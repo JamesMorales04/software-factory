@@ -36,14 +36,9 @@ Owner identity.
   in Office. Core persists only its digest and expiry, and a unique database
   claim makes initial enrollment single-use across concurrent requests.
 - Local recovery requires an explicit container operation. It revokes and
-  audits every active device session, cancels outstanding pairing authority,
-  clears the Owner bootstrap claim, and issues a new confirmation code. The
-  permanent operator credential remains available only through its protected
-  internal recovery/API paths.
-- Office removes the retired `sessionStorage["factory-api-token"]` key during
-  frontend initialization without reading, transmitting or logging its value.
-  The upgrade path is covered by a test that seeds the legacy key, enrolls,
-  reads the session and logs out.
+  audits every active device session, clears the Owner bootstrap claim, and
+  issues a new confirmation code. The permanent operator credential remains
+  available only through its protected internal recovery/API paths.
 - Versioned SQLite migrations add session and audit tables without deleting or
   rewriting existing Projects, Campaigns, credentials or evidence.
 

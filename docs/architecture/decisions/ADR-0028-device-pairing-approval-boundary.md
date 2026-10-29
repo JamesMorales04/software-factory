@@ -9,7 +9,7 @@ amends: ADR-0026
 # ADR-0028: QR device pairing and approval boundary
 
 - **Status:** Proposed for Product Owner review. The 2026-10-29 runtime repair `7bca751` has author-run Rust and real Chromium pairing/revocation evidence; static socket-volume policy hardening is committed at `d2fa767`, alias resolution at `d0d4040`, implicit external-volume protection at `d2783e4`, and prefixed-source regression coverage at `48a1346`. Independent review, remote Tailscale HTTPS, mobile-data UAT and Product Owner promotion approval remain pending.
-- **Amends:** [ADR-0026](ADR-0026-device-sessions-and-local-owner-bootstrap.md) with the device enrollment and approval boundary.
+- **Amends:** [ADR-0026](ADR-0026-device-sessions-and-local-owner-bootstrap.md) with the proposed device enrollment and approval boundary. Global access-revocation fencing and legacy browser-token cleanup are proposed separately in [ADR-0030](ADR-0030-global-access-revocation-and-legacy-token-cleanup.md).
 
 ## Context
 
@@ -20,7 +20,7 @@ Factory Office needs a safe way to enroll a phone without copying a permanent op
 - Core creates a short-lived random challenge and persists its lifecycle and audit records. A QR carries only the challenge identifier, which grants no Factory access by itself.
 - A single phone claim changes the challenge from `AVAILABLE` to `PENDING`. Core returns a separate random poll capability to the claimant and persists only its hash. The claimant presents it in a POST body, never in a URL.
 - The phone and authenticated Office display the same short verification code. The code is generated from `ring::rand::SystemRandom` with rejection sampling, so all one million values are equally likely. Core approves only when the authenticated operator submits the matching code. A per-challenge persisted failed-attempt counter cancels the challenge after five invalid approvals. Rejection, expiry, replay, throttling and a second claim fail closed.
-- Core consumes approval and creates the independent device session in one SQLite transaction. The transaction requires the challenge's approval epoch to equal the current global access epoch. Logout-all, revoke-all and local recovery advance that epoch and cancel outstanding `AVAILABLE`, `PENDING` and `APPROVED` challenges, so an approval delayed across a global revocation cannot issue a session. A revocation that commits after the exchange revokes the session the exchange created. The raw session and CSRF values are returned only through the session cookies and the CSRF response contract; session storage contains hashes. A failed session issue requires a new pairing challenge.
+- Core consumes approval and creates the independent device session in one SQLite transaction. The raw session and CSRF values are returned only through the session cookies and the CSRF response contract; session storage contains hashes. A failed session issue requires a new pairing challenge. Global revocation fencing and cancellation of outstanding challenges are governed by proposed ADR-0030.
 - Per-device and all-device revocation are Core operations and are audited. Tailscale supplies private transport only; it does not provide a Factory identity or session.
 - The claim and polling routes are capability-scoped public operations under strict Core Host/Origin checks. Device-management operations require an authenticated Factory operator session and CSRF validation.
 
