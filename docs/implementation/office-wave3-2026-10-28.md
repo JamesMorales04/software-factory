@@ -297,6 +297,26 @@ upgrade, Core binary tests, Compose E2E and live-provider proof remain gates.
 
 No duplicate issues were opened. No `main` merge was performed.
 
+## 12. Final review disposition (2026-10-29)
+
+**Code candidate:** `66a71bf` (Compose run `40825390549` SUCCESS).
+**Final branch head:** `1c7621d` — adds only review-condition tests and the
+evidence record; no runtime behavior changed after `66a71bf`.
+
+- **Sol:** APPROVE WITH CONDITIONS on `66a71bf`.
+- **Luna:** APPROVE WITH CONDITIONS on `66a71bf`; its only condition (run
+  formatter/tests/clippy on a writable checkout) was satisfied by the Director
+  (`cargo fmt`, 487 lib tests, 31 Core-bin tests, 12 fixture E2E, clippy, Office
+  241 tests).
+- Prior #72/#73 HIGH findings are closed: assessment envelope, receipt-bound
+  progress, binding quarantine, crash/restart ambiguity, dispatch intent,
+  ownership/fencing and no artificial productivity ceiling.
+- Remaining conditions are explicit, not waived: live paid inference (owner
+  spend authorization), real-browser Office journey, OS-process-kill injection,
+  upstream pricing correctness, access-stack promotion and `main` protection.
+- Wave 3 remains a development branch. No `main` merge and no product
+  acceptance are claimed.
+
 ## 8. Change log
 
 - 2026-10-28: Wave 3 opened at `4e0a43e`. Model routes verified
