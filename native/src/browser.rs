@@ -206,9 +206,15 @@ impl ManagedTestServer {
     /// clean it up.
     pub async fn start(config: ManagedTestServerConfig) -> Result<Self, BrowserError> {
         validate_server_config(&config)?;
-        let endpoint = resolve_endpoint(&config)?;
-        endpoint.assert_free()?;
+        // Reject an invalid log location before reserving a port or creating
+        // runtime state; this also keeps the validation deterministic under
+        // concurrent test execution.
         let runtime_dir = prepare_runtime_dirs(&config)?;
+        let endpoint = resolve_endpoint(&config)?;
+        if let Err(error) = endpoint.assert_free() {
+            let _ = std::fs::remove_dir_all(&runtime_dir);
+            return Err(error);
+        }
         let (stdout_log, stderr_log) = log_paths(&config.log_dir);
         let mut command = server_command(&config, &endpoint, &runtime_dir);
         command
