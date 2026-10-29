@@ -21,12 +21,22 @@ use crate::execution_policy::{
     ReservationState, ReserveInferenceInput, SpendingStatus, UsdMicros,
 };
 use crate::inference_ledger::{
-    CampaignEnvelopeBindingInput, EnvelopeSnapshot, InferenceEnvelopeRecord,
+    CampaignEnvelopeBindingInput, CampaignInferenceRequirement, EnvelopeSnapshot,
+    InferenceEnvelopeRecord, InferenceLedgerMode, InferencePricingQuote,
     InferenceReservationRecord, MarkInferenceDispatchedInput, NewInferenceAuthorization,
-    NewInferenceEnvelope, ReconcileInferenceInput, ReconciliationOutcome, ReservationAmounts,
-    RevokeInferenceEnvelopeInput, project_spending, spending_totals, validate_reserve_input,
-    validate_settlement,
+    NewInferenceEnvelope, NewInferencePricingQuote, ReconcileInferenceInput, ReconciliationOutcome,
+    ReservationAmounts, RevokeInferenceEnvelopeInput, project_spending, spending_totals,
+    validate_reserve_input, validate_settlement,
 };
+
+type WorkerDispatchLease = (
+    Option<String>,
+    Option<i64>,
+    Option<i64>,
+    String,
+    String,
+    String,
+);
 
 #[derive(Debug, Clone)]
 struct EnvelopeRow {
@@ -139,6 +149,123 @@ impl ReservationRow {
 }
 
 impl Database {
+    pub async fn inference_ledger_mode(&self) -> Result<InferenceLedgerMode, Error> {
+        let mut connection = self.pool.acquire().await?;
+        load_ledger_mode(&mut connection).await
+    }
+
+    /// Promote execution from V1 to V2. This is one-way: a V2 cutover cannot be
+    /// silently reverted to legacy accounting.
+    pub async fn set_inference_ledger_mode_v2(
+        &self,
+        actor: &str,
+        evidence_sha256: &str,
+    ) -> Result<InferenceLedgerMode, Error> {
+        if actor.trim().is_empty() || actor.len() > 512 || !is_sha256(evidence_sha256) {
+            return Err(Error::Validation("inference ledger policy evidence".into()));
+        }
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let current = load_ledger_mode(&mut transaction).await?;
+        if current == InferenceLedgerMode::V1 {
+            sqlx::query::query(
+                "UPDATE inference_ledger_policy
+                 SET mode='V2',actor=?1,evidence_sha256=?2,updated_at_ms=?3
+                 WHERE id=1 AND mode='V1'",
+            )
+            .bind(actor)
+            .bind(evidence_sha256)
+            .bind(Utc::now().timestamp_millis())
+            .execute(&mut *transaction)
+            .await?;
+        }
+        let next = load_ledger_mode(&mut transaction).await?;
+        transaction.commit().await?;
+        Ok(next)
+    }
+
+    /// Frozen per-request ceiling supplied by a trusted adapter quote.
+    pub async fn create_inference_pricing_quote(
+        &self,
+        input: &NewInferencePricingQuote,
+    ) -> Result<InferencePricingQuote, Error> {
+        input.validate().map_err(ledger_error)?;
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let coverage_sha256 = sha256_hex(input.coverage_json.as_bytes());
+        if let Some(existing) = load_pricing_quote_by_revision(
+            &mut transaction,
+            &input.provider,
+            &input.model,
+            input.revision,
+        )
+        .await?
+        {
+            if existing.upper_bound_micros == input.upper_bound_micros
+                && existing.coverage_sha256 == coverage_sha256
+                && existing.snapshot_json == input.snapshot_json
+                && existing.evidence_sha256 == input.evidence_sha256
+            {
+                transaction.commit().await?;
+                return Ok(existing);
+            }
+            return Err(Error::Conflict(
+                "pricing quote revision conflicts with its recorded value",
+            ));
+        }
+        let quote = InferencePricingQuote {
+            quote_id: Uuid::new_v4().to_string(),
+            provider: input.provider.clone(),
+            model: input.model.clone(),
+            revision: input.revision,
+            upper_bound_micros: input.upper_bound_micros,
+            coverage_sha256,
+            snapshot_json: input.snapshot_json.clone(),
+            evidence_sha256: input.evidence_sha256.clone(),
+        };
+        sqlx::query::query(
+            "INSERT INTO inference_pricing_quotes
+             (quote_id,provider,model,revision,currency,upper_bound_micros,coverage_sha256,
+              coverage_json,snapshot_json,evidence_sha256,created_at_ms)
+             VALUES (?1,?2,?3,?4,'USD',?5,?6,?7,?8,?9,?10)",
+        )
+        .bind(&quote.quote_id)
+        .bind(&quote.provider)
+        .bind(&quote.model)
+        .bind(quote.revision)
+        .bind(micros_to_i64(quote.upper_bound_micros)?)
+        .bind(&quote.coverage_sha256)
+        .bind(&input.coverage_json)
+        .bind(&quote.snapshot_json)
+        .bind(&quote.evidence_sha256)
+        .bind(Utc::now().timestamp_millis())
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(quote)
+    }
+
+    pub async fn inference_pricing_quote(
+        &self,
+        provider: &str,
+        model: &str,
+    ) -> Result<InferencePricingQuote, Error> {
+        let mut connection = self.pool.acquire().await?;
+        load_latest_pricing_quote(&mut connection, provider, model)
+            .await?
+            .ok_or(Error::NotFound)
+    }
+
+    /// Resolve the Campaign's explicit V1/V2 requirement. V2 (or a global V2
+    /// cutover) without a bound, active envelope fails closed.
+    pub async fn require_campaign_inference_envelope(
+        &self,
+        campaign_id: &str,
+    ) -> Result<CampaignInferenceRequirement, Error> {
+        let mut connection = self.pool.acquire().await?;
+        campaign_requirement_in_tx(&mut connection, campaign_id).await
+    }
+
     /// Create one operator-request envelope and its initial authorization.
     /// Replaying the same authorization idempotency key returns the durable
     /// envelope; a different request or agreement conflicts.
@@ -170,12 +297,39 @@ impl Database {
             transaction.commit().await?;
             return Ok(envelope.record());
         }
-        if load_envelope_by_request(&mut transaction, &input.request_id)
+        if find_envelope_for_request_alias(&mut transaction, &input.request_id)
             .await?
             .is_some()
         {
             return Err(Error::Conflict(
-                "operator request already has an inference envelope",
+                "operator request alias already has an inference envelope",
+            ));
+        }
+        // If the request identity is already known, its project is durable and
+        // must match. Unknown standalone request identities remain admissible
+        // only because no canonical request row exists to contradict them.
+        let lead_project: Option<(String,)> =
+            sqlx::query_as::query_as("SELECT project_id FROM lead_requests WHERE id=?1")
+                .bind(&input.request_id)
+                .fetch_optional(&mut *transaction)
+                .await?;
+        let intake_project: Option<(String,)> =
+            sqlx::query_as::query_as("SELECT project_id FROM intake_requests WHERE id=?1")
+                .bind(&input.request_id)
+                .fetch_optional(&mut *transaction)
+                .await?;
+        if let (Some((lead,)), Some((intake,))) = (&lead_project, &intake_project)
+            && lead != intake
+        {
+            return Err(Error::Conflict(
+                "request identity resolves to conflicting projects",
+            ));
+        }
+        if let Some((project,)) = lead_project.or(intake_project)
+            && project != input.project_id
+        {
+            return Err(Error::Forbidden(
+                "inference envelope project differs from its request project".into(),
             ));
         }
         let envelope_id = Uuid::new_v4().to_string();
@@ -304,8 +458,10 @@ impl Database {
         Ok(envelope.record())
     }
 
-    /// Bind a Campaign to the request envelope it inherits. A Campaign can
-    /// never switch envelopes or create a second allowance.
+    /// Bind a Campaign to the request envelope it inherits. The Campaign must
+    /// belong to the envelope's project and to the same operator request; an
+    /// envelope can back at most one Campaign. Binding is a one-way V2
+    /// classification.
     pub async fn bind_campaign_inference_envelope(
         &self,
         input: &CampaignEnvelopeBindingInput,
@@ -316,18 +472,48 @@ impl Database {
         let envelope = load_envelope(&mut transaction, &input.envelope_id)
             .await?
             .ok_or(Error::NotFound)?;
-        let existing: Option<(String,)> = sqlx::query_as::query_as(
-            "SELECT envelope_id FROM inference_campaign_bindings WHERE campaign_id=?1",
+        let campaign: Option<(String,)> = sqlx::query_as::query_as(
+            "SELECT a.project_id FROM campaigns c JOIN actions a ON a.id=c.action_id
+             WHERE c.id=?1",
         )
         .bind(&input.campaign_id)
         .fetch_optional(&mut *transaction)
         .await?;
-        if let Some((envelope_id,)) = existing {
-            if envelope_id != input.envelope_id {
+        let Some((project_id,)) = campaign else {
+            return Err(Error::NotFound);
+        };
+        if project_id != envelope.project_id {
+            return Err(Error::Forbidden(
+                "campaign belongs to a different project than the inference envelope".into(),
+            ));
+        }
+        if !campaign_owns_envelope_request(
+            &mut transaction,
+            &input.campaign_id,
+            &envelope.request_id,
+        )
+        .await?
+        {
+            return Err(Error::Forbidden(
+                "campaign does not belong to the envelope's operator request".into(),
+            ));
+        }
+        let existing: Option<(String, String)> = sqlx::query_as::query_as(
+            "SELECT campaign_id,envelope_id FROM inference_campaign_bindings
+             WHERE campaign_id=?1 OR envelope_id=?2",
+        )
+        .bind(&input.campaign_id)
+        .bind(&input.envelope_id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        if let Some((existing_campaign, existing_envelope)) = existing {
+            if existing_campaign != input.campaign_id || existing_envelope != input.envelope_id {
                 return Err(Error::Conflict(
-                    "campaign is already bound to another inference envelope",
+                    "campaign or inference envelope is already bound elsewhere",
                 ));
             }
+            classify_campaign_v2(&mut transaction, &input.campaign_id, &input.evidence_sha256)
+                .await?;
             transaction.commit().await?;
             return Ok(());
         }
@@ -340,13 +526,17 @@ impl Database {
         .bind(Utc::now().timestamp_millis())
         .execute(&mut *transaction)
         .await?;
+        classify_campaign_v2(&mut transaction, &input.campaign_id, &input.evidence_sha256).await?;
         insert_ledger_event(
             &mut transaction,
             &envelope.id,
             None,
             "CAMPAIGN_BOUND",
             &input.actor,
-            &format!("campaign:{}", input.campaign_id),
+            &format!(
+                "campaign:{}:request:{}",
+                input.campaign_id, envelope.request_id
+            ),
             &input.evidence_sha256,
             Utc::now().timestamp_millis(),
         )
@@ -563,6 +753,29 @@ pub(crate) async fn reserve_inference_in_tx(
     let envelope = load_envelope(connection, &input.envelope_id)
         .await?
         .ok_or(Error::NotFound)?;
+    // The monetary bound comes from a frozen adapter quote, never from a
+    // caller estimate. Exact revision, snapshot and bound equality make a
+    // lowered or invented liability impossible.
+    let pricing_quote = load_pricing_quote(
+        connection,
+        &input.pricing_revision,
+        &input.provider,
+        &input.model,
+    )
+    .await?
+    .ok_or(Error::Validation(
+        "inference reservation requires a frozen pricing quote".into(),
+    ))?;
+    if pricing_quote.snapshot_json != input.pricing_snapshot_json {
+        return Err(Error::Conflict(
+            "inference pricing snapshot differs from the frozen quote",
+        ));
+    }
+    if pricing_quote.upper_bound_micros != input.upper_bound_micros {
+        return Err(Error::Validation(
+            "caller-supplied bound differs from the frozen pricing quote".into(),
+        ));
+    }
     if let Some(existing) = load_reservation_by_identity(
         connection,
         &input.envelope_id,
@@ -717,12 +930,35 @@ pub(crate) async fn reserve_inference_in_tx(
         .ok_or(Error::NotFound)
 }
 
-/// Record dispatch intent inside an existing transaction.
+/// Record dispatch intent inside an existing transaction. Idempotent replay of
+/// the same identity returns the durable record; a different identity conflicts.
 pub(crate) async fn mark_inference_dispatched_in_tx(
     connection: &mut SqliteConnection,
     input: &MarkInferenceDispatchedInput,
     now_ms: i64,
 ) -> Result<InferenceReservationRecord, Error> {
+    let (record, _) = dispatch_inference_in_tx(connection, input, now_ms, false).await?;
+    Ok(record)
+}
+
+/// Acquire dispatch intent for a new upstream send. Only a newly recorded
+/// intent returns success; an already-dispatched reservation is refused so a
+/// caller can never authorize a second send from a replayed intent.
+pub(crate) async fn acquire_inference_dispatch_in_tx(
+    connection: &mut SqliteConnection,
+    input: &MarkInferenceDispatchedInput,
+    now_ms: i64,
+) -> Result<InferenceReservationRecord, Error> {
+    let (record, _) = dispatch_inference_in_tx(connection, input, now_ms, true).await?;
+    Ok(record)
+}
+
+async fn dispatch_inference_in_tx(
+    connection: &mut SqliteConnection,
+    input: &MarkInferenceDispatchedInput,
+    now_ms: i64,
+    require_new: bool,
+) -> Result<(InferenceReservationRecord, bool), Error> {
     input.validate().map_err(ledger_error)?;
     let reservation = load_reservation(connection, &input.reservation_id)
         .await?
@@ -743,7 +979,12 @@ pub(crate) async fn mark_inference_dispatched_in_tx(
             && reservation.generation == input.generation
             && reservation.provider_request_id == input.provider_request_id
         {
-            return Ok(reservation.record());
+            if require_new {
+                return Err(Error::Forbidden(
+                    "inference dispatch intent was already acquired".into(),
+                ));
+            }
+            return Ok((reservation.record(), false));
         }
         return Err(Error::Conflict(
             "inference dispatch intent conflicts with the recorded dispatch",
@@ -773,6 +1014,81 @@ pub(crate) async fn mark_inference_dispatched_in_tx(
             return Err(Error::Forbidden("inference envelope is not active".into()));
         }
     }
+    // Frozen authorization context must still resolve to the exact durable
+    // revision/scope recorded on the reservation. Append-only reauthorization
+    // does not erase older revision evidence.
+    let Some(scope) =
+        load_authorization_scope(connection, &envelope.id, reservation.authorization_revision)
+            .await?
+    else {
+        return Err(Error::Conflict(
+            "reservation authorization revision is missing",
+        ));
+    };
+    if scope != reservation.scope_sha256 {
+        return Err(Error::Conflict(
+            "reservation scope differs from durable authorization evidence",
+        ));
+    }
+    if reservation.role == InferenceRole::Implementer {
+        let Some(attempt_id) = &input.attempt_id else {
+            return Err(Error::Validation(
+                "worker dispatch requires an attempt id".into(),
+            ));
+        };
+        let lease: Option<WorkerDispatchLease> = sqlx::query_as::query_as(
+            "SELECT l.worker_id,l.generation,l.expires_at_ms,a.status,c.status,r.campaign_id
+                 FROM attempts a
+                 JOIN runs r ON r.id=a.run_id
+                 JOIN campaigns c ON c.id=r.campaign_id
+                 LEFT JOIN worker_leases l ON l.attempt_id=a.id
+                 WHERE a.id=?1",
+        )
+        .bind(attempt_id)
+        .fetch_optional(&mut *connection)
+        .await?;
+        let Some((
+            lease_worker,
+            lease_generation,
+            lease_expiry,
+            attempt_status,
+            campaign_status,
+            campaign_id,
+        )) = lease
+        else {
+            return Err(Error::Forbidden(
+                "worker dispatch has no current attempt lineage".into(),
+            ));
+        };
+        if lease_worker.as_deref() != input.worker_id.as_deref()
+            || lease_generation != input.generation
+            || lease_expiry.is_none_or(|expiry| expiry <= now_ms)
+            || attempt_status != "LEASED"
+            || campaign_status != "AUTHORIZED"
+        {
+            return Err(Error::Forbidden(
+                "worker dispatch is not authorized by the current lease".into(),
+            ));
+        }
+        let (billing_mode,): (String,) = sqlx::query_as::query_as(
+            "SELECT mode FROM inference_campaign_modes WHERE campaign_id=?1",
+        )
+        .bind(&campaign_id)
+        .fetch_optional(&mut *connection)
+        .await?
+        .ok_or(Error::Forbidden(
+            "worker dispatch campaign is not classified V2".into(),
+        ))?;
+        if billing_mode != "V2" {
+            return Err(Error::Forbidden(
+                "worker dispatch campaign is not classified V2".into(),
+            ));
+        }
+    } else if input.attempt_id.is_some() || input.worker_id.is_some() {
+        return Err(Error::Validation(
+            "non-worker dispatch must not carry worker fencing".into(),
+        ));
+    }
     sqlx::query::query(
         "UPDATE inference_reservations
          SET worker_id=?1,generation=?2,dispatched_at_ms=?3,provider_request_id=?4,updated_at_ms=?5
@@ -797,10 +1113,11 @@ pub(crate) async fn mark_inference_dispatched_in_tx(
         now_ms,
     )
     .await?;
-    load_reservation(connection, &reservation.id)
+    let record = load_reservation(connection, &reservation.id)
         .await?
-        .map(|row| row.record())
-        .ok_or(Error::NotFound)
+        .ok_or(Error::NotFound)?
+        .record();
+    Ok((record, true))
 }
 
 /// Settle a reserved hold inside an existing transaction.
@@ -1123,7 +1440,9 @@ pub(crate) async fn settle_or_reconcile_in_tx(
             .await?;
         }
         ReservationState::Settled => {
-            if reservation.settled_micros != Some(settled_micros) {
+            if reservation.settled_micros != Some(settled_micros)
+                || reservation.settlement_sha256.as_deref() != Some(evidence_sha256)
+            {
                 return Err(Error::Conflict(
                     "inference reservation was already settled differently",
                 ));
@@ -1170,7 +1489,145 @@ pub(crate) async fn release_or_reconcile_in_tx(
             )
             .await?;
         }
-        ReservationState::Released | ReservationState::Settled => {}
+        ReservationState::Released => {}
+        ReservationState::Settled => {
+            return Err(Error::Conflict(
+                "settled inference reservation cannot be released",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Ledger reservations attached to one provider turn, ordered by egress
+/// sequence. A missing row means the legacy V1 path.
+pub(crate) async fn provider_turn_ledger_ids_in_tx(
+    connection: &mut SqliteConnection,
+    turn_reservation_id: &str,
+) -> Result<Vec<(i64, String)>, Error> {
+    let rows: Vec<(i64, String)> = sqlx::query_as::query_as(
+        "SELECT sequence,ledger_reservation_id FROM provider_turn_ledger_requests
+         WHERE reservation_id=?1 ORDER BY sequence",
+    )
+    .bind(turn_reservation_id)
+    .fetch_all(&mut *connection)
+    .await?;
+    if !rows.is_empty() {
+        return Ok(rows);
+    }
+    // Compatibility evidence for a single linked row created before the
+    // per-request mapping existed.
+    let legacy: Option<(String,)> = sqlx::query_as::query_as(
+        "SELECT ledger_reservation_id FROM provider_turn_reservations
+         WHERE reservation_id=?1 AND ledger_reservation_id IS NOT NULL",
+    )
+    .bind(turn_reservation_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    Ok(legacy
+        .map(|(ledger_id,)| vec![(0, ledger_id)])
+        .unwrap_or_default())
+}
+
+/// Settle a total receipt across the turn's per-request holds, allocating the
+/// actual cost once with checked arithmetic. A remainder beyond all holds is
+/// recorded on the last hold so the overrun is truthful and visible.
+pub(crate) async fn settle_provider_turn_ledger_in_tx(
+    connection: &mut SqliteConnection,
+    turn_reservation_id: &str,
+    total_cost_micros: UsdMicros,
+    actor: &str,
+    evidence_ref: &str,
+    now_ms: i64,
+) -> Result<(), Error> {
+    let ledger_ids = provider_turn_ledger_ids_in_tx(connection, turn_reservation_id).await?;
+    let mut remaining = total_cost_micros;
+    let last_index = ledger_ids.len().saturating_sub(1);
+    for (index, (_, ledger_id)) in ledger_ids.iter().enumerate() {
+        let reservation = load_reservation(connection, ledger_id)
+            .await?
+            .ok_or(Error::NotFound)?;
+        let portion = if index == last_index {
+            remaining
+        } else {
+            remaining.min(reservation.upper_bound_micros)
+        };
+        remaining = remaining
+            .checked_sub(portion)
+            .map_err(InferenceLedgerError::from)
+            .map_err(ledger_error)?;
+        let digest = sha256_hex(
+            format!(
+                "provider-turn-settlement:v2:{turn_reservation_id}:{ledger_id}:{}",
+                portion.get()
+            )
+            .as_bytes(),
+        );
+        settle_or_reconcile_in_tx(
+            connection,
+            ledger_id,
+            portion,
+            &digest,
+            actor,
+            evidence_ref,
+            now_ms,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+pub(crate) async fn mark_provider_turn_ledger_ambiguous_in_tx(
+    connection: &mut SqliteConnection,
+    turn_reservation_id: &str,
+    actor: &str,
+    evidence_ref: &str,
+    payload_sha256: &str,
+    now_ms: i64,
+) -> Result<(), Error> {
+    for (_, ledger_id) in provider_turn_ledger_ids_in_tx(connection, turn_reservation_id).await? {
+        mark_inference_ambiguous_in_tx(
+            connection,
+            &ledger_id,
+            actor,
+            evidence_ref,
+            payload_sha256,
+            now_ms,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+pub(crate) async fn settle_provider_turn_ledger_at_bounds_in_tx(
+    connection: &mut SqliteConnection,
+    turn_reservation_id: &str,
+    actor: &str,
+    evidence_ref: &str,
+    now_ms: i64,
+) -> Result<(), Error> {
+    let ledger_ids = provider_turn_ledger_ids_in_tx(connection, turn_reservation_id).await?;
+    for (_, ledger_id) in ledger_ids {
+        let reservation = load_reservation(connection, &ledger_id)
+            .await?
+            .ok_or(Error::NotFound)?;
+        let digest = sha256_hex(
+            format!(
+                "provider-turn-resolution:v2:{turn_reservation_id}:{ledger_id}:{}",
+                reservation.upper_bound_micros.get()
+            )
+            .as_bytes(),
+        );
+        settle_or_reconcile_in_tx(
+            connection,
+            &ledger_id,
+            reservation.upper_bound_micros,
+            &digest,
+            actor,
+            evidence_ref,
+            now_ms,
+        )
+        .await?;
     }
     Ok(())
 }
@@ -1201,24 +1658,6 @@ pub(crate) async fn envelope_for_lead_in_tx(
         (Some((id,)), _) | (_, Some((id,))) => Ok(Some(id)),
         (None, None) => Ok(None),
     }
-}
-
-pub(crate) async fn envelope_for_candidate_in_tx(
-    connection: &mut SqliteConnection,
-    candidate_id: &str,
-) -> Result<Option<String>, Error> {
-    let row: Option<(String,)> = sqlx::query_as::query_as(
-        "SELECT b.envelope_id
-         FROM candidates cd
-         JOIN attempts a ON a.id=cd.attempt_id
-         JOIN runs r ON r.id=a.run_id
-         JOIN inference_campaign_bindings b ON b.campaign_id=r.campaign_id
-         WHERE cd.id=?1",
-    )
-    .bind(candidate_id)
-    .fetch_optional(&mut *connection)
-    .await?;
-    Ok(row.map(|(id,)| id))
 }
 
 pub(crate) async fn envelope_for_campaign_in_tx(
@@ -1488,6 +1927,48 @@ async fn load_envelope(
     row.map(|row| envelope_from_row(&row)).transpose()
 }
 
+async fn find_envelope_for_request_alias(
+    connection: &mut SqliteConnection,
+    request_id: &str,
+) -> Result<Option<String>, Error> {
+    let direct: Option<(String,)> =
+        sqlx::query_as::query_as("SELECT id FROM inference_envelopes WHERE request_id=?1")
+            .bind(request_id)
+            .fetch_optional(&mut *connection)
+            .await?;
+    let via_lead: Option<(String,)> = sqlx::query_as::query_as(
+        "SELECT e.id FROM lead_requests lr
+         LEFT JOIN intake_requests ir ON ir.lead_request_id=lr.id
+         JOIN inference_envelopes e ON e.request_id IN (lr.id, COALESCE(ir.id,''))
+         WHERE lr.id=?1 LIMIT 1",
+    )
+    .bind(request_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    let via_intake: Option<(String,)> = sqlx::query_as::query_as(
+        "SELECT e.id FROM intake_requests ir
+         JOIN inference_envelopes e ON e.request_id IN (ir.id, ir.lead_request_id)
+         WHERE ir.id=?1 LIMIT 1",
+    )
+    .bind(request_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    let mut found: Vec<String> = [direct, via_lead, via_intake]
+        .into_iter()
+        .flatten()
+        .map(|(id,)| id)
+        .collect();
+    found.sort();
+    found.dedup();
+    match found.len() {
+        0 => Ok(None),
+        1 => Ok(found.pop()),
+        _ => Err(Error::Conflict(
+            "request identity aliases resolve to more than one inference envelope",
+        )),
+    }
+}
+
 async fn load_envelope_by_request(
     connection: &mut SqliteConnection,
     request_id: &str,
@@ -1562,6 +2043,197 @@ struct AuthorizationRow {
     actor: String,
     scope_sha256: String,
     evidence_sha256: String,
+}
+
+pub(crate) async fn load_ledger_mode(
+    connection: &mut SqliteConnection,
+) -> Result<InferenceLedgerMode, Error> {
+    let (mode,): (String,) =
+        sqlx::query_as::query_as("SELECT mode FROM inference_ledger_policy WHERE id=1")
+            .fetch_one(&mut *connection)
+            .await?;
+    InferenceLedgerMode::parse(&mode).map_err(ledger_error)
+}
+
+pub(crate) async fn campaign_requirement_in_tx(
+    connection: &mut SqliteConnection,
+    campaign_id: &str,
+) -> Result<CampaignInferenceRequirement, Error> {
+    let row: Option<(String,)> =
+        sqlx::query_as::query_as("SELECT mode FROM inference_campaign_modes WHERE campaign_id=?1")
+            .bind(campaign_id)
+            .fetch_optional(&mut *connection)
+            .await?;
+    if row.as_ref().is_some_and(|(mode,)| mode == "V2") {
+        let binding: Option<(String,)> = sqlx::query_as::query_as(
+            "SELECT envelope_id FROM inference_campaign_bindings WHERE campaign_id=?1",
+        )
+        .bind(campaign_id)
+        .fetch_optional(&mut *connection)
+        .await?;
+        let Some((envelope_id,)) = binding else {
+            return Err(Error::Forbidden(
+                "V2 campaign has no inference envelope".into(),
+            ));
+        };
+        let envelope = load_envelope(connection, &envelope_id)
+            .await?
+            .ok_or(Error::NotFound)?;
+        if envelope.state != EnvelopeState::Active {
+            return Err(Error::Forbidden(
+                "inference envelope is not active for new campaign spending".into(),
+            ));
+        }
+        return Ok(CampaignInferenceRequirement::EnvelopeBound { envelope_id });
+    }
+    if load_ledger_mode(connection).await? == InferenceLedgerMode::V2 {
+        return Err(Error::Forbidden(
+            "V2 execution policy requires a bound inference envelope".into(),
+        ));
+    }
+    Ok(CampaignInferenceRequirement::LegacyV1)
+}
+
+async fn classify_campaign_v2(
+    connection: &mut SqliteConnection,
+    campaign_id: &str,
+    evidence_sha256: &str,
+) -> Result<(), Error> {
+    sqlx::query::query(
+        "INSERT INTO inference_campaign_modes(campaign_id,mode,classified_at_ms,evidence_sha256)
+         VALUES (?1,'V2',?2,?3)
+         ON CONFLICT(campaign_id) DO UPDATE SET mode='V2',
+             classified_at_ms=excluded.classified_at_ms,
+             evidence_sha256=excluded.evidence_sha256
+         WHERE inference_campaign_modes.mode='V1'",
+    )
+    .bind(campaign_id)
+    .bind(Utc::now().timestamp_millis())
+    .bind(evidence_sha256)
+    .execute(&mut *connection)
+    .await?;
+    Ok(())
+}
+
+async fn campaign_owns_envelope_request(
+    connection: &mut SqliteConnection,
+    campaign_id: &str,
+    envelope_request_id: &str,
+) -> Result<bool, Error> {
+    let lead_request: Option<(String,)> =
+        sqlx::query_as::query_as("SELECT request_id FROM lead_start_evidence WHERE campaign_id=?1")
+            .bind(campaign_id)
+            .fetch_optional(&mut *connection)
+            .await?;
+    let intake_request: Option<(String,)> =
+        sqlx::query_as::query_as("SELECT id FROM intake_requests WHERE campaign_id=?1")
+            .bind(campaign_id)
+            .fetch_optional(&mut *connection)
+            .await?;
+    if let Some((lead_request_id,)) = lead_request {
+        if envelope_request_id == lead_request_id {
+            return Ok(true);
+        }
+        let linked: Option<(String,)> =
+            sqlx::query_as::query_as("SELECT id FROM intake_requests WHERE lead_request_id=?1")
+                .bind(&lead_request_id)
+                .fetch_optional(&mut *connection)
+                .await?;
+        if linked
+            .as_ref()
+            .is_some_and(|(id,)| id == envelope_request_id)
+        {
+            return Ok(true);
+        }
+    }
+    if let Some((intake_request_id,)) = intake_request
+        && envelope_request_id == intake_request_id
+    {
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+async fn load_pricing_quote_by_revision(
+    connection: &mut SqliteConnection,
+    provider: &str,
+    model: &str,
+    revision: i64,
+) -> Result<Option<InferencePricingQuote>, Error> {
+    let row = sqlx::query::query(
+        "SELECT quote_id,provider,model,revision,upper_bound_micros,coverage_sha256,
+                snapshot_json,evidence_sha256
+         FROM inference_pricing_quotes
+         WHERE provider=?1 AND model=?2 AND revision=?3",
+    )
+    .bind(provider)
+    .bind(model)
+    .bind(revision)
+    .fetch_optional(&mut *connection)
+    .await?;
+    row.map(|row| pricing_quote_from_row(&row)).transpose()
+}
+
+async fn load_pricing_quote(
+    connection: &mut SqliteConnection,
+    quote_id: &str,
+    provider: &str,
+    model: &str,
+) -> Result<Option<InferencePricingQuote>, Error> {
+    let row = sqlx::query::query(
+        "SELECT quote_id,provider,model,revision,upper_bound_micros,coverage_sha256,
+                snapshot_json,evidence_sha256
+         FROM inference_pricing_quotes
+         WHERE quote_id=?1 AND provider=?2 AND model=?3",
+    )
+    .bind(quote_id)
+    .bind(provider)
+    .bind(model)
+    .fetch_optional(&mut *connection)
+    .await?;
+    row.map(|row| pricing_quote_from_row(&row)).transpose()
+}
+
+pub(crate) async fn latest_pricing_quote_in_tx(
+    connection: &mut SqliteConnection,
+    provider: &str,
+    model: &str,
+) -> Result<InferencePricingQuote, Error> {
+    load_latest_pricing_quote(connection, provider, model)
+        .await?
+        .ok_or(Error::NotFound)
+}
+
+async fn load_latest_pricing_quote(
+    connection: &mut SqliteConnection,
+    provider: &str,
+    model: &str,
+) -> Result<Option<InferencePricingQuote>, Error> {
+    let row = sqlx::query::query(
+        "SELECT quote_id,provider,model,revision,upper_bound_micros,coverage_sha256,
+                snapshot_json,evidence_sha256
+         FROM inference_pricing_quotes
+         WHERE provider=?1 AND model=?2
+         ORDER BY revision DESC LIMIT 1",
+    )
+    .bind(provider)
+    .bind(model)
+    .fetch_optional(&mut *connection)
+    .await?;
+    row.map(|row| pricing_quote_from_row(&row)).transpose()
+}
+
+fn pricing_quote_from_row(row: &sqlx_sqlite::SqliteRow) -> Result<InferencePricingQuote, Error> {
+    Ok(InferencePricingQuote {
+        quote_id: row.try_get("quote_id")?,
+        provider: row.try_get("provider")?,
+        model: row.try_get("model")?,
+        revision: row.try_get("revision")?,
+        upper_bound_micros: micros_from_i64(row.try_get("upper_bound_micros")?)?,
+        coverage_sha256: row.try_get("coverage_sha256")?,
+        snapshot_json: row.try_get("snapshot_json")?,
+        evidence_sha256: row.try_get("evidence_sha256")?,
+    })
 }
 
 async fn load_authorization_scope(
@@ -1711,8 +2383,9 @@ fn envelope_state_str(state: EnvelopeState) -> &'static str {
 mod tests {
     use super::*;
     use crate::inference_ledger::{
-        NewInferenceAuthorization, NewInferenceEnvelope, ReconcileInferenceInput,
-        ReconciliationOutcome, RevokeInferenceEnvelopeInput,
+        InferencePricingQuote, NewInferenceAuthorization, NewInferenceEnvelope,
+        NewInferencePricingQuote, ReconcileInferenceInput, ReconciliationOutcome,
+        RevokeInferenceEnvelopeInput,
     };
     use sqlx_sqlite::{SqliteConnectOptions, SqlitePoolOptions};
     use std::path::{Path, PathBuf};
@@ -1730,6 +2403,58 @@ mod tests {
         .bind(format!("/{project_id}"))
         .bind("base")
         .bind(Utc::now().to_rfc3339())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    }
+
+    async fn seed_worker_campaign(db: &Database) {
+        let now = Utc::now().to_rfc3339();
+        sqlx::query::query(
+            "INSERT INTO actions
+             (id,project_id,objective,provider,model,risk,status,objective_sha256,created_at)
+             VALUES ('action-fence','project','objective','opencode-go',
+                     'deepseek-v4.1-flash','R0','AUTHORIZED','hash',?1)",
+        )
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO campaigns(id,action_id,status,created_at)
+             VALUES ('campaign-fence','action-fence','AUTHORIZED',?1)",
+        )
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO inference_campaign_modes(campaign_id,mode,classified_at_ms,evidence_sha256)
+             VALUES ('campaign-fence','V2',?1,?2)",
+        )
+        .bind(Utc::now().timestamp_millis())
+        .bind("c".repeat(64))
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query("INSERT INTO runs VALUES ('run-fence','campaign-fence','QUEUED',?1)")
+            .bind(&now)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        sqlx::query::query(
+            "INSERT INTO attempts(id,run_id,status,created_at)
+             VALUES ('attempt-fence','run-fence','LEASED',?1)",
+        )
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO worker_leases(attempt_id,worker_id,generation,expires_at_ms)
+             VALUES ('attempt-fence','worker-1',3,?1)",
+        )
+        .bind(Utc::now().timestamp_millis().saturating_add(60_000))
         .execute(&db.pool)
         .await
         .unwrap();
@@ -1756,7 +2481,122 @@ mod tests {
         (envelope.envelope_id, key)
     }
 
+    async fn seed_campaign_lineage(
+        db: &Database,
+        project_id: &str,
+        action_id: &str,
+        campaign_id: &str,
+        request_id: &str,
+    ) {
+        let now = Utc::now().to_rfc3339();
+        sqlx::query::query(
+            "INSERT OR IGNORE INTO projects(id,repository,base_commit,created_at,identity)
+             VALUES (?1,?2,'base',?3,'')",
+        )
+        .bind(project_id)
+        .bind(format!("/{project_id}"))
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT OR IGNORE INTO actions
+             (id,project_id,objective,provider,model,risk,status,objective_sha256,created_at)
+             VALUES (?1,?2,'objective','opencode-go','deepseek-v4.1-flash','R0','AUTHORIZED',
+                     'hash',?3)",
+        )
+        .bind(action_id)
+        .bind(project_id)
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT OR IGNORE INTO campaigns(id,action_id,status,created_at)
+             VALUES (?1,?2,'AUTHORIZED',?3)",
+        )
+        .bind(campaign_id)
+        .bind(action_id)
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let delegation_id = format!("delegation-{request_id}");
+        sqlx::query::query(
+            "INSERT OR IGNORE INTO standing_delegations
+             (id,principal_id,audit_id,project_id,revision,content_hash,content_json,created_at)
+             VALUES (?1,'worker','audit',?2,1,'hash','{}',?3)",
+        )
+        .bind(&delegation_id)
+        .bind(project_id)
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT OR IGNORE INTO lead_requests
+             (id,project_id,action_id,delegation_id,objective,request_hash,project_config_hash,
+              state,created_at,updated_at)
+             VALUES (?1,?2,?3,?4,'objective','hash','hash','FROZEN',?5,?5)",
+        )
+        .bind(request_id)
+        .bind(project_id)
+        .bind(action_id)
+        .bind(&delegation_id)
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT OR IGNORE INTO lead_start_evidence
+             (request_id,campaign_id,mode,principal_id,principal_label,rationale,
+              idempotency_key,request_hash,plan_hash,profile_revision_id,profile_hash,
+              spec_sha256,config_hash,delegation_hash,policy_hash,authorization_digest,created_at)
+             VALUES (?1,?2,'OPERATOR','operator',NULL,'test',?3,?4,?4,NULL,NULL,?4,?4,?4,?4,?4,?5)",
+        )
+        .bind(request_id)
+        .bind(campaign_id)
+        .bind(format!("lead-start-{campaign_id}"))
+        .bind("a".repeat(64))
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    }
+
+    async fn test_quote(db: &Database, bound: u64) -> InferencePricingQuote {
+        let (revision,): (i64,) = sqlx::query_as::query_as(
+            "SELECT COALESCE(MAX(revision),0)+1 FROM inference_pricing_quotes",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        db.create_inference_pricing_quote(&NewInferencePricingQuote {
+            provider: "opencode-go".into(),
+            model: "deepseek-v4.1-flash".into(),
+            revision,
+            upper_bound_micros: UsdMicros::new(bound).unwrap(),
+            coverage_json: serde_json::json!({
+                "input": true,
+                "output": true,
+                "cachedInput": true,
+                "reasoning": true,
+                "tools": true,
+                "retries": true,
+                "requestOverhead": true,
+            })
+            .to_string(),
+            snapshot_json: format!("{{\"quoteRevision\":{revision},\"upperBoundMicros\":{bound}}}"),
+            evidence_sha256: "e".repeat(64),
+            actor: "operator".into(),
+        })
+        .await
+        .unwrap()
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn reserve_input(
+        quote: &InferencePricingQuote,
         envelope_id: &str,
         operation_id: &str,
         idempotency_key: &str,
@@ -1765,6 +2605,10 @@ mod tests {
         role: InferenceRole,
         expires_at_ms: i64,
     ) -> ReserveInferenceInput {
+        assert_eq!(
+            quote.upper_bound_micros,
+            UsdMicros::new(bound).expect("test quote bound")
+        );
         ReserveInferenceInput {
             envelope_id: envelope_id.into(),
             operation_id: operation_id.into(),
@@ -1773,11 +2617,11 @@ mod tests {
             role,
             principal_id: "principal".into(),
             parent_operation_id: None,
-            provider: "opencode-go".into(),
-            model: "deepseek-v4.1-flash".into(),
-            pricing_revision: "models.dev@1".into(),
-            pricing_snapshot_json: "{}".into(),
-            upper_bound_micros: UsdMicros::new(bound).unwrap(),
+            provider: quote.provider.clone(),
+            model: quote.model.clone(),
+            pricing_revision: quote.quote_id.clone(),
+            pricing_snapshot_json: quote.snapshot_json.clone(),
+            upper_bound_micros: quote.upper_bound_micros,
             expires_at_ms,
             authorization_revision: 1,
             scope_sha256: "a".repeat(64),
@@ -1797,8 +2641,10 @@ mod tests {
         let second = Database::open(&path).await.unwrap();
         seed_project(&first, "project").await;
         let (envelope_id, _) = create_envelope(&first, "request-race", 10_000).await;
+        let quote = test_quote(&first, 6000).await;
         let expires = future_ms(60_000);
         let left = reserve_input(
+            &quote,
             &envelope_id,
             "operation-left",
             "idempotency-left",
@@ -1808,6 +2654,7 @@ mod tests {
             expires,
         );
         let right = reserve_input(
+            &quote,
             &envelope_id,
             "operation-right",
             "idempotency-right",
@@ -1844,7 +2691,9 @@ mod tests {
         let db = Database::open(&path).await.unwrap();
         seed_project(&db, "project").await;
         let (envelope_id, _) = create_envelope(&db, "request-idempotency", 10_000).await;
+        let quote = test_quote(&db, 2000).await;
         let input = reserve_input(
+            &quote,
             &envelope_id,
             "operation",
             "idempotency",
@@ -1879,7 +2728,9 @@ mod tests {
             db.reserve_inference(&conflicting_identity).await,
             Err(Error::Conflict(_))
         ));
+        let quote_alt = test_quote(&db, 1_000).await;
         let mut wrong_scope = reserve_input(
+            &quote_alt,
             &envelope_id,
             "operation-scope",
             "idempotency-scope",
@@ -1913,8 +2764,10 @@ mod tests {
         let db = Database::open(&path).await.unwrap();
         seed_project(&db, "project").await;
         let (envelope_id, _) = create_envelope(&db, "request-settlement", 10_000).await;
+        let quote = test_quote(&db, 2000).await;
         let reservation = db
             .reserve_inference(&reserve_input(
+                &quote,
                 &envelope_id,
                 "operation",
                 "idempotency",
@@ -1956,6 +2809,14 @@ mod tests {
         let status = db.inference_spending_status(&envelope_id).await.unwrap();
         assert_eq!(status.settled_micros.get(), 1_250);
         assert_eq!(status.reserved_micros.get(), 0);
+        assert!(
+            sqlx::query::query("UPDATE inference_reservations SET state='RESERVED' WHERE id=?1")
+                .bind(&settled.reservation_id)
+                .execute(&db.pool)
+                .await
+                .is_err(),
+            "terminal settlement cannot be rewound"
+        );
         db.close().await;
         let _ = std::fs::remove_file(path);
     }
@@ -1966,8 +2827,11 @@ mod tests {
         let db = Database::open(&path).await.unwrap();
         seed_project(&db, "project").await;
         let (envelope_id, _) = create_envelope(&db, "request-overdrawn", 10_000).await;
+        let quote = test_quote(&db, 1000).await;
+        let quote_alt = test_quote(&db, 100).await;
         let reservation = db
             .reserve_inference(&reserve_input(
+                &quote,
                 &envelope_id,
                 "operation",
                 "idempotency",
@@ -1991,6 +2855,7 @@ mod tests {
         assert_eq!(status.overrun_micros.get(), 500);
         assert_eq!(
             db.reserve_inference(&reserve_input(
+                &quote_alt,
                 &envelope_id,
                 "operation-two",
                 "idempotency-two",
@@ -2014,7 +2879,10 @@ mod tests {
         let db = Database::open(&path).await.unwrap();
         seed_project(&db, "project").await;
         let (envelope_id, _) = create_envelope(&db, "request-revocation", 10_000).await;
+        let quote = test_quote(&db, 4000).await;
+        let quote_alt = test_quote(&db, 100).await;
         let mut evidence_turn = reserve_input(
+            &quote,
             &envelope_id,
             "operation",
             "idempotency",
@@ -2040,6 +2908,7 @@ mod tests {
                 worker_id: Some("worker".into()),
                 generation: Some(1),
                 provider_request_id: None,
+                attempt_id: Some("attempt".into()),
                 actor: "core:test".into(),
             })
             .await,
@@ -2047,6 +2916,7 @@ mod tests {
         ));
         assert!(matches!(
             db.reserve_inference(&reserve_input(
+                &quote_alt,
                 &envelope_id,
                 "operation-two",
                 "idempotency-two",
@@ -2085,7 +2955,10 @@ mod tests {
         let second = Database::open(&path).await.unwrap();
         seed_project(&first, "project").await;
         let (envelope_id, _) = create_envelope(&first, "request-revocation-race", 10_000).await;
+        let quote = test_quote(&first, 1000).await;
+        let quote_alt = test_quote(&first, 100).await;
         let input = reserve_input(
+            &quote,
             &envelope_id,
             "operation",
             "idempotency",
@@ -2114,6 +2987,7 @@ mod tests {
         assert!(matches!(
             first
                 .reserve_inference(&reserve_input(
+                    &quote_alt,
                     &envelope_id,
                     "operation-late",
                     "idempotency-late",
@@ -2138,23 +3012,26 @@ mod tests {
             let db = Database::open(&path).await.unwrap();
             seed_project(&db, "project").await;
             let (envelope_id, _) = create_envelope(&db, "request-ambiguous", 10_000).await;
+            let quote = test_quote(&db, 3000).await;
             let mut uncertain = reserve_input(
+                &quote,
                 &envelope_id,
                 "operation",
                 "idempotency",
                 &"a".repeat(64),
                 3_000,
-                InferenceRole::Implementer,
+                InferenceRole::Auxiliary,
                 expires,
             );
-            uncertain.worker_id = Some("worker".into());
-            uncertain.generation = Some(1);
+            uncertain.worker_id = None;
+            uncertain.generation = None;
             let reservation = db.reserve_inference(&uncertain).await.unwrap();
             db.mark_inference_dispatched(&MarkInferenceDispatchedInput {
                 reservation_id: reservation.reservation_id.clone(),
-                worker_id: Some("worker".into()),
-                generation: Some(1),
+                worker_id: None,
+                generation: None,
                 provider_request_id: Some("provider-request".into()),
+                attempt_id: None,
                 actor: "core:test".into(),
             })
             .await
@@ -2179,6 +3056,8 @@ mod tests {
             reservation.reservation_id
         };
         let reopened = Database::open(&path).await.unwrap();
+        let quote = test_quote(&reopened, 3000).await;
+        let quote_alt = test_quote(&reopened, 1000).await;
         let record = reopened
             .inference_reservation(&reservation_id)
             .await
@@ -2186,44 +3065,51 @@ mod tests {
         assert_eq!(record.state, ReservationState::Ambiguous);
         let envelope_id = record.envelope_id.clone();
         let mut replay = reserve_input(
+            &quote,
             &envelope_id,
             "operation",
             "idempotency",
             &"a".repeat(64),
             3_000,
-            InferenceRole::Implementer,
+            InferenceRole::Auxiliary,
             expires,
         );
-        replay.worker_id = Some("worker".into());
-        replay.generation = Some(1);
+        replay.worker_id = None;
+        replay.generation = None;
         assert!(matches!(
             reopened.reserve_inference(&replay).await,
-            Err(Error::Forbidden(_))
+            Err(Error::Conflict(_) | Error::Forbidden(_))
         ));
         assert!(matches!(
             reopened
                 .mark_inference_dispatched(&MarkInferenceDispatchedInput {
                     reservation_id: reservation_id.clone(),
-                    worker_id: Some("worker".into()),
-                    generation: Some(1),
+                    worker_id: None,
+                    generation: None,
                     provider_request_id: Some("provider-request".into()),
+                    attempt_id: None,
                     actor: "core:test".into(),
                 })
                 .await,
             Err(Error::Forbidden(_))
         ));
-        reopened
-            .reconcile_inference(&ReconcileInferenceInput {
-                reservation_id: reservation_id.clone(),
-                outcome: ReconciliationOutcome::Settled {
-                    settled_micros: UsdMicros::new(3_000).unwrap(),
-                },
-                actor: "operator".into(),
-                evidence_ref: "provider-usage-export".into(),
-                evidence_sha256: "e".repeat(64),
-            })
-            .await
-            .unwrap();
+        let reconcile = ReconcileInferenceInput {
+            reservation_id: reservation_id.clone(),
+            outcome: ReconciliationOutcome::Settled {
+                settled_micros: UsdMicros::new(3_000).unwrap(),
+            },
+            actor: "operator".into(),
+            evidence_ref: "provider-usage-export".into(),
+            evidence_sha256: "e".repeat(64),
+        };
+        reopened.reconcile_inference(&reconcile).await.unwrap();
+        reopened.reconcile_inference(&reconcile).await.unwrap();
+        let mut conflicting_reconcile = reconcile.clone();
+        conflicting_reconcile.evidence_sha256 = "f".repeat(64);
+        assert!(matches!(
+            reopened.reconcile_inference(&conflicting_reconcile).await,
+            Err(Error::Conflict(_))
+        ));
         let status = reopened
             .inference_spending_status(&envelope_id)
             .await
@@ -2233,6 +3119,7 @@ mod tests {
         // After reconciliation a new operation has authority again.
         reopened
             .reserve_inference(&reserve_input(
+                &quote_alt,
                 &envelope_id,
                 "operation-next",
                 "idempotency-next",
@@ -2253,8 +3140,11 @@ mod tests {
         let db = Database::open(&path).await.unwrap();
         seed_project(&db, "project").await;
         let (envelope_id, _) = create_envelope(&db, "request-release", 10_000).await;
+        let quote = test_quote(&db, 2000).await;
+        let quote_alt = test_quote(&db, 3000).await;
         let undispatched = db
             .reserve_inference(&reserve_input(
+                &quote,
                 &envelope_id,
                 "operation-ready",
                 "idempotency-ready",
@@ -2296,22 +3186,24 @@ mod tests {
         ));
 
         let mut uncertain_input = reserve_input(
+            &quote_alt,
             &envelope_id,
             "operation-uncertain",
             "idempotency-uncertain",
             &"c".repeat(64),
             3_000,
-            InferenceRole::Implementer,
+            InferenceRole::Auxiliary,
             future_ms(60_000),
         );
-        uncertain_input.worker_id = Some("worker".into());
-        uncertain_input.generation = Some(2);
+        uncertain_input.worker_id = None;
+        uncertain_input.generation = None;
         let uncertain = db.reserve_inference(&uncertain_input).await.unwrap();
         db.mark_inference_dispatched(&MarkInferenceDispatchedInput {
             reservation_id: uncertain.reservation_id.clone(),
-            worker_id: Some("worker".into()),
-            generation: Some(2),
+            worker_id: None,
+            generation: None,
             provider_request_id: Some("request-uncertain".into()),
+            attempt_id: None,
             actor: "core:test".into(),
         })
         .await
@@ -2348,8 +3240,11 @@ mod tests {
         let path = temp_path("factory-ledger-fencing");
         let db = Database::open(&path).await.unwrap();
         seed_project(&db, "project").await;
+        seed_worker_campaign(&db).await;
         let (envelope_id, _) = create_envelope(&db, "request-fencing", 10_000).await;
+        let quote = test_quote(&db, 1000).await;
         let mut input = reserve_input(
+            &quote,
             &envelope_id,
             "operation",
             "idempotency",
@@ -2367,6 +3262,7 @@ mod tests {
                 worker_id: Some("worker-2".into()),
                 generation: Some(3),
                 provider_request_id: None,
+                attempt_id: Some("attempt-fence".into()),
                 actor: "core:test".into(),
             })
             .await,
@@ -2378,6 +3274,7 @@ mod tests {
                 worker_id: Some("worker-1".into()),
                 generation: Some(3),
                 provider_request_id: Some("request-1".into()),
+                attempt_id: Some("attempt-fence".into()),
                 actor: "core:test".into(),
             })
             .await
@@ -2385,6 +3282,66 @@ mod tests {
         assert_eq!(dispatched.state, ReservationState::Reserved);
         assert_eq!(dispatched.worker_id.as_deref(), Some("worker-1"));
         assert_eq!(dispatched.generation, Some(3));
+        // Dispatch identity is immutable and terminal states cannot be rewound.
+        assert!(
+            sqlx::query::query(
+                "UPDATE inference_reservations SET worker_id='worker-2' WHERE id=?1"
+            )
+            .bind(&reservation.reservation_id)
+            .execute(&db.pool)
+            .await
+            .is_err()
+        );
+        assert!(
+            sqlx::query::query("UPDATE inference_reservations SET dispatched_at_ms=1 WHERE id=?1")
+                .bind(&reservation.reservation_id)
+                .execute(&db.pool)
+                .await
+                .is_err()
+        );
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn dispatch_requires_a_current_worker_lease() {
+        let path = temp_path("factory-ledger-stale-lease");
+        let db = Database::open(&path).await.unwrap();
+        seed_project(&db, "project").await;
+        seed_worker_campaign(&db).await;
+        let (envelope_id, _) = create_envelope(&db, "request-stale-lease", 10_000).await;
+        let quote = test_quote(&db, 1_000).await;
+        let mut input = reserve_input(
+            &quote,
+            &envelope_id,
+            "operation",
+            "idempotency",
+            &"a".repeat(64),
+            1_000,
+            InferenceRole::Implementer,
+            future_ms(60_000),
+        );
+        input.worker_id = Some("worker-1".into());
+        input.generation = Some(3);
+        let reservation = db.reserve_inference(&input).await.unwrap();
+        sqlx::query::query(
+            "UPDATE worker_leases SET expires_at_ms=1 WHERE attempt_id='attempt-fence'",
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        assert!(matches!(
+            db.mark_inference_dispatched(&MarkInferenceDispatchedInput {
+                reservation_id: reservation.reservation_id,
+                worker_id: Some("worker-1".into()),
+                generation: Some(3),
+                provider_request_id: Some("request".into()),
+                attempt_id: Some("attempt-fence".into()),
+                actor: "core:test".into(),
+            })
+            .await,
+            Err(Error::Forbidden(_))
+        ));
         db.close().await;
         let _ = std::fs::remove_file(path);
     }
@@ -2395,6 +3352,7 @@ mod tests {
         let db = Database::open(&path).await.unwrap();
         seed_project(&db, "project").await;
         let (envelope_id, _) = create_envelope(&db, "request-revision", 10_000).await;
+        let quote = test_quote(&db, 1000).await;
         db.authorize_inference_envelope(&NewInferenceAuthorization {
             envelope_id: envelope_id.clone(),
             limit_micros: UsdMicros::new(20_000).unwrap(),
@@ -2406,6 +3364,7 @@ mod tests {
         .await
         .unwrap();
         let mut stale = reserve_input(
+            &quote,
             &envelope_id,
             "operation-stale",
             "idempotency-stale",
@@ -2433,14 +3392,211 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn campaign_binding_requires_project_and_request_ownership() {
+        let path = temp_path("factory-ledger-binding-ownership");
+        let db = Database::open(&path).await.unwrap();
+        seed_project(&db, "project").await;
+        let (envelope_id, _) = create_envelope(&db, "request-owner", 10_000).await;
+        // Wrong project.
+        seed_campaign_lineage(
+            &db,
+            "other-project",
+            "action-other",
+            "campaign-other",
+            "request-other",
+        )
+        .await;
+        assert!(matches!(
+            db.bind_campaign_inference_envelope(&CampaignEnvelopeBindingInput {
+                campaign_id: "campaign-other".into(),
+                envelope_id: envelope_id.clone(),
+                actor: "operator".into(),
+                evidence_sha256: "c".repeat(64),
+            })
+            .await,
+            Err(Error::Forbidden(_))
+        ));
+        // Correct project, foreign request.
+        seed_campaign_lineage(
+            &db,
+            "project",
+            "action-owner-foreign",
+            "campaign-owner",
+            "request-foreign",
+        )
+        .await;
+        assert!(matches!(
+            db.bind_campaign_inference_envelope(&CampaignEnvelopeBindingInput {
+                campaign_id: "campaign-owner".into(),
+                envelope_id: envelope_id.clone(),
+                actor: "operator".into(),
+                evidence_sha256: "c".repeat(64),
+            })
+            .await,
+            Err(Error::Forbidden(_))
+        ));
+        // Matching lineage succeeds; an identical rebind is idempotent.
+        seed_campaign_lineage(
+            &db,
+            "project",
+            "action-owner-ok",
+            "campaign-owner-ok",
+            "request-owner",
+        )
+        .await;
+        db.bind_campaign_inference_envelope(&CampaignEnvelopeBindingInput {
+            campaign_id: "campaign-owner-ok".into(),
+            envelope_id: envelope_id.clone(),
+            actor: "operator".into(),
+            evidence_sha256: "c".repeat(64),
+        })
+        .await
+        .unwrap();
+        db.bind_campaign_inference_envelope(&CampaignEnvelopeBindingInput {
+            campaign_id: "campaign-owner-ok".into(),
+            envelope_id: envelope_id.clone(),
+            actor: "operator".into(),
+            evidence_sha256: "c".repeat(64),
+        })
+        .await
+        .unwrap();
+        // Schema uniqueness also prevents a second binding row for the envelope.
+        sqlx::query::query(
+            "INSERT INTO inference_campaign_bindings(campaign_id,envelope_id,bound_at_ms)
+             VALUES ('campaign-other',?1,1)",
+        )
+        .bind(&envelope_id)
+        .execute(&db.pool)
+        .await
+        .expect_err("one envelope may back only one campaign");
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn settlement_helpers_require_identical_receipts_and_terminal_conflicts() {
+        let path = temp_path("factory-ledger-settlement-helpers");
+        let db = Database::open(&path).await.unwrap();
+        seed_project(&db, "project").await;
+        let (envelope_id, _) = create_envelope(&db, "request-helpers", 10_000).await;
+        let quote = test_quote(&db, 1_000).await;
+        let reservation = db
+            .reserve_inference(&reserve_input(
+                &quote,
+                &envelope_id,
+                "operation",
+                "idempotency",
+                &"a".repeat(64),
+                1_000,
+                InferenceRole::Evaluation,
+                future_ms(60_000),
+            ))
+            .await
+            .unwrap();
+        let ledger_id = reservation.reservation_id;
+        db.settle_inference(&InferenceSettlement {
+            reservation_id: ledger_id.clone(),
+            settled_micros: UsdMicros::new(700).unwrap(),
+            usage_evidence_sha256: "b".repeat(64),
+        })
+        .await
+        .unwrap();
+        let mut transaction = db.pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
+        assert!(matches!(
+            settle_or_reconcile_in_tx(
+                &mut transaction,
+                &ledger_id,
+                UsdMicros::new(700).unwrap(),
+                &"c".repeat(64),
+                "operator",
+                "different receipt",
+                Utc::now().timestamp_millis(),
+            )
+            .await,
+            Err(Error::Conflict(_))
+        ));
+        assert!(matches!(
+            release_or_reconcile_in_tx(
+                &mut transaction,
+                &ledger_id,
+                "operator",
+                "release settled",
+                &"d".repeat(64),
+                Utc::now().timestamp_millis(),
+            )
+            .await,
+            Err(Error::Conflict(_))
+        ));
+        transaction.rollback().await.unwrap();
+        let mut transaction = db.pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
+        settle_or_reconcile_in_tx(
+            &mut transaction,
+            &ledger_id,
+            UsdMicros::new(700).unwrap(),
+            &"b".repeat(64),
+            "operator",
+            "identical receipt",
+            Utc::now().timestamp_millis(),
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn quote_bound_cannot_be_lowered_by_the_caller() {
+        let path = temp_path("factory-ledger-quote-bound");
+        let db = Database::open(&path).await.unwrap();
+        seed_project(&db, "project").await;
+        let (envelope_id, _) = create_envelope(&db, "request-quote", 10_000).await;
+        let quote = test_quote(&db, 2_000).await;
+        let mut input = reserve_input(
+            &quote,
+            &envelope_id,
+            "operation",
+            "idempotency",
+            &"a".repeat(64),
+            2_000,
+            InferenceRole::Lead,
+            future_ms(60_000),
+        );
+        input.upper_bound_micros = UsdMicros::new(1).unwrap();
+        assert!(matches!(
+            db.reserve_inference(&input).await,
+            Err(Error::Validation(_))
+        ));
+        let mut estimated = reserve_input(
+            &quote,
+            &envelope_id,
+            "operation-estimate",
+            "idempotency-estimate",
+            &"b".repeat(64),
+            2_000,
+            InferenceRole::Lead,
+            future_ms(60_000),
+        );
+        estimated.pricing_snapshot_json = "{\"estimate\":1}".into();
+        assert!(matches!(
+            db.reserve_inference(&estimated).await,
+            Err(Error::Conflict(_))
+        ));
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
     async fn aggregation_covers_every_inference_role() {
         let path = temp_path("factory-ledger-aggregation");
         let db = Database::open(&path).await.unwrap();
         seed_project(&db, "project").await;
         let (envelope_id, _) = create_envelope(&db, "request-aggregation", 100_000).await;
+        let quote = test_quote(&db, 1000).await;
         for (index, role) in InferenceRole::ALL.into_iter().enumerate() {
             let reservation = db
                 .reserve_inference(&reserve_input(
+                    &quote,
                     &envelope_id,
                     &format!("operation-{index}"),
                     &format!("idempotency-{index}"),
@@ -2678,6 +3834,23 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(provider_turn, ("SETTLED".into(), None));
+        let (fk_violations,): (i64,) =
+            sqlx::query_as::query_as("SELECT COUNT(*) FROM pragma_foreign_key_check")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(fk_violations, 0);
+        let trigger_count: (i64,) = sqlx::query_as::query_as(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger'
+             AND name IN ('inference_reservations_identity_immutable',
+                          'inference_reservations_dispatch_immutable',
+                          'inference_authorizations_immutable_update',
+                          'inference_ledger_events_immutable_update')",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(trigger_count.0, 4);
         db.close().await;
         let reopened = Database::open(&path).await.unwrap();
         let (reopened_count,): (i64,) =

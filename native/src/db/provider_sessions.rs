@@ -5,64 +5,11 @@
 
 use super::*;
 
-use crate::execution_policy::{
-    InferenceRole, InferenceSettlement, ReserveInferenceInput, UsdMicros,
-};
+use crate::execution_policy::{InferenceRole, ReserveInferenceInput, UsdMicros};
 use crate::inference_ledger::MarkInferenceDispatchedInput;
 use chrono::Utc;
 use sqlx_sqlite::SqliteConnection;
 use uuid::Uuid;
-
-/// Deterministic settlement evidence for one provider turn. The same stored
-/// usage always produces the same digest, so an identical settlement replays.
-fn provider_turn_settlement_digest(
-    reservation_id: &str,
-    input_tokens: u64,
-    output_tokens: u64,
-    total_tokens: u64,
-    cost_micros: u64,
-    usage_known: bool,
-) -> String {
-    sha256_hex(
-        format!(
-            "provider-turn-settlement:v1:{reservation_id}:{input_tokens}:{output_tokens}:{total_tokens}:{cost_micros}:{usage_known}"
-        )
-        .as_bytes(),
-    )
-}
-
-/// Conservative per-turn monetary bound from frozen provider rates and the
-/// already-admitted input/output token ceilings.
-fn provider_turn_upper_bound(
-    input_tokens: i64,
-    output_tokens: i64,
-    input_micros_per_million: i64,
-    output_micros_per_million: i64,
-) -> Result<u64, Error> {
-    if input_tokens < 0 || output_tokens < 0 {
-        return Err(Error::Invalid("provider turn token bound"));
-    }
-    let input_rate = u64::try_from(input_micros_per_million)
-        .map_err(|_| Error::Invalid("provider input price"))?;
-    let output_rate = u64::try_from(output_micros_per_million)
-        .map_err(|_| Error::Invalid("provider output price"))?;
-    let input_cost = u128::try_from(input_tokens)
-        .map_err(|_| Error::Invalid("provider turn input bound"))?
-        .checked_mul(u128::from(input_rate))
-        .ok_or(Error::Validation("provider turn price overflow".into()))?
-        .div_ceil(1_000_000);
-    let output_cost = u128::try_from(output_tokens)
-        .map_err(|_| Error::Invalid("provider turn output bound"))?
-        .checked_mul(u128::from(output_rate))
-        .ok_or(Error::Validation("provider turn price overflow".into()))?
-        .div_ceil(1_000_000);
-    u64::try_from(
-        input_cost
-            .checked_add(output_cost)
-            .ok_or(Error::Validation("provider turn price overflow".into()))?,
-    )
-    .map_err(|_| Error::Validation("provider turn price overflow".into()))
-}
 
 type IntentContext = (String, i64, i64, String, String, String, String, String);
 type TerminalRow = (String, String, i64, String, String, String, String, String);
@@ -333,39 +280,35 @@ impl Database {
             ));
         }
         let campaign_id: String = lease.try_get("campaign_id")?;
-        let ledger_envelope_id =
-            super::inference_ledger::envelope_for_campaign_in_tx(&mut transaction, &campaign_id)
+        // V1 may use legacy accounting; V2 (or a global V2 cutover) must have a
+        // bound active envelope before this billable turn is even reserved.
+        let requirement =
+            super::inference_ledger::campaign_requirement_in_tx(&mut transaction, &campaign_id)
                 .await?;
-        let ledger_context = if let Some(envelope_id) = &ledger_envelope_id {
-            Some(
-                super::inference_ledger::envelope_authorization_context_in_tx(
+        let ledger_turn_cost_bound = match requirement {
+            crate::inference_ledger::CampaignInferenceRequirement::EnvelopeBound { .. } => {
+                let quote = super::inference_ledger::latest_pricing_quote_in_tx(
                     &mut transaction,
-                    envelope_id,
+                    &provider,
+                    &model,
                 )
-                .await?
-                .ok_or(Error::Conflict(
-                    "inference envelope has no durable authorization",
-                ))?,
-            )
-        } else {
-            None
-        };
-        let ledger_pricing = if ledger_envelope_id.is_some() {
-            let row: Option<(i64, i64, i64)> = sqlx::query_as::query_as(
-                "SELECT input_micros_per_million,output_micros_per_million,revision
-                 FROM provider_settings WHERE provider=?1",
-            )
-            .bind(&provider)
-            .fetch_optional(&mut *transaction)
-            .await?;
-            let Some((input_rate, output_rate, revision)) = row else {
-                return Err(Error::Forbidden(
-                    "provider turn has no frozen pricing basis for its inference envelope".into(),
-                ));
-            };
-            Some((input_rate, output_rate, revision))
-        } else {
-            None
+                .await
+                .map_err(|_| {
+                    Error::Forbidden(
+                        "inference-bound provider turn has no enforceable pricing quote".into(),
+                    )
+                })?;
+                Some(
+                    quote
+                        .upper_bound_micros
+                        .get()
+                        .checked_mul(u64::from(max_requests))
+                        .ok_or(Error::Validation(
+                            "provider turn cost bound overflow".into(),
+                        ))?,
+                )
+            }
+            crate::inference_ledger::CampaignInferenceRequirement::LegacyV1 => None,
         };
         let max_input: i64 = lease.try_get("max_input_tokens")?;
         let max_output: i64 = lease.try_get("max_output_tokens")?;
@@ -413,26 +356,13 @@ impl Database {
             .map_err(|_| Error::Invalid("provider turn output"))?
             .min(remaining_output)
             .min(remaining_total);
-        let ledger_bound_micros = match ledger_pricing {
-            Some((input_rate, output_rate, _)) => Some(provider_turn_upper_bound(
-                remaining_input,
-                grant_output,
-                input_rate,
-                output_rate,
-            )?),
-            None => None,
-        };
         if remaining_input <= 0
             || grant_output <= 0
-            || (ledger_bound_micros.is_none() && remaining_cost <= 0)
-            || ledger_bound_micros == Some(0)
+            || (ledger_turn_cost_bound.is_none() && remaining_cost <= 0)
         {
             return Err(Error::Forbidden("provider turn budget is exhausted".into()));
         }
-        // A ledger-bound turn is admitted by its shared money hold. The legacy
-        // campaign cost column is not intersected again; it stores the bound for
-        // evidence and is never added to ledger totals.
-        let reservation_cost = match ledger_bound_micros {
+        let reservation_cost = match ledger_turn_cost_bound {
             Some(bound) => {
                 i64::try_from(bound).map_err(|_| Error::Invalid("provider turn ledger bound"))?
             }
@@ -443,62 +373,12 @@ impl Database {
             .saturating_add(deadline_secs.saturating_mul(1000))
             .saturating_add(30_000);
         let now = Utc::now().to_rfc3339();
-        let ledger_reservation_id =
-            if let (Some(envelope_id), Some(bound)) = (&ledger_envelope_id, ledger_bound_micros) {
-                let (input_rate, output_rate, revision) = ledger_pricing.ok_or(
-                    Error::Validation("provider turn pricing basis is missing".into()),
-                )?;
-                let (authorization_revision, scope_sha256) = ledger_context.clone().ok_or(
-                    Error::Conflict("inference envelope has no durable authorization"),
-                )?;
-                let pricing_snapshot_json = serde_json::json!({
-                    "basis": "provider-settings",
-                    "revision": revision,
-                    "inputMicrosPerMillion": input_rate,
-                    "outputMicrosPerMillion": output_rate,
-                    "maxInputTokens": remaining_input,
-                    "maxOutputTokens": grant_output,
-                })
-                .to_string();
-                let reserved = super::inference_ledger::reserve_inference_in_tx(
-                    &mut transaction,
-                    &ReserveInferenceInput {
-                        envelope_id: envelope_id.clone(),
-                        operation_id: reservation_id.clone(),
-                        idempotency_key: format!(
-                            "provider_turn:{}:{}:{}",
-                            attempt_id, generation, reservation_id
-                        ),
-                        request_sha256: request_sha256.to_ascii_lowercase(),
-                        role: InferenceRole::Implementer,
-                        principal_id: worker_id.to_owned(),
-                        parent_operation_id: None,
-                        provider: provider.clone(),
-                        model: model.clone(),
-                        pricing_revision: format!("provider-settings:{provider}@{revision}"),
-                        pricing_snapshot_json,
-                        upper_bound_micros: UsdMicros::new(bound)
-                            .map_err(|_| Error::Invalid("provider turn ledger bound"))?,
-                        expires_at_ms,
-                        authorization_revision,
-                        scope_sha256,
-                        worker_id: Some(worker_id.to_owned()),
-                        generation: Some(generation),
-                    },
-                    now_ms,
-                )
-                .await?;
-                Some(reserved.reservation_id)
-            } else {
-                None
-            };
         sqlx::query::query(
             "INSERT INTO provider_turn_reservations
              (reservation_id,session_record_id,attempt_id,generation,provider,model,
               max_input_tokens,max_output_tokens,max_total_tokens,max_cost_micros,
-              request_sha256,state,expires_at_ms,created_at,updated_at,max_requests,requests_bound,
-              ledger_reservation_id)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'RESERVED',?12,?13,?13,?14,0,?15)",
+              request_sha256,state,expires_at_ms,created_at,updated_at,max_requests,requests_bound)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'RESERVED',?12,?13,?13,?14,0)",
         )
         .bind(&reservation_id)
         .bind(session_record_id)
@@ -514,7 +394,6 @@ impl Database {
         .bind(expires_at_ms)
         .bind(&now)
         .bind(i64::from(max_requests))
-        .bind(&ledger_reservation_id)
         .execute(&mut *transaction)
         .await?;
         record_event(
@@ -570,13 +449,13 @@ impl Database {
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         use sqlx::row::Row;
         let row = sqlx::query::query(
-            "SELECT ptr.session_record_id,ptr.attempt_id,ptr.generation,ptr.model,ptr.state,
-                    ptr.actual_request_sha256,ptr.expires_at_ms,ptr.max_requests,
-                    ptr.requests_bound,ptr.ledger_reservation_id,
+            "SELECT ptr.session_record_id,ptr.attempt_id,ptr.generation,ptr.provider,ptr.model,
+                    ptr.state,ptr.actual_request_sha256,ptr.expires_at_ms,ptr.max_requests,
+                    ptr.requests_bound,
                     ps.worker_id,ps.state AS session_state,
                     l.worker_id AS lease_worker,l.generation AS lease_generation,
                     l.expires_at_ms AS lease_expires, a.status AS attempt_status,
-                    c.status AS campaign_status
+                    c.status AS campaign_status,r.campaign_id
              FROM provider_turn_reservations ptr
              JOIN provider_sessions ps ON ps.session_record_id=ptr.session_record_id
              JOIN attempts a ON a.id=ptr.attempt_id
@@ -594,13 +473,13 @@ impl Database {
         let session_record_id: String = row.try_get("session_record_id")?;
         let attempt_id: String = row.try_get("attempt_id")?;
         let generation: i64 = row.try_get("generation")?;
+        let provider: String = row.try_get("provider")?;
         let model: String = row.try_get("model")?;
         let state: String = row.try_get("state")?;
         let actual_request_sha256: String = row.try_get("actual_request_sha256")?;
         let expires_at_ms: i64 = row.try_get("expires_at_ms")?;
         let max_requests: i64 = row.try_get("max_requests")?;
         let requests_bound: i64 = row.try_get("requests_bound")?;
-        let ledger_reservation_id: Option<String> = row.try_get("ledger_reservation_id")?;
         let session_worker: String = row.try_get("worker_id")?;
         let session_state: String = row.try_get("session_state")?;
         let lease_worker: Option<String> = row.try_get("lease_worker")?;
@@ -608,6 +487,7 @@ impl Database {
         let lease_expires: Option<i64> = row.try_get("lease_expires")?;
         let attempt_status: String = row.try_get("attempt_status")?;
         let campaign_status: String = row.try_get("campaign_status")?;
+        let campaign_id: String = row.try_get("campaign_id")?;
         let now_ms = Utc::now().timestamp_millis();
         if session_record_id != input.session_record_id
             || generation != input.generation
@@ -678,21 +558,95 @@ impl Database {
         if changed != 1 {
             return Err(Error::Conflict("provider turn egress request raced"));
         }
-        if sequence == 0
-            && let Some(ledger_id) = &ledger_reservation_id
+        // Each billable egress request owns a fresh ledger reservation and a
+        // fresh envelope-state/revocation check, even when one turn groups up
+        // to eight requests. V1 campaigns remain on historical evidence rows.
+        let requirement =
+            super::inference_ledger::campaign_requirement_in_tx(&mut transaction, &campaign_id)
+                .await?;
+        if let crate::inference_ledger::CampaignInferenceRequirement::EnvelopeBound {
+            envelope_id,
+        } = requirement
         {
-            super::inference_ledger::mark_inference_dispatched_in_tx(
+            let quote = super::inference_ledger::latest_pricing_quote_in_tx(
+                &mut transaction,
+                &provider,
+                &model,
+            )
+            .await
+            .map_err(|_| {
+                Error::Forbidden(
+                    "inference-bound provider request has no enforceable pricing quote".into(),
+                )
+            })?;
+            let (authorization_revision, scope_sha256) =
+                super::inference_ledger::envelope_authorization_context_in_tx(
+                    &mut transaction,
+                    &envelope_id,
+                )
+                .await?
+                .ok_or(Error::Conflict(
+                    "inference envelope has no durable authorization",
+                ))?;
+            let operation_id = format!("provider_turn:{}:request:{sequence}", input.reservation_id);
+            let reserved = super::inference_ledger::reserve_inference_in_tx(
+                &mut transaction,
+                &ReserveInferenceInput {
+                    envelope_id: envelope_id.clone(),
+                    operation_id: operation_id.clone(),
+                    idempotency_key: operation_id,
+                    request_sha256: input.request_sha256.clone(),
+                    role: InferenceRole::Implementer,
+                    principal_id: input.worker_id.clone(),
+                    parent_operation_id: None,
+                    provider: provider.clone(),
+                    model: model.clone(),
+                    pricing_revision: quote.quote_id.clone(),
+                    pricing_snapshot_json: quote.snapshot_json.clone(),
+                    upper_bound_micros: quote.upper_bound_micros,
+                    expires_at_ms,
+                    authorization_revision,
+                    scope_sha256,
+                    worker_id: Some(input.worker_id.clone()),
+                    generation: Some(input.generation),
+                },
+                now_ms,
+            )
+            .await?;
+            super::inference_ledger::acquire_inference_dispatch_in_tx(
                 &mut transaction,
                 &MarkInferenceDispatchedInput {
-                    reservation_id: ledger_id.clone(),
+                    reservation_id: reserved.reservation_id.clone(),
                     worker_id: Some(input.worker_id.clone()),
                     generation: Some(input.generation),
                     provider_request_id: Some(request_id.clone()),
+                    attempt_id: Some(attempt_id.clone()),
                     actor: "core:provider_turn".into(),
                 },
                 now_ms,
             )
             .await?;
+            sqlx::query::query(
+                "INSERT INTO provider_turn_ledger_requests
+                 (reservation_id,sequence,ledger_reservation_id,created_at_ms)
+                 VALUES (?1,?2,?3,?4)",
+            )
+            .bind(&input.reservation_id)
+            .bind(sequence)
+            .bind(&reserved.reservation_id)
+            .bind(now_ms)
+            .execute(&mut *transaction)
+            .await?;
+            if sequence == 0 {
+                sqlx::query::query(
+                    "UPDATE provider_turn_reservations SET ledger_reservation_id=?1
+                     WHERE reservation_id=?2 AND ledger_reservation_id IS NULL",
+                )
+                .bind(&reserved.reservation_id)
+                .bind(&input.reservation_id)
+                .execute(&mut *transaction)
+                .await?;
+            }
         }
         record_event(
             &mut transaction,
@@ -755,7 +709,6 @@ impl Database {
         let max_total: i64 = row.try_get("max_total_tokens")?;
         let max_cost: i64 = row.try_get("max_cost_micros")?;
         let actual_request_sha256: String = row.try_get("actual_request_sha256")?;
-        let ledger_reservation_id: Option<String> = row.try_get("ledger_reservation_id")?;
         if actual_request_sha256.is_empty() {
             return Err(Error::Conflict(
                 "provider turn has no bound request; use the worker release path",
@@ -797,23 +750,14 @@ impl Database {
         .bind(&session_record_id)
         .execute(&mut *transaction)
         .await?;
-        if let Some(ledger_id) = &ledger_reservation_id {
-            let evidence_sha256 = sha256_hex(
-                format!("provider-turn-resolution:v1:{reservation_id}:{actor}:{reason}").as_bytes(),
-            );
-            let bound = u64::try_from(max_cost)
-                .map_err(|_| Error::Invalid("provider turn maximum cost"))?;
-            super::inference_ledger::settle_or_reconcile_in_tx(
-                &mut transaction,
-                ledger_id,
-                UsdMicros::new(bound).map_err(|_| Error::Invalid("provider turn maximum cost"))?,
-                &evidence_sha256,
-                actor,
-                &format!("provider_turn:{reservation_id}:resolve"),
-                Utc::now().timestamp_millis(),
-            )
-            .await?;
-        }
+        super::inference_ledger::settle_provider_turn_ledger_at_bounds_in_tx(
+            &mut transaction,
+            reservation_id,
+            actor,
+            &format!("provider_turn:{reservation_id}:resolve"),
+            Utc::now().timestamp_millis(),
+        )
+        .await?;
         record_event(
             &mut transaction,
             &attempt_id,
@@ -849,7 +793,6 @@ impl Database {
         let session_record_id: String = row.try_get("session_record_id")?;
         let attempt_id: String = row.try_get("attempt_id")?;
         let state: String = row.try_get("state")?;
-        let ledger_reservation_id: Option<String> = row.try_get("ledger_reservation_id")?;
         let session_worker: Option<(String,)> = sqlx::query_as::query_as(
             "SELECT worker_id FROM provider_sessions WHERE session_record_id=?1",
         )
@@ -878,27 +821,16 @@ impl Database {
                 usage_known: row.try_get::<i64, _>("usage_known")? != 0,
             };
             if prior == *usage {
-                if let Some(ledger_id) = &ledger_reservation_id {
-                    let digest = provider_turn_settlement_digest(
-                        ledger_id,
-                        prior.input_tokens,
-                        prior.output_tokens,
-                        prior.total_tokens,
-                        prior.cost_micros,
-                        prior.usage_known,
-                    );
-                    super::inference_ledger::settle_inference_in_tx(
-                        &mut transaction,
-                        &InferenceSettlement {
-                            reservation_id: ledger_id.clone(),
-                            settled_micros: UsdMicros::new(prior.cost_micros)
-                                .map_err(|_| Error::Invalid("stored provider turn cost"))?,
-                            usage_evidence_sha256: digest,
-                        },
-                        Utc::now().timestamp_millis(),
-                    )
-                    .await?;
-                }
+                super::inference_ledger::settle_provider_turn_ledger_in_tx(
+                    &mut transaction,
+                    &usage.reservation_id,
+                    UsdMicros::new(prior.cost_micros)
+                        .map_err(|_| Error::Invalid("stored provider turn cost"))?,
+                    "core:provider_turn",
+                    &format!("provider_turn:{}:settle", usage.reservation_id),
+                    Utc::now().timestamp_millis(),
+                )
+                .await?;
                 transaction.commit().await?;
                 return Ok(prior);
             }
@@ -908,20 +840,18 @@ impl Database {
             return Err(Error::Conflict("provider turn is not reserved"));
         }
         if !usage.usage_known {
-            if let Some(ledger_id) = &ledger_reservation_id {
-                super::inference_ledger::mark_inference_ambiguous_in_tx(
-                    &mut transaction,
-                    ledger_id,
-                    "core:provider_turn",
-                    &format!("provider_turn:{}:unknown_usage", usage.reservation_id),
-                    &sha256_hex(
-                        format!("provider-turn-unknown:v1:{}", usage.reservation_id).as_bytes(),
-                    ),
-                    Utc::now().timestamp_millis(),
-                )
-                .await?;
-                transaction.commit().await?;
-            }
+            super::inference_ledger::mark_provider_turn_ledger_ambiguous_in_tx(
+                &mut transaction,
+                &usage.reservation_id,
+                "core:provider_turn",
+                &format!("provider_turn:{}:unknown_usage", usage.reservation_id),
+                &sha256_hex(
+                    format!("provider-turn-unknown:v1:{}", usage.reservation_id).as_bytes(),
+                ),
+                Utc::now().timestamp_millis(),
+            )
+            .await?;
+            transaction.commit().await?;
             return Err(Error::Forbidden(
                 "provider turn usage is unknown; operator resolution is required".into(),
             ));
@@ -977,27 +907,16 @@ impl Database {
         .bind(&session_record_id)
         .execute(&mut *transaction)
         .await?;
-        if let Some(ledger_id) = &ledger_reservation_id {
-            let digest = provider_turn_settlement_digest(
-                ledger_id,
-                usage.input_tokens,
-                usage.output_tokens,
-                usage.total_tokens,
-                usage.cost_micros,
-                usage.usage_known,
-            );
-            super::inference_ledger::settle_or_reconcile_in_tx(
-                &mut transaction,
-                ledger_id,
-                UsdMicros::new(usage.cost_micros)
-                    .map_err(|_| Error::Invalid("provider turn cost usage"))?,
-                &digest,
-                "core:provider_turn",
-                &format!("provider_turn:{}:settle", usage.reservation_id),
-                Utc::now().timestamp_millis(),
-            )
-            .await?;
-        }
+        super::inference_ledger::settle_provider_turn_ledger_in_tx(
+            &mut transaction,
+            &usage.reservation_id,
+            UsdMicros::new(usage.cost_micros)
+                .map_err(|_| Error::Invalid("provider turn cost usage"))?,
+            "core:provider_turn",
+            &format!("provider_turn:{}:settle", usage.reservation_id),
+            Utc::now().timestamp_millis(),
+        )
+        .await?;
         record_event(
             &mut transaction,
             &attempt_id,
@@ -1025,8 +944,8 @@ impl Database {
     ) -> Result<(), Error> {
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        let binding: Option<(String, i64, Option<String>)> = sqlx::query_as::query_as(
-            "SELECT ptr.actual_request_sha256,ptr.requests_bound,ptr.ledger_reservation_id
+        let binding: Option<(String, i64)> = sqlx::query_as::query_as(
+            "SELECT ptr.actual_request_sha256,ptr.requests_bound
              FROM provider_turn_reservations ptr
              JOIN provider_sessions ps ON ps.session_record_id=ptr.session_record_id
              WHERE ptr.reservation_id=?1 AND ptr.session_record_id=?2
@@ -1038,7 +957,7 @@ impl Database {
         .bind(generation)
         .fetch_optional(&mut *transaction)
         .await?;
-        let Some((actual_request_sha256, requests_bound, ledger_reservation_id)) = binding else {
+        let Some((actual_request_sha256, requests_bound)) = binding else {
             return Err(Error::Conflict("provider turn is not reserved"));
         };
         if !actual_request_sha256.is_empty() || requests_bound != 0 {
@@ -1060,10 +979,15 @@ impl Database {
         if changed != 1 {
             return Err(Error::Conflict("provider turn is not reserved"));
         }
-        if let Some(ledger_id) = &ledger_reservation_id {
+        for (_, ledger_id) in super::inference_ledger::provider_turn_ledger_ids_in_tx(
+            &mut transaction,
+            reservation_id,
+        )
+        .await?
+        {
             super::inference_ledger::release_inference_in_tx(
                 &mut transaction,
-                ledger_id,
+                &ledger_id,
                 "core:provider_turn",
                 &format!("provider_turn:{reservation_id}:release"),
                 Utc::now().timestamp_millis(),
@@ -2744,6 +2668,286 @@ mod ledger_link_tests {
     use crate::db::CampaignEnvelopeBindingInput;
     use crate::inference_ledger::NewInferenceEnvelope;
 
+    async fn setup_turn_envelope(
+        db: &Database,
+        provider: &str,
+        model: &str,
+        request_id: &str,
+        bound: u64,
+    ) -> String {
+        let envelope = db
+            .create_inference_envelope(&NewInferenceEnvelope {
+                request_id: request_id.into(),
+                project_id: "project".into(),
+                authorized_micros: UsdMicros::new(10_000).unwrap(),
+                actor: "operator".into(),
+                scope_sha256: "a".repeat(64),
+                evidence_sha256: "b".repeat(64),
+                idempotency_key: format!("envelope-{request_id}"),
+            })
+            .await
+            .unwrap();
+        let now = Utc::now().to_rfc3339();
+        sqlx::query::query(
+            "INSERT INTO standing_delegations
+             (id,principal_id,audit_id,project_id,revision,content_hash,content_json,created_at)
+             VALUES (?1,'worker','audit','project',1,'hash','{}',?2)",
+        )
+        .bind(format!("delegation-{request_id}"))
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO lead_requests
+             (id,project_id,action_id,delegation_id,objective,request_hash,project_config_hash,
+              state,created_at,updated_at)
+             VALUES (?1,'project','action',?2,'objective','hash','hash','FROZEN',?3,?3)",
+        )
+        .bind(request_id)
+        .bind(format!("delegation-{request_id}"))
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO lead_start_evidence
+             (request_id,campaign_id,mode,principal_id,principal_label,rationale,
+              idempotency_key,request_hash,plan_hash,profile_revision_id,profile_hash,
+              spec_sha256,config_hash,delegation_hash,policy_hash,authorization_digest,created_at)
+             VALUES (?1,'campaign','OPERATOR','operator',NULL,'test',?2,?3,?3,NULL,NULL,?3,?3,?3,?3,?3,?4)",
+        )
+        .bind(request_id)
+        .bind(format!("lead-start-{request_id}"))
+        .bind("a".repeat(64))
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        db.create_inference_pricing_quote(&crate::inference_ledger::NewInferencePricingQuote {
+            provider: provider.into(),
+            model: model.into(),
+            revision: 1,
+            upper_bound_micros: UsdMicros::new(bound).unwrap(),
+            coverage_json: serde_json::json!({
+                "input": true,
+                "output": true,
+                "cachedInput": true,
+                "reasoning": true,
+                "tools": true,
+                "retries": true,
+                "requestOverhead": true,
+            })
+            .to_string(),
+            snapshot_json: format!("{{\"quoteRevision\":1,\"upperBoundMicros\":{bound}}}"),
+            evidence_sha256: "f".repeat(64),
+            actor: "operator".into(),
+        })
+        .await
+        .unwrap();
+        db.bind_campaign_inference_envelope(&CampaignEnvelopeBindingInput {
+            campaign_id: "campaign".into(),
+            envelope_id: envelope.envelope_id.clone(),
+            actor: "operator".into(),
+            evidence_sha256: "c".repeat(64),
+        })
+        .await
+        .unwrap();
+        envelope.envelope_id
+    }
+
+    #[tokio::test]
+    async fn v2_provider_turn_without_envelope_fails_closed() {
+        let (_path, db, session) = active_turn_fixture(100).await;
+        db.set_inference_ledger_mode_v2("operator", &"e".repeat(64))
+            .await
+            .unwrap();
+        assert!(matches!(
+            db.authorize_provider_turn(&session, "worker", 1, 50, &"a".repeat(64), 1)
+                .await,
+            Err(Error::Forbidden(_))
+        ));
+        let (count,): (i64,) =
+            sqlx::query_as::query_as("SELECT COUNT(*) FROM provider_turn_reservations")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(count, 0);
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn codex_multi_request_turn_reserves_each_egress_request() {
+        let (_path, db, session) = active_turn_fixture(100).await;
+        sqlx::query::query(
+            "UPDATE provider_sessions SET provider='codex',model='gpt-6'
+             WHERE session_record_id=?1",
+        )
+        .bind(&session)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        setup_turn_envelope(&db, "codex", "gpt-6", "request-multi", 1_000).await;
+        let turn = db
+            .authorize_provider_turn(&session, "worker", 1, 50, &"a".repeat(64), 2)
+            .await
+            .unwrap();
+        for (sequence, digest) in [(0u32, "b".repeat(64)), (1, "c".repeat(64))] {
+            db.bind_provider_turn(&ProviderTurnBindingInput {
+                reservation_id: turn.reservation_id.clone(),
+                session_record_id: session.clone(),
+                worker_id: "worker".into(),
+                generation: 1,
+                request_sha256: digest,
+                model: "gpt-6".into(),
+                path: "/v1/chat/completions".into(),
+                body_bytes: 123,
+                sequence,
+            })
+            .await
+            .unwrap();
+        }
+        let (mapping_count,): (i64,) = sqlx::query_as::query_as(
+            "SELECT COUNT(*) FROM provider_turn_ledger_requests WHERE reservation_id=?1",
+        )
+        .bind(&turn.reservation_id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(mapping_count, 2);
+        let (reserved,): (i64,) = sqlx::query_as::query_as(
+            "SELECT COUNT(*) FROM inference_reservations
+             WHERE envelope_id=(SELECT envelope_id FROM inference_campaign_bindings
+                               WHERE campaign_id='campaign')
+               AND state='RESERVED'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(reserved, 2);
+        db.settle_provider_turn(&ProviderTurnUsage {
+            reservation_id: turn.reservation_id.clone(),
+            worker_id: "worker".into(),
+            input_tokens: 10,
+            output_tokens: 20,
+            total_tokens: 30,
+            cost_micros: 1_500,
+            usage_known: true,
+        })
+        .await
+        .unwrap();
+        let (settled,): (i64,) = sqlx::query_as::query_as(
+            "SELECT COALESCE(SUM(settled_micros),0) FROM inference_reservations
+             WHERE envelope_id=(SELECT envelope_id FROM inference_campaign_bindings
+                               WHERE campaign_id='campaign')",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(settled, 1_500);
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn revocation_between_egress_requests_fails_closed() {
+        let (_path, db, session) = active_turn_fixture(100).await;
+        sqlx::query::query(
+            "UPDATE provider_sessions SET provider='codex',model='gpt-6'
+             WHERE session_record_id=?1",
+        )
+        .bind(&session)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let envelope_id =
+            setup_turn_envelope(&db, "codex", "gpt-6", "request-revoke-turn", 1_000).await;
+        let turn = db
+            .authorize_provider_turn(&session, "worker", 1, 50, &"a".repeat(64), 2)
+            .await
+            .unwrap();
+        db.bind_provider_turn(&ProviderTurnBindingInput {
+            reservation_id: turn.reservation_id.clone(),
+            session_record_id: session.clone(),
+            worker_id: "worker".into(),
+            generation: 1,
+            request_sha256: "b".repeat(64),
+            model: "gpt-6".into(),
+            path: "/v1/chat/completions".into(),
+            body_bytes: 123,
+            sequence: 0,
+        })
+        .await
+        .unwrap();
+        db.revoke_inference_envelope(&crate::inference_ledger::RevokeInferenceEnvelopeInput {
+            envelope_id,
+            actor: "operator".into(),
+            evidence_ref: "revoke-turn".into(),
+            evidence_sha256: "d".repeat(64),
+        })
+        .await
+        .unwrap();
+        assert!(matches!(
+            db.bind_provider_turn(&ProviderTurnBindingInput {
+                reservation_id: turn.reservation_id.clone(),
+                session_record_id: session,
+                worker_id: "worker".into(),
+                generation: 1,
+                request_sha256: "c".repeat(64),
+                model: "gpt-6".into(),
+                path: "/v1/chat/completions".into(),
+                body_bytes: 123,
+                sequence: 1,
+            })
+            .await,
+            Err(Error::Forbidden(_))
+        ));
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn stale_lease_blocks_egress_binding() {
+        let (_path, db, session) = active_turn_fixture(100).await;
+        let envelope_id = setup_turn_envelope(
+            &db,
+            "opencode",
+            "deepseek-v4.1-flash",
+            "request-stale",
+            1_000,
+        )
+        .await;
+        let turn = db
+            .authorize_provider_turn(&session, "worker", 1, 50, &"a".repeat(64), 1)
+            .await
+            .unwrap();
+        sqlx::query::query("UPDATE worker_leases SET expires_at_ms=1 WHERE attempt_id='attempt'")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        assert!(matches!(
+            db.bind_provider_turn(&ProviderTurnBindingInput {
+                reservation_id: turn.reservation_id,
+                session_record_id: session,
+                worker_id: "worker".into(),
+                generation: 1,
+                request_sha256: "b".repeat(64),
+                model: "deepseek-v4.1-flash".into(),
+                path: "/v1/chat/completions".into(),
+                body_bytes: 123,
+                sequence: 0,
+            })
+            .await,
+            Err(Error::Forbidden(_))
+        ));
+        let (mapping,): (i64,) =
+            sqlx::query_as::query_as("SELECT COUNT(*) FROM provider_turn_ledger_requests")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(mapping, 0);
+        let _ = envelope_id;
+        db.close().await;
+    }
+
     #[tokio::test]
     async fn envelope_bound_provider_turn_uses_the_shared_ledger() {
         let (_path, db, session) = active_turn_fixture(100).await;
@@ -2759,6 +2963,61 @@ mod ledger_link_tests {
             })
             .await
             .unwrap();
+        let now = Utc::now().to_rfc3339();
+        sqlx::query::query(
+            "INSERT INTO standing_delegations
+             (id,principal_id,audit_id,project_id,revision,content_hash,content_json,created_at)
+             VALUES ('delegation-turn','worker','audit','project',1,'hash','{}',?1)",
+        )
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO lead_requests
+             (id,project_id,action_id,delegation_id,objective,request_hash,project_config_hash,
+              state,created_at,updated_at)
+             VALUES ('request-turn','project','action','delegation-turn','objective','hash','hash',
+                     'FROZEN',?1,?1)",
+        )
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO lead_start_evidence
+             (request_id,campaign_id,mode,principal_id,principal_label,rationale,
+              idempotency_key,request_hash,plan_hash,profile_revision_id,profile_hash,
+              spec_sha256,config_hash,delegation_hash,policy_hash,authorization_digest,created_at)
+             VALUES ('request-turn','campaign','OPERATOR','operator',NULL,'test',
+                     'lead-start-turn',?1,?1,NULL,NULL,?1,?1,?1,?1,?1,?2)",
+        )
+        .bind("a".repeat(64))
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        db.create_inference_pricing_quote(&crate::inference_ledger::NewInferencePricingQuote {
+            provider: "opencode".into(),
+            model: "deepseek-v4.1-flash".into(),
+            revision: 1,
+            upper_bound_micros: UsdMicros::new(1_000).unwrap(),
+            coverage_json: serde_json::json!({
+                "input": true,
+                "output": true,
+                "cachedInput": true,
+                "reasoning": true,
+                "tools": true,
+                "retries": true,
+                "requestOverhead": true,
+            })
+            .to_string(),
+            snapshot_json: "{\"quoteRevision\":1,\"upperBoundMicros\":1000}".into(),
+            evidence_sha256: "f".repeat(64),
+            actor: "operator".into(),
+        })
+        .await
+        .unwrap();
         db.bind_campaign_inference_envelope(&CampaignEnvelopeBindingInput {
             campaign_id: "campaign".into(),
             envelope_id: envelope.envelope_id.clone(),
@@ -2784,7 +3043,29 @@ mod ledger_link_tests {
             .authorize_provider_turn(&session, "worker", 1, 50, &"d".repeat(64), 1)
             .await
             .unwrap();
-        assert_eq!(turn.max_cost_micros, 200);
+        assert_eq!(turn.max_cost_micros, 1_000);
+        // Per-request holds are acquired at the egress binding boundary.
+        db.bind_provider_turn(&ProviderTurnBindingInput {
+            reservation_id: turn.reservation_id.clone(),
+            session_record_id: session.clone(),
+            worker_id: "worker".into(),
+            generation: 1,
+            request_sha256: "e".repeat(64),
+            model: "deepseek-v4.1-flash".into(),
+            path: "/v1/chat/completions".into(),
+            body_bytes: 123,
+            sequence: 0,
+        })
+        .await
+        .unwrap();
+        let (mapping_count,): (i64,) = sqlx::query_as::query_as(
+            "SELECT COUNT(*) FROM provider_turn_ledger_requests WHERE reservation_id=?1",
+        )
+        .bind(&turn.reservation_id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(mapping_count, 1);
         let (ledger_reservation_id,): (Option<String>,) = sqlx::query_as::query_as(
             "SELECT ledger_reservation_id FROM provider_turn_reservations
              WHERE reservation_id=?1",
@@ -2800,7 +3081,7 @@ mod ledger_link_tests {
             i64,
         ) = sqlx::query_as::query_as(
             "SELECT worker_id,generation,authorization_revision
-                 FROM inference_reservations WHERE id=?1",
+             FROM inference_reservations WHERE id=?1",
         )
         .bind(&ledger_reservation_id)
         .fetch_one(&db.pool)
@@ -2809,19 +3090,6 @@ mod ledger_link_tests {
         assert_eq!(ledger_worker.as_deref(), Some("worker"));
         assert_eq!(ledger_generation, Some(1));
         assert_eq!(ledger_revision, 1);
-        db.bind_provider_turn(&ProviderTurnBindingInput {
-            reservation_id: turn.reservation_id.clone(),
-            session_record_id: session.clone(),
-            worker_id: "worker".into(),
-            generation: 1,
-            request_sha256: "e".repeat(64),
-            model: "deepseek-v4.1-flash".into(),
-            path: "/v1/chat/completions".into(),
-            body_bytes: 123,
-            sequence: 0,
-        })
-        .await
-        .unwrap();
         let (dispatched_at_ms,): (Option<i64>,) = sqlx::query_as::query_as(
             "SELECT dispatched_at_ms FROM inference_reservations WHERE id=?1",
         )
@@ -2852,14 +3120,14 @@ mod ledger_link_tests {
             .authorize_provider_turn(&session, "worker", 1, 50, &"f".repeat(64), 1)
             .await
             .unwrap();
-        let (second_ledger,): (Option<String>,) = sqlx::query_as::query_as(
-            "SELECT ledger_reservation_id FROM provider_turn_reservations
-             WHERE reservation_id=?1",
+        let (mapping_count,): (i64,) = sqlx::query_as::query_as(
+            "SELECT COUNT(*) FROM provider_turn_ledger_requests WHERE reservation_id=?1",
         )
         .bind(&unbound.reservation_id)
         .fetch_one(&db.pool)
         .await
         .unwrap();
+        assert_eq!(mapping_count, 0);
         db.release_provider_turn(
             &unbound.reservation_id,
             &session,
@@ -2869,13 +3137,6 @@ mod ledger_link_tests {
         )
         .await
         .unwrap();
-        let (ledger_state,): (String,) =
-            sqlx::query_as::query_as("SELECT state FROM inference_reservations WHERE id=?1")
-                .bind(second_ledger.unwrap())
-                .fetch_one(&db.pool)
-                .await
-                .unwrap();
-        assert_eq!(ledger_state, "RELEASED");
         db.close().await;
     }
 }

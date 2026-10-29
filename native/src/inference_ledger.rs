@@ -40,9 +40,124 @@ impl From<ExecutionPolicyError> for InferenceLedgerError {
 /// before a reservation is created.
 pub const USD_BILLING_BASIS: &str = "USD_MICROS";
 
+/// Explicit billing mode. Legacy money accounting is legal only while Core is
+/// explicitly in V1. Once promoted to V2, every billable operation requires a
+/// bound envelope; there is no implicit fallback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum InferenceLedgerMode {
+    V1,
+    V2,
+}
+
+impl InferenceLedgerMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::V1 => "V1",
+            Self::V2 => "V2",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, InferenceLedgerError> {
+        match value {
+            "V1" => Ok(Self::V1),
+            "V2" => Ok(Self::V2),
+            _ => Err(InferenceLedgerError::Invalid(
+                "stored inference ledger mode".into(),
+            )),
+        }
+    }
+}
+
+/// What a Campaign's billing mode requires from the ledger.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CampaignInferenceRequirement {
+    LegacyV1,
+    EnvelopeBound { envelope_id: String },
+}
+
 const MAX_TOKEN_LEN: usize = 256;
 const MAX_TEXT_LEN: usize = 512;
 const MAX_JSON_LEN: usize = 64 * 1024;
+
+/// A frozen per-request price ceiling supplied by a provider adapter. The
+/// coverage document must cover every billable component; an incomplete quote
+/// is rejected rather than promoted into an invented bound.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct NewInferencePricingQuote {
+    pub provider: String,
+    pub model: String,
+    pub revision: i64,
+    pub upper_bound_micros: UsdMicros,
+    pub coverage_json: String,
+    pub snapshot_json: String,
+    pub evidence_sha256: String,
+    pub actor: String,
+}
+
+pub const PRICING_COVERAGE_COMPONENTS: [&str; 7] = [
+    "input",
+    "output",
+    "cachedInput",
+    "reasoning",
+    "tools",
+    "retries",
+    "requestOverhead",
+];
+
+impl NewInferencePricingQuote {
+    pub fn validate(&self) -> Result<(), InferenceLedgerError> {
+        validate_token("provider", &self.provider)?;
+        validate_token("model", &self.model)?;
+        if self.revision <= 0 {
+            return Err(InferenceLedgerError::Invalid(
+                "pricing revision must be positive".into(),
+            ));
+        }
+        if self.upper_bound_micros == UsdMicros::ZERO {
+            return Err(InferenceLedgerError::Invalid(
+                "pricing quote bound must be positive".into(),
+            ));
+        }
+        validate_sha256("evidence_sha256", &self.evidence_sha256)?;
+        validate_text("actor", &self.actor)?;
+        let coverage: serde_json::Value = serde_json::from_str(&self.coverage_json)
+            .map_err(|_| InferenceLedgerError::Invalid("coverage_json is not JSON".into()))?;
+        let Some(object) = coverage.as_object() else {
+            return Err(InferenceLedgerError::Invalid(
+                "coverage_json must be an object".into(),
+            ));
+        };
+        for component in PRICING_COVERAGE_COMPONENTS {
+            if !object
+                .get(component)
+                .is_some_and(serde_json::Value::is_boolean)
+                || object.get(component).and_then(serde_json::Value::as_bool) != Some(true)
+            {
+                return Err(InferenceLedgerError::Invalid(format!(
+                    "pricing quote does not enforce {component}"
+                )));
+            }
+        }
+        validate_json("snapshot_json", &self.snapshot_json)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct InferencePricingQuote {
+    pub quote_id: String,
+    pub provider: String,
+    pub model: String,
+    pub revision: i64,
+    pub upper_bound_micros: UsdMicros,
+    pub coverage_sha256: String,
+    pub snapshot_json: String,
+    pub evidence_sha256: String,
+}
 
 /// Create one operator-request envelope and its first monetary authorization.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -122,6 +237,9 @@ pub struct MarkInferenceDispatchedInput {
     pub worker_id: Option<String>,
     pub generation: Option<i64>,
     pub provider_request_id: Option<String>,
+    /// Worker attempt that owns the current lease. Required for Implementer
+    /// reservations and rejected for Core-only assessment/review roles.
+    pub attempt_id: Option<String>,
     pub actor: String,
 }
 
@@ -147,6 +265,14 @@ impl MarkInferenceDispatchedInput {
         }
         if let Some(provider_request_id) = &self.provider_request_id {
             validate_token("provider_request_id", provider_request_id)?;
+        }
+        if let Some(attempt_id) = &self.attempt_id {
+            validate_token("attempt_id", attempt_id)?;
+        }
+        if self.worker_id.is_some() && self.attempt_id.is_none() {
+            return Err(InferenceLedgerError::Invalid(
+                "worker dispatch requires an attempt id".into(),
+            ));
         }
         Ok(())
     }
