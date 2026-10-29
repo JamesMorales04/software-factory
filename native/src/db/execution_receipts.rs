@@ -43,6 +43,10 @@ pub struct ExecutionCheckReceiptRecord {
     pub expected_exit: i32,
     pub outcome: String,
     pub result_sha256: String,
+    /// True when this receipt is a genuine FAIL -> PASS transition for the
+    /// exact check: the preceding receipt is FAIL and the candidate advanced.
+    /// A first-time PASS is recorded but is not `TestsImproved` progress.
+    pub fail_to_pass: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -138,6 +142,21 @@ pub(super) async fn record_execution_check_receipt_in_tx(
         expected_exit,
         outcome,
     );
+    let prior: Option<(String, String)> = sqlx::query_as::query_as(
+        "SELECT outcome,candidate_sha256 FROM execution_check_receipts
+         WHERE campaign_id=?1 AND work_item_id=?2 AND suite=?3 AND command_sha256=?4
+         ORDER BY rowid DESC LIMIT 1",
+    )
+    .bind(&campaign_id)
+    .bind(&work_item_id)
+    .bind(&suite)
+    .bind(&command_sha256)
+    .fetch_optional(&mut *connection)
+    .await?;
+    let fail_to_pass = outcome == "PASS"
+        && prior.is_some_and(|(prior_outcome, prior_candidate)| {
+            prior_outcome == "FAIL" && prior_candidate != input.candidate_sha256
+        });
     let receipt_id = format!("{session_record_id}:{sequence}");
     let created_at = Utc::now().to_rfc3339();
     sqlx::query::query(
@@ -180,6 +199,7 @@ pub(super) async fn record_execution_check_receipt_in_tx(
         expected_exit,
         outcome: outcome.into(),
         result_sha256,
+        fail_to_pass,
     })
 }
 
