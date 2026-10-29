@@ -8,6 +8,7 @@
 
 use std::{env, time::Duration};
 
+use chrono::Utc;
 use factory_native::db::{ActionSpec, ProviderTerminal, ProviderTurnAuthorization};
 use factory_native::execution::{
     ApplyFilesRequest, ExecuteWorkspace, ExecutionResult, ToolRunRequest, WorkspaceAllocation,
@@ -52,6 +53,8 @@ struct Assignment {
     campaign_id: String,
     #[serde(default)]
     work_item_id: String,
+    #[serde(default)]
+    progress_last_sequence: u64,
     action_id: String,
     action_spec: ActionSpec,
     action_spec_sha256: String,
@@ -1696,9 +1699,11 @@ impl std::error::Error for WorkerProgressHalt {}
 struct TurnProgress {
     campaign_id: String,
     work_item_id: String,
-    /// Attempt-scoped prefix keeps checkpoint/operation ids unique across
-    /// repair attempts while progress counters remain work-item scoped.
+    /// Attempt/run-scoped prefix keeps checkpoint/operation ids unique across
+    /// repair attempts and Worker restarts while progress counters remain
+    /// work-item scoped.
     operation_prefix: String,
+    run_identity: String,
     turn: u64,
     sequence: u64,
     evidence: Vec<ProgressEvidence>,
@@ -1712,17 +1717,29 @@ impl TurnProgress {
             context.assignment.campaign_id.clone(),
             context.assignment.work_item_id.clone(),
             context.assignment.lease.attempt_id.clone(),
+            context.assignment.lease.generation,
+            Uuid::new_v4().simple().to_string(),
+            context.assignment.progress_last_sequence,
         )
     }
 
-    fn from_identity(campaign_id: String, work_item_id: String, attempt_id: String) -> Self {
-        let operation_prefix = format!("{work_item_id}/{attempt_id}");
+    fn from_identity(
+        campaign_id: String,
+        work_item_id: String,
+        attempt_id: String,
+        generation: i64,
+        run_id: String,
+        initial_sequence: u64,
+    ) -> Self {
+        let run_identity = format!("{attempt_id}-g{generation}-{run_id}");
+        let operation_prefix = format!("{work_item_id}/{run_identity}");
         Self {
             campaign_id,
             work_item_id,
             operation_prefix,
+            run_identity,
             turn: 0,
-            sequence: 0,
+            sequence: initial_sequence,
             evidence: Vec::new(),
             last_content: std::collections::BTreeMap::new(),
             last_check: std::collections::BTreeMap::new(),
@@ -1733,8 +1750,18 @@ impl TurnProgress {
         self.turn += 1;
     }
 
+    /// Monotonic across Worker restarts: epoch milliseconds in the high bits
+    /// and a small in-process counter in the low three digits. A clock that
+    /// moves backwards inside one run is clamped to the last value.
     fn next_sequence(&mut self) -> u64 {
-        self.sequence += 1;
+        // Epoch microseconds plus a durable seed from Core's last accepted
+        // sequence: later runs and restarts cannot fall below prior evidence.
+        let now = u64::try_from(Utc::now().timestamp_micros()).unwrap_or(0);
+        self.sequence = if now > self.sequence {
+            now
+        } else {
+            self.sequence.saturating_add(1)
+        };
         self.sequence
     }
 
@@ -1748,7 +1775,7 @@ impl TurnProgress {
         self.last_content.insert(path.to_owned(), artifact.clone());
         let sequence = self.next_sequence();
         self.evidence.push(ProgressEvidence {
-            evidence_id: format!("{}-write-{sequence}", self.work_item_id),
+            evidence_id: format!("{}-write-{sequence}", self.run_identity),
             campaign_id: self.campaign_id.clone(),
             work_item_id: self.work_item_id.clone(),
             kind: ProgressKind::CandidateChanged,
@@ -1770,7 +1797,7 @@ impl TurnProgress {
     /// Record both PASS and FAIL outcomes. A failing receipt establishes the
     /// suite baseline; only a later PASS for the identical suite can count as
     /// progress. A changed receipt hash alone never earns progress.
-    fn observe_check(&mut self, argv: &[String], success: bool) {
+    fn observe_check(&mut self, call_id: &str, argv: &[String], success: bool) {
         let suite = format!("check:{}", argv.join("\u{0}"));
         let outcome = if success { "PASS" } else { "FAIL" };
         let receipt =
@@ -1781,11 +1808,11 @@ impl TurnProgress {
         self.last_check.insert(suite.clone(), receipt.clone());
         let sequence = self.next_sequence();
         self.evidence.push(ProgressEvidence {
-            evidence_id: format!("{}-check-{sequence}", self.work_item_id),
+            evidence_id: format!("{}-check-{sequence}", self.run_identity),
             campaign_id: self.campaign_id.clone(),
             work_item_id: self.work_item_id.clone(),
             kind: ProgressKind::TestsImproved,
-            artifact_ref: format!("suite:{suite}:{outcome}"),
+            artifact_ref: format!("suite:{suite}|{outcome}|{call_id}"),
             artifact_sha256: receipt,
             baseline_ref: suite,
             observed_sequence: sequence,
@@ -2441,7 +2468,11 @@ async fn run_provider_tool_loop(
                         .await
                         {
                             Ok(result) => {
-                                progress.observe_check(&argv, result.exit_code == Some(0));
+                                progress.observe_check(
+                                    &call_id,
+                                    &argv,
+                                    result.exit_code == Some(0),
+                                );
                                 let status = if result.exit_code == Some(0) {
                                     "ok"
                                 } else {
@@ -2779,7 +2810,7 @@ async fn execute_codex_tool(
             .await;
             match run {
                 Ok(Ok(result)) => {
-                    progress.observe_check(&argv, result.exit_code == Some(0));
+                    progress.observe_check(call_id, &argv, result.exit_code == Some(0));
                     post_tool_event(
                         context,
                         call_id,
@@ -4537,6 +4568,7 @@ mod tests {
             },
             campaign_id: "campaign".into(),
             work_item_id: "unit-1".into(),
+            progress_last_sequence: 0,
             action_id: "action".into(),
             action_spec: ActionSpec {
                 schema_version: 1,
@@ -4567,12 +4599,22 @@ mod tests {
 
     #[test]
     fn twelve_turns_build_stable_campaign_checkpoints() {
-        let mut progress =
-            TurnProgress::from_identity("campaign".into(), "unit-1".into(), "attempt-1".into());
+        let mut progress = TurnProgress::from_identity(
+            "campaign".into(),
+            "unit-1".into(),
+            "attempt-1".into(),
+            1,
+            "run-1".into(),
+            0,
+        );
         for turn in 0..12 {
             progress.begin_turn();
             progress.observe_write("src/lib.rs", &format!("candidate-{turn}"));
-            progress.observe_check(&["cargo".into(), "test".into()], true);
+            progress.observe_check(
+                &format!("call-{turn}"),
+                &["cargo".into(), "test".into()],
+                true,
+            );
             let request = progress.checkpoint_request().expect("checkpoint request");
             assert_eq!(request.campaign_id, "campaign");
             assert_eq!(request.work_item_id, "unit-1");
@@ -4590,12 +4632,18 @@ mod tests {
 
     #[test]
     fn check_observations_encode_suite_and_pass_fail_outcomes() {
-        let mut progress =
-            TurnProgress::from_identity("campaign".into(), "unit-1".into(), "attempt-1".into());
+        let mut progress = TurnProgress::from_identity(
+            "campaign".into(),
+            "unit-1".into(),
+            "attempt-1".into(),
+            1,
+            "run-1".into(),
+            0,
+        );
         progress.begin_turn();
         progress.observe_write("src/lib.rs", "candidate");
-        progress.observe_check(&["cargo".into(), "test".into()], false);
-        progress.observe_check(&["cargo".into(), "test".into()], true);
+        progress.observe_check("call-fail", &["cargo".into(), "test".into()], false);
+        progress.observe_check("call-pass", &["cargo".into(), "test".into()], true);
         let request = progress.checkpoint_request().unwrap();
         let outcomes: Vec<_> = request
             .evidence
@@ -4604,8 +4652,8 @@ mod tests {
             .map(|item| item.artifact_ref.as_str())
             .collect();
         assert_eq!(outcomes.len(), 2, "{outcomes:?}");
-        assert!(outcomes.iter().any(|value| value.ends_with(":FAIL")));
-        assert!(outcomes.iter().any(|value| value.ends_with(":PASS")));
+        assert!(outcomes.iter().any(|value| value.contains("|FAIL|")));
+        assert!(outcomes.iter().any(|value| value.contains("|PASS|")));
         assert!(
             outcomes
                 .iter()
@@ -4615,11 +4663,17 @@ mod tests {
 
     #[test]
     fn duplicate_identical_checks_do_not_duplicate_evidence() {
-        let mut progress =
-            TurnProgress::from_identity("campaign".into(), "unit-1".into(), "attempt-1".into());
+        let mut progress = TurnProgress::from_identity(
+            "campaign".into(),
+            "unit-1".into(),
+            "attempt-1".into(),
+            1,
+            "run-1".into(),
+            0,
+        );
         progress.begin_turn();
         progress.observe_write("src/lib.rs", "same");
-        progress.observe_check(&["cargo".into(), "test".into()], true);
+        progress.observe_check("call-1", &["cargo".into(), "test".into()], true);
         let first = progress.checkpoint_request().unwrap();
         let first_checks = first
             .evidence
@@ -4629,7 +4683,7 @@ mod tests {
         assert_eq!(first_checks, 1);
         progress.begin_turn();
         progress.observe_write("src/lib.rs", "same");
-        progress.observe_check(&["cargo".into(), "test".into()], true);
+        progress.observe_check("call-2", &["cargo".into(), "test".into()], true);
         let second = progress.checkpoint_request().unwrap();
         assert!(
             second
@@ -4642,12 +4696,25 @@ mod tests {
 
     #[test]
     fn repair_attempts_share_work_item_but_not_checkpoint_ids() {
-        let mut first =
-            TurnProgress::from_identity("campaign".into(), "unit-1".into(), "attempt-1".into());
+        let mut first = TurnProgress::from_identity(
+            "campaign".into(),
+            "unit-1".into(),
+            "attempt-1".into(),
+            1,
+            "run-1".into(),
+            0,
+        );
         first.begin_turn();
+        first.observe_write("src/lib.rs", "attempt-1-candidate");
         let first_request = first.checkpoint_request().unwrap();
-        let mut second =
-            TurnProgress::from_identity("campaign".into(), "unit-1".into(), "attempt-2".into());
+        let mut second = TurnProgress::from_identity(
+            "campaign".into(),
+            "unit-1".into(),
+            "attempt-2".into(),
+            1,
+            "run-2".into(),
+            0,
+        );
         second.begin_turn();
         let second_request = second.checkpoint_request().unwrap();
         assert_eq!(first_request.work_item_id, second_request.work_item_id);
@@ -4656,6 +4723,71 @@ mod tests {
             first_request.checkpoint.checkpoint_id, second_request.checkpoint.checkpoint_id,
             "a repair attempt must not reuse the prior attempt's operation identity"
         );
+    }
+
+    #[test]
+    fn observation_sequences_are_strictly_increasing_within_a_run() {
+        let mut progress = TurnProgress::from_identity(
+            "campaign".into(),
+            "unit-1".into(),
+            "attempt-1".into(),
+            1,
+            "run-1".into(),
+            0,
+        );
+        let first = progress.next_sequence();
+        let second = progress.next_sequence();
+        let third = progress.next_sequence();
+        assert!(first > 0);
+        assert!(second > first);
+        assert!(third > second);
+        // The sequence is epoch-millisecond based, so a later run (or a
+        // restart after the previous run) starts above older observations.
+        let later = TurnProgress::from_identity(
+            "campaign".into(),
+            "unit-1".into(),
+            "attempt-1".into(),
+            1,
+            "run-2".into(),
+            0,
+        );
+        let mut later = later;
+        assert!(later.next_sequence() >= third);
+    }
+
+    #[test]
+    fn restarted_run_never_reuses_evidence_or_checkpoint_ids() {
+        let mut first = TurnProgress::from_identity(
+            "campaign".into(),
+            "unit-1".into(),
+            "attempt-1".into(),
+            1,
+            "run-before".into(),
+            0,
+        );
+        first.begin_turn();
+        first.observe_write("src/lib.rs", "before-restart");
+        let first_request = first.checkpoint_request().unwrap();
+        let mut restarted = TurnProgress::from_identity(
+            "campaign".into(),
+            "unit-1".into(),
+            "attempt-1".into(),
+            1,
+            "run-after".into(),
+            0,
+        );
+        restarted.begin_turn();
+        restarted.observe_write("src/lib.rs", "after-restart");
+        let restarted_request = restarted.checkpoint_request().unwrap();
+        assert_ne!(
+            first_request.checkpoint.checkpoint_id,
+            restarted_request.checkpoint.checkpoint_id
+        );
+        assert_ne!(
+            first_request.evidence[0].evidence_id,
+            restarted_request.evidence[0].evidence_id
+        );
+        assert_eq!(restarted_request.work_item_id, "unit-1");
     }
 
     #[test]

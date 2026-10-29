@@ -156,6 +156,9 @@ pub struct WorkerAssignment {
     /// Campaigns use the frozen WorkGraph unit id; direct Campaigns use the
     /// Campaign id.
     pub work_item_id: String,
+    /// Highest observed progress sequence accepted by Core for this Campaign;
+    /// the Worker uses it to seed a monotonic sequence across restarts.
+    pub progress_last_sequence: u64,
     pub action_id: String,
     pub action_spec: ActionSpec,
     pub action_spec_sha256: String,
@@ -866,7 +869,7 @@ pub use issue_intake::{
     ClaimedIssueIntakeItem, IssueIntakeBatchResult, IssueIntakeBatchState, IssueIntakeItemState,
     IssueIntakeLimits, IssueIntakePolicyResult, IssueIntakeQueueFailure,
     IssueIntakeReconcileResult, IssueIntakeState, NewIssueIntakeBatch, NewIssueIntakeBatchItem,
-    NewIssueIntakePolicy,
+    NewIssueIntakePolicy, NewIssueIntakePolicyV2,
 };
 pub use model_calls::{
     ModelCallDecision, ModelCallGrant, ModelCallPolicy, ModelCallRecord, ModelCallResult,

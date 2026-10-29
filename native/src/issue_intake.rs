@@ -78,6 +78,7 @@ pub struct IssueIntakePolicyRecord {
     pub max_sessions: u32,
     pub max_turns: u32,
     pub max_wall_clock_secs: u64,
+    pub schema_version: u32,
     pub expires_at: String,
     pub acknowledged: bool,
     pub principal_id: String,
@@ -569,7 +570,7 @@ pub fn policy_content_hash(policy: &IssueIntakePolicyRecord) -> String {
     paths.sort();
     let mut capabilities = policy.capabilities.clone();
     capabilities.sort_by_key(|capability| format!("{capability:?}"));
-    let payload = serde_json::json!({
+    let mut payload = serde_json::json!({
         "schema": "factory-issue-intake-policy-v1",
         "projectId": policy.project_id,
         "revision": policy.revision,
@@ -593,12 +594,16 @@ pub fn policy_content_hash(policy: &IssueIntakePolicyRecord) -> String {
         "maxConcurrent": policy.max_concurrent,
         "maxCostMicrosPerIssue": policy.max_cost_micros_per_issue,
         "maxTotalCostMicros": policy.max_total_cost_micros,
-        "maxAttempts": policy.max_attempts,
-        "maxSessions": policy.max_sessions,
-        "maxTurns": policy.max_turns,
-        "maxWallClockSecs": policy.max_wall_clock_secs,
         "expiresAt": policy.expires_at,
     });
+    if policy.schema_version == 1 {
+        payload["maxAttempts"] = serde_json::json!(policy.max_attempts);
+        payload["maxSessions"] = serde_json::json!(policy.max_sessions);
+        payload["maxTurns"] = serde_json::json!(policy.max_turns);
+        payload["maxWallClockSecs"] = serde_json::json!(policy.max_wall_clock_secs);
+    } else {
+        payload["schemaVersion"] = serde_json::json!(policy.schema_version);
+    }
     sha256_hex(payload.to_string().as_bytes())
 }
 
@@ -862,6 +867,7 @@ mod tests {
             max_sessions: 2,
             max_turns: 2,
             max_wall_clock_secs: 60,
+            schema_version: 1,
             expires_at: "2099-01-01T00:00:00Z".into(),
             acknowledged: true,
             principal_id: "operator".into(),

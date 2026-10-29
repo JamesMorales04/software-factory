@@ -17,7 +17,7 @@ use crate::lead::{
 };
 use crate::progress::{
     CheckpointOutcome, GateRecord, ProgressCheckpointRequest, ProgressCheckpointResponse,
-    ProgressHoldRecord, ProgressSupervisor, ProgressSupervisorState,
+    ProgressError, ProgressHoldRecord, ProgressSupervisor, ProgressSupervisorState,
 };
 
 use super::delegations::{load_delegation_v2, record_usage_v2_in_tx, release_usage_in_tx};
@@ -35,6 +35,13 @@ type ProgressHoldRow = (
     String,
     Option<String>,
 );
+type WorkerFenceRow = (String, i64, i64, String, String, String, String);
+
+struct WorkerCheckpointFence<'a> {
+    worker_id: &'a str,
+    attempt_id: &'a str,
+    generation: i64,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LeadRequestRecord {
@@ -3774,8 +3781,62 @@ impl Database {
         evidence: &[ProgressEvidence],
         gate: Option<&GateRecord>,
     ) -> Result<CheckpointOutcome, Error> {
+        self.record_progress_checkpoint_inner(campaign_id, checkpoint, evidence, gate, None)
+            .await
+    }
+
+    async fn record_progress_checkpoint_inner(
+        &self,
+        campaign_id: &str,
+        checkpoint: &ProgressCheckpoint,
+        evidence: &[ProgressEvidence],
+        gate: Option<&GateRecord>,
+        fence: Option<&WorkerCheckpointFence<'_>>,
+    ) -> Result<CheckpointOutcome, Error> {
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        if let Some(fence) = fence {
+            // Revalidate the Worker fence inside the same write transaction
+            // that persists progress, holds and the supervisor snapshot.
+            let row: Option<WorkerFenceRow> = sqlx::query_as::query_as(
+                "SELECT l.worker_id,l.generation,l.expires_at_ms,a.status,c.status,r.campaign_id,
+                        COALESCE(lt.unit_id,li.integration_id,c.id)
+                 FROM attempts a
+                 JOIN runs r ON r.id=a.run_id
+                 JOIN campaigns c ON c.id=r.campaign_id
+                 LEFT JOIN lead_tasks lt ON lt.attempt_id=a.id
+                 LEFT JOIN lead_integrations li ON li.attempt_id=a.id
+                 JOIN worker_leases l ON l.attempt_id=a.id
+                 WHERE a.id=?1",
+            )
+            .bind(fence.attempt_id)
+            .fetch_optional(&mut *transaction)
+            .await?;
+            let Some((
+                owner,
+                saved_generation,
+                expires_at,
+                attempt_status,
+                campaign_status,
+                fence_campaign,
+                fence_work_item,
+            )) = row
+            else {
+                return Err(Error::NotFound);
+            };
+            if owner != fence.worker_id
+                || saved_generation != fence.generation
+                || expires_at <= Utc::now().timestamp_millis()
+                || attempt_status != "LEASED"
+                || campaign_status != "AUTHORIZED"
+                || fence_campaign != campaign_id
+                || fence_work_item != checkpoint.work_item_id
+            {
+                return Err(Error::Forbidden(
+                    "worker progress checkpoint is not authorized by the current lease".into(),
+                ));
+            }
+        }
         let policy_json: Option<(String,)> = sqlx::query_as::query_as(
             "SELECT p.policy_json
              FROM campaign_authorizations ca
@@ -3795,25 +3856,37 @@ impl Database {
         if let Some(gate) = gate {
             // Acceptance can only cite an existing deterministic Core gate
             // decision for a candidate belonging to this Campaign. A Worker,
-            // model or caller-supplied record cannot accept work.
-            let verified: Option<(String, String)> = sqlx::query_as::query_as(
-                "SELECT gd.outcome,c.commit_sha
+            // model or caller-supplied record cannot accept work. Candidate
+            // identity is normalized after the fetch: a Core gate may carry a
+            // raw 40-character Git commit while progress evidence carries its
+            // 64-character SHA-256 digest, so SQL equality here would hide
+            // every real candidate.
+            let verified: Option<(String, String, String)> = sqlx::query_as::query_as(
+                "SELECT gd.outcome,c.commit_sha,
+                        COALESCE(lt.unit_id,li.integration_id,r.campaign_id)
                  FROM gate_decisions gd
                  JOIN candidates c ON c.id=gd.candidate_id
                  JOIN attempts a ON a.id=c.attempt_id
                  JOIN runs r ON r.id=a.run_id
-                 WHERE gd.candidate_id=?1 AND r.campaign_id=?2 AND c.commit_sha=?3",
+                 LEFT JOIN lead_tasks lt ON lt.attempt_id=a.id
+                 LEFT JOIN lead_integrations li ON li.attempt_id=a.id
+                 WHERE gd.candidate_id=?1 AND r.campaign_id=?2",
             )
             .bind(&gate.gate_id)
             .bind(campaign_id)
-            .bind(&gate.candidate_sha256)
             .fetch_optional(&mut *transaction)
             .await?;
-            if verified.as_ref() != Some(&(gate.outcome.clone(), gate.candidate_sha256.clone()))
-                || gate.outcome != "ACCEPTED"
-            {
+            let verified = verified.is_some_and(|(outcome, commit, work_item)| {
+                outcome == "ACCEPTED"
+                    && gate.outcome == "ACCEPTED"
+                    && gate.campaign_id == campaign_id
+                    && gate.work_item_id == checkpoint.work_item_id
+                    && work_item == checkpoint.work_item_id
+                    && commit_artifact_matches(&commit, &gate.candidate_sha256)
+            });
+            if !verified {
                 return Err(Error::Forbidden(
-                    "progress acceptance requires an existing accepted Core gate record".into(),
+                    "progress acceptance requires an existing accepted Core gate record for the exact campaign, work item and candidate".into(),
                 ));
             }
         }
@@ -3866,9 +3939,32 @@ impl Database {
             None => ProgressSupervisor::new(policy.progress)
                 .map_err(|error| Error::Validation(error.to_string()))?,
         };
+        let mut retired_work_items: Vec<(String, &'static str)> = supervisor
+            .retire_accepted_work_items_at_capacity(&checkpoint.work_item_id)
+            .into_iter()
+            .map(|id| {
+                (
+                    id,
+                    "accepted work item retired to admit a new WorkGraph item",
+                )
+            })
+            .collect();
         let outcome = supervisor
             .checkpoint(campaign_id, checkpoint, &fresh_evidence, gate)
-            .map_err(|error| Error::Validation(error.to_string()))?;
+            .map_err(|error| match error {
+                ProgressError::WorkItemRetirementRequired { active: _ } => Error::Conflict(
+                    "progress work-item capacity reached and no accepted work item can be retired; archive an active unit or complete and validate one",
+                ),
+                other => Error::Validation(other.to_string()),
+            })?;
+        if outcome.decision == crate::execution_policy::ContinuationDecision::Complete
+            && supervisor.retire_accepted_work_item(&checkpoint.work_item_id)
+        {
+            retired_work_items.push((
+                checkpoint.work_item_id.clone(),
+                "gate-accepted work item retired from the active progress projection",
+            ));
+        }
         for item in &fresh_evidence {
             let evidence_json = serde_json::to_string(item)
                 .map_err(|_| Error::Invalid("progress evidence encoding"))?;
@@ -4037,6 +4133,16 @@ impl Database {
             }
             _ => {}
         }
+        for (retired_id, reason) in &retired_work_items {
+            record_progress_retirement_in_tx(
+                &mut transaction,
+                campaign_id,
+                retired_id,
+                reason,
+                &now,
+            )
+            .await?;
+        }
         let state_json = serde_json::to_string(&supervisor.snapshot())
             .map_err(|_| Error::Invalid("progress state encoding"))?;
         let state_sha256 = sha256_hex(state_json.as_bytes());
@@ -4061,11 +4167,11 @@ impl Database {
         Ok(outcome)
     }
 
-    /// Core-owned Worker checkpoint entry point. Validates the current lease,
-    /// generation, attempt state and the stable Campaign/work-item identity
-    /// before persisting the deterministic decision. The HTTP handler in
-    /// `bin/core.rs` must authenticate the Worker session and call this method;
-    /// the route is `POST /worker/progress_checkpoint`.
+    /// Core-owned Worker checkpoint entry point. The lease, generation, attempt,
+    /// campaign and stable work-item identity are revalidated inside the write
+    /// transaction. The HTTP handler in `bin/core.rs` must authenticate the
+    /// Worker session and call this method; the route is
+    /// `POST /worker/progress_checkpoint`.
     pub async fn record_worker_progress_checkpoint(
         &self,
         worker_id: &str,
@@ -4076,68 +4182,32 @@ impl Database {
         if worker_id.trim().is_empty() || attempt_id.trim().is_empty() || generation <= 0 {
             return Err(Error::Invalid("worker progress checkpoint identity"));
         }
-        let now_ms = Utc::now().timestamp_millis();
-        let mut connection = self.pool.acquire().await?;
-        let row: Option<(String, i64, i64, String, String, String, String)> =
-            sqlx::query_as::query_as(
-                "SELECT l.worker_id,l.generation,l.expires_at_ms,a.status,c.status,r.campaign_id,
-                    COALESCE(lt.unit_id,li.integration_id,c.id)
-             FROM attempts a
-             JOIN runs r ON r.id=a.run_id
-             JOIN campaigns c ON c.id=r.campaign_id
-             LEFT JOIN lead_tasks lt ON lt.attempt_id=a.id
-             LEFT JOIN lead_integrations li ON li.attempt_id=a.id
-             JOIN worker_leases l ON l.attempt_id=a.id
-             WHERE a.id=?1",
-            )
-            .bind(attempt_id)
-            .fetch_optional(&mut *connection)
-            .await?;
-        let Some((
-            owner,
-            saved_generation,
-            expires_at,
-            attempt_status,
-            campaign_status,
-            campaign_id,
-            work_item_id,
-        )) = row
-        else {
-            return Err(Error::NotFound);
-        };
-        if owner != worker_id
-            || saved_generation != generation
-            || expires_at <= now_ms
-            || attempt_status != "LEASED"
-            || campaign_status != "AUTHORIZED"
-        {
-            return Err(Error::Forbidden(
-                "worker progress checkpoint is not authorized by the current lease".into(),
-            ));
-        }
-        if request.campaign_id != campaign_id
-            || request.work_item_id != work_item_id
-            || request.checkpoint.work_item_id != work_item_id
+        if request.campaign_id.trim().is_empty()
+            || request.work_item_id != request.checkpoint.work_item_id
             || request
                 .evidence
                 .iter()
-                .any(|item| item.work_item_id != work_item_id)
+                .any(|item| item.work_item_id != request.work_item_id)
         {
             return Err(Error::Forbidden(
                 "worker progress checkpoint identity differs from the assignment".into(),
             ));
         }
-        drop(connection);
         let outcome = self
-            .record_progress_checkpoint(
-                &campaign_id,
+            .record_progress_checkpoint_inner(
+                &request.campaign_id,
                 &request.checkpoint,
                 &request.evidence,
                 request.gate.as_ref(),
+                Some(&WorkerCheckpointFence {
+                    worker_id,
+                    attempt_id,
+                    generation,
+                }),
             )
             .await?;
         let hold_open = self
-            .progress_hold(&campaign_id, &work_item_id)
+            .progress_hold(&request.campaign_id, &request.work_item_id)
             .await?
             .is_some();
         Ok(ProgressCheckpointResponse {
@@ -4290,16 +4360,8 @@ impl Database {
             ));
         }
         let now = Utc::now().to_rfc3339();
-        sqlx::query::query(
-            "INSERT INTO progress_retired_work_items(campaign_id,work_item_id,reason,retired_at)
-             VALUES (?1,?2,?3,?4)",
-        )
-        .bind(campaign_id)
-        .bind(work_item_id)
-        .bind(reason)
-        .bind(&now)
-        .execute(&mut *transaction)
-        .await?;
+        record_progress_retirement_in_tx(&mut transaction, campaign_id, work_item_id, reason, &now)
+            .await?;
         state.work_items.remove(work_item_id);
         let state_json =
             serde_json::to_string(&state).map_err(|_| Error::Invalid("progress state encoding"))?;
@@ -4336,6 +4398,26 @@ impl Database {
             })
             .transpose()
     }
+}
+
+async fn record_progress_retirement_in_tx(
+    connection: &mut SqliteConnection,
+    campaign_id: &str,
+    work_item_id: &str,
+    reason: &str,
+    retired_at: &str,
+) -> Result<(), Error> {
+    sqlx::query::query(
+        "INSERT INTO progress_retired_work_items(campaign_id,work_item_id,reason,retired_at)
+         VALUES (?1,?2,?3,?4)",
+    )
+    .bind(campaign_id)
+    .bind(work_item_id)
+    .bind(reason)
+    .bind(retired_at)
+    .execute(&mut *connection)
+    .await?;
+    Ok(())
 }
 
 async fn validate_progress_work_item_in_tx(
@@ -4376,6 +4458,24 @@ async fn validate_progress_work_item_in_tx(
     Ok(())
 }
 
+/// Candidate commits are Git object ids (normally 40 hex characters) while
+/// progress artifacts are lower-case SHA-256. Accept either the exact commit
+/// (for 64-character test doubles) or the SHA-256 of the commit id.
+fn commit_artifact_matches(commit: &str, artifact_sha256: &str) -> bool {
+    commit.eq_ignore_ascii_case(artifact_sha256)
+        || sha256_hex(commit.to_ascii_lowercase().as_bytes()) == artifact_sha256
+}
+
+fn parse_test_receipt_ref(artifact_ref: &str) -> Option<(&str, &str, &str)> {
+    let rest = artifact_ref.strip_prefix("suite:")?;
+    let (before, call_id) = rest.rsplit_once('|')?;
+    let (suite, outcome) = before.rsplit_once('|')?;
+    if suite.trim().is_empty() || call_id.trim().is_empty() || !matches!(outcome, "PASS" | "FAIL") {
+        return None;
+    }
+    Some((suite, outcome, call_id))
+}
+
 fn findings_contain(raw: &str, finding_id: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(raw)
         .ok()
@@ -4399,25 +4499,45 @@ async fn verify_progress_evidence_in_tx(
     for item in evidence {
         match item.kind {
             crate::execution_policy::ProgressKind::FindingsResolved => {
-                let receipts: Vec<(String, String)> = sqlx::query_as::query_as(
-                    "SELECT c.commit_sha,qr.findings_json
-                     FROM quality_receipts qr
-                     JOIN candidates c ON c.id=qr.candidate_id
-                     JOIN attempts a ON a.id=c.attempt_id
-                     JOIN runs r ON r.id=a.run_id
-                     WHERE r.campaign_id=?1",
-                )
-                .bind(campaign_id)
-                .fetch_all(&mut *connection)
-                .await?;
-                let recorded = receipts.iter().any(|(commit, findings)| {
-                    commit == &item.artifact_sha256
-                        && findings_contain(findings, &item.artifact_ref)
-                });
-                if !recorded {
+                let receipts: Vec<(String, String, String, String, String, String)> =
+                    sqlx::query_as::query_as(
+                        "SELECT qr.candidate_id,qr.role,qr.result,qr.received_at,c.commit_sha,
+                                qr.findings_json
+                         FROM quality_receipts qr
+                         JOIN candidates c ON c.id=qr.candidate_id
+                         JOIN attempts a ON a.id=c.attempt_id
+                         JOIN runs r ON r.id=a.run_id
+                         WHERE r.campaign_id=?1
+                         ORDER BY qr.received_at,qr.receipt_id",
+                    )
+                    .bind(campaign_id)
+                    .fetch_all(&mut *connection)
+                    .await?;
+                let open = receipts
+                    .iter()
+                    .find(|(_, _, _, _, _, findings)| {
+                        findings_contain(findings, &item.artifact_ref)
+                    })
+                    .ok_or_else(|| {
+                        Error::Forbidden(
+                            "resolved finding is not recorded as open in a Core quality receipt"
+                                .into(),
+                        )
+                    })?;
+                let resolved = receipts.iter().any(
+                    |(candidate_id, role, result, received_at, commit, findings)| {
+                        candidate_id != &open.0
+                            && role == &open.1
+                            && result == "PASS"
+                            && received_at > &open.3
+                            && !findings_contain(findings, &item.artifact_ref)
+                            && commit_artifact_matches(commit, &item.artifact_sha256)
+                            && commit_artifact_matches(&open.4, &item.baseline_ref)
+                    },
+                );
+                if !resolved {
                     return Err(Error::Forbidden(
-                        "resolved finding is not recorded in a Core quality receipt for this Campaign"
-                            .into(),
+                        "finding has no later same-role PASS receipt without that finding".into(),
                     ));
                 }
             }
@@ -4451,30 +4571,131 @@ async fn verify_progress_evidence_in_tx(
                     ));
                 }
             }
+            crate::execution_policy::ProgressKind::TestsImproved => {
+                let (suite, outcome, call_id) = parse_test_receipt_ref(&item.artifact_ref)
+                    .ok_or_else(|| {
+                        Error::Forbidden(
+                            "test progress must cite a Core-recorded tool call id".into(),
+                        )
+                    })?;
+                if suite != item.baseline_ref {
+                    return Err(Error::Forbidden(
+                        "test progress suite and baseline identity differ".into(),
+                    ));
+                }
+                let detail: Option<(String,)> = sqlx::query_as::query_as(
+                    "SELECT pte.detail
+                     FROM provider_tool_events pte
+                     JOIN provider_sessions ps ON ps.session_record_id=pte.session_record_id
+                     JOIN attempts a ON a.id=ps.attempt_id
+                     JOIN runs r ON r.id=a.run_id
+                     WHERE r.campaign_id=?1 AND pte.call_id=?2
+                       AND pte.tool='run_command' AND pte.decision='RESULT'
+                     ORDER BY pte.created_at DESC,pte.sequence DESC LIMIT 1",
+                )
+                .bind(campaign_id)
+                .bind(call_id)
+                .fetch_optional(&mut *connection)
+                .await?;
+                let Some((detail,)) = detail else {
+                    return Err(Error::Forbidden(
+                        "test progress has no Core-recorded frozen-check result".into(),
+                    ));
+                };
+                let passed = detail.contains("exit=Some(0)");
+                match outcome {
+                    "PASS" if passed => {}
+                    "FAIL" if !passed => {}
+                    _ => {
+                        return Err(Error::Forbidden(
+                            "test progress outcome does not match the Core-recorded check result"
+                                .into(),
+                        ));
+                    }
+                }
+            }
             crate::execution_policy::ProgressKind::RepairValidated => {
-                let repair: Option<(String, String)> = sqlx::query_as::query_as(
-                    "SELECT gd.outcome,c.commit_sha
+                let gates: Vec<(String, String, String, String)> = sqlx::query_as::query_as(
+                    "SELECT gd.candidate_id,gd.outcome,gd.decided_at,c.commit_sha
                      FROM gate_decisions gd
                      JOIN candidates c ON c.id=gd.candidate_id
                      JOIN attempts a ON a.id=c.attempt_id
                      JOIN runs r ON r.id=a.run_id
-                     WHERE gd.candidate_id=?1 AND r.campaign_id=?2",
+                     WHERE r.campaign_id=?1 AND gd.candidate_id IN (?2,?3)",
                 )
-                .bind(&item.artifact_ref)
                 .bind(campaign_id)
-                .fetch_optional(&mut *connection)
+                .bind(&item.artifact_ref)
+                .bind(&item.baseline_ref)
+                .fetch_all(&mut *connection)
                 .await?;
-                if repair.as_ref()
-                    != Some(&("REPAIR_REQUIRED".to_string(), item.artifact_sha256.clone()))
+                let repair = gates.iter().find(|(candidate, outcome, _, _)| {
+                    candidate == &item.baseline_ref && outcome == "REPAIR_REQUIRED"
+                });
+                let accepted = gates.iter().find(|(candidate, outcome, _, _)| {
+                    candidate == &item.artifact_ref && outcome == "ACCEPTED"
+                });
+                if let (Some(repair), Some(accepted)) = (repair, accepted)
+                    && accepted.2 > repair.2
+                    && commit_artifact_matches(&accepted.3, &item.artifact_sha256)
                 {
-                    return Err(Error::Forbidden(
-                        "repair validation is not backed by a Core REPAIR_REQUIRED gate".into(),
-                    ));
+                    continue;
                 }
+                return Err(Error::Forbidden(
+                    "repair validation requires a later ACCEPTED gate for the repaired candidate"
+                        .into(),
+                ));
             }
             _ => {}
         }
     }
+    Ok(())
+}
+
+/// Create a durable blocking hold for the work item owned by an attempt. Used
+/// when a V2 paid-provider operation cannot obtain its required ledger hold;
+/// repeated dispatch must stop until the ledger is available or an operator
+/// resolves the campaign state.
+pub(super) async fn record_blocking_progress_hold_in_tx(
+    connection: &mut SqliteConnection,
+    attempt_id: &str,
+    state: &str,
+    reason: &str,
+) -> Result<(), Error> {
+    if !matches!(state, "DIAGNOSE" | "ESCALATE" | "BLOCKED") {
+        return Err(Error::Invalid("progress hold state"));
+    }
+    let row: Option<(String, String)> = sqlx::query_as::query_as(
+        "SELECT r.campaign_id,COALESCE(lt.unit_id,li.integration_id,r.campaign_id)
+         FROM attempts a
+         JOIN runs r ON r.id=a.run_id
+         LEFT JOIN lead_tasks lt ON lt.attempt_id=a.id
+         LEFT JOIN lead_integrations li ON li.attempt_id=a.id
+         WHERE a.id=?1",
+    )
+    .bind(attempt_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    let Some((campaign_id, work_item_id)) = row else {
+        return Err(Error::NotFound);
+    };
+    let now = Utc::now().to_rfc3339();
+    sqlx::query::query(
+        "INSERT INTO progress_holds
+         (hold_id,campaign_id,work_item_id,state,reason,checkpoint_id,created_at)
+         SELECT ?1,?2,?3,?4,?5,NULL,?6
+         WHERE NOT EXISTS (
+           SELECT 1 FROM progress_holds
+           WHERE campaign_id=?2 AND work_item_id=?3 AND resolved_at IS NULL
+         )",
+    )
+    .bind(Uuid::new_v4().to_string())
+    .bind(&campaign_id)
+    .bind(&work_item_id)
+    .bind(state)
+    .bind(reason)
+    .bind(&now)
+    .execute(&mut *connection)
+    .await?;
     Ok(())
 }
 
@@ -5908,7 +6129,7 @@ mod tests {
         .unwrap();
 
         sqlx::query::query(
-            "INSERT INTO provider_sessions
+            "INSERT OR IGNORE INTO provider_sessions
              (session_record_id,attempt_id,worker_id,generation,provider,model,provider_mode,state,
               provider_session_id,provider_directory,created_at,updated_at)
              VALUES ('provider-cancel','attempt-cancel','worker-cancel',1,'opencode',
@@ -7523,17 +7744,60 @@ mod tests {
         sequence: u64,
         suite: &str,
         outcome: &str,
+        call_id: &str,
     ) -> ProgressEvidence {
         ProgressEvidence {
             evidence_id: format!("test-{sequence}-{outcome}"),
             campaign_id: campaign_id.into(),
             work_item_id: work_item_id.into(),
             kind: crate::execution_policy::ProgressKind::TestsImproved,
-            artifact_ref: format!("suite:{suite}:{outcome}"),
+            artifact_ref: format!("suite:{suite}|{outcome}|{call_id}"),
             artifact_sha256: sha256_hex(format!("{suite}-{sequence}-{outcome}").as_bytes()),
             baseline_ref: suite.into(),
             observed_sequence: sequence,
         }
+    }
+
+    async fn insert_test_tool_event(db: &Database, attempt_id: &str, call_id: &str, passed: bool) {
+        let session = format!("session-{attempt_id}");
+        let now = Utc::now().to_rfc3339();
+        sqlx::query::query(
+            "INSERT OR IGNORE INTO provider_sessions
+             (session_record_id,attempt_id,worker_id,generation,provider,model,provider_mode,
+              state,created_at,updated_at)
+             VALUES (?1,?2,'worker',1,'opencode','deepseek-v4.1-flash','build','ACTIVE',?3,?3)",
+        )
+        .bind(&session)
+        .bind(attempt_id)
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let (sequence,): (i64,) = sqlx::query_as::query_as(
+            "SELECT COALESCE(MAX(sequence),0)+1 FROM provider_tool_events
+             WHERE session_record_id=?1",
+        )
+        .bind(&session)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO provider_tool_events
+             (session_record_id,sequence,call_id,tool,decision,detail,created_at)
+             VALUES (?1,?2,?3,'run_command','RESULT',?4,?5)",
+        )
+        .bind(&session)
+        .bind(sequence)
+        .bind(call_id)
+        .bind(if passed {
+            "exit=Some(0)"
+        } else {
+            "exit=Some(1)"
+        })
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
     }
 
     fn progress_checkpoint(
@@ -7924,6 +8188,212 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn worker_assignment_seeds_the_durable_progress_sequence() {
+        let (path, db, _) = fixture().await;
+        let (campaign_id, _run_id, _attempt_id) = progress_attempt_campaign(&db).await;
+        let evidence = ProgressEvidence {
+            evidence_id: "sequence-seed".into(),
+            campaign_id: campaign_id.clone(),
+            work_item_id: campaign_id.clone(),
+            kind: crate::execution_policy::ProgressKind::CandidateChanged,
+            artifact_ref: "src/lib.rs".into(),
+            artifact_sha256: sha256_hex(b"candidate"),
+            baseline_ref: sha256_hex(b"empty"),
+            observed_sequence: 12_345,
+        };
+        db.record_progress_checkpoint(
+            &campaign_id,
+            &progress_checkpoint(&campaign_id, 1, std::slice::from_ref(&evidence)),
+            std::slice::from_ref(&evidence),
+            None,
+        )
+        .await
+        .unwrap();
+        let assignment = db
+            .claim_assignment("sequence-worker", Utc::now().timestamp_millis(), 30_000)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            assignment.progress_last_sequence >= 12_345,
+            "assignment must seed Core's last accepted sequence"
+        );
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn checkpoint_fence_is_revalidated_inside_the_write_transaction() {
+        let (path, db, _) = fixture().await;
+        let (campaign_id, _run_id, attempt_id) = progress_attempt_campaign(&db).await;
+        let lease = db
+            .claim_assignment("fence-worker", Utc::now().timestamp_millis(), 30_000)
+            .await
+            .unwrap()
+            .unwrap();
+        let request = ProgressCheckpointRequest {
+            campaign_id: campaign_id.clone(),
+            work_item_id: lease.work_item_id.clone(),
+            checkpoint: progress_checkpoint(&campaign_id, 1, &[]),
+            evidence: Vec::new(),
+            gate: None,
+        };
+        // A generation change after the claim but before persistence must be
+        // observed by the transaction that writes progress.
+        sqlx::query::query("UPDATE worker_leases SET generation=generation+1 WHERE attempt_id=?1")
+            .bind(&attempt_id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let error = db
+            .record_worker_progress_checkpoint(
+                "fence-worker",
+                &attempt_id,
+                lease.lease.generation,
+                &request,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::Forbidden(_)), "{error:?}");
+        assert!(
+            db.campaign_progress_state(&campaign_id)
+                .await
+                .unwrap()
+                .is_none(),
+            "stale checkpoint mutated progress state"
+        );
+        let (evidence_count,): (i64,) =
+            sqlx::query_as::query_as("SELECT COUNT(*) FROM progress_evidence WHERE campaign_id=?1")
+                .bind(&campaign_id)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(evidence_count, 0);
+
+        let current_generation: (i64,) =
+            sqlx::query_as::query_as("SELECT generation FROM worker_leases WHERE attempt_id=?1")
+                .bind(&attempt_id)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        sqlx::query::query("UPDATE attempts SET status='CANCELLED' WHERE id=?1")
+            .bind(&attempt_id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let cancelled = db
+            .record_worker_progress_checkpoint(
+                "fence-worker",
+                &attempt_id,
+                current_generation.0,
+                &request,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(cancelled, Error::Forbidden(_)), "{cancelled:?}");
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn attempt_evidence_ids_and_sequences_are_durable_across_restarts() {
+        let (path, db, _) = fixture().await;
+        let (campaign_id, run_id, _first_attempt) = progress_attempt_campaign(&db).await;
+        let candidate = |sequence: u64, content: &str| ProgressEvidence {
+            evidence_id: format!("attempt-evidence-{sequence}"),
+            campaign_id: campaign_id.clone(),
+            work_item_id: campaign_id.clone(),
+            kind: crate::execution_policy::ProgressKind::CandidateChanged,
+            artifact_ref: "src/lib.rs".into(),
+            artifact_sha256: sha256_hex(content.as_bytes()),
+            baseline_ref: sha256_hex(b"empty"),
+            observed_sequence: sequence,
+        };
+        let first = candidate(1_000, "attempt-1");
+        let first_outcome = db
+            .record_progress_checkpoint(
+                &campaign_id,
+                &progress_checkpoint(&campaign_id, 1, std::slice::from_ref(&first)),
+                std::slice::from_ref(&first),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(first_outcome.rejected.is_empty(), "{first_outcome:?}");
+
+        sqlx::query::query("UPDATE attempts SET status='FAILED' WHERE run_id=?1")
+            .bind(&run_id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        sqlx::query::query("UPDATE runs SET status='QUEUED' WHERE id=?1")
+            .bind(&run_id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        db.create_attempt(&run_id, "evidence-attempt-2")
+            .await
+            .unwrap();
+        let second = candidate(2_000, "attempt-2");
+        let second_outcome = db
+            .record_progress_checkpoint(
+                &campaign_id,
+                &progress_checkpoint(&campaign_id, 2, std::slice::from_ref(&second)),
+                std::slice::from_ref(&second),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(second_outcome.rejected.is_empty(), "{second_outcome:?}");
+
+        // Stagnation is work-item scoped and therefore accumulates across the
+        // two attempts; a lower sequence is rejected, never silently accepted.
+        db.record_progress_checkpoint(
+            &campaign_id,
+            &progress_checkpoint(&campaign_id, 3, &[]),
+            &[],
+            None,
+        )
+        .await
+        .unwrap();
+        let diagnosed = db
+            .record_progress_checkpoint(
+                &campaign_id,
+                &progress_checkpoint(&campaign_id, 4, &[]),
+                &[],
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            diagnosed.decision,
+            crate::execution_policy::ContinuationDecision::Diagnose
+        );
+        assert!(
+            db.progress_hold(&campaign_id, &campaign_id)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        let stale = candidate(500, "stale");
+        let stale_outcome = db
+            .record_progress_checkpoint(
+                &campaign_id,
+                &progress_checkpoint(&campaign_id, 5, std::slice::from_ref(&stale)),
+                std::slice::from_ref(&stale),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(
+            !stale_outcome.rejected.is_empty(),
+            "a lower observed sequence must be rejected"
+        );
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
     async fn two_stagnant_attempts_accumulate_to_one_durable_diagnosis() {
         let (path, db, _) = fixture().await;
         let (campaign_id, run_id, first_attempt) = progress_attempt_campaign(&db).await;
@@ -8043,15 +8513,25 @@ mod tests {
             outcome.decision,
             crate::execution_policy::ContinuationDecision::Complete
         );
-        db.retire_progress_work_item(&campaign_id, &campaign_id, "accepted unit archived")
-            .await
-            .unwrap();
         let state = db
             .campaign_progress_state(&campaign_id)
             .await
             .unwrap()
             .unwrap();
-        assert!(!state.work_items.contains_key(&campaign_id));
+        assert!(
+            !state.work_items.contains_key(&campaign_id),
+            "a gate-accepted completed work item is retired from the active projection"
+        );
+        let retired: Option<(String,)> = sqlx::query_as::query_as(
+            "SELECT work_item_id FROM progress_retired_work_items
+             WHERE campaign_id=?1 AND work_item_id=?2",
+        )
+        .bind(&campaign_id)
+        .bind(&campaign_id)
+        .fetch_optional(&db.pool)
+        .await
+        .unwrap();
+        assert!(retired.is_some());
         let error = db
             .record_progress_checkpoint(
                 &campaign_id,
@@ -8062,6 +8542,443 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(error, Error::Conflict(_)), "{error:?}");
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn forty_character_gate_candidate_accepts_and_retires() {
+        let (path, db, _) = fixture().await;
+        let (campaign_id, run_id, attempt_id) = progress_attempt_campaign(&db).await;
+        let commit = "0123456789abcdef0123456789abcdef01234567";
+        let digest = sha256_hex(commit.as_bytes());
+        sqlx::query::query(
+            "INSERT INTO candidates
+             (id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at)
+             VALUES ('raw-commit-candidate',?1,?2,?3,?2,'worker',?4)",
+        )
+        .bind(&attempt_id)
+        .bind("a".repeat(64))
+        .bind(commit)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO gate_decisions(candidate_id,outcome,reasons_json,decided_at)
+             VALUES ('raw-commit-candidate','ACCEPTED','[]',?1)",
+        )
+        .bind(Utc::now().to_rfc3339())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let evidence = ProgressEvidence {
+            evidence_id: "raw-commit-accepted".into(),
+            campaign_id: campaign_id.clone(),
+            work_item_id: campaign_id.clone(),
+            kind: crate::execution_policy::ProgressKind::UnitAccepted,
+            artifact_ref: "raw-commit-candidate".into(),
+            artifact_sha256: digest.clone(),
+            baseline_ref: "unit".into(),
+            observed_sequence: 1,
+        };
+        let gate = crate::progress::GateRecord {
+            gate_id: "raw-commit-candidate".into(),
+            campaign_id: campaign_id.clone(),
+            work_item_id: campaign_id.clone(),
+            // Core may hand the raw Git commit, not just its SHA-256 digest.
+            candidate_sha256: commit.into(),
+            outcome: "ACCEPTED".into(),
+        };
+
+        let wrong = crate::progress::GateRecord {
+            candidate_sha256: "f".repeat(40),
+            ..gate.clone()
+        };
+        let rejected = db
+            .record_progress_checkpoint(
+                &campaign_id,
+                &progress_checkpoint(&campaign_id, 1, std::slice::from_ref(&evidence)),
+                std::slice::from_ref(&evidence),
+                Some(&wrong),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(rejected, Error::Forbidden(_)), "{rejected:?}");
+
+        let repair_commit = "2".repeat(40);
+        sqlx::query::query("UPDATE runs SET status='QUEUED' WHERE id=?1")
+            .bind(&run_id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let repair_attempt = db.create_attempt(&run_id, "repair-attempt").await.unwrap();
+        sqlx::query::query(
+            "INSERT INTO candidates
+             (id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at)
+             VALUES ('repair-candidate',?1,?2,?3,?2,'worker',?4)",
+        )
+        .bind(&repair_attempt.id)
+        .bind("a".repeat(64))
+        .bind(&repair_commit)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO gate_decisions(candidate_id,outcome,reasons_json,decided_at)
+             VALUES ('repair-candidate','REPAIR_REQUIRED','[]',?1)",
+        )
+        .bind(Utc::now().to_rfc3339())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let repair_gate = crate::progress::GateRecord {
+            gate_id: "repair-candidate".into(),
+            campaign_id: campaign_id.clone(),
+            work_item_id: campaign_id.clone(),
+            candidate_sha256: repair_commit,
+            outcome: "ACCEPTED".into(),
+        };
+        let rejected = db
+            .record_progress_checkpoint(
+                &campaign_id,
+                &progress_checkpoint(&campaign_id, 2, std::slice::from_ref(&evidence)),
+                std::slice::from_ref(&evidence),
+                Some(&repair_gate),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(rejected, Error::Forbidden(_)), "{rejected:?}");
+
+        let outcome = db
+            .record_progress_checkpoint(
+                &campaign_id,
+                &progress_checkpoint(&campaign_id, 3, std::slice::from_ref(&evidence)),
+                std::slice::from_ref(&evidence),
+                Some(&gate),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome.decision,
+            crate::execution_policy::ContinuationDecision::Complete
+        );
+        assert_eq!(
+            outcome.classification,
+            crate::progress::CheckpointClassification::Verified
+        );
+        let state = db
+            .campaign_progress_state(&campaign_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            !state.work_items.contains_key(&campaign_id),
+            "the accepted work item must be retired from the active projection"
+        );
+        let retired: (String,) = sqlx::query_as::query_as(
+            "SELECT work_item_id FROM progress_retired_work_items
+             WHERE campaign_id=?1",
+        )
+        .bind(&campaign_id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(retired.0, campaign_id);
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn accepted_work_item_is_retired_so_item_513_is_admitted() {
+        let (path, db, _) = fixture().await;
+        let (campaign_id, _run_id, _attempt_id) = progress_attempt_campaign(&db).await;
+        db.record_progress_checkpoint(
+            &campaign_id,
+            &progress_checkpoint(&campaign_id, 1, &[]),
+            &[],
+            None,
+        )
+        .await
+        .unwrap();
+        let (state_json,): (String,) = sqlx::query_as::query_as(
+            "SELECT state_json FROM campaign_progress_state WHERE campaign_id=?1",
+        )
+        .bind(&campaign_id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        let mut state: ProgressSupervisorState = serde_json::from_str(&state_json).unwrap();
+        state.work_items.clear();
+        for index in 0..crate::progress::MAX_SUPERVISED_WORK_ITEMS {
+            let id = format!("active-unit-{index}");
+            let mut item = crate::progress::WorkItemProgressState::new(&id);
+            if index == 0 {
+                item.accepted_units.insert("c".repeat(64));
+            }
+            state.work_items.insert(id, item);
+        }
+        let seeded = serde_json::to_string(&state).unwrap();
+        let seeded_sha256 = sha256_hex(seeded.as_bytes());
+        sqlx::query::query(
+            "UPDATE campaign_progress_state
+             SET state_json=?1,state_sha256=?2,updated_at=?3 WHERE campaign_id=?4",
+        )
+        .bind(&seeded)
+        .bind(&seeded_sha256)
+        .bind(Utc::now().to_rfc3339())
+        .bind(&campaign_id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+        db.record_progress_checkpoint(
+            &campaign_id,
+            &progress_checkpoint(&campaign_id, 2, &[]),
+            &[],
+            None,
+        )
+        .await
+        .unwrap();
+
+        let state = db
+            .campaign_progress_state(&campaign_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            state.work_items.len(),
+            crate::progress::MAX_SUPERVISED_WORK_ITEMS
+        );
+        assert!(state.work_items.contains_key(&campaign_id));
+        let retired: (String,) = sqlx::query_as::query_as(
+            "SELECT work_item_id FROM progress_retired_work_items WHERE campaign_id=?1",
+        )
+        .bind(&campaign_id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(retired.0, "active-unit-0");
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn findings_and_repair_require_real_core_transitions() {
+        let (path, db, _) = fixture().await;
+        let (campaign_id, run_id, first_attempt) = progress_attempt_campaign(&db).await;
+        let open_commit = "1".repeat(40);
+        let resolved_commit = "2".repeat(40);
+        let now = Utc::now().to_rfc3339();
+        sqlx::query::query(
+            "INSERT INTO candidates
+             (id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at)
+             VALUES ('open-candidate',?1,?2,?3,?2,'worker',?4)",
+        )
+        .bind(&first_attempt)
+        .bind("a".repeat(64))
+        .bind(&open_commit)
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query("UPDATE attempts SET status='FAILED' WHERE run_id=?1")
+            .bind(&run_id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        sqlx::query::query("UPDATE runs SET status='QUEUED' WHERE id=?1")
+            .bind(&run_id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let second_attempt = db
+            .create_attempt(&run_id, "transition-attempt-2")
+            .await
+            .unwrap();
+        sqlx::query::query(
+            "INSERT INTO candidates
+             (id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at)
+             VALUES ('resolved-candidate',?1,?2,?3,?2,'worker',?4)",
+        )
+        .bind(&second_attempt.id)
+        .bind("a".repeat(64))
+        .bind(&resolved_commit)
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO quality_receipts
+             (receipt_id,candidate_id,role,principal_id,action_spec_sha256,commit_sha,
+              tree_sha,result,evidence,received_at,findings_json)
+             VALUES ('receipt-open','open-candidate','reviewer','reviewer-1',?1,?2,?1,
+                     'FAIL','EXECUTED','2026-10-28T00:00:00Z',?3)",
+        )
+        .bind("a".repeat(64))
+        .bind(&open_commit)
+        .bind(serde_json::json!([{"id":"finding-1","severity":"blocking","category":"testing","message":"broken","evidenceRefs":["src/lib.rs"]}]).to_string())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let findings = ProgressEvidence {
+            evidence_id: "finding-evidence".into(),
+            campaign_id: campaign_id.clone(),
+            work_item_id: campaign_id.clone(),
+            kind: crate::execution_policy::ProgressKind::FindingsResolved,
+            artifact_ref: "finding-1".into(),
+            artifact_sha256: sha256_hex(resolved_commit.as_bytes()),
+            baseline_ref: open_commit.clone(),
+            observed_sequence: 1,
+        };
+        // Existing open finding with no later PASS is not resolution.
+        let unresolved = db
+            .record_progress_checkpoint(
+                &campaign_id,
+                &progress_checkpoint(&campaign_id, 1, std::slice::from_ref(&findings)),
+                std::slice::from_ref(&findings),
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(unresolved, Error::Forbidden(_)), "{unresolved:?}");
+
+        sqlx::query::query(
+            "INSERT INTO quality_receipts
+             (receipt_id,candidate_id,role,principal_id,action_spec_sha256,commit_sha,
+              tree_sha,result,evidence,received_at,findings_json)
+             VALUES ('receipt-resolved','resolved-candidate','reviewer','reviewer-1',?1,?2,?1,
+                     'PASS','EXECUTED','2026-10-28T01:00:00Z','[]')",
+        )
+        .bind("a".repeat(64))
+        .bind(&resolved_commit)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let resolved = db
+            .record_progress_checkpoint(
+                &campaign_id,
+                &progress_checkpoint(&campaign_id, 2, std::slice::from_ref(&findings)),
+                std::slice::from_ref(&findings),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resolved.classification,
+            crate::progress::CheckpointClassification::Verified,
+            "{resolved:?}"
+        );
+
+        sqlx::query::query(
+            "INSERT INTO gate_decisions(candidate_id,outcome,reasons_json,decided_at)
+             VALUES ('open-candidate','REPAIR_REQUIRED','[]','2026-10-28T00:00:00Z')",
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let repair = ProgressEvidence {
+            evidence_id: "repair-evidence".into(),
+            campaign_id: campaign_id.clone(),
+            work_item_id: campaign_id.clone(),
+            kind: crate::execution_policy::ProgressKind::RepairValidated,
+            artifact_ref: "open-candidate".into(),
+            artifact_sha256: sha256_hex(open_commit.as_bytes()),
+            baseline_ref: "open-candidate".into(),
+            observed_sequence: 3,
+        };
+        let repair_required_only = db
+            .record_progress_checkpoint(
+                &campaign_id,
+                &progress_checkpoint(&campaign_id, 3, std::slice::from_ref(&repair)),
+                std::slice::from_ref(&repair),
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(repair_required_only, Error::Forbidden(_)),
+            "{repair_required_only:?}"
+        );
+
+        sqlx::query::query(
+            "INSERT INTO gate_decisions(candidate_id,outcome,reasons_json,decided_at)
+             VALUES ('resolved-candidate','ACCEPTED','[]','2026-10-28T01:00:00Z')",
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let validated = ProgressEvidence {
+            evidence_id: "repair-validated".into(),
+            campaign_id: campaign_id.clone(),
+            work_item_id: campaign_id.clone(),
+            kind: crate::execution_policy::ProgressKind::RepairValidated,
+            artifact_ref: "resolved-candidate".into(),
+            artifact_sha256: sha256_hex(resolved_commit.as_bytes()),
+            baseline_ref: "open-candidate".into(),
+            observed_sequence: 4,
+        };
+        let accepted = db
+            .record_progress_checkpoint(
+                &campaign_id,
+                &progress_checkpoint(&campaign_id, 4, std::slice::from_ref(&validated)),
+                std::slice::from_ref(&validated),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            accepted.classification,
+            crate::progress::CheckpointClassification::Verified,
+            "{accepted:?}"
+        );
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn test_progress_requires_a_matching_core_recorded_check_result() {
+        let (path, db, _) = fixture().await;
+        let (campaign_id, _run_id, attempt_id) = progress_attempt_campaign(&db).await;
+        let missing = test_evidence(
+            &campaign_id,
+            &campaign_id,
+            1,
+            "suite-a",
+            "PASS",
+            "invented-call",
+        );
+        let error = db
+            .record_progress_checkpoint(
+                &campaign_id,
+                &progress_checkpoint(&campaign_id, 1, std::slice::from_ref(&missing)),
+                std::slice::from_ref(&missing),
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::Forbidden(_)), "{error:?}");
+
+        insert_test_tool_event(&db, &attempt_id, "failed-check", false).await;
+        let wrong_outcome = test_evidence(
+            &campaign_id,
+            &campaign_id,
+            2,
+            "suite-a",
+            "PASS",
+            "failed-check",
+        );
+        let error = db
+            .record_progress_checkpoint(
+                &campaign_id,
+                &progress_checkpoint(&campaign_id, 2, std::slice::from_ref(&wrong_outcome)),
+                std::slice::from_ref(&wrong_outcome),
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::Forbidden(_)), "{error:?}");
         db.close().await;
         let _ = std::fs::remove_file(path);
     }
@@ -8115,18 +9032,29 @@ mod tests {
     #[tokio::test]
     async fn verified_progress_continues_past_former_deadline_and_productivity_caps() {
         let (path, db, _) = fixture().await;
-        let campaign_id = progress_campaign(&db).await;
+        let (campaign_id, _run_id, attempt_id) = progress_attempt_campaign(&db).await;
         for zone in 0..5u64 {
             let sequence = zone * 2 + 1;
-            let failed =
-                test_evidence(&campaign_id, &campaign_id, sequence, "suite-stable", "FAIL");
+            let fail_call = format!("fail-{zone}");
+            let pass_call = format!("pass-{zone}");
+            let failed = test_evidence(
+                &campaign_id,
+                &campaign_id,
+                sequence,
+                "suite-stable",
+                "FAIL",
+                &fail_call,
+            );
             let passed = test_evidence(
                 &campaign_id,
                 &campaign_id,
                 sequence + 1,
                 "suite-stable",
                 "PASS",
+                &pass_call,
             );
+            insert_test_tool_event(&db, &attempt_id, &fail_call, false).await;
+            insert_test_tool_event(&db, &attempt_id, &pass_call, true).await;
             let evidence = [failed, passed];
             let outcome = db
                 .record_progress_checkpoint(

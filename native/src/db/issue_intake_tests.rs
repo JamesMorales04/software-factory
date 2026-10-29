@@ -710,6 +710,90 @@ async fn count_rows(db: &Database, sql: &str) -> i64 {
 }
 
 #[tokio::test]
+async fn v2_policy_write_omits_obsolete_campaign_inputs() {
+    let fixture = fixture("project", "widgets", 42, false).await;
+    let legacy = policy_input(&fixture);
+    let policy = fixture
+        .db
+        .create_issue_intake_policy_v2(NewIssueIntakePolicyV2 {
+            project_id: legacy.project_id,
+            repository_full_name: legacy.repository_full_name,
+            repository_github_id: legacy.repository_github_id,
+            required_labels: legacy.required_labels,
+            excluded_labels: legacy.excluded_labels,
+            author_ids: legacy.author_ids,
+            author_associations: legacy.author_associations,
+            profile_id: legacy.profile_id,
+            profile_revision_id: legacy.profile_revision_id,
+            profile_revision: legacy.profile_revision,
+            profile_hash: legacy.profile_hash,
+            project_config_hash: legacy.project_config_hash,
+            allowed_paths: legacy.allowed_paths,
+            capabilities: legacy.capabilities,
+            max_issues: legacy.max_issues,
+            max_concurrent: legacy.max_concurrent,
+            max_cost_micros_per_issue: legacy.max_cost_micros_per_issue,
+            max_total_cost_micros: legacy.max_total_cost_micros,
+            expires_at: legacy.expires_at,
+            acknowledge: true,
+            reason: legacy.reason,
+            idempotency_key: "v2-policy-key",
+            principal_id: legacy.principal_id,
+            principal_label: None,
+        })
+        .await
+        .unwrap()
+        .policy;
+    assert_eq!(policy.schema_version, 2);
+    // Frozen 0033 storage placeholders; never Campaign authority.
+    assert_eq!(policy.max_attempts, 1);
+    assert_eq!(policy.max_sessions, 1);
+    assert_eq!(policy.max_turns, 1);
+    assert_eq!(policy.max_wall_clock_secs, 1);
+
+    let mut issue = issue(5, 55, 7, "MEMBER");
+    issue.body = "Implement the bounded change.".into();
+    insert_issue(&fixture.db, "project", "acme/widgets", 42, &issue).await;
+    let batch = create_batch(&fixture, &policy, &issue, "batch-v2").await;
+    let delegation = fixture
+        .db
+        .standing_delegation_v2(&batch.delegation_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        delegation
+            .progress
+            .diagnose_after_stagnant_checkpoints
+            .get(),
+        2
+    );
+    assert_eq!(delegation.operations.max_generation_tokens.get(), 8_192);
+    assert_eq!(delegation.max_parallel, 1);
+
+    // A V2 row cannot smuggle a real legacy cap past the storage trigger.
+    let rejected = sqlx::query::query(
+        "INSERT INTO issue_intake_policy_revisions
+         (id,project_id,revision,enabled,repository_full_name,repository_github_id,
+          connection_revision,required_labels_json,excluded_labels_json,author_ids_json,
+          author_associations_json,profile_id,profile_revision_id,profile_revision,
+          profile_hash,project_config_hash,allowed_paths_json,capabilities_json,
+          max_risk_class,max_issues,max_concurrent,max_cost_micros_per_issue,
+          max_total_cost_micros,max_attempts,max_sessions,max_turns,max_wall_clock_secs,
+          expires_at,acknowledged,principal_id,principal_label,reason,idempotency_key,
+          content_hash,created_at,schema_version)
+         VALUES ('bad-v2','project',2,1,'acme/widgets',42,1,'[]','[]','[]','[]',
+                 'profile','revision',1,'a','b','[\"src\"]','[]','R0',5,1,100,500,
+                 2,1,1,1,'2099-01-01T00:00:00Z',1,'operator',NULL,'why',
+                 'bad-v2-key','d','2026-10-28T00:00:00Z',2)",
+    )
+    .execute(&fixture.db.pool)
+    .await;
+    assert!(rejected.is_err(), "V2 policy retained a legacy cap");
+    fixture.db.close().await;
+    let _ = std::fs::remove_file(fixture.path);
+}
+
+#[tokio::test]
 async fn reconcile_creates_review_plan_proposal_without_campaign_or_provider_call() {
     let fixture = fixture("project", "widgets", 42, false).await;
     let policy = create_policy(&fixture).await;

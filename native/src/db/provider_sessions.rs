@@ -388,6 +388,14 @@ impl Database {
                 requirement,
                 crate::inference_ledger::CampaignInferenceRequirement::EnvelopeBound { .. }
             ) {
+                super::lead::record_blocking_progress_hold_in_tx(
+                    &mut transaction,
+                    &attempt_id,
+                    "BLOCKED",
+                    "V2 provider turn authorization requires a bound inference envelope",
+                )
+                .await?;
+                transaction.commit().await?;
                 return Err(Error::Unavailable(
                     "V2 provider turn authorization requires a bound inference envelope".into(),
                 ));
@@ -1904,6 +1912,24 @@ mod tests {
         assert!(
             matches!(error, Error::Unavailable(_)),
             "a V2 turn without a bound envelope must fail closed: {error:?}"
+        );
+        assert!(
+            db.progress_hold("campaign", "campaign")
+                .await
+                .unwrap()
+                .is_some(),
+            "a V2 ledger failure must create a durable blocking hold"
+        );
+        sqlx::query::query("UPDATE attempts SET status='QUEUED' WHERE id='attempt'")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        assert!(
+            db.claim_assignment("worker-2", Utc::now().timestamp_millis(), 30_000)
+                .await
+                .unwrap()
+                .is_none(),
+            "a V2 ledger failure must prevent repeated dispatch"
         );
         db.close().await;
     }

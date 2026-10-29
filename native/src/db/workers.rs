@@ -263,6 +263,26 @@ impl Database {
         let action_id: String = row.try_get("action_id")?;
         let campaign_id: String = row.try_get("campaign_id")?;
         let work_item_id: String = row.try_get("work_item_id")?;
+        let progress_last_sequence: u64 = {
+            let state_json: Option<(String,)> = sqlx::query_as::query_as(
+                "SELECT state_json FROM campaign_progress_state WHERE campaign_id=?1",
+            )
+            .bind(&campaign_id)
+            .fetch_optional(&self.pool)
+            .await?;
+            state_json
+                .and_then(|(json,)| {
+                    serde_json::from_str::<crate::progress::ProgressSupervisorState>(&json).ok()
+                })
+                .and_then(|state| {
+                    state
+                        .work_items
+                        .values()
+                        .map(|item| item.last_sequence)
+                        .max()
+                })
+                .unwrap_or(0)
+        };
         let repository: String = row.try_get("repository")?;
         let spec_json: String = row.try_get("spec_json")?;
         let spec_sha256: String = row.try_get("spec_sha256")?;
@@ -343,6 +363,7 @@ impl Database {
             lease: lease.clone(),
             campaign_id,
             work_item_id,
+            progress_last_sequence,
             action_id,
             action_spec: spec,
             action_spec_sha256: spec_sha256,
