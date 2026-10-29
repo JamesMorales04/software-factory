@@ -92,11 +92,11 @@
   --office-line-soft: rgb(173 201 228 / 0.16);
   --office-text: #e8eff8;
   --office-text-muted: #9db1c8;
-  --office-floor: #3c2e23;
-  --office-floor-deep: #241a14;
-  --office-floor-seam: #6a523b;
+  --office-floor: #5a402c;
+  --office-floor-deep: #2d2017;
+  --office-floor-seam: #8a6a4b;
   --office-floor-plank: rgb(255 221 176 / 0.08);
-  --office-wall: #0d1b2b;
+  --office-wall: #102134;
   --office-wall-edge: #29445e;
   --office-wall-panel: #122338;
   --office-wall-panel-edge: #1d364f;
@@ -505,7 +505,7 @@
 }
 
 .office-room-rug {
-  fill: color-mix(in srgb, var(--office-zone-tone) 14%, #171c22);
+  fill: color-mix(in srgb, var(--office-zone-tone) 10%, #38291d);
   stroke: color-mix(in srgb, var(--office-zone-tone) 34%, transparent);
   stroke-width: 1;
 }
@@ -548,14 +548,14 @@
 
 .office-room-floor-shine {
   fill: var(--office-wood-light);
-  opacity: 0.05;
+  opacity: 0.08;
   pointer-events: none;
 }
 
 .office-room-light {
   pointer-events: none;
   mix-blend-mode: screen;
-  opacity: 0.9;
+  opacity: 1;
 }
 
 .office-room-wall-seam {
