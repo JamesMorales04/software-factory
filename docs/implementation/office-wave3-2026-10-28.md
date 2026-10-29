@@ -251,6 +251,52 @@ Director-owned `bin/core.rs` envelope/authorization wiring.
 **Not accepted, not merged to `main`.** The ordered `0034→0035` populated
 upgrade, Core binary tests, Compose E2E and live-provider proof remain gates.
 
+## 11. Development candidate — 2026-10-29
+
+**Code candidate:** `66a71bf99453ea507514d12cae63bdbe59758b96` on
+`campaign/office-ux-wave3-20261028`. `main` is unchanged.
+
+### Verified gates
+
+| Gate | Result |
+|---|---|
+| Rust library | **487 passed, 0 failed, 2 ignored** |
+| Core binary | **31 passed** |
+| Fixture dispatch E2E | **12 passed** |
+| Office | typecheck, lint, **239 tests**, build pass |
+| Clippy all targets | clean |
+| Compose E2E | run **40825390549 SUCCESS** on `66a71bf` (intake → assessment → approval → envelope → Worker → verifier/reviewer → ACCEPTED gate → restart) |
+| Migration chain | `0001…0040` applies; FK/integrity checks clean; populated 0033→0040 fixture passes |
+| Provider sandbox | 2 host-environment failures; both reproduce on the clean base and require the containerized OpenCode runtime |
+
+### Independent reviews on the exact candidate
+
+- **Sol:** APPROVE WITH CONDITIONS.
+- **Luna:** APPROVE WITH CONDITIONS.
+- Prior #72/#73 HIGHs are closed: assessment charged to the request envelope;
+  receipt-bound test evidence; binding quarantine; durable dispatch intent;
+  crash/restart ambiguity; per-egress holds; fence/ownership; no artificial
+  productivity cap found.
+
+### Conditions carried forward
+
+1. Add explicit Home tests for zero, negative, unsafe/over-limit and
+   policy-retry edited amounts (code inspection currently covers them).
+2. Live paid inference remains **NOT_RUN_PENDING_OWNER_SPEND_AUTHORIZATION**.
+3. Real-browser Office journey, OS-process-kill injection, upstream pricing
+   correctness and independent verifier/Gate acceptance remain **NOT_VERIFIED**.
+4. Access PRs #36–#38 remain draft and unmerged; promotion requires owner
+   authorization and the normal protected review path.
+5. `main` is not protected; no merge is authorized by this ledger.
+
+### Draft PRs
+
+- #74 provider — draft, Luna approved with conditions resolved.
+- #75 shared ledger — draft; repaired code is in the integrated candidate.
+- #76 isometric Office — draft; Luna approved with conditions.
+
+No duplicate issues were opened. No `main` merge was performed.
+
 ## 8. Change log
 
 - 2026-10-28: Wave 3 opened at `4e0a43e`. Model routes verified
