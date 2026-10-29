@@ -14,12 +14,14 @@
 #                                   dry-run env contract)
 #   assess                          phase 1: real MODEL assessment
 #   execute --plan-hash SHA256      phase 2: approve and execute the exact plan
+#   resume                          resume a quota-paused run after verified recovery
 #   status                          stack and provider readiness (no inference)
 #   down                            remove the disposable stack and volumes
 #
-# Every live phase is gated by scripts/real-provider-uat.mjs. In particular,
-# FACTORY_REAL_PROVIDER_UAT=1, the authorization id, accounting mode, Extra
-# Usage state and spend cap must all be supplied by the Owner.
+# Every live phase is gated by scripts/real-provider-uat.mjs. The current
+# funding policy is subscription-only: there is no positive USD authorization,
+# no spend cap and no paid-mode fallback. The Owner must provide fresh Console
+# evidence for entitlement, Extra Usage OFF and quota before any request.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -29,6 +31,7 @@ BASE="http://127.0.0.1:${PORT}"
 PROVIDER="${PODMAN_COMPOSE_PROVIDER:-/usr/bin/podman-compose}"
 RUN_ROOT="${FACTORY_REAL_PROVIDER_RUN_ROOT:-/tmp/opencode/real-provider-uat-${PROJECT}}"
 EVIDENCE_DIR="${FACTORY_REAL_PROVIDER_EVIDENCE_DIR:-$RUN_ROOT/evidence}"
+SUBSCRIPTION_EVIDENCE="${FACTORY_REAL_PROVIDER_SUBSCRIPTION_EVIDENCE_FILE:-$RUN_ROOT/subscription-evidence.json}"
 GIT_DIR="$RUN_ROOT/git"
 COMPOSE=(podman compose -p "$PROJECT" -f "$ROOT/compose.yaml" -f "$ROOT/compose.real-provider-uat.yaml")
 
@@ -36,21 +39,26 @@ log() { printf '%s\n' "$*" >&2; }
 
 usage() {
   cat >&2 <<'USAGE'
-usage: real-provider-uat.sh <prepare|preflight|assess|execute|status|down>
+usage: real-provider-uat.sh <prepare|preflight|assess|execute|resume|status|down>
 
   prepare                      start the disposable stack and print enrollment instructions
   preflight                    read-only readiness check (FACTORY_REAL_PROVIDER_DRY_RUN=1)
   assess                       create Project/Request and run the real MODEL assessment
   execute --plan-hash SHA256   approve and execute one exact frozen plan
+  resume                       resume a PAUSED / SUBSCRIPTION_QUOTA_EXHAUSTED run
   status                       show stack/provider readiness without inference
   down                         remove the disposable Compose project and volumes
 
 Live phases additionally require:
   FACTORY_REAL_PROVIDER_UAT=1
+  FACTORY_REAL_PROVIDER_OWNER_GO_AHEAD=1
   FACTORY_REAL_PROVIDER_AUTHORIZATION=<owner authorization id>
-  FACTORY_REAL_PROVIDER_ACCOUNTING=GO_SUBSCRIPTION_INCLUDED|GO_EXTRA_USAGE_BILLABLE|PAY_AS_YOU_GO_API
-  FACTORY_REAL_PROVIDER_EXTRA_USAGE=DISABLED|ENABLED_WITHIN_CAP|NOT_APPLICABLE
-  FACTORY_REAL_PROVIDER_SPEND_CAP_USD=<positive amount, at most 5.00>
+  FACTORY_REAL_PROVIDER_ACCOUNTING=GO_SUBSCRIPTION_INCLUDED
+  FACTORY_REAL_PROVIDER_EXTRA_USAGE=DISABLED
+  FACTORY_REAL_PROVIDER_SUBSCRIPTION_EVIDENCE_FILE=<0600 Owner Console evidence JSON>
+
+No spend cap or positive USD authorization is accepted. Billable / pay-as-you-go
+modes are refused with PAID_MODE_DISABLED before any request.
 USAGE
 }
 
@@ -218,9 +226,11 @@ prepare() {
   log "   select 'Default route for Core model calls'."
   log "2. Click 'Test connection'. It must show AVAILABLE with deepseek-v4.1-flash."
   log "3. Settings -> Runtime: enable semantic review."
-  log "4. Confirm the accounting facts and authorization in the runbook."
+  log "4. Confirm Extra Usage is OFF, entitlement and quota in the Console,"
+  log "   then create the 0600 subscription evidence file described in the runbook."
   log ""
   log "Evidence directory: $EVIDENCE_DIR"
+  log "Subscription verification file: $SUBSCRIPTION_EVIDENCE"
   log "No paid inference was requested by prepare."
 }
 
@@ -231,14 +241,30 @@ run_driver() {
       log "FACTORY_REAL_PROVIDER_UAT=1 is required for a live phase; no request was made"
       exit 3
     fi
+    if [[ "${FACTORY_REAL_PROVIDER_OWNER_GO_AHEAD:-}" != "1" ]]; then
+      log "a separate explicit Owner go-ahead is required; set FACTORY_REAL_PROVIDER_OWNER_GO_AHEAD=1; no request was made"
+      exit 3
+    fi
     if [[ -z "${FACTORY_REAL_PROVIDER_AUTHORIZATION:-}" ]]; then
       log "FACTORY_REAL_PROVIDER_AUTHORIZATION is required; no request was made"
       exit 3
     fi
     if [[ -z "${FACTORY_REAL_PROVIDER_ACCOUNTING:-}" ||
           -z "${FACTORY_REAL_PROVIDER_EXTRA_USAGE:-}" ||
-          -z "${FACTORY_REAL_PROVIDER_SPEND_CAP_USD:-}" ]]; then
-      log "the accounting mode, Extra Usage state and spend cap are required; no request was made"
+          -z "${SUBSCRIPTION_EVIDENCE:-}" ]]; then
+      log "the subscription accounting mode, Extra Usage state and Owner Console evidence file are required; no request was made"
+      exit 3
+    fi
+    if [[ "${FACTORY_REAL_PROVIDER_ACCOUNTING}" != "GO_SUBSCRIPTION_INCLUDED" ]]; then
+      log "PAID_MODE_DISABLED: only GO_SUBSCRIPTION_INCLUDED is permitted; no request was made"
+      exit 3
+    fi
+    if [[ "${FACTORY_REAL_PROVIDER_EXTRA_USAGE}" != "DISABLED" ]]; then
+      log "EXTRA_USAGE_NOT_DISABLED: Extra Usage must be DISABLED; no request was made"
+      exit 3
+    fi
+    if [[ -n "${FACTORY_REAL_PROVIDER_SPEND_CAP_USD:-}" ]]; then
+      log "a spend cap is not accepted in subscription-only mode; no request was made"
       exit 3
     fi
   fi
@@ -250,6 +276,7 @@ run_driver() {
   export FACTORY_REAL_PROVIDER_REPOSITORY="${FACTORY_REAL_PROVIDER_REPOSITORY:-http://git-fixture:8080/repo.git}"
   export FACTORY_REAL_PROVIDER_COMPOSE_PROJECT="$PROJECT"
   export FACTORY_REAL_PROVIDER_COMPOSE_FILES="compose.yaml compose.real-provider-uat.yaml"
+  export FACTORY_REAL_PROVIDER_SUBSCRIPTION_EVIDENCE_FILE="$SUBSCRIPTION_EVIDENCE"
   if [[ -z "${FACTORY_REAL_PROVIDER_CANDIDATE_SHA:-}" ]]; then
     FACTORY_REAL_PROVIDER_CANDIDATE_SHA="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || true)"
     export FACTORY_REAL_PROVIDER_CANDIDATE_SHA
@@ -315,6 +342,7 @@ case "$command_name" in
   preflight) run_driver preflight "$@" ;;
   assess) run_driver assess "$@" ;;
   execute) run_driver execute "$@" ;;
+  resume) run_driver resume "$@" ;;
   status) status ;;
   down) down ;;
   *)

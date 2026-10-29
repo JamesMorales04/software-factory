@@ -319,5 +319,5 @@ live report.
 
 The current container-native bounded OpenCode Go run is **prepared but not run**
 in the [real-provider UAT runbook](real-provider-uat-runbook-2026-10-29.md),
-including its accounting findings and Owner spend decision.
+including its subscription-only accounting findings and separate Owner go-ahead.
 

@@ -1,15 +1,18 @@
-# Real-provider acceptance runbook — OpenCode Go
+# Real-provider acceptance runbook — subscription-only OpenCode Go
 
 **Date prepared:** 2026-10-29
-**Prepared candidate:** `2907b17` plus this preparation commit
-**Status:** **PREPARED — NOT RUN.** No paid inference has been performed for this
-runbook. `#60` live-provider acceptance remains `NOT_TESTED` until the Product
-Owner authorizes the envelope in §4 and the commands in §6 are executed.
+**Policy baseline:** Product Owner funding policy — **subscription-included only, no additional charges**
+**Prepared candidate:** `3290799` plus this subscription-policy amendment
+**Status:** **PREPARED — NOT RUN; LIVE EXECUTION BLOCKED.** No provider inference
+has been performed for this runbook. `#60` live-provider acceptance remains
+`NOT_TESTED`. The current Core lacks subscription admission; Owner Console
+verification and the separate go-ahead cannot authorize a run until Core
+subscription admission is implemented and the read-only preflight passes.
 
-This runbook prepares one small, bounded real-model Factory Campaign. It does not
-authorize merge, deployment, a GitHub pull request, ISOLATED execution, SEC-01
-certification or any security claim. It is UAT author-run evidence, not
-independent acceptance.
+This runbook prepares one small, bounded real-model Factory Campaign under the
+current subscription-only policy. It does not authorize merge, deployment, a
+GitHub pull request, ISOLATED execution, SEC-01 certification or any security
+claim. It is UAT author-run evidence, not independent acceptance.
 
 ## 1. What the run exercises
 
@@ -18,12 +21,12 @@ The run drives the real Compose product path through one disposable Project:
 ```text
 Project import
   -> operator Request (REVIEW_PLAN)
-  -> MODEL Lead assessment (real OpenCode Go call through Core)
+  -> MODEL Lead assessment (real subscription-included OpenCode Go call)
   -> Owner review of the exact frozen plan hash
   -> plan approval and Campaign start
-  -> TRUSTED_LOCAL_PROVIDER Implementer session (real OpenCode Go call)
+  -> TRUSTED_LOCAL_PROVIDER Implementer session (subscription-included)
   -> independent verifier (rootless nested Podman, frozen checks)
-  -> independent semantic Reviewer (real OpenCode Go call through Core)
+  -> independent semantic Reviewer (subscription-included)
   -> deterministic Quality Gate
   -> candidate diff + PR-preparation inspection (no GitHub write)
 ```
@@ -34,22 +37,37 @@ fixture. The deterministic fixture-provider acceptance is already recorded in
 [`compose-browser-uat-2026-10-29`](../evidence/compose-browser-uat-2026-10-29/README.md)
 and is separate evidence.
 
-## 2. Accounting investigation
+## 2. Funding policy and accounting
 
-### 2.1 Authoritative sources
+### 2.1 Authoritative policy
+
+Current Product Owner policy permits **only** `GO_SUBSCRIPTION_INCLUDED` usage.
+The following are refused before any request:
+
+- `GO_EXTRA_USAGE_BILLABLE`;
+- `PAY_AS_YOU_GO_API`;
+- any other paid/balance route;
+- any required or supplied positive USD spend cap.
+
+The harness reports `PAID_MODE_DISABLED` for paid modes and
+`SPEND_CAP_NOT_APPLICABLE` for a supplied cap. The #73 monetary ledger and its
+security remain intact for a future explicitly authorized billable path, but no
+billable path is enabled here.
+
+### 2.2 Authoritative accounting sources
 
 | Source | Observation (2026-10-29) |
 |---|---|
 | `opencode --version` | `2.2.0` |
-| `opencode models` | `opencode-go/deepseek-v4.1-flash` is listed; 30 `opencode-go/*` routes are available |
+| `opencode models` | `opencode-go/deepseek-v4.1-flash` is listed; 30 `opencode-go/*` routes |
 | `opencode auth list` | `OpenCode Go  API key  stored` (presence only; the value was never read) |
 | `~/.cache/opencode/models.json` | provider `opencode-go`, API `https://opencode.ai/inference/go/openai/v1`, doc `https://opencode.ai/v2/docs/console/go/`; `deepseek-v4.1-flash` list rates: input `$0.15/M`, output `$0.60/M`, cached read `$0.003/M` |
-| `opencode.db` read-only message projection | recent `opencode-go/deepseek-v4.1-flash` messages carry a **nonzero** local `cost` (for example `0.00267897` for 2,591 input / 265 output / 349 reasoning / 640,640 cached-read tokens). The arithmetic matches the list rates, so this is OpenCode's local message-cost estimate, not the provider's `usage.cost` and not a balance charge |
-| `opencode stats --days 1 --cost --json` | today's `opencode-go/deepseek-v4.1-flash` model row reports `cost: 0` while the same messages carry nonzero message cost. This is a local statistics view, not the Console account ledger; it does not expose the remaining Go allowance |
-| [OpenCode Go documentation](https://opencode.ai/v2/docs/console/go/) | Go `$10/month`, Go Plus `$40/month`, Go Teams `$20/member/month`; usage limits are monthly **dollar amounts**; DeepSeek V4.1 Flash monthly limit is `$80` (Go), `$160` (Go Plus), `$85` (Go Teams); 5-hour = 20%, weekly = 50%, monthly = 100% of the limit; peak hours are 01:00–04:00 and 06:00–10:00 UTC Monday–Friday (2× list rates); Off-Peak otherwise |
-| [OpenCode Go documentation — usage beyond limits](https://opencode.ai/v2/docs/console/go/#usage-beyond-limits) | **Extra Usage** is an opt-in fallback to the Console pay-as-you-go balance after the Go allowance is exhausted. **Go Teams starts with Extra Usage on.** |
-| [OpenCode inference API cost](https://opencode.ai/v2/docs/console/api/inference#cost) | `usage.cost` is USD **charged to the balance**; `0` for free models and for Go usage **within its limits**. `opencode.billing_source` is `free`, `balance`, `go`, `go-plus` or `byok`; `opencode.list_cost` is the list price; `opencode.allowance` is how much the request counted toward the Go monthly limit |
-| [OpenCode inference API authentication](https://opencode.ai/v2/docs/console/api/inference#authentication) | Free-tier chat models are only usable from inside OpenCode; other clients receive HTTP `403`. Go models are explicitly usable from other clients. |
+| `opencode.db` read-only message projection | recent `opencode-go/deepseek-v4.1-flash` messages carry a **nonzero** local `cost` (for example `0.00267897` for 2,591 input / 265 output / 349 reasoning / 640,640 cached-read tokens). The arithmetic matches the list rates, so this is OpenCode's local list-rate estimate, not the provider's `usage.cost` and not a balance charge |
+| `opencode stats --days 1 --cost --json` | today's `opencode-go/deepseek-v4.1-flash` model row reports `cost: 0` while the same messages carry nonzero list-rate estimates. This is a local statistics view, not the Console ledger, and does not expose remaining entitlement |
+| [OpenCode Go documentation](https://opencode.ai/v2/docs/console/go/) | Go/Go Plus/Go Teams subscription plans; usage limits are monthly **dollar-denominated allowances**; DeepSeek V4.1 Flash monthly allowance is `$80` (Go), `$160` (Go Plus), `$85` (Go Teams); 5-hour = 20%, weekly = 50%, monthly = 100%; peak hours 01:00–04:00 and 06:00–10:00 UTC Mon–Fri (2× list rates) |
+| [OpenCode Go — usage beyond limits](https://opencode.ai/v2/docs/console/go/#usage-beyond-limits) | Extra Usage is an opt-in fallback to the Console balance after the Go allowance. **Go Teams starts with Extra Usage on.** Current policy requires it OFF. |
+| [OpenCode inference API cost](https://opencode.ai/v2/docs/console/api/inference#cost) | `usage.cost` is USD **charged to the balance**; `0` for Go usage within its limits. `opencode.billing_source` is `free`, `balance`, `go`, `go-plus` or `byok`; `opencode.allowance` counts toward the Go monthly limit |
+| [OpenCode inference API authentication](https://opencode.ai/v2/docs/console/api/inference#authentication) | Free-tier chat models are only usable from inside OpenCode; Go models are usable from other clients |
 
 The local message-cost probe used only the non-credential `message` table:
 
@@ -58,157 +76,157 @@ sqlite3 "file:$HOME/.local/share/opencode/opencode.db?mode=ro" \
   "SELECT json_extract(data,'$.providerID'), json_extract(data,'$.modelID'), json_extract(data,'$.cost'), json_extract(data,'$.tokens.input'), json_extract(data,'$.tokens.output') FROM message WHERE json_extract(data,'$.providerID')='opencode-go' ORDER BY time_created DESC LIMIT 5;"
 ```
 
-### 2.2 The three funding modes are not interchangeable
+### 2.3 The four evidence layers must remain separate
 
-1. **Subscription-included usage (Go / Go Plus / Go Teams).**
-   Requests that stay inside the plan report `cost = 0` and
-   `billing_source = go`/`go-plus`; they still consume a dollar-denominated
-   monthly allowance, tracked by `opencode.allowance`. This is **not free and not
-   unlimited**. The subscription fee is fixed, but exceeding the allowance blocks
-   requests unless Extra Usage is on.
-2. **Additional paid usage (Extra Usage / balance).**
-   After the allowance is exhausted, Extra Usage can fall back to the Console
-   balance. Those requests report a positive `cost` and
-   `billing_source = balance`. This is billable. Go Teams enables Extra Usage by
-   default; the Owner must verify the actual setting before this run.
-3. **Separately billable API requests.**
-   A personal API key against the general Console models endpoint is
-   pay-as-you-go balance usage independent of the Go allowance. Factory is
-   configured for the **Go route** `https://opencode.ai/inference/go/openai/v1`,
-   so this run is intended to consume Go allowance, not the general API balance.
-   The per-model USD rates in the catalog and documentation are list prices used
-   to compute `list_cost`/`allowance`; they are not, by themselves, an invoice.
+1. **Subscription entitlement/quota.** The Owner Console observation records the
+   plan, exact model entitlement, Extra Usage OFF, balance fallback OFF,
+   no-charge route VERIFIED and quota/reset state. The current Core and local
+   preflight **cannot verify the Console**; the evidence records that
+   limitation. Missing, stale or unverifiable evidence fails closed.
+2. **Measured usage.** Tokens reported by Core/provider records: input, output,
+   total (including reasoning/cache as reported), per role and provider.
+3. **List-rate equivalent.** A calculation from the Core-configured rates plus
+   OpenCode's local message-cost estimate. It carries a rate revision and
+   provenance. It is **not** an actual charge and **not** a spending cap.
+4. **Provider-reported actual charge.** `VERIFIED_ZERO`, `VERIFIED_POSITIVE` or
+   `UNKNOWN`, with the evidence source. A positive charge or a paid
+   `billing_source` on a subscription run is an incident and blocks further
+   dispatch. Absence of charge evidence is `UNKNOWN`, never zero.
 
-### 2.3 What Factory measures — and what it cannot
+The authoritative remaining allowance, quota reset and invoice are in the
+OpenCode Console. No local CLI or Factory endpoint exposes them. The preparer did
+not sign in to the Console and did not read `~/.local/share/opencode/auth.json` or
+any credential store. No current balance or allowance is claimed here.
 
-- The Lead and semantic Reviewer calls use Core's `model_gateway`. Core reserves
-  a configured-rate estimate, then settles the measured token counts at the
-  configured input/output rates (`inputMicrosPerMillion` /
-  `outputMicrosPerMillion`). This is a deterministic **configured-rate
-  equivalent**, not the provider invoice.
-- Core's gateway parses `usage.prompt_tokens`/`completion_tokens`/`total_tokens`
-  and a `usage.cost_micros` field, but it does **not** persist
-  `usage.cost`, `opencode.billing_source` or `opencode.allowance`.
-- The Implementer provider session records the OpenCode message `info.cost`.
-  Locally observed Go messages have a nonzero `cost` computed from list rates
-  (including cached reads), so this is OpenCode's local estimate, **not** the
-  raw API `usage.cost`, not the Go allowance consumed and not a balance charge.
-  The Worker/Core do not capture `opencode.allowance` or
-  `opencode.billing_source` for that session.
-- Consequently the run can record:
-  - measured tokens and the Core configured-rate equivalent;
-  - the OpenCode message-cost estimate (nonzero even inside the Go allowance);
-  - provider/model/session IDs and cleanup;
-  - but **not** an independently verified Go allowance consumption, balance
-    charge or invoice.
-- The authoritative remaining allowance/balance is the OpenCode Console. No
-  local CLI or Factory endpoint exposes it. `opencode stats` reports a local
-  usage view (today's Go model row shows `cost: 0` while its messages carry a
-  list-rate estimate) and is not the Console account ledger.
+**Unknowns that must remain explicit:** plan/workspace entitlement, current
+remaining allowance, 5-hour/weekly usage, quota reset, Extra Usage state, actual
+provider charge when Core has no charge evidence, taxes/currency conversion and
+the final invoice.
 
-**Unknown until the Owner reads the Console:** current plan, remaining monthly
-allowance for DeepSeek V4.1 Flash, current 5-hour/weekly usage, Extra Usage state,
-Console balance, taxes/currency conversion and the final invoice. These are
-recorded as `UNKNOWN`, never as `$0`.
-
-The preparer did not sign in to the Console and did not read
-`~/.local/share/opencode/auth.json` or any credential store. No current balance
-or allowance is claimed here.
-
-### 2.4 Off-peak observation
+### 2.4 Peak/off-peak
 
 At preparation time (2026-10-29 14:54 UTC) DeepSeek V4.1 Flash was Off-Peak, so
 the list rates were `$0.15/M` input and `$0.60/M` output. Peak rates are double.
-The run must record the actual UTC start/finish time and whether the requests
-fell in a peak window. Do not assume Off-Peak.
-
-Core's envelope uses the **configured** input/output rates, not a live price
-lookup. Configure the Peak rates when a run may cross a peak boundary; otherwise
-the USD cap understates the allowance consumed at the provider.
-
-### 2.5 Factory real-provider paths inspected
-
-| Path | Role in this runbook |
-|---|---|
-| `native/src/bin/provider_probe.rs` + `runtime::probe_opencode` | Read-only provider/version discovery. Not used as acceptance evidence and not a paid call. |
-| `native/src/bin/provider_smoke.rs` | Separate default-closed one-turn smoke (`FACTORY_LIVE_PROVIDER_SMOKE=1`). It proves bounded protocol compatibility only; it does not run a Campaign. |
-| `native/src/bin/provider_bridge.rs` | Unix-socket to loopback-TCP bridge used by the confined provider namespace. |
-| `native/src/model_gateway.rs` | Core-owned Lead, semantic Reviewer and evaluation calls. Reserves a configured-rate envelope before dispatch and settles measured usage after the response. The harness relies on this for the Lead and Reviewer. |
-| `native/src/provider_sandbox.rs` | Confined provider process/container and loopback credential broker. The Worker uses the container form; the long-lived credential stays in the Worker egress broker. |
-| `compose.yaml` worker wiring | `FACTORY_PROVIDER_KIND=opencode`, `FACTORY_PROVIDER_SANDBOX=container`, `/provider-sessions`, runtime broker. The Worker fetches `/worker/provider_profile` for the exact leased attempt and does not receive a fixture fallback. |
-| `scripts/compose-e2e.sh`, `scripts/compose-browser-uat.sh`, `scripts/compose-provider-smoke.mjs` | Existing deterministic fixture and browser harnesses. They do not exercise a real model. The provider smoke is a separate credential/catalog test. |
-| `scripts/real-provider-uat.{sh,mjs}` | The gated real-provider Campaign harness in this runbook. |
-
-The credential flow is: Owner → Office Settings → encrypted Core storage →
-Worker `provider_profile` request for the exact leased attempt → Worker egress
-broker → provider container via a per-run capability. The harness never receives
-the credential and cannot read it from the browser or evidence.
+The run records actual UTC start/finish and a peak/off-peak schedule; never
+assume Off-Peak.
 
 ## 3. Preconditions
 
-1. The Owner has an OpenCode Go plan (or explicitly chooses a billable API
-   balance route), a valid credential, and Console access.
-2. The Owner confirms the actual funding mode and Extra Usage state in
-   <https://opencode.ai/console> (Go page and usage page).
-3. The Owner either confirms Extra Usage is **off**, or accepts balance fallback
-   and sets a cap below.
+1. The Owner has an OpenCode Go plan covering `deepseek-v4.1-flash`.
+2. The Owner signs in to <https://opencode.ai/console> and verifies:
+   - the plan/workspace and exact model entitlement;
+   - **Extra Usage is OFF**;
+   - **balance fallback is OFF**;
+   - the current quota state, remaining amount and reset time, or explicitly
+     records them as unknown.
+3. The Owner creates a `0600` subscription verification JSON file with the
+   fields in §4. This is Owner-verified Console evidence, not a Core
+   verification receipt. It must not contain a credential, API key, cookie or
+   raw account identifier.
 4. The Owner enters the OpenCode Go API key **directly into Office Settings**.
-   The key is never passed to the runbook scripts, never printed and never
-   committed. The scripts only use the local Core operator token.
+   The key is never passed to the harness, printed or committed.
 5. A disposable Compose project whose name contains `uat` is used. The permanent
    `software-factory` stack is not touched.
-6. No GitHub repository is bound to the disposable Project, and no GitHub PR is
-   created, merged or commented on.
+6. The disposable Project is not bound to a GitHub repository; no PR is created,
+   merged or commented on.
+7. Core V3 subscription admission must be implemented and independently verified
+   before any live run. The harness requires
+   `GET /funding/subscription/opencode-go` to return a matching, fresh
+   subscription binding (plan, account, exact model, Extra Usage OFF, balance
+   fallback OFF, no-charge route VERIFIED and quota). This repository candidate's
+   Core does not expose this endpoint, so the current live path is blocked and
+   fails closed as `CORE_V3_SUBSCRIPTION_ADMISSION_REQUIRED` before creating a
+   Project or Request. Owner Console evidence and the separate go-ahead do not
+   bypass this Core admission requirement. **Do not add a cap, select billable
+   mode or bypass this check.**
 
-## 4. Exact Owner decision required
+## 4. Owner verification and authorization required after Core is ready
 
-The Owner must record all of the following in writing before the first paid call:
+After Core V3 is implemented and its read-only preflight passes, the Owner must
+record all of the following in writing before the first provider call. Providing
+this evidence now does not authorize live execution while Core admission is
+missing.
 
 | Decision | Required value |
 |---|---|
-| Billing route | `GO_SUBSCRIPTION_INCLUDED` (Go/Go Plus/Go Teams allowance) **or** `GO_EXTRA_USAGE_BILLABLE` (allowance plus balance fallback) **or** `PAY_AS_YOU_GO_API` (separate Console balance) |
-| Extra Usage | `GO_SUBSCRIPTION_INCLUDED` requires `DISABLED`; `GO_EXTRA_USAGE_BILLABLE` requires `ENABLED_WITHIN_CAP`; `PAY_AS_YOU_GO_API` requires `NOT_APPLICABLE` |
-| Plan / workspace | Go, Go Plus or Go Teams; workspace name; member or personal workspace |
-| Remaining allowance or balance | Owner-read Console value, with timestamp |
-| Spend cap | A USD cap for this run, `> 0` and `<= 5.00`; the runbook recommends `2.00` for Go allowance and `1.00` for balance fallback |
+| Funding route | `GO_SUBSCRIPTION_INCLUDED` only |
+| Paid fallback | None; `GO_EXTRA_USAGE_BILLABLE` and `PAY_AS_YOU_GO_API` are disabled |
+| Extra Usage | **OFF** in the Console; `FACTORY_REAL_PROVIDER_EXTRA_USAGE=DISABLED` plus fresh Console evidence |
+| Balance fallback | **OFF** in the Console |
+| Plan / workspace | Go, Go Plus or Go Teams; workspace name |
+| Entitlement | Exact `opencode-go/deepseek-v4.1-flash` entitlement VERIFIED |
+| Quota | AVAILABLE, UNKNOWN or EXHAUSTED; remaining/reset if observed |
+| Spend cap | **None. No positive USD authorization is required or accepted.** |
 | Authorization id | A unique id, for example `owner-rp-uat-2026-10-30` |
 | Route | `opencode-go` / `deepseek-v4.1-flash`; no fallback provider or model |
 | Sessions / turns | At most 1 Implementer provider session and 4 turns |
-| Requests / tokens | At most 1 request envelope; at most 60,000 input and 12,000 output tokens reported by Core |
+| Requests / tokens | At most one assessment Request; at most 60,000 input and 12,000 output tokens reported by Core |
 | Deadline | At most 90 minutes from the start of the authorized run |
 | Retries | None; an infrastructure failure is repaired before any new authorization |
+| Quota exhaustion | Durable `PAUSED / SUBSCRIPTION_QUOTA_EXHAUSTED`; resume only after refreshed evidence, no fallback or redispatch |
 | GitHub | No PR creation, merge, comment or review |
 | Plan approval | The Owner personally reviews the exact frozen plan hash before `execute` |
-
-The **cap is a single monetary envelope** for the request. Core reserves it
-before the first billable assessment and refuses to exceed it. It is not a
-per-role or per-call allowance.
-
-Decision tree:
-
-1. Console shows a Go/Go Plus/Go Teams plan and **Extra Usage off** →
-   `GO_SUBSCRIPTION_INCLUDED` + `DISABLED`.
-2. Console shows a Go plan and **Extra Usage on** → either turn Extra Usage off
-   and use case 1, or accept balance fallback and use
-   `GO_EXTRA_USAGE_BILLABLE` + `ENABLED_WITHIN_CAP`.
-3. No Go plan, or the Owner intends to spend the Console pay-as-you-go balance
-   directly → `PAY_AS_YOU_GO_API` + `NOT_APPLICABLE`.
-
-There is no "free" or "unlimited" option in this harness. A Go allowance is a
-prepaid monthly dollar limit, not an absence of cost.
+| Final go-ahead | A **separate explicit Owner go-ahead** after verification and before the first real request |
 
 Recommended authorization text:
 
-> I authorize one bounded real-provider UAT, id `owner-rp-uat-2026-10-30`, on
-> `opencode-go/deepseek-v4.1-flash` under my OpenCode Go subscription. I confirm
-> Extra Usage is off. The run may consume up to USD 2.00 of my DeepSeek V4.1
-> Flash monthly allowance, at most one Implementer session, four turns, 60,000
-> input and 12,000 output tokens, within 90 minutes. No retry, no fallback
-> model, and no GitHub write. I will review the frozen plan hash before
-> execution.
+> I authorize one bounded subscription-only real-provider UAT, id
+> `owner-rp-uat-2026-10-30`, on `opencode-go/deepseek-v4.1-flash`. I verified in
+> the OpenCode Console that Extra Usage and balance fallback are OFF, that my
+> plan entitles this exact model, and that quota is
+> [AVAILABLE/UNKNOWN/EXHAUSTED] with [remaining/reset or unknown]. There is no
+> USD spend cap and no paid fallback. I authorize at most one Implementer
+> session, four turns, 60,000 input and 12,000 output tokens within 90 minutes.
+> No retry, no provider/model/funding fallback, and no GitHub write. I will
+> review the frozen plan hash before execution. This is my separate explicit
+> go-ahead for the first real request.
 
-If the Owner instead authorizes balance fallback, replace the Extra Usage sentence
-with the exact balance and cap and state that fallback is accepted within the cap.
+### Subscription verification file
+
+Create it `0600` with only non-secret values:
+
+```json
+{
+  "schema": "factory.subscription-verification.v1",
+  "provider": "opencode-go",
+  "model": "deepseek-v4.1-flash",
+  "route": "GO_SUBSCRIPTION_INCLUDED",
+  "plan": "Go",
+  "account_fingerprint": "sha256:<non-secret account label hash>",
+  "source": "OWNER_CONSOLE",
+  "verification_method": "OWNER_CONSOLE_INSPECTION",
+  "console_url": "https://opencode.ai/console",
+  "observed_at": "2026-10-30T14:00:00Z",
+  "valid_until": "2026-10-31T02:00:00Z",
+  "entitlement": "VERIFIED",
+  "extra_usage": "OFF",
+  "balance_fallback": "OFF",
+  "no_charge_route": "VERIFIED",
+  "quota": {
+    "state": "AVAILABLE",
+    "remaining_usd": null,
+    "resets_at": null
+  },
+  "core_verifiable": false,
+  "limitation": "CORE_AND_LOCAL_PREFLIGHT_CANNOT_VERIFY_CONSOLE_EXTRA_USAGE",
+  "rate_revision": "opencode-go-doc-2026-10-29",
+  "notes": "Owner read the OpenCode Console at the observed time; no credential stored."
+}
+```
+
+Rules:
+
+- `source` is `OWNER_CONSOLE` for the current build; `core_verifiable` must be
+  `false`. A future Core V3 export may use `source: "CORE"`,
+  `verification_method: "CORE_EXPORT"` and `core_verifiable: true`.
+- `entitlement` must be `VERIFIED`; `extra_usage` and `balance_fallback` must be
+  `OFF`; `no_charge_route` must be `VERIFIED`.
+- `observed_at`/`valid_until` must be fresh (default maximum age 24 hours;
+  tighten with `FACTORY_REAL_PROVIDER_VERIFICATION_MAX_AGE_SECS`).
+- `quota.state` may be `UNKNOWN`; unknown quota is not unlimited and is recorded
+  as unknown. `EXHAUSTED` or zero remaining pauses before dispatch.
+- No credential, API key, cookie, email or raw account identifier belongs in
+  this file.
 
 ## 5. Harness and gates
 
@@ -216,12 +234,12 @@ Artifacts:
 
 - `scripts/real-provider-uat.sh` — disposable stack, credential readiness and
   driver invocation.
-- `scripts/real-provider-uat.mjs` — authorization gate, preflight, assessment,
-  approval/execution and redacted evidence.
+- `scripts/real-provider-uat.mjs` — subscription-only gate, verification,
+  assessment, approval/execution, quota pause/resume and redacted evidence.
 - `compose.real-provider-uat.yaml` — test-only Git fixture and real-provider
   opt-in; no model fixture.
-- `scripts/real-provider-uat.test.mjs` — contract tests that refuse live mode
-  without the flag and prove secrets are not logged.
+- `scripts/real-provider-uat.test.mjs` — contract tests for refusal, evidence
+  separation, quota pause/recovery and secret redaction.
 
 Run the contract tests with:
 
@@ -229,20 +247,22 @@ Run the contract tests with:
 node --test scripts/real-provider-uat.test.mjs
 ```
 
-They use a local fake Core. They do not contact OpenCode, a real Core or any
-paid provider.
+They use a local fake Core and perform no inference.
 
 The driver refuses to make a paid call unless **all** of the following are true:
 
 - `FACTORY_REAL_PROVIDER_UAT=1` (live mode);
+- `FACTORY_REAL_PROVIDER_OWNER_GO_AHEAD=1` (the separate Owner go-ahead);
 - `FACTORY_REAL_PROVIDER_AUTHORIZATION` is a bounded non-empty id;
-- `FACTORY_REAL_PROVIDER_ACCOUNTING` and `FACTORY_REAL_PROVIDER_EXTRA_USAGE` are
-  explicit, consistent values;
-- `FACTORY_REAL_PROVIDER_SPEND_CAP_USD` parses exactly to a positive amount no
-  greater than `5.00`;
+- `FACTORY_REAL_PROVIDER_ACCOUNTING=GO_SUBSCRIPTION_INCLUDED`;
+- `FACTORY_REAL_PROVIDER_EXTRA_USAGE=DISABLED`;
+- no `FACTORY_REAL_PROVIDER_SPEND_CAP_USD` is supplied;
+- `FACTORY_REAL_PROVIDER_SUBSCRIPTION_EVIDENCE_FILE` is a fresh, valid `0600`
+  Owner Console verification;
 - the Core URL is HTTPS or loopback HTTP, with no embedded credentials;
 - the operator token is supplied by a `0600` file and is at least 32 bytes, or
   by a non-empty environment variable;
+- Core returns a matching V3 `GET /funding/subscription/opencode-go` verification;
 - the provider connection is configured, enabled, default, and its catalog is
   available with the exact model;
 - the provider connection's `maxTurns` does not exceed the authorized turn
@@ -250,22 +270,14 @@ The driver refuses to make a paid call unless **all** of the following are true:
 - semantic review is enabled and a model gateway route exists;
 - at least one Worker is registered.
 
-Token ceilings default to 60,000 input and 12,000 output for this runbook and can
-be tightened with `FACTORY_REAL_PROVIDER_MAX_INPUT_TOKENS` /
-`FACTORY_REAL_PROVIDER_MAX_OUTPUT_TOKENS`. The provider turn ceiling defaults to
-4 and can be tightened with `FACTORY_REAL_PROVIDER_MAX_TURNS`. They are
-reconciled from the measured Core/provider records after the run; the monetary
-cap is the pre-request enforcement.
-
-It also refuses to approve a plan unless
-`FACTORY_REAL_PROVIDER_PLAN_APPROVAL=OWNER_REVIEWED` and the plan hash passed on
-the command line exactly matches the frozen plan.
-
 The harness authenticates to Core with the local operator token read from
 `/config/operator.token` into a `0600` file and removed on exit. It never prints
-the token and does not reuse the Owner's browser session. The approval is
-audited as `operator-token` with the label `owner-real-provider-uat`; the frozen
-plan hash and rationale are recorded in the evidence.
+the token and does not reuse the Owner's browser session. Approval is audited as
+`operator-token` with the label `owner-real-provider-uat`.
+
+Token ceilings default to 60,000 input and 12,000 output and can be tightened.
+The provider turn ceiling defaults to 4. These are technical bounds, not USD
+spending caps.
 
 ## 6. Commands
 
@@ -275,100 +287,108 @@ plan hash and rationale are recorded in the evidence.
 ./scripts/real-provider-uat.sh prepare
 ```
 
-The command prints the Office URL and a one-time enrollment code. The Owner:
+The command prints the Office URL, a one-time enrollment code and the default
+subscription verification path. The Owner:
 
-1. Opens the printed Office URL and enrolls the device.
+1. Opens the Office URL and enrolls the device.
 2. Opens **Settings → OpenCode Go**, enters the API key directly, enables the
    connection, selects **Default route for Core model calls**, and saves.
-   Set the input/output rates to the current DeepSeek V4.1 Flash window (Off-Peak
-   `$0.15/$0.60` per million, Peak `$0.30/$1.20` per million). If the run may
-   cross a peak boundary, use the **Peak** rates so Core's envelope is
-   conservative. Record the configured rates in the evidence.
+   Set the input/output rates to the current DeepSeek V4.1 Flash window
+   (Off-Peak `$0.15/$0.60` per million, Peak `$0.30/$1.20` per million). If the
+   run may cross a peak boundary, use Peak so the list-rate equivalent is
+   conservative. These rates are **not** a spending cap.
 3. Clicks **Test connection**. This reads the public catalog only; it performs
-   no inference. It must show `AVAILABLE` and include `deepseek-v4.1-flash`.
+   no inference. It must show `AVAILABLE` with `deepseek-v4.1-flash`.
 4. Enables semantic review under **Settings → Runtime** if it is not already on.
-5. Confirms the Console accounting facts in §4.
+5. Performs the Console verification in §4 and creates the `0600` evidence file.
+6. Gives the separate explicit go-ahead for the first real request.
 
-The `prepare` command does not start a paid call. It may be run before the
-authorization exists. The stack remains disposable until `down`.
-
-After enrollment and provider configuration, a read-only preflight can validate
-the gate without the live flag:
+### 6.2 Read-only preflight
 
 ```sh
 export FACTORY_REAL_PROVIDER_DRY_RUN=1
 export FACTORY_REAL_PROVIDER_AUTHORIZATION=owner-rp-uat-2026-10-30
 export FACTORY_REAL_PROVIDER_ACCOUNTING=GO_SUBSCRIPTION_INCLUDED
 export FACTORY_REAL_PROVIDER_EXTRA_USAGE=DISABLED
-export FACTORY_REAL_PROVIDER_SPEND_CAP_USD=2.00
+export FACTORY_REAL_PROVIDER_SUBSCRIPTION_EVIDENCE_FILE=/secure/owner-console-evidence.json
 ./scripts/real-provider-uat.sh preflight
 ```
 
 Preflight performs only Core and catalog `GET`s. It does not create a Project,
 Request, Campaign or provider session, and it does not prove inference access.
-Remove `FACTORY_REAL_PROVIDER_DRY_RUN` before a live phase.
+If Core returns `CORE_V3_SUBSCRIPTION_ADMISSION_REQUIRED`, stop; the current
+candidate is blocked. Do not set the live flags or Owner go-ahead. Only remove
+`FACTORY_REAL_PROVIDER_DRY_RUN` after a future Core candidate implements the
+binding, the read-only preflight passes, and the Owner separately authorizes the
+specific run.
 
-### 6.2 Phase 1 — real MODEL assessment
-
-Set the Owner-authorized values (example values are illustrative, not
-authorization):
+### 6.3 Phase 1 — real MODEL assessment
 
 ```sh
 export FACTORY_REAL_PROVIDER_UAT=1
+export FACTORY_REAL_PROVIDER_OWNER_GO_AHEAD=1
 export FACTORY_REAL_PROVIDER_AUTHORIZATION=owner-rp-uat-2026-10-30
 export FACTORY_REAL_PROVIDER_ACCOUNTING=GO_SUBSCRIPTION_INCLUDED
 export FACTORY_REAL_PROVIDER_EXTRA_USAGE=DISABLED
-export FACTORY_REAL_PROVIDER_SPEND_CAP_USD=2.00
+export FACTORY_REAL_PROVIDER_SUBSCRIPTION_EVIDENCE_FILE=/secure/owner-console-evidence.json
 export FACTORY_REAL_PROVIDER_OBJECTIVE='Fix apply_discount in src/pricing.rs so the discount is applied exactly once, and add tests for zero, fractional, full and maximum-subtotal discounts. Do not change the public API.'
-```
-
-Then:
-
-```sh
 ./scripts/real-provider-uat.sh assess
 ```
 
-This creates the Project, execution profile, request envelope and Request, then
-runs the real Lead assessment. It stops at `AWAITING_APPROVAL`, writes
-`plan.json` and `state.json` under the evidence directory, and prints the exact
-plan hash. It does not approve or execute the plan. The Lead call is paid usage
-and counts against the envelope.
+This creates the Project, execution profile and Request **without**
+`authorized_micros`, then runs the real Lead assessment. It stops at
+`AWAITING_APPROVAL`, writes `plan.json` and `state.json`, and prints the exact
+plan hash. It does not approve or execute the plan. The Lead call is
+subscription-included usage.
 
-Do not delete or move the evidence directory between phases. The state file is
-the guard against a second paid request under the same authorization. If it is
-lost, stop and request a new authorization id rather than re-running blindly.
+If Core does not expose the V3 subscription verification, the run fails closed
+as `CORE_V3_SUBSCRIPTION_ADMISSION_REQUIRED` before creating a Project or
+Request; do not supply a cap.
 
-The Owner must read `plan.json` and confirm:
+Do not delete the evidence directory between phases. The state file prevents a
+second paid request under the same authorization.
 
-- the objective and allowed paths are the intended small change;
-- the frozen acceptance and negative checks are executable;
-- the route is `opencode-go/deepseek-v4.1-flash` with no fallback;
-- the budget and session/turn limits are within §4.
+### 6.4 Phase 2 — execute the exact approved plan
 
-### 6.3 Phase 2 — execute the exact approved plan
-
-Only after reviewing the plan:
+Only after reviewing `plan.json` and the frozen hash:
 
 ```sh
 FACTORY_REAL_PROVIDER_PLAN_APPROVAL=OWNER_REVIEWED \
   ./scripts/real-provider-uat.sh execute --plan-hash <exact-plan-hash>
 ```
 
-The driver refuses a mismatched hash. It approves the frozen plan, starts the
-Campaign, waits for the real Implementer, the independent verifier, the MODEL
-Reviewer and the deterministic Gate, and writes
-`real-provider-uat-evidence.json`. It never creates a GitHub PR; it inspects the
-Project's GitHub binding and records `UNBOUND_READY` when no repository is bound.
+The driver refuses a mismatched hash, approves without a USD authorization,
+starts the Campaign, waits for the real Implementer, independent verifier, MODEL
+Reviewer and deterministic Gate, and writes `real-provider-uat-evidence.json`.
+It never creates a GitHub PR; it records `UNBOUND_READY` when no repository is
+bound.
 
-The assessment phase also rejects a frozen plan that declares more than one
-provider session or any repair cycle; it does not silently narrow a model plan.
-The Owner must reject such a plan and request a new authorization rather than
-editing the state file.
+### 6.5 Quota pause and resume
 
-### 6.4 Evidence and cleanup
+If a verified quota-exhaustion response occurs, the harness records
+`PAUSED_SUBSCRIPTION_QUOTA_EXHAUSTED`, preserves the Campaign, candidate/session
+references and frozen plan, and exits `4`. It does not retry, re-approve, change
+provider/model/account/funding or create a replacement request.
+
+After the Console shows quota available again:
+
+1. Refresh the subscription verification file with a new `observed_at`,
+   `valid_until` and quota observation; keep the same plan/account/model.
+2. Run:
 
 ```sh
-# Keep the evidence before destroying the stack.
+./scripts/real-provider-uat.sh resume
+```
+
+`resume` requires Core V3's authenticated subscription resume operation. The
+current pre-V3 Core does not expose it; the harness then fails closed as
+`CORE_V3_SUBSCRIPTION_RESUME_REQUIRED` and does not fall back. A generic HTTP
+429 or a paused state without the `SUBSCRIPTION_QUOTA_EXHAUSTED` reason is not
+treated as subscription exhaustion.
+
+### 6.6 Evidence and cleanup
+
+```sh
 tar -C "$FACTORY_REAL_PROVIDER_EVIDENCE_DIR" -czf /tmp/real-provider-uat-evidence.tgz .
 ./scripts/real-provider-uat.sh down
 ```
@@ -387,76 +407,109 @@ podman volume ls | grep software-factory-rp-uat || true
 Stop on any of the following; do not retry within the same authorization:
 
 - `ACCEPTED` gate (success) or any non-`ACCEPTED` terminal gate;
-- exhausted envelope, unknown or ambiguous model-call usage, or an unresolved
-  provider turn;
-- missing credential, rejected catalog, provider/model mismatch, disabled
-  semantic review, or no Worker;
-- timeout, transport ambiguity, or unconfirmed provider cleanup;
-- any request to create or merge a GitHub PR.
+- subscription entitlement unknown/false/expired, Extra Usage enabled/unknown,
+  balance fallback enabled/unknown, or stale verification;
+- paid mode or spend cap supplied;
+- provider/model/account/plan/revision mismatch from the frozen binding;
+- quota exhaustion (durable pause) or a generic pause without a verified quota
+  reason;
+- unknown/ambiguous model or provider usage, unresolved provider turn, or
+  unconfirmed cleanup;
+- timeout, transport ambiguity, or any request to create/merge a GitHub PR.
 
-If the run stops with an unresolved provider session, record it as unresolved;
-do not silently treat it as zero cost. Repair the infrastructure failure, then
-request a **new** authorization id. The state file refuses to reuse one
-authorization id for a second request.
+A quota pause is recoverable only through `resume` after refreshed evidence and
+unchanged authority. An infrastructure failure is repaired before any new
+authorization. Do not silently reclassify a subscription run as paid.
 
 ## 8. Evidence to record
 
-- Candidate wrapper commit and exact stack Compose files/project name.
-- Authorization id, funding mode, Extra Usage state, cap and UTC start/finish.
-- Provider and model, Core model route, and evidence that the catalog was
-  `AVAILABLE` (catalog availability does not prove inference).
+- Candidate wrapper commit, exact Compose files/project and UTC timestamps.
+- Authorization id, funding policy, provider/model, plan, account fingerprint,
+  Console observation time/validity and explicit limitation.
+- Core V3 `GET /funding/subscription/{provider}` binding, or the fail-closed
+  `CORE_V3_SUBSCRIPTION_ADMISSION_REQUIRED` result.
+- Subscription entitlement, Extra Usage OFF, balance fallback OFF,
+  no-charge route and quota/reset (or unknown).
 - Project, request, Action, Campaign, Run, Attempt and candidate identities.
-- Frozen plan hash and the Owner's approval rationale.
+- Frozen plan hash, budget observation (not authorization) and Owner rationale.
 - Implementer provider session record ID, OpenCode session ID, model, turns,
-  terminal state, measured tokens, OpenCode message-cost estimate (labelled as
-  a local estimate, not a charge) and cleanup receipt.
-- Lead and Reviewer model-call reservations, roles, measured tokens and
-  configured-rate cost.
-- Independent verifier receipt (result/evidence/commit/tree) and Reviewer
-  receipt (result/mechanism/provider/model/usage).
+  terminal state, measured tokens, list-rate estimate, actual-charge observation
+  and cleanup receipt.
+- Lead and Reviewer model-call reservations, roles, measured tokens,
+  configured-rate micros and actual-charge observation.
+- Independent verifier receipt and MODEL Reviewer receipt.
 - Quality Gate outcome and reasons.
-- Campaign inference ledger status and any ambiguous/reserved/overrun amounts.
 - Candidate commit/tree, changed paths and diff summary.
-- GitHub binding state and `PR_WRITE: NONE`.
-- Console-reported allowance/balance observed by the Owner, marked `UNKNOWN` if
-  not read.
-- Cleanup receipts and any surviving container, volume or provider session.
+- PR preparation: GitHub binding state and `PR_WRITE: NONE`.
+- `PAUSED / SUBSCRIPTION_QUOTA_EXHAUSTED` evidence and resume outcome, if any.
+- Cleanup receipts and surviving container/volume/provider session.
 
-## 9. Non-claims
+The evidence must keep **subscription entitlement/quota**, **measured usage**,
+**list-rate equivalent**, **provider-reported actual charge** and **unknown**
+fields separate. Configured-rate micros and the plan budget are never a balance
+debit, invoice or spending cap.
 
-- No live result is claimed by this preparation. The dry-run contract test uses
-  a local fake Core and performs no inference.
+## 9. Core V3 handoff (not implemented here)
+
+The harness is aligned with the subscription-only funding contract but does not
+implement Core V3. Required Core work, tracked separately:
+
+- `FundingPolicy::{SubscriptionIncluded{...}, Billable{envelope_id}}` and
+  `SubscriptionBinding`/`Observation<T>`/`QuotaState` types in
+  `native/src/execution_policy.rs`;
+- `ExecutionPolicyV3` with subscription admission and no positive USD envelope;
+- migration `0041_subscription_funding_policy.sql` (if still unallocated) with
+  immutable funding/binding evidence, append-only observations and explicit
+  unknown actual-charge fields;
+- `GET /funding/subscription/{provider}` returning the typed subscription binding
+  consumed by the harness;
+- funding-aware request/assessment/approval APIs and authenticated quota resume;
+- durable `PAUSED / SUBSCRIPTION_QUOTA_EXHAUSTED` transitions preserving work;
+- Office subscription/quota/usage projections with no mandatory spend form;
+- no-charge enforcement and fail-closed paid-route selection.
+
+Until that exists, the real Core may reject this harness at subscription
+admission or resume. That is the correct fail-closed result; do not add a cap,
+select billable mode, export a provider credential or bypass Core.
+
+## 10. Non-claims
+
+- No live result is claimed by this preparation. The contract tests use a local
+  fake Core and perform no inference.
 - No ISOLATED, SEC-01, credential-confinement, production, Windows, human
   security-review or GitHub delivery claim.
-- A subscription allowance is not "free"; the run may consume paid allowance.
-- Configured-rate micros and OpenCode message-cost estimates are not invoices.
-- The run cannot prove the Go allowance consumed or a balance charge unless the
-  Owner separately reads the Console.
+- A subscription allowance is not "free" or unlimited; it consumes a monthly
+  allowance.
+- List-rate equivalents and plan budgets are not actual charges or spending
+  caps.
+- Provider-reported actual charge remains `UNKNOWN` unless Core supplies
+  explicit charge evidence.
 - Author-run UAT is not independent acceptance. The independent verifier and
-  Reviewer are independent *roles*, not independent acceptance of this runbook.
+  Reviewer are independent roles, not independent acceptance of this runbook.
 - The provider credential remains in Core/Worker trust; `TRUSTED_LOCAL` is not
   isolated.
 
 ### Office impact: none
 
 This change adds operator tooling and documentation only. It adds no Office
-route, control, projection or user-facing capability. The live run uses the
-existing Office Settings, Runtime, Request and Campaign surfaces, which are
-already mapped in [the Office parity matrix](../product/office-parity.json).
-The harness calls only existing authenticated Core operations. Therefore the
-parity matrix is unchanged and the impact is explicitly **none**; the required
-capability remains #60's real-provider acceptance, which stays `NOT_TESTED`
-until the Owner authorizes and executes it.
+route, control, projection or user-facing capability. The live run uses existing
+Office Settings, Runtime, Request and Campaign surfaces already mapped in
+[the Office parity matrix](../product/office-parity.json). The harness calls only
+existing authenticated Core operations. The parity matrix is unchanged and the
+impact is explicitly **none**; the required capability remains #60, which stays
+`NOT_TESTED` until the Owner verifies Console evidence, gives the separate
+go-ahead and executes the run.
 
-## 10. Open accounting follow-ups
+## 11. Open accounting follow-ups
 
-1. Persist `opencode.billing_source`, `usage.cost` and
-   `opencode.allowance` from provider responses so Go allowance is measurable
-   rather than unknown.
-2. Add a Console/account usage read path or an explicit owner-attested usage
-   record to the evidence schema.
+1. Persist raw `usage.cost`, `opencode.billing_source` and
+   `opencode.allowance` so actual charge and allowance consumption are
+   measurable instead of unknown.
+2. Add a Core subscription entitlement/quota verification export and consume it
+   in the harness instead of Owner Console evidence.
 3. Verify the actual peak/off-peak window at request time and record it.
-4. Reconcile OpenCode's local message `info.cost` (list-rate arithmetic
-   including cache reads) against the raw inference API `usage.cost`,
-   `billing_source` and `opencode.allowance` for both Go and pay-as-you-go
-   routes; do not label the local estimate as a charge.
+4. Reconcile OpenCode's local message `info.cost` list-rate arithmetic against
+   the raw inference API `usage.cost` and billing source for both subscription
+   and future billable routes.
+5. Implement the Core V3 quota pause/resume and Office subscription/quota
+   projections listed in §9.

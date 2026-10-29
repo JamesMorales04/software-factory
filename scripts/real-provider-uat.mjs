@@ -29,10 +29,15 @@ import { fileURLToPath } from "node:url";
 export const PROVIDER = "opencode-go";
 export const MODEL = "deepseek-v4.1-flash";
 export const PROVIDER_BASE_URL = "https://opencode.ai/inference/go/openai/v1";
-export const MAX_SPEND_CAP_MICROS = 5_000_000;
 export const DEFAULT_ASSESSMENT_TIMEOUT_MS = 300_000;
 export const DEFAULT_EXECUTION_TIMEOUT_MS = 1_800_000;
 export const EXIT_REFUSED = 3;
+export const EXIT_PAUSED = 4;
+export const SUBSCRIPTION_POLICY = "SUBSCRIPTION_INCLUDED_ONLY";
+export const VERIFICATION_SCHEMA = "factory.subscription-verification.v1";
+const VERIFICATION_MAX_BYTES = 64 * 1024;
+const DEFAULT_VERIFICATION_MAX_AGE_SECS = 86_400;
+const SUBSCRIPTION_MODE = "GO_SUBSCRIPTION_INCLUDED";
 
 const activeSecrets = new Set();
 
@@ -42,6 +47,16 @@ export class UatError extends Error {
     this.name = "UatError";
     this.code = code;
     this.exitCode = exitCode;
+  }
+}
+
+export class SubscriptionPausedError extends UatError {
+  constructor(message, { stage = "EXECUTION", verification = null } = {}) {
+    super("SUBSCRIPTION_QUOTA_EXHAUSTED", message, EXIT_PAUSED);
+    this.name = "SubscriptionPausedError";
+    this.stage = stage;
+    this.verification = verification;
+    this.paused = true;
   }
 }
 
@@ -71,30 +86,13 @@ function requireString(env, name, { min = 1, max = 512, pattern } = {}) {
   return value;
 }
 
-export function parseSpendCapMicros(value) {
-  if (typeof value !== "string" || value.length > 16) {
-    throw refuse("SPEND_CAP_INVALID", "FACTORY_REAL_PROVIDER_SPEND_CAP_USD is required");
-  }
-  const match = /^(0|[1-9]\d{0,2})(?:\.(\d{1,2}))?$/.exec(value);
-  if (!match) {
+export function refuseSuppliedSpendCap(env) {
+  if (env.FACTORY_REAL_PROVIDER_SPEND_CAP_USD !== undefined) {
     throw refuse(
-      "SPEND_CAP_INVALID",
-      "FACTORY_REAL_PROVIDER_SPEND_CAP_USD must be a plain positive USD amount with at most two decimals",
+      "SPEND_CAP_NOT_APPLICABLE",
+      "subscription-only mode does not accept a spend cap or positive USD authorization; remove FACTORY_REAL_PROVIDER_SPEND_CAP_USD",
     );
   }
-  const dollars = Number(match[1]);
-  const cents = Number((match[2] ?? "").padEnd(2, "0"));
-  const micros = dollars * 1_000_000 + cents * 10_000;
-  if (micros <= 0 || micros > MAX_SPEND_CAP_MICROS) {
-    throw refuse(
-      "SPEND_CAP_OUT_OF_BOUNDS",
-      `FACTORY_REAL_PROVIDER_SPEND_CAP_USD must be greater than 0 and at most ${MAX_SPEND_CAP_MICROS / 1_000_000}`,
-    );
-  }
-  return {
-    micros,
-    usd: `${dollars}.${String(cents).padStart(2, "0")}`,
-  };
 }
 
 function parseCoreUrl(value) {
@@ -125,10 +123,10 @@ function parseCoreUrl(value) {
 
 function parseCommand(argv) {
   const command = argv[0];
-  if (!["preflight", "assess", "execute"].includes(command)) {
+  if (!["preflight", "assess", "execute", "resume"].includes(command)) {
     throw refuse(
       "USAGE",
-      "usage: real-provider-uat.mjs <preflight|assess|execute --plan-hash SHA256>",
+      "usage: real-provider-uat.mjs <preflight|assess|execute --plan-hash SHA256|resume>",
     );
   }
   let planHash = "";
@@ -144,20 +142,11 @@ function parseCommand(argv) {
     if (argv.length !== index + 2) {
       throw refuse("USAGE", "execute accepts only --plan-hash <SHA-256>");
     }
+  } else if (command === "resume" && argv.length !== 1) {
+    throw refuse("USAGE", "resume accepts no arguments");
   }
   return { command, planHash };
 }
-
-const ACCOUNTING_MODES = new Set([
-  "GO_SUBSCRIPTION_INCLUDED",
-  "GO_EXTRA_USAGE_BILLABLE",
-  "PAY_AS_YOU_GO_API",
-]);
-const EXTRA_USAGE_MODES = new Set([
-  "DISABLED",
-  "ENABLED_WITHIN_CAP",
-  "NOT_APPLICABLE",
-]);
 
 export function parseGate(env, argv) {
   const { command, planHash } = parseCommand(argv);
@@ -174,6 +163,11 @@ export function parseGate(env, argv) {
       "LIVE_FLAG_MISSING",
       "FACTORY_REAL_PROVIDER_UAT=1 is required for a live run; no request was made",
     );
+  } else if (env.FACTORY_REAL_PROVIDER_OWNER_GO_AHEAD !== "1") {
+    throw refuse(
+      "OWNER_GO_AHEAD_MISSING",
+      "a separate explicit Owner go-ahead is required before the first real request; set FACTORY_REAL_PROVIDER_OWNER_GO_AHEAD=1 after Console verification",
+    );
   }
 
   const authorization = requireString(env, "FACTORY_REAL_PROVIDER_AUTHORIZATION", {
@@ -184,47 +178,23 @@ export function parseGate(env, argv) {
   const accounting = requireString(env, "FACTORY_REAL_PROVIDER_ACCOUNTING", {
     max: 64,
   });
-  if (!ACCOUNTING_MODES.has(accounting)) {
+  if (accounting !== SUBSCRIPTION_MODE) {
     throw refuse(
-      "ACCOUNTING_INVALID",
-      `FACTORY_REAL_PROVIDER_ACCOUNTING must be one of ${[...ACCOUNTING_MODES].join(", ")}`,
+      "PAID_MODE_DISABLED",
+      "the current funding policy permits only GO_SUBSCRIPTION_INCLUDED; billable and pay-as-you-go modes are disabled before any request",
     );
   }
+  refuseSuppliedSpendCap(env);
   const extraUsage = requireString(env, "FACTORY_REAL_PROVIDER_EXTRA_USAGE", {
     max: 64,
   });
-  if (!EXTRA_USAGE_MODES.has(extraUsage)) {
+  if (extraUsage !== "DISABLED") {
     throw refuse(
-      "EXTRA_USAGE_INVALID",
-      `FACTORY_REAL_PROVIDER_EXTRA_USAGE must be one of ${[...EXTRA_USAGE_MODES].join(", ")}`,
-    );
-  }
-  if (accounting === "PAY_AS_YOU_GO_API" && extraUsage !== "NOT_APPLICABLE") {
-    throw refuse(
-      "EXTRA_USAGE_INCONSISTENT",
-      "PAY_AS_YOU_GO_API requires FACTORY_REAL_PROVIDER_EXTRA_USAGE=NOT_APPLICABLE",
-    );
-  }
-  if (accounting !== "PAY_AS_YOU_GO_API" && extraUsage === "NOT_APPLICABLE") {
-    throw refuse(
-      "EXTRA_USAGE_INCONSISTENT",
-      "Go subscription modes require DISABLED or ENABLED_WITHIN_CAP",
-    );
-  }
-  if (accounting === "GO_SUBSCRIPTION_INCLUDED" && extraUsage !== "DISABLED") {
-    throw refuse(
-      "EXTRA_USAGE_INCONSISTENT",
-      "GO_SUBSCRIPTION_INCLUDED requires Extra Usage DISABLED; use GO_EXTRA_USAGE_BILLABLE when balance fallback is possible",
-    );
-  }
-  if (accounting === "GO_EXTRA_USAGE_BILLABLE" && extraUsage !== "ENABLED_WITHIN_CAP") {
-    throw refuse(
-      "EXTRA_USAGE_INCONSISTENT",
-      "GO_EXTRA_USAGE_BILLABLE requires Extra Usage ENABLED_WITHIN_CAP",
+      "EXTRA_USAGE_NOT_DISABLED",
+      "FACTORY_REAL_PROVIDER_EXTRA_USAGE must be DISABLED; enabled, unknown or unverifiable Extra Usage is refused before any request",
     );
   }
 
-  const cap = parseSpendCapMicros(env.FACTORY_REAL_PROVIDER_SPEND_CAP_USD);
   const coreApiUrl = parseCoreUrl(
     requireString(env, "FACTORY_CORE_API_URL", { max: 512 }),
   );
@@ -234,6 +204,11 @@ export function parseGate(env, argv) {
   if (!isAbsolute(evidenceDir)) {
     throw refuse("EVIDENCE_DIR_INVALID", "evidence directory must be absolute");
   }
+  const subscriptionEvidenceFile = resolve(
+    requireString(env, "FACTORY_REAL_PROVIDER_SUBSCRIPTION_EVIDENCE_FILE", {
+      max: 4096,
+    }),
+  );
 
   let timeoutSecs = DEFAULT_EXECUTION_TIMEOUT_MS / 1_000;
   if (env.FACTORY_REAL_PROVIDER_TIMEOUT_SECS !== undefined) {
@@ -245,6 +220,18 @@ export function parseGate(env, argv) {
       );
     }
     timeoutSecs = parsed;
+  }
+
+  let verificationMaxAgeSecs = DEFAULT_VERIFICATION_MAX_AGE_SECS;
+  if (env.FACTORY_REAL_PROVIDER_VERIFICATION_MAX_AGE_SECS !== undefined) {
+    const parsed = Number(env.FACTORY_REAL_PROVIDER_VERIFICATION_MAX_AGE_SECS);
+    if (!Number.isInteger(parsed) || parsed < 60 || parsed > 604_800) {
+      throw refuse(
+        "VERIFICATION_AGE_INVALID",
+        "FACTORY_REAL_PROVIDER_VERIFICATION_MAX_AGE_SECS must be an integer between 60 and 604800",
+      );
+    }
+    verificationMaxAgeSecs = parsed;
   }
 
   const maxInputTokens = Number(env.FACTORY_REAL_PROVIDER_MAX_INPUT_TOKENS ?? "60000");
@@ -329,10 +316,12 @@ export function parseGate(env, argv) {
     authorization,
     accounting,
     extraUsage,
-    capMicros: cap.micros,
-    capUsd: cap.usd,
+    fundingPolicy: SUBSCRIPTION_POLICY,
+    mode: SUBSCRIPTION_MODE,
     coreApiUrl,
     evidenceDir,
+    subscriptionEvidenceFile,
+    verificationMaxAgeSecs,
     timeoutMs: timeoutSecs * 1_000,
     maxInputTokens,
     maxOutputTokens,
@@ -475,6 +464,598 @@ function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
 }
 
+const VERIFICATION_KEYS = new Set([
+  "schema",
+  "provider",
+  "model",
+  "route",
+  "plan",
+  "account_fingerprint",
+  "source",
+  "verification_method",
+  "console_url",
+  "observed_at",
+  "valid_until",
+  "entitlement",
+  "extra_usage",
+  "balance_fallback",
+  "no_charge_route",
+  "quota",
+  "core_verifiable",
+  "limitation",
+  "rate_revision",
+  "notes",
+]);
+const QUOTA_KEYS = new Set(["state", "remaining_usd", "resets_at"]);
+const SUBSCRIPTION_PLANS = new Set(["Go", "Go Plus", "Go Teams"]);
+
+function assertNoUnknownKeys(value, allowed, label) {
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) {
+      throw refuse(
+        "SUBSCRIPTION_VERIFICATION_INVALID",
+        `${label} contains an unknown field; refusing to interpret it`,
+      );
+    }
+  }
+}
+
+function boundedRegularFile(path, label, maxBytes) {
+  let stat;
+  try {
+    stat = lstatSync(path);
+  } catch {
+    throw refuse(
+      "SUBSCRIPTION_VERIFICATION_MISSING",
+      `${label} is unavailable; owner-verified Console evidence is required before any request`,
+    );
+  }
+  if (stat.isSymbolicLink() || !stat.isFile()) {
+    throw refuse(
+      "SUBSCRIPTION_VERIFICATION_INVALID",
+      `${label} must be a regular non-symlink file`,
+    );
+  }
+  if (process.platform !== "win32" && (stat.mode & 0o077) !== 0) {
+    throw refuse(
+      "SUBSCRIPTION_VERIFICATION_PERMISSIONS",
+      `${label} permissions must not grant group/other access`,
+    );
+  }
+  if (stat.size > maxBytes) {
+    throw refuse(
+      "SUBSCRIPTION_VERIFICATION_INVALID",
+      `${label} exceeds its bounded size`,
+    );
+  }
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    throw refuse(
+      "SUBSCRIPTION_VERIFICATION_MISSING",
+      `${label} could not be read`,
+    );
+  }
+}
+
+function parseTimestamp(value, label) {
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) {
+    throw refuse(
+      "SUBSCRIPTION_VERIFICATION_INVALID",
+      `${label} must be an ISO-8601 timestamp`,
+    );
+  }
+  return parsed;
+}
+
+/// Read the Owner-verified subscription evidence. This file is not a Core
+/// verification receipt: the current Core/local preflight cannot inspect the
+/// OpenCode Console. The limitation is recorded in every evidence projection.
+export function loadSubscriptionVerification(gate) {
+  const raw = boundedRegularFile(
+    gate.subscriptionEvidenceFile,
+    "FACTORY_REAL_PROVIDER_SUBSCRIPTION_EVIDENCE_FILE",
+    VERIFICATION_MAX_BYTES,
+  );
+  let record;
+  try {
+    record = JSON.parse(raw);
+  } catch {
+    throw refuse(
+      "SUBSCRIPTION_VERIFICATION_INVALID",
+      "subscription evidence is not valid JSON",
+    );
+  }
+  if (!record || typeof record !== "object" || Array.isArray(record)) {
+    throw refuse(
+      "SUBSCRIPTION_VERIFICATION_INVALID",
+      "subscription evidence must be a JSON object",
+    );
+  }
+  assertNoUnknownKeys(record, VERIFICATION_KEYS, "subscription evidence");
+  if (record.schema !== VERIFICATION_SCHEMA) {
+    throw refuse(
+      "SUBSCRIPTION_VERIFICATION_INVALID",
+      `subscription evidence schema must be ${VERIFICATION_SCHEMA}`,
+    );
+  }
+  if (record.provider !== gate.provider || record.model !== gate.model) {
+    throw refuse(
+      "SUBSCRIPTION_VERIFICATION_BINDING_MISMATCH",
+      "subscription evidence does not bind the authorized provider/model",
+    );
+  }
+  if (record.route !== SUBSCRIPTION_MODE) {
+    throw refuse(
+      "PAID_MODE_DISABLED",
+      "subscription evidence must record GO_SUBSCRIPTION_INCLUDED; paid routes are disabled",
+    );
+  }
+  if (!SUBSCRIPTION_PLANS.has(record.plan)) {
+    throw refuse(
+      "SUBSCRIPTION_VERIFICATION_INVALID",
+      "subscription plan must be Go, Go Plus or Go Teams",
+    );
+  }
+  if (
+    typeof record.account_fingerprint !== "string" ||
+    !/^[A-Za-z0-9:_-]{8,128}$/.test(record.account_fingerprint)
+  ) {
+    throw refuse(
+      "SUBSCRIPTION_VERIFICATION_INVALID",
+      "subscription account fingerprint must be a bounded non-secret identifier",
+    );
+  }
+  if (!["OWNER_CONSOLE", "CORE"].includes(record.source)) {
+    throw refuse(
+      "SUBSCRIPTION_VERIFICATION_INVALID",
+      "subscription evidence source must be OWNER_CONSOLE or CORE",
+    );
+  }
+  if (typeof record.core_verifiable !== "boolean") {
+    throw refuse(
+      "SUBSCRIPTION_VERIFICATION_INVALID",
+      "subscription evidence must declare whether Core can verify it",
+    );
+  }
+  if (record.source === "OWNER_CONSOLE") {
+    if (record.core_verifiable !== false) {
+      throw refuse(
+        "SUBSCRIPTION_VERIFICATION_INVALID",
+        "owner Console evidence must not claim Core verification",
+      );
+    }
+    if (record.verification_method !== "OWNER_CONSOLE_INSPECTION") {
+      throw refuse(
+        "SUBSCRIPTION_VERIFICATION_INVALID",
+        "owner Console evidence must use OWNER_CONSOLE_INSPECTION",
+      );
+    }
+    if (
+      typeof record.console_url !== "string" ||
+      !record.console_url.startsWith("https://opencode.ai/console") ||
+      typeof record.limitation !== "string" ||
+      record.limitation.length < 8
+    ) {
+      throw refuse(
+        "SUBSCRIPTION_VERIFICATION_INVALID",
+        "owner Console evidence requires the Console URL and an explicit verification limitation",
+      );
+    }
+  } else {
+    if (record.core_verifiable !== true || record.verification_method !== "CORE_EXPORT") {
+      throw refuse(
+        "SUBSCRIPTION_VERIFICATION_INVALID",
+        "Core-sourced evidence must declare CORE_EXPORT and core_verifiable=true",
+      );
+    }
+  }
+  if (
+    record.entitlement !== "VERIFIED" ||
+    record.extra_usage !== "OFF" ||
+    record.balance_fallback !== "OFF" ||
+    record.no_charge_route !== "VERIFIED"
+  ) {
+    throw refuse(
+      "SUBSCRIPTION_ENTITLEMENT_UNVERIFIED",
+      "subscription entitlement, Extra Usage OFF, balance fallback OFF and no-charge route VERIFIED are all required",
+    );
+  }
+  if (
+    record.rate_revision !== undefined &&
+    (typeof record.rate_revision !== "string" ||
+      record.rate_revision.length < 1 ||
+      record.rate_revision.length > 512)
+  ) {
+    throw refuse(
+      "SUBSCRIPTION_VERIFICATION_INVALID",
+      "subscription rate_revision must be a bounded string",
+    );
+  }
+  if (
+    record.notes !== undefined &&
+    (typeof record.notes !== "string" || record.notes.length > 2_000)
+  ) {
+    throw refuse(
+      "SUBSCRIPTION_VERIFICATION_INVALID",
+      "subscription notes must be a bounded string",
+    );
+  }
+  if (!record.quota || typeof record.quota !== "object" || Array.isArray(record.quota)) {
+    throw refuse(
+      "SUBSCRIPTION_VERIFICATION_INVALID",
+      "subscription evidence must include a quota observation",
+    );
+  }
+  assertNoUnknownKeys(record.quota, QUOTA_KEYS, "subscription quota");
+  if (!["AVAILABLE", "EXHAUSTED", "UNKNOWN"].includes(record.quota.state)) {
+    throw refuse(
+      "SUBSCRIPTION_VERIFICATION_INVALID",
+      "subscription quota state must be AVAILABLE, EXHAUSTED or UNKNOWN",
+    );
+  }
+  if (
+    record.quota.remaining_usd !== undefined &&
+    record.quota.remaining_usd !== null &&
+    (typeof record.quota.remaining_usd !== "number" ||
+      !Number.isFinite(record.quota.remaining_usd) ||
+      record.quota.remaining_usd < 0)
+  ) {
+    throw refuse(
+      "SUBSCRIPTION_VERIFICATION_INVALID",
+      "subscription quota remaining_usd must be null or a non-negative number",
+    );
+  }
+  if (record.quota.resets_at !== undefined && record.quota.resets_at !== null) {
+    parseTimestamp(record.quota.resets_at, "subscription quota resets_at");
+  }
+  const observedMs = parseTimestamp(record.observed_at, "subscription observed_at");
+  const validUntilMs = parseTimestamp(record.valid_until, "subscription valid_until");
+  const now = Date.now();
+  if (observedMs > now + 300_000) {
+    throw refuse(
+      "SUBSCRIPTION_VERIFICATION_INVALID",
+      "subscription evidence observed_at is in the future",
+    );
+  }
+  if (validUntilMs <= now) {
+    throw refuse(
+      "SUBSCRIPTION_VERIFICATION_STALE",
+      "subscription evidence has expired; refresh the Owner Console verification",
+    );
+  }
+  if (now - observedMs > gate.verificationMaxAgeSecs * 1_000) {
+    throw refuse(
+      "SUBSCRIPTION_VERIFICATION_STALE",
+      "subscription evidence is older than the allowed verification age; refresh the Owner Console verification",
+    );
+  }
+  if (record.quota.state === "EXHAUSTED") {
+    throw new SubscriptionPausedError(
+      "subscription quota is exhausted according to the Owner Console evidence; no dispatch was attempted",
+      { stage: "PRE_DISPATCH", verification: record },
+    );
+  }
+  if (
+    record.quota.state === "AVAILABLE" &&
+    typeof record.quota.remaining_usd === "number" &&
+    record.quota.remaining_usd <= 0
+  ) {
+    throw new SubscriptionPausedError(
+      "subscription quota reports zero remaining; no dispatch was attempted",
+      { stage: "PRE_DISPATCH", verification: record },
+    );
+  }
+  return {
+    record,
+    file: gate.subscriptionEvidenceFile,
+    sha256: sha256(raw),
+    observedMs,
+    validUntilMs,
+    ageMs: now - observedMs,
+    limitation:
+      record.source === "OWNER_CONSOLE"
+        ? "CORE_AND_LOCAL_PREFLIGHT_CANNOT_VERIFY_CONSOLE_EXTRA_USAGE"
+        : null,
+  };
+}
+
+export function summarizeVerification(verification) {
+  const record = verification.record;
+  return {
+    schema: record.schema,
+    source: record.source,
+    verification_method: record.verification_method,
+    core_verifiable: record.core_verifiable,
+    plan: record.plan,
+    account_fingerprint: record.account_fingerprint,
+    console_url: record.console_url ?? null,
+    observed_at: record.observed_at,
+    valid_until: record.valid_until,
+    age_seconds: Math.floor(verification.ageMs / 1_000),
+    entitlement: record.entitlement,
+    extra_usage: record.extra_usage,
+    balance_fallback: record.balance_fallback,
+    no_charge_route: record.no_charge_route,
+    quota: {
+      state: record.quota.state,
+      remaining_usd: record.quota.remaining_usd ?? null,
+      resets_at: record.quota.resets_at ?? null,
+    },
+    rate_revision: record.rate_revision ?? null,
+    limitation: verification.limitation,
+    evidence_sha256: verification.sha256,
+  };
+}
+
+export async function loadCoreSubscriptionVerification(client, gate) {
+  const response = await client.get(
+    `/funding/subscription/${encodeURIComponent(gate.provider)}`,
+    { allowStatuses: [404, 405] },
+  );
+  if (response.status === 404 || response.status === 405) {
+    throw new UatError(
+      "CORE_V3_SUBSCRIPTION_ADMISSION_REQUIRED",
+      "Core does not expose the V3 subscription funding verification; no Project or Request was created",
+      1,
+    );
+  }
+  const record = response.payload;
+  assert(
+    record && typeof record === "object" && !Array.isArray(record),
+    "CORE_SUBSCRIPTION_VERIFICATION_INVALID",
+    "Core returned no subscription funding verification object",
+  );
+  assert(
+    record.provider === gate.provider &&
+      record.model === gate.model &&
+      record.route === SUBSCRIPTION_MODE,
+    "CORE_SUBSCRIPTION_VERIFICATION_MISMATCH",
+    "Core subscription verification does not bind the authorized provider/model/route",
+  );
+  assert(
+    record.plan === gate.verification.record.plan &&
+      record.account_fingerprint ===
+        gate.verification.record.account_fingerprint,
+    "SUBSCRIPTION_BINDING_CHANGED",
+    "Core subscription verification differs from the Owner Console evidence",
+  );
+  assert(
+    record.core_verifiable === true &&
+      record.entitlement === "VERIFIED" &&
+      record.extra_usage === "OFF" &&
+      record.balance_fallback === "OFF" &&
+      record.no_charge_route === "VERIFIED",
+    "CORE_SUBSCRIPTION_ENTITLEMENT_UNVERIFIED",
+    "Core subscription verification does not prove entitlement, Extra Usage OFF, balance fallback OFF and no-charge routing",
+  );
+  assert(
+    record.quota &&
+      ["AVAILABLE", "UNKNOWN", "EXHAUSTED"].includes(record.quota.state) &&
+      (record.quota.remaining_usd === undefined ||
+        record.quota.remaining_usd === null ||
+        (typeof record.quota.remaining_usd === "number" &&
+          Number.isFinite(record.quota.remaining_usd) &&
+          record.quota.remaining_usd >= 0)),
+    "CORE_SUBSCRIPTION_QUOTA_INVALID",
+    "Core subscription verification has no valid quota observation",
+  );
+  if (record.quota.state === "EXHAUSTED") {
+    throw new SubscriptionPausedError(
+      "Core subscription verification reports quota exhausted; no dispatch was attempted",
+      { stage: "PRE_DISPATCH", verification: record },
+    );
+  }
+  if (
+    record.quota.state === "AVAILABLE" &&
+    typeof record.quota.remaining_usd === "number" &&
+    record.quota.remaining_usd <= 0
+  ) {
+    throw new SubscriptionPausedError(
+      "Core subscription verification reports zero remaining quota; no dispatch was attempted",
+      { stage: "PRE_DISPATCH", verification: record },
+    );
+  }
+  if (typeof record.valid_until === "string") {
+    const validUntil = Date.parse(record.valid_until);
+    if (Number.isFinite(validUntil) && validUntil <= Date.now()) {
+      throw refuse(
+        "SUBSCRIPTION_VERIFICATION_STALE",
+        "Core subscription verification has expired; refresh the Owner Console/Core verification",
+      );
+    }
+  }
+  return {
+    provider: record.provider,
+    model: record.model,
+    route: record.route,
+    plan: record.plan,
+    account_fingerprint: record.account_fingerprint,
+    entitlement: record.entitlement,
+    extra_usage: record.extra_usage,
+    balance_fallback: record.balance_fallback,
+    no_charge_route: record.no_charge_route,
+    quota: {
+      state: record.quota.state,
+      remaining_usd: record.quota.remaining_usd ?? null,
+      resets_at: record.quota.resets_at ?? null,
+    },
+    observed_at: record.observed_at ?? null,
+    valid_until: record.valid_until ?? null,
+    core_verifiable: true,
+  };
+}
+
+export function isQuotaPausedPayload(payload) {
+  const state = String(payload?.state ?? "");
+  if (state !== "PAUSED" && state !== "PAUSED_SUBSCRIPTION_QUOTA_EXHAUSTED") {
+    return false;
+  }
+  const reason = [
+    payload?.pauseReason,
+    payload?.stateDetail,
+    payload?.reason,
+    payload?.error,
+  ]
+    .filter((value) => typeof value === "string")
+    .join(" ");
+  return /SUBSCRIPTION_QUOTA_EXHAUSTED|QUOTA_EXHAUSTED/i.test(reason);
+}
+
+export function isQuotaError(error) {
+  if (!(error instanceof UatError)) return false;
+  const text = `${error.code} ${error.message}`;
+  return /SUBSCRIPTION_QUOTA_EXHAUSTED|QUOTA_EXHAUSTED/i.test(text);
+}
+
+export function classifySubscriptionAdmissionError(error) {
+  if (
+    error instanceof UatError &&
+    /INFERENCE_AUTHORIZATION_REQUIRED|INFERENCE_AUTHORIZATION_NOT_APPLICABLE/i.test(
+      error.message,
+    )
+  ) {
+    return new UatError(
+      "CORE_V3_SUBSCRIPTION_ADMISSION_REQUIRED",
+      "Core does not admit subscription-only inference without a positive monetary envelope; do not add a cap, select billable mode or fall back",
+      1,
+    );
+  }
+  return error;
+}
+
+function throwIfQuota(error, stage) {
+  if (isQuotaError(error)) {
+    throw new SubscriptionPausedError(error.message, { stage });
+  }
+  throw error;
+}
+
+export function readActualCharge(record, kind, id) {
+  const known =
+    record?.actual_charge_known === true ||
+    record?.provider_reported_actual_charge_known === true;
+  const rawMicros =
+    record?.actual_charge_micros ??
+    record?.provider_reported_actual_charge_micros;
+  const billing = record?.billing_source ?? record?.billingSource;
+  const normalizedBilling =
+    typeof billing === "string" ? billing.toLowerCase() : null;
+  const paidBilling =
+    normalizedBilling === "balance" || normalizedBilling === "byok";
+
+  if (known) {
+    const micros = Number(rawMicros);
+    if (!Number.isFinite(micros) || micros < 0) {
+      return {
+        observation: "UNKNOWN",
+        micros: null,
+        reason: "INVALID_ACTUAL_CHARGE_EVIDENCE",
+        source: `${kind}:${id}`,
+      };
+    }
+    if (micros > 0) {
+      return {
+        observation: "VERIFIED_POSITIVE",
+        micros,
+        provenance: "PROVIDER_REPORTED_ACTUAL_CHARGE",
+        fallbackObserved: paidBilling,
+        source: `${kind}:${id}`,
+      };
+    }
+    if (paidBilling) {
+      return {
+        observation: "UNKNOWN",
+        micros: 0,
+        reason: "PAID_BILLING_SOURCE_OBSERVED",
+        fallbackObserved: true,
+        source: `${kind}:${id}`,
+      };
+    }
+    return {
+      observation: "VERIFIED_ZERO",
+      micros: 0,
+      provenance: "PROVIDER_REPORTED_ACTUAL_CHARGE",
+      source: `${kind}:${id}`,
+    };
+  }
+
+  if (paidBilling) {
+    return {
+      observation: "UNKNOWN",
+      micros: null,
+      reason: "PAID_BILLING_SOURCE_OBSERVED",
+      fallbackObserved: true,
+      source: `${kind}:${id}`,
+    };
+  }
+  if (typeof billing === "string") {
+    if (["go", "go-plus", "go-teams", "subscription", "free"].includes(normalizedBilling)) {
+      return {
+        observation: "VERIFIED_ZERO",
+        micros: 0,
+        provenance: `BILLING_SOURCE_${normalizedBilling.toUpperCase().replaceAll("-", "_")}`,
+        source: `${kind}:${id}`,
+      };
+    }
+  }
+  return {
+    observation: "UNKNOWN",
+    micros: null,
+    reason: "CORE_DOES_NOT_PERSIST_RAW_PROVIDER_CHARGE",
+    source: `${kind}:${id}`,
+  };
+}
+
+export function summarizeActualCharge(records) {
+  const observations = records.map(({ record, kind, id }) =>
+    readActualCharge(record, kind, id),
+  );
+  const positive = observations.find(
+    (item) => item.observation === "VERIFIED_POSITIVE",
+  );
+  const fallback = observations.find((item) => item.fallbackObserved === true);
+  if (positive) {
+    return {
+      observation: "VERIFIED_POSITIVE",
+      micros: positive.micros,
+      provenance: positive.provenance,
+      fallback_observed: Boolean(fallback),
+      observations,
+    };
+  }
+  if (fallback) {
+    return {
+      observation: "UNKNOWN",
+      micros: null,
+      reason: "PAID_FALLBACK_OBSERVED_WITHOUT_AMOUNT",
+      fallback_observed: true,
+      observations,
+    };
+  }
+  if (
+    observations.length > 0 &&
+    observations.every((item) => item.observation === "VERIFIED_ZERO")
+  ) {
+    return {
+      observation: "VERIFIED_ZERO",
+      micros: 0,
+      provenance: "PROVIDER_REPORTED_OR_BILLING_SOURCE_VALUE",
+      fallback_observed: false,
+      observations,
+    };
+  }
+  return {
+    observation: "UNKNOWN",
+    micros: null,
+    reason: "CORE_DOES_NOT_PERSIST_RAW_PROVIDER_CHARGE",
+    fallback_observed: false,
+    observations,
+  };
+}
+
+
 export class CoreClient {
   constructor({ baseUrl, token, timeoutMs = 60_000 }) {
     this.baseUrl = baseUrl;
@@ -562,6 +1143,7 @@ export async function waitFor(label, operation, { timeoutMs, intervalMs = 2_000 
       const value = await operation();
       if (value) return value;
     } catch (error) {
+      if (error?.paused === true) throw error;
       lastError = error;
     }
     await sleep(intervalMs);
@@ -577,6 +1159,12 @@ function normalizeBaseUrl(value) {
 }
 
 export async function preflight(client, gate) {
+  const verification = gate.verification;
+  assert(
+    verification,
+    "SUBSCRIPTION_VERIFICATION_UNAVAILABLE",
+    "owner-verified subscription evidence was not loaded; no request was made",
+  );
   const health = await client.get("/health");
   assert(health.status === 200 && health.payload?.healthy === true, "CORE_UNHEALTHY", "Core health is not healthy");
 
@@ -586,6 +1174,8 @@ export async function preflight(client, gate) {
     "SETUP_REQUIRED",
     "the disposable stack is not enrolled; use the prepare instructions and enroll the Owner device first",
   );
+
+  const coreSubscription = await loadCoreSubscriptionVerification(client, gate);
 
   const providers = await client.get("/settings/providers");
   const list = providers.payload?.providers;
@@ -660,8 +1250,11 @@ export async function preflight(client, gate) {
       maxInputTokens: provider.maxInputTokens,
       maxOutputTokens: provider.maxOutputTokens,
       maxCostMicros: provider.maxCostMicros,
+      maxCostMicrosSemantics: "PROVIDER_SETTINGS_OBSERVATION_NOT_A_SPEND_AUTHORIZATION",
       inputMicrosPerMillion: provider.inputMicrosPerMillion,
       outputMicrosPerMillion: provider.outputMicrosPerMillion,
+      revision: provider.revision ?? null,
+      updatedAt: provider.updatedAt ?? null,
     },
     catalog: {
       status: catalogPayload.status,
@@ -680,16 +1273,27 @@ export async function preflight(client, gate) {
       semanticReviewMaxOutputTokens: runtime.payload.semanticReviewMaxOutputTokens,
     },
     workers: workers.payload.map((worker) => worker.worker_id ?? worker.workerId ?? "unknown"),
+    subscription: {
+      policy: SUBSCRIPTION_POLICY,
+      mode: SUBSCRIPTION_MODE,
+      positive_usd_authorization: "NOT_REQUIRED",
+      spend_cap: "NOT_USED",
+      verification: summarizeVerification(verification),
+      core_verification: "AVAILABLE_V3_SUBSCRIPTION_BINDING",
+      core_subscription: coreSubscription,
+      limitation: verification.limitation,
+    },
   };
 }
 
 function gateEcho(gate) {
   return {
     authorization_id: gate.authorization,
+    funding_policy: gate.fundingPolicy,
     accounting: gate.accounting,
     extra_usage: gate.extraUsage,
-    spend_cap_usd: gate.capUsd,
-    spend_cap_micros: gate.capMicros,
+    positive_usd_authorization: "NOT_REQUIRED",
+    spend_cap: "NOT_USED",
     max_input_tokens: gate.maxInputTokens,
     max_output_tokens: gate.maxOutputTokens,
     max_turns: gate.maxTurns,
@@ -701,6 +1305,11 @@ function gateEcho(gate) {
     candidate_sha: gate.candidateSha || null,
     compose_project: gate.composeProject || null,
     compose_files: gate.composeFiles.split(/\s+/).filter(Boolean),
+    subscription_evidence_sha256: gate.verification?.sha256 ?? null,
+    subscription_plan: gate.verification?.record?.plan ?? null,
+    subscription_account_fingerprint:
+      gate.verification?.record?.account_fingerprint ?? null,
+    subscription_source: gate.verification?.record?.source ?? null,
   };
 }
 
@@ -724,16 +1333,33 @@ function loadState(gate) {
   }
 }
 
+const STATE_SCHEMA = "factory.real-provider-uat.state.v2";
+
 function ensureStateAuthorization(state, gate) {
+  assert(
+    state.schema === STATE_SCHEMA,
+    "STATE_VERSION_MISMATCH",
+    "the existing state predates subscription-only funding; use a new evidence directory and authorization",
+  );
   assert(
     state.authorization === gate.authorization,
     "STATE_AUTHORIZATION_MISMATCH",
     "the existing state belongs to a different authorization id; use a new evidence directory or a new authorization",
   );
   assert(
-    state.spend_cap_micros === gate.capMicros,
-    "STATE_CAP_MISMATCH",
-    "the existing state has a different spend cap; do not widen an authorization silently",
+    state.funding?.policy === gate.fundingPolicy &&
+      state.funding?.mode === gate.mode,
+    "STATE_FUNDING_MISMATCH",
+    "the existing state has a different funding policy; do not change funding mode silently",
+  );
+  assert(
+    state.subscription?.provider === gate.provider &&
+      state.subscription?.model === gate.model &&
+      state.subscription?.plan === gate.verification.record.plan &&
+      state.subscription?.account_fingerprint ===
+        gate.verification.record.account_fingerprint,
+    "SUBSCRIPTION_BINDING_CHANGED",
+    "the subscription provider, model, plan or account differs from the frozen run; require explicit reauthorization",
   );
 }
 
@@ -748,6 +1374,7 @@ function safePlan(projection, gate) {
     risk_class: proposal.risk_class ?? null,
     route: proposal.route ?? { provider: gate.provider, model: gate.model, mode: "build" },
     budget: proposal.budget ?? null,
+    budget_semantics: "MODEL_PLAN_OBSERVATION_NOT_A_SPEND_AUTHORIZATION",
     quality_profile: proposal.quality_profile ?? null,
     assumptions: proposal.assumptions ?? [],
     risks: proposal.risks ?? [],
@@ -765,7 +1392,14 @@ function safePlan(projection, gate) {
   };
 }
 
-const INTAKE_TERMINAL = new Set(["AWAITING_APPROVAL", "COMPLETED", "BLOCKED", "FAILED", "CANCELLED"]);
+const INTAKE_TERMINAL = new Set([
+  "AWAITING_APPROVAL",
+  "PAUSED",
+  "COMPLETED",
+  "BLOCKED",
+  "FAILED",
+  "CANCELLED",
+]);
 
 export async function assess(client, gate) {
   const startedAt = new Date();
@@ -860,19 +1494,31 @@ export async function assess(client, gate) {
       execution_profile_id: profile.id,
       mode: "REVIEW_PLAN",
       idempotency_key: `${gate.authorization}:intake`,
-      authorized_micros: gate.capMicros,
     });
     const intake = intakeResponse.payload;
     assert(intake?.id && intake?.leadRequestId, "INTAKE_CREATE_FAILED", "Core did not return an intake request");
 
     state = {
-      schema: "factory.real-provider-uat.state.v1",
+      schema: STATE_SCHEMA,
       phase: "REQUEST_CREATED",
       authorization: gate.authorization,
+      funding: {
+        policy: gate.fundingPolicy,
+        mode: gate.mode,
+        positive_usd_authorization: "NOT_REQUIRED",
+        spend_cap: "NOT_USED",
+      },
       accounting: gate.accounting,
       extra_usage: gate.extraUsage,
-      spend_cap_usd: gate.capUsd,
-      spend_cap_micros: gate.capMicros,
+      subscription: {
+        provider: gate.provider,
+        model: gate.model,
+        plan: gate.verification.record.plan,
+        account_fingerprint: gate.verification.record.account_fingerprint,
+        evidence_sha256: gate.verification.sha256,
+        source: gate.verification.record.source,
+        core_verifiable: gate.verification.record.core_verifiable,
+      },
       started_at: startedAt.toISOString(),
       project_id: project.id,
       project_config_hash: projectConfig.configHash,
@@ -900,7 +1546,7 @@ export async function assess(client, gate) {
           timeoutMs: Math.min(gate.timeoutMs, DEFAULT_ASSESSMENT_TIMEOUT_MS),
         });
       } catch (error) {
-        if (error.code !== "CORE_TRANSPORT") throw error;
+        if (error.code !== "CORE_TRANSPORT") throwIfQuota(error, "ASSESSMENT");
         // The request may have reached Core. Do not retry; poll the durable
         // request state instead.
       }
@@ -909,6 +1555,12 @@ export async function assess(client, gate) {
       "real Lead assessment",
       async () => {
         const current = await client.get(`/intake/requests/${state.intake_request_id}`);
+        if (isQuotaPausedPayload(current.payload)) {
+          throw new SubscriptionPausedError(
+            "Core paused the request with SUBSCRIPTION_QUOTA_EXHAUSTED",
+            { stage: "ASSESSMENT", verification: gate.verification.record },
+          );
+        }
         return INTAKE_TERMINAL.has(current.payload?.state) ? current : null;
       },
       { timeoutMs: gate.timeoutMs, intervalMs: 2_000 },
@@ -966,7 +1618,7 @@ export async function assess(client, gate) {
   state.phase = "AWAITING_PLAN_APPROVAL";
   state.plan_hash = planHash;
   state.assessed_at = nowIso();
-  state.assessment_spend = result.spending?.status ?? null;
+  state.assessment_spend_observation = result.spending?.status ?? null;
   writeJson(statePath(gate), state);
   const plan = safePlan(result, gate);
   writeJson(planPath(gate), plan);
@@ -1012,6 +1664,13 @@ function safeModelCall(call) {
     total_tokens: numeric(call.total_tokens),
     cost_micros: numeric(call.cost_micros),
     max_cost_micros: numeric(call.max_cost_micros),
+    actual_charge_micros: call.actual_charge_micros ?? null,
+    actual_charge_known: call.actual_charge_known === true,
+    provider_reported_actual_charge_micros:
+      call.provider_reported_actual_charge_micros ?? null,
+    provider_reported_actual_charge_known:
+      call.provider_reported_actual_charge_known === true,
+    billing_source: call.billing_source ?? call.billingSource ?? null,
     provider: call.provider,
     model: call.model,
     purpose: call.purpose,
@@ -1019,19 +1678,20 @@ function safeModelCall(call) {
   };
 }
 
-function validateAccounting(gate, campaign, providerSessions, leadCalls, reviewCalls) {
-  const status = campaign?.inference?.status;
-  assert(status, "ACCOUNTING_UNAVAILABLE", "the Campaign has no inference envelope status");
-  const settled = numeric(status.settledMicros);
-  const reserved = numeric(status.reservedMicros);
-  const ambiguous = numeric(status.ambiguousMicros);
-  const overrun = numeric(status.overrunMicros);
-  const unresolved = numeric(status.unresolvedCount);
-  assert(settled <= gate.capMicros, "SPEND_CAP_EXCEEDED", `settled ${settled} exceeds the authorized ${gate.capMicros} micros`);
-  assert(overrun === 0, "ACCOUNTING_OVERRUN", `the inference envelope overran by ${overrun} micros`);
-  assert(ambiguous === 0, "ACCOUNTING_AMBIGUOUS", `${ambiguous} micros are ambiguous`);
-  assert(unresolved === 0, "ACCOUNTING_UNRESOLVED", `${unresolved} inference operations are unresolved`);
-  assert(reserved === 0, "ACCOUNTING_RESERVED", `${reserved} micros remain reserved after the Gate`);
+function buildFundingUsageEvidence(
+  gate,
+  preflight,
+  startedAt,
+  campaign,
+  providerSessions,
+  leadCalls,
+  reviewCalls,
+) {
+  assert(
+    campaign?.inference === null || campaign?.inference === undefined,
+    "FUNDING_MODE_MISMATCH",
+    "subscription-only execution returned a monetary inference envelope; Core V3 subscription admission is required and no envelope may be used as a spending cap",
+  );
 
   for (const call of [...leadCalls, ...reviewCalls]) {
     assert(call.state === "SETTLED", "MODEL_CALL_UNSETTLED", `model call ${call.reservation_id} is ${call.state}`);
@@ -1053,12 +1713,24 @@ function validateAccounting(gate, campaign, providerSessions, leadCalls, reviewC
     );
   }
 
-  const totalInput =
-    [...leadCalls, ...reviewCalls].reduce((total, call) => total + numeric(call.input_tokens), 0) +
-    providerSessions.reduce((total, session) => total + numeric(session.input_tokens), 0);
-  const totalOutput =
-    [...leadCalls, ...reviewCalls].reduce((total, call) => total + numeric(call.output_tokens), 0) +
-    providerSessions.reduce((total, session) => total + numeric(session.output_tokens), 0);
+  const callInput = [...leadCalls, ...reviewCalls].reduce(
+    (total, call) => total + numeric(call.input_tokens),
+    0,
+  );
+  const callOutput = [...leadCalls, ...reviewCalls].reduce(
+    (total, call) => total + numeric(call.output_tokens),
+    0,
+  );
+  const sessionInput = providerSessions.reduce(
+    (total, session) => total + numeric(session.input_tokens),
+    0,
+  );
+  const sessionOutput = providerSessions.reduce(
+    (total, session) => total + numeric(session.output_tokens),
+    0,
+  );
+  const totalInput = callInput + sessionInput;
+  const totalOutput = callOutput + sessionOutput;
   assert(
     totalInput <= gate.maxInputTokens,
     "INPUT_TOKEN_CEILING_EXCEEDED",
@@ -1070,49 +1742,118 @@ function validateAccounting(gate, campaign, providerSessions, leadCalls, reviewC
     `reported output ${totalOutput} exceeds the authorized ${gate.maxOutputTokens}`,
   );
 
+  const configuredRateMicros = [...leadCalls, ...reviewCalls].reduce(
+    (total, call) => total + numeric(call.cost_micros),
+    0,
+  );
+  const opencodeMessageCostMicros = providerSessions.reduce(
+    (total, session) => total + numeric(session.cost_micros),
+    0,
+  );
+  const listRateMicros = configuredRateMicros + opencodeMessageCostMicros;
+
+  const actualCharge = summarizeActualCharge([
+    ...leadCalls.map((record) => ({
+      record,
+      kind: "model_call",
+      id: record.reservation_id,
+    })),
+    ...reviewCalls.map((record) => ({
+      record,
+      kind: "model_call",
+      id: record.reservation_id,
+    })),
+    ...providerSessions.map((record) => ({
+      record,
+      kind: "provider_session",
+      id: record.session_record_id,
+    })),
+  ]);
+
+  const rateRevision = {
+    provider_settings_revision: preflight.provider.revision ?? null,
+    provider_settings_updated_at: preflight.provider.updatedAt ?? null,
+    configured_input_micros_per_million:
+      preflight.provider.inputMicrosPerMillion ?? null,
+    configured_output_micros_per_million:
+      preflight.provider.outputMicrosPerMillion ?? null,
+    schedule: isDeepSeekPeak(startedAt) ? "PEAK" : "OFF_PEAK",
+    source: "CORE_PROVIDER_SETTINGS_AND_OPENCODE_GO_DOC_2026-10-29",
+    owner_evidence_rate_revision:
+      gate.verification.record.rate_revision ?? null,
+  };
+
+  const subscription = summarizeVerification(gate.verification);
+  const unknown = [];
+  if (actualCharge.observation === "UNKNOWN") {
+    unknown.push("provider_reported_actual_charge");
+  }
+  if (subscription.quota.state === "UNKNOWN") {
+    unknown.push("subscription_quota_remaining");
+  }
+  if (subscription.source === "OWNER_CONSOLE") {
+    unknown.push("core_console_verification");
+  }
+  unknown.push("invoice");
+
   return {
-    basis: "CORE_CONFIGURED_RATE_AND_OPENCODE_MESSAGE_COST_ESTIMATES",
-    tokens: {
-      input: totalInput,
-      output: totalOutput,
-      max_input: gate.maxInputTokens,
-      max_output: gate.maxOutputTokens,
+    funding: {
+      policy: SUBSCRIPTION_POLICY,
+      mode: SUBSCRIPTION_MODE,
+      positive_usd_authorization: "NOT_REQUIRED",
+      spend_cap: "NOT_USED",
+      monetary_envelope: "ABSENT",
+      paid_mode: "PAID_MODE_DISABLED",
+      fallback: "NONE",
     },
-    envelope: {
-      authorized_micros: numeric(status.authorizedMicros),
-      settled_micros: settled,
-      reserved_micros: reserved,
-      ambiguous_micros: ambiguous,
-      overrun_micros: overrun,
-      available_micros: numeric(status.availableMicros),
-      unresolved_count: unresolved,
-      state: status.state,
-      by_role: status.byRole ?? [],
-      by_provider: status.byProvider ?? [],
+    subscription: {
+      ...subscription,
+      entitlement_observation:
+        subscription.source === "CORE"
+          ? "VERIFIED_CORE_EXPORT"
+          : "VERIFIED_OWNER_CONSOLE",
+      quota_observation: {
+        state: subscription.quota.state,
+        remaining_usd: subscription.quota.remaining_usd,
+        resets_at: subscription.quota.resets_at,
+        observed_at: subscription.observed_at,
+        source: subscription.source,
+      },
     },
-    model_calls: {
-      configured_rate_micros: [...leadCalls, ...reviewCalls].reduce(
-        (total, call) => total + numeric(call.cost_micros),
-        0,
-      ),
-      lead_count: leadCalls.length,
-      reviewer_count: reviewCalls.length,
+    usage: {
+      measured: {
+        input_tokens: totalInput,
+        output_tokens: totalOutput,
+        total_tokens:
+          [...leadCalls, ...reviewCalls].reduce(
+            (total, call) => total + numeric(call.total_tokens),
+            0,
+          ) +
+          providerSessions.reduce(
+            (total, session) => total + numeric(session.total_tokens),
+            0,
+          ),
+        max_input_tokens: gate.maxInputTokens,
+        max_output_tokens: gate.maxOutputTokens,
+      },
+      list_rate_equivalent: {
+        micros: listRateMicros,
+        lead_reviewer_configured_rate_micros: configuredRateMicros,
+        implementer_opencode_message_cost_micros: opencodeMessageCostMicros,
+        rate_revision: rateRevision,
+        provenance:
+          "CORE_CONFIGURED_RATE_PLUS_OPENCODE_LOCAL_MESSAGE_COST_ESTIMATE",
+        is_actual_charge: false,
+        is_spending_cap: false,
+      },
+      provider_reported_actual_charge: actualCharge,
+      unknown,
     },
-    provider_sessions: {
-      opencode_message_cost_micros: providerSessions.reduce(
-        (total, session) => total + numeric(session.cost_micros),
-        0,
-      ),
-      cost_semantics:
-        "OPENCODE_LOCAL_MESSAGE_COST_ESTIMATE_NOT_A_BALANCE_CHARGE_OR_INVOICE",
-      allowance: "UNKNOWN_CORE_DOES_NOT_PERSIST_OPENCODE_ALLOWANCE",
-      invoice: "UNKNOWN_NOT_AN_INVOICE",
-    },
-    console: {
-      remaining_allowance_or_balance: "UNKNOWN_OWNER_MUST_READ_OPENCODE_CONSOLE",
-      extra_usage: gate.extraUsage,
-      accounting: gate.accounting,
-    },
+    charge_incident:
+      actualCharge.observation === "VERIFIED_POSITIVE" ||
+      actualCharge.fallback_observed === true
+        ? actualCharge
+        : null,
   };
 }
 
@@ -1137,8 +1878,16 @@ async function executeInner(client, gate) {
 
   const pre = await preflight(client, gate);
   let projection = await client.get(`/intake/requests/${state.intake_request_id}`);
+  if (isQuotaPausedPayload(projection.payload)) {
+    throw new SubscriptionPausedError(
+      "Core reports SUBSCRIPTION_QUOTA_EXHAUSTED before approval",
+      { stage: "EXECUTION", verification: gate.verification.record },
+    );
+  }
   assert(
-    projection.payload?.state === "AWAITING_APPROVAL" || projection.payload?.state === "EXECUTING" || projection.payload?.state === "COMPLETED",
+    projection.payload?.state === "AWAITING_APPROVAL" ||
+      projection.payload?.state === "EXECUTING" ||
+      projection.payload?.state === "COMPLETED",
     "INTAKE_NOT_APPROVABLE",
     `intake request is ${projection.payload?.state}`,
   );
@@ -1147,9 +1896,9 @@ async function executeInner(client, gate) {
     "PLAN_HASH_MISMATCH",
     "Core's frozen plan hash does not match the approved hash",
   );
-
   if (projection.payload.state === "AWAITING_APPROVAL") {
     state.phase = "APPROVAL_SENT";
+    state.plan_approval = gate.planApproval;
     state.approval_rationale = `Owner reviewed the exact frozen plan ${gate.planHash} under authorization ${gate.authorization}.`;
     state.approved_at = nowIso();
     writeJson(statePath(gate), state);
@@ -1161,23 +1910,40 @@ async function executeInner(client, gate) {
         rationale: state.approval_rationale,
         principal_label: "owner-real-provider-uat",
         idempotency_key: `${gate.authorization}:approve`,
-        authorized_micros: gate.capMicros,
       });
     } catch (error) {
+      throwIfQuota(error, "EXECUTION");
       // Approval is idempotent by key, but a transport error is ambiguous. Poll
       // the durable state; never send a blind retry.
       const current = await client.get(`/intake/requests/${state.intake_request_id}`).catch(() => null);
+      if (isQuotaPausedPayload(current?.payload)) {
+        throw new SubscriptionPausedError(
+          "Core paused the approved request with SUBSCRIPTION_QUOTA_EXHAUSTED",
+          { stage: "EXECUTION", verification: gate.verification.record },
+        );
+      }
       if (!["EXECUTING", "COMPLETED"].includes(current?.payload?.state)) throw error;
     }
   }
 
   state.phase = "EXECUTING";
   writeJson(statePath(gate), state);
+  return finishExecution(client, gate, state, pre, startedAt, projection);
+}
 
+async function finishExecution(client, gate, state, pre, startedAt, projection) {
   const campaignId = await waitFor(
     "Campaign start",
     async () => {
       const current = await client.get(`/intake/requests/${state.intake_request_id}`);
+      if (isQuotaPausedPayload(current.payload)) {
+        state.campaign_id = current.payload?.campaignId ?? state.campaign_id ?? null;
+        writeJson(statePath(gate), state);
+        throw new SubscriptionPausedError(
+          "Core paused the request with SUBSCRIPTION_QUOTA_EXHAUSTED",
+          { stage: "EXECUTION", verification: gate.verification.record },
+        );
+      }
       return current.payload?.campaignId ?? null;
     },
     { timeoutMs: gate.timeoutMs, intervalMs: 2_000 },
@@ -1188,6 +1954,15 @@ async function executeInner(client, gate) {
   const campaign = await waitFor(
     "Campaign candidate",
     async () => {
+      const requestState = await client.get(
+        `/intake/requests/${state.intake_request_id}`,
+      );
+      if (isQuotaPausedPayload(requestState.payload)) {
+        throw new SubscriptionPausedError(
+          "Core paused the Campaign with SUBSCRIPTION_QUOTA_EXHAUSTED",
+          { stage: "EXECUTION", verification: gate.verification.record },
+        );
+      }
       const current = await client.get(`/campaigns/${campaignId}`);
       const detail = current.payload;
       const task = candidateTask(detail);
@@ -1297,7 +2072,23 @@ async function executeInner(client, gate) {
   assert(leadCalls.length >= 1, "LEAD_MODEL_CALL_MISSING", "no Lead model call was recorded");
   assert(reviewCalls.length >= 1, "REVIEWER_MODEL_CALL_MISSING", "no semantic reviewer model call was recorded");
 
-  const accounting = validateAccounting(gate, campaign, providerSessions, leadCalls, reviewCalls);
+  const fundingUsage = buildFundingUsageEvidence(
+    gate,
+    pre,
+    startedAt,
+    campaign,
+    providerSessions,
+    leadCalls,
+    reviewCalls,
+  );
+  if (fundingUsage.charge_incident) {
+    const incident = new UatError(
+      "SUBSCRIPTION_CHARGE_INCIDENT",
+      "a positive provider-reported charge or paid billing source was observed on a subscription-only run",
+    );
+    incident.fundingUsage = fundingUsage;
+    throw incident;
+  }
 
   const diffResponse = await client.get(`/campaigns/${campaignId}/candidates/${candidate.id}/diff`);
   const diff = diffResponse.payload ?? {};
@@ -1327,7 +2118,7 @@ async function executeInner(client, gate) {
 
   const evidence = redactDeep(
     {
-      schema: "factory.real-provider-uat.evidence.v1",
+      schema: "factory.real-provider-uat.evidence.v2",
       result: gateDecision.outcome === "ACCEPTED" ? "ACCEPTED" : `GATE_${gateDecision.outcome}`,
       phase: "COMPLETE",
       started_at: startedAt.toISOString(),
@@ -1342,18 +2133,20 @@ async function executeInner(client, gate) {
       preflight: pre,
       gate: {
         authorization_id: gate.authorization,
+        funding_policy: gate.fundingPolicy,
         accounting: gate.accounting,
         extra_usage: gate.extraUsage,
-        spend_cap_usd: gate.capUsd,
-        spend_cap_micros: gate.capMicros,
+        positive_usd_authorization: "NOT_REQUIRED",
+        spend_cap: "NOT_USED",
         max_input_tokens: gate.maxInputTokens,
         max_output_tokens: gate.maxOutputTokens,
         max_turns: gate.maxTurns,
         provider: gate.provider,
         model: gate.model,
-        plan_hash: gate.planHash,
-        plan_approval: gate.planApproval,
+        plan_hash: state.plan_hash ?? gate.planHash,
+        plan_approval: state.plan_approval ?? gate.planApproval,
         approval_rationale: state.approval_rationale,
+        subscription_evidence_sha256: gate.verification.sha256,
       },
       ids: {
         project: state.project_id,
@@ -1388,6 +2181,11 @@ async function executeInner(client, gate) {
             cost_semantics:
               "OPENCODE_LOCAL_MESSAGE_COST_ESTIMATE_NOT_A_BALANCE_CHARGE",
           },
+          actual_charge: readActualCharge(
+            implementer.session,
+            "provider_session",
+            state.attempt_id,
+          ),
         },
         sessions: providerSessions.map((session) => ({
           session_record_id: session.session_record_id,
@@ -1402,6 +2200,13 @@ async function executeInner(client, gate) {
           output_tokens: numeric(session.output_tokens),
           total_tokens: numeric(session.total_tokens),
           cost_micros: numeric(session.cost_micros),
+          cost_semantics:
+            "OPENCODE_LOCAL_MESSAGE_COST_ESTIMATE_NOT_A_BALANCE_CHARGE",
+          actual_charge: readActualCharge(
+            session,
+            "provider_session",
+            session.session_record_id,
+          ),
           cleanup_receipt: session.cleanup_receipt,
         })),
       },
@@ -1439,7 +2244,7 @@ async function executeInner(client, gate) {
         reasons: gateDecision.reasons ?? [],
         candidate_id: candidate.id,
       },
-      accounting,
+      ...fundingUsage,
       candidate: {
         commit_sha: candidate.commit_sha,
         tree_sha: candidate.tree_sha,
@@ -1452,6 +2257,9 @@ async function executeInner(client, gate) {
         real_compose_stack: true,
         live_provider_inference: "CALLS_MADE",
         deterministic_model_fixture: false,
+        funding_policy: SUBSCRIPTION_POLICY,
+        paid_fallback: "NONE",
+        redispatch: "NONE",
         github_pr_created_or_merged: false,
         github_write: "NONE",
         isolation: "NOT_CLAIMED",
@@ -1459,13 +2267,15 @@ async function executeInner(client, gate) {
       },
       commands: {
         assess: "scripts/real-provider-uat.sh assess",
-        execute: `scripts/real-provider-uat.sh execute --plan-hash ${gate.planHash}`,
+        execute: `scripts/real-provider-uat.sh execute --plan-hash ${state.plan_hash ?? gate.planHash}`,
+        resume: "scripts/real-provider-uat.sh resume",
       },
       non_claims: [
         "Author-run UAT, not independent acceptance.",
         "No ISOLATED, SEC-01 or credential-confinement certification.",
-        "Configured-rate micros are not an invoice.",
-        "OpenCode Go allowance consumption is UNKNOWN to Core unless the Owner reads the Console.",
+        "Configured-rate and OpenCode message-cost micros are list-rate equivalents, not actual charges or spending caps.",
+        "Provider-reported actual charge is unknown unless Core supplies explicit charge evidence.",
+        "OpenCode Go allowance consumption is UNKNOWN to Core; the Owner Console observation is recorded but not Core-verified.",
       ],
     },
     client.secrets,
@@ -1480,6 +2290,83 @@ async function executeInner(client, gate) {
   };
 }
 
+function pausePath(gate) {
+  return join(gate.evidenceDir, "real-provider-uat-paused.json");
+}
+
+function pauseEvidence(client, gate, error, { preDispatch = false } = {}) {
+  ensureEvidenceDir(gate);
+  let state = null;
+  if (!preDispatch) {
+    state = loadState(gate) ?? {
+      schema: STATE_SCHEMA,
+      authorization: gate.authorization,
+    };
+    state.phase = "PAUSED_SUBSCRIPTION_QUOTA_EXHAUSTED";
+    state.pause_reason = "SUBSCRIPTION_QUOTA_EXHAUSTED";
+    state.paused_at = nowIso();
+    state.resume_stage = error.stage ?? "EXECUTION";
+    state.recovery =
+      "AUTHENTICATED_CORE_RESUME_AFTER_REFRESHED_QUOTA_EVIDENCE";
+    writeJson(statePath(gate), state);
+  }
+  const verification = gate.verification
+    ? summarizeVerification(gate.verification)
+    : error?.verification
+      ? {
+          source: error.verification.source,
+          plan: error.verification.plan,
+          account_fingerprint: error.verification.account_fingerprint,
+          entitlement: error.verification.entitlement,
+          extra_usage: error.verification.extra_usage,
+          balance_fallback: error.verification.balance_fallback,
+          no_charge_route: error.verification.no_charge_route,
+          quota: error.verification.quota,
+          core_verifiable: error.verification.core_verifiable,
+          limitation: error.verification.limitation ?? null,
+        }
+      : null;
+  const evidence = redactDeep(
+    {
+      schema: "factory.real-provider-uat.paused.v1",
+      result: "PAUSED_SUBSCRIPTION_QUOTA_EXHAUSTED",
+      phase: "PAUSED",
+      paused_at: nowIso(),
+      recoverable: true,
+      fallback: "NONE",
+      redispatch: "NONE",
+      pre_dispatch: preDispatch,
+      gate: {
+        ...gateEcho(gate),
+        plan_hash: (state?.plan_hash ?? gate.planHash) || null,
+      },
+      state,
+      subscription: verification,
+      quota: verification?.quota ?? null,
+      error: {
+        code: error?.code ?? "SUBSCRIPTION_QUOTA_EXHAUSTED",
+        message: error?.message ?? String(error),
+      },
+      resume_command: preDispatch
+        ? "Re-run assess after refreshing the Owner Console verification"
+        : "scripts/real-provider-uat.sh resume",
+      boundary: {
+        real_core_http_api: true,
+        funding_policy: SUBSCRIPTION_POLICY,
+        paid_fallback: "NONE",
+        provider_or_model_fallback: "NONE",
+        redispatch: "NONE",
+        github_write: "NONE",
+        isolation: "NOT_CLAIMED",
+        independent_acceptance: "NOT_CLAIMED",
+      },
+    },
+    client?.secrets ?? new Set(),
+  );
+  writeJson(pausePath(gate), evidence);
+  return evidence;
+}
+
 /// Execute the approved plan. Any failure after this point preserves a
 /// minimal, redacted failure record so an accounting or gate failure is never
 /// hidden by an exception.
@@ -1487,10 +2374,22 @@ export async function execute(client, gate) {
   const state = loadState(gate);
   try {
     return await executeInner(client, gate);
-  } catch (error) {
+  } catch (caught) {
+    const error = classifySubscriptionAdmissionError(caught);
+    if (error?.paused === true) {
+      const evidence = pauseEvidence(client, gate, error);
+      return {
+        result: "PAUSED_SUBSCRIPTION_QUOTA_EXHAUSTED",
+        paused: true,
+        evidence,
+        pausePath: pausePath(gate),
+        gateDecision: null,
+      };
+    }
+    const latestState = loadState(gate) ?? state;
     const failure = redactDeep(
       {
-        schema: "factory.real-provider-uat.evidence.v1",
+        schema: "factory.real-provider-uat.evidence.v2",
         result: `FAILED_${error?.code ?? "UNEXPECTED"}`,
         phase: "FAILED",
         finished_at: nowIso(),
@@ -1499,22 +2398,27 @@ export async function execute(client, gate) {
           plan_hash: gate.planHash,
           plan_approval: gate.planApproval,
         },
-        state,
+        state: latestState,
         error: {
           code: error?.code ?? "UNEXPECTED",
           message: error?.message ?? String(error),
         },
+        ...(error?.fundingUsage ?? {}),
         boundary: {
           real_core_http_api: true,
           live_provider_inference: "CALLS_MAY_HAVE_BEEN_MADE",
+          funding_policy: SUBSCRIPTION_POLICY,
+          paid_fallback: "NONE",
+          provider_or_model_fallback: "NONE",
+          redispatch: "NONE",
           github_write: "NONE",
           isolation: "NOT_CLAIMED",
           independent_acceptance: "NOT_CLAIMED",
         },
-        accounting: {
-          status: "NOT_RECONCILED",
-          note: "A failure before final reconciliation is not zero cost.",
-        },
+        unknown: [
+          "invoice",
+          "provider_reported_actual_charge_when_absent",
+        ],
       },
       client.secrets,
     );
@@ -1527,8 +2431,138 @@ export async function execute(client, gate) {
   }
 }
 
+/// Resume a quota-paused subscription run through an authenticated Core
+/// operation. This never re-approves the plan, changes provider/model/funding,
+/// or dispatches a replacement operation.
+export async function resume(client, gate) {
+  const state = loadState(gate);
+  assert(state, "STATE_MISSING", "no paused state exists; run assess first");
+  ensureStateAuthorization(state, gate);
+  assert(
+    state.phase === "PAUSED_SUBSCRIPTION_QUOTA_EXHAUSTED",
+    "STATE_NOT_PAUSED",
+    `the existing state is ${state.phase}; resume requires PAUSED_SUBSCRIPTION_QUOTA_EXHAUSTED`,
+  );
+  assert(
+    state.resume_stage === "EXECUTION",
+    "RESUME_NOT_SUPPORTED_FOR_STAGE",
+    "quota exhaustion during assessment requires a new authorization; only execution resumes automatically",
+  );
+  assert(
+    state.plan_hash && state.campaign_id,
+    "RESUME_CONTEXT_MISSING",
+    "the paused state has no frozen plan hash or Campaign identity",
+  );
+  if (gate.verification.record.quota.state === "EXHAUSTED") {
+    const evidence = pauseEvidence(
+      client,
+      gate,
+      new SubscriptionPausedError(
+        "subscription quota is still exhausted according to refreshed Owner evidence",
+        { stage: "EXECUTION", verification: gate.verification.record },
+      ),
+    );
+    return {
+      result: "PAUSED_SUBSCRIPTION_QUOTA_EXHAUSTED",
+      paused: true,
+      evidence,
+      pausePath: pausePath(gate),
+      gateDecision: null,
+    };
+  }
+
+  let pre;
+  try {
+    pre = await preflight(client, gate);
+  } catch (error) {
+    if (error?.paused === true) {
+      const evidence = pauseEvidence(client, gate, error);
+      return {
+        result: "PAUSED_SUBSCRIPTION_QUOTA_EXHAUSTED",
+        paused: true,
+        evidence,
+        pausePath: pausePath(gate),
+        gateDecision: null,
+      };
+    }
+    throw error;
+  }
+  let projection = await client.get(`/intake/requests/${state.intake_request_id}`);
+  assert(
+    projection.payload?.plan?.plan_hash === state.plan_hash,
+    "PLAN_HASH_MISMATCH",
+    "Core's frozen plan hash does not match the paused run",
+  );
+
+  if (!["EXECUTING", "COMPLETED"].includes(projection.payload?.state)) {
+    try {
+      await client.post(`/intake/requests/${state.intake_request_id}/resume`, {
+        expected_plan_hash: state.plan_hash,
+        expected_campaign_id: state.campaign_id,
+        subscription_evidence_sha256: gate.verification.sha256,
+        idempotency_key: `${gate.authorization}:resume:${state.resume_count ?? 0}`,
+      });
+    } catch (error) {
+      if (error?.code === "CORE_HTTP" && /-> 404|-> 405/.test(error.message)) {
+        const blocked = new UatError(
+          "CORE_V3_SUBSCRIPTION_RESUME_REQUIRED",
+          "Core does not expose the subscription quota resume operation; no fallback or redispatch was attempted",
+          1,
+        );
+        blocked.state = state;
+        throw blocked;
+      }
+      throwIfQuota(error, "EXECUTION");
+      const current = await client
+        .get(`/intake/requests/${state.intake_request_id}`)
+        .catch(() => null);
+      if (isQuotaPausedPayload(current?.payload)) {
+        const evidence = pauseEvidence(
+          client,
+          gate,
+          new SubscriptionPausedError(
+            "Core paused the resume with SUBSCRIPTION_QUOTA_EXHAUSTED",
+            { stage: "EXECUTION", verification: gate.verification.record },
+          ),
+        );
+        return {
+          result: "PAUSED_SUBSCRIPTION_QUOTA_EXHAUSTED",
+          paused: true,
+          evidence,
+          pausePath: pausePath(gate),
+          gateDecision: null,
+        };
+      }
+      if (!["EXECUTING", "COMPLETED"].includes(current?.payload?.state)) {
+        throw error;
+      }
+    }
+  }
+
+  state.phase = "EXECUTING";
+  state.resume_count = (state.resume_count ?? 0) + 1;
+  state.resumed_at = nowIso();
+  writeJson(statePath(gate), state);
+  return finishExecution(client, gate, state, pre, new Date(), projection);
+}
+
 export async function main(argv = process.argv.slice(2), env = process.env) {
   const gate = parseGate(env, argv);
+  try {
+    gate.verification = loadSubscriptionVerification(gate);
+  } catch (error) {
+    if (error?.paused === true) {
+      const evidence = pauseEvidence(null, gate, error, { preDispatch: true });
+      printSummary("PAUSED_SUBSCRIPTION_QUOTA_EXHAUSTED", [
+        "No dispatch was attempted.",
+        `Paused evidence: ${pausePath(gate)}`,
+        "Refresh the Owner Console quota/entitlement evidence, then re-run assess.",
+      ]);
+      process.exitCode = EXIT_PAUSED;
+      return { result: "PAUSED_SUBSCRIPTION_QUOTA_EXHAUSTED", paused: true, evidence };
+    }
+    throw error;
+  }
   const token = loadOperatorToken(env);
   activeSecrets.add(token);
   const client = new CoreClient({ baseUrl: gate.coreApiUrl, token });
@@ -1563,7 +2597,26 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       return { result: "DRY_RUN_READY", evidence };
     }
     if (gate.command === "assess") {
-      const assessed = await assess(client, gate);
+      let assessed;
+      try {
+        assessed = await assess(client, gate);
+      } catch (error) {
+        if (error?.paused === true) {
+          const evidence = pauseEvidence(client, gate, error);
+          printSummary("PAUSED_SUBSCRIPTION_QUOTA_EXHAUSTED", [
+            "Assessment hit a quota pause; no retry or fallback was attempted.",
+            `Paused evidence: ${pausePath(gate)}`,
+            "A new authorization is required to re-assess after refresh.",
+          ]);
+          process.exitCode = EXIT_PAUSED;
+          return {
+            result: "PAUSED_SUBSCRIPTION_QUOTA_EXHAUSTED",
+            paused: true,
+            evidence,
+          };
+        }
+        throw classifySubscriptionAdmissionError(error);
+      }
       printSummary("AWAITING_PLAN_APPROVAL", [
         `Project: ${assessed.state.project_id}`,
         `Request: ${assessed.state.intake_request_id}`,
@@ -1573,7 +2626,19 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       ]);
       return assessed;
     }
-    const executed = await execute(client, gate);
+    const executed =
+      gate.command === "resume"
+        ? await resume(client, gate)
+        : await execute(client, gate);
+    if (executed.paused === true) {
+      printSummary("PAUSED_SUBSCRIPTION_QUOTA_EXHAUSTED", [
+        "Recoverable pause; no provider/model/funding fallback and no redispatch.",
+        `Paused evidence: ${executed.pausePath}`,
+        "Refresh the Owner Console quota/entitlement evidence, then run resume.",
+      ]);
+      process.exitCode = EXIT_PAUSED;
+      return executed;
+    }
     printSummary(executed.result, [
       `Gate: ${executed.gateDecision.outcome}`,
       `Candidate: ${executed.evidence.ids.candidate_commit}`,
