@@ -349,7 +349,9 @@ The fake-Core simulation in the contract tests covers downstream pause,
 replay, accounting and evidence code only. Its output uses the
 `FAKE_CORE_SIMULATION` prefix, evidence kind `FAKE_CORE_SIMULATION`, and
 `SIMULATED_*` results. It cannot be treated as request admission, runtime
-execution, live inference or acceptance evidence.
+execution, live inference or acceptance evidence. The executable `main` accepts
+no simulation option. The test-only runner requires an explicitly marked fake
+transport and refuses to default to the live Core client.
 
 Do not delete the evidence directory between phases. The state file prevents a
 second paid request under the same authorization.

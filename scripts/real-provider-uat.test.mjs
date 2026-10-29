@@ -37,6 +37,7 @@ import {
   loadSubscriptionVerification,
   parseGate,
   readActualCharge,
+  runFakeCoreSimulation,
   summarizeActualCharge,
 } from "./real-provider-uat.mjs";
 
@@ -126,12 +127,51 @@ function runDriver(args, env, { simulation = false } = {}) {
   if (!simulation) {
     return spawnAndCollect(process.execPath, [DRIVER.pathname, ...args], env);
   }
-  const source = `import { main } from ${JSON.stringify(DRIVER.href)};\nmain(${JSON.stringify(args)}, process.env, { simulation: true }).catch((error) => { const code = error?.code ?? "UNEXPECTED"; process.stderr.write("FAKE_CORE_SIMULATION=REFUSED code=" + code + " " + String(error?.message ?? error) + "\\n"); process.exitCode = error?.exitCode ?? 1; });`;
+  const source = `import { readFileSync } from "node:fs";
+import { runFakeCoreSimulation } from ${JSON.stringify(DRIVER.href)};
+const token = readFileSync(process.env.FACTORY_OPERATOR_TOKEN_FILE, "utf8").trim();
+const calls = [];
+const base = process.env.FACTORY_CORE_API_URL.replace(/\\/+$/, "");
+const client = {
+  simulationTransport: true,
+  calls,
+  secrets: new Set([token]),
+  async request(method, path, body, options = {}) {
+    let response;
+    try {
+      response = await fetch(base + path, {
+        method,
+        headers: { authorization: "Bearer " + token, ...(body === undefined ? {} : { "content-type": "application/json" }) },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+    } catch (error) {
+      throw Object.assign(new Error("fake Core transport failed"), { code: options.ambiguousCode ?? "CORE_TRANSPORT" });
+    }
+    const text = await response.text();
+    let payload = null;
+    if (text) { try { payload = JSON.parse(text); } catch { payload = text; } }
+    calls.push({ method, path, status: response.status });
+    if (!response.ok && !(options.allowStatuses ?? []).includes(response.status)) {
+      const code = payload && typeof payload === "object" ? payload.code ?? payload.error : null;
+      throw Object.assign(new Error("fake Core response"), { code: typeof code === "string" ? code : options.statusCode ?? "CORE_HTTP" });
+    }
+    return { status: response.status, payload };
+  },
+  get(path, options) { return this.request("GET", path, undefined, options); },
+  post(path, body, options) { return this.request("POST", path, body, options); },
+  put(path, body, options) { return this.request("PUT", path, body, options); },
+};
+runFakeCoreSimulation(${JSON.stringify(args)}, process.env, client).catch((error) => { const code = error?.code ?? "UNEXPECTED"; process.stderr.write("FAKE_CORE_SIMULATION=REFUSED code=" + code + " " + String(error?.message ?? error) + "\\n"); process.exitCode = error?.exitCode ?? 1; });`;
   return spawnAndCollect(process.execPath, ["--input-type=module", "-e", source], env);
 }
 
 function runSimulation(args, env) {
   return runDriver(args, env, { simulation: true });
+}
+
+function runMainWithSimulationOption(args, env) {
+  const source = `import { main } from ${JSON.stringify(DRIVER.href)};\nmain(${JSON.stringify(args)}, process.env, { simulation: true }).catch((error) => { const code = error?.code ?? "UNEXPECTED"; process.stderr.write("REAL_PROVIDER_UAT=REFUSED code=" + code + " " + String(error?.message ?? error) + "\\n"); process.exitCode = error?.exitCode ?? 1; });`;
+  return spawnAndCollect(process.execPath, ["--input-type=module", "-e", source], env);
 }
 
 function runWrapper(args, env) {
@@ -1115,7 +1155,21 @@ test("a Core without subscription verification fails closed before creating a Pr
   assert.ok(requests.every((request) => !request.url.endsWith("/projects")));
 });
 
-test("request admission remains unverified and blocks before every resource or inference call", async () => {
+test("fake-Core simulation requires an explicit fake transport and cannot default to CoreClient", async () => {
+  requests = [];
+  const env = baseGate(port, {
+    FACTORY_REAL_PROVIDER_UAT: "1",
+    FACTORY_REAL_PROVIDER_EVIDENCE_DIR: join(ROOT, "simulation-needs-fake-transport"),
+  });
+  await assert.rejects(
+    runFakeCoreSimulation(["assess"], env),
+    (error) => error.code === "FAKE_CORE_TRANSPORT_REQUIRED",
+  );
+  assert.equal(requests.length, 0);
+  assert.ok(!existsSync(env.FACTORY_REAL_PROVIDER_EVIDENCE_DIR));
+});
+
+test("live main ignores simulation options and blocks before resource or inference calls", async () => {
   requests = [];
   resetFlow();
   const env = baseGate(port, {
@@ -1123,9 +1177,11 @@ test("request admission remains unverified and blocks before every resource or i
     FACTORY_REAL_PROVIDER_EVIDENCE_DIR: join(ROOT, "admission-rejected-evidence"),
     FACTORY_REAL_PROVIDER_TIMEOUT_SECS: "120",
   });
-  const result = await runDriver(["assess"], env);
+  const result = await runMainWithSimulationOption(["assess"], env);
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /REQUEST_ADMISSION_NOT_VERIFIED/);
+  assert.doesNotMatch(result.stdout, /FAKE_CORE_SIMULATION/);
+  assert.doesNotMatch(result.stderr, /FAKE_CORE_SIMULATION/);
   assert.equal(flow.projectCalls, 0);
   assert.equal(flow.profileCalls, 0);
   assert.equal(flow.defaultCalls, 0);
