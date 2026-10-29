@@ -31,7 +31,7 @@ provenance and is not current campaign certification.
 | Conversational Home (#62) | `sf-wave3/ux-conversation` / `factory/office-conversation/20261029` | PR #80 at `3d394652fd3956676affbefb6c8109076ca33c77` | Luna subagent `home_conversation`; fixture Chromium clean rerun PASS; V2 grant contract repair active | Use existing authenticated V2 execution-policy grant in E2E and Lead projection; rerun canonical journey, review exact SHA, keep visual sign-off pending |
 | Agent Office V3 (#65/#70) | `sf-wave3/isometric-v3` / `factory/office-isometric-v3/20261029` | PR #82 at `82b9ee4703326947a9a3c78153d9bf1994a3a960`; source `e31e46298b42f13e80701913b43878336587ccb8`, captures `782b5d9dbe484f41afa12120667a07f248703bb0` | Luna subagent `agent_office_v3`; exact independent review PASS; prior infinite loop corrected | Resolve inherited CAP-050/052 architecture check after #81; Owner visual acceptance pending |
 | Access repairs (#36–#38) | `sf-wave3/access-repairs` / `factory/access-repairs/20261029` | Cumulative #38 head `0c3fd4436dd4a83ef2a1a721a22c0932883fd5e3`; clean | Luna subagent `access_security_repairs`; exact review PASS; #38 fast-forwarded, #37 policy-only split being prepared | Preserve stack order and put the guard in #37 before that layer can promote; no merge; remote Serve and SEC-01 NOT_TESTED |
-| Provider acceptance / PR #79 | `sf-wave3/provider-acceptance` / `factory/provider-acceptance/20261029` | Candidate `c5c90ce1f3a2a2274724b18cf41aa2d26ef6530a`, pushed | Luna subagent `funding_shared_admission`; HIGHs repaired; exact re-review and CI in progress | Collect review/CI; live UAT BLOCKED because Core V3 subscription admission is absent |
+| Provider acceptance / PR #79 | `sf-wave3/provider-acceptance` / `factory/provider-acceptance/20261029` | Candidate `c5c90ce1f3a2a2274724b18cf41aa2d26ef6530a`, pushed | Luna subagent `funding_shared_admission`; exact re-review BLOCK HIGH for request admission after Project/profile creation; repair active | Require request-specific read-only pre-admission before any create or remain blocked; preserve fail-closed UAT |
 | Capability evidence shape | `sf-wave3/capability-evidence-shape` / `factory/capability-evidence-shape/20261029` | `13adff74a8de434fd46c527ea92608b695a98d03`; draft PR #81 | Director | Collect CI and exact-SHA independent review; integrate only after gates pass |
 
 No active Cargo or frontend writer was observed in the funding, Home, access,
@@ -187,10 +187,14 @@ completion.
 - PR #79 candidate `a8d3488` was independently BLOCKED for null/source-only
   verified-zero accounting and arbitrary Core error-body secret leakage. Both
   HIGH findings are repaired in `c5c90ce`; 27/27 harness tests and syntax/
-  whitespace checks pass. Rootless Podman config and six negative mutations
-  passed without starting services; image is digest-pinned. Current Core still
-  lacks `/funding/subscription`, so preflight fails before Project/Request and
-  real UAT remains BLOCKED. Exact re-review/CI pending.
+  whitespace checks pass. Independent re-review BLOCKED another HIGH: if
+  provider funding verification exists but request-level Lead admission fails,
+  the harness may create Project/profile before `/intake/requests` refuses.
+  Current Core lacks `/funding/subscription` and fails earlier, but harness must
+  require request-specific read-only admission before any create or remain
+  blocked. A repair is active. Podman config and six negative mutations passed
+  without starting services; fixture image is digest-pinned. No live inference
+  or billing occurred.
 
 ## Immediate sequence
 
@@ -214,6 +218,6 @@ completion.
 **Independent review:** access candidate `0c3fd44` PASS (reviewer suite rerun
 limitation recorded); funding `f4e757a` APPROVE; Agent Office V3 `82b9ee4` PASS;
 capability PR #81 `13adff7` APPROVE (container-dev rerun pending on corrected
-integration candidate); PR #79 `c5c90ce` review pending (prior `a8d3488`
-BLOCK HIGH repaired).
+integration candidate); PR #79 `c5c90ce` BLOCK HIGH (request pre-admission
+repair active).
 **Campaign status:** in progress; Wave 3 is not a certified product release.
