@@ -2192,6 +2192,31 @@ pub(crate) async fn campaign_requirement_in_tx(
     connection: &mut SqliteConnection,
     campaign_id: &str,
 ) -> Result<CampaignInferenceRequirement, Error> {
+    // Milestone 1 subscription rows are durable proposals only. Do not let a
+    // legacy/V1 inference path interpret their presence as permission to use
+    // the monetary ledger or provider balance. This shared check is reached
+    // by Core model-call and Worker turn admission (and their request binding
+    // paths) before an upstream effect.
+    let subscription_policy: Option<(String, String)> = sqlx::query_as::query_as(
+        "SELECT state,policy_sha256 FROM subscription_funding_policies WHERE campaign_id=?1",
+    )
+    .bind(campaign_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    if let Some((state, policy_sha256)) = subscription_policy {
+        if !matches!(state.as_str(), "DISABLED" | "PAUSED_QUOTA" | "RECOVERABLE")
+            || policy_sha256.len() != 64
+            || !policy_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(Error::Forbidden(
+                "subscription funding evidence is invalid; provider dispatch is disabled".into(),
+            ));
+        }
+        return Err(Error::Unavailable(
+            "subscription-funded provider admission is not enabled; dispatch remains fail-closed"
+                .into(),
+        ));
+    }
     let quarantined: Option<(String, String)> = sqlx::query_as::query_as(
         "SELECT reason,detail_json FROM inference_campaign_binding_quarantine
          WHERE campaign_id=?1",
@@ -2704,6 +2729,55 @@ mod tests {
         .execute(&db.pool)
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn subscription_funding_proposal_never_falls_through_to_v1_ledger() {
+        let path = temp_path("factory-subscription-admission-fail-closed");
+        let db = Database::open(&path).await.unwrap();
+        seed_project(&db, "project").await;
+        let now = Utc::now().to_rfc3339();
+        sqlx::query::query(
+            "INSERT INTO actions
+             (id,project_id,objective,provider,model,risk,status,objective_sha256,created_at)
+             VALUES ('subscription-action','project','objective','opencode','model',
+                     'R0','AUTHORIZED','hash',?1)",
+        )
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO campaigns(id,action_id,status,created_at)
+             VALUES ('subscription-campaign','subscription-action','BLOCKED_AUTHORIZATION',?1)",
+        )
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let policy_json = r#"{"funding":{"kind":"SUBSCRIPTION"}}"#;
+        sqlx::query::query(
+            "INSERT INTO subscription_funding_policies
+             (campaign_id,authorization_id,policy_json,policy_sha256,state,reason,
+              observed_at_ms,resets_at_ms,created_at_ms,updated_at_ms)
+             VALUES ('subscription-campaign','subscription-auth',?1,?2,'DISABLED',NULL,1,NULL,1,1)",
+        )
+        .bind(policy_json)
+        .bind("a".repeat(64))
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+        let mut connection = db.pool.acquire().await.unwrap();
+        let error = campaign_requirement_in_tx(&mut connection, "subscription-campaign")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::Unavailable(_)),
+            "a disabled subscription proposal must not fall through to legacy/billable inference: {error:?}"
+        );
+        db.close().await;
+        let _ = std::fs::remove_file(path);
     }
 
     async fn create_envelope(

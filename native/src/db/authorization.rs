@@ -134,6 +134,7 @@ impl Database {
     ) -> Result<SubscriptionFundingRecord, Error> {
         if observed_at_ms <= 0
             || policy.authorization_id.trim().is_empty()
+            || policy.authorization_revision <= 0
             || policy.policy_id.trim().is_empty()
             || policy.scope_sha256.len() != 64
             || !policy
@@ -1014,6 +1015,7 @@ mod tests {
         ExecutionPolicyV3 {
             policy_id: "policy-subscription-1".into(),
             authorization_id: "auth-subscription-1".into(),
+            authorization_revision: 1,
             funding: FundingPolicy::Subscription {
                 grant_id: "grant".into(),
                 binding_sha256: sha256_hex(binding_json.as_bytes()),

@@ -1955,6 +1955,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn provider_turn_refuses_subscription_proposal_before_reservation() {
+        let (_path, db, session) = active_turn_fixture_v2().await;
+        // Simulate a stale/partially migrated state that the normal immutable
+        // triggers prevent. Runtime admission must still fail closed if the
+        // subscription record is present beside an executable authorization.
+        sqlx::query::query("DROP TRIGGER subscription_funding_policy_requires_unapproved_campaign")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        sqlx::query::query("DROP TRIGGER campaign_authorization_excludes_subscription_proposal")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let policy_json = r#"{"funding":{"kind":"SUBSCRIPTION"}}"#;
+        sqlx::query::query(
+            "INSERT INTO subscription_funding_policies
+             (campaign_id,authorization_id,policy_json,policy_sha256,state,reason,
+              observed_at_ms,resets_at_ms,created_at_ms,updated_at_ms)
+             VALUES ('campaign','subscription-auth',?1,?2,'DISABLED',NULL,1,NULL,1,1)",
+        )
+        .bind(policy_json)
+        .bind("a".repeat(64))
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+        let error = db
+            .authorize_provider_turn(&session, "worker", 1, 1_000, &"a".repeat(64), 1)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::Unavailable(_)),
+            "a subscription proposal cannot authorize Worker egress without runtime admission: {error:?}"
+        );
+        let reservations: (i64,) =
+            sqlx::query_as::query_as("SELECT COUNT(*) FROM provider_turn_reservations")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(reservations.0, 0, "refusal must precede reservation");
+    }
+
+    #[tokio::test]
     async fn v2_provider_tool_events_have_no_lifetime_turn_cap() {
         let (_path, db, session) = active_turn_fixture_v2().await;
         for index in 0..64 {

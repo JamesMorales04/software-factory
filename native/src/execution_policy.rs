@@ -240,6 +240,15 @@ impl SubscriptionBinding {
             && self.api_key_route_disabled
             && quota_available
     }
+
+    pub fn is_verified_no_charge_route_at(&self, now_ms: i64) -> bool {
+        let fresh_quota = matches!(
+            self.quota,
+            QuotaObservation::Available { observed_at_ms, valid_until_ms, .. }
+                if observed_at_ms > 0 && observed_at_ms <= now_ms && valid_until_ms > now_ms
+        );
+        now_ms > 0 && self.is_verified_no_charge_route() && fresh_quota
+    }
 }
 
 /// V3 replaces V2's mandatory envelope with an explicit funding policy.
@@ -248,10 +257,141 @@ impl SubscriptionBinding {
 pub struct ExecutionPolicyV3 {
     pub policy_id: String,
     pub authorization_id: String,
+    pub authorization_revision: i64,
     pub funding: FundingPolicy,
     pub scope_sha256: String,
     pub progress: ProgressPolicy,
     pub operations: OperationLimits,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum FundingAdmissionDecision {
+    Allowed,
+    Disabled,
+    UnverifiedEntitlement,
+    UnknownQuota,
+    BillableRouteForbidden,
+    ExtraUsageUnverified,
+    QuotaExhausted,
+    ProviderUnavailable,
+    AuthorizationInvalid,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderAuthenticationClass {
+    OpenCodeSubscription,
+    ChatGptPlan,
+    ApiKey,
+    Unknown,
+}
+
+/// Trusted facts needed for one deterministic subscription admission check.
+/// `funding_enabled` is read from authoritative campaign state; provider and
+/// authentication values come from the provider adapter, never model output.
+pub struct FundingAdmissionContext<'a> {
+    pub policy: &'a ExecutionPolicyV3,
+    pub authorization_id: &'a str,
+    pub authorization_revision: i64,
+    pub authorization_revoked: bool,
+    pub funding_revoked: bool,
+    pub grant_id: &'a str,
+    pub provider: &'a str,
+    pub model: &'a str,
+    pub authentication: ProviderAuthenticationClass,
+    pub scope_sha256: &'a str,
+    pub settings_revision: &'a str,
+    pub funding_enabled: bool,
+    pub provider_available: bool,
+    pub now_ms: i64,
+}
+
+/// Deterministic admission. This only evaluates evidence supplied by a
+/// trusted provider adapter; user labels and model responses are not evidence.
+pub fn evaluate_funding_admission(
+    context: &FundingAdmissionContext<'_>,
+) -> FundingAdmissionDecision {
+    if !context.provider_available {
+        return FundingAdmissionDecision::ProviderUnavailable;
+    }
+    if !context.funding_enabled {
+        return FundingAdmissionDecision::Disabled;
+    }
+    let policy = context.policy;
+    let (provider, model, authentication, scope_sha256, now_ms) = (
+        context.provider,
+        context.model,
+        context.authentication,
+        context.scope_sha256,
+        context.now_ms,
+    );
+    if policy.policy_id.trim().is_empty()
+        || policy.authorization_id.trim().is_empty()
+        || policy.authorization_id != context.authorization_id
+        || policy.authorization_revision <= 0
+        || policy.authorization_revision != context.authorization_revision
+        || context.authorization_revoked
+        || context.funding_revoked
+        || context.grant_id.trim().is_empty()
+        || policy.scope_sha256 != scope_sha256
+        || scope_sha256.len() != 64
+        || !scope_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || now_ms <= 0
+    {
+        return FundingAdmissionDecision::AuthorizationInvalid;
+    }
+    let FundingPolicy::Subscription {
+        grant_id, binding, ..
+    } = &policy.funding
+    else {
+        return FundingAdmissionDecision::BillableRouteForbidden;
+    };
+    if grant_id != context.grant_id {
+        return FundingAdmissionDecision::AuthorizationInvalid;
+    }
+    let expected = match binding.route {
+        SubscriptionRoute::OpenCodeGo => (
+            "opencode",
+            ProviderAuthenticationClass::OpenCodeSubscription,
+        ),
+        SubscriptionRoute::CodexChatGpt => ("codex", ProviderAuthenticationClass::ChatGptPlan),
+    };
+    if provider != expected.0
+        || model != binding.model_id
+        || authentication != expected.1
+        || context.settings_revision != binding.settings_revision
+    {
+        return FundingAdmissionDecision::BillableRouteForbidden;
+    }
+    if !binding.extra_usage_disabled
+        || !binding.api_key_route_disabled
+        || !binding.no_charge_route_verified
+    {
+        return FundingAdmissionDecision::ExtraUsageUnverified;
+    }
+    if binding.provider_account_id.trim().is_empty()
+        || binding.plan_id.trim().is_empty()
+        || binding.model_id.trim().is_empty()
+        || binding.settings_revision.trim().is_empty()
+    {
+        return FundingAdmissionDecision::AuthorizationInvalid;
+    }
+    match binding.quota {
+        QuotaObservation::Exhausted { .. } => return FundingAdmissionDecision::QuotaExhausted,
+        QuotaObservation::Unknown { .. } => return FundingAdmissionDecision::UnknownQuota,
+        QuotaObservation::Available {
+            observed_at_ms,
+            valid_until_ms,
+            ..
+        } if observed_at_ms <= 0 || observed_at_ms > now_ms || valid_until_ms <= now_ms => {
+            return FundingAdmissionDecision::UnknownQuota;
+        }
+        QuotaObservation::Available { .. } => {}
+    }
+    if !binding.is_verified_no_charge_route_at(now_ms) {
+        return FundingAdmissionDecision::UnverifiedEntitlement;
+    }
+    FundingAdmissionDecision::Allowed
 }
 
 /// Technical operation bounds. These are per-operation and capacity limits,
@@ -765,6 +905,90 @@ mod tests {
 mod subscription_funding_tests {
     use super::*;
 
+    fn admission_policy() -> ExecutionPolicyV3 {
+        let binding = SubscriptionBinding {
+            route: SubscriptionRoute::OpenCodeGo,
+            entitlement: ProviderEntitlement::Verified {
+                plan_id: "go".into(),
+                provider_account_id: "account".into(),
+            },
+            provider_account_id: "account".into(),
+            plan_id: "go".into(),
+            model_id: "model".into(),
+            settings_revision: "revision-1".into(),
+            entitlement_verified: true,
+            no_charge_route_verified: true,
+            extra_usage_disabled: true,
+            api_key_route_disabled: true,
+            quota: QuotaObservation::Available {
+                observed_at_ms: 10,
+                valid_until_ms: 20,
+                remaining: Some(100),
+            },
+        };
+        ExecutionPolicyV3 {
+            policy_id: "policy-1".into(),
+            authorization_id: "auth-1".into(),
+            authorization_revision: 1,
+            funding: FundingPolicy::Subscription {
+                grant_id: "grant-1".into(),
+                binding_sha256: "a".repeat(64),
+                binding: Box::new(binding),
+            },
+            scope_sha256: "b".repeat(64),
+            progress: ProgressPolicy {
+                diagnose_after_stagnant_checkpoints: std::num::NonZeroU32::new(2).unwrap(),
+                escalate_after_unsuccessful_replans: std::num::NonZeroU32::new(2).unwrap(),
+                observation_timeout_secs: std::num::NonZeroU32::new(30).unwrap(),
+            },
+            operations: OperationLimits {
+                model_request_timeout_secs: std::num::NonZeroU32::new(60).unwrap(),
+                tool_call_timeout_secs: std::num::NonZeroU32::new(60).unwrap(),
+                max_request_bytes: std::num::NonZeroU32::new(1024).unwrap(),
+                max_response_bytes: std::num::NonZeroU32::new(1024).unwrap(),
+                max_generation_tokens: std::num::NonZeroU32::new(1024).unwrap(),
+                max_in_flight_operations: std::num::NonZeroU32::new(1).unwrap(),
+            },
+        }
+    }
+
+    fn admission(policy: &ExecutionPolicyV3) -> FundingAdmissionDecision {
+        admission_for(
+            policy,
+            "opencode",
+            "model",
+            ProviderAuthenticationClass::OpenCodeSubscription,
+            &"b".repeat(64),
+            true,
+        )
+    }
+
+    fn admission_for(
+        policy: &ExecutionPolicyV3,
+        provider: &str,
+        model: &str,
+        authentication: ProviderAuthenticationClass,
+        scope_sha256: &str,
+        funding_enabled: bool,
+    ) -> FundingAdmissionDecision {
+        evaluate_funding_admission(&FundingAdmissionContext {
+            policy,
+            authorization_id: "auth-1",
+            authorization_revision: 1,
+            authorization_revoked: false,
+            funding_revoked: false,
+            grant_id: "grant-1",
+            provider,
+            model,
+            authentication,
+            scope_sha256,
+            settings_revision: "revision-1",
+            funding_enabled,
+            provider_available: true,
+            now_ms: 15,
+        })
+    }
+
     #[test]
     fn subscription_funding_policy_round_trips_without_usd_envelope() {
         let policy = FundingPolicy::Subscription {
@@ -835,6 +1059,132 @@ mod subscription_funding_tests {
         let mut mismatched = binding;
         mismatched.plan_id = "other-plan".into();
         assert!(!mismatched.is_verified_no_charge_route());
+    }
+
+    #[test]
+    fn funding_admission_requires_enabled_verified_subscription_and_fresh_quota() {
+        let mut policy = admission_policy();
+        assert_eq!(admission(&policy), FundingAdmissionDecision::Allowed);
+
+        assert_eq!(
+            admission_for(
+                &policy,
+                "opencode",
+                "model",
+                ProviderAuthenticationClass::OpenCodeSubscription,
+                &"b".repeat(64),
+                false,
+            ),
+            FundingAdmissionDecision::Disabled
+        );
+        if let FundingPolicy::Subscription { binding, .. } = &mut policy.funding {
+            binding.extra_usage_disabled = false;
+        } else {
+            panic!("expected subscription binding");
+        }
+        assert_eq!(
+            admission(&policy),
+            FundingAdmissionDecision::ExtraUsageUnverified
+        );
+        if let FundingPolicy::Subscription { binding, .. } = &mut policy.funding {
+            binding.extra_usage_disabled = true;
+            binding.quota = QuotaObservation::Unknown {
+                observed_at_ms: 10,
+                reason: "provider quota is not observable".into(),
+            };
+        }
+        assert_eq!(admission(&policy), FundingAdmissionDecision::UnknownQuota);
+        if let FundingPolicy::Subscription { binding, .. } = &mut policy.funding {
+            binding.quota = QuotaObservation::Available {
+                observed_at_ms: 10,
+                valid_until_ms: 14,
+                remaining: Some(10),
+            };
+        }
+        assert_eq!(admission(&policy), FundingAdmissionDecision::UnknownQuota);
+    }
+
+    #[test]
+    fn funding_admission_refuses_changed_route_or_billable_authentication() {
+        let policy = admission_policy();
+        assert_eq!(
+            admission_for(
+                &policy,
+                "opencode",
+                "different-model",
+                ProviderAuthenticationClass::OpenCodeSubscription,
+                &"b".repeat(64),
+                true,
+            ),
+            FundingAdmissionDecision::BillableRouteForbidden
+        );
+        assert_eq!(
+            admission_for(
+                &policy,
+                "opencode",
+                "model",
+                ProviderAuthenticationClass::ApiKey,
+                &"b".repeat(64),
+                true,
+            ),
+            FundingAdmissionDecision::BillableRouteForbidden
+        );
+        assert_eq!(
+            admission_for(
+                &policy,
+                "opencode",
+                "model",
+                ProviderAuthenticationClass::OpenCodeSubscription,
+                &"c".repeat(64),
+                true,
+            ),
+            FundingAdmissionDecision::AuthorizationInvalid
+        );
+    }
+
+    #[test]
+    fn funding_admission_fences_revocation_and_authorization_or_settings_revisions() {
+        let policy = admission_policy();
+        let scope_sha256 = "b".repeat(64);
+        let mut context = FundingAdmissionContext {
+            policy: &policy,
+            authorization_id: "auth-1",
+            authorization_revision: 1,
+            authorization_revoked: false,
+            funding_revoked: false,
+            grant_id: "grant-1",
+            provider: "opencode",
+            model: "model",
+            authentication: ProviderAuthenticationClass::OpenCodeSubscription,
+            scope_sha256: &scope_sha256,
+            settings_revision: "revision-1",
+            funding_enabled: true,
+            provider_available: true,
+            now_ms: 15,
+        };
+        context.authorization_revision = 2;
+        assert_eq!(
+            evaluate_funding_admission(&context),
+            FundingAdmissionDecision::AuthorizationInvalid
+        );
+        context.authorization_revision = 1;
+        context.authorization_revoked = true;
+        assert_eq!(
+            evaluate_funding_admission(&context),
+            FundingAdmissionDecision::AuthorizationInvalid
+        );
+        context.authorization_revoked = false;
+        context.funding_revoked = true;
+        assert_eq!(
+            evaluate_funding_admission(&context),
+            FundingAdmissionDecision::AuthorizationInvalid
+        );
+        context.funding_revoked = false;
+        context.settings_revision = "revision-2";
+        assert_eq!(
+            evaluate_funding_admission(&context),
+            FundingAdmissionDecision::BillableRouteForbidden
+        );
     }
 
     #[test]

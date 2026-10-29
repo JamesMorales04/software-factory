@@ -299,6 +299,7 @@ type ReplayRow = (
     i64,
     i64,
 );
+type DispatchReservationRow = (String, Option<i64>, Option<String>, String, String);
 
 const MAX_CALL_OUTPUT_TOKENS: u64 = 8192;
 const RESERVATION_LIFETIME_MS: i64 = 120_000;
@@ -587,16 +588,33 @@ impl Database {
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let now_ms = Utc::now().timestamp_millis();
-        let row: Option<(String, Option<i64>, Option<String>, String)> = sqlx::query_as::query_as(
-            "SELECT state,dispatched_at_ms,ledger_reservation_id,request_sha256
+        let row: Option<DispatchReservationRow> = sqlx::query_as::query_as(
+            "SELECT state,dispatched_at_ms,ledger_reservation_id,request_sha256,objective_id
                  FROM model_call_reservations WHERE reservation_id=?1",
         )
         .bind(reservation_id)
         .fetch_optional(&mut *transaction)
         .await?;
-        let Some((state, dispatched_at_ms, ledger_reservation_id, _request_sha256)) = row else {
+        let Some((state, dispatched_at_ms, ledger_reservation_id, _request_sha256, objective_id)) =
+            row
+        else {
             return Err(Error::NotFound);
         };
+        // Candidate-bound Core calls share the same campaign funding check as
+        // Worker turns. Re-read it at dispatch so a funding proposal recorded
+        // after reservation cannot be bypassed by a stale reservation.
+        if let Some((campaign_id,)) = sqlx::query_as::query_as::<_, (String,)>(
+            "SELECT r.campaign_id FROM candidates cd
+             JOIN attempts a ON a.id=cd.attempt_id
+             JOIN runs r ON r.id=a.run_id WHERE cd.id=?1",
+        )
+        .bind(&objective_id)
+        .fetch_optional(&mut *transaction)
+        .await?
+        {
+            super::inference_ledger::campaign_requirement_in_tx(&mut transaction, &campaign_id)
+                .await?;
+        }
         if dispatched_at_ms.is_some() {
             if let Some(ledger_id) = &ledger_reservation_id {
                 let (ledger_dispatched,): (Option<i64>,) = sqlx::query_as::query_as(
@@ -1943,6 +1961,118 @@ mod tests {
                 .await,
             Err(Error::Forbidden(_))
         ));
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn core_dispatch_rechecks_subscription_funding_after_reservation() {
+        let (path, db) = project_db("factory-model-call-subscription-fence").await;
+        let now = Utc::now().to_rfc3339();
+        sqlx::query::query(
+            "INSERT INTO actions
+             (id,project_id,objective,provider,model,risk,status,objective_sha256,created_at)
+             VALUES ('action-subscription','project','objective','opencode','model',
+                     'R0','AUTHORIZED','hash',?1)",
+        )
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO campaigns(id,action_id,status,created_at)
+             VALUES ('campaign-subscription','action-subscription','AUTHORIZED',?1)",
+        )
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO runs VALUES ('run-subscription','campaign-subscription','QUEUED',?1)",
+        )
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO attempts(id,run_id,status,created_at)
+             VALUES ('attempt-subscription','run-subscription','ACCEPTED',?1)",
+        )
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO candidates(id,attempt_id,action_spec_sha256,commit_sha,tree_sha,
+                                    implementer_id,created_at)
+             VALUES ('candidate-subscription','attempt-subscription','hash','commit','tree',
+                     'worker',?1)",
+        )
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let request = evaluation_input("candidate-subscription");
+        sqlx::query::query(
+            "INSERT INTO model_call_reservations
+             (reservation_id,role,principal_id,project_id,objective_id,scope_id,provider,model,
+              purpose,request_sha256,max_input_tokens,max_output_tokens,max_total_tokens,
+              max_cost_micros,state,expires_at_ms,created_at,updated_at)
+             VALUES ('reservation-subscription','EVALUATION','evaluator','project',?1,?1,
+                     'opencode-go','deepseek-v4.1-flash','evaluate',?2,100,100,200,1000,
+                     'RESERVED',?3,?4,?4)",
+        )
+        .bind(&request.objective_id)
+        .bind(&request.request_sha256)
+        .bind(Utc::now().timestamp_millis() + 60_000)
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+        // Model a proposal appearing after the call was reserved. Normal
+        // migration triggers make this inconsistent state unreachable, while
+        // the dispatch boundary still rechecks against stale reservations.
+        sqlx::query::query("DROP TRIGGER subscription_funding_policy_requires_unapproved_campaign")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        sqlx::query::query("DROP TRIGGER campaign_authorization_excludes_subscription_proposal")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let policy_json = r#"{"funding":{"kind":"SUBSCRIPTION"}}"#;
+        sqlx::query::query(
+            "INSERT INTO subscription_funding_policies
+             (campaign_id,authorization_id,policy_json,policy_sha256,state,reason,
+              observed_at_ms,resets_at_ms,created_at_ms,updated_at_ms)
+             VALUES ('campaign-subscription','subscription-auth',?1,?2,'DISABLED',NULL,1,NULL,1,1)",
+        )
+        .bind(policy_json)
+        .bind("a".repeat(64))
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+        let error = db
+            .acquire_model_call_dispatch("reservation-subscription", "provider-request")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::Unavailable(_)),
+            "Core dispatch must recheck funding before writing dispatch intent: {error:?}"
+        );
+        let dispatched: (Option<i64>,) = sqlx::query_as::query_as(
+            "SELECT dispatched_at_ms FROM model_call_reservations
+             WHERE reservation_id='reservation-subscription'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert!(
+            dispatched.0.is_none(),
+            "refusal must precede dispatch intent"
+        );
         db.close().await;
         let _ = std::fs::remove_file(path);
     }
