@@ -28,7 +28,7 @@ provenance and is not current campaign certification.
 | Lane | Worktree / branch | Base / current state | Owner | Next deliverable |
 |---|---|---|---|---|
 | Subscription funding V3 | `sf-wave3/subscription-funding` / `factory/subscription-funding/20261029` | `5b902a4d3baf1d9840c8e511f08fd051ef93f9a6` plus dirty `native/src/execution_policy.rs` evaluator | Luna subagent `funding_shared_admission` | Failing regression tests, then shared fail-closed enforcement across Core and Worker paths; no paid fallback |
-| Conversational Home (#62) | `sf-wave3/ux-conversation` / `factory/office-conversation/20261029` | `6482f0c9b68f7fec3933a1b4dbe50e8f6e1e225c`, clean | Implemented by Luna subagent `home_conversation`; exact-SHA independent re-review pending from `review_home_523b288` | Integrate only after review is clear; real Core/Compose acceptance and Owner visual sign-off remain pending |
+| Conversational Home (#62) | `sf-wave3/ux-conversation` / `factory/office-conversation/20261029` | `6482f0c9b68f7fec3933a1b4dbe50e8f6e1e225c`, pushed | Implemented by Luna subagent `home_conversation`; exact-SHA independent review PASS from `review_home_523b288`; draft PR #80 | Await CI and real Core/Compose acceptance; Owner visual sign-off remains pending |
 | Agent Office V3 (#65/#70) | `sf-wave3/isometric-v3` / `factory/office-isometric-v3/20261029` | `f7479c0c5f936d1097426dd1293ef43ea6e72fb6` plus dirty SVG/DOM renderer work and untracked `office/node_modules` | Unassigned; preserve | Reassess after Home lane frees frontend capacity; do not discard existing changes |
 | Access repairs (#36–#38) | `sf-wave3/access-repairs` / `factory/access-repairs/20261029` | `c8bf930bc34e7d7062b13821d0c84f734e394a18` plus dirty repairs | Unassigned; preserve | Resume only with safe exclusive ownership; require negative tests and exact-SHA independent security review |
 | Provider acceptance / PR #79 | `sf-wave3/provider-acceptance` / `factory/provider-acceptance/20261029` | `32907995c84cbe6f348be17acd61073a18f8b566` plus dirty harness/runbook/tests | Unassigned; preserve | Reconcile with subscription-only policy after funding boundary; no live inference |
@@ -79,6 +79,9 @@ completion.
 - Home fix candidate `6482f0c`: implementer reports focused Home tests 24/24,
   full Office suite 270/270, typecheck, Biome, build and fixture Chromium PASS.
   The >500 kB chunk warning persists; real Core/Compose remains `NOT_TESTED`.
+- Draft PR #80 is open against `campaign/office-ux-wave3-20261028`; exact-SHA
+  independent review passed. The PR is not integrated and no acceptance is
+  claimed until CI and real Core/Compose browser evidence are complete.
 - Office V3 and access repairs: dirty work preserved; no acceptance/review
   claim made.
 - No live provider inference ran in this campaign session.
@@ -88,8 +91,9 @@ completion.
 1. Collect and inspect the funding agent's exact diff, focused tests and commit;
    request independent review on that exact SHA, then proceed to quota/restart
    fencing.
-2. Collect independent re-review of Home candidate `6482f0c`; repair any new
-   findings, rerun invalidated checks, then integrate only if review is clear.
+2. Monitor PR #80 CI; obtain real Core/Compose browser evidence with no live
+   provider inference, then integrate only if gates pass. Keep visual Owner
+   acceptance pending.
 3. Reconcile PR #79 only after subscription admission and no-overage evidence
    are represented accurately. Keep the live run gated and draft until reviewed.
 4. Reassign frontend capacity to preserved Agent Office V3 work; retain explicit
