@@ -2951,7 +2951,10 @@ mod ledger_link_tests {
     use super::tests::active_turn_fixture;
     use super::*;
     use crate::db::CampaignEnvelopeBindingInput;
-    use crate::inference_ledger::NewInferenceEnvelope;
+    use crate::execution_policy::ReservationState;
+    use crate::inference_ledger::{
+        NewInferenceEnvelope, ReconcileInferenceInput, ReconciliationOutcome,
+    };
 
     async fn setup_turn_envelope(
         db: &Database,
@@ -3052,6 +3055,124 @@ mod ledger_link_tests {
         .await
         .unwrap();
         envelope.envelope_id
+    }
+
+    #[tokio::test]
+    async fn v2_dispatch_crash_survives_restart_and_reconciles_once() {
+        let (path, db, session) = active_turn_fixture(100).await;
+        let envelope_id = setup_turn_envelope(
+            &db,
+            "opencode",
+            "deepseek-v4.1-flash",
+            "request-crash",
+            1_000,
+        )
+        .await;
+        let turn = db
+            .authorize_provider_turn(&session, "worker", 1, 50, &"a".repeat(64), 1)
+            .await
+            .unwrap();
+        let binding = ProviderTurnBindingInput {
+            reservation_id: turn.reservation_id.clone(),
+            session_record_id: session.clone(),
+            worker_id: "worker".into(),
+            generation: 1,
+            request_sha256: "b".repeat(64),
+            model: "deepseek-v4.1-flash".into(),
+            path: "/v1/chat/completions".into(),
+            body_bytes: 64,
+            sequence: 0,
+        };
+        db.bind_provider_turn(&binding).await.unwrap();
+        let (ledger_id,): (String,) = sqlx::query_as::query_as(
+            "SELECT ledger_reservation_id FROM provider_turn_ledger_requests
+             WHERE reservation_id=?1 AND sequence=0",
+        )
+        .bind(&turn.reservation_id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        db.close().await;
+
+        // Simulate Core/Worker restart after dispatch intent committed but
+        // before any upstream response was observed.
+        let reopened = Database::open(&path).await.unwrap();
+        let status = reopened
+            .inference_spending_status(&envelope_id)
+            .await
+            .unwrap();
+        assert_eq!(status.reserved_micros.get(), 1_000);
+        let record = reopened.inference_reservation(&ledger_id).await.unwrap();
+        assert_eq!(record.state, ReservationState::Reserved);
+        assert!(record.dispatched_at_ms.is_some());
+
+        // Re-running the same egress binding must not send again or create a
+        // second hold.
+        assert!(matches!(
+            reopened.bind_provider_turn(&binding).await,
+            Err(Error::Forbidden(_) | Error::Conflict(_))
+        ));
+        let (mapping_count,): (i64,) = sqlx::query_as::query_as(
+            "SELECT COUNT(*) FROM provider_turn_ledger_requests WHERE reservation_id=?1",
+        )
+        .bind(&turn.reservation_id)
+        .fetch_one(&reopened.pool)
+        .await
+        .unwrap();
+        assert_eq!(mapping_count, 1);
+        let (egress_count,): (i64,) = sqlx::query_as::query_as(
+            "SELECT COUNT(*) FROM provider_turn_egress_requests WHERE reservation_id=?1",
+        )
+        .bind(&turn.reservation_id)
+        .fetch_one(&reopened.pool)
+        .await
+        .unwrap();
+        assert_eq!(egress_count, 1, "the crashed request must not be resent");
+        let (requests_bound,): (i64,) = sqlx::query_as::query_as(
+            "SELECT requests_bound FROM provider_turn_reservations WHERE reservation_id=?1",
+        )
+        .bind(&turn.reservation_id)
+        .fetch_one(&reopened.pool)
+        .await
+        .unwrap();
+        assert_eq!(requests_bound, 1);
+
+        reopened
+            .expire_inference_reservations(Utc::now().timestamp_millis() + 120_000)
+            .await
+            .unwrap();
+        let status = reopened
+            .inference_spending_status(&envelope_id)
+            .await
+            .unwrap();
+        assert_eq!(status.ambiguous_micros.get(), 1_000);
+        assert_eq!(status.reserved_micros.get(), 0);
+
+        let reconciliation = ReconcileInferenceInput {
+            reservation_id: ledger_id,
+            outcome: ReconciliationOutcome::Settled {
+                settled_micros: UsdMicros::new(1_000).unwrap(),
+            },
+            actor: "operator".into(),
+            evidence_ref: "provider-usage-export-after-crash".into(),
+            evidence_sha256: "c".repeat(64),
+        };
+        reopened.reconcile_inference(&reconciliation).await.unwrap();
+        reopened.reconcile_inference(&reconciliation).await.unwrap();
+        let mut conflicting = reconciliation.clone();
+        conflicting.evidence_sha256 = "d".repeat(64);
+        assert!(matches!(
+            reopened.reconcile_inference(&conflicting).await,
+            Err(Error::Conflict(_))
+        ));
+        let status = reopened
+            .inference_spending_status(&envelope_id)
+            .await
+            .unwrap();
+        assert_eq!(status.settled_micros.get(), 1_000);
+        assert_eq!(status.ambiguous_micros.get(), 0);
+        reopened.close().await;
+        let _ = std::fs::remove_file(path);
     }
 
     #[tokio::test]
