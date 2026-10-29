@@ -59,17 +59,21 @@ impl Database {
         Ok(result)
     }
 
-    pub async fn standing_delegations(&self) -> Result<Vec<StandingDelegation>, Error> {
-        let ids: Vec<(String,)> =
-            sqlx::query_as::query_as("SELECT id FROM standing_delegations ORDER BY created_at,id")
-                .fetch_all(&self.pool)
-                .await?;
-        let mut grants = Vec::with_capacity(ids.len());
-        let mut connection = self.pool.acquire().await?;
-        for (id,) in ids {
-            grants.push(load_delegation(&mut connection, &id).await?);
-        }
-        Ok(grants)
+    /// Versioned delegation identities for operator projections. Callers load
+    /// the exact V1 or V2 record; legacy caps are never projected as V2.
+    pub async fn standing_delegation_versions(&self) -> Result<Vec<(String, u32)>, Error> {
+        let rows: Vec<(String, i64)> = sqlx::query_as::query_as(
+            "SELECT id,schema_version FROM standing_delegations ORDER BY created_at,id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|(id, version)| {
+                let version = u32::try_from(version)
+                    .map_err(|_| Error::Invalid("stored delegation schema version"))?;
+                Ok((id, version))
+            })
+            .collect()
     }
 
     pub async fn standing_delegation(&self, id: &str) -> Result<StandingDelegation, Error> {

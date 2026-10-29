@@ -2293,6 +2293,21 @@ async fn start_lead_campaign_in_tx(
     .bind(&now)
     .execute(&mut *connection)
     .await?;
+    // A billable V2 Campaign and its one operator-request envelope commit
+    // together. The evidence row above establishes request ownership; a
+    // missing, foreign or already-bound envelope rolls the whole start back.
+    if authorization_input.execution_mode == "TRUSTED_LOCAL_PROVIDER" {
+        super::inference_ledger::bind_campaign_inference_envelope_in_tx(
+            connection,
+            &crate::inference_ledger::CampaignEnvelopeBindingInput {
+                campaign_id: campaign.id.clone(),
+                envelope_id: authorization_input.monetary_envelope_id.clone(),
+                actor: principal_id.clone(),
+                evidence_sha256: policy_hash.clone(),
+            },
+        )
+        .await?;
+    }
     if let Some(profile) = &identity.profile {
         sqlx::query::query(
             "INSERT INTO campaign_execution_profile_bindings
@@ -4583,41 +4598,6 @@ mod tests {
         (path, db, grant)
     }
 
-    fn legacy_test_grant() -> crate::lead::StandingDelegation {
-        let mut grant = crate::lead::StandingDelegation {
-            id: "grant".into(),
-            principal_id: "owner".into(),
-            audit_id: "audit".into(),
-            project_id: "project".into(),
-            revision: 1,
-            content_hash: String::new(),
-            objective_classes: vec![ObjectiveClass::Feature],
-            allowed_paths: vec!["src".into()],
-            capabilities: vec![Capability::RepositoryEdit, Capability::GenericToolchain],
-            risk_classes: vec![RiskClass::R0, RiskClass::R1],
-            autonomous_start: false,
-            autonomous_risk_classes: Vec::new(),
-            route: ProviderRoute {
-                provider: "opencode".into(),
-                model: "deepseek-v4.1-flash".into(),
-                mode: "build".into(),
-            },
-            max_attempts: 2,
-            max_timeout_secs: 300,
-            max_repair_cycles: 1,
-            max_wall_clock_secs: 1_800,
-            max_parallel: 1,
-            max_sessions: 4,
-            max_requests: 2,
-            max_cumulative_sessions: 8,
-            max_cumulative_attempts: 16,
-            expires_at: Utc::now() + chrono::Duration::days(1),
-            revoked_at: None,
-        };
-        grant.content_hash = grant.compute_content_hash();
-        grant
-    }
-
     fn project_config() -> ProjectConfig {
         let mut config = ProjectConfig {
             project_id: "project".into(),
@@ -4920,6 +4900,21 @@ mod tests {
             progress: progress_policy(),
             operations: operations(),
         }
+    }
+
+    async fn test_inference_envelope(db: &Database, request_id: &str) -> String {
+        db.create_inference_envelope(&crate::inference_ledger::NewInferenceEnvelope {
+            request_id: request_id.into(),
+            project_id: "project".into(),
+            authorized_micros: crate::execution_policy::UsdMicros::new(1_000_000).unwrap(),
+            actor: "test-operator".into(),
+            scope_sha256: "a".repeat(64),
+            evidence_sha256: "b".repeat(64),
+            idempotency_key: format!("test-envelope:{request_id}"),
+        })
+        .await
+        .unwrap()
+        .envelope_id
     }
 
     struct DraftReady {
@@ -6119,7 +6114,12 @@ mod tests {
         assert_eq!(usage_before.requests, 1);
         assert_eq!(usage_before.sessions, 1);
         assert_eq!(usage_before.attempts, 0);
-        let authorization = model_authorization(&ready.proposal);
+        let authorization = {
+            let mut authorization = model_authorization(&ready.proposal);
+            authorization.monetary_envelope_id =
+                test_inference_envelope(&db, &ready.request.id).await;
+            authorization
+        };
         let started = db
             .start_lead_campaign(
                 &ready.request.id,
@@ -6199,7 +6199,12 @@ mod tests {
         let (path, db, _) = fixture().await;
         let first = ready_lead(&db, "MODEL").await;
         let second = ready_lead(&db, "MODEL").await;
-        let authorization = model_authorization(&first.proposal);
+        let authorization = {
+            let mut authorization = model_authorization(&first.proposal);
+            authorization.monetary_envelope_id =
+                test_inference_envelope(&db, &first.request.id).await;
+            authorization
+        };
         db.start_lead_campaign(
             &first.request.id,
             "duplicate-first",
@@ -7026,7 +7031,7 @@ mod tests {
             provider_mode: ready.proposal.route.mode.clone(),
             delegation_id: ready.grant.id.clone(),
             allowed_tools: vec!["write_file".into()],
-            monetary_envelope_id: "envelope-test".into(),
+            monetary_envelope_id: test_inference_envelope(&db, &ready.request.id).await,
             progress: progress_policy(),
             operations: operations(),
         };
@@ -7258,7 +7263,7 @@ mod tests {
                 action: &binding,
                 action_spec: &action.spec,
                 objective: &request.objective,
-                grant: &legacy_test_grant(),
+                grant: &grant,
                 now: Utc::now(),
             },
         )

@@ -347,9 +347,7 @@ impl Database {
                         (input, output, cost, deadline)
                     }
                     _ => {
-                        return Err(Error::Invalid(
-                            "legacy authorization is missing its caps".into(),
-                        ));
+                        return Err(Error::Invalid("legacy authorization is missing its caps"));
                     }
                 };
             let used: (i64, i64, i64, i64) = sqlx::query_as::query_as(
@@ -422,12 +420,12 @@ impl Database {
             };
             let operation_limits: crate::execution_policy::OperationLimits =
                 serde_json::from_str(&operation_limits).map_err(|_| {
-                    Error::Invalid("V2 provider turn operation limits are malformed".into())
+                    Error::Invalid("V2 provider turn operation limits are malformed")
                 })?;
             let deadline_secs = i64::from(operation_limits.model_request_timeout_secs.get());
             let max_cost = match ledger_turn_cost_bound {
                 Some(bound) => i64::try_from(bound)
-                    .map_err(|_| Error::Invalid("provider turn ledger bound".into()))?,
+                    .map_err(|_| Error::Invalid("provider turn ledger bound"))?,
                 None => 0,
             };
             (
@@ -444,9 +442,7 @@ impl Database {
                 0,
             )
         } else {
-            return Err(Error::Invalid(
-                "unknown authorization policy version".into(),
-            ));
+            return Err(Error::Invalid("unknown authorization policy version"));
         };
         let max_total = max_input.saturating_add(max_output);
         let remaining_input = max_input
@@ -1899,15 +1895,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn v2_provider_turn_is_typed_unavailable_without_the_ledger() {
+    async fn v2_provider_turn_is_typed_unavailable_without_a_bound_envelope() {
         let (_path, db, session) = active_turn_fixture_v2().await;
         let error = db
             .authorize_provider_turn(&session, "worker", 1, 1_000, &"a".repeat(64), 1)
             .await
             .unwrap_err();
         assert!(
-            matches!(error, Error::Unavailable(ref message) if message == V2_PROVIDER_TURN_LEDGER_REQUIRED),
-            "{error:?}"
+            matches!(error, Error::Unavailable(_)),
+            "a V2 turn without a bound envelope must fail closed: {error:?}"
         );
         db.close().await;
     }

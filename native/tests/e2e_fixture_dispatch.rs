@@ -1339,6 +1339,45 @@ async fn model_lead_start_dispatches_through_supervisor_to_accepted_gate() {
         revoked_at: None,
     };
     grant.content_hash = grant.compute_content_hash();
+    // This legacy end-to-end fixture posts a V1 delegation to the V1
+    // delegation route. The plan fixture itself now consumes the exact V2
+    // execution policy, so it must not reinterpret V1 caps as authority.
+    let fixture_grant = factory_native::lead::StandingDelegationV2 {
+        id: grant.id.clone(),
+        principal_id: grant.principal_id.clone(),
+        audit_id: grant.audit_id.clone(),
+        project_id: grant.project_id.clone(),
+        revision: grant.revision,
+        content_hash: String::new(),
+        objective_classes: grant.objective_classes.clone(),
+        allowed_paths: grant.allowed_paths.clone(),
+        capabilities: grant.capabilities.clone(),
+        risk_classes: grant.risk_classes.clone(),
+        autonomous_start: grant.autonomous_start,
+        autonomous_risk_classes: grant.autonomous_risk_classes.clone(),
+        route: grant.route.clone(),
+        max_timeout_secs: 300,
+        max_parallel: 1,
+        operations: factory_native::execution_policy::OperationLimits {
+            model_request_timeout_secs: std::num::NonZeroU32::new(300).unwrap(),
+            tool_call_timeout_secs: std::num::NonZeroU32::new(300).unwrap(),
+            max_request_bytes: std::num::NonZeroU32::new(2 * 1024 * 1024).unwrap(),
+            max_response_bytes: std::num::NonZeroU32::new(2 * 1024 * 1024).unwrap(),
+            max_generation_tokens: std::num::NonZeroU32::new(8_192).unwrap(),
+            max_in_flight_operations: std::num::NonZeroU32::new(4).unwrap(),
+        },
+        progress: factory_native::execution_policy::ProgressPolicy {
+            diagnose_after_stagnant_checkpoints: std::num::NonZeroU32::new(2).unwrap(),
+            escalate_after_unsuccessful_replans: std::num::NonZeroU32::new(1).unwrap(),
+            observation_timeout_secs: std::num::NonZeroU32::new(300).unwrap(),
+        },
+        expires_at: grant.expires_at,
+        revoked_at: None,
+    };
+    let fixture_grant = factory_native::lead::StandingDelegationV2 {
+        content_hash: fixture_grant.compute_content_hash(),
+        ..fixture_grant
+    };
     let delegated = operator(
         &client,
         reqwest::Method::POST,
@@ -1393,7 +1432,7 @@ async fn model_lead_start_dispatches_through_supervisor_to_accepted_gate() {
         },
         &action_spec,
         "Implement the fixture.",
-        &grant,
+        &fixture_grant,
         chrono::Utc::now(),
     )
     .unwrap();
