@@ -311,6 +311,84 @@ describe("Home", () => {
     expect(mocks.createIntakeRequest).not.toHaveBeenCalled();
   });
 
+  it("requires a positive inference spend authorization and sends the edited amount", async () => {
+    renderHome();
+    await screen.findByLabelText("Project");
+    await userEvent.selectOptions(
+      screen.getByLabelText("Project"),
+      "project-1",
+    );
+    await userEvent.type(
+      screen.getByLabelText("What should the Factory do?"),
+      "Add an export endpoint.",
+    );
+    const spend = screen.getByLabelText("Maximum inference spend (USD)");
+    await userEvent.clear(spend);
+    await userEvent.click(
+      screen.getByRole("button", { name: "Submit request" }),
+    );
+    expect(
+      await screen.findByText(
+        "Enter a positive USD amount for the inference envelope.",
+      ),
+    ).toBeDefined();
+    expect(document.activeElement?.id).toBe("home-spend");
+    expect(mocks.createIntakeRequest).not.toHaveBeenCalled();
+
+    await userEvent.type(spend, "10.50");
+    await userEvent.click(
+      screen.getByRole("button", { name: "Submit request" }),
+    );
+    await waitFor(() => expect(mocks.createIntakeRequest).toHaveBeenCalled());
+    expect(mocks.createIntakeRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ authorized_micros: 10_500_000 }),
+    );
+  });
+
+  it("requires a positive inference spend authorization", async () => {
+    renderHome();
+    await screen.findByLabelText("Project");
+    await userEvent.selectOptions(
+      screen.getByLabelText("Project"),
+      "project-1",
+    );
+    await userEvent.type(
+      screen.getByLabelText("What should the Factory do?"),
+      "Add an export endpoint.",
+    );
+    await userEvent.clear(
+      screen.getByLabelText("Maximum inference spend (USD)"),
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Submit request" }),
+    );
+    expect(await screen.findByText(/positive USD amount/i)).toBeDefined();
+    expect(mocks.createIntakeRequest).not.toHaveBeenCalled();
+  });
+
+  it("submits an edited spend authorization in integer micros", async () => {
+    renderHome();
+    await screen.findByLabelText("Project");
+    await userEvent.selectOptions(
+      screen.getByLabelText("Project"),
+      "project-1",
+    );
+    await userEvent.type(
+      screen.getByLabelText("What should the Factory do?"),
+      "Add an export endpoint.",
+    );
+    const spend = screen.getByLabelText("Maximum inference spend (USD)");
+    await userEvent.clear(spend);
+    await userEvent.type(spend, "12.50");
+    await userEvent.click(
+      screen.getByRole("button", { name: "Submit request" }),
+    );
+    await waitFor(() => expect(mocks.createIntakeRequest).toHaveBeenCalled());
+    expect(mocks.createIntakeRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ authorized_micros: 12_500_000 }),
+    );
+  });
+
   it("submits the selected Project and profile with explicit review-plan intent", async () => {
     renderHome();
     await screen.findByLabelText("Execution profile");

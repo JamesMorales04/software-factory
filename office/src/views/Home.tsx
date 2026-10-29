@@ -243,7 +243,11 @@ export function Home() {
     if (trimmed === "") {
       nextErrors.objective = t("home.validation.objective");
     }
-    if (!Number.isFinite(spendMicros) || spendMicros <= 0) {
+    if (
+      !Number.isSafeInteger(spendMicros) ||
+      spendMicros <= 0 ||
+      spendMicros > 9_000_000_000_000
+    ) {
       nextErrors.spend = t("home.validation.authorization");
     }
     setFieldErrors(nextErrors);
