@@ -10,7 +10,12 @@ the code candidate). **`main` is unchanged.**
 Evidence branch `factory/compose-browser-uat/20261029` at `13ad56a`
 (`docs/evidence/compose-browser-uat-2026-10-29/`).
 
-**Result: `PASS_WITH_FINDINGS`.** Author-run, not independent acceptance.
+**Result: `PASS` after the V2 Office contract repair (the earlier
+`PASS_WITH_FINDINGS` run is superseded).** Author-run, not independent
+acceptance. Final run: `40d44ec`; request `272f0fb2…`; Campaign `1322c7a4…`;
+candidate `cbdb3218…` / `e0ac1a33…`; verifier `574e7eb2…`; reviewer
+`394fd54d…`; Gate **ACCEPTED**; 4 participants; `campaign_budget_projection`
+**PASS**; no findings.
 
 | Item | Result |
 |---|---|
@@ -28,7 +33,8 @@ Evidence branch `factory/compose-browser-uat/20261029` at `13ad56a`
 | Live provider inference | **NOT TESTED**, no paid inference |
 | Independent acceptance / SEC-01 | **NOT CLAIMED** |
 
-The UAT found two Office V2 contract defects:
+The earlier run found two Office V2 contract defects, now fixed by UX commit
+`0048cf9` and verified in the final real-Core run:
 
 1. `RequestWorkspace` shows `Authorization undefined · undefined`.
 2. `CampaignDetail` Budget & usage crashes with `TypeError: Cannot read
