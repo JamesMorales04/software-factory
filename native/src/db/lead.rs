@@ -4066,11 +4066,12 @@ impl Database {
         let row: Option<(String, i64, i64, String, String, String, String)> =
             sqlx::query_as::query_as(
                 "SELECT l.worker_id,l.generation,l.expires_at_ms,a.status,c.status,r.campaign_id,
-                    COALESCE(lt.unit_id,c.id)
+                    COALESCE(lt.unit_id,li.integration_id,c.id)
              FROM attempts a
              JOIN runs r ON r.id=a.run_id
              JOIN campaigns c ON c.id=r.campaign_id
              LEFT JOIN lead_tasks lt ON lt.attempt_id=a.id
+             LEFT JOIN lead_integrations li ON li.attempt_id=a.id
              JOIN worker_leases l ON l.attempt_id=a.id
              WHERE a.id=?1",
             )
@@ -4343,7 +4344,10 @@ async fn validate_progress_work_item_in_tx(
     let belongs: Option<(String,)> = sqlx::query_as::query_as(
         "SELECT ?2 WHERE ?2=?1
          UNION ALL
-         SELECT unit_id FROM lead_tasks WHERE campaign_id=?1 AND unit_id=?2 LIMIT 1",
+         SELECT unit_id FROM lead_tasks WHERE campaign_id=?1 AND unit_id=?2
+         UNION ALL
+         SELECT integration_id FROM lead_integrations WHERE campaign_id=?1 AND integration_id=?2
+         LIMIT 1",
     )
     .bind(campaign_id)
     .bind(work_item_id)
@@ -4490,8 +4494,9 @@ async fn resolve_progress_hold_in_tx(
              FROM attempts a
              JOIN runs r ON r.id=a.run_id
              LEFT JOIN lead_tasks lt ON lt.attempt_id=a.id
+             LEFT JOIN lead_integrations li ON li.attempt_id=a.id
              WHERE r.campaign_id=?1 AND a.status='BLOCKED'
-               AND COALESCE(lt.unit_id,r.campaign_id)=?2
+               AND COALESCE(lt.unit_id,li.integration_id,r.campaign_id)=?2
              ORDER BY a.created_at DESC LIMIT 1",
         )
         .bind(campaign_id)

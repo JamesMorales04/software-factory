@@ -227,7 +227,8 @@ impl Database {
         super::lead::validate_lead_attempt_lineage(&mut connection, attempt_id).await?;
         let row = sqlx::query::query(
             "SELECT COALESCE(aps.action_id,c.action_id) AS action_id,
-                    r.campaign_id,COALESCE(lt.unit_id,c.id) AS work_item_id,p.repository,
+                    r.campaign_id,COALESCE(lt.unit_id,li.integration_id,c.id) AS work_item_id,
+                    p.repository,
                     COALESCE(aps.spec_json,s.spec_json) AS spec_json,
                     COALESCE(aps.spec_sha256,s.spec_sha256) AS spec_sha256,
                     COALESCE(aps.base_commit,p.base_commit) AS base_commit,
@@ -249,6 +250,7 @@ impl Database {
              JOIN action_specs s ON s.action_id=ac.id
              LEFT JOIN attempt_specs aps ON aps.attempt_id=a.id
              LEFT JOIN lead_tasks lt ON lt.attempt_id=a.id
+             LEFT JOIN lead_integrations li ON li.attempt_id=a.id
              LEFT JOIN campaign_authorizations ca ON ca.campaign_id=c.id
              LEFT JOIN execution_policies xp ON xp.policy_id=ca.policy_id
              LEFT JOIN standing_delegations d ON d.id=ca.delegation_id
@@ -405,6 +407,7 @@ impl Database {
              LEFT JOIN campaign_authorizations ca ON ca.campaign_id=c.id
              LEFT JOIN worker_leases l ON l.attempt_id=a.id
              LEFT JOIN lead_tasks lt ON lt.attempt_id=a.id
+             LEFT JOIN lead_integrations li ON li.attempt_id=a.id
              WHERE a.status IN ('QUEUED','LEASED') AND c.status='AUTHORIZED'
              AND r.status IN ('QUEUED','RUNNING','REPAIR_REQUIRED')
              AND ca.execution_mode IN ('FIXTURE','TRUSTED_LOCAL_PROVIDER')
@@ -412,7 +415,7 @@ impl Database {
              AND NOT EXISTS (
                SELECT 1 FROM progress_holds ph
                WHERE ph.campaign_id=c.id
-                 AND ph.work_item_id=COALESCE(lt.unit_id,c.id)
+                 AND ph.work_item_id=COALESCE(lt.unit_id,li.integration_id,c.id)
                  AND ph.resolved_at IS NULL
              )
              ORDER BY a.created_at,a.id LIMIT 1",
