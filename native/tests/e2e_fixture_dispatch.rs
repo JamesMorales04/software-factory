@@ -519,7 +519,8 @@ async fn start_request_scoped_provider_campaign(
             "delegation_id": delegation_id,
             "objective": objective,
             "project_config_hash": config_hash,
-            "idempotency_key": format!("{suffix}-lead-request")
+            "idempotency_key": format!("{suffix}-lead-request"),
+            "authorized_micros": 5_000_000
         })),
     )
     .await
@@ -1633,7 +1634,8 @@ async fn model_lead_start_dispatches_through_supervisor_to_accepted_gate() {
             "delegation_id": "lead-grant",
             "objective": "Implement the fixture.",
             "project_config_hash": config_hash,
-            "idempotency_key": "lead-request"
+            "idempotency_key": "lead-request",
+            "authorized_micros": 5_000_000
         })),
     )
     .await
@@ -1681,6 +1683,71 @@ async fn model_lead_start_dispatches_through_supervisor_to_accepted_gate() {
     assert!(calls[0].cost_micros > 0);
     let reservation_id = calls[0].reservation_id.clone();
     ledger.close().await;
+
+    // A Lead request without an operator amount must be refused before any
+    // billable assessment call is dispatched.
+    let no_amount_action: Value = operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/actions"),
+        Some(json!({
+            "project_id": project_id,
+            "objective": "No-amount Lead request.",
+            "provider": "opencode",
+            "model": "deepseek-v4.1-flash",
+            "idempotency_key": "lead-no-amount-action",
+            "allowed_paths": ["src"],
+            "checks": [
+                {"id":"build","kind":"build","description":"build","command":["true"],"expectExit":0,"timeoutSecs":30},
+                {"id":"test","kind":"test","description":"test","command":["true"],"expectExit":0,"timeoutSecs":30},
+                {"id":"functional","kind":"functional","description":"content","command":["true"],"expectExit":0,"timeoutSecs":30},
+                {"id":"negative","kind":"negative","description":"absent","command":["grep","-q","absent","seed.txt"],"expectExit":1,"timeoutSecs":30}
+            ]
+        })),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let no_amount_lead: Value = operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/lead/requests"),
+        Some(json!({
+            "project_id": project_id,
+            "action_id": no_amount_action["id"],
+            "delegation_id": "lead-grant",
+            "objective": "No-amount Lead request.",
+            "project_config_hash": config_hash,
+            "idempotency_key": "lead-no-amount-request"
+        })),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let no_amount_request_id = no_amount_lead["id"].as_str().unwrap().to_owned();
+    let refused = operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/lead/requests/{no_amount_request_id}/assess"),
+        None,
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+    let refused_body: Value = refused.json().await.unwrap();
+    assert_eq!(refused_body["code"], "INFERENCE_AUTHORIZATION_REQUIRED");
+    let ledger = factory_native::db::Database::open(&database).await.unwrap();
+    assert!(
+        ledger
+            .lead_model_calls(&no_amount_request_id)
+            .await
+            .unwrap()
+            .is_empty(),
+        "a refused assessment must not dispatch a paid model call"
+    );
+    ledger.close().await;
+
     let lead_projection: Value = operator(
         &client,
         reqwest::Method::GET,
@@ -1737,6 +1804,41 @@ async fn model_lead_start_dispatches_through_supervisor_to_accepted_gate() {
             .is_some_and(|items| items.is_empty()),
         "a rejected MODEL Lead start must not create a Campaign"
     );
+    let changed_amount = operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/lead/requests/{request_id}/start"),
+        Some(v2_provider_authorization(
+            "lead-live-start-authorization",
+            "lead-grant",
+            "lead-e2e-operator",
+            "changed provider authorization",
+            "opencode",
+            "deepseek-v4.1-flash",
+            6_000_000,
+        )),
+    )
+    .await;
+    assert_eq!(changed_amount.status(), StatusCode::CONFLICT);
+    let changed_body: Value = changed_amount.json().await.unwrap();
+    assert_eq!(changed_body["code"], "INFERENCE_AUTHORIZATION_CHANGED");
+    let campaigns_after_changed: Value = operator(
+        &client,
+        reqwest::Method::GET,
+        format!("{base_url}/campaigns"),
+        None,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    assert!(
+        campaigns_after_changed
+            .as_array()
+            .is_some_and(|items| items.is_empty()),
+        "a changed-amount Lead start must not create a Campaign"
+    );
+
     let started_response = operator(
         &client,
         reqwest::Method::POST,

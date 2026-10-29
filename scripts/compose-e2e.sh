@@ -206,7 +206,7 @@ api POST "/projects/$PROJECT_ID/execution-policy" \
 log "== creating and assessing the unified intake request"
 INTAKE_OBJECTIVE='Add the deterministic Compose fixture candidate and cover it with frozen checks.'
 INTAKE_CREATED="$(api POST /intake/requests \
-  "{\"project_id\":\"$PROJECT_ID\",\"objective\":\"$INTAKE_OBJECTIVE\",\"execution_profile_id\":\"$PROFILE_ID\",\"mode\":\"REVIEW_PLAN\",\"idempotency_key\":\"e2e-intake-request\"}")"
+  "{\"project_id\":\"$PROJECT_ID\",\"objective\":\"$INTAKE_OBJECTIVE\",\"execution_profile_id\":\"$PROFILE_ID\",\"mode\":\"REVIEW_PLAN\",\"idempotency_key\":\"e2e-intake-request\",\"authorized_micros\":5000000}")"
 INTAKE_ID="$(printf '%s' "$INTAKE_CREATED" | json 'import json,sys; print(json.load(sys.stdin)["id"])')"
 INTAKE_ACTION_ID="$(printf '%s' "$INTAKE_CREATED" | json 'import json,sys; print(json.load(sys.stdin)["actionId"])')"
 INTAKE_LEAD_REQUEST_ID="$(printf '%s' "$INTAKE_CREATED" | json 'import json,sys; print(json.load(sys.stdin)["leadRequestId"])')"
