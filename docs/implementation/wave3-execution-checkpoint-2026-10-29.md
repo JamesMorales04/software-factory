@@ -27,11 +27,11 @@ provenance and is not current campaign certification.
 
 | Lane | Worktree / branch | Base / current state | Owner | Next deliverable |
 |---|---|---|---|---|
-| Subscription funding V3 / PR #83 | `sf-wave3/subscription-funding` / `factory/subscription-funding/20261029` | Draft PR at `c0eb767d84d774362c7bed27fc5a7834fbbc2436`; branch pushed | Exact-SHA independent review APPROVE; 45 focused Core/Worker tests, fmt and strict Clippy reported PASS by author; hosted checks queued | Collect PR checks; preserve typed refusal, Worker hold and auth/lease/fencing; keep dispatch disabled |
+| Subscription funding V3 / PR #83 | `sf-wave3/subscription-funding` / `factory/subscription-funding/20261029` | Draft PR at `c0eb767d84d774362c7bed27fc5a7834fbbc2436`; branch pushed | Exact-SHA independent review APPROVE; 45 focused Core/Worker tests, fmt and strict Clippy reported PASS; hosted architecture fails on inherited CAP-050/052; other checks pending | Resolve inherited registry check through #81 integration; preserve fail-closed refusals and disabled dispatch |
 | Conversational Home (#62) | `sf-wave3/ux-conversation` / `factory/office-conversation/20261029` | PR #80 at `f310192c33a02d9191fd9cfbcaf90264c2c6e8cf` | Canonical Compose Office/browser gates passed; exact review and hosted CI pending | Obtain exact-SHA review and resolve CI; keep visual sign-off pending |
 | Agent Office V3 (#65/#70) | `sf-wave3/isometric-v3` / `factory/office-isometric-v3/20261029` | PR #82 at `82b9ee4703326947a9a3c78153d9bf1994a3a960`; source `e31e46298b42f13e80701913b43878336587ccb8`, captures `782b5d9dbe484f41afa12120667a07f248703bb0` | Frontend lane reassigned to `home_conversation`; V3 visual spike active; prior exact candidate review PASS | Compare reference and implement bounded visual refinements; preserve Owner visual sign-off |
 | Access repairs (#36–#38) | `sf-wave3/access-repairs` / `factory/access-repairs/20261029` | #38 cumulative head `ad04aca35d0538c614f0f957ea42929895fd63a0`; #37 policy-only candidate `da2f07a58d0dfe638786dedf12af7c9cb598c4e9` | Exact #38 review PASS; hosted architecture/Compose pass, Rust/container-dev pending; #37 Rust/container-dev pending | Collect remaining hosted checks; keep stack Draft, no promotion; remote Serve/SEC-01 NOT_TESTED |
-| Provider acceptance / PR #79 | `sf-wave3/provider-acceptance` / `factory/provider-acceptance/20261029` | Candidate `73664882316acfc18928ab697ec04da435187dd8`, pushed | Exact-SHA re-review APPROVED; 29 tests and syntax/diff passed; hosted CI pending (architecture inherited #81 failure) | Collect hosted checks; keep real UAT blocked pending Core atomic create-and-admit |
+| Provider acceptance / PR #79 | `sf-wave3/provider-acceptance` / `factory/provider-acceptance/20261029` | Candidate `73664882316acfc18928ab697ec04da435187dd8`, pushed | Exact-SHA re-review APPROVED; 29 tests and syntax/diff passed; hosted architecture fails on inherited CAP-050/052; other checks pending | Resolve inherited registry check through #81 integration; keep real UAT blocked pending Core atomic create-and-admit |
 | Capability evidence shape | `sf-wave3/capability-evidence-shape` / `factory/capability-evidence-shape/20261029` | `13adff74a8de434fd46c527ea92608b695a98d03`; draft PR #81 | Director | Collect CI and exact-SHA independent review; integrate only after gates pass |
 
 No active Cargo or frontend writer was observed in the funding, Home, access,
@@ -49,8 +49,10 @@ were left untouched.
   `c0eb767d84d774362c7bed27fc5a7834fbbc2436`. It adds typed Core/Worker
   refusals, stable API codes and Worker hold ordering while leaving dispatch
   disabled. Exact independent review APPROVED; author-run 45 focused tests,
-  formatting and strict Clippy passed; hosted checks were queued. Provider
-  entitlement, quota recovery and request admission remain NOT_VERIFIED.
+  formatting and strict Clippy passed. Hosted architecture fails on inherited
+  CAP-050/CAP-052 README evidence references tracked in #81; other checks remain
+  pending. Provider entitlement, quota recovery and request admission remain
+  NOT_VERIFIED.
 - #79 — subscription-only provider UAT preparation: open draft; current commit
   `7366488` is pushed. It requires explicit valid charge amounts before showing
   zero, separates subscription billing-source observations, omits arbitrary
@@ -62,8 +64,9 @@ were left untouched.
   services. Prior review findings for caller-selected simulation and the
   forgeable transport marker were addressed by removing the fake runner from
   the production API, using an in-memory fake handler with no HTTP capability,
-  and refusing before creating the evidence directory. Fresh exact review and
-  hosted CI are pending. No live inference/billing.
+  and refusing before creating the evidence directory. Exact review
+  **APPROVED**; hosted architecture still fails on inherited CAP-050/CAP-052,
+  and Rust/container-dev remain pending. No live inference/billing.
 - #80 — conversational Home: open draft against Wave 3 at
   `f310192c33a02d9191fd9cfbcaf90264c2c6e8cf`. Typecheck, Biome (four existing
   CSS `!important` warnings), Vitest (12 files / 51 tests), production build
@@ -230,14 +233,14 @@ transport marker can be forged by a real-Core wrapper); PR #79 `7366488`
 APPROVE. PR #80 `f310192` exact review pending; PR #38 `ad04aca` PASS.
 **Campaign status:** in progress; Wave 3 is not a certified product release.
 
-## Director update — 2026-10-29 19:20 UTC (revised 19:34 UTC)
+## Director update — 2026-10-29 19:20 UTC (revised 19:39 UTC)
 
 - Remote integration remains exactly `f7479c0c5f936d1097426dd1293ef43ea6e72fb6`; local checkpoint branch contains documentation-only checkpoint commits. `main` is unchanged.
 - PR #37 policy guard `da2f07a58d0dfe638786dedf12af7c9cb598c4e9` has an exact independent APPROVE and was pushed as a normal fast-forward. Hosted architecture-consistency and compose-policy now pass; Rust/container-dev remain in progress. No merge or promotion has occurred.
 - PR #38 repair is pushed at `ad04aca35d0538c614f0f957ea42929895fd63a0`, with base unchanged and still OPEN/Draft. It restores accepted ADR-0026 byte-for-byte, records the new policy in proposed ADR-0030, and includes #37 candidate `da2f07a` through merge commit `9ef246f` while preserving `0c3fd44` ancestry. Exact-SHA review **PASS**; local architecture, format, strict Clippy, focused Rust, and Compose-policy checks passed; hosted architecture and Compose-policy pass, while Rust/container-dev remain pending. Current Serve/HTTPS behavior and SEC-01 are NOT_TESTED.
-- PR #79 is pushed at `73664882316acfc18928ab697ec04da435187dd8`. Exact-SHA review **APPROVED**: the fake runner is absent from the production API, its in-memory test handler has no HTTP capability, and refusal precedes evidence-directory creation. Tests pass 29/29; impact declarations, syntax and diff checks pass; Podman validation was config-only. Hosted architecture still reports inherited CAP-050/CAP-052 from #81; Rust/container-dev remain pending. No live inference or billing occurred.
-- PR #80 is pushed at `f310192c33a02d9191fd9cfbcaf90264c2c6e8cf`; its canonical deterministic browser journey, request-scoped approval, Office typecheck/Biome/Vitest/build and screenshots passed with no provider/session/model/tool calls. Exact review and hosted CI are pending; architecture CI reports the inherited #81 CAP-050/CAP-052 evidence entries. Visual acceptance is pending.
-- Funding V3 Rust slice is in draft PR #83 at `c0eb767d84d774362c7bed27fc5a7834fbbc2436`. It shares typed refusal/error codes across Core/Worker, orders Worker funding before monetary prerequisites while preserving the existing subscription hold, and keeps dispatch disabled. Author reports 45 focused tests, fmt and strict Clippy passed; exact independent review APPROVED. Hosted checks are running. Quota pause/recovery remains blocked on trusted provider exhaustion evidence and durable Core recovery APIs.
+- PR #79 is pushed at `73664882316acfc18928ab697ec04da435187dd8`. Exact-SHA review **APPROVED**: the fake runner is absent from the production API, its in-memory test handler has no HTTP capability, and refusal precedes evidence-directory creation. Tests pass 29/29; impact declarations, syntax and diff checks pass; Podman validation was config-only. Hosted architecture fails on inherited CAP-050/CAP-052 from #81; Rust/container-dev remain pending. No live inference or billing occurred.
+- PR #80 is pushed at `f310192c33a02d9191fd9cfbcaf90264c2c6e8cf`; its canonical deterministic browser journey, request-scoped approval, Office typecheck/Biome/Vitest/build and screenshots passed with no provider/session/model/tool calls. Exact review is in progress; architecture CI fails on inherited #81 CAP-050/CAP-052 while Rust/container-dev remain pending. Visual acceptance is pending.
+- Funding V3 Rust slice is in draft PR #83 at `c0eb767d84d774362c7bed27fc5a7834fbbc2436`. It shares typed refusal/error codes across Core/Worker, orders Worker funding before monetary prerequisites while preserving the existing subscription hold, and keeps dispatch disabled. Author reports 45 focused tests, fmt and strict Clippy passed; exact independent review APPROVED. Hosted architecture fails on inherited CAP-050/CAP-052; Rust, Compose-policy and container-dev remain pending. Quota pause/recovery remains blocked on trusted provider exhaustion evidence and durable Core recovery APIs.
 - No active worktree was reset or discarded. Existing `office/node_modules`, unrelated root untracked files, and long-running services remain untouched.
 
 ### Next executable tasks
