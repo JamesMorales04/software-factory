@@ -104,3 +104,12 @@ No access PR was merged. PRs #36–#38 remain drafts.
 
 No `main` merge, branch protection change or paid inference occurred in this
 checkpoint.
+
+## D. Real-provider acceptance preparation (#60)
+
+The bounded OpenCode Go UAT is now **prepared, not run**:
+[real-provider UAT runbook](real-provider-uat-runbook-2026-10-29.md). It
+documents the subscription-vs-billable accounting distinction, the exact Owner
+decision and cap, the two-phase plan-approval flow, and a default-closed harness
+with a fake-Core contract test. No credential was read and no paid inference was
+performed.

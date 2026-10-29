@@ -1,0 +1,33 @@
+# Test-only override for the bounded real-provider UAT.
+#
+# This is not part of the installed product. It adds a local dumb-HTTP Git
+# fixture for a disposable project and makes the real-provider route explicit.
+# It does not add a model fixture, a host Podman socket, host networking or any
+# provider credential to the Compose environment.
+services:
+  core:
+    environment:
+      FACTORY_ALLOW_INSECURE_GIT: "1"
+      FACTORY_LEAD_FIXTURE_ASSESSOR: "0"
+  worker:
+    environment:
+      FACTORY_PROVIDER_KIND: opencode
+      FACTORY_PROVIDER_SANDBOX: container
+  git-fixture:
+    image: docker.io/library/python:3.12-alpine
+    command: ["python3", "-m", "http.server", "8080", "--directory", "/srv"]
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ${FACTORY_RP_UAT_GIT_DIR:?FACTORY_RP_UAT_GIT_DIR is required}:/srv:ro
+    networks:
+      - factory-egress
+    restart: "no"

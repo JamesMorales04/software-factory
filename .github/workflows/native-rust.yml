@@ -23,6 +23,8 @@ jobs:
         run: |
           git rev-parse HEAD
           test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
+      - name: Real-provider UAT harness contract tests
+        run: node --test scripts/real-provider-uat.test.mjs
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.90.0 --profile minimal --component clippy,rustfmt
       - name: Install pinned cargo-audit
