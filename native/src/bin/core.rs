@@ -332,6 +332,10 @@ struct NewLeadRequest {
     objective: String,
     project_config_hash: String,
     idempotency_key: String,
+    /// Explicit operator monetary authorization for the whole request. It is
+    /// reserved before the first billable Lead assessment.
+    #[serde(default)]
+    authorized_micros: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -377,6 +381,10 @@ struct NewIntakeRequest {
     execution_profile_id: Option<String>,
     mode: factory_native::intake::IntakeMode,
     idempotency_key: String,
+    /// Explicit operator monetary authorization for the whole request. It is
+    /// reserved before the first billable Lead assessment.
+    #[serde(default)]
+    authorized_micros: Option<u64>,
 }
 
 #[derive(Deserialize, Default)]
@@ -5578,6 +5586,53 @@ async fn create_request_inference_envelope(
     Ok(Some(envelope))
 }
 
+/// Create the request envelope once, or reuse it only for the same operator
+/// amount. A later approval/start that changes the amount conflicts; it never
+/// creates a second allowance.
+async fn ensure_request_inference_envelope(
+    app: &App,
+    request_id: &str,
+    project_id: &str,
+    authorized_micros: Option<u64>,
+    actor: &str,
+    scope_sha256: &str,
+    evidence_sha256: &str,
+) -> Result<Option<factory_native::inference_ledger::InferenceEnvelopeRecord>, Error> {
+    let Some(authorized_micros) = authorized_micros else {
+        return Ok(None);
+    };
+    if authorized_micros == 0 {
+        return Err(Error::Conflict(
+            "the operator authorized a zero inference envelope",
+        ));
+    }
+    if let Some(existing) = app.db.inference_envelope_for_request(request_id).await? {
+        if existing.project_id != project_id
+            || existing.authorized_micros.get() != authorized_micros
+        {
+            return Err(Error::IntakeConflict {
+                code: "INFERENCE_AUTHORIZATION_CHANGED",
+                message: "the operator inference authorization changed for this request".into(),
+            });
+        }
+        return Ok(Some(existing));
+    }
+    create_request_inference_envelope(
+        app,
+        request_id,
+        project_id,
+        Some(authorized_micros),
+        actor,
+        scope_sha256,
+        evidence_sha256,
+    )
+    .await
+}
+
+fn request_scope_digest(parts: &[&str]) -> String {
+    factory_native::device_session::sha256_hex(&parts.join("\u{1f}"))
+}
+
 /// Read-only ledger projection attached to request and Campaign JSON. Absence of
 /// an envelope is `null`: Core never claims measured spending without a ledger.
 async fn inference_spending_value(app: &App, request_id: &str) -> Result<Value, Error> {
@@ -7971,11 +8026,14 @@ async fn revoke_delegation(
 async fn create_lead_request(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
     Json(input): Json<NewLeadRequest>,
 ) -> Response {
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
+    let (principal_id, _) =
+        authenticated_operator(session.as_ref().map(|Extension(device)| device));
     match app
         .db
         .create_lead_request(
@@ -7988,15 +8046,56 @@ async fn create_lead_request(
         )
         .await
     {
-        Ok((request, created)) => (
-            if created {
-                StatusCode::CREATED
-            } else {
-                StatusCode::OK
-            },
-            Json(request),
-        )
-            .into_response(),
+        Ok((request, created)) => {
+            if let Some(authorized_micros) = input.authorized_micros {
+                let action = match app.db.action(&request.action_id).await {
+                    Ok(action) => action,
+                    Err(error) => return api_error(error),
+                };
+                let grant = match app.db.standing_delegation_v2(&request.delegation_id).await {
+                    Ok(grant) => grant,
+                    Err(error) => return api_error(error),
+                };
+                if let Err(error) = ensure_inference_pricing_quote(
+                    &app,
+                    &grant.route.provider,
+                    &grant.route.model,
+                    &principal_id,
+                )
+                .await
+                {
+                    return api_error(error);
+                }
+                if let Err(error) = ensure_request_inference_envelope(
+                    &app,
+                    &request.id,
+                    &request.project_id,
+                    Some(authorized_micros),
+                    &principal_id,
+                    &request_scope_digest(&[
+                        "lead-request-scope",
+                        &request.project_id,
+                        &request.action_id,
+                        &grant.id,
+                        &action.spec_sha256,
+                    ]),
+                    &request.request_hash,
+                )
+                .await
+                {
+                    return api_error(error);
+                }
+            }
+            (
+                if created {
+                    StatusCode::CREATED
+                } else {
+                    StatusCode::OK
+                },
+                Json(request),
+            )
+                .into_response()
+        }
         Err(error) => api_error(error),
     }
 }
@@ -8037,6 +8136,33 @@ async fn assess_lead_request(
             Json(json!({"error":"no model gateway is authorized; configure FACTORY_MODEL_URL or set FACTORY_LEAD_FIXTURE_ASSESSOR=1 only for deterministic tests"})),
         )
             .into_response();
+    }
+    if let Some(gateway) = &current_gateway {
+        // The assessment is billable. It must be charged to the one request
+        // envelope created from the operator's explicit amount; never dispatch
+        // a paid call without one.
+        match app.db.inference_envelope_for_request(&id).await {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                return api_error(Error::IntakeConflict {
+                    code: "INFERENCE_AUTHORIZATION_REQUIRED",
+                    message:
+                        "billable Lead assessment requires an explicit operator-authorized monetary amount at request creation"
+                            .into(),
+                });
+            }
+            Err(error) => return api_error(error),
+        }
+        if let Err(error) = ensure_inference_pricing_quote(
+            &app,
+            gateway.provider(),
+            gateway.model(),
+            "lead-assessment",
+        )
+        .await
+        {
+            return api_error(error);
+        }
     }
     if request.state == factory_native::lead::LeadRequestState::Submitted
         && let Err(error) = app.db.begin_lead_assessment(&id).await
@@ -8233,67 +8359,27 @@ async fn start_lead_request(
                 .into_response();
         }
         let envelope_id = if input.execution_mode == "TRUSTED_LOCAL_PROVIDER" {
-            let request = match app.db.lead_request(&id).await {
-                Ok(request) => request,
+            let envelope = match app.db.inference_envelope_for_request(&id).await {
+                Ok(Some(envelope)) => envelope,
+                Ok(None) => {
+                    return api_error(Error::IntakeConflict {
+                        code: "INFERENCE_AUTHORIZATION_REQUIRED",
+                        message:
+                            "billable execution requires an operator-authorized monetary amount at request creation"
+                                .into(),
+                    });
+                }
                 Err(error) => return api_error(error),
             };
-            let plan = match app.db.frozen_lead_plan(&request.id).await {
-                Ok(plan) => plan,
-                Err(error) => return api_error(error),
-            };
-            let action = match app.db.action(&request.action_id).await {
-                Ok(action) => action,
-                Err(error) => return api_error(error),
-            };
-            let actor = match app.db.standing_delegation_v2(&request.delegation_id).await {
-                Ok(grant) => grant.principal_id,
-                Err(error) => return api_error(error),
-            };
-            let existing = if request.campaign_id.is_some() {
-                match app.db.inference_envelope_for_request(&request.id).await {
-                    Ok(envelope) => envelope,
-                    Err(error) => return api_error(error),
-                }
-            } else {
-                None
-            };
-            if let Some(envelope) = existing {
-                if Some(envelope.authorized_micros.get()) != input.authorized_micros {
-                    return api_error(Error::Conflict(
-                        "start replay changed the operator inference authorization",
-                    ));
-                }
-                envelope.envelope_id
-            } else {
-                if let Err(error) =
-                    ensure_inference_pricing_quote(&app, &input.provider, &input.model, &actor)
-                        .await
-                {
-                    return api_error(error);
-                }
-                match create_request_inference_envelope(
-                    &app,
-                    &request.id,
-                    &request.project_id,
-                    input.authorized_micros,
-                    &actor,
-                    &action.spec_sha256,
-                    &plan.plan_hash,
-                )
-                .await
-                {
-                    Ok(Some(envelope)) => envelope.envelope_id,
-                    Ok(None) => {
-                        return api_error(Error::IntakeConflict {
-                            code: "INFERENCE_AUTHORIZATION_REQUIRED",
-                            message:
-                                "billable execution requires an explicit operator-authorized monetary amount"
-                                    .into(),
-                        });
-                    }
-                    Err(error) => return api_error(error),
-                }
+            if let Some(authorized_micros) = input.authorized_micros
+                && authorized_micros != envelope.authorized_micros.get()
+            {
+                return api_error(Error::IntakeConflict {
+                    code: "INFERENCE_AUTHORIZATION_CHANGED",
+                    message: "start changed the operator inference authorization".into(),
+                });
             }
+            envelope.envelope_id
         } else {
             if input.authorized_micros.is_some() {
                 return api_error(Error::IntakeConflict {
@@ -8385,68 +8471,27 @@ async fn approve_lead_request(
                 ));
             }
             let envelope_id = if authorization.execution_mode == "TRUSTED_LOCAL_PROVIDER" {
-                let request = match app.db.lead_request(&id).await {
-                    Ok(request) => request,
+                let envelope = match app.db.inference_envelope_for_request(&id).await {
+                    Ok(Some(envelope)) => envelope,
+                    Ok(None) => {
+                        return api_error(Error::IntakeConflict {
+                            code: "INFERENCE_AUTHORIZATION_REQUIRED",
+                            message:
+                                "billable execution requires an operator-authorized monetary amount at request creation"
+                                    .into(),
+                        });
+                    }
                     Err(error) => return api_error(error),
                 };
-                let plan = match app.db.frozen_lead_plan(&request.id).await {
-                    Ok(plan) => plan,
-                    Err(error) => return api_error(error),
-                };
-                let action = match app.db.action(&request.action_id).await {
-                    Ok(action) => action,
-                    Err(error) => return api_error(error),
-                };
-                let actor = principal_label.unwrap_or(&principal_id).to_owned();
-                let existing = if request.campaign_id.is_some() {
-                    match app.db.inference_envelope_for_request(&request.id).await {
-                        Ok(envelope) => envelope,
-                        Err(error) => return api_error(error),
-                    }
-                } else {
-                    None
-                };
-                if let Some(envelope) = existing {
-                    if Some(envelope.authorized_micros.get()) != amount {
-                        return api_error(Error::Conflict(
-                            "approval replay changed the operator inference authorization",
-                        ));
-                    }
-                    envelope.envelope_id
-                } else {
-                    if let Err(error) = ensure_inference_pricing_quote(
-                        &app,
-                        &authorization.provider,
-                        &authorization.model,
-                        &actor,
-                    )
-                    .await
-                    {
-                        return api_error(error);
-                    }
-                    match create_request_inference_envelope(
-                        &app,
-                        &request.id,
-                        &request.project_id,
-                        amount,
-                        &actor,
-                        &action.spec_sha256,
-                        &plan.plan_hash,
-                    )
-                    .await
-                    {
-                        Ok(Some(envelope)) => envelope.envelope_id,
-                        Ok(None) => {
-                            return api_error(Error::IntakeConflict {
-                                code: "INFERENCE_AUTHORIZATION_REQUIRED",
-                                message:
-                                    "billable execution requires an explicit operator-authorized monetary amount"
-                                        .into(),
-                            });
-                        }
-                        Err(error) => return api_error(error),
-                    }
+                if let Some(amount) = amount
+                    && amount != envelope.authorized_micros.get()
+                {
+                    return api_error(Error::IntakeConflict {
+                        code: "INFERENCE_AUTHORIZATION_CHANGED",
+                        message: "approval changed the operator inference authorization".into(),
+                    });
                 }
+                envelope.envelope_id
             } else {
                 if amount.is_some() {
                     return api_error(Error::IntakeConflict {
@@ -9043,6 +9088,47 @@ async fn create_intake_request(
         .await
     {
         Ok((record, created)) => {
+            if let Some(authorized_micros) = input.authorized_micros {
+                let profile = match app
+                    .db
+                    .execution_profile_revision(&record.profile_id, &record.profile_revision_id)
+                    .await
+                {
+                    Ok(profile) => profile,
+                    Err(error) => return api_error(error),
+                };
+                let Some(content) = profile.content.v2() else {
+                    return api_error(Error::IntakeConflict {
+                        code: "EXECUTION_PROFILE_NOT_EXECUTABLE",
+                        message: "a legacy V1 execution profile cannot request billable inference"
+                            .into(),
+                    });
+                };
+                if let Err(error) =
+                    ensure_profile_pricing_quotes(&app, content, &principal_id).await
+                {
+                    return api_error(error);
+                }
+                if let Err(error) = ensure_request_inference_envelope(
+                    &app,
+                    &record.id,
+                    &record.project_id,
+                    Some(authorized_micros),
+                    &principal_id,
+                    &request_scope_digest(&[
+                        "intake-request-scope",
+                        &record.project_id,
+                        &record.profile_id,
+                        &record.profile_revision_id,
+                        &record.profile_hash,
+                    ]),
+                    &record.submission_hash,
+                )
+                .await
+                {
+                    return api_error(error);
+                }
+            }
             let value = match intake_request_value(&app, &record, true).await {
                 Ok(value) => value,
                 Err(error) => return api_error(error),
@@ -9198,6 +9284,29 @@ async fn assess_intake_request(
         Ok(profile) => profile,
         Err(error) => return api_error(error),
     };
+    let Some(profile_content) = profile.content.v2() else {
+        return api_error(Error::IntakeConflict {
+            code: "EXECUTION_PROFILE_NOT_EXECUTABLE",
+            message: "a legacy V1 execution profile cannot start billable assessment".into(),
+        });
+    };
+    match app.db.inference_envelope_for_request(&id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return api_error(Error::IntakeConflict {
+                code: "INFERENCE_AUTHORIZATION_REQUIRED",
+                message:
+                    "billable intake assessment requires an explicit operator-authorized monetary amount at request creation"
+                        .into(),
+            });
+        }
+        Err(error) => return api_error(error),
+    }
+    if let Err(error) =
+        ensure_profile_pricing_quotes(&app, profile_content, "intake-assessment").await
+    {
+        return api_error(error);
+    }
     let gateway = match app.intake_assess_gateway(&profile).await {
         Ok(gateway) => gateway,
         Err(route_error) => {
@@ -9387,65 +9496,35 @@ async fn approve_intake_request(
         Err(error) => return api_error(error),
     };
     let billable = context.mechanism == "MODEL";
-    let actor = principal_label.unwrap_or(&principal_id).to_owned();
     let monetary_envelope_id = if billable {
-        let Some(authorized_micros) = input.authorized_micros else {
-            return api_error(Error::IntakeConflict {
-                code: "INFERENCE_AUTHORIZATION_REQUIRED",
-                message:
-                    "billable execution requires an explicit operator-authorized monetary amount"
-                        .into(),
-            });
-        };
-        // Replay must not re-price or create a second envelope. The original
-        // envelope is the durable record of the operator's exact amount.
-        let existing = if context.intake.campaign_id.is_some() {
-            match app
-                .db
-                .inference_envelope_for_request(&context.intake.id)
-                .await
-            {
-                Ok(envelope) => envelope,
-                Err(error) => return api_error(error),
-            }
-        } else {
-            None
-        };
-        if let Some(envelope) = existing {
-            if envelope.authorized_micros.get() != authorized_micros {
-                return api_error(Error::Conflict(
-                    "approval replay changed the operator inference authorization",
-                ));
-            }
-            envelope.envelope_id
-        } else {
-            let content = &context.profile;
-            if let Err(error) = ensure_profile_pricing_quotes(&app, content, &actor).await {
-                return api_error(error);
-            }
-            match create_request_inference_envelope(
-                &app,
-                &context.intake.id,
-                &context.intake.project_id,
-                Some(authorized_micros),
-                &actor,
-                &context.spec_sha256,
-                &context.plan.plan_hash,
-            )
+        // The request envelope was created from the operator amount when the
+        // request was submitted. Approval reuses it; it never creates or
+        // re-prices a second allowance.
+        let envelope = match app
+            .db
+            .inference_envelope_for_request(&context.intake.id)
             .await
-            {
-                Ok(Some(envelope)) => envelope.envelope_id,
-                Ok(None) => {
-                    return api_error(Error::IntakeConflict {
-                        code: "INFERENCE_AUTHORIZATION_REQUIRED",
-                        message:
-                            "billable execution requires an explicit operator-authorized monetary amount"
-                                .into(),
-                    });
-                }
-                Err(error) => return api_error(error),
+        {
+            Ok(Some(envelope)) => envelope,
+            Ok(None) => {
+                return api_error(Error::IntakeConflict {
+                    code: "INFERENCE_AUTHORIZATION_REQUIRED",
+                    message:
+                        "billable execution requires an operator-authorized monetary amount at request creation"
+                            .into(),
+                });
             }
+            Err(error) => return api_error(error),
+        };
+        if let Some(authorized_micros) = input.authorized_micros
+            && authorized_micros != envelope.authorized_micros.get()
+        {
+            return api_error(Error::IntakeConflict {
+                code: "INFERENCE_AUTHORIZATION_CHANGED",
+                message: "approval changed the operator inference authorization".into(),
+            });
         }
+        envelope.envelope_id
     } else {
         if input.authorized_micros.is_some() {
             return api_error(Error::IntakeConflict {
@@ -14127,19 +14206,25 @@ mod tests {
         }
 
         async fn create_intake(fixture: &Fixture, key: &str) -> (StatusCode, Value) {
-            send(
-                &fixture.router,
-                "POST",
-                "/intake/requests",
-                Some(json!({
-                    "project_id": fixture.project_id,
-                    "objective": "Implement a bounded intake endpoint.",
-                    "execution_profile_id": fixture.profile.id,
-                    "mode": "REVIEW_PLAN",
-                    "idempotency_key": key,
-                })),
-            )
-            .await
+            create_intake_with_amount(fixture, key, None).await
+        }
+
+        async fn create_intake_with_amount(
+            fixture: &Fixture,
+            key: &str,
+            authorized_micros: Option<u64>,
+        ) -> (StatusCode, Value) {
+            let mut body = json!({
+                "project_id": fixture.project_id,
+                "objective": "Implement a bounded intake endpoint.",
+                "execution_profile_id": fixture.profile.id,
+                "mode": "REVIEW_PLAN",
+                "idempotency_key": key,
+            });
+            if let Some(authorized_micros) = authorized_micros {
+                body["authorized_micros"] = json!(authorized_micros);
+            }
+            send(&fixture.router, "POST", "/intake/requests", Some(body)).await
         }
 
         async fn fixture_plan(
@@ -14276,6 +14361,40 @@ mod tests {
             (url, hits)
         }
 
+        async fn chat_upstream_with_content(
+            content: Arc<Mutex<String>>,
+        ) -> (String, Arc<Mutex<usize>>) {
+            use axum::{Router, routing::post};
+
+            #[derive(Clone)]
+            struct ChatState {
+                hits: Arc<Mutex<usize>>,
+                content: Arc<Mutex<String>>,
+            }
+
+            let hits = Arc::new(Mutex::new(0));
+            async fn chat(
+                axum::extract::State(state): axum::extract::State<ChatState>,
+            ) -> axum::Json<Value> {
+                *state.hits.lock().unwrap() += 1;
+                let content = state.content.lock().unwrap().clone();
+                axum::Json(json!({
+                    "choices": [{"message": {"content": content}}],
+                    "usage": {"prompt_tokens": 12, "completion_tokens": 7, "total_tokens": 19}
+                }))
+            }
+            let app = Router::new()
+                .route("/chat/completions", post(chat))
+                .with_state(ChatState {
+                    hits: hits.clone(),
+                    content,
+                });
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            (url, hits)
+        }
+
         #[tokio::test]
         async fn semantic_review_uses_the_frozen_reviewer_route() {
             // Only relaxes the HTTPS rule for loopback test upstreams; every
@@ -14346,7 +14465,9 @@ mod tests {
 
             let (status, _) = enable_policy(&fixture).await;
             assert_eq!(status, StatusCode::CREATED);
-            let (status, created) = create_intake(&fixture, "reviewer-route-request").await;
+            let (status, created) =
+                create_intake_with_amount(&fixture, "reviewer-route-request", Some(5_000_000))
+                    .await;
             assert_eq!(status, StatusCode::CREATED, "{created}");
             let intake_id = created["id"].as_str().unwrap().to_owned();
             let context = fixture_plan(&fixture, &intake_id, "MODEL").await;
@@ -14484,6 +14605,251 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn billable_assessment_requires_creation_amount_and_shares_request_envelope() {
+            unsafe { std::env::set_var("FACTORY_ALLOW_TEST_UPSTREAM", "1") };
+            let key = master_key();
+            let model_content = Arc::new(Mutex::new(String::new()));
+            let (model_url, model_hits) = chat_upstream_with_content(model_content.clone()).await;
+            let fixture = setup_with(Some(&key), &model_url, &model_url, profile_content()).await;
+            let (status, enabled) = send(
+                &fixture.router,
+                "PUT",
+                "/settings/runtime",
+                Some(json!({
+                    "semanticReviewEnabled": true,
+                    "semanticReviewMaxOutputTokens": 8192,
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{enabled}");
+            let (status, _) = enable_policy(&fixture).await;
+            assert_eq!(status, StatusCode::CREATED);
+
+            // No operator amount: the request is accepted for fixture use, but
+            // a billable assessment must fail closed before any upstream call.
+            let (status, created) = create_intake(&fixture, "assessment-without-amount").await;
+            assert_eq!(status, StatusCode::CREATED, "{created}");
+            let refused_id = created["id"].as_str().unwrap().to_owned();
+            let (status, refused) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{refused_id}/assess"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+            assert_eq!(refused["code"], "INFERENCE_AUTHORIZATION_REQUIRED");
+            assert_eq!(*model_hits.lock().unwrap(), 0);
+
+            // Explicit amount at request creation: one envelope exists before
+            // the assessment.
+            let (status, created) =
+                create_intake_with_amount(&fixture, "assessment-with-amount", Some(5_000_000))
+                    .await;
+            assert_eq!(status, StatusCode::CREATED, "{created}");
+            let intake_id = created["id"].as_str().unwrap().to_owned();
+            let envelope = fixture
+                .app
+                .db
+                .inference_envelope_for_request(&intake_id)
+                .await
+                .unwrap()
+                .expect("creation envelope");
+            assert_eq!(envelope.authorized_micros.get(), 5_000_000);
+
+            let request = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            let lead = fixture
+                .app
+                .db
+                .lead_request(&request.lead_request_id)
+                .await
+                .unwrap();
+            let config = fixture
+                .app
+                .db
+                .project_config(&request.project_id)
+                .await
+                .unwrap();
+            let grant = fixture
+                .app
+                .db
+                .standing_delegation_v2(&request.delegation_id)
+                .await
+                .unwrap();
+            let binding = ActionBinding {
+                id: lead.action_id.clone(),
+                project_id: lead.project_id.clone(),
+                status: factory_native::lead::ActionStatus::Pending,
+            };
+            let spec = factory_native::db::ActionSpec {
+                schema_version: 1,
+                project_id: lead.project_id.clone(),
+                repository: config.repository.clone(),
+                base_commit: config.base_commit.clone(),
+                objective: lead.objective.clone(),
+                objective_sha256: factory_native::device_session::sha256_hex(&lead.objective),
+                provider: grant.route.provider.clone(),
+                model: grant.route.model.clone(),
+                allowed_paths: config.allowed_paths.clone(),
+                checks: checks(),
+            };
+            let (assessment, _) = factory_native::lead::fixture_lead_assessment(
+                &lead.id,
+                &config,
+                &binding,
+                &spec,
+                &lead.objective,
+                &grant,
+                chrono::Utc::now(),
+            )
+            .unwrap();
+            *model_content.lock().unwrap() = serde_json::to_string(&assessment).unwrap();
+
+            let (status, assessed) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/assess"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{assessed}");
+            assert_eq!(assessed["state"], "AWAITING_APPROVAL");
+            assert_eq!(*model_hits.lock().unwrap(), 1);
+            let reservations = fixture
+                .app
+                .db
+                .inference_reservations(&envelope.envelope_id)
+                .await
+                .unwrap();
+            assert!(
+                reservations.iter().any(|reservation| {
+                    reservation.role == factory_native::execution_policy::InferenceRole::Lead
+                        && reservation.state
+                            == factory_native::execution_policy::ReservationState::Settled
+                }),
+                "the Lead assessment must settle under the request envelope: {reservations:?}"
+            );
+
+            let plan_hash = assessed["plan"]["plan_hash"].as_str().unwrap().to_owned();
+            let (status, changed) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/approve"),
+                Some(json!({
+                    "expected_plan_hash": plan_hash,
+                    "rationale": "changed amount",
+                    "idempotency_key": "assessment-changed-amount",
+                    "authorized_micros": 6_000_000,
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{changed}");
+            assert_eq!(changed["code"], "INFERENCE_AUTHORIZATION_CHANGED");
+
+            let (status, approved) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/approve"),
+                Some(json!({
+                    "expected_plan_hash": plan_hash,
+                    "rationale": "same amount",
+                    "idempotency_key": "assessment-same-amount",
+                    "authorized_micros": 5_000_000,
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{approved}");
+            let campaign_id = approved["campaignId"].as_str().unwrap().to_owned();
+            let bound = fixture
+                .app
+                .db
+                .inference_envelope_for_campaign(&campaign_id)
+                .await
+                .unwrap()
+                .expect("campaign envelope binding");
+            assert_eq!(bound.envelope_id, envelope.envelope_id);
+
+            // A required reviewer call after start settles under the same
+            // envelope, not a second allowance.
+            let tasks = fixture.app.db.campaign_tasks(&campaign_id).await.unwrap();
+            let attempt_id = tasks[0].attempt_id.clone().expect("Lead Attempt");
+            let pool = sqlx_sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx_sqlite::SqliteConnectOptions::new()
+                        .filename(&fixture.path)
+                        .create_if_missing(false),
+                )
+                .await
+                .unwrap();
+            let now = chrono::Utc::now().to_rfc3339();
+            sqlx::query::query(
+                "INSERT INTO candidates
+                 (id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at)
+                 VALUES ('candidate-assessment-envelope',?1,?2,?3,?4,'worker-1',?5)",
+            )
+            .bind(&attempt_id)
+            .bind("a".repeat(64))
+            .bind("b".repeat(40))
+            .bind("c".repeat(40))
+            .bind(&now)
+            .execute(&pool)
+            .await
+            .unwrap();
+            pool.close().await;
+            *model_content.lock().unwrap() = "{\"findings\":[],\"verdict\":\"approve\"}".into();
+            let (status, call) = send_as(
+                &fixture.router,
+                "POST",
+                "/model/calls",
+                "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb",
+                Some(json!({
+                    "role": "semantic_reviewer",
+                    "principalId": "reviewer-1",
+                    "projectId": fixture.project_id,
+                    "objectiveId": "candidate-assessment-envelope",
+                    "scopeId": "candidate-assessment-envelope",
+                    "purpose": "semantic_review",
+                    "systemPrompt": "Return strict JSON only.",
+                    "userPrompt": "Review the candidate.",
+                    "maxOutputTokens": 2_000,
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{call}");
+            let spending = fixture
+                .app
+                .db
+                .inference_spending_status(&envelope.envelope_id)
+                .await
+                .unwrap();
+            assert_eq!(spending.unresolved_count, 0);
+            let reservations = fixture
+                .app
+                .db
+                .inference_reservations(&envelope.envelope_id)
+                .await
+                .unwrap();
+            for role in [
+                factory_native::execution_policy::InferenceRole::Lead,
+                factory_native::execution_policy::InferenceRole::SemanticReviewer,
+            ] {
+                assert!(
+                    reservations.iter().any(|reservation| {
+                        reservation.role == role
+                            && reservation.state
+                                == factory_native::execution_policy::ReservationState::Settled
+                    }),
+                    "missing settled {role:?} under one envelope: {reservations:?}"
+                );
+            }
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
         async fn intake_api_requires_policy_and_reports_truthful_states() {
             let fixture = setup().await;
             let (status, body) = create_intake(&fixture, "request-api-1").await;
@@ -14556,7 +14922,8 @@ mod tests {
             assert_eq!(status, StatusCode::OK);
             assert_eq!(replay["delegation"]["id"], policy["delegation"]["id"]);
 
-            let (status, created) = create_intake(&fixture, "request-api-1").await;
+            let (status, created) =
+                create_intake_with_amount(&fixture, "request-api-1", Some(5_000_000)).await;
             assert_eq!(status, StatusCode::CREATED, "{created}");
             assert_eq!(created["state"], "SUBMITTED");
             assert_eq!(
@@ -14661,7 +15028,8 @@ mod tests {
             let fixture = setup().await;
             let (status, _) = enable_policy(&fixture).await;
             assert_eq!(status, StatusCode::CREATED);
-            let (status, created) = create_intake(&fixture, "request-api-stale").await;
+            let (status, created) =
+                create_intake_with_amount(&fixture, "request-api-stale", Some(5_000_000)).await;
             assert_eq!(status, StatusCode::CREATED, "{created}");
             let intake_id = created["id"].as_str().unwrap().to_owned();
             let mut changed = profile_content();

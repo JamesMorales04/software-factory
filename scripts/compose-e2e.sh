@@ -206,7 +206,7 @@ api POST "/projects/$PROJECT_ID/execution-policy" \
 log "== creating and assessing the unified intake request"
 INTAKE_OBJECTIVE='Add the deterministic Compose fixture candidate and cover it with frozen checks.'
 INTAKE_CREATED="$(api POST /intake/requests \
-  "{\"project_id\":\"$PROJECT_ID\",\"objective\":\"$INTAKE_OBJECTIVE\",\"execution_profile_id\":\"$PROFILE_ID\",\"mode\":\"REVIEW_PLAN\",\"idempotency_key\":\"e2e-intake-request\"}")"
+  "{\"project_id\":\"$PROJECT_ID\",\"objective\":\"$INTAKE_OBJECTIVE\",\"execution_profile_id\":\"$PROFILE_ID\",\"mode\":\"REVIEW_PLAN\",\"idempotency_key\":\"e2e-intake-request\",\"authorized_micros\":5000000}")"
 INTAKE_ID="$(printf '%s' "$INTAKE_CREATED" | json 'import json,sys; print(json.load(sys.stdin)["id"])')"
 INTAKE_ACTION_ID="$(printf '%s' "$INTAKE_CREATED" | json 'import json,sys; print(json.load(sys.stdin)["actionId"])')"
 INTAKE_LEAD_REQUEST_ID="$(printf '%s' "$INTAKE_CREATED" | json 'import json,sys; print(json.load(sys.stdin)["leadRequestId"])')"
@@ -247,7 +247,7 @@ INTAKE_APPROVED="$(api POST "/intake/requests/$INTAKE_ID/approve" \
   "{\"expected_plan_hash\":\"$PLAN_HASH\",\"rationale\":\"Reviewed the exact frozen Compose intake plan.\",\"idempotency_key\":\"e2e-intake-approve\",\"authorized_micros\":5000000}")"
 INTAKE_CAMPAIGN_ID="$(printf '%s' "$INTAKE_APPROVED" | json 'import json,sys; print(json.load(sys.stdin)["campaignId"])')"
 INTAKE_ATTEMPT_ID="$(printf '%s' "$INTAKE_APPROVED" | json 'import json,sys; print(json.load(sys.stdin)["campaign"]["tasks"][0]["attempt_id"])')"
-[[ "$(printf '%s' "$INTAKE_APPROVED" | json 'import json,sys; print(json.load(sys.stdin)["campaign"]["authorization"]["execution_mode"])')" == "TRUSTED_LOCAL_PROVIDER" ]] || {
+[[ "$(printf '%s' "$INTAKE_APPROVED" | json 'import json,sys; print(json.load(sys.stdin)["campaign"]["authorization"]["executionMode"])')" == "TRUSTED_LOCAL_PROVIDER" ]] || {
   log "intake Campaign has an unexpected execution mode"; exit 1;
 }
 [[ "$(printf '%s' "$INTAKE_APPROVED" | json 'import json,sys; print(json.load(sys.stdin)["profile"]["revisionId"])')" == "$PROFILE_REVISION_ID" ]] || {
