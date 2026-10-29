@@ -327,7 +327,21 @@ async fn authorize_campaign(
             "actor": "e2e-negative-operator",
             "rationale": "deterministic negative E2E",
             "authorized_paths": allowed_paths,
-            "max_attempts": 1
+            "delegation_id": "delegation-shared",
+            "provider_mode": "build",
+            "operations": {
+                "modelRequestTimeoutSecs": 60,
+                "toolCallTimeoutSecs": 60,
+                "maxRequestBytes": 2097152,
+                "maxResponseBytes": 2097152,
+                "maxGenerationTokens": 8192,
+                "maxInFlightOperations": 1
+            },
+            "progress": {
+                "diagnoseAfterStagnantCheckpoints": 2,
+                "escalateAfterUnsuccessfulReplans": 1,
+                "observationTimeoutSecs": 300
+            }
         })),
     )
     .await;
