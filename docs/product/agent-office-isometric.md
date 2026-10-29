@@ -102,6 +102,9 @@ as live activity.
   not an operator action. No Core operation exists to move a participant.
 - The scene is not a second source of truth and does not stream events; the
   page polls the bounded projection.
+- `office/visual-harness.html` is a developer-only fixture renderer for visual
+  review. Its captures are not live-agent activity and are not browser
+  acceptance against the real Core/Compose stack.
 - The page projects at most 200 participants. Larger organizations require
   Campaign/project scope or a future paging design.
 - Visual regression, Storybook and a full axe/manual accessibility audit remain
