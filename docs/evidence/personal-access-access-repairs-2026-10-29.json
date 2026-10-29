@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "record": "personal-access-access-repairs-author-run",
-  "implementation_sha": "d2fa767f135b83f348f97efbedb52012b050e242",
+  "implementation_sha": "d0d4040f597818a77296e3fb821fce1c774a9cf5",
   "runtime_tested_sha": "7bca75159ee39ed74106744dc19f5c0dec4b82e1",
   "date": "2026-10-29",
   "environment": {
@@ -39,8 +39,8 @@
     {
       "name": "Compose policy and negative regressions",
       "pass": true,
-      "candidate_sha": "d2fa767f135b83f348f97efbedb52012b050e242",
-      "detail": "The checker passed on both base and optional Tailscale configurations. All 24 tests passed with the Tailscale overlay; 24 passed with 5 Tailscale-only tests skipped on the base configuration. Regressions reject the former v1.102.4 image digest and reject Office socket volume mounts by Supervisor, Worker, Verifier, Reviewer, and Runtime. Local podman-compose 1.6.0 lacks config --format json; its normalized YAML was converted to the checker’s JSON input shape for this author-run."
+      "candidate_sha": "d0d4040f597818a77296e3fb821fce1c774a9cf5",
+      "detail": "The checker passed on both base and optional Tailscale configurations. All 26 tests passed with the Tailscale overlay; 26 passed with 5 Tailscale-only tests skipped on the base configuration. Regressions reject the former v1.102.4 image digest, Office socket volume mounts by Supervisor, Worker, Verifier, Reviewer, and Runtime, and both a named alias and external named alias resolving to software-factory_factory-office-socket. Local podman-compose 1.6.0 lacks config --format json; its normalized YAML was converted to the checker’s JSON input shape for this author-run."
     },
     {
       "name": "disposable rootless Podman Compose runtime",
@@ -90,6 +90,6 @@
     "https://tailscale.com/changelog",
     "https://tailscale.com/docs/features/containers/docker/docker-params"
   ],
-  "independent_review": "PENDING",
+  "independent_review": "PENDING_AFTER_ALIAS_HARDENING",
   "promotion_status": "NOT_PROMOTED"
 }
