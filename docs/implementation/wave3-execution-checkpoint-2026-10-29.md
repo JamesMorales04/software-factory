@@ -30,7 +30,7 @@ provenance and is not current campaign certification.
 | Subscription funding V3 | `sf-wave3/subscription-funding` / `factory/subscription-funding/20261029` | Latest `f4e757a755e43ded4f9cb3ac17117952466def49`; worktree clean | Luna subagent `funding_shared_admission`; independent review APPROVE for `f4e757a` | Continue request-level subscription admission only after defining its separate boundary; quota pause/re-admission still needs trusted provider exhaustion evidence and append-only observations |
 | Conversational Home (#62) | `sf-wave3/ux-conversation` / `factory/office-conversation/20261029` | PR #80 at `3d394652fd3956676affbefb6c8109076ca33c77` | Luna subagent `home_conversation`; fixture Chromium clean rerun PASS; V2 grant contract repair active | Use existing authenticated V2 execution-policy grant in E2E and Lead projection; rerun canonical journey, review exact SHA, keep visual sign-off pending |
 | Agent Office V3 (#65/#70) | `sf-wave3/isometric-v3` / `factory/office-isometric-v3/20261029` | PR #82 at `82b9ee4703326947a9a3c78153d9bf1994a3a960`; source `e31e46298b42f13e80701913b43878336587ccb8`, captures `782b5d9dbe484f41afa12120667a07f248703bb0` | Luna subagent `agent_office_v3`; exact independent review PASS; prior infinite loop corrected | Resolve inherited CAP-050/052 architecture check after #81; Owner visual acceptance pending |
-| Access repairs (#36–#38) | `sf-wave3/access-repairs` / `factory/access-repairs/20261029` | Cumulative #38 head `0c3fd4436dd4a83ef2a1a721a22c0932883fd5e3`; clean | Luna subagent `access_security_repairs`; exact review PASS; #38 fast-forwarded, #37 policy-only split being prepared | Preserve stack order and put the guard in #37 before that layer can promote; no merge; remote Serve and SEC-01 NOT_TESTED |
+| Access repairs (#36–#38) | `sf-wave3/access-repairs` / `factory/access-repairs/20261029` | #38 cumulative head `0c3fd4436dd4a83ef2a1a721a22c0932883fd5e3`; #37 policy-only candidate `da2f07a58d0dfe638786dedf12af7c9cb598c4e9` | Luna subagent `access_security_repairs`; #38 exact review PASS; #37 exact review pending | Keep #37 split based on `715349f` (no pairing); push only after independent review; no merge; remote Serve/SEC-01 NOT_TESTED |
 | Provider acceptance / PR #79 | `sf-wave3/provider-acceptance` / `factory/provider-acceptance/20261029` | Candidate `c5c90ce1f3a2a2274724b18cf41aa2d26ef6530a`, pushed | Luna subagent `funding_shared_admission`; exact re-review BLOCK HIGH for request admission after Project/profile creation; repair active | Require request-specific read-only pre-admission before any create or remain blocked; preserve fail-closed UAT |
 | Capability evidence shape | `sf-wave3/capability-evidence-shape` / `factory/capability-evidence-shape/20261029` | `13adff74a8de434fd46c527ea92608b695a98d03`; draft PR #81 | Director | Collect CI and exact-SHA independent review; integrate only after gates pass |
 
@@ -82,7 +82,10 @@ were left untouched.
   unique appearances. Fixture captures and parity mapping are committed.
   Compose policy passed; Rust/container-dev remain pending; architecture check
   fails on the inherited CAP-050/052 registry entries pending #81.
-- #36 → #37 → #38 — no PRs opened from this repair branch yet. Exact review of
+- #36 → #37 → #38 — existing draft stack preserved. PR #38 was fast-forwarded
+  from `c8bf930` to `0c3fd44` with no base change or merge. A separate
+  #37-compatible guard candidate `da2f07a` is based directly on `715349f` and
+  excludes pairing changes; exact review is pending before any push. Review of
   `2851345` found a Major Compose policy gap, addressed in `d2fa767`/`a03dd55`;
   re-review found HIGH named-volume and unnamed-external alias bypasses.
   Commits `d0d4040` and `d2783e4` resolve canonical, project-derived, explicit,
@@ -215,8 +218,9 @@ completion.
 6. Integrate only coherent, reviewed slices into this Wave 3 branch after their
    relevant deterministic gates pass. Do not merge to `main`.
 
-**Independent review:** access candidate `0c3fd44` PASS (reviewer suite rerun
-limitation recorded); funding `f4e757a` APPROVE; Agent Office V3 `82b9ee4` PASS;
+**Independent review:** access cumulative candidate `0c3fd44` PASS (reviewer
+suite rerun limitation recorded); #37 policy-only candidate `da2f07a` pending;
+funding `f4e757a` APPROVE; Agent Office V3 `82b9ee4` PASS;
 capability PR #81 `13adff7` APPROVE (container-dev rerun pending on corrected
 integration candidate); PR #79 `c5c90ce` BLOCK HIGH (request pre-admission
 repair active).
