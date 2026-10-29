@@ -130,6 +130,50 @@ Director owns shared files: `native/src/bin/core.rs`, `native/src/lib.rs`,
 3. No change to `main`; no fabricated provider or acceptance claim.
 4. This ledger and the campaign state are committed on the integration branch.
 
+## 8. Checkpoint 1 — lane evidence (2026-10-28)
+
+| Lane | Candidate | State | Evidence |
+|---|---|---|---|
+| P #59 | `0ae58f4`, docs delta `278688f` | **Draft PR #74** | Rust: 11 provider-catalog tests + Core discovery test pass; clippy clean; Office typecheck + 18 focused tests pass. Luna: **APPROVE WITH CONDITIONS**; read-only check condition resolved by a writable Director rerun; parity-state Low fixed in `278688f`. |
+| L #73 | `e9a3acd` | **Draft PR #75** | 19 ledger tests (real SQLite) pass; 417 lib tests pass; clippy clean. Covers concurrency, stale revision/scope, replay, fencing, overdraw, revocation, ambiguous recovery, five-role aggregation, populated-0033 migration. Luna security review running. |
+| I #70 | `6bb5cde` + docs | Amendment in progress | V0 SVG/DOM isometric scene, 0/1/5/12/30, stable identity, filters, selection, pan/zoom; 229 Office tests, typecheck/lint/build pass. Owner reference pack now hosted at `docs/product/reference/factory-office-visual-reference-pack-20261028/` (commit `9f6a8c0`). Agent re-reading updated #70/#65 and amending visual fidelity. |
+| C #72 | no commit yet | Active | Migration `0034`, `progress.rs`, authorization/worker/progress changes in progress; clippy repairs running. |
+
+### Independent architecture review
+
+Sol reviewed the frozen shared interface (`execution_policy.rs`) and returned
+**BLOCK** with two HIGH findings:
+
+1. derived `Deserialize` for `UsdMicros` accepted values above SQLite `INTEGER`;
+2. the frozen reserve/settlement boundary lacked durable authorization-revision,
+   scope and Worker-fencing context.
+
+Disposition: fixed in `b16ee5e` (checked deserialization, `authorization_revision`,
+`scope_sha256`, `worker_id`/`generation`, full reservation provenance, role/
+provider spending breakdown) and adapted by Lane L in `a1ea4c5`/`e9a3acd`.
+Sol's remaining MEDIUM items (validated identity newtypes, `JsonSchema`) are
+recorded as follow-ups, not silently dropped.
+
+### Contested files and duplicate writers
+
+- The provider worktree briefly had two writers (a duplicate agent session).
+  `0ae58f4` is the accepted sibling-catalog implementation; the later
+  models.dev variant `ef79f7f` is preserved only as local branch
+  `factory/provider-opencode-go-modelsdev/20261028` and is **not** the PR.
+- Lane L cherry-picked the interface fix; its branch contains `a1ea4c5`, while
+  the integration branch has `b16ee5e`. The Director resolves this at merge.
+- Migrations are disjoint: Lane C owns `0034`, Lane L owns `0035`. No lane may
+  renumber the other's migration.
+
+### Not yet done
+
+- Lane C commit and its independent reviews.
+- Luna ledger review and Sol ledger implementation review.
+- Model-gateway `mark_inference_dispatched` wiring; Office spending surfaces.
+- Real Core/Compose/Chromium acceptance and live inference (requires owner spend
+  authorization).
+- No `main` merge; access PRs #36–#38 remain unmerged.
+
 ## 8. Change log
 
 - 2026-10-28: Wave 3 opened at `4e0a43e`. Model routes verified
