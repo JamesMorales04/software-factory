@@ -30,8 +30,8 @@ provenance and is not current campaign certification.
 | Subscription funding V3 | `sf-wave3/subscription-funding` / `factory/subscription-funding/20261029` | Latest `f4e757a755e43ded4f9cb3ac17117952466def49`; worktree clean | Luna subagent `funding_shared_admission`; independent review APPROVE for `f4e757a` | Continue request-level subscription admission only after defining its separate boundary; quota pause/re-admission still needs trusted provider exhaustion evidence and append-only observations |
 | Conversational Home (#62) | `sf-wave3/ux-conversation` / `factory/office-conversation/20261029` | PR #80 at `3d394652fd3956676affbefb6c8109076ca33c77` | Luna subagent `home_conversation`; fixture Chromium clean rerun PASS; V2 grant contract repair active | Use existing authenticated V2 execution-policy grant in E2E and Lead projection; rerun canonical journey, review exact SHA, keep visual sign-off pending |
 | Agent Office V3 (#65/#70) | `sf-wave3/isometric-v3` / `factory/office-isometric-v3/20261029` | PR #82 at `82b9ee4703326947a9a3c78153d9bf1994a3a960`; source `e31e46298b42f13e80701913b43878336587ccb8`, captures `782b5d9dbe484f41afa12120667a07f248703bb0` | Luna subagent `agent_office_v3`; exact independent review PASS; prior infinite loop corrected | Resolve inherited CAP-050/052 architecture check after #81; Owner visual acceptance pending |
-| Access repairs (#36–#38) | `sf-wave3/access-repairs` / `factory/access-repairs/20261029` | #38 cumulative head `0c3fd4436dd4a83ef2a1a721a22c0932883fd5e3`; #37 policy-only candidate `da2f07a58d0dfe638786dedf12af7c9cb598c4e9` | Luna subagent `access_security_repairs`; #38 exact review PASS; #37 exact review pending | Keep #37 split based on `715349f` (no pairing); push only after independent review; no merge; remote Serve/SEC-01 NOT_TESTED |
-| Provider acceptance / PR #79 | `sf-wave3/provider-acceptance` / `factory/provider-acceptance/20261029` | Candidate `c5c90ce1f3a2a2274724b18cf41aa2d26ef6530a`, pushed | Luna subagent `funding_shared_admission`; exact re-review BLOCK HIGH for request admission after Project/profile creation; repair active | Require request-specific read-only pre-admission before any create or remain blocked; preserve fail-closed UAT |
+| Access repairs (#36–#38) | `sf-wave3/access-repairs` / `factory/access-repairs/20261029` | #38 cumulative head `0c3fd4436dd4a83ef2a1a721a22c0932883fd5e3`; #37 policy-only candidate `da2f07a58d0dfe638786dedf12af7c9cb598c4e9` | Luna subagent `access_security_repairs`; exact reviews PASS; #38 architecture check found in-place edit to accepted ADR-0026, repair active | Preserve accepted ADR history with a superseding ADR; push #37 only after exact review; keep stack Draft, no merge; remote Serve/SEC-01 NOT_TESTED |
+| Provider acceptance / PR #79 | `sf-wave3/provider-acceptance` / `factory/provider-acceptance/20261029` | Candidate `c5c90ce1f3a2a2274724b18cf41aa2d26ef6530a`, pushed | Luna subagent `funding_shared_admission`; exact review BLOCK HIGH for request admission after Project/profile creation; repair active | Mark fake downstream flows `SIMULATION`; real path stays blocked until Core atomic create-and-admit exists |
 | Capability evidence shape | `sf-wave3/capability-evidence-shape` / `factory/capability-evidence-shape/20261029` | `13adff74a8de434fd46c527ea92608b695a98d03`; draft PR #81 | Director | Collect CI and exact-SHA independent review; integrate only after gates pass |
 
 No active Cargo or frontend writer was observed in the funding, Home, access,
@@ -191,37 +191,41 @@ completion.
   verified-zero accounting and arbitrary Core error-body secret leakage. Both
   HIGH findings are repaired in `c5c90ce`; 27/27 harness tests and syntax/
   whitespace checks pass. Independent re-review BLOCKED another HIGH: if
-  provider funding verification exists but request-level Lead admission fails,
-  the harness may create Project/profile before `/intake/requests` refuses.
-  Current Core lacks `/funding/subscription` and fails earlier, but harness must
-  require request-specific read-only admission before any create or remain
-  blocked. A repair is active. Podman config and six negative mutations passed
-  without starting services; fixture image is digest-pinned. No live inference
-  or billing occurred.
+  provider verification exists but request-level Lead admission fails, the
+  harness may create Project/profile before `/intake/requests` refuses. A
+  bounded Sol review found no existing read-only Core operation can adjudicate
+  the exact request before Project creation; a preview alone cannot fence stale
+  or revoked authority. Real UAT must remain blocked until Core implements a
+  transactional create-and-admit boundary binding principal, objective,
+  repository/base, config, exact profile, explicit approval, assessment
+  authority, funding evidence and idempotency. Harness repair will block before
+  resources and label fake downstream flows `SIMULATION`. Podman config and six
+  negative mutations passed without starting services; fixture image is
+  digest-pinned. No live inference or billing occurred.
 
 ## Immediate sequence
 
-1. Collect exact funding review of `f4e757a`; continue the separate
-   request-level subscription envelope boundary while keeping provider
-   inference disabled. Quota recovery remains blocked until a trusted provider
-   exhaustion evidence source and append-only observation model exist.
-2. Resolve the Home Lead selector journey issue, rerun the canonical
-   containerized Chromium journey, rebind PR #80 declarations to its exact
-   current SHA, and clear CAP-050/CAP-052 through #81. Keep visual approval
-   pending.
-3. Reconcile PR #79 only after subscription admission and no-overage evidence
-   are represented accurately. Keep the live run gated and draft until reviewed.
+1. Continue shared funding admission while provider inference stays disabled.
+   Quota recovery remains blocked until trusted provider exhaustion evidence
+   and append-only observations exist.
+2. Finish Home V2 delegation projection and request-scoped approval flow, run
+   canonical containerized Chromium, update PR #80 exact-SHA declarations, and
+   obtain independent review. Keep visual approval pending.
+3. Keep PR #79 fake-only until Core implements transactional request
+   create-and-admit. Ensure fake flow evidence says `SIMULATION`; no real UAT or
+   resource creation on unknown request admission.
 4. Re-review Agent Office V3 exact commit `82b9ee4`, clear inherited registry
    CI through #81, and preserve explicit Owner visual sign-off as pending.
-5. Collect access repairs in dependency order #36 → #37 → #38. Do not merge the
-   stack while high findings or required Owner authorization remain open.
+5. Finish accepted-ADR history repair for #38, keep #37's reviewed guard split
+   and stack order #36 → #37 → #38, and collect exact CI/reviews. Do not merge
+   while policy or Owner-authorization requirements remain open.
 6. Integrate only coherent, reviewed slices into this Wave 3 branch after their
    relevant deterministic gates pass. Do not merge to `main`.
 
 **Independent review:** access cumulative candidate `0c3fd44` PASS (reviewer
-suite rerun limitation recorded); #37 policy-only candidate `da2f07a` pending;
+suite rerun limitation recorded); #37 policy-only candidate `da2f07a` APPROVE;
 funding `f4e757a` APPROVE; Agent Office V3 `82b9ee4` PASS;
 capability PR #81 `13adff7` APPROVE (container-dev rerun pending on corrected
-integration candidate); PR #79 `c5c90ce` BLOCK HIGH (request pre-admission
-repair active).
+integration candidate); PR #79 `c5c90ce` BLOCK HIGH (Core atomic create-and-admit
+is missing; fake/live separation repair active).
 **Campaign status:** in progress; Wave 3 is not a certified product release.
