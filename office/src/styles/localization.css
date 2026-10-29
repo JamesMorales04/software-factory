@@ -87,6 +87,41 @@
   color: var(--text);
 }
 
+/* The global header sits on the deep-navy shell. Native <option> values keep
+   light content colours because the OS renders that popup on the content
+   surface. */
+.topbar .language-switcher-compact {
+  color: var(--shell-text-muted);
+}
+
+.topbar .language-switcher-compact > svg {
+  color: var(--shell-text-muted);
+}
+
+.topbar .language-switcher-compact .language-switcher-select {
+  min-height: 38px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--shell-text-muted);
+}
+
+.topbar .language-switcher-compact .language-switcher-select:hover {
+  border-color: rgb(255 255 255 / 0.14);
+  background: rgb(255 255 255 / 0.06);
+  color: var(--shell-text);
+}
+
+.topbar .language-switcher-compact .language-switcher-select:focus-visible {
+  outline: 2px solid var(--focus-inverse);
+  outline-offset: 2px;
+  color: var(--shell-text);
+}
+
+.topbar .language-switcher-compact .language-switcher-select option {
+  background: var(--surface);
+  color: var(--text);
+}
+
 .table-responsive {
   width: 100%;
   max-width: 100%;

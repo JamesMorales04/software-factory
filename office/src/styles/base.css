@@ -39,17 +39,18 @@ h5 {
 }
 
 h1 {
-  font-size: var(--text-2xl);
-  letter-spacing: -0.02em;
+  font-size: clamp(1.6rem, 1.35rem + 0.7vw, 2rem);
+  letter-spacing: -0.03em;
 }
 
 h2 {
   font-size: var(--text-xl);
-  letter-spacing: -0.015em;
+  letter-spacing: -0.02em;
 }
 
 h3 {
   font-size: var(--text-lg);
+  letter-spacing: -0.012em;
 }
 
 h4,
@@ -66,10 +67,16 @@ a {
   color: var(--accent);
   text-decoration-thickness: 1px;
   text-underline-offset: 3px;
+  transition: color var(--transition-fast);
 }
 
 a:hover {
   color: var(--accent-hover);
+}
+
+::selection {
+  background: var(--accent-soft);
+  color: var(--text);
 }
 
 code,
@@ -95,11 +102,6 @@ td {
 :focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
-}
-
-::selection {
-  background: var(--accent-soft);
-  color: var(--text);
 }
 
 .muted {

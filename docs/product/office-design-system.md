@@ -14,6 +14,13 @@ workspace now exposes a bounded candidate file diff and GitHub PR inspection;
 real browser and live GitHub acceptance remain open. Nothing here says those modules exist beyond their documented
 read-only projections.
 
+**Visual-polish slice 1 (2026-10-29):** semantic shell/content tokens, a deep
+navy application rail and top bar, larger 10–14 px controls, refined focus and
+busy states, and a conversation-first Home composition are implemented against
+the Owner visual contract in issue #62. This is a first prototype: Owner visual
+acceptance remains **outstanding**, and the shell/Home changes have only
+fixture-browser evidence, not acceptance evidence.
+
 **Product job:** the primary workspace where the Product Owner manages
 engineering objectives, decisions, autonomous agents, evidence and multiple
 projects without raw API calls or terminal inspection.
@@ -42,23 +49,47 @@ values without changing their meaning.
 
 | Token | Light | Dark | Use |
 |---|---|---|---|
-| `--canvas` | `#eef2f7` | `#07111f` | Application background |
-| `--surface` | `#ffffff` | `#0d1a2b` | Primary work surface |
-| `--surface-raised` | `#f8fafc` | `#132235` | Popovers, inspectors, elevated panels |
-| `--surface-sunken` | `#e3eaf3` | `#091524` | Table headers, inset areas |
-| `--border` | `#c9d5e3` | `#26384f` | Dividers and control borders |
-| `--border-strong` | `#9fb0c7` | `#3b526f` | Emphasis boundaries |
-| `--text` | `#0b1728` | `#e7eef8` | Primary text |
-| `--text-muted` | `#52647b` | `#9fb0c7` | Secondary text and metadata |
-| `--text-inverse` | `#ffffff` | `#07111f` | Text on accent |
-| `--accent` | `#0f766e` | `#2dd4bf` | Interactive primary |
-| `--accent-hover` | `#115e59` | `#5eead4` | Hover/active primary |
+| `--canvas` | `#f4f7fb` | `#071322` | Application background |
+| `--surface` | `#ffffff` | `#0c1a2b` | Primary work surface |
+| `--surface-raised` | `#f8fafc` | `#112239` | Popovers, inspectors, elevated panels |
+| `--surface-sunken` | `#eef3f9` | `#091524` | Table headers, inset areas |
+| `--surface-inset` | `#f6f9fd` | `#0a1828` | Composer and grouped controls |
+| `--border` | `#dfe6ef` | `#24374e` | Dividers and control borders |
+| `--border-strong` | `#b8c5d6` | `#3d5674` | Emphasis boundaries |
+| `--text` | `#0f1b2d` | `#e8eff8` | Primary text |
+| `--text-muted` | `#52647b` | `#a5b4c8` | Secondary text and metadata |
+| `--text-subtle` | `#5e7088` | `#94a6bd` | Placeholder text |
+| `--accent` | `#2563eb` | `#60a5fa` | Interactive primary |
+| `--accent-hover` | `#1d4ed8` | `#93c5fd` | Hover/active primary |
+| `--accent-contrast` | `#ffffff` | `#06121f` | Text on the primary action |
+| `--accent-soft` | `#eef3ff` | `#102b4d` | Selected and primary tint |
+| `--accent-teal` | `#0f766e` | `#2dd4bf` | Product/teal accent |
 | `--attention` | `#b45309` | `#fbbf24` | Needs attention, warning |
 | `--danger` | `#b91c1c` | `#f87171` | Critical failure, destructive |
 | `--success` | `#15803d` | `#4ade80` | Verified success |
 | `--info` | `#0369a1` | `#38bdf8` | Informational |
-| `--focus` | `#0e7490` | `#67e8f9` | Focus ring |
-| `--overlay` | `rgb(7 17 31 / 0.48)` | `rgb(0 0 0 / 0.62)` | Modal scrim |
+| `--focus` | `#2563eb` | `#7dd3fc` | Content focus ring |
+| `--focus-inverse` | `#7dd3fc` | `#7dd3fc` | Focus ring on the navy shell |
+| `--overlay` | `rgb(7 17 31 / 0.52)` | `rgb(0 0 0 / 0.64)` | Modal scrim |
+
+### 2.1 Shell tokens
+
+The application rail and top bar are deeper than content in both themes. They
+own separate tokens so a content theme change cannot erase the shell hierarchy.
+
+| Token | Light | Dark | Use |
+|---|---|---|---|
+| `--shell-bg` | `#0a1a2f` | `#050f1d` | Rail and top bar |
+| `--shell-bg-hover` | `rgb(255 255 255 / 0.065)` | `rgb(255 255 255 / 0.07)` | Navigation hover |
+| `--shell-border` | `rgb(148 163 184 / 0.16)` | `rgb(148 163 184 / 0.16)` | Shell dividers |
+| `--shell-text` | `#eef4fb` | `#eef4fb` | Primary shell text |
+| `--shell-text-muted` | `#9fb0c7` | `#9fb0c7` | Secondary shell text |
+| `--shell-active-bg` | `#17345b` | `#14345c` | Active navigation item |
+| `--shell-accent` | `#2dd4bf` | `#2dd4bf` | Active rail and icon accent |
+| `--shell-mark-bg` | `#14b8a6` | `#14b8a6` | Brand mark (dark text) |
+
+Deep navy is not applied to content panels. The wide content area stays light
+in the light theme and uses the same semantic content tokens in dark mode.
 
 Semantic state backgrounds use the state color at low opacity plus a solid
 border/text token. Never indicate state by color alone; include a label, icon or
@@ -86,12 +117,17 @@ shape. `ACCEPTED`, `PASS`, `TRUSTED_LOCAL`, `UNKNOWN`, `NOT_TESTED`,
 ## 4. Spacing, shape and layout
 
 - Spacing scale: 4, 8, 12, 16, 20, 24, 32, 40, 48, 64 px.
-- Radius: 4 px controls, 6 px panels, 8 px overlays, 12 px only for major
-  surfaces. Do not pill every metadata item.
-- Elevation: no decorative shadows. Use borders and surface contrast; a light
-  shadow is reserved for overlays and popovers.
-- Application shell: 248 px expanded sidebar, 64 px collapsed; 56 px top bar;
-  content max width 1600 px with 24 px gutters; 360 px inspector/drawer.
+- Radius: 6 px small controls, 10 px controls, 12 px panels, 16 px for a major
+  composer/overlay. Do not pill every metadata item.
+- Elevation: borders and surface contrast carry structure. A one-pixel shadow
+  plus a wide, very soft ambient shadow may separate a panel or primary action;
+  no decorative glow, gradient stack or glass effect.
+- Application shell: 260 px expanded sidebar, 72 px collapsed; 60 px top bar;
+  content max width 1600 px with a 16–32 px responsive gutter; 360 px
+  inspector/drawer. The rail and top bar are deep navy; content stays airy.
+- Normal controls use a 40 px height; a primary action may use the 44 px
+  `size="lg"` treatment, as Home does. Compact density reduces to 36/40 px but
+  never below an accessible target where the control is the only way to act.
 - Data density: comfortable 40 px rows, compact 32 px rows. Density is a user
   preference, persisted; it does not change information or touch targets below
   the accessible minimum.
@@ -102,9 +138,10 @@ shape. `ACCEPTED`, `PASS`, `TRUSTED_LOCAL`, `UNKNOWN`, `NOT_TESTED`,
 
 ## 5. Navigation and page structure
 
-- Persistent collapsible sidebar grouped by operator task: Overview, Work
-  (Actions, Campaigns, Agent Office, Issues, Docs), Operations (Decision Inbox,
-  Runtime, Settings).
+- Persistent deep-navy collapsible sidebar grouped by operator task: Workspace
+  (Home, Projects, Campaigns, Issues, Decisions, Agents, Settings) and an
+  Advanced disclosure for internal views. The active item carries a turquoise
+  signal rail and a solid navy-blue fill; it is not a generic card highlight.
 - Project/workspace context is visible and switchable where the Core supports
   it; do not imply a project scope that the API does not enforce.
 - Contextual page header with breadcrumbs, status and primary action.
@@ -118,11 +155,12 @@ shape. `ACCEPTED`, `PASS`, `TRUSTED_LOCAL`, `UNKNOWN`, `NOT_TESTED`,
 
 | Component | Required states and rules |
 |---|---|
-| Button / IconButton / LinkButton | primary/secondary/quiet/destructive; loading; disabled with reason; icon-only accessible name; no action without a Core operation |
-| Input / Select / Combobox / Checkbox / Switch | label, help, error, required, disabled, keyboard operation, autocomplete where appropriate |
+| Button / IconButton / LinkButton | primary/secondary/quiet/destructive; `busy` spinner plus `aria-busy`; disabled with reason; 40 px normal and 44 px primary height; icon-only accessible name; no action without a Core operation |
+| Input / Select / Combobox / Checkbox / Switch | label (visible or `labelHidden` with a visible prompt), help, error, required, disabled, keyboard operation, hover/focus ring, autocomplete where appropriate |
 | Form validation | inline error next to the field, a summary for multi-error forms, focus moved to the first error, no silent submission |
 | Table | sorting/filtering, pagination, empty/loading/error, row actions, keyboard access, responsive fallback |
-| Card / Panel / Inspector | one level of hierarchy; no identical card for every content type |
+| Card / Panel / Inspector | 12 px panel radius, one-pixel border, soft ambient shadow; one level of hierarchy; no identical card for every content type |
+| Home composer | one dominant instruction surface; compact Project/profile selects; explicit Core-required USD authorization; one obvious submit action; recent work, decisions and Core status are lighter secondary surfaces |
 | Tabs / SegmentedControl | keyboard arrow navigation, visible selected state, URL-backed where material |
 | Dialog / Drawer / ConfirmDialog | focus trap, escape/cancel, focus restoration, consequence text, destructive action separated |
 | Badge / Status | label plus semantic color; unknown/not-tested/blocked distinct; never color-only |

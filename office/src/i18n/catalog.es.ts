@@ -40,6 +40,7 @@ export const es: Catalog = {
   "nav.factoryOffice": "Factory Office",
 
   "shell.skipToMain": "Saltar al contenido principal",
+  "shell.preferences": "Preferencias de visualización",
   "shell.primaryNavigation": "Navegación principal",
   "shell.navigation": "Principal",
   "shell.closeDrawer": "Cerrar el panel de navegación",
@@ -95,10 +96,6 @@ export const es: Catalog = {
   "app.lock.error": "No se pudo finalizar esta sesión de dispositivo.",
 
   "home.title": "Inicio",
-  "home.description":
-    "Describe el resultado que quieres. La Factory lo evalúa, propone un plan y espera tu aprobación antes de empezar cualquier trabajo.",
-  "home.meta.flow": "Proyecto → resultado → perfil → autorización",
-  "home.meta.durable": "Las solicitudes son registros durables de Core",
   "home.projects.error": "No se pudieron cargar los Proyectos desde Core.",
   "home.projects.retry": "Reintentar Proyectos",
   "home.newRequest.title": "Nueva solicitud",
@@ -106,7 +103,7 @@ export const es: Catalog = {
     "Intención del operador, no una especificación de Acción",
   "home.composer.title": "¿En qué debe trabajar la Factory?",
   "home.composer.description":
-    "Escribe el resultado de ingeniería en lenguaje natural. Elige un Proyecto y un perfil de ejecución, autoriza un importe de inferencia y envía la solicitud. Core congela el plan; nada se ejecuta hasta que lo apruebes.",
+    "Describe el resultado en lenguaje natural. El Lead prepara un plan y tú lo apruebas antes de que empiece cualquier trabajo.",
   "home.projects.loading": "Cargando Proyectos…",
   "home.projects.emptyTitle": "Registra primero un Proyecto",
   "home.projects.emptyDescription":
@@ -115,16 +112,11 @@ export const es: Catalog = {
   "home.projectFallback": "Proyecto {id}",
   "home.project.label": "Proyecto",
   "home.project.select": "Selecciona un Proyecto",
-  "home.project.help":
-    "Core aplica la configuración del Proyecto, las rutas permitidas y la revisión de política.",
   "home.objective.label": "¿Qué debe hacer la Factory?",
   "home.objective.placeholder":
     "Añade un endpoint de exportación CSV a la API de informes, mantén la compatibilidad hacia atrás y cúbrelo con pruebas.",
-  "home.objective.help":
-    "El lenguaje natural es suficiente. Core congela el plan concreto y las comprobaciones tras la evaluación.",
   "home.profile.label": "Perfil de ejecución",
-  "home.profile.help":
-    "Elige cómo trabajan Lead, Implementador y Revisor semántico. Los límites técnicos de operación permanecen en la configuración avanzada del perfil.",
+  "home.profile.routes": "Detalle de rutas",
   "home.profile.routesHint":
     "Estas rutas forman parte de la revisión del perfil que Core congela para esta solicitud.",
   "home.profile.coreDefaultUnavailable":
@@ -146,10 +138,9 @@ export const es: Catalog = {
     "Este perfil está declarado pero no es ejecutable. Elige un perfil ejecutable o el predeterminado de Core.",
   "home.profile.notExecutableError":
     "El perfil de ejecución seleccionado no es ejecutable en esta compilación de Core. Elige otro perfil.",
-  "home.approval.title":
-    "Cada solicitud se detiene para la aprobación explícita del operador.",
+  "home.approval.title": "Aprobación explícita obligatoria.",
   "home.approval.body":
-    "Core evalúa la solicitud, congela un plan y espera tu aprobación antes de iniciar cualquier Campaña. Esta compilación no inicia solicitudes automáticamente.",
+    "Core congela el plan y espera tu decisión; nada se ejecuta por sí solo.",
   "home.policy.title": "Habilitar ejecución gobernada",
   "home.policy.description":
     "Core exige una política de ejecución explícita y acotada para este Proyecto y la revisión exacta del perfil antes de crear la solicitud de Lead. Esta concesión no es autónoma y se limita a trabajo R0; no habilita el inicio automático.",
@@ -181,9 +172,7 @@ export const es: Catalog = {
   "home.validation.project": "Selecciona un Proyecto.",
   "home.spend.label": "Gasto máximo de inferencia (USD)",
   "home.spend.help":
-    "Un importe explícito cubre la evaluación de Lead, la implementación y la revisión. Core detiene las llamadas facturables cuando se agota y solicita un aumento.",
-  "home.spend.note":
-    "Este es el único importe de gasto obligatorio. Los límites avanzados de coste y tokens permanecen en la configuración técnica del perfil de ejecución.",
+    "Cubre la evaluación de Lead, la implementación y la revisión. Core detiene las llamadas facturables cuando se agota y solicita un aumento.",
   "home.validation.authorization":
     "Introduce un importe positivo en USD para la envolvente de inferencia.",
   "home.validation.objective":
@@ -193,10 +182,8 @@ export const es: Catalog = {
     "La entrada unificada de solicitudes no está disponible en esta compilación de Core. El cliente tipado de Office está listo, pero Core no expone /intake/requests.",
   "home.submit": "Enviar solicitud",
   "home.submitting": "Enviando solicitud…",
-  "home.submitHint":
-    "Enviar registra la intención del operador. No autoriza una Campaña.",
-  "home.recent.title": "Solicitudes recientes",
-  "home.recent.hint": "Proyección acotada de Core",
+  "home.submitHint": "Registra la intención en Core. No autoriza una Campaña.",
+  "home.recent.title": "Trabajo reciente",
   "home.recent.loading": "Cargando solicitudes…",
   "home.recent.unavailable":
     "El historial unificado de solicitudes no está disponible en esta compilación de Core. El compositor y las vistas operativas existentes siguen disponibles.",

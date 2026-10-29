@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -232,6 +232,15 @@ describe("AppShell", () => {
     ]) {
       expect(screen.getByRole("link", { name })).toBeDefined();
     }
+    const preferences = screen.getByRole("group", {
+      name: "Display preferences",
+    });
+    expect(
+      within(preferences).getByRole("button", { name: /switch theme/ }),
+    ).toBeDefined();
+    expect(
+      within(preferences).getByRole("button", { name: /switch density/ }),
+    ).toBeDefined();
     await userEvent.click(
       screen.getByRole("button", { name: "Close navigation drawer" }),
     );

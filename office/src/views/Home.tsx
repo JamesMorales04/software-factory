@@ -1,14 +1,23 @@
+import {
+  Activity,
+  ArrowRight,
+  ChevronDown,
+  FileText,
+  FolderGit2,
+  History,
+  Inbox,
+  Send,
+  ShieldCheck,
+  SlidersHorizontal,
+  Sparkles,
+  Wallet,
+} from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Badge } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
 import { Checkbox, Input, Select, Textarea } from "../components/ui/Field";
-import {
-  EmptyState,
-  LoadingState,
-  PageHeader,
-  Panel,
-} from "../components/ui/Surface";
+import { EmptyState, LoadingState, Panel } from "../components/ui/Surface";
 import {
   CoreApiError,
   coreApi,
@@ -305,19 +314,7 @@ export function Home() {
 
   return (
     <div className="home">
-      <PageHeader
-        title={t("home.title")}
-        description={t("home.description")}
-        meta={
-          <>
-            <span>{t("home.meta.flow")}</span>
-            <span className="overview-meta-separator" aria-hidden="true">
-              /
-            </span>
-            <span>{t("home.meta.durable")}</span>
-          </>
-        }
-      />
+      <h1 className="ui-visually-hidden">{t("home.title")}</h1>
 
       <div className="home-layout">
         <div className="home-primary">
@@ -330,11 +327,18 @@ export function Home() {
             </div>
           )}
 
-          <Panel className="home-composer home-composer--conversation">
-            <div className="home-conversation-head">
-              <span className="home-kicker">{t("home.newRequest.title")}</span>
-              <h2>{t("home.composer.title")}</h2>
-              <p className="muted">{t("home.composer.description")}</p>
+          <Panel className="home-composer">
+            <div className="home-composer-head">
+              <span className="home-composer-icon" aria-hidden="true">
+                <Sparkles size={22} />
+              </span>
+              <div className="home-composer-head-copy">
+                <span className="home-kicker">
+                  {t("home.newRequest.title")}
+                </span>
+                <h2>{t("home.composer.title")}</h2>
+                <p>{t("home.composer.description")}</p>
+              </div>
             </div>
 
             {projects === null && projectsError === null && (
@@ -358,13 +362,14 @@ export function Home() {
 
             {projects !== null && projects.length > 0 && (
               <form
-                className="home-request-form home-conversation"
+                className="home-request-form"
                 noValidate
                 onSubmit={(event) => void submit(event)}
               >
                 <Textarea
                   id="home-objective"
                   label={t("home.objective.label")}
+                  labelHidden
                   value={objective}
                   onChange={(event) => {
                     setObjective(event.target.value);
@@ -375,16 +380,21 @@ export function Home() {
                     resetRequestKey();
                   }}
                   placeholder={t("home.objective.placeholder")}
-                  help={t("home.objective.help")}
                   error={fieldErrors.objective}
-                  rows={7}
+                  className="home-objective"
+                  rows={5}
                   required
                 />
 
                 <div className="home-context-grid">
                   <Select
                     id="home-project"
-                    label={t("home.project.label")}
+                    label={
+                      <>
+                        <FolderGit2 size={13} aria-hidden="true" />
+                        {t("home.project.label")}
+                      </>
+                    }
                     value={projectId}
                     onChange={(event) => {
                       setProjectId(event.target.value);
@@ -395,7 +405,6 @@ export function Home() {
                       resetRequestKey();
                     }}
                     error={fieldErrors.project}
-                    help={t("home.project.help")}
                     required
                   >
                     <option value="">{t("home.project.select")}</option>
@@ -408,13 +417,17 @@ export function Home() {
 
                   <Select
                     id="home-profile"
-                    label={t("home.profile.label")}
+                    label={
+                      <>
+                        <SlidersHorizontal size={13} aria-hidden="true" />
+                        {t("home.profile.label")}
+                      </>
+                    }
                     value={profileId}
                     onChange={(event) => {
                       setProfileId(event.target.value);
                       resetRequestKey();
                     }}
-                    help={t("home.profile.help")}
                     disabled={profiles === null}
                   >
                     <option value="">
@@ -469,9 +482,11 @@ export function Home() {
                   )}
 
                 {selectedProfile && (
-                  <div className="home-profile-preview">
-                    <div className="home-profile-preview-head">
-                      <strong>{selectedProfile.name}</strong>
+                  <details className="home-profile-details">
+                    <summary>
+                      <span className="home-profile-summary-name">
+                        {selectedProfile.name}
+                      </span>
                       <Badge
                         tone={
                           selectedProfile.executable ? "success" : "attention"
@@ -481,7 +496,9 @@ export function Home() {
                           ? t("execProfiles.state.executable")
                           : t("execProfiles.state.draftNotExecutable")}
                       </Badge>
-                    </div>
+                      <span>{t("home.profile.routes")}</span>
+                      <ChevronDown size={14} aria-hidden="true" />
+                    </summary>
                     <dl className="home-profile-routes">
                       {(
                         [
@@ -504,8 +521,10 @@ export function Home() {
                         </div>
                       ))}
                     </dl>
-                    <p className="muted">{t("home.profile.routesHint")}</p>
-                  </div>
+                    <p className="home-profile-route-note">
+                      {t("home.profile.routesHint")}
+                    </p>
+                  </details>
                 )}
 
                 {selectedProfile && selectedProfile.warnings.length > 0 && (
@@ -528,10 +547,15 @@ export function Home() {
                   </p>
                 )}
 
-                <div className="home-spend-authorization">
+                <div className="home-authorization">
                   <Input
                     id="home-spend"
-                    label={t("home.spend.label")}
+                    label={
+                      <>
+                        <Wallet size={13} aria-hidden="true" />
+                        {t("home.spend.label")}
+                      </>
+                    }
                     type="number"
                     min="0.01"
                     step="0.01"
@@ -544,16 +568,20 @@ export function Home() {
                       }));
                       resetRequestKey();
                     }}
-                    help={t("home.spend.help")}
                     error={fieldErrors.spend}
                     required
                   />
-                  <p className="muted">{t("home.spend.note")}</p>
+                  <p className="home-authorization-note">
+                    {t("home.spend.help")}
+                  </p>
                 </div>
 
-                <p className="ui-callout ui-callout--info home-mode-help">
-                  <strong>{t("home.approval.title")}</strong>{" "}
-                  {t("home.approval.body")}
+                <p className="home-approval-note">
+                  <ShieldCheck size={16} aria-hidden="true" />
+                  <span>
+                    <strong>{t("home.approval.title")}</strong>{" "}
+                    {t("home.approval.body")}
+                  </span>
                 </p>
 
                 {policySetup && (
@@ -694,10 +722,11 @@ export function Home() {
                         {policyError}
                       </p>
                     )}
-                    <div className="request-form-actions">
+                    <div className="home-form-actions">
                       <Button
                         type="button"
                         variant="primary"
+                        busy={policyBusy}
                         disabled={
                           policyBusy ||
                           !policyAcknowledged ||
@@ -721,25 +750,33 @@ export function Home() {
                 )}
 
                 <div className="home-form-actions">
+                  <p className="home-submit-hint">{t("home.submitHint")}</p>
                   <Button
                     type="submit"
                     variant="primary"
+                    size="lg"
+                    className="home-submit"
+                    busy={busy}
                     disabled={
                       busy || profileUnavailable || policySetup !== null
                     }
                   >
                     {busy ? t("home.submitting") : t("home.submit")}
+                    {!busy && <Send size={17} aria-hidden="true" />}
                   </Button>
-                  <span className="muted">{t("home.submitHint")}</span>
                 </div>
               </form>
             )}
           </Panel>
 
           <Panel className="home-recent">
-            <div className="section-heading">
-              <h2>{t("home.recent.title")}</h2>
-              <span className="muted">{t("home.recent.hint")}</span>
+            <div className="home-section-head">
+              <div className="home-section-title">
+                <span className="home-section-icon" aria-hidden="true">
+                  <History size={16} />
+                </span>
+                <h2>{t("home.recent.title")}</h2>
+              </div>
             </div>
             {recentRequests === null && !recentUnavailable && !recentError && (
               <LoadingState label={t("home.recent.loading")} />
@@ -767,6 +804,9 @@ export function Home() {
               <ul className="home-request-list">
                 {recentRequests.map((request) => (
                   <li key={request.id}>
+                    <span className="home-request-icon" aria-hidden="true">
+                      <FileText size={16} />
+                    </span>
                     <div className="home-request-copy">
                       <Link to={`/requests/${encodeURIComponent(request.id)}`}>
                         {request.objective}
@@ -789,9 +829,17 @@ export function Home() {
 
         <aside className="home-side" aria-label={t("home.status.aria")}>
           <Panel className="home-decisions">
-            <div className="section-heading">
-              <h2>{t("home.decisions.title")}</h2>
-              <Link to="/inbox">{t("home.decisions.open")}</Link>
+            <div className="home-section-head">
+              <div className="home-section-title">
+                <span className="home-section-icon" aria-hidden="true">
+                  <Inbox size={16} />
+                </span>
+                <h2>{t("home.decisions.title")}</h2>
+              </div>
+              <Link className="home-section-link" to="/inbox">
+                {t("home.decisions.open")}
+                <ArrowRight size={13} aria-hidden="true" />
+              </Link>
             </div>
             {overview === null ? (
               <p className="muted">{t("home.active.unavailable")}</p>
@@ -804,7 +852,20 @@ export function Home() {
               <ul className="home-decision-list">
                 {pendingDecisions.slice(0, 4).map((decision) => (
                   <li key={decision.id}>
-                    <Link to={decision.target}>{decision.title}</Link>
+                    <span
+                      className={`home-decision-dot ${
+                        decision.severity === "critical"
+                          ? "home-decision-dot--danger"
+                          : decision.severity === "attention"
+                            ? "home-decision-dot--attention"
+                            : ""
+                      }`}
+                      aria-hidden="true"
+                    />
+                    <div className="home-decision-copy">
+                      <Link to={decision.target}>{decision.title}</Link>
+                      <p>{decision.detail}</p>
+                    </div>
                     <Badge
                       tone={
                         decision.severity === "critical"
@@ -816,7 +877,6 @@ export function Home() {
                     >
                       {decision.severity}
                     </Badge>
-                    <p className="muted">{decision.detail}</p>
                   </li>
                 ))}
               </ul>
@@ -824,8 +884,13 @@ export function Home() {
           </Panel>
 
           <Panel className="home-status">
-            <div className="section-heading">
-              <h2>{t("home.status.title")}</h2>
+            <div className="home-section-head">
+              <div className="home-section-title">
+                <span className="home-section-icon" aria-hidden="true">
+                  <Activity size={16} />
+                </span>
+                <h2>{t("home.status.title")}</h2>
+              </div>
               {overview && (
                 <Badge
                   tone={overview.runtime.core_healthy ? "success" : "danger"}
@@ -847,7 +912,7 @@ export function Home() {
             )}
             {overview && (
               <>
-                <p className="muted home-status-time">
+                <p className="home-status-time">
                   {t("home.status.snapshot", {
                     date: formatDate(overview.as_of),
                   })}

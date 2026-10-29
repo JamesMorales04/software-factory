@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "result": "PASS",
+  "evidence_level": "DETERMINISTIC_FIXTURE_ONLY",
+  "status": "fixture_only",
+  "scope": "Office shell and Home visual-polish prototype for issue #62",
+  "branch": "factory/office-design-polish/20261029",
+  "base_commit": "2907b17",
+  "fixture_only": true,
+  "live_core": false,
+  "owner_visual_acceptance": "NOT_TESTED",
+  "checks": [
+    {
+      "name": "office typecheck",
+      "command": "npm run typecheck",
+      "pass": true
+    },
+    {
+      "name": "office lint",
+      "command": "npm run lint",
+      "pass": true,
+      "files": 137
+    },
+    {
+      "name": "office component tests",
+      "command": "npm test",
+      "pass": true,
+      "test_files": 34,
+      "tests": 256
+    },
+    {
+      "name": "office production build",
+      "command": "npm run build",
+      "pass": true,
+      "modules": 2149,
+      "warning": "Existing >500 kB JavaScript chunk warning remains"
+    },
+    {
+      "name": "fixture Chromium overflow and screenshots",
+      "command": "node office/e2e-browser/office-home-visual-polish.mjs",
+      "pass": true,
+      "viewports": [1440, 834, 390, 320],
+      "extra_captures": [
+        "1440 dark",
+        "1440 focus",
+        "1440 collapsed rail",
+        "390 Spanish",
+        "390 mobile drawer",
+        "1440 empty Project state"
+      ],
+      "horizontal_overflow": false,
+      "browser": "Google Chrome for Testing 156.0.8078.4"
+    }
+  ],
+  "artifacts": [
+    "README.md",
+    "design-audit.md",
+    "home-1440.png",
+    "home-834.png",
+    "home-390.png",
+    "home-320.png",
+    "home-390-es.png",
+    "home-390-drawer.png",
+    "home-1440-focus.png",
+    "home-1440-collapsed.png",
+    "home-1440-dark.png",
+    "home-1440-empty-projects.png",
+    "reference-02-vs-home-1440.png",
+    "reference-03-vs-home-1440.png",
+    "reference-03-mobile-vs-home-390-es.png",
+    "overflow-report.json"
+  ],
+  "not_proven": [
+    "Real Core or Compose behavior",
+    "Live provider inference or billing",
+    "Real-browser acceptance, axe certification or visual regression",
+    "Product Owner visual acceptance",
+    "Other Office views migrated to the new composition"
+  ]
+}
