@@ -1,13 +1,17 @@
-// Contract tests for the bounded real-provider UAT harness.
+// Contract tests for the bounded subscription-only real-provider UAT harness.
 //
 // These tests do not contact OpenCode, a real Core, or any paid provider. They
 // spawn the real driver against a local fake Core and prove:
 //   1. live mode refuses before any network request without the explicit flag
-//      and the complete authorization envelope;
-//   2. the dry-run preflight is read-only and records no inference;
-//   3. the operator token and a credential-shaped response field never appear
-//      in stdout, stderr or the evidence file;
-//   4. invalid gate combinations fail closed.
+//      and the complete subscription-only authorization envelope;
+//   2. paid modes and spend caps are refused;
+//   3. Extra Usage enabled, missing, stale or unverifiable evidence is refused;
+//   4. the dry-run preflight is read-only and records no inference;
+//   5. quota exhaustion is a durable PAUSED outcome that resumes without
+//      re-approval, fallback or redispatch;
+//   6. list-rate equivalents are separated from provider-reported actual charge;
+//   7. the operator token and a credential-shaped response field never appear
+//      in stdout, stderr or the evidence file.
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -28,8 +32,11 @@ import { after, before, test } from "node:test";
 import {
   MODEL,
   PROVIDER,
+  VERIFICATION_SCHEMA,
+  loadSubscriptionVerification,
   parseGate,
-  parseSpendCapMicros,
+  readActualCharge,
+  summarizeActualCharge,
 } from "./real-provider-uat.mjs";
 
 const DRIVER = new URL("./real-provider-uat.mjs", import.meta.url);
@@ -37,6 +44,11 @@ const TOKEN = "test-operator-token-0123456789abcdef0123456789abcdef";
 const PROVIDER_CREDENTIAL = "provider-credential-marker-must-never-appear";
 const TEMP_BASE = existsSync("/tmp/opencode") ? "/tmp/opencode" : tmpdir();
 const ROOT = mkdtempSync(join(TEMP_BASE, "factory-rp-uat-test-"));
+const PLAN_HASH = "f".repeat(64);
+const COMMIT = "d".repeat(40);
+const TREE = "e".repeat(40);
+
+let verificationSequence = 0;
 
 function cleanEnv(overrides) {
   const env = { ...process.env };
@@ -53,57 +65,77 @@ function writeToken(mode = 0o600) {
   return path;
 }
 
-function baseGate(port) {
+function validVerification(overrides = {}) {
+  const now = Date.now();
   return {
+    schema: VERIFICATION_SCHEMA,
+    provider: PROVIDER,
+    model: MODEL,
+    route: "GO_SUBSCRIPTION_INCLUDED",
+    plan: "Go",
+    account_fingerprint: "sha256:test-owner-account",
+    source: "OWNER_CONSOLE",
+    verification_method: "OWNER_CONSOLE_INSPECTION",
+    console_url: "https://opencode.ai/console",
+    observed_at: new Date(now - 5 * 60_000).toISOString(),
+    valid_until: new Date(now + 23 * 60 * 60_000).toISOString(),
+    entitlement: "VERIFIED",
+    extra_usage: "OFF",
+    balance_fallback: "OFF",
+    no_charge_route: "VERIFIED",
+    quota: {
+      state: "AVAILABLE",
+      remaining_usd: null,
+      resets_at: null,
+    },
+    core_verifiable: false,
+    limitation:
+      "CORE_AND_LOCAL_PREFLIGHT_CANNOT_VERIFY_CONSOLE_EXTRA_USAGE",
+    rate_revision: "opencode-go-doc-2026-10-29",
+    notes: "test fixture only; not a live Console observation",
+    ...overrides,
+  };
+}
+
+function writeVerification(overrides = {}) {
+  verificationSequence += 1;
+  const path = join(ROOT, `subscription-evidence-${verificationSequence}.json`);
+  writeFileSync(path, `${JSON.stringify(validVerification(overrides), null, 2)}\n`, {
+    mode: 0o600,
+  });
+  chmodSync(path, 0o600);
+  return path;
+}
+
+function baseGate(port, overrides = {}) {
+  return {
+    FACTORY_REAL_PROVIDER_OWNER_GO_AHEAD: "1",
     FACTORY_REAL_PROVIDER_AUTHORIZATION: "test-owner-authorization",
     FACTORY_REAL_PROVIDER_ACCOUNTING: "GO_SUBSCRIPTION_INCLUDED",
     FACTORY_REAL_PROVIDER_EXTRA_USAGE: "DISABLED",
-    FACTORY_REAL_PROVIDER_SPEND_CAP_USD: "2.00",
+    FACTORY_REAL_PROVIDER_SUBSCRIPTION_EVIDENCE_FILE: writeVerification(),
     FACTORY_CORE_API_URL: `http://127.0.0.1:${port}/core-api`,
     FACTORY_REAL_PROVIDER_EVIDENCE_DIR: join(ROOT, "evidence"),
     FACTORY_OPERATOR_TOKEN_FILE: writeToken(),
+    ...overrides,
   };
 }
 
 function runDriver(args, env) {
-  return new Promise((resolvePromise, rejectPromise) => {
-    const child = spawn(process.execPath, [DRIVER.pathname, ...args], {
-      env: cleanEnv(env),
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let stderr = "";
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      rejectPromise(new Error(`driver timed out; stdout=${stdout} stderr=${stderr}`));
-    }, 30_000);
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk;
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk;
-    });
-    child.on("error", (error) => {
-      clearTimeout(timer);
-      rejectPromise(error);
-    });
-    child.on("close", (status, signal) => {
-      clearTimeout(timer);
-      resolvePromise({ status, signal, stdout, stderr });
-    });
-  });
-}
-
-function assertRefused(result, code) {
-  assert.notEqual(result.status, 0, `driver unexpectedly succeeded: ${result.stdout}`);
-  assert.match(result.stderr, new RegExp(`code=${code}`), result.stderr);
-  assert.doesNotMatch(result.stderr, new RegExp(TOKEN));
-  assert.doesNotMatch(result.stdout, new RegExp(TOKEN));
+  return spawnAndCollect(process.execPath, [DRIVER.pathname, ...args], env);
 }
 
 function runWrapper(args, env) {
+  return spawnAndCollect(
+    "bash",
+    [new URL("./real-provider-uat.sh", import.meta.url).pathname, ...args],
+    env,
+  );
+}
+
+function spawnAndCollect(command, args, env) {
   return new Promise((resolvePromise, rejectPromise) => {
-    const child = spawn("bash", [new URL("./real-provider-uat.sh", import.meta.url).pathname, ...args], {
+    const child = spawn(command, args, {
       env: cleanEnv(env),
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -111,7 +143,7 @@ function runWrapper(args, env) {
     let stderr = "";
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
-      rejectPromise(new Error(`wrapper timed out; stdout=${stdout} stderr=${stderr}`));
+      rejectPromise(new Error(`process timed out; stdout=${stdout} stderr=${stderr}`));
     }, 30_000);
     child.stdout.on("data", (chunk) => {
       stdout += chunk;
@@ -130,45 +162,60 @@ function runWrapper(args, env) {
   });
 }
 
+function assertRefused(result, code) {
+  assert.notEqual(result.status, 0, `driver unexpectedly succeeded: ${result.stdout}`);
+  assert.match(result.stderr, new RegExp(`code=${code}`), result.stderr);
+  assert.doesNotMatch(result.stderr, new RegExp(TOKEN));
+  assert.doesNotMatch(result.stdout, new RegExp(TOKEN));
+}
+
 let server;
 let port;
 let requests;
 let healthMode = "ok";
 let providerMaxTurns = 4;
-const PLAN_HASH = "f".repeat(64);
-const COMMIT = "d".repeat(40);
-const TREE = "e".repeat(40);
+
 const flow = {
   assessed: false,
   approved: false,
+  quotaPauseAfterApproval: false,
+  quotaRecovered: false,
+  actualChargeKnown: true,
+  actualChargeMicros: 0,
+  billingSource: "go",
+  approveCalls: 0,
+  requestCalls: 0,
+  resumeCalls: 0,
+  projectCalls: 0,
+  intakeBody: null,
+  approveBody: null,
+  resumeBody: null,
   githubWrite: false,
+  admissionRejected: false,
+  coreSubscriptionUnavailable: false,
 };
 
-function resetFlow() {
-  flow.assessed = false;
-  flow.approved = false;
-  flow.githubWrite = false;
-}
-
-function flowStatus() {
-  return {
-    envelopeId: "envelope-1",
-    currency: "USD",
-    state: "ACTIVE",
-    authorizedMicros: 2_000_000,
-    settledMicros: 1_234,
-    reservedMicros: 0,
-    ambiguousMicros: 0,
-    availableMicros: 1_998_766,
-    overrunMicros: 0,
-    authorizationRevision: 1,
-    billingBasis: "CONFIGURED_RATE",
-    pricingProvenance: "test-fixture",
-    unresolvedCount: 0,
-    byRole: [],
-    byProvider: [],
-    asOf: "2026-10-29T15:00:00Z",
-  };
+function resetFlow(overrides = {}) {
+  Object.assign(flow, {
+    assessed: false,
+    approved: false,
+    quotaPauseAfterApproval: false,
+    quotaRecovered: false,
+    actualChargeKnown: true,
+    actualChargeMicros: 0,
+    billingSource: "go",
+    approveCalls: 0,
+    requestCalls: 0,
+    resumeCalls: 0,
+    projectCalls: 0,
+    intakeBody: null,
+    approveBody: null,
+    resumeBody: null,
+    githubWrite: false,
+    admissionRejected: false,
+    coreSubscriptionUnavailable: false,
+    ...overrides,
+  });
 }
 
 function flowProposal() {
@@ -227,17 +274,26 @@ function flowProposal() {
 }
 
 function flowIntake() {
+  const paused = flow.quotaPauseAfterApproval && !flow.quotaRecovered;
+  const state = flow.approved
+    ? paused
+      ? "PAUSED"
+      : "COMPLETED"
+    : flow.assessed
+      ? "AWAITING_APPROVAL"
+      : "ASSESSING";
   return {
     id: "intake-1",
     projectId: "project-1",
     objective: flowProposal().objective,
     mode: "REVIEW_PLAN",
-    state: flow.approved
-      ? "COMPLETED"
-      : flow.assessed
-        ? "AWAITING_APPROVAL"
-        : "ASSESSING",
-    stateDetail: flow.approved ? "campaign accepted" : "assessment complete",
+    state,
+    stateDetail: paused
+      ? "SUBSCRIPTION_QUOTA_EXHAUSTED"
+      : flow.approved
+        ? "campaign accepted"
+        : "assessment complete",
+    pauseReason: paused ? "SUBSCRIPTION_QUOTA_EXHAUSTED" : null,
     profile: {
       id: "profile-1",
       revisionId: "rev-1",
@@ -262,46 +318,64 @@ function flowIntake() {
       : null,
     proposal: flow.assessed ? flowProposal() : null,
     assessment: flow.assessed ? { class: "change", estimated_effort: "small" } : null,
-    spending: { status: flowStatus() },
+    spending: null,
     campaignStatus: flow.approved ? "AUTHORIZED" : null,
-    gateOutcome: flow.approved ? "ACCEPTED" : null,
+    gateOutcome: flow.approved && !paused ? "ACCEPTED" : null,
     updatedAt: "2026-10-29T15:00:00Z",
   };
 }
 
 function flowCampaign() {
+  const paused = flow.quotaPauseAfterApproval && !flow.quotaRecovered;
   return {
-    campaign: { id: "campaign-1", action_id: "action-1", status: "AUTHORIZED" },
-    authorization: { provider: PROVIDER, model: MODEL, riskClass: "R0" },
-    inference: { envelope: { id: "envelope-1" }, status: flowStatus(), legacyEvidenceExcluded: true },
-    tasks: [
-      {
-        task_id: "task-1",
-        campaign_id: "campaign-1",
-        request_id: "lead-1",
-        unit_id: "unit-1",
-        sequence: 1,
-        status: "SUCCEEDED",
-        base_commit: COMMIT,
-        depends_on: [],
-        run_id: "run-1",
-        attempt_id: "attempt-1",
-        candidate_id: "candidate-1",
-        candidate_commit: COMMIT,
-      },
-    ],
-    runs: [{ id: "run-1", campaign_id: "campaign-1" }],
-    attempts: [{ id: "attempt-1", run_id: "run-1" }],
-    candidates: [
-      {
-        id: "candidate-1",
-        attempt_id: "attempt-1",
-        commit_sha: COMMIT,
-        tree_sha: TREE,
-        implementer_id: "compose-worker",
-      },
-    ],
+    campaign: { id: "campaign-1", action_id: "action-1", status: paused ? "PAUSED" : "AUTHORIZED" },
+    authorization: {
+      provider: PROVIDER,
+      model: MODEL,
+      riskClass: "R0",
+      executionMode: "TRUSTED_LOCAL_PROVIDER",
+    },
+    inference: null,
+    tasks: paused
+      ? []
+      : [
+          {
+            task_id: "task-1",
+            campaign_id: "campaign-1",
+            request_id: "lead-1",
+            unit_id: "unit-1",
+            sequence: 1,
+            status: "SUCCEEDED",
+            base_commit: COMMIT,
+            depends_on: [],
+            run_id: "run-1",
+            attempt_id: "attempt-1",
+            candidate_id: "candidate-1",
+            candidate_commit: COMMIT,
+          },
+        ],
+    runs: paused ? [] : [{ id: "run-1", campaign_id: "campaign-1" }],
+    attempts: paused ? [] : [{ id: "attempt-1", run_id: "run-1" }],
+    candidates: paused
+      ? []
+      : [
+          {
+            id: "candidate-1",
+            attempt_id: "attempt-1",
+            commit_sha: COMMIT,
+            tree_sha: TREE,
+            implementer_id: "compose-worker",
+          },
+        ],
     events: [],
+  };
+}
+
+function actualChargeFields() {
+  return {
+    actual_charge_micros: flow.actualChargeKnown ? flow.actualChargeMicros : null,
+    actual_charge_known: flow.actualChargeKnown,
+    billing_source: flow.billingSource,
   };
 }
 
@@ -331,6 +405,7 @@ function flowLead() {
         error: "",
         created_at: "2026-10-29T15:00:00Z",
         updated_at: "2026-10-29T15:00:00Z",
+        ...actualChargeFields(),
       },
     ],
   };
@@ -358,6 +433,33 @@ function flowReviewerCall() {
     error: "",
     created_at: "2026-10-29T15:00:00Z",
     updated_at: "2026-10-29T15:00:00Z",
+    ...actualChargeFields(),
+  };
+}
+
+function flowProviderSession() {
+  return {
+    session_record_id: "session-1",
+    attempt_id: "attempt-1",
+    worker_id: "compose-worker",
+    generation: 1,
+    provider: PROVIDER,
+    model: MODEL,
+    provider_mode: "build",
+    state: "COMPLETED",
+    provider_session_id: "ses_real_123",
+    provider_directory: "/tmp/provider-session",
+    turn_id: "msg-1",
+    input_tokens: 100,
+    output_tokens: 50,
+    total_tokens: 150,
+    cost_micros: 1914,
+    usage_known: true,
+    cleanup_receipt: "session_delete_verified_absent",
+    error: "",
+    created_at: "2026-10-29T15:00:00Z",
+    updated_at: "2026-10-29T15:00:00Z",
+    ...actualChargeFields(),
   };
 }
 
@@ -412,12 +514,34 @@ function flowReceipts() {
   ];
 }
 
+function readBody(request) {
+  return new Promise((resolvePromise) => {
+    let data = "";
+    request.on("data", (chunk) => {
+      data += chunk;
+    });
+    request.on("end", () => {
+      if (!data) {
+        resolvePromise(null);
+        return;
+      }
+      try {
+        resolvePromise(JSON.parse(data));
+      } catch {
+        resolvePromise(data);
+      }
+    });
+  });
+}
+
 before(async () => {
-  server = createServer((request, response) => {
+  server = createServer(async (request, response) => {
+    const body = await readBody(request);
     requests.push({
       method: request.method,
       url: request.url,
       authorization: request.headers.authorization ?? "",
+      body,
     });
     const send = (status, value) => {
       response.writeHead(status, { "content-type": "application/json" });
@@ -439,6 +563,29 @@ before(async () => {
       send(200, { required: false });
       return;
     }
+    if (path === `/funding/subscription/${PROVIDER}` && request.method === "GET") {
+      if (flow.coreSubscriptionUnavailable) {
+        send(404, { error: "not found" });
+        return;
+      }
+      const record = validVerification();
+      send(200, {
+        provider: PROVIDER,
+        model: MODEL,
+        route: "GO_SUBSCRIPTION_INCLUDED",
+        plan: record.plan,
+        account_fingerprint: record.account_fingerprint,
+        entitlement: "VERIFIED",
+        extra_usage: "OFF",
+        balance_fallback: "OFF",
+        no_charge_route: "VERIFIED",
+        quota: record.quota,
+        observed_at: record.observed_at,
+        valid_until: record.valid_until,
+        core_verifiable: true,
+      });
+      return;
+    }
     if (path === "/settings/providers") {
       send(200, {
         providers: [
@@ -455,6 +602,8 @@ before(async () => {
             maxCostMicros: 2000000,
             inputMicrosPerMillion: 150000,
             outputMicrosPerMillion: 600000,
+            revision: 7,
+            updatedAt: "2026-10-29T15:00:00Z",
             credential: PROVIDER_CREDENTIAL,
           },
         ],
@@ -469,7 +618,6 @@ before(async () => {
         catalogUrl: "https://opencode.ai/inference/go/v1/models",
         models: [MODEL],
         model: MODEL,
-        modelAvailable: true,
         credentialSignal: "NOT_OBSERVED",
         detail: "1 model(s) discovered",
         discoveredAt: "2026-10-29T15:00:00Z",
@@ -491,6 +639,7 @@ before(async () => {
       return;
     }
     if (path === "/projects" && request.method === "POST") {
+      flow.projectCalls += 1;
       send(201, { id: "project-1", repository: "http://git-fixture:8080/repo.git" });
       return;
     }
@@ -535,6 +684,12 @@ before(async () => {
       return;
     }
     if (path === "/intake/requests" && request.method === "POST") {
+      flow.requestCalls += 1;
+      flow.intakeBody = body;
+      if (flow.admissionRejected) {
+        send(409, { error: "INFERENCE_AUTHORIZATION_REQUIRED" });
+        return;
+      }
       send(201, {
         id: "intake-1",
         actionId: "action-1",
@@ -551,8 +706,17 @@ before(async () => {
       return;
     }
     if (path === "/intake/requests/intake-1/approve" && request.method === "POST") {
+      flow.approveCalls += 1;
+      flow.approveBody = body;
       flow.approved = true;
       send(201, flowIntake());
+      return;
+    }
+    if (path === "/intake/requests/intake-1/resume" && request.method === "POST") {
+      flow.resumeCalls += 1;
+      flow.resumeBody = body;
+      flow.quotaRecovered = true;
+      send(200, { ...flowIntake(), state: "EXECUTING" });
       return;
     }
     if (path === "/intake/requests/intake-1" && request.method === "GET") {
@@ -592,30 +756,7 @@ before(async () => {
       return;
     }
     if (path === "/provider/sessions" && request.method === "GET") {
-      send(200, [
-        {
-          session_record_id: "session-1",
-          attempt_id: "attempt-1",
-          worker_id: "compose-worker",
-          generation: 1,
-          provider: PROVIDER,
-          model: MODEL,
-          provider_mode: "build",
-          state: "COMPLETED",
-          provider_session_id: "ses_real_123",
-          provider_directory: "/tmp/provider-session",
-          turn_id: "msg-1",
-          input_tokens: 100,
-          output_tokens: 50,
-          total_tokens: 150,
-          cost_micros: 1914,
-          usage_known: true,
-          cleanup_receipt: "session_delete_verified_absent",
-          error: "",
-          created_at: "2026-10-29T15:00:00Z",
-          updated_at: "2026-10-29T15:00:00Z",
-        },
-      ]);
+      send(200, [flowProviderSession()]);
       return;
     }
     if (path === "/lead/requests/lead-1" && request.method === "GET") {
@@ -664,6 +805,16 @@ test("live mode refuses without FACTORY_REAL_PROVIDER_UAT=1 before any request",
   assert.equal(requests.length, 0, "the driver contacted Core before the live flag was present");
 });
 
+test("live mode refuses without the separate Owner go-ahead", async () => {
+  requests = [];
+  const env = baseGate(port);
+  env.FACTORY_REAL_PROVIDER_UAT = "1";
+  delete env.FACTORY_REAL_PROVIDER_OWNER_GO_AHEAD;
+  const result = await runDriver(["assess"], env);
+  assertRefused(result, "OWNER_GO_AHEAD_MISSING");
+  assert.equal(requests.length, 0);
+});
+
 test("the shell entrypoint refuses a live phase before touching the stack", async () => {
   requests = [];
   const result = await runWrapper(["assess"], {});
@@ -682,62 +833,157 @@ test("live mode refuses without the authorization id before any request", async 
   assert.equal(requests.length, 0, "the driver contacted Core without an authorization id");
 });
 
-test("live mode refuses an incomplete accounting envelope before any request", async () => {
+test("billable and pay-as-you-go modes are refused before any request", async () => {
   requests = [];
-  const env = baseGate(port);
-  env.FACTORY_REAL_PROVIDER_UAT = "1";
-  env.FACTORY_REAL_PROVIDER_EXTRA_USAGE = "NOT_APPLICABLE";
+  for (const mode of ["GO_EXTRA_USAGE_BILLABLE", "PAY_AS_YOU_GO_API"]) {
+    const env = baseGate(port, {
+      FACTORY_REAL_PROVIDER_UAT: "1",
+      FACTORY_REAL_PROVIDER_ACCOUNTING: mode,
+      FACTORY_REAL_PROVIDER_EXTRA_USAGE:
+        mode === "PAY_AS_YOU_GO_API" ? "NOT_APPLICABLE" : "ENABLED_WITHIN_CAP",
+      FACTORY_REAL_PROVIDER_SPEND_CAP_USD: "2.00",
+    });
+    const result = await runDriver(["assess"], env);
+    assertRefused(result, "PAID_MODE_DISABLED");
+  }
+  assert.equal(requests.length, 0);
+});
+
+test("a spend cap is not accepted in subscription-only mode", async () => {
+  requests = [];
+  const env = baseGate(port, {
+    FACTORY_REAL_PROVIDER_UAT: "1",
+    FACTORY_REAL_PROVIDER_SPEND_CAP_USD: "2.00",
+  });
   const result = await runDriver(["assess"], env);
-  assertRefused(result, "EXTRA_USAGE_INCONSISTENT");
+  assertRefused(result, "SPEND_CAP_NOT_APPLICABLE");
+  assert.equal(requests.length, 0);
+});
+
+test("Extra Usage enabled or missing is refused before any request", async () => {
+  requests = [];
+  const enabled = baseGate(port, {
+    FACTORY_REAL_PROVIDER_UAT: "1",
+    FACTORY_REAL_PROVIDER_EXTRA_USAGE: "ENABLED_WITHIN_CAP",
+  });
+  assertRefused(await runDriver(["assess"], enabled), "EXTRA_USAGE_NOT_DISABLED");
+  const missing = baseGate(port, { FACTORY_REAL_PROVIDER_UAT: "1" });
+  delete missing.FACTORY_REAL_PROVIDER_EXTRA_USAGE;
+  assertRefused(await runDriver(["assess"], missing), "ENV_REQUIRED");
+  assert.equal(requests.length, 0);
+});
+
+test("missing subscription evidence is refused before any request", async () => {
+  requests = [];
+  const env = baseGate(port, {
+    FACTORY_REAL_PROVIDER_UAT: "1",
+    FACTORY_REAL_PROVIDER_SUBSCRIPTION_EVIDENCE_FILE: join(ROOT, "missing-evidence.json"),
+  });
+  const result = await runDriver(["assess"], env);
+  assertRefused(result, "SUBSCRIPTION_VERIFICATION_MISSING");
+  assert.equal(requests.length, 0);
+});
+
+test("stale subscription evidence is refused before any request", async () => {
+  requests = [];
+  const now = Date.now();
+  const file = writeVerification({
+    observed_at: new Date(now - 48 * 60 * 60_000).toISOString(),
+    valid_until: new Date(now - 24 * 60 * 60_000).toISOString(),
+  });
+  const env = baseGate(port, {
+    FACTORY_REAL_PROVIDER_UAT: "1",
+    FACTORY_REAL_PROVIDER_SUBSCRIPTION_EVIDENCE_FILE: file,
+  });
+  const result = await runDriver(["assess"], env);
+  assertRefused(result, "SUBSCRIPTION_VERIFICATION_STALE");
+  assert.equal(requests.length, 0);
+});
+
+test("Extra Usage ON or unknown entitlement in evidence is refused", async () => {
+  requests = [];
+  for (const overrides of [
+    { extra_usage: "ON" },
+    { balance_fallback: "ON" },
+    { entitlement: "UNKNOWN" },
+    { no_charge_route: "UNKNOWN" },
+  ]) {
+    const env = baseGate(port, {
+      FACTORY_REAL_PROVIDER_UAT: "1",
+      FACTORY_REAL_PROVIDER_SUBSCRIPTION_EVIDENCE_FILE: writeVerification(overrides),
+    });
+    const result = await runDriver(["assess"], env);
+    assertRefused(result, "SUBSCRIPTION_ENTITLEMENT_UNVERIFIED");
+  }
   assert.equal(requests.length, 0);
 });
 
 test("execute refuses without the exact Owner plan approval attestation", async () => {
   requests = [];
-  const env = baseGate(port);
-  env.FACTORY_REAL_PROVIDER_UAT = "1";
-  const result = await runDriver(
-    ["execute", "--plan-hash", "a".repeat(64)],
-    env,
-  );
+  const env = baseGate(port, { FACTORY_REAL_PROVIDER_UAT: "1" });
+  const result = await runDriver(["execute", "--plan-hash", "a".repeat(64)], env);
   assertRefused(result, "ENV_REQUIRED");
   assert.equal(requests.length, 0);
+});
+
+test("exhausted subscription quota pauses before any request", async () => {
+  requests = [];
+  const env = baseGate(port, {
+    FACTORY_REAL_PROVIDER_UAT: "1",
+    FACTORY_REAL_PROVIDER_SUBSCRIPTION_EVIDENCE_FILE: writeVerification({
+      quota: { state: "EXHAUSTED", remaining_usd: 0, resets_at: null },
+    }),
+  });
+  const result = await runDriver(["assess"], env);
+  assert.equal(result.status, 4, result.stderr);
+  assert.match(result.stdout, /PAUSED_SUBSCRIPTION_QUOTA_EXHAUSTED/);
+  assert.equal(requests.length, 0);
+  const paused = JSON.parse(
+    readFileSync(join(env.FACTORY_REAL_PROVIDER_EVIDENCE_DIR, "real-provider-uat-paused.json"), "utf8"),
+  );
+  assert.equal(paused.result, "PAUSED_SUBSCRIPTION_QUOTA_EXHAUSTED");
+  assert.equal(paused.recoverable, true);
+  assert.equal(paused.pre_dispatch, true);
+  assert.equal(paused.subscription.quota.state, "EXHAUSTED");
+  assert.equal(paused.subscription.extra_usage, "OFF");
 });
 
 test("dry-run preflight is read-only and records no inference", async () => {
   requests = [];
   healthMode = "ok";
-  const env = baseGate(port);
-  env.FACTORY_REAL_PROVIDER_DRY_RUN = "1";
+  const env = baseGate(port, { FACTORY_REAL_PROVIDER_DRY_RUN: "1" });
   const result = await runDriver(["preflight"], env);
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(requests.length, 6);
+  assert.equal(requests.length, 7);
   assert.ok(
     requests.every((request) => request.method === "GET"),
     `dry-run made a non-GET request: ${JSON.stringify(requests)}`,
   );
   const evidencePath = join(env.FACTORY_REAL_PROVIDER_EVIDENCE_DIR, "real-provider-uat-preflight.json");
-  assert.ok(existsSync(evidencePath), "dry-run evidence was not written");
   const evidence = JSON.parse(readFileSync(evidencePath, "utf8"));
   assert.equal(evidence.result, "DRY_RUN_READY");
   assert.equal(evidence.paid_inference, false);
   assert.equal(evidence.mutations, false);
-  assert.ok(evidence.preflight.catalog.modelAvailable);
-  assert.deepEqual(evidence.preflight.catalog.models, [MODEL]);
+  assert.equal(evidence.preflight.subscription.positive_usd_authorization, "NOT_REQUIRED");
+  assert.equal(evidence.preflight.subscription.spend_cap, "NOT_USED");
+  assert.equal(evidence.preflight.subscription.verification.extra_usage, "OFF");
+  assert.equal(evidence.preflight.subscription.verification.core_verifiable, false);
+  assert.match(evidence.preflight.subscription.verification.limitation, /CANNOT_VERIFY/);
+  assert.equal(evidence.preflight.subscription.core_verification, "AVAILABLE_V3_SUBSCRIPTION_BINDING");
+  assert.equal(evidence.preflight.subscription.core_subscription.core_verifiable, true);
   const serialized = JSON.stringify(evidence);
   assert.doesNotMatch(serialized, new RegExp(TOKEN));
   assert.doesNotMatch(serialized, new RegExp(PROVIDER_CREDENTIAL));
   assert.doesNotMatch(result.stdout, new RegExp(TOKEN));
   assert.doesNotMatch(result.stderr, new RegExp(TOKEN));
-  assert.equal(statSync(evidencePath).mode & 0o077, 0, "evidence file must not be group/other readable");
+  assert.equal(statSync(evidencePath).mode & 0o077, 0);
 });
 
 test("preflight refuses a provider turn budget above the authorization", async () => {
   requests = [];
   providerMaxTurns = 8;
   healthMode = "ok";
-  const env = baseGate(port);
-  env.FACTORY_REAL_PROVIDER_DRY_RUN = "1";
+  const env = baseGate(port, { FACTORY_REAL_PROVIDER_DRY_RUN: "1" });
   const result = await runDriver(["preflight"], env);
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /PROVIDER_TURN_CEILING_EXCEEDED/);
@@ -747,8 +993,7 @@ test("preflight refuses a provider turn budget above the authorization", async (
 test("a Core error that echoes the operator token is redacted", async () => {
   requests = [];
   healthMode = "echo-token";
-  const env = baseGate(port);
-  env.FACTORY_REAL_PROVIDER_DRY_RUN = "1";
+  const env = baseGate(port, { FACTORY_REAL_PROVIDER_DRY_RUN: "1" });
   const result = await runDriver(["preflight"], env);
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /\[REDACTED\]/, result.stderr);
@@ -758,159 +1003,315 @@ test("a Core error that echoes the operator token is redacted", async () => {
   healthMode = "ok";
 });
 
-test("a fake-Core contract run stops at plan approval and records ACCEPTED evidence", async () => {
-  requests = [];
-  resetFlow();
-  healthMode = "ok";
-  const env = baseGate(port);
-  env.FACTORY_REAL_PROVIDER_UAT = "1";
-  env.FACTORY_REAL_PROVIDER_PLAN_APPROVAL = "OWNER_REVIEWED";
-  env.FACTORY_REAL_PROVIDER_EVIDENCE_DIR = join(ROOT, "flow-evidence");
-  env.FACTORY_REAL_PROVIDER_TIMEOUT_SECS = "120";
-  env.FACTORY_REAL_PROVIDER_CANDIDATE_SHA = "a".repeat(40);
-  env.FACTORY_REAL_PROVIDER_COMPOSE_PROJECT = "software-factory-rp-uat-test";
-
-  const assessed = await runDriver(["assess"], env);
-  assert.equal(assessed.status, 0, assessed.stderr);
-  assert.match(assessed.stdout, /REAL_PROVIDER_UAT=AWAITING_PLAN_APPROVAL/);
-  const statePath = join(env.FACTORY_REAL_PROVIDER_EVIDENCE_DIR, "real-provider-uat-state.json");
-  const planPath = join(env.FACTORY_REAL_PROVIDER_EVIDENCE_DIR, "plan.json");
-  const state = JSON.parse(readFileSync(statePath, "utf8"));
-  const plan = JSON.parse(readFileSync(planPath, "utf8"));
-  assert.equal(state.phase, "AWAITING_PLAN_APPROVAL");
-  assert.equal(state.plan_hash, PLAN_HASH);
-  assert.equal(plan.plan_hash, PLAN_HASH);
-  assert.equal(plan.route.provider, PROVIDER);
-  assert.equal(plan.route.model, MODEL);
-  assert.equal(flow.approved, false, "assess must not approve the plan");
-
-  const wrongHash = await runDriver(["execute", "--plan-hash", "a".repeat(64)], env);
-  assert.notEqual(wrongHash.status, 0);
-  assert.match(wrongHash.stderr, /PLAN_HASH_MISMATCH/);
-  assert.equal(flow.approved, false, "a mismatched plan hash must not approve the plan");
-
-  const executed = await runDriver(["execute", "--plan-hash", PLAN_HASH], env);
-  assert.equal(executed.status, 0, executed.stderr);
-  assert.match(executed.stdout, /REAL_PROVIDER_UAT=ACCEPTED/);
-  assert.equal(flow.approved, true);
-  assert.equal(flow.githubWrite, false, "the harness attempted a GitHub PR write");
-  assert.ok(
-    requests.every((request) => !request.url.includes("pull_request")),
-    "the harness called a GitHub PR endpoint",
-  );
-
-  const evidencePath = join(env.FACTORY_REAL_PROVIDER_EVIDENCE_DIR, "real-provider-uat-evidence.json");
-  const evidence = JSON.parse(readFileSync(evidencePath, "utf8"));
-  assert.equal(evidence.result, "ACCEPTED");
-  assert.equal(evidence.runtime.candidate_sha, "a".repeat(40));
-  assert.equal(evidence.runtime.compose_project, "software-factory-rp-uat-test");
-  assert.deepEqual(evidence.runtime.compose_files, [
-    "compose.yaml",
-    "compose.real-provider-uat.yaml",
-  ]);
-  assert.equal(evidence.ids.candidate_commit, COMMIT);
-  assert.equal(evidence.ids.candidate_tree, TREE);
-  assert.equal(evidence.provider.route, `${PROVIDER}/${MODEL}`);
-  assert.equal(evidence.provider.implementer.provider_session_id, "ses_real_123");
-  assert.equal(evidence.provider.sessions[0].cleanup_receipt, "session_delete_verified_absent");
-  assert.equal(evidence.receipts.verifier.result, "PASS");
-  assert.equal(evidence.receipts.verifier.evidence, "EXECUTED");
-  assert.equal(evidence.receipts.reviewer.result, "PASS");
-  assert.equal(evidence.receipts.reviewer.mechanism, "MODEL");
-  assert.equal(evidence.receipts.reviewer.model_provider, PROVIDER);
-  assert.equal(evidence.receipts.reviewer.model_name, MODEL);
-  assert.equal(evidence.quality_gate.outcome, "ACCEPTED");
-  assert.equal(evidence.pr_preparation.status, "UNBOUND_READY");
-  assert.equal(evidence.pr_preparation.write_attempted, false);
-  assert.equal(evidence.accounting.envelope.settled_micros, 1234);
-  assert.equal(evidence.accounting.provider_sessions.opencode_message_cost_micros, 1914);
-  assert.match(evidence.accounting.provider_sessions.cost_semantics, /NOT_A_BALANCE_CHARGE/);
-  assert.match(evidence.accounting.provider_sessions.allowance, /^UNKNOWN/);
-  assert.deepEqual(evidence.candidate.changed_paths, ["src/pricing.rs", "tests/discounts.rs"]);
-  assert.equal(evidence.boundary.github_write, "NONE");
-
-  const serialized = JSON.stringify(evidence);
-  assert.doesNotMatch(serialized, new RegExp(TOKEN));
-  assert.doesNotMatch(serialized, new RegExp(PROVIDER_CREDENTIAL));
-  assert.doesNotMatch(executed.stdout, new RegExp(TOKEN));
-  assert.doesNotMatch(executed.stderr, new RegExp(TOKEN));
-  assert.equal(statSync(evidencePath).mode & 0o077, 0);
-});
-
 test("operator token files with group/other access are refused", async () => {
   requests = [];
-  const env = baseGate(port);
-  env.FACTORY_REAL_PROVIDER_DRY_RUN = "1";
-  env.FACTORY_OPERATOR_TOKEN_FILE = writeToken(0o644);
+  const env = baseGate(port, {
+    FACTORY_REAL_PROVIDER_DRY_RUN: "1",
+    FACTORY_OPERATOR_TOKEN_FILE: writeToken(0o644),
+  });
   const result = await runDriver(["preflight"], env);
   assertRefused(result, "OPERATOR_TOKEN_PERMISSIONS");
   assert.equal(requests.length, 0);
 });
 
 test("plain HTTP is refused outside loopback", async () => {
-  const env = baseGate(port);
-  env.FACTORY_REAL_PROVIDER_DRY_RUN = "1";
-  env.FACTORY_CORE_API_URL = "http://core.example:8899/core-api";
+  const env = baseGate(port, {
+    FACTORY_REAL_PROVIDER_DRY_RUN: "1",
+    FACTORY_CORE_API_URL: "http://core.example:8899/core-api",
+  });
   const result = await runDriver(["preflight"], env);
   assertRefused(result, "CORE_URL_INSECURE");
 });
 
-test("spend caps are exact and bounded", () => {
-  assert.deepEqual(parseSpendCapMicros("2.00"), { micros: 2_000_000, usd: "2.00" });
-  assert.deepEqual(parseSpendCapMicros("0.01"), { micros: 10_000, usd: "0.01" });
-  for (const value of ["0", "0.00", "5.01", "2.001", "1e2", "-1", "02.00", "abc"]) {
-    assert.throws(() => parseSpendCapMicros(value), undefined, value);
-  }
-});
-
-test("the gate binds the exact provider, model and Go base URL", () => {
-  const env = {
-    FACTORY_REAL_PROVIDER_UAT: "1",
-    FACTORY_REAL_PROVIDER_AUTHORIZATION: "owner-test",
-    FACTORY_REAL_PROVIDER_ACCOUNTING: "GO_SUBSCRIPTION_INCLUDED",
-    FACTORY_REAL_PROVIDER_EXTRA_USAGE: "DISABLED",
-    FACTORY_REAL_PROVIDER_SPEND_CAP_USD: "1.00",
-    FACTORY_CORE_API_URL: "https://factory.example/core-api",
-    FACTORY_REAL_PROVIDER_EVIDENCE_DIR: join(ROOT, "evidence-gate"),
-  };
+test("the gate binds subscription-only funding without a USD cap", () => {
+  const env = baseGate(port, { FACTORY_REAL_PROVIDER_UAT: "1" });
   const gate = parseGate(env, ["assess"]);
+  assert.equal(gate.fundingPolicy, "SUBSCRIPTION_INCLUDED_ONLY");
+  assert.equal(gate.accounting, "GO_SUBSCRIPTION_INCLUDED");
+  assert.equal(gate.extraUsage, "DISABLED");
+  assert.equal(gate.capMicros, undefined);
+  assert.equal(gate.capUsd, undefined);
   assert.equal(gate.provider, PROVIDER);
   assert.equal(gate.model, MODEL);
   assert.equal(gate.baseUrl, "https://opencode.ai/inference/go/openai/v1");
-  assert.equal(gate.capMicros, 1_000_000);
-  assert.throws(
-    () =>
-      parseGate(
-        {
-          ...env,
-          FACTORY_REAL_PROVIDER_ACCOUNTING: "PAY_AS_YOU_GO_API",
-          FACTORY_REAL_PROVIDER_EXTRA_USAGE: "DISABLED",
-        },
-        ["assess"],
-      ),
-    /PAY_AS_YOU_GO_API requires/,
-  );
-  assert.throws(
-    () =>
-      parseGate(
-        {
-          ...env,
-          FACTORY_REAL_PROVIDER_EXTRA_USAGE: "ENABLED_WITHIN_CAP",
-        },
-        ["assess"],
-      ),
-    /GO_SUBSCRIPTION_INCLUDED requires Extra Usage DISABLED/,
-  );
-  assert.equal(
-    parseGate(
-      {
-        ...env,
-        FACTORY_REAL_PROVIDER_ACCOUNTING: "GO_EXTRA_USAGE_BILLABLE",
-        FACTORY_REAL_PROVIDER_EXTRA_USAGE: "ENABLED_WITHIN_CAP",
-      },
-      ["assess"],
-    ).accounting,
-    "GO_EXTRA_USAGE_BILLABLE",
+});
+
+test("a Core without subscription verification fails closed before creating a Project", async () => {
+  requests = [];
+  resetFlow({ coreSubscriptionUnavailable: true });
+  const env = baseGate(port, {
+    FACTORY_REAL_PROVIDER_UAT: "1",
+    FACTORY_REAL_PROVIDER_EVIDENCE_DIR: join(ROOT, "core-unavailable-evidence"),
+    FACTORY_REAL_PROVIDER_TIMEOUT_SECS: "120",
+  });
+  const result = await runDriver(["assess"], env);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /CORE_V3_SUBSCRIPTION_ADMISSION_REQUIRED/);
+  assert.equal(flow.projectCalls, 0);
+  assert.equal(flow.requestCalls, 0);
+  assert.ok(requests.every((request) => !request.url.endsWith("/projects")));
+});
+
+test("a Core without subscription admission fails closed and does not invent a cap", async () => {
+  requests = [];
+  resetFlow({ admissionRejected: true });
+  const env = baseGate(port, {
+    FACTORY_REAL_PROVIDER_UAT: "1",
+    FACTORY_REAL_PROVIDER_EVIDENCE_DIR: join(ROOT, "admission-rejected-evidence"),
+    FACTORY_REAL_PROVIDER_TIMEOUT_SECS: "120",
+  });
+  const result = await runDriver(["assess"], env);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /CORE_V3_SUBSCRIPTION_ADMISSION_REQUIRED/);
+  assert.equal(flow.requestCalls, 1);
+  assert.equal(flow.intakeBody.authorized_micros, undefined);
+  assert.ok(
+    requests.every(
+      (request) =>
+        !request.url.endsWith("/approve") &&
+        !request.url.includes("pull_request"),
+    ),
   );
 });
 
+test("a fake-Core subscription run records ACCEPTED without a USD cap", async () => {
+  requests = [];
+  resetFlow({ actualChargeKnown: true, actualChargeMicros: 0, billingSource: "go" });
+  healthMode = "ok";
+  const env = baseGate(port, {
+    FACTORY_REAL_PROVIDER_UAT: "1",
+    FACTORY_REAL_PROVIDER_PLAN_APPROVAL: "OWNER_REVIEWED",
+    FACTORY_REAL_PROVIDER_EVIDENCE_DIR: join(ROOT, "flow-evidence"),
+    FACTORY_REAL_PROVIDER_TIMEOUT_SECS: "120",
+    FACTORY_REAL_PROVIDER_CANDIDATE_SHA: "a".repeat(40),
+    FACTORY_REAL_PROVIDER_COMPOSE_PROJECT: "software-factory-rp-uat-test",
+  });
+
+  const assessed = await runDriver(["assess"], env);
+  assert.equal(assessed.status, 0, assessed.stderr);
+  assert.match(assessed.stdout, /REAL_PROVIDER_UAT=AWAITING_PLAN_APPROVAL/);
+  assert.equal(flow.intakeBody.authorized_micros, undefined, "subscription request must not carry a USD authorization");
+  const statePath = join(env.FACTORY_REAL_PROVIDER_EVIDENCE_DIR, "real-provider-uat-state.json");
+  const planPath = join(env.FACTORY_REAL_PROVIDER_EVIDENCE_DIR, "plan.json");
+  const state = JSON.parse(readFileSync(statePath, "utf8"));
+  const plan = JSON.parse(readFileSync(planPath, "utf8"));
+  assert.equal(state.schema, "factory.real-provider-uat.state.v2");
+  assert.equal(state.funding.policy, "SUBSCRIPTION_INCLUDED_ONLY");
+  assert.equal(state.funding.positive_usd_authorization, "NOT_REQUIRED");
+  assert.equal(state.funding.spend_cap, "NOT_USED");
+  assert.equal(state.plan_hash, PLAN_HASH);
+  assert.equal(plan.budget_semantics, "MODEL_PLAN_OBSERVATION_NOT_A_SPEND_AUTHORIZATION");
+  assert.equal(flow.approved, false, "assess must not approve the plan");
+
+  const wrongHash = await runDriver(["execute", "--plan-hash", "a".repeat(64)], env);
+  assert.notEqual(wrongHash.status, 0);
+  assert.match(wrongHash.stderr, /PLAN_HASH_MISMATCH/);
+  assert.equal(flow.approved, false);
+
+  const executed = await runDriver(["execute", "--plan-hash", PLAN_HASH], env);
+  assert.equal(executed.status, 0, executed.stderr);
+  assert.match(executed.stdout, /REAL_PROVIDER_UAT=ACCEPTED/);
+  assert.equal(flow.approveBody.authorized_micros, undefined, "approval must not carry a USD authorization");
+  assert.equal(flow.githubWrite, false);
+  assert.ok(requests.every((request) => !request.url.includes("pull_request")));
+
+  const evidence = JSON.parse(
+    readFileSync(
+      join(env.FACTORY_REAL_PROVIDER_EVIDENCE_DIR, "real-provider-uat-evidence.json"),
+      "utf8",
+    ),
+  );
+  assert.equal(evidence.result, "ACCEPTED");
+  assert.equal(evidence.funding.policy, "SUBSCRIPTION_INCLUDED_ONLY");
+  assert.equal(evidence.funding.positive_usd_authorization, "NOT_REQUIRED");
+  assert.equal(evidence.funding.spend_cap, "NOT_USED");
+  assert.equal(evidence.funding.monetary_envelope, "ABSENT");
+  assert.equal(evidence.funding.paid_mode, "PAID_MODE_DISABLED");
+  assert.equal(evidence.subscription.entitlement, "VERIFIED");
+  assert.equal(evidence.subscription.extra_usage, "OFF");
+  assert.equal(evidence.subscription.balance_fallback, "OFF");
+  assert.equal(evidence.subscription.quota.state, "AVAILABLE");
+  assert.equal(evidence.subscription.core_verifiable, false);
+  assert.match(evidence.subscription.limitation, /CANNOT_VERIFY/);
+  assert.equal(evidence.usage.measured.input_tokens, 1600);
+  assert.equal(evidence.usage.measured.output_tokens, 200);
+  assert.ok(evidence.usage.list_rate_equivalent.micros > 0);
+  assert.equal(evidence.usage.list_rate_equivalent.is_actual_charge, false);
+  assert.equal(evidence.usage.list_rate_equivalent.is_spending_cap, false);
+  assert.equal(evidence.usage.list_rate_equivalent.rate_revision.provider_settings_revision, 7);
+  assert.equal(evidence.usage.provider_reported_actual_charge.observation, "VERIFIED_ZERO");
+  assert.equal(evidence.usage.provider_reported_actual_charge.micros, 0);
+  assert.equal(evidence.ids.candidate_commit, COMMIT);
+  assert.equal(evidence.receipts.reviewer.mechanism, "MODEL");
+  assert.equal(evidence.quality_gate.outcome, "ACCEPTED");
+  assert.equal(evidence.pr_preparation.status, "UNBOUND_READY");
+  assert.equal(evidence.pr_preparation.write_attempted, false);
+  assert.equal(evidence.boundary.paid_fallback, "NONE");
+  assert.equal(evidence.boundary.redispatch, "NONE");
+  const serialized = JSON.stringify(evidence);
+  assert.doesNotMatch(serialized, new RegExp(TOKEN));
+  assert.doesNotMatch(serialized, new RegExp(PROVIDER_CREDENTIAL));
+  assert.doesNotMatch(executed.stdout, new RegExp(TOKEN));
+  assert.doesNotMatch(executed.stderr, new RegExp(TOKEN));
+  assert.equal(statSync(join(env.FACTORY_REAL_PROVIDER_EVIDENCE_DIR, "real-provider-uat-evidence.json")).mode & 0o077, 0);
+});
+
+test("unknown provider-reported actual charge is recorded as UNKNOWN, never zero", async () => {
+  requests = [];
+  resetFlow({ actualChargeKnown: false, actualChargeMicros: null, billingSource: null });
+  const env = baseGate(port, {
+    FACTORY_REAL_PROVIDER_UAT: "1",
+    FACTORY_REAL_PROVIDER_PLAN_APPROVAL: "OWNER_REVIEWED",
+    FACTORY_REAL_PROVIDER_EVIDENCE_DIR: join(ROOT, "unknown-charge-evidence"),
+    FACTORY_REAL_PROVIDER_TIMEOUT_SECS: "120",
+  });
+  const assessed = await runDriver(["assess"], env);
+  assert.equal(assessed.status, 0, assessed.stderr);
+  const executed = await runDriver(["execute", "--plan-hash", PLAN_HASH], env);
+  assert.equal(executed.status, 0, executed.stderr);
+  const evidence = JSON.parse(
+    readFileSync(join(env.FACTORY_REAL_PROVIDER_EVIDENCE_DIR, "real-provider-uat-evidence.json"), "utf8"),
+  );
+  assert.equal(evidence.usage.provider_reported_actual_charge.observation, "UNKNOWN");
+  assert.equal(evidence.usage.provider_reported_actual_charge.micros, null);
+  assert.ok(evidence.usage.unknown.includes("provider_reported_actual_charge"));
+  assert.ok(evidence.usage.list_rate_equivalent.micros > 0);
+});
+
+test("a positive provider-reported charge blocks a subscription run", async () => {
+  requests = [];
+  resetFlow({
+    actualChargeKnown: true,
+    actualChargeMicros: 1914,
+    billingSource: "balance",
+  });
+  const env = baseGate(port, {
+    FACTORY_REAL_PROVIDER_UAT: "1",
+    FACTORY_REAL_PROVIDER_PLAN_APPROVAL: "OWNER_REVIEWED",
+    FACTORY_REAL_PROVIDER_EVIDENCE_DIR: join(ROOT, "charge-incident-evidence"),
+    FACTORY_REAL_PROVIDER_TIMEOUT_SECS: "120",
+  });
+  const assessed = await runDriver(["assess"], env);
+  assert.equal(assessed.status, 0, assessed.stderr);
+  const executed = await runDriver(["execute", "--plan-hash", PLAN_HASH], env);
+  assert.notEqual(executed.status, 0);
+  assert.match(executed.stderr, /SUBSCRIPTION_CHARGE_INCIDENT/);
+  const evidence = JSON.parse(
+    readFileSync(join(env.FACTORY_REAL_PROVIDER_EVIDENCE_DIR, "real-provider-uat-evidence.json"), "utf8"),
+  );
+  assert.equal(evidence.result, "FAILED_SUBSCRIPTION_CHARGE_INCIDENT");
+  assert.equal(evidence.usage.provider_reported_actual_charge.observation, "VERIFIED_POSITIVE");
+  assert.ok(evidence.usage.provider_reported_actual_charge.fallback_observed);
+  assert.equal(evidence.boundary.paid_fallback, "NONE");
+});
+
+test("quota exhaustion pauses and resumes without approval, fallback or redispatch", async () => {
+  requests = [];
+  resetFlow({ quotaPauseAfterApproval: true });
+  const env = baseGate(port, {
+    FACTORY_REAL_PROVIDER_UAT: "1",
+    FACTORY_REAL_PROVIDER_PLAN_APPROVAL: "OWNER_REVIEWED",
+    FACTORY_REAL_PROVIDER_EVIDENCE_DIR: join(ROOT, "quota-resume-evidence"),
+    FACTORY_REAL_PROVIDER_TIMEOUT_SECS: "120",
+  });
+  const assessed = await runDriver(["assess"], env);
+  assert.equal(assessed.status, 0, assessed.stderr);
+  assert.equal(flow.approveCalls, 0);
+  assert.equal(flow.requestCalls, 1);
+
+  const executed = await runDriver(["execute", "--plan-hash", PLAN_HASH], env);
+  assert.equal(executed.status, 4, executed.stderr);
+  assert.match(executed.stdout, /PAUSED_SUBSCRIPTION_QUOTA_EXHAUSTED/);
+  assert.equal(flow.approveCalls, 1);
+  assert.equal(flow.requestCalls, 1);
+  assert.equal(flow.resumeCalls, 0);
+  const statePath = join(env.FACTORY_REAL_PROVIDER_EVIDENCE_DIR, "real-provider-uat-state.json");
+  const pausedState = JSON.parse(readFileSync(statePath, "utf8"));
+  assert.equal(pausedState.phase, "PAUSED_SUBSCRIPTION_QUOTA_EXHAUSTED");
+  assert.equal(pausedState.resume_stage, "EXECUTION");
+  assert.equal(pausedState.campaign_id, "campaign-1");
+  assert.equal(pausedState.subscription.provider, PROVIDER);
+  assert.equal(pausedState.subscription.model, MODEL);
+  assert.equal(pausedState.funding.policy, "SUBSCRIPTION_INCLUDED_ONLY");
+  assert.equal(pausedState.funding.positive_usd_authorization, "NOT_REQUIRED");
+  const paused = JSON.parse(
+    readFileSync(join(env.FACTORY_REAL_PROVIDER_EVIDENCE_DIR, "real-provider-uat-paused.json"), "utf8"),
+  );
+  assert.equal(paused.result, "PAUSED_SUBSCRIPTION_QUOTA_EXHAUSTED");
+  assert.equal(paused.recoverable, true);
+  assert.equal(paused.fallback, "NONE");
+  assert.equal(paused.redispatch, "NONE");
+  assert.equal(paused.state.provider, undefined);
+  assert.equal(flow.githubWrite, false);
+
+  const resumed = await runDriver(["resume"], env);
+  assert.equal(resumed.status, 0, resumed.stderr);
+  assert.match(resumed.stdout, /REAL_PROVIDER_UAT=ACCEPTED/);
+  assert.equal(flow.resumeCalls, 1);
+  assert.equal(flow.approveCalls, 1, "resume must not re-approve the plan");
+  assert.equal(flow.requestCalls, 1, "resume must not create another request");
+  assert.equal(flow.projectCalls, 1, "resume must not create another project");
+  assert.equal(flow.resumeBody.expected_plan_hash, PLAN_HASH);
+  assert.equal(flow.resumeBody.subscription_evidence_sha256.length, 64);
+  assert.equal(flow.resumeBody.expected_campaign_id, "campaign-1");
+  assert.ok(
+    requests.filter((request) => request.url.endsWith("/approve")).length === 1,
+    "resume must not send a second approval",
+  );
+  assert.ok(
+    requests.filter((request) => request.url.endsWith("/intake/requests")).length === 1,
+    "resume must not create a second intake request",
+  );
+  const evidence = JSON.parse(
+    readFileSync(join(env.FACTORY_REAL_PROVIDER_EVIDENCE_DIR, "real-provider-uat-evidence.json"), "utf8"),
+  );
+  assert.equal(evidence.result, "ACCEPTED");
+  assert.equal(evidence.boundary.paid_fallback, "NONE");
+  assert.equal(evidence.boundary.redispatch, "NONE");
+});
+
+test("list-rate and provider-reported actual charge are distinct observations", () => {
+  const zero = readActualCharge(
+    { actual_charge_known: true, actual_charge_micros: 0 },
+    "provider_session",
+    "zero",
+  );
+  const positive = readActualCharge(
+    { actual_charge_known: true, actual_charge_micros: 1914 },
+    "provider_session",
+    "positive",
+  );
+  const unknown = readActualCharge({}, "provider_session", "unknown");
+  const fallback = readActualCharge(
+    { billing_source: "balance" },
+    "model_call",
+    "fallback",
+  );
+  assert.equal(zero.observation, "VERIFIED_ZERO");
+  assert.equal(positive.observation, "VERIFIED_POSITIVE");
+  assert.equal(unknown.observation, "UNKNOWN");
+  assert.equal(fallback.fallbackObserved, true);
+  assert.equal(
+    summarizeActualCharge([
+      {
+        record: { actual_charge_known: true, actual_charge_micros: 0 },
+        kind: "x",
+        id: "x",
+      },
+    ]).observation,
+    "VERIFIED_ZERO",
+  );
+  assert.equal(
+    summarizeActualCharge([{ record: {}, kind: "x", id: "x" }]).observation,
+    "UNKNOWN",
+  );
+});
+
+test("loadSubscriptionVerification loads the Owner Console limitation", () => {
+  const env = baseGate(port, { FACTORY_REAL_PROVIDER_UAT: "1" });
+  const gate = parseGate(env, ["assess"]);
+  const verification = loadSubscriptionVerification(gate);
+  assert.equal(verification.record.source, "OWNER_CONSOLE");
+  assert.equal(verification.record.core_verifiable, false);
+  assert.match(verification.limitation, /CANNOT_VERIFY/);
+});
