@@ -55,6 +55,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::env::var("FACTORY_PROVIDER_SESSIONS_DIR")
             .unwrap_or_else(|_| "/provider-sessions".into()),
     );
+    let office_socket = PathBuf::from(
+        std::env::var("FACTORY_OFFICE_SOCKET_DIR").unwrap_or_else(|_| "/office-socket".into()),
+    );
     let uid = std::env::var("FACTORY_CONFIG_UID")
         .ok()
         .and_then(|value| value.parse::<u32>().ok())
@@ -89,9 +92,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         prepare_directory(&placement.directory, uid)?;
         let _ = fs::remove_file(placement.directory.join(".ready"));
     }
-    for directory in [&data, &projects, &provider_sessions] {
+    for directory in [&data, &projects, &provider_sessions, &office_socket] {
         prepare_directory(directory, uid)?;
     }
+    // The dedicated Office socket volume is shared with the Tailscale
+    // container, whose root is mapped outside Core's UID in rootless Podman.
+    fs::set_permissions(&office_socket, fs::Permissions::from_mode(0o755))?;
 
     let mut names = BTreeSet::new();
     for placement in &placements {

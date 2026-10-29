@@ -86,6 +86,40 @@ pub async fn issue_owner(
     })
 }
 
+/// Consume an approved pairing and create its device session in one transaction.
+///
+/// Raw token material is generated here, returned once to the caller and only
+/// its SHA-256 digest reaches storage.
+pub async fn exchange_pairing(
+    db: &Database,
+    challenge_id: &str,
+    poll_token_sha256: &str,
+    device_name: &str,
+    now_ms: i64,
+) -> Result<IssuedDeviceSession, Error> {
+    let session_id = uuid::Uuid::new_v4().to_string();
+    let session_token = uuid::Uuid::new_v4().simple().to_string();
+    let csrf_token = uuid::Uuid::new_v4().simple().to_string();
+    let device = db
+        .exchange_device_pairing(crate::db::PairingExchange {
+            challenge_id,
+            poll_token_sha256,
+            session_id: &session_id,
+            device_name,
+            session_token_sha256: &sha256_hex(&session_token),
+            csrf_token_sha256: &sha256_hex(&csrf_token),
+            now_ms,
+            expires_at_ms: now_ms.saturating_add(SESSION_LIFETIME_MS),
+        })
+        .await?;
+    Ok(IssuedDeviceSession {
+        session_id: device.id.clone(),
+        session_token,
+        csrf_token,
+        device,
+    })
+}
+
 /// Rotate the active credentials for one device without changing its identity or expiry.
 pub async fn rotate(
     db: &Database,

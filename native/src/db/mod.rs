@@ -735,6 +735,7 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
         == 0
 }
 
+mod access_revocation;
 mod authorization;
 pub use authorization::{CampaignAuthorizationRecord, NewCampaignAuthorization};
 mod delegations;
@@ -768,4 +769,6 @@ mod workers;
 mod device_pairing;
 #[cfg(test)]
 mod tests;
-pub use device_pairing::{DevicePairingPoll, DevicePairingRecord, SecurityAuditEntry};
+pub use device_pairing::{
+    DevicePairingPoll, DevicePairingRecord, PairingExchange, SecurityAuditEntry,
+};

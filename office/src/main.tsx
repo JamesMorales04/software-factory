@@ -5,8 +5,11 @@ import "@fontsource-variable/ibm-plex-sans";
 import "@fontsource/ibm-plex-mono/400.css";
 import "@fontsource/ibm-plex-mono/500.css";
 import { App } from "./App";
+import { initializeOffice } from "./legacyCredentials";
 import { ThemeProvider } from "./theme";
 import "./styles.css";
+
+initializeOffice();
 
 const root = document.getElementById("root");
 if (!root) {

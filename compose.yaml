@@ -52,6 +52,7 @@ services:
       FACTORY_DATA_DIR: /data
       FACTORY_PROJECTS_DIR: /projects
       FACTORY_PROVIDER_SESSIONS_DIR: /provider-sessions
+      FACTORY_OFFICE_SOCKET_DIR: /office-socket
       FACTORY_CONFIG_UID: "10001"
     volumes:
       - factory-config-core:/config-core
@@ -63,6 +64,7 @@ services:
       - factory-data:/data
       - factory-projects:/projects
       - factory-provider-sessions:/provider-sessions
+      - factory-office-socket:/office-socket
     network_mode: none
     restart: "no"
 
@@ -183,8 +185,11 @@ services:
       - factory-data:/data
       - factory-config-core:/config:ro
       - factory-projects:/projects
+      - factory-office-socket:/office-socket
     environment:
-      FACTORY_BIND: 0.0.0.0:8765
+      # The full control listener binds only the dedicated control/egress
+      # interfaces. It never listens on the optional Office-only network.
+      FACTORY_BIND: core-control:8765,core-egress:8765
       FACTORY_CONTAINER_MODE: "1"
       FACTORY_DATABASE: /data/factory.sqlite
       FACTORY_OFFICE_DIR: /app/office
@@ -199,10 +204,14 @@ services:
       FACTORY_LEAD_FIXTURE_ASSESSOR: ${FACTORY_LEAD_FIXTURE_ASSESSOR:-0}
       FACTORY_ENABLE_AUTONOMOUS_START: "0"
     networks:
-      - factory-control
-      - factory-egress
+      factory-control:
+        aliases:
+          - core-control
+      factory-egress:
+        aliases:
+          - core-egress
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8765/health >/dev/null"]
+      test: ["CMD-SHELL", "curl -fsS -H 'Host: localhost:8765' http://core-control:8765/health >/dev/null"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -352,6 +361,7 @@ services:
     stop_grace_period: 20s
 
 volumes:
+  factory-office-socket:
   factory-config-core:
   factory-config-worker:
   factory-config-supervisor:

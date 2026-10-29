@@ -409,7 +409,14 @@ export function AccessDevices() {
             {access.tailscale.status}
           </span>
         </div>
-        {access.tailscale.status === "CONNECTED" ? (
+        {access.tailscale.status === "CONFIGURED" ? (
+          <p className="muted">
+            Private remote access is configured. Core cannot probe Tailscale
+            health across the isolated socket-only boundary; open the private
+            HTTPS endpoint to confirm the Serve path. Factory still requires its
+            own enrolled device session.
+          </p>
+        ) : access.tailscale.status === "CONNECTED" ? (
           <p className="muted">
             Core can reach the private Office health endpoint. This confirms the
             current Serve path only; Factory still requires its own enrolled

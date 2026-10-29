@@ -95,36 +95,23 @@ impl Database {
     }
 
     /// Revoke all sessions and reopen local Owner enrollment in one transaction.
+    ///
+    /// Also advances the access epoch and cancels outstanding pairing authority
+    /// so an approval obtained before recovery cannot mint a new session.
     pub async fn reset_owner_bootstrap(&self, actor: &str, now_ms: i64) -> Result<u64, Error> {
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin().await?;
-        let ids: Vec<String> = sqlx::query_scalar::query_scalar(
-            "SELECT id FROM device_sessions WHERE revoked_at_ms IS NULL",
-        )
-        .fetch_all(&mut *transaction)
-        .await?;
-        sqlx::query::query(
-            "UPDATE device_sessions SET revoked_at_ms=?1 WHERE revoked_at_ms IS NULL",
-        )
-        .bind(now_ms)
-        .execute(&mut *transaction)
-        .await?;
-        for id in &ids {
-            sqlx::query::query(
-                "INSERT INTO device_session_audit(session_id,actor,action,recorded_at_ms)
-                 VALUES (?1,?2,'revoked_all',?3)",
-            )
-            .bind(id)
-            .bind(actor)
-            .bind(now_ms)
-            .execute(&mut *transaction)
+        let revoked =
+            super::access_revocation::revoke_active_sessions(&mut transaction, actor, now_ms)
+                .await?;
+        super::access_revocation::advance_epoch(&mut transaction).await?;
+        super::access_revocation::invalidate_outstanding_pairings(&mut transaction, actor, now_ms)
             .await?;
-        }
         sqlx::query::query("DELETE FROM owner_bootstrap_claim WHERE id=1")
             .execute(&mut *transaction)
             .await?;
         transaction.commit().await?;
-        Ok(ids.len() as u64)
+        Ok(revoked)
     }
 
     /// Persist only token digests and create an audit record for a new device session.
@@ -340,34 +327,19 @@ impl Database {
         Ok(true)
     }
 
-    /// Revoke all active sessions and audit each affected session.
+    /// Revoke all active sessions, advance the access epoch and cancel every
+    /// outstanding pairing approval in one transaction.
     pub async fn revoke_all_device_sessions(&self, actor: &str, now_ms: i64) -> Result<u64, Error> {
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin().await?;
-        let ids: Vec<String> = sqlx::query_scalar::query_scalar(
-            "SELECT id FROM device_sessions WHERE revoked_at_ms IS NULL",
-        )
-        .fetch_all(&mut *transaction)
-        .await?;
-        sqlx::query::query(
-            "UPDATE device_sessions SET revoked_at_ms=?1 WHERE revoked_at_ms IS NULL",
-        )
-        .bind(now_ms)
-        .execute(&mut *transaction)
-        .await?;
-        for id in &ids {
-            sqlx::query::query(
-                "INSERT INTO device_session_audit(session_id,actor,action,recorded_at_ms)
-                 VALUES (?1,?2,'revoked_all',?3)",
-            )
-            .bind(id)
-            .bind(actor)
-            .bind(now_ms)
-            .execute(&mut *transaction)
+        let revoked =
+            super::access_revocation::revoke_active_sessions(&mut transaction, actor, now_ms)
+                .await?;
+        super::access_revocation::advance_epoch(&mut transaction).await?;
+        super::access_revocation::invalidate_outstanding_pairings(&mut transaction, actor, now_ms)
             .await?;
-        }
         transaction.commit().await?;
-        Ok(ids.len() as u64)
+        Ok(revoked)
     }
 
     /// List sessions for the authenticated device-management view.
@@ -393,7 +365,7 @@ impl Database {
     }
 }
 
-fn validate_session_input(
+pub(super) fn validate_session_input(
     id: &str,
     name: &str,
     session_token_sha256: &str,
@@ -413,7 +385,7 @@ fn validate_session_input(
     Ok(())
 }
 
-fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+pub(super) fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     let mut difference = left.len() ^ right.len();
     for index in 0..left.len().max(right.len()) {
         difference |= usize::from(*left.get(index).unwrap_or(&0) ^ *right.get(index).unwrap_or(&0));

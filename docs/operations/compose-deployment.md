@@ -304,18 +304,23 @@ Factory device session; tailnet membership alone grants no Factory access.
 
 The overlay uses the pinned official Tailscale image, userspace networking,
 a persistent `factory-tailscale-state` volume, and private Tailscale Serve on
-HTTPS 443. It adds an internal network shared only by Core and Tailscale plus a
-separate uplink network containing only Tailscale. It does not mount a host
-runtime socket, join the Factory control/egress networks, publish its own host port,
-configure Funnel, or pass Factory/provider credentials to Tailscale. Core
-keeps its existing `127.0.0.1` publication for local access and recovery.
-Tailscale Serve forwards only to Core's restricted Office listener on container
-port 8768. The listener omits Worker, Supervisor, verifier, reviewer, and
-Quality Gate role/control routes; the port is not published on the host.
-The container exposes only Tailscale's sanitized `/healthz` process status on
-its private network interfaces for Core's Access & Devices projection. Metrics
-are disabled and the health port has no host publication; the network contains
-only Core and Tailscale.
+HTTPS 443. Tailscale joins only its outbound `factory-tailscale-uplink`
+network; it shares no network with Core and cannot reach any Core TCP listener.
+It does not mount a host runtime socket, join the Factory control/egress
+networks, publish its own host port, configure Funnel, or pass
+Factory/provider credentials to Tailscale. Core keeps its existing `127.0.0.1`
+publication for local access and recovery.
+Core's full control listener binds only the `core-control` (factory-control)
+and `core-egress` (factory-egress) network aliases. Tailscale Serve forwards
+only to Core's restricted Office listener through the dedicated
+`factory-office-socket` Unix domain socket volume, mounted read-only in
+Tailscale. The listener omits Worker, Supervisor, verifier, reviewer, and
+Quality Gate role/control routes; the socket is not published on the host.
+Because Core has no network path to Tailscale, Access & Devices reports the
+private endpoint as `CONFIGURED` rather than claiming live Serve connectivity;
+open the exact HTTPS origin to confirm it. Tailscale's sanitized `/healthz`
+endpoint is not probed by Core and has no host publication. Metrics are
+disabled.
 
 To disable the overlay, stop it with the same two Compose files. This keeps the
 node identity volume:

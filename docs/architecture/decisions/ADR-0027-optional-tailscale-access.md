@@ -28,31 +28,46 @@ to work without Tailscale.
 
 An opt-in `compose.tailscale.yaml` adds the official Tailscale container at
 the reviewed multi-architecture digest
-`sha256:2667499ed87ae29218f292556ba062918402dd5e92e93637af14867e4df12dd3`
-for official version 1.102.4. It uses userspace networking and a
-persistent named state volume. The official image and runtime parameters were
-checked against [Tailscale container configuration documentation](https://tailscale.com/docs/features/containers/docker/docker-params) and the [official image tag listing](https://hub.docker.com/r/tailscale/tailscale/tags) on 2026-10-27.
+`sha256:ed6480b33c6eb67c9cbd203ed42b9fb57e361986725b6856def71b7a3d9e276c`
+for official version 1.104.4. This patched release is required because the
+Unix-socket Serve backend was added to the Tailscale boundary; v1.104.4 fixes
+TS-2026-016 and TS-2026-017. The version and digest were verified from the
+official OCI registry on 2026-10-29. See the
+[official security bulletins](https://tailscale.com/security-bulletins) and
+[v1.104.4 changelog](https://tailscale.com/changelog). It uses userspace
+networking and a persistent named state volume. The container configuration
+was also checked against [Tailscale container documentation](https://tailscale.com/docs/features/containers/docker/docker-params)
+on 2026-10-29.
 Initial login is interactive through the Tailscale approval URL; no reusable auth key is committed or required.
 
 The placement analysis is recorded in the
 [service placement assessment](../assessments/tailscale-service.md). The
-Tailscale service joins two dedicated networks only:
+Tailscale service joins one network only:
 
-- `factory-office-private` is internal and contains only Core and Tailscale.
-  Tailscale Serve proxies HTTPS to Core's dedicated restricted Office listener
-  on port 8768 on this network. That listener serves Office assets and an
-  explicit operator/auth route allowlist; Worker, Supervisor, verifier,
-  reviewer, and Quality Gate authority endpoints are absent even when their
-  role tokens are supplied.
 - `factory-tailscale-uplink` provides outbound tailnet connectivity and has no
   other Factory service members.
 
-It does not join `factory-control` or the existing `factory-egress` network.
-Core retains its existing loopback-only host publication for local access and
-recovery; the Tailscale service publishes no host port. Serve is configured
-for HTTPS port 443 only; Funnel is explicitly disabled. Core receives the exact
-`FACTORY_TRUSTED_ORIGINS` value; wildcard
-`ts.net` origins and incoming Tailscale identity headers are not trusted.
+It shares no network with Core and cannot reach any Core TCP listener. Tailscale
+Serve proxies HTTPS to Core's restricted Office listener through a dedicated
+Unix domain socket volume (`factory-office-socket`) mounted read-only in the
+Tailscale container. That listener serves Office assets and an explicit
+operator/auth route allowlist; Worker, Supervisor, verifier, reviewer, and
+Quality Gate authority endpoints are absent even when their role tokens are
+supplied.
+
+Core's full control listener binds only the `core-control` and `core-egress`
+network aliases on `factory-control` and `factory-egress`. It has no listener
+on the Tailscale uplink, no host networking and no shared network with the
+Tailscale service. Core retains its existing loopback-only host publication for
+local access and recovery; the Tailscale service publishes no host port. Serve
+is configured for HTTPS port 443 only; Funnel is explicitly disabled. Core
+receives the exact `FACTORY_TRUSTED_ORIGINS` value; wildcard `ts.net` origins
+and incoming Tailscale identity headers are not trusted.
+
+Because Core has no network path to Tailscale, it cannot probe the Tailscale
+health endpoint. Core reports the configured private endpoint as `CONFIGURED`
+and never claims that the Serve path is live; the operator confirms it by
+opening the exact HTTPS origin.
 
 The Tailscale container has no Core, provider, Worker, Supervisor, runtime,
 reviewer or broker credentials. Its persistent state volume is its only
@@ -71,18 +86,29 @@ contains no credentials.
 - Rootless Podman networking, node identity persistence across restart, Serve
   HTTPS, Secure session cookies, forged Host/Origin rejection and negative
   control-route reachability passed in an author-run at candidate `e17eb80`.
-  Mobile-network reachability from a phone, independent acceptance and
-  deployment remain `USER_PENDING` or `NOT_TESTED`. Funnel remains explicitly
-  disabled and is not an offered capability.
+  That run did not test direct reachability of the full Core port 8765 from the
+  Tailscale network. The 2026-10-29 repair removes the shared network and
+  records a real Podman probe from the Tailscale container: Core's control and
+  egress addresses are unreachable, no port 8768 TCP listener exists, and the
+  restricted Office socket is reachable only through the dedicated volume.
+  Serve over the socket could not be exercised without a tailnet login in this
+  slice, so the live HTTPS path remains `NOT_TESTED`. Mobile-network
+  reachability from a phone, independent acceptance and deployment remain
+  `USER_PENDING` or `NOT_TESTED`. Funnel remains explicitly disabled and is not
+  an offered capability.
 
 ## Alternatives considered
 
 1. **Publish Office on a LAN or public interface:** rejected because it creates
    direct network exposure and does not solve CGNAT safely.
-2. **Join Tailscale to `factory-control` or `factory-egress`:** rejected because
-   it would expose control-plane peers beyond Office.
-3. **Trust Tailscale identity headers:** rejected because the application does
+2. **Share a network with Core:** rejected because network reachability cannot
+   be limited to one TCP port when Core also exposes its full control API.
+3. **Expose the Office listener on a dedicated TCP network:** rejected because a
+   shared bridge still let every Core address be probed and made host port
+   forwarding depend on interface selection. The Unix socket gives Tailscale no
+   IP route to Core at all.
+4. **Trust Tailscale identity headers:** rejected because the application does
    not verify their cryptographic provenance; Tailscale connectivity does not
    replace Core sessions.
-4. **Kernel TUN networking:** deferred because userspace networking avoids
+5. **Kernel TUN networking:** deferred because userspace networking avoids
    `/dev/net/tun` and additional capabilities for this reverse-proxy use case.

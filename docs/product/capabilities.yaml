@@ -2447,7 +2447,7 @@ capabilities:
     - .github/scripts/check-compose-policy.py
     - .github/scripts/test_check_compose_policy.py
   acceptance:
-    deterministic: The pinned official Tailscale service uses userspace networking, a persistent identity volume, private HTTPS Serve and a restricted Office listener; control routes and forged Host or Origin requests are denied.
+    deterministic: The pinned official Tailscale service uses userspace networking, a persistent identity volume and private HTTPS Serve to a restricted Office Unix socket; it shares no network with Core, so Core's control and egress addresses are unreachable from the Tailscale container. Control routes and forged Host or Origin requests are denied.
     real: An authenticated Office journey works over the enrolled tailnet HTTPS origin with Secure session cookies, while tailnet membership alone is unauthenticated and mobile-data reachability is confirmed by the owner.
   evidence:
     deterministic:
@@ -2459,6 +2459,7 @@ capabilities:
   limitations:
   - Only Tailscale Serve is supported; public Funnel, host networking, privileged mode and a host Podman socket are forbidden.
   - Tailnet device identity does not confer Factory operator authorization; a separate Core device session is required.
+  - Because Core shares no network with Tailscale, Access & Devices reports the configured endpoint as CONFIGURED; it does not claim a live probe of the Serve path.
   - The optional overlay does not start for the default local-only installation.
   blockers:
   - Mobile-data UAT, independent security review and deployment remain pending.
@@ -2511,7 +2512,7 @@ capabilities:
     deployment: []
     isolation: []
   limitations:
-  - Tailscale status reflects Core health probing of the configured private Office endpoint; it does not prove reachability from mobile data. HTTPS certificate hostnames appear in public Certificate Transparency logs.
+  - Tailscale status reports the configured private Office endpoint as CONFIGURED; Core has no network path to probe it and does not claim reachability from mobile data. HTTPS certificate hostnames appear in public Certificate Transparency logs.
   - The service worker does not cache API responses and does not offer offline authorization.
   - The Office shell remains available without a session so recovery and enrollment can render; protected API access still fails closed.
   blockers:

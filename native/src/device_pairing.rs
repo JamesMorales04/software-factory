@@ -1,7 +1,6 @@
 //! Short-lived device enrollment with operator approval and one independent session per device.
 use std::{
     env,
-    time::Duration,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -22,8 +21,6 @@ use uuid::Uuid;
 use crate::db::{Database, DevicePairingRecord, DeviceSessionRecord, Error};
 
 const CHALLENGE_LIFETIME_MS: i64 = 180_000;
-const TAILSCALE_HEALTH_URL: &str = "http://tailscale:9002/healthz";
-const TAILSCALE_HEALTH_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Clone)]
 struct PairingState {
@@ -87,9 +84,32 @@ fn valid_secret(value: &str) -> bool {
 fn hash(value: &str) -> String {
     format!("{:x}", Sha256::digest(value.as_bytes()))
 }
-fn verification_code() -> String {
-    format!("{:06}", Uuid::new_v4().as_u128() % 1_000_000)
+const CODE_RANGE: u32 = 1_000_000;
+/// Largest multiple of `CODE_RANGE` that fits in `u32`; values at or above it
+/// are rejected so every code has exactly the same probability.
+const CODE_REJECTION_LIMIT: u32 = CODE_RANGE * (u32::MAX / CODE_RANGE);
+
+fn code_from_entropy(mut next: impl FnMut() -> Option<u32>) -> Option<String> {
+    loop {
+        let value = next()?;
+        if value < CODE_REJECTION_LIMIT {
+            return Some(format!("{:06}", value % CODE_RANGE));
+        }
+    }
 }
+
+fn verification_code() -> Option<String> {
+    let random = SystemRandom::new();
+    code_from_entropy(|| {
+        let mut bytes = [0u8; 4];
+        random.fill(&mut bytes).ok()?;
+        Some(u32::from_le_bytes(bytes))
+    })
+}
+
+#[cfg(test)]
+#[path = "device_pairing_code_tests.rs"]
+mod code_tests;
 
 async fn create_challenge(
     State(state): State<PairingState>,
@@ -101,7 +121,13 @@ async fn create_challenge(
     };
     let now = now_ms();
     let id = Uuid::new_v4().to_string();
-    let code = verification_code();
+    let Some(code) = verification_code() else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "secure randomness unavailable",
+        )
+            .into_response();
+    };
     let expires = now.saturating_add(CHALLENGE_LIFETIME_MS);
     let actor = operator.id.as_str();
     if let Err(e) = state
@@ -166,22 +192,18 @@ async fn poll_claim(
     }
     match state.db.poll_device_pairing(&id, &hash(token), now_ms()).await {
         Ok(poll) if poll.status == "APPROVED" => {
-            if let Err(error) = state.db.consume_device_pairing(&id, &hash(token), now_ms()).await {
-                return db_error(error);
-            }
-            let issued = match crate::device_session::issue(
+            let issued = match crate::device_session::exchange_pairing(
                 &state.db,
+                &id,
+                &hash(token),
                 poll.device_name.as_deref().unwrap_or("Mobile device"),
-                "approved-device-pairing",
                 now_ms(),
-            ).await {
+            )
+            .await
+            {
                 Ok(value) => value,
                 Err(error) => return db_error(error),
             };
-            if let Err(error) = state.db.attach_pairing_device_session(&id, &issued.session_id).await {
-                let _ = state.db.revoke_device_session(&issued.session_id, "pairing-attachment-failure", now_ms()).await;
-                return db_error(error);
-            }
             crate::telemetry::register_secret(&issued.session_token);
             crate::telemetry::register_secret(&issued.csrf_token);
             let mut response = Json(json!({"status":"APPROVED","csrfToken":issued.csrf_token,"expiresAt":issued.device.expires_at_ms})).into_response();
@@ -367,7 +389,7 @@ async fn access_status(operator: Option<Extension<DeviceSessionRecord>>) -> Resp
         return StatusCode::UNAUTHORIZED.into_response();
     }
     let configured_origin = env::var("FACTORY_TAILSCALE_ORIGIN").ok();
-    let tailscale = tailscale_status(configured_origin.as_deref(), TAILSCALE_HEALTH_URL).await;
+    let tailscale = tailscale_status(configured_origin.as_deref());
     Json(json!({
         "local": {"status": "AVAILABLE"},
         "tailscale": {
@@ -387,7 +409,7 @@ struct TailscaleStatus {
     error: Option<String>,
 }
 
-async fn tailscale_status(configured_origin: Option<&str>, health_url: &str) -> TailscaleStatus {
+fn tailscale_status(configured_origin: Option<&str>) -> TailscaleStatus {
     let Some(configured_origin) = configured_origin.filter(|value| !value.trim().is_empty()) else {
         return TailscaleStatus {
             enabled: false,
@@ -396,63 +418,19 @@ async fn tailscale_status(configured_origin: Option<&str>, health_url: &str) -> 
             error: None,
         };
     };
-    let https_endpoint =
-        valid_private_origin(configured_origin).then(|| configured_origin.to_owned());
-    let Some(https_endpoint) = https_endpoint else {
+    if !valid_private_origin(configured_origin) {
         return TailscaleStatus {
             enabled: true,
             status: "UNKNOWN",
             https_endpoint: None,
             error: Some("configured Tailscale HTTPS origin is invalid".to_owned()),
         };
-    };
-
-    let client = match reqwest::Client::builder()
-        .timeout(TAILSCALE_HEALTH_TIMEOUT)
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-    {
-        Ok(client) => client,
-        Err(_) => {
-            return TailscaleStatus {
-                enabled: true,
-                status: "UNKNOWN",
-                https_endpoint: Some(https_endpoint),
-                error: Some("could not initialize the Tailscale health check".to_owned()),
-            };
-        }
-    };
-    let probe_result = match client.get(health_url).send().await {
-        Ok(response) => Ok(response.status().as_u16()),
-        Err(_) => Err(()),
-    };
-    configured_tailscale_status(https_endpoint, probe_result)
-}
-
-fn configured_tailscale_status(
-    https_endpoint: String,
-    probe_result: Result<u16, ()>,
-) -> TailscaleStatus {
-    match probe_result {
-        Ok(200) => TailscaleStatus {
-            enabled: true,
-            status: "CONNECTED",
-            https_endpoint: Some(https_endpoint),
-            error: None,
-        },
-        Ok(code) => TailscaleStatus {
-            enabled: true,
-            status: "DISCONNECTED",
-            https_endpoint: Some(https_endpoint),
-            error: Some(format!("Tailscale health endpoint returned HTTP {code}")),
-        },
-        Err(()) => TailscaleStatus {
-            enabled: true,
-            status: "UNKNOWN",
-            https_endpoint: Some(https_endpoint),
-            error: Some("Tailscale health endpoint could not be reached".to_owned()),
-        },
+    }
+    TailscaleStatus {
+        enabled: true,
+        status: "CONFIGURED",
+        https_endpoint: Some(configured_origin.to_owned()),
+        error: None,
     }
 }
 
@@ -489,51 +467,35 @@ fn db_error(error: Error) -> Response {
 
 #[cfg(test)]
 mod access_tests {
-    use super::{configured_tailscale_status, tailscale_status};
+    use super::tailscale_status;
 
     const PRIVATE_ORIGIN: &str = "https://factory.example.ts.net";
 
     #[test]
-    fn configured_tailscale_is_connected_when_health_returns_200() {
-        let status = configured_tailscale_status(PRIVATE_ORIGIN.to_owned(), Ok(200));
+    fn configured_tailscale_reports_configuration_without_a_live_probe() {
+        let status = tailscale_status(Some(PRIVATE_ORIGIN));
+
         assert!(status.enabled);
-        assert_eq!(status.status, "CONNECTED");
+        assert_eq!(status.status, "CONFIGURED");
         assert_eq!(status.https_endpoint.as_deref(), Some(PRIVATE_ORIGIN));
         assert!(status.error.is_none());
     }
 
     #[test]
-    fn configured_tailscale_is_disconnected_when_health_returns_unavailable() {
-        let status = configured_tailscale_status(PRIVATE_ORIGIN.to_owned(), Ok(503));
-        assert!(status.enabled);
-        assert_eq!(status.status, "DISCONNECTED");
-        assert_eq!(status.https_endpoint.as_deref(), Some(PRIVATE_ORIGIN));
+    fn invalid_or_missing_tailscale_origin_fails_closed() {
+        let invalid = tailscale_status(Some("http://factory.example.ts.net"));
+        assert!(invalid.enabled);
+        assert_eq!(invalid.status, "UNKNOWN");
+        assert!(invalid.https_endpoint.is_none());
         assert_eq!(
-            status.error.as_deref(),
-            Some("Tailscale health endpoint returned HTTP 503")
+            invalid.error.as_deref(),
+            Some("configured Tailscale HTTPS origin is invalid")
         );
-    }
 
-    #[test]
-    fn configured_tailscale_is_unknown_when_health_cannot_be_reached() {
-        let status = configured_tailscale_status(PRIVATE_ORIGIN.to_owned(), Err(()));
-
-        assert!(status.enabled);
-        assert_eq!(status.status, "UNKNOWN");
-        assert_eq!(status.https_endpoint.as_deref(), Some(PRIVATE_ORIGIN));
-        assert_eq!(
-            status.error.as_deref(),
-            Some("Tailscale health endpoint could not be reached")
-        );
-    }
-
-    #[tokio::test]
-    async fn unconfigured_tailscale_is_disabled_without_a_probe() {
-        let status = tailscale_status(None, "not a URL").await;
-
-        assert!(!status.enabled);
-        assert_eq!(status.status, "DISABLED");
-        assert!(status.https_endpoint.is_none());
-        assert!(status.error.is_none());
+        let disabled = tailscale_status(None);
+        assert!(!disabled.enabled);
+        assert_eq!(disabled.status, "DISABLED");
+        assert!(disabled.https_endpoint.is_none());
+        assert!(disabled.error.is_none());
     }
 }

@@ -71,7 +71,7 @@ describe("Access & Devices", () => {
     expect(screen.getByText(/Funnel remains disabled/)).toBeTruthy();
   });
 
-  it.each(["CONNECTED", "DISCONNECTED", "UNKNOWN", "DISABLED"])(
+  it.each(["CONFIGURED", "CONNECTED", "DISCONNECTED", "UNKNOWN", "DISABLED"])(
     "renders the Core-reported Tailscale state %s",
     async (status) => {
       mocks.getAccessOverview.mockResolvedValue({
@@ -89,6 +89,9 @@ describe("Access & Devices", () => {
       if (status === "DISCONNECTED") {
         expect(screen.getByText(/health probe failed/)).toBeTruthy();
         expect(screen.getByText(/Core cannot reach/)).toBeTruthy();
+      }
+      if (status === "CONFIGURED") {
+        expect(screen.getByText(/isolated socket-only boundary/)).toBeTruthy();
       }
       if (status === "DISABLED") {
         expect(screen.getByText(/Remote access is disabled/)).toBeTruthy();

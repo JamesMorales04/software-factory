@@ -1,7 +1,8 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     env,
-    net::SocketAddr,
+    future::IntoFuture,
+    net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
@@ -403,7 +404,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     factory_native::telemetry::register_secret(&attempt_grant_key);
     let container_mode = env::var("FACTORY_CONTAINER_MODE").as_deref() == Ok("1");
-    let addr: SocketAddr = validate_bind(&bind, container_mode)?;
+    let control_addrs = resolve_binds(&bind, container_mode).await?;
     let db = Database::open(Path::new(&database)).await?;
     let observability = match factory_native::observability::Config::from_env() {
         Ok(Some(config)) => match factory_native::observability::start(db.clone(), config) {
@@ -461,26 +462,55 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         observability,
     });
     let router = build_router(Arc::clone(&app));
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    tracing::info!(%addr, "native Factory Core listening");
-    let office_access_bind = env::var("FACTORY_OFFICE_ACCESS_BIND").ok();
-    if let Some(bind) = office_access_bind {
-        let office_addr: SocketAddr = validate_bind(&bind, container_mode)?;
-        let office_listener = tokio::net::TcpListener::bind(office_addr).await?;
-        let office_router = build_office_access_router(
-            Arc::clone(&app),
-            env::var("FACTORY_OFFICE_DIR").ok().map(PathBuf::from),
-        );
-        tracing::info!(%office_addr, "native Factory Office access listener listening");
-        tokio::select! {
-            result = axum::serve(listener, router).with_graceful_shutdown(shutdown_signal()) => result?,
-            result = axum::serve(office_listener, office_router).with_graceful_shutdown(shutdown_signal()) => result?,
-        }
-    } else {
-        axum::serve(listener, router)
-            .with_graceful_shutdown(shutdown_signal())
-            .await?;
+    let mut listeners = Vec::new();
+    for addr in &control_addrs {
+        listeners.push(tokio::net::TcpListener::bind(addr).await?);
+        tracing::info!(%addr, "native Factory Core control listener listening");
     }
+    let mut servers: Vec<
+        std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<()>> + Send>>,
+    > = Vec::new();
+    for listener in listeners {
+        servers.push(Box::pin(
+            axum::serve(listener, router.clone())
+                .with_graceful_shutdown(shutdown_signal())
+                .into_future(),
+        ));
+    }
+    if let Ok(raw) = env::var("FACTORY_OFFICE_ACCESS_SOCKET") {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let path = validate_office_socket_path(&raw)?;
+            match std::fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+            let listener = tokio::net::UnixListener::bind(&path)?;
+            // The socket volume is dedicated to Core and the Tailscale
+            // container. Rootless Podman maps the Tailscale container's root
+            // to the host user rather than Core's UID, so the socket must be
+            // connectable across that namespace boundary.
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666))?;
+            let office_router = build_office_access_router(
+                Arc::clone(&app),
+                env::var("FACTORY_OFFICE_DIR").ok().map(PathBuf::from),
+            );
+            tracing::info!(socket = %path.display(), "native Factory Office socket listener listening");
+            servers.push(Box::pin(
+                axum::serve(listener, office_router)
+                    .with_graceful_shutdown(shutdown_signal())
+                    .into_future(),
+            ));
+        }
+        #[cfg(not(unix))]
+        {
+            return Err("FACTORY_OFFICE_ACCESS_SOCKET requires a Unix host".into());
+        }
+    }
+    futures_util::future::try_join_all(servers).await?;
     app.observability.shutdown().await;
     app.db.close().await;
     Ok(())
@@ -994,11 +1024,31 @@ fn policy_from_env(
     })
 }
 
+fn validate_office_socket_path(raw: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let path = PathBuf::from(raw);
+    if !path.is_absolute() {
+        return Err("FACTORY_OFFICE_ACCESS_SOCKET must be absolute".into());
+    }
+    let parent = path
+        .parent()
+        .ok_or("FACTORY_OFFICE_ACCESS_SOCKET must have a parent directory")?;
+    if !parent.is_dir() {
+        return Err("FACTORY_OFFICE_ACCESS_SOCKET parent directory must exist".into());
+    }
+    Ok(path)
+}
+
 fn validate_bind(
     raw: &str,
     container_mode: bool,
 ) -> Result<SocketAddr, Box<dyn std::error::Error>> {
-    let addr: SocketAddr = raw.parse()?;
+    validate_address(raw.parse()?, container_mode)
+}
+
+fn validate_address(
+    addr: SocketAddr,
+    container_mode: bool,
+) -> Result<SocketAddr, Box<dyn std::error::Error>> {
     if addr.ip().is_loopback() {
         return Ok(addr);
     }
@@ -1009,7 +1059,91 @@ fn validate_bind(
         );
         return Ok(addr);
     }
-    Err("remote binding requires FACTORY_CONTAINER_MODE=1 with an IPv4 unspecified container bind; publish only host loopback".into())
+    if container_mode && is_private_ipv4(addr.ip()) {
+        return Ok(addr);
+    }
+    Err("remote binding requires FACTORY_CONTAINER_MODE=1 with an IPv4 unspecified or private container bind; publish only host loopback".into())
+}
+
+/// Resolve a bind specification to one or more concrete addresses.
+///
+/// A raw socket address keeps the historical rules. A hostname (a Compose
+/// network alias) must resolve to exactly one private IPv4 address and is only
+/// accepted in container mode, so the full control listener can be confined to
+/// the control interfaces while the Office listener is confined to its own
+/// network. Ambiguous or public resolutions fail closed.
+async fn resolve_binds(
+    raw: &str,
+    container_mode: bool,
+) -> Result<Vec<SocketAddr>, Box<dyn std::error::Error>> {
+    let mut resolved = Vec::new();
+    for entry in raw
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+    {
+        resolved.extend(resolve_bind(entry, container_mode).await?);
+    }
+    let mut unique = BTreeSet::new();
+    for addr in resolved {
+        if !unique.insert(addr) {
+            return Err(format!("duplicate bind address {addr}").into());
+        }
+    }
+    if unique.is_empty() {
+        return Err("at least one bind address is required".into());
+    }
+    Ok(unique.into_iter().collect())
+}
+
+async fn resolve_bind(
+    raw: &str,
+    container_mode: bool,
+) -> Result<Vec<SocketAddr>, Box<dyn std::error::Error>> {
+    if raw.parse::<SocketAddr>().is_ok() {
+        return Ok(vec![validate_bind(raw, container_mode)?]);
+    }
+    let (host, port) = raw
+        .rsplit_once(':')
+        .ok_or_else(|| format!("bind {raw:?} must be HOST:PORT"))?;
+    if host.is_empty() || host.contains(['/', '[', ']']) {
+        return Err(format!("bind host {host:?} is not a service name").into());
+    }
+    let port: u16 = port
+        .parse()
+        .map_err(|_| format!("bind {raw:?} has an invalid port"))?;
+    if !container_mode {
+        return Err(format!("bind host {host:?} requires FACTORY_CONTAINER_MODE=1").into());
+    }
+    let addresses: BTreeSet<IpAddr> = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|_| format!("bind host {host:?} could not be resolved"))?
+        .map(|address| address.ip())
+        .filter(IpAddr::is_ipv4)
+        .collect();
+    let mut addresses = addresses.into_iter();
+    let address = match (addresses.next(), addresses.next()) {
+        (Some(address), None) => address,
+        (None, _) => {
+            return Err(format!("bind host {host:?} has no IPv4 address").into());
+        }
+        _ => {
+            return Err(
+                format!("bind host {host:?} must resolve to exactly one IPv4 address").into(),
+            );
+        }
+    };
+    if !address.is_loopback() && !is_private_ipv4(address) {
+        return Err(format!("bind host {host:?} resolved to a non-private address").into());
+    }
+    Ok(vec![validate_address(
+        SocketAddr::new(address, port),
+        container_mode,
+    )?])
+}
+
+fn is_private_ipv4(address: IpAddr) -> bool {
+    matches!(address, IpAddr::V4(address) if address.is_private())
 }
 
 fn authorized(headers: &HeaderMap, token: &str) -> bool {
@@ -4398,8 +4532,93 @@ mod tests {
         assert!(validate_bind("127.0.0.1:8765", false).is_ok());
         assert!(validate_bind("0.0.0.0:8765", false).is_err());
         assert!(validate_bind("0.0.0.0:8765", true).is_ok());
+        assert!(validate_bind("10.89.0.2:8765", true).is_ok());
+        assert!(validate_bind("10.89.0.2:8765", false).is_err());
         assert!(validate_bind("[::]:8765", true).is_err());
         assert!(validate_bind("203.0.113.4:8765", true).is_err());
+        assert!(!is_private_ipv4("203.0.113.4".parse().unwrap()));
+        assert!(is_private_ipv4("10.89.0.2".parse().unwrap()));
+    }
+
+    #[test]
+    fn office_socket_path_must_be_absolute_in_an_existing_directory() {
+        assert!(validate_office_socket_path("office.sock").is_err());
+        assert!(validate_office_socket_path("/nonexistent-factory-dir/office.sock").is_err());
+        let directory = std::env::temp_dir();
+        assert!(
+            validate_office_socket_path(
+                directory.join("factory-office-test.sock").to_str().unwrap()
+            )
+            .is_ok()
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn office_access_router_serves_over_a_unix_socket_only() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let database_path = std::env::temp_dir().join(format!(
+            "factory-core-office-socket-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let app = test_app(&database_path).await;
+        let directory =
+            std::env::temp_dir().join(format!("factory-office-socket-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let socket = directory.join("office.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let router = build_office_access_router(Arc::clone(&app), None);
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+
+        async fn request(socket: &std::path::Path, path: &str) -> String {
+            let mut stream = tokio::net::UnixStream::connect(socket).await.unwrap();
+            stream
+                .write_all(
+                    format!(
+                        "GET {path} HTTP/1.1\r\nHost: localhost:8768\r\nConnection: close\r\n\r\n"
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+            let mut response = Vec::new();
+            stream.read_to_end(&mut response).await.unwrap();
+            String::from_utf8_lossy(&response).to_string()
+        }
+        assert!(
+            request(&socket, "/core-api/health")
+                .await
+                .starts_with("HTTP/1.1 200")
+        );
+        let control = request(&socket, "/core-api/quality/pending").await;
+        assert!(
+            control.starts_with("HTTP/1.1 404"),
+            "control routes must not exist on the Office socket: {control}"
+        );
+
+        server.abort();
+        let _ = std::fs::remove_dir_all(directory);
+        let _ = std::fs::remove_file(database_path);
+    }
+
+    #[tokio::test]
+    async fn hostname_binds_are_single_private_container_interfaces() {
+        assert!(resolve_binds("core-control:8765", false).await.is_err());
+        assert!(resolve_binds("localhost:8765", true).await.is_ok());
+        let both = resolve_binds("0.0.0.0:8765,127.0.0.1:8766", true)
+            .await
+            .expect("explicit binds resolve");
+        assert_eq!(both.len(), 2);
+        assert!(
+            resolve_binds("127.0.0.1:8765,127.0.0.1:8765", false)
+                .await
+                .is_err(),
+            "duplicate binds must fail closed"
+        );
+        assert!(resolve_binds("", true).await.is_err());
     }
 
     #[test]
@@ -5779,6 +5998,137 @@ mod tests {
         assert!(audit.contains("revoked"));
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn global_revocation_invalidates_delayed_pairing_polls() {
+        use tower::ServiceExt;
+        for operation in ["logout-all", "revoke-all", "recovery"] {
+            let path = std::env::temp_dir().join(format!(
+                "factory-core-pairing-revocation-{}-{}.sqlite",
+                operation,
+                uuid::Uuid::new_v4()
+            ));
+            let app = test_app(&path).await;
+            let now = chrono::Utc::now().timestamp_millis();
+            let owner = factory_native::device_session::issue_owner(&app.db, "Desktop", now)
+                .await
+                .unwrap();
+            let session_cookie = format!("factory_session={}", owner.session_token);
+            let csrf_cookie = format!("factory_csrf={}", owner.csrf_token);
+            let both_cookies = format!("{session_cookie}; {csrf_cookie}");
+            let challenge_id = uuid::Uuid::new_v4().to_string();
+            let poll_token = format!(
+                "{}{}",
+                uuid::Uuid::new_v4().simple(),
+                uuid::Uuid::new_v4().simple()
+            );
+            app.db
+                .create_device_pairing(
+                    &challenge_id,
+                    "204817",
+                    &owner.session_id,
+                    now,
+                    now.saturating_add(180_000),
+                )
+                .await
+                .unwrap();
+            app.db
+                .claim_device_pairing(
+                    &challenge_id,
+                    &factory_native::device_session::sha256_hex(&poll_token),
+                    "Phone",
+                    now + 1,
+                )
+                .await
+                .unwrap();
+            app.db
+                .decide_device_pairing(
+                    &challenge_id,
+                    true,
+                    Some("204817"),
+                    &owner.session_id,
+                    now + 2,
+                )
+                .await
+                .unwrap();
+            let router = build_office_access_router(Arc::clone(&app), None);
+            let mutation = match operation {
+                "recovery" => app
+                    .db
+                    .reset_owner_bootstrap("local-recovery", now + 3)
+                    .await
+                    .map(|_| ()),
+                route => {
+                    let uri = if route == "logout-all" {
+                        "/core-api/auth/logout-all"
+                    } else {
+                        "/core-api/auth/devices/revoke-all"
+                    };
+                    let response = router
+                        .clone()
+                        .oneshot(
+                            axum::http::Request::builder()
+                                .method("POST")
+                                .uri(uri)
+                                .header("host", "localhost:8768")
+                                .header("origin", "http://localhost:8768")
+                                .header("cookie", &both_cookies)
+                                .header(CSRF_HEADER, &owner.csrf_token)
+                                .header("content-type", "application/json")
+                                .body(axum::body::Body::from("{}"))
+                                .unwrap(),
+                        )
+                        .await
+                        .unwrap();
+                    assert_eq!(response.status(), StatusCode::NO_CONTENT, "{operation}");
+                    Ok(())
+                }
+            };
+            mutation.expect("global revocation operation succeeds");
+
+            let poll = router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri(format!("/core-api/auth/device-claims/{challenge_id}/poll"))
+                        .header("host", "localhost:8768")
+                        .header("origin", "http://localhost:8768")
+                        .header("content-type", "application/json")
+                        .body(axum::body::Body::from(
+                            serde_json::json!({"pollToken": poll_token}).to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(poll.status(), StatusCode::OK, "{operation}");
+            assert_eq!(
+                poll.headers().get_all(header::SET_COOKIE).iter().count(),
+                0,
+                "{operation} must not issue a device session"
+            );
+            let body = axum::body::to_bytes(poll.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["status"], "CANCELLED", "{operation}");
+
+            let access = router
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri("/core-api/auth/access")
+                        .header("host", "localhost:8768")
+                        .header("cookie", &session_cookie)
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(access.status(), StatusCode::UNAUTHORIZED, "{operation}");
+            let _ = std::fs::remove_file(path);
+        }
     }
 
     #[tokio::test]
