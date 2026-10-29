@@ -29,8 +29,8 @@ provenance and is not current campaign certification.
 |---|---|---|---|---|
 | Subscription funding V3 / PR #83 | `sf-wave3/subscription-funding` / `factory/subscription-funding/20261029` | Draft PR at `c0eb767d84d774362c7bed27fc5a7834fbbc2436`; branch pushed | Exact-SHA independent review APPROVE; 45 focused Core/Worker tests, fmt and strict Clippy reported PASS; hosted architecture fails on inherited CAP-050/052; other checks pending | Resolve inherited registry check through #81 integration; preserve fail-closed refusals and disabled dispatch |
 | Provider route verification | `sf-wave3/provider` / `factory/provider-opencode-go/20261028` | Clean at `278688f4465dc084845964e9af11c087cbda333e` | Luna subagent `funding_pre_admission_contract`; official-route verification/implementation started | Verify exact subscription-authenticated route and no-charge evidence without credentials, settings changes, or live inference; retain fail-closed behavior |
-| Conversational Home (#62) | `sf-wave3/ux-conversation` / `factory/office-conversation/20261029` | PR #80 at `f310192c33a02d9191fd9cfbcaf90264c2c6e8cf` | Canonical Compose Office/browser gates passed; exact review and hosted CI pending | Obtain exact-SHA review and resolve CI; keep visual sign-off pending |
-| Agent Office V3 (#65/#70) | `sf-wave3/isometric-v3` / `factory/office-isometric-v3/20261029` | PR #82 at `95346734a4c3d99384388f84c15c7cb2996e2efa` | Compose typecheck/Biome/Vitest/build and pinned fixture Chromium passed; exact review pending; Core/Compose journey NOT_TESTED after Worker fixture failure | Collect exact-SHA review; keep artwork gap and Owner visual sign-off pending |
+| Conversational Home (#62) | `sf-wave3/ux-conversation` / `factory/office-conversation/20261029` | PR #80 at `f310192c33a02d9191fd9cfbcaf90264c2c6e8cf` | Exact review BLOCK P2: expired V2 grants misrepresented; provider-session browser regression removed; repair active | Fix expiry display/selection and restore deterministic inspector/redaction/reload browser coverage without provider egress |
+| Agent Office V3 (#65/#70) | `sf-wave3/isometric-v3` / `factory/office-isometric-v3/20261029` | PR #82 at `95346734a4c3d99384388f84c15c7cb2996e2efa` | Compose typecheck/Biome/Vitest/build and pinned fixture Chromium passed; exact review in progress; Core/Compose journey NOT_TESTED after Worker fixture failure | Collect exact-SHA review; keep artwork gap and Owner visual sign-off pending |
 | Access repairs (#36–#38) | `sf-wave3/access-repairs` / `factory/access-repairs/20261029` | #38 cumulative head `ad04aca35d0538c614f0f957ea42929895fd63a0`; #37 policy-only candidate `da2f07a58d0dfe638786dedf12af7c9cb598c4e9` | Exact #38 review PASS; hosted architecture/Compose pass, Rust/container-dev pending; #37 Rust/container-dev pending | Collect remaining hosted checks; keep stack Draft, no promotion; remote Serve/SEC-01 NOT_TESTED |
 | Provider acceptance / PR #79 | `sf-wave3/provider-acceptance` / `factory/provider-acceptance/20261029` | Candidate `73664882316acfc18928ab697ec04da435187dd8`, pushed | Exact-SHA re-review APPROVED; 29 tests and syntax/diff passed; hosted architecture fails on inherited CAP-050/052; other checks pending | Resolve inherited registry check through #81 integration; keep real UAT blocked pending Core atomic create-and-admit |
 | Capability evidence shape | `sf-wave3/capability-evidence-shape` / `factory/capability-evidence-shape/20261029` | `13adff74a8de434fd46c527ea92608b695a98d03`; draft PR #81 | Director | Collect CI and exact-SHA independent review; integrate only after gates pass |
@@ -81,10 +81,12 @@ were left untouched.
   returned ACCEPTED after authenticated request-scoped `/approve`; the browser
   reached an approved/pending Campaign with no provider/session/model/tool
   calls. V1 grants are shown as historical and excluded from Lead authority.
-  Responsive screenshots and parity are updated. Exact review and hosted CI
-  remain pending; architecture CI reports inherited #81 CAP-050/CAP-052 registry
-  entries. Visual sign-off and real subscription assessment are not accepted or
-  tested.
+  Responsive screenshots and parity are updated. Exact review BLOCKED P2:
+  expired V2 grants still appear active/selectable, and this change removed the
+  deterministic browser provider-session inspector/tool-event/redaction/reload
+  journey. Repair is active. Hosted architecture CI reports inherited #81
+  CAP-050/CAP-052 registry entries. Visual sign-off and real subscription
+  assessment are not accepted or tested.
 - #81 — capability evidence-reference correction: open draft against Wave 3 at
   `13adff74a8de434fd46c527ea92608b695a98d03`. Canonical container architecture
   governance and Compose policy passed after retrying with the worktree's common
@@ -240,26 +242,28 @@ integration candidate); PR #79 `c5c90ce` BLOCK HIGH (Core atomic create-and-admi
 is missing; fake/live separation repair active); PR #79 `f6af062` BLOCK HIGH
 (exported simulation mode can use real Core); PR #79 `6818b30` BLOCK HIGH (fake
 transport marker can be forged by a real-Core wrapper); PR #79 `7366488`
-APPROVE. PR #80 `f310192` and PR #82 `9534673` exact review pending; PR #38
+APPROVE. PR #80 `f310192` BLOCK P2 (expiry representation and removed provider
+session browser regression); PR #82 `9534673` exact review pending; PR #38
 `ad04aca` PASS.
 **Campaign status:** in progress; Wave 3 is not a certified product release.
 
-## Director update — 2026-10-29 19:20 UTC (revised 19:42 UTC)
+## Director update — 2026-10-29 19:20 UTC (revised 19:37 UTC)
 
 - Remote integration remains exactly `f7479c0c5f936d1097426dd1293ef43ea6e72fb6`; local checkpoint branch contains documentation-only checkpoint commits. `main` is unchanged.
 - PR #37 policy guard `da2f07a58d0dfe638786dedf12af7c9cb598c4e9` has an exact independent APPROVE and was pushed as a normal fast-forward. Hosted architecture-consistency and compose-policy now pass; Rust/container-dev remain in progress. No merge or promotion has occurred.
 - PR #38 repair is pushed at `ad04aca35d0538c614f0f957ea42929895fd63a0`, with base unchanged and still OPEN/Draft. It restores accepted ADR-0026 byte-for-byte, records the new policy in proposed ADR-0030, and includes #37 candidate `da2f07a` through merge commit `9ef246f` while preserving `0c3fd44` ancestry. Exact-SHA review **PASS**; local architecture, format, strict Clippy, focused Rust, and Compose-policy checks passed; hosted architecture and Compose-policy pass, while Rust/container-dev remain pending. Current Serve/HTTPS behavior and SEC-01 are NOT_TESTED.
 - PR #79 is pushed at `73664882316acfc18928ab697ec04da435187dd8`. Exact-SHA review **APPROVED**: the fake runner is absent from the production API, its in-memory test handler has no HTTP capability, and refusal precedes evidence-directory creation. Tests pass 29/29; impact declarations, syntax and diff checks pass; Podman validation was config-only. Hosted architecture fails on inherited CAP-050/CAP-052 from #81; Rust/container-dev remain pending. No live inference or billing occurred.
-- PR #80 is pushed at `f310192c33a02d9191fd9cfbcaf90264c2c6e8cf`; its canonical deterministic browser journey, request-scoped approval, Office typecheck/Biome/Vitest/build and screenshots passed with no provider/session/model/tool calls. Exact review is in progress; architecture CI fails on inherited #81 CAP-050/CAP-052 while Rust/container-dev remain pending. Visual acceptance is pending.
-- PR #82 is pushed at `95346734a4c3d99384388f84c15c7cb2996e2efa`. The deterministic renderer now uses two staggered, depth-scaled rows; Compose typecheck/Biome/Vitest/build and pinned Chromium desktop/tablet/mobile captures passed. The canonical Office E2E failed before Agent Office at an existing fixture Worker assertion, so Core/Compose Agent Office acceptance is NOT_TESTED. Exact review is queued; original-art fidelity and Owner approval remain pending.
+- PR #80 is pushed at `f310192c33a02d9191fd9cfbcaf90264c2c6e8cf`; its canonical deterministic browser journey, request-scoped approval, Office typecheck/Biome/Vitest/build and screenshots passed with no provider/session/model/tool calls. Exact review **BLOCKED P2** for expired V2 grants shown as active/selectable and removed provider-session inspector/tool-event/redaction/reload browser coverage; repair is active. Architecture CI fails on inherited #81 CAP-050/CAP-052 while Rust/container-dev remain pending. Visual acceptance is pending.
+- PR #82 is pushed at `95346734a4c3d99384388f84c15c7cb2996e2efa`. The deterministic renderer now uses two staggered, depth-scaled rows; Compose typecheck/Biome/Vitest/build and pinned Chromium desktop/tablet/mobile captures passed. The canonical Office E2E failed before Agent Office at an existing fixture Worker assertion, so Core/Compose Agent Office acceptance is NOT_TESTED. Exact review is in progress; original-art fidelity and Owner approval remain pending.
 - Funding V3 Rust slice is in draft PR #83 at `c0eb767d84d774362c7bed27fc5a7834fbbc2436`. It shares typed refusal/error codes across Core/Worker, orders Worker funding before monetary prerequisites while preserving the existing subscription hold, and keeps dispatch disabled. Author reports 45 focused tests, fmt and strict Clippy passed; exact independent review APPROVED. Hosted architecture fails on inherited CAP-050/CAP-052; Rust, Compose-policy and container-dev remain pending. Quota pause/recovery remains blocked on trusted provider exhaustion evidence and durable Core recovery APIs.
+- Provider route verification is active in the existing clean provider worktree at `278688f` under the original branch. The agent is using official docs and offline tests only; no credentials, provider settings or live inference are involved.
 - No active worktree was reset or discarded. Existing `office/node_modules`, unrelated root untracked files, and long-running services remain untouched.
 
 ### Next executable tasks
 
 1. Collect PR #83 hosted checks; repair any issue without enabling dispatch.
 2. Collect fresh exact-SHA review and hosted checks for PR #79; keep real UAT blocked until Core request admission exists.
-3. Obtain exact-SHA review and hosted CI for PR #80; repair any finding while preserving the request-scoped approval flow and fixture boundary.
-4. Collect PR #38 remaining hosted checks; repair any finding while preserving #37/#38 ancestry. Keep the stack Draft and unpromoted.
+3. Complete PR #80 expiry handling and restore deterministic provider-session browser coverage; rerun canonical Chromium without egress and obtain a fresh review.
+4. Collect exact review for PR #82 and remaining PR #38 hosted checks; repair any finding while preserving #37/#38 ancestry. Keep access stack Draft and unpromoted.
 5. Continue provider-route verification in the existing provider worktree using official docs and offline tests only; keep all inference disabled.
 6. Resolve #81’s inherited evidence references and cross-PR fixture failure before any integration candidate; preserve Owner visual acceptance as pending.
