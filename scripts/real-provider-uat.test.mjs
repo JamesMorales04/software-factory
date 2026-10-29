@@ -122,8 +122,16 @@ function baseGate(port, overrides = {}) {
   };
 }
 
-function runDriver(args, env) {
-  return spawnAndCollect(process.execPath, [DRIVER.pathname, ...args], env);
+function runDriver(args, env, { simulation = false } = {}) {
+  if (!simulation) {
+    return spawnAndCollect(process.execPath, [DRIVER.pathname, ...args], env);
+  }
+  const source = `import { main } from ${JSON.stringify(DRIVER.href)};\nmain(${JSON.stringify(args)}, process.env, { simulation: true }).catch((error) => { const code = error?.code ?? "UNEXPECTED"; process.stderr.write("FAKE_CORE_SIMULATION=REFUSED code=" + code + " " + String(error?.message ?? error) + "\\n"); process.exitCode = error?.exitCode ?? 1; });`;
+  return spawnAndCollect(process.execPath, ["--input-type=module", "-e", source], env);
+}
+
+function runSimulation(args, env) {
+  return runDriver(args, env, { simulation: true });
 }
 
 function runWrapper(args, env) {
@@ -188,6 +196,11 @@ const flow = {
   requestCalls: 0,
   resumeCalls: 0,
   projectCalls: 0,
+  profileCalls: 0,
+  defaultCalls: 0,
+  policyCalls: 0,
+  assessmentCalls: 0,
+  providerCalls: 0,
   intakeBody: null,
   approveBody: null,
   resumeBody: null,
@@ -209,6 +222,11 @@ function resetFlow(overrides = {}) {
     requestCalls: 0,
     resumeCalls: 0,
     projectCalls: 0,
+    profileCalls: 0,
+    defaultCalls: 0,
+    policyCalls: 0,
+    assessmentCalls: 0,
+    providerCalls: 0,
     intakeBody: null,
     approveBody: null,
     resumeBody: null,
@@ -549,6 +567,9 @@ before(async () => {
       response.end(JSON.stringify(value));
     };
     const path = request.url.replace(/^\/core-api/, "").split("?")[0];
+    if (request.method !== "GET" && /provider|models|inference|turn/i.test(path)) {
+      flow.providerCalls += 1;
+    }
     if (path === "/health") {
       if (healthMode === "echo-token") {
         send(401, {
@@ -676,6 +697,7 @@ before(async () => {
       return;
     }
     if (path === "/execution-profiles" && request.method === "POST") {
+      flow.profileCalls += 1;
       send(201, {
         id: "profile-1",
         revision: 1,
@@ -686,10 +708,12 @@ before(async () => {
       return;
     }
     if (path === "/execution-profiles/profile-1/default" && request.method === "POST") {
+      flow.defaultCalls += 1;
       send(200, {});
       return;
     }
     if (path === "/projects/project-1/execution-policy" && request.method === "POST") {
+      flow.policyCalls += 1;
       send(201, { id: "policy-1" });
       return;
     }
@@ -711,6 +735,7 @@ before(async () => {
       return;
     }
     if (path === "/intake/requests/intake-1/assess" && request.method === "POST") {
+      flow.assessmentCalls += 1;
       flow.assessed = true;
       send(200, flowIntake());
       return;
@@ -972,6 +997,12 @@ test("dry-run preflight is read-only and records no inference", async () => {
   const evidencePath = join(env.FACTORY_REAL_PROVIDER_EVIDENCE_DIR, "real-provider-uat-preflight.json");
   const evidence = JSON.parse(readFileSync(evidencePath, "utf8"));
   assert.equal(evidence.result, "DRY_RUN_READY");
+  assert.equal(evidence.uat_status, "BLOCKED");
+  assert.equal(evidence.preflight.request_admission.status, "NOT_VERIFIED");
+  assert.equal(
+    evidence.preflight.request_admission.reason,
+    "CORE_HAS_NO_READ_ONLY_ATOMIC_REQUEST_ADMISSION_CONTRACT",
+  );
   assert.equal(evidence.paid_inference, false);
   assert.equal(evidence.mutations, false);
   assert.equal(evidence.preflight.subscription.positive_usd_authorization, "NOT_REQUIRED");
@@ -1084,9 +1115,9 @@ test("a Core without subscription verification fails closed before creating a Pr
   assert.ok(requests.every((request) => !request.url.endsWith("/projects")));
 });
 
-test("a Core without subscription admission fails closed and does not invent a cap", async () => {
+test("request admission remains unverified and blocks before every resource or inference call", async () => {
   requests = [];
-  resetFlow({ admissionRejected: true });
+  resetFlow();
   const env = baseGate(port, {
     FACTORY_REAL_PROVIDER_UAT: "1",
     FACTORY_REAL_PROVIDER_EVIDENCE_DIR: join(ROOT, "admission-rejected-evidence"),
@@ -1094,19 +1125,30 @@ test("a Core without subscription admission fails closed and does not invent a c
   });
   const result = await runDriver(["assess"], env);
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /CORE_V3_SUBSCRIPTION_ADMISSION_REQUIRED/);
-  assert.equal(flow.requestCalls, 1);
-  assert.equal(flow.intakeBody.authorized_micros, undefined);
+  assert.match(result.stderr, /REQUEST_ADMISSION_NOT_VERIFIED/);
+  assert.equal(flow.projectCalls, 0);
+  assert.equal(flow.profileCalls, 0);
+  assert.equal(flow.defaultCalls, 0);
+  assert.equal(flow.policyCalls, 0);
+  assert.equal(flow.requestCalls, 0);
+  assert.equal(flow.assessmentCalls, 0);
+  assert.equal(flow.approveCalls, 0);
+  assert.equal(flow.providerCalls, 0);
+  assert.ok(!existsSync(join(env.FACTORY_REAL_PROVIDER_EVIDENCE_DIR, "real-provider-uat-state.json")));
+  assert.ok(!existsSync(join(env.FACTORY_REAL_PROVIDER_EVIDENCE_DIR, "plan.json")));
+  assert.equal(flow.intakeBody, null);
   assert.ok(
     requests.every(
       (request) =>
-        !request.url.endsWith("/approve") &&
-        !request.url.includes("pull_request"),
+        request.method === "GET" &&
+        !request.url.endsWith("/projects") &&
+        !request.url.endsWith("/execution-profiles") &&
+        !request.url.endsWith("/intake/requests"),
     ),
   );
 });
 
-test("a fake-Core subscription run records ACCEPTED without a USD cap", async () => {
+test("fake-Core simulation exercises downstream flow without runtime acceptance", async () => {
   requests = [];
   resetFlow({ actualChargeKnown: true, actualChargeMicros: 0, billingSource: "go" });
   healthMode = "ok";
@@ -1119,15 +1161,19 @@ test("a fake-Core subscription run records ACCEPTED without a USD cap", async ()
     FACTORY_REAL_PROVIDER_COMPOSE_PROJECT: "software-factory-rp-uat-test",
   });
 
-  const assessed = await runDriver(["assess"], env);
+  const assessed = await runSimulation(["assess"], env);
   assert.equal(assessed.status, 0, assessed.stderr);
-  assert.match(assessed.stdout, /REAL_PROVIDER_UAT=AWAITING_PLAN_APPROVAL/);
+  assert.match(assessed.stdout, /FAKE_CORE_SIMULATION=SIMULATED_AWAITING_PLAN_APPROVAL/);
   assert.equal(flow.intakeBody.authorized_micros, undefined, "subscription request must not carry a USD authorization");
   const statePath = join(env.FACTORY_REAL_PROVIDER_EVIDENCE_DIR, "real-provider-uat-state.json");
   const planPath = join(env.FACTORY_REAL_PROVIDER_EVIDENCE_DIR, "plan.json");
   const state = JSON.parse(readFileSync(statePath, "utf8"));
   const plan = JSON.parse(readFileSync(planPath, "utf8"));
   assert.equal(state.schema, "factory.real-provider-uat.state.v2");
+  assert.equal(state.evidence_kind, "FAKE_CORE_SIMULATION");
+  assert.equal(state.request_admission, "NOT_VERIFIED");
+  assert.equal(plan.evidence_kind, "FAKE_CORE_SIMULATION");
+  assert.equal(plan.request_admission, "NOT_VERIFIED");
   assert.equal(state.funding.policy, "SUBSCRIPTION_INCLUDED_ONLY");
   assert.equal(state.funding.positive_usd_authorization, "NOT_REQUIRED");
   assert.equal(state.funding.spend_cap, "NOT_USED");
@@ -1135,14 +1181,14 @@ test("a fake-Core subscription run records ACCEPTED without a USD cap", async ()
   assert.equal(plan.budget_semantics, "MODEL_PLAN_OBSERVATION_NOT_A_SPEND_AUTHORIZATION");
   assert.equal(flow.approved, false, "assess must not approve the plan");
 
-  const wrongHash = await runDriver(["execute", "--plan-hash", "a".repeat(64)], env);
+  const wrongHash = await runSimulation(["execute", "--plan-hash", "a".repeat(64)], env);
   assert.notEqual(wrongHash.status, 0);
   assert.match(wrongHash.stderr, /PLAN_HASH_MISMATCH/);
   assert.equal(flow.approved, false);
 
-  const executed = await runDriver(["execute", "--plan-hash", PLAN_HASH], env);
+  const executed = await runSimulation(["execute", "--plan-hash", PLAN_HASH], env);
   assert.equal(executed.status, 0, executed.stderr);
-  assert.match(executed.stdout, /REAL_PROVIDER_UAT=ACCEPTED/);
+  assert.match(executed.stdout, /FAKE_CORE_SIMULATION=SIMULATED_ACCEPTED/);
   assert.equal(flow.approveBody.authorized_micros, undefined, "approval must not carry a USD authorization");
   assert.equal(flow.githubWrite, false);
   assert.ok(requests.every((request) => !request.url.includes("pull_request")));
@@ -1153,7 +1199,13 @@ test("a fake-Core subscription run records ACCEPTED without a USD cap", async ()
       "utf8",
     ),
   );
-  assert.equal(evidence.result, "ACCEPTED");
+  assert.equal(evidence.result, "SIMULATED_ACCEPTED");
+  assert.equal(evidence.evidence_kind, "FAKE_CORE_SIMULATION");
+  assert.equal(evidence.request_admission, "NOT_VERIFIED");
+  assert.equal(evidence.boundary.real_core_http_api, false);
+  assert.equal(evidence.boundary.real_compose_stack, false);
+  assert.equal(evidence.boundary.live_provider_inference, "NOT_PERFORMED_FAKE_CORE");
+  assert.doesNotMatch(executed.stdout, /REAL_PROVIDER_UAT=(?:ACCEPTED|AWAITING_PLAN_APPROVAL)/);
   assert.equal(evidence.funding.policy, "SUBSCRIPTION_INCLUDED_ONLY");
   assert.equal(evidence.funding.positive_usd_authorization, "NOT_REQUIRED");
   assert.equal(evidence.funding.spend_cap, "NOT_USED");
@@ -1203,9 +1255,9 @@ test("unknown provider-reported actual charge is recorded as UNKNOWN, never zero
     FACTORY_REAL_PROVIDER_EVIDENCE_DIR: join(ROOT, "unknown-charge-evidence"),
     FACTORY_REAL_PROVIDER_TIMEOUT_SECS: "120",
   });
-  const assessed = await runDriver(["assess"], env);
+  const assessed = await runSimulation(["assess"], env);
   assert.equal(assessed.status, 0, assessed.stderr);
-  const executed = await runDriver(["execute", "--plan-hash", PLAN_HASH], env);
+  const executed = await runSimulation(["execute", "--plan-hash", PLAN_HASH], env);
   assert.equal(executed.status, 0, executed.stderr);
   const evidence = JSON.parse(
     readFileSync(join(env.FACTORY_REAL_PROVIDER_EVIDENCE_DIR, "real-provider-uat-evidence.json"), "utf8"),
@@ -1229,15 +1281,17 @@ test("a positive provider-reported charge blocks a subscription run", async () =
     FACTORY_REAL_PROVIDER_EVIDENCE_DIR: join(ROOT, "charge-incident-evidence"),
     FACTORY_REAL_PROVIDER_TIMEOUT_SECS: "120",
   });
-  const assessed = await runDriver(["assess"], env);
+  const assessed = await runSimulation(["assess"], env);
   assert.equal(assessed.status, 0, assessed.stderr);
-  const executed = await runDriver(["execute", "--plan-hash", PLAN_HASH], env);
+  const executed = await runSimulation(["execute", "--plan-hash", PLAN_HASH], env);
   assert.notEqual(executed.status, 0);
   assert.match(executed.stderr, /SUBSCRIPTION_CHARGE_INCIDENT/);
   const evidence = JSON.parse(
     readFileSync(join(env.FACTORY_REAL_PROVIDER_EVIDENCE_DIR, "real-provider-uat-evidence.json"), "utf8"),
   );
-  assert.equal(evidence.result, "FAILED_SUBSCRIPTION_CHARGE_INCIDENT");
+  assert.equal(evidence.result, "SIMULATED_FAILED_SUBSCRIPTION_CHARGE_INCIDENT");
+  assert.equal(evidence.evidence_kind, "FAKE_CORE_SIMULATION");
+  assert.equal(evidence.request_admission, "NOT_VERIFIED");
   assert.equal(evidence.usage.provider_reported_actual_charge.observation, "VERIFIED_POSITIVE");
   assert.ok(evidence.usage.provider_reported_actual_charge.fallback_observed);
   assert.equal(evidence.boundary.paid_fallback, "NONE");
@@ -1252,12 +1306,12 @@ test("quota exhaustion pauses and resumes without approval, fallback or redispat
     FACTORY_REAL_PROVIDER_EVIDENCE_DIR: join(ROOT, "quota-resume-evidence"),
     FACTORY_REAL_PROVIDER_TIMEOUT_SECS: "120",
   });
-  const assessed = await runDriver(["assess"], env);
+  const assessed = await runSimulation(["assess"], env);
   assert.equal(assessed.status, 0, assessed.stderr);
   assert.equal(flow.approveCalls, 0);
   assert.equal(flow.requestCalls, 1);
 
-  const executed = await runDriver(["execute", "--plan-hash", PLAN_HASH], env);
+  const executed = await runSimulation(["execute", "--plan-hash", PLAN_HASH], env);
   assert.equal(executed.status, 4, executed.stderr);
   assert.match(executed.stdout, /PAUSED_SUBSCRIPTION_QUOTA_EXHAUSTED/);
   assert.equal(flow.approveCalls, 1);
@@ -1275,16 +1329,18 @@ test("quota exhaustion pauses and resumes without approval, fallback or redispat
   const paused = JSON.parse(
     readFileSync(join(env.FACTORY_REAL_PROVIDER_EVIDENCE_DIR, "real-provider-uat-paused.json"), "utf8"),
   );
-  assert.equal(paused.result, "PAUSED_SUBSCRIPTION_QUOTA_EXHAUSTED");
+  assert.equal(paused.result, "SIMULATED_PAUSED_SUBSCRIPTION_QUOTA_EXHAUSTED");
+  assert.equal(paused.evidence_kind, "FAKE_CORE_SIMULATION");
+  assert.equal(paused.request_admission, "NOT_VERIFIED");
   assert.equal(paused.recoverable, true);
   assert.equal(paused.fallback, "NONE");
   assert.equal(paused.redispatch, "NONE");
   assert.equal(paused.state.provider, undefined);
   assert.equal(flow.githubWrite, false);
 
-  const resumed = await runDriver(["resume"], env);
+  const resumed = await runSimulation(["resume"], env);
   assert.equal(resumed.status, 0, resumed.stderr);
-  assert.match(resumed.stdout, /REAL_PROVIDER_UAT=ACCEPTED/);
+  assert.match(resumed.stdout, /FAKE_CORE_SIMULATION=SIMULATED_ACCEPTED/);
   assert.equal(flow.resumeCalls, 1);
   assert.equal(flow.approveCalls, 1, "resume must not re-approve the plan");
   assert.equal(flow.requestCalls, 1, "resume must not create another request");
@@ -1303,7 +1359,9 @@ test("quota exhaustion pauses and resumes without approval, fallback or redispat
   const evidence = JSON.parse(
     readFileSync(join(env.FACTORY_REAL_PROVIDER_EVIDENCE_DIR, "real-provider-uat-evidence.json"), "utf8"),
   );
-  assert.equal(evidence.result, "ACCEPTED");
+  assert.equal(evidence.result, "SIMULATED_ACCEPTED");
+  assert.equal(evidence.evidence_kind, "FAKE_CORE_SIMULATION");
+  assert.equal(evidence.request_admission, "NOT_VERIFIED");
   assert.equal(evidence.boundary.paid_fallback, "NONE");
   assert.equal(evidence.boundary.redispatch, "NONE");
 });
@@ -1326,6 +1384,7 @@ test("list-rate and provider-reported actual charge are distinct observations", 
     "fallback",
   );
   assert.equal(zero.observation, "VERIFIED_ZERO");
+  assert.equal(zero.provenance, "PROVIDER_REPORTED_ACTUAL_CHARGE");
   assert.equal(positive.observation, "VERIFIED_POSITIVE");
   assert.equal(unknown.observation, "UNKNOWN");
   assert.equal(fallback.fallbackObserved, true);
@@ -1357,16 +1416,15 @@ test("list-rate and provider-reported actual charge are distinct observations", 
     readBillingSource({ billing_source: "balance" }, "model_call", "balance-route").observation,
     "PAID_FALLBACK",
   );
-  assert.equal(
-    summarizeActualCharge([
+  const summarizedZero = summarizeActualCharge([
       {
         record: { actual_charge_known: true, actual_charge_micros: 0 },
         kind: "x",
         id: "x",
       },
-    ]).observation,
-    "VERIFIED_ZERO",
-  );
+    ]);
+  assert.equal(summarizedZero.observation, "VERIFIED_ZERO");
+  assert.equal(summarizedZero.provenance, "EXPLICIT_PROVIDER_REPORTED_ACTUAL_CHARGE");
   assert.equal(
     summarizeActualCharge([{ record: {}, kind: "x", id: "x" }]).observation,
     "UNKNOWN",

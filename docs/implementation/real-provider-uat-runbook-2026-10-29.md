@@ -133,11 +133,15 @@ assume Off-Peak.
    before any live run. The harness requires
    `GET /funding/subscription/opencode-go` to return a matching, fresh
    subscription binding (plan, account, exact model, Extra Usage OFF, balance
-   fallback OFF, no-charge route VERIFIED and quota). This repository candidate's
-   Core does not expose this endpoint, so the current live path is blocked and
-   fails closed as `CORE_V3_SUBSCRIPTION_ADMISSION_REQUIRED` before creating a
-   Project or Request. Owner Console evidence and the separate go-ahead do not
-   bypass this Core admission requirement. **Do not add a cap, select billable
+   fallback OFF, no-charge route VERIFIED and quota). Even when this provider
+   observation is available, it does not authorize a specific Lead request.
+   Core currently has no read-only request-admission decision or atomic
+   create-and-admit boundary that binds the proposed objective, repository/base,
+   configuration, exact profile, policy acknowledgement, assessment authority,
+   provider/model/account and funding revision. Therefore the harness records
+   `request_admission: NOT_VERIFIED` and blocks before creating any Project,
+   profile, default, policy or Request. Owner Console evidence and the separate
+   go-ahead do not bypass either boundary. **Do not add a cap, select billable
    mode or bypass this check.**
 
 ## 4. Owner verification and authorization required after Core is ready
@@ -316,13 +320,12 @@ export FACTORY_REAL_PROVIDER_SUBSCRIPTION_EVIDENCE_FILE=/secure/owner-console-ev
 
 Preflight performs only Core and catalog `GET`s. It does not create a Project,
 Request, Campaign or provider session, and it does not prove inference access.
-If Core returns `CORE_V3_SUBSCRIPTION_ADMISSION_REQUIRED`, stop; the current
-candidate is blocked. Do not set the live flags or Owner go-ahead. Only remove
-`FACTORY_REAL_PROVIDER_DRY_RUN` after a future Core candidate implements the
-binding, the read-only preflight passes, and the Owner separately authorizes the
-specific run.
+The evidence records `request_admission: NOT_VERIFIED`; provider verification
+does not establish request-level authorization. Do not set live flags or Owner
+go-ahead. The current candidate is blocked even if the subscription endpoint
+returns a valid entitlement observation.
 
-### 6.3 Phase 1 — real MODEL assessment
+### 6.3 Phase 1 — BLOCKED real MODEL assessment
 
 ```sh
 export FACTORY_REAL_PROVIDER_UAT=1
@@ -335,15 +338,18 @@ export FACTORY_REAL_PROVIDER_OBJECTIVE='Fix apply_discount in src/pricing.rs so 
 ./scripts/real-provider-uat.sh assess
 ```
 
-This creates the Project, execution profile and Request **without**
-`authorized_micros`, then runs the real Lead assessment. It stops at
-`AWAITING_APPROVAL`, writes `plan.json` and `state.json`, and prints the exact
-plan hash. It does not approve or execute the plan. The Lead call is
-subscription-included usage.
+Do not run this command for live inference. The current CLI fails with
+`REQUEST_ADMISSION_NOT_VERIFIED` before any resource creation or provider call.
+It must remain blocked until Core owns and independently verifies an atomic
+request-admission operation that creates/adopts the Project/profile/policy and
+admits the exact request as one transaction, with no committed resources on
+refusal. No such route is implemented by this harness.
 
-If Core does not expose the V3 subscription verification, the run fails closed
-as `CORE_V3_SUBSCRIPTION_ADMISSION_REQUIRED` before creating a Project or
-Request; do not supply a cap.
+The fake-Core simulation in the contract tests covers downstream pause,
+replay, accounting and evidence code only. Its output uses the
+`FAKE_CORE_SIMULATION` prefix, evidence kind `FAKE_CORE_SIMULATION`, and
+`SIMULATED_*` results. It cannot be treated as request admission, runtime
+execution, live inference or acceptance evidence.
 
 Do not delete the evidence directory between phases. The state file prevents a
 second paid request under the same authorization.
@@ -428,6 +434,8 @@ authorization. Do not silently reclassify a subscription run as paid.
   Console observation time/validity and explicit limitation.
 - Core V3 `GET /funding/subscription/{provider}` binding, or the fail-closed
   `CORE_V3_SUBSCRIPTION_ADMISSION_REQUIRED` result.
+- Atomic request-admission authority; until it exists the evidence must record
+  `request_admission: NOT_VERIFIED` and create no resources.
 - Subscription entitlement, Extra Usage OFF, balance fallback OFF,
   no-charge route and quota/reset (or unknown).
 - Project, request, Action, Campaign, Run, Attempt and candidate identities.
@@ -466,6 +474,10 @@ implement Core V3. Required Core work, tracked separately:
 - `GET /funding/subscription/{provider}` returning the typed subscription binding
   consumed by the harness;
 - funding-aware request/assessment/approval APIs and authenticated quota resume;
+- a Core-owned atomic request-admission transaction binding principal, objective,
+  repository/base, config, exact profile, execution-policy acknowledgement,
+  assessment authority, provider/model/account/settings revision, subscription
+  evidence and idempotency; refusal must leave no committed resources;
 - durable `PAUSED / SUBSCRIPTION_QUOTA_EXHAUSTED` transitions preserving work;
 - Office subscription/quota/usage projections with no mandatory spend form;
 - no-charge enforcement and fail-closed paid-route selection.
