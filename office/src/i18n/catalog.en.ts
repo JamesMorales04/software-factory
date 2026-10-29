@@ -166,6 +166,11 @@ export const en = {
   "home.policy.enable": "Enable governed execution",
   "home.policy.enabling": "Enabling governed execution…",
   "home.validation.project": "Select a Project.",
+  "home.spend.label": "Maximum inference spend (USD)",
+  "home.spend.help":
+    "One explicit amount covers the Lead assessment, implementation and review. Core stops billable calls when it is exhausted and asks for an increase.",
+  "home.validation.authorization":
+    "Enter a positive USD amount for the inference envelope.",
   "home.validation.objective": "Describe the engineering outcome you want.",
   "home.request.error": "The request could not be submitted.",
   "home.request.endpointUnavailable":

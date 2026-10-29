@@ -172,6 +172,11 @@ export const es: Catalog = {
   "home.policy.enable": "Habilitar la ejecución gobernada",
   "home.policy.enabling": "Habilitando la ejecución gobernada…",
   "home.validation.project": "Selecciona un Proyecto.",
+  "home.spend.label": "Gasto máximo de inferencia (USD)",
+  "home.spend.help":
+    "Un importe explícito cubre la evaluación del Lead, la implementación y la revisión. Core detiene las llamadas facturables al agotarse y solicita un incremento.",
+  "home.validation.authorization":
+    "Introduce un importe positivo en USD para el sobre de inferencia.",
   "home.validation.objective":
     "Describe el resultado de ingeniería que deseas.",
   "home.request.error": "No se pudo enviar la solicitud.",

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Badge } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
-import { Checkbox, Select, Textarea } from "../components/ui/Field";
+import { Checkbox, Input, Select, Textarea } from "../components/ui/Field";
 import {
   EmptyState,
   LoadingState,
@@ -80,9 +80,11 @@ export function Home() {
   const [projectId, setProjectId] = useState("");
   const [profileId, setProfileId] = useState("");
   const [objective, setObjective] = useState("");
+  const [spendUsd, setSpendUsd] = useState("5.00");
   const [fieldErrors, setFieldErrors] = useState<{
     project?: string;
     objective?: string;
+    spend?: string;
   }>({});
   const [formError, setFormError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -234,17 +236,23 @@ export function Home() {
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     const trimmed = objective.trim();
-    const nextErrors: { project?: string; objective?: string } = {};
+    const nextErrors: { project?: string; objective?: string; spend?: string } = {};
+    const spendMicros = Math.round(Number(spendUsd) * 1_000_000);
     if (projectId === "") nextErrors.project = t("home.validation.project");
     if (trimmed === "") {
       nextErrors.objective = t("home.validation.objective");
     }
+    if (!Number.isFinite(spendMicros) || spendMicros <= 0) {
+      nextErrors.spend = t("home.validation.authorization");
+    }
     setFieldErrors(nextErrors);
-    if (nextErrors.project || nextErrors.objective) {
+    if (nextErrors.project || nextErrors.objective || nextErrors.spend) {
       if (nextErrors.project) {
         document.getElementById("home-project")?.focus();
-      } else {
+      } else if (nextErrors.objective) {
         document.getElementById("home-objective")?.focus();
+      } else {
+        document.getElementById("home-spend")?.focus();
       }
       return;
     }
@@ -260,6 +268,7 @@ export function Home() {
       ...(profileId === "" ? {} : { execution_profile_id: profileId }),
       mode: "REVIEW_PLAN",
       idempotency_key: requestKey.current,
+      authorized_micros: Math.round(Number(spendUsd) * 1_000_000),
     };
     await submitRequest(input);
   }
@@ -387,6 +396,26 @@ export function Home() {
                   help={t("home.objective.help")}
                   error={fieldErrors.objective}
                   rows={5}
+                  required
+                />
+
+                <Input
+                  id="home-spend"
+                  label={t("home.spend.label")}
+                  type="number"
+                  min="0.01"
+                  step="0.01"
+                  value={spendUsd}
+                  onChange={(event) => {
+                    setSpendUsd(event.target.value);
+                    setFieldErrors((current) => ({
+                      ...current,
+                      spend: undefined,
+                    }));
+                    resetRequestKey();
+                  }}
+                  help={t("home.spend.help")}
+                  error={fieldErrors.spend}
                   required
                 />
 

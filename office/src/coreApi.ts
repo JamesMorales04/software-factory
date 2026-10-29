@@ -1345,6 +1345,8 @@ export interface NewIntakeRequest {
   execution_profile_id?: string;
   mode: IntakeMode;
   idempotency_key: string;
+  /** Explicit operator monetary authorization for assessment and execution. */
+  authorized_micros?: number;
 }
 
 export interface ApproveIntakeRequest {

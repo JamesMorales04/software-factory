@@ -333,6 +333,7 @@ describe("Home", () => {
       execution_profile_id: "profile-1",
       mode: "REVIEW_PLAN",
       idempotency_key: "idem-test",
+      authorized_micros: 5_000_000,
     });
   });
 
@@ -409,6 +410,7 @@ describe("Home", () => {
       objective: "Add a CSV export endpoint.",
       mode: "REVIEW_PLAN",
       idempotency_key: "idem-test",
+      authorized_micros: 5_000_000,
     });
   });
 
@@ -548,6 +550,7 @@ describe("Home", () => {
       execution_profile_id: "profile-1",
       mode: "REVIEW_PLAN",
       idempotency_key: "idem-test",
+      authorized_micros: 5_000_000,
     });
   });
 });
