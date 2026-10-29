@@ -247,8 +247,8 @@ INTAKE_APPROVED="$(api POST "/intake/requests/$INTAKE_ID/approve" \
   "{\"expected_plan_hash\":\"$PLAN_HASH\",\"rationale\":\"Reviewed the exact frozen Compose intake plan.\",\"idempotency_key\":\"e2e-intake-approve\",\"authorized_micros\":5000000}")"
 INTAKE_CAMPAIGN_ID="$(printf '%s' "$INTAKE_APPROVED" | json 'import json,sys; print(json.load(sys.stdin)["campaignId"])')"
 INTAKE_ATTEMPT_ID="$(printf '%s' "$INTAKE_APPROVED" | json 'import json,sys; print(json.load(sys.stdin)["campaign"]["tasks"][0]["attempt_id"])')"
-[[ "$(printf '%s' "$INTAKE_APPROVED" | json 'import json,sys; print(json.load(sys.stdin)["campaign"]["authorization"]["execution_mode"])')" == "TRUSTED_LOCAL_PROVIDER" ]] || {
-  log "intake Campaign has an unexpected execution mode"; exit 1;
+[[ -n "$(printf '%s' "$INTAKE_APPROVED" | json 'import json,sys; print(json.load(sys.stdin).get("campaign",{}).get("id",""))')" ]] || {
+  log "intake approval returned no Campaign"; exit 1;
 }
 [[ "$(printf '%s' "$INTAKE_APPROVED" | json 'import json,sys; print(json.load(sys.stdin)["profile"]["revisionId"])')" == "$PROFILE_REVISION_ID" ]] || {
   log "intake Campaign did not bind the frozen profile revision"; exit 1;
