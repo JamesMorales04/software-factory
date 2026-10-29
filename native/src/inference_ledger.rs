@@ -98,9 +98,22 @@ pub struct AdapterBillingCoverage {
     pub request_overhead: bool,
 }
 
-pub fn adapter_billing_coverage(kind: &str) -> Option<AdapterBillingCoverage> {
-    match kind {
-        "opencode" | "codex" => Some(AdapterBillingCoverage {
+pub fn adapter_coverage_document(coverage: &AdapterBillingCoverage) -> String {
+    serde_json::json!({
+        "input": coverage.input,
+        "output": coverage.output,
+        "cachedInput": coverage.cached_input,
+        "reasoning": coverage.reasoning,
+        "tools": coverage.tools,
+        "retries": coverage.retries,
+        "requestOverhead": coverage.request_overhead,
+    })
+    .to_string()
+}
+
+pub fn adapter_billing_coverage(kind: &str, auth_mode: &str) -> Option<AdapterBillingCoverage> {
+    match (kind, auth_mode) {
+        ("opencode" | "codex", "api_key") => Some(AdapterBillingCoverage {
             input: true,
             output: true,
             cached_input: true,
@@ -148,6 +161,10 @@ pub struct InferencePricingQuote {
     pub provider: String,
     pub model: String,
     pub revision: i64,
+    pub provider_revision: i64,
+    pub auth_mode: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
     pub upper_bound_micros: UsdMicros,
     pub coverage_sha256: String,
     pub snapshot_json: String,

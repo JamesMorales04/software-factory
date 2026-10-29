@@ -419,18 +419,40 @@ impl Database {
         } else {
             None
         };
-        if input.estimated_input_tokens > remaining_input
-            || (ledger_envelope_id.is_none() && input.estimated_cost_micros > remaining_cost)
-            || remaining_input == 0
-            || (ledger_envelope_id.is_none() && remaining_cost == 0)
-        {
-            return Err(Error::Forbidden("model call budget is exhausted".into()));
-        }
-        let max_input = remaining_input;
-        let max_output = input.requested_output_tokens.min(remaining_output);
-        if max_output == 0 {
-            return Err(Error::Forbidden("model call budget is exhausted".into()));
-        }
+        let (max_input, max_output) = if let Some(quote) = &pricing_quote {
+            // V2 uses a per-request technical token bound, never cumulative
+            // lifetime role/scope allowances. The bound must fit the frozen
+            // quote envelope or the request is refused before any effect.
+            if input.estimated_input_tokens > input.policy.max_input_tokens
+                || input.requested_output_tokens > input.policy.max_output_tokens
+            {
+                return Err(Error::Forbidden(
+                    "model call request exceeds its technical policy".into(),
+                ));
+            }
+            if input.estimated_input_tokens > quote.input_tokens
+                || input.requested_output_tokens > quote.output_tokens
+            {
+                return Err(Error::Forbidden(
+                    "model call request exceeds its frozen token quote".into(),
+                ));
+            }
+            (input.estimated_input_tokens, input.requested_output_tokens)
+        } else {
+            if input.estimated_input_tokens > remaining_input
+                || input.estimated_cost_micros > remaining_cost
+                || remaining_input == 0
+                || remaining_cost == 0
+            {
+                return Err(Error::Forbidden("model call budget is exhausted".into()));
+            }
+            let max_input = remaining_input;
+            let max_output = input.requested_output_tokens.min(remaining_output);
+            if max_output == 0 {
+                return Err(Error::Forbidden("model call budget is exhausted".into()));
+            }
+            (max_input, max_output)
+        };
         let max_total = max_input.saturating_add(max_output);
         let max_cost = match &pricing_quote {
             Some(quote) => quote.upper_bound_micros,
@@ -1784,7 +1806,7 @@ mod tests {
         .envelope_id
     }
 
-    async fn quote(db: &Database) {
+    async fn quote_with(db: &Database, input_tokens: u64, output_tokens: u64) {
         sqlx::query::query(
             "INSERT INTO provider_settings
              (provider,kind,model,base_url,auth_mode,credential_ciphertext,credential_nonce,
@@ -1792,8 +1814,18 @@ mod tests {
               max_output_tokens,max_cost_micros,input_micros_per_million,
               output_micros_per_million,revision,updated_at)
              VALUES ('opencode-go','opencode','deepseek-v4.1-flash','http://127.0.0.1:9',
-                     'api_key','cipher','nonce','fingerprint',1,0,1,250,250,500,1000000,0,1,?1)",
+                     'api_key','cipher','nonce','fingerprint',1,0,1,?1,?2,?3,1000000,0,1,?4)
+             ON CONFLICT(provider) DO UPDATE SET
+               max_input_tokens=excluded.max_input_tokens,
+               max_output_tokens=excluded.max_output_tokens,
+               max_cost_micros=excluded.max_cost_micros,
+               input_micros_per_million=excluded.input_micros_per_million,
+               output_micros_per_million=excluded.output_micros_per_million,
+               revision=excluded.revision,updated_at=excluded.updated_at",
         )
+        .bind(i64::try_from(input_tokens).unwrap())
+        .bind(i64::try_from(output_tokens).unwrap())
+        .bind(i64::try_from(input_tokens + output_tokens).unwrap())
         .bind(Utc::now().to_rfc3339())
         .execute(&db.pool)
         .await
@@ -1807,6 +1839,10 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+
+    async fn quote(db: &Database) {
+        quote_with(db, 250, 250).await;
     }
 
     #[tokio::test]
@@ -1907,6 +1943,59 @@ mod tests {
                 .await,
             Err(Error::Forbidden(_))
         ));
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn v2_quote_token_envelope_bounds_the_request() {
+        let (path, db) = project_db("factory-model-call-token-quote").await;
+        quote_with(&db, 50, 25).await;
+        let scope = "evaluation-token-bound";
+        envelope_for(&db, scope).await;
+        let mut input = evaluation_input(scope);
+        input.estimated_input_tokens = 100;
+        assert!(matches!(
+            db.authorize_model_call(&input).await,
+            Err(Error::Forbidden(_))
+        ));
+        let mut fitting = evaluation_input(scope);
+        fitting.estimated_input_tokens = 40;
+        fitting.requested_output_tokens = 20;
+        assert!(db.authorize_model_call(&fitting).await.is_ok());
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn v2_ignores_historical_cumulative_token_usage() {
+        let (path, db) = project_db("factory-model-call-history").await;
+        quote(&db).await;
+        let scope = "evaluation-history";
+        envelope_for(&db, scope).await;
+        for digest in ["a".repeat(64), "b".repeat(64)] {
+            sqlx::query::query(
+                "INSERT INTO model_call_reservations
+                 (reservation_id,role,principal_id,project_id,objective_id,scope_id,provider,model,
+                  purpose,request_sha256,max_input_tokens,max_output_tokens,max_total_tokens,
+                  max_cost_micros,input_tokens,output_tokens,total_tokens,cost_micros,usage_known,
+                  state,expires_at_ms,created_at,updated_at)
+                 VALUES (?1,'EVALUATION','evaluator','project',?2,?2,'opencode-go',
+                         'deepseek-v4.1-flash','evaluate',?3,1000000,1000000,2000000,1000000,
+                         1000000,1000000,2000000,1000000,1,'SETTLED',1,'now','now')",
+            )
+            .bind(format!("history-{}", digest))
+            .bind(scope)
+            .bind(digest)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        }
+        assert!(
+            db.authorize_model_call(&evaluation_input(scope))
+                .await
+                .is_ok()
+        );
         db.close().await;
         let _ = std::fs::remove_file(path);
     }

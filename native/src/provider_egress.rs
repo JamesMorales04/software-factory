@@ -500,23 +500,12 @@ async fn handle(
                     return Ok(());
                 }
             }
-            if let Some(binder) = &config.turn_binder {
-                let Some((reservation_id, model, max_input_tokens, sequence)) = bound_turn else {
-                    write_status(&mut stream, 403, "provider turn was not authorized").await?;
-                    return Ok(());
-                };
-                let max_body_bytes = max_input_tokens
-                    .saturating_mul(4)
-                    .saturating_div(
-                        config
-                            .turn_policy
-                            .as_ref()
-                            .and_then(|policy| policy.lock().ok())
-                            .and_then(|policy| policy.as_ref().map(|turn| turn.max_requests))
-                            .unwrap_or(1)
-                            .max(1) as u64,
-                    )
-                    .min(MAX_REQUEST_BODY as u64);
+            // UTF-8 bytes are a conservative upper bound on tokens for
+            // OpenAI-compatible tokenizers. Do not multiply by four: that is
+            // both non-conservative and not a per-request bound. This check is
+            // the external-effect boundary and runs before any binder or send.
+            if let Some((_, _, max_input_tokens, _)) = &bound_turn {
+                let max_body_bytes = (*max_input_tokens).min(MAX_REQUEST_BODY as u64);
                 if body.len() as u64 > max_body_bytes {
                     if let Some(policy) = &config.turn_policy
                         && let Ok(mut guard) = policy.lock()
@@ -527,6 +516,12 @@ async fn handle(
                     write_status(&mut stream, 413, "request exceeds input budget").await?;
                     return Ok(());
                 }
+            }
+            if let Some(binder) = &config.turn_binder {
+                let Some((reservation_id, model, _max_input_tokens, sequence)) = bound_turn else {
+                    write_status(&mut stream, 403, "provider turn was not authorized").await?;
+                    return Ok(());
+                };
                 let digest = sha256_hex(&body);
                 if let Err(error) = binder
                     .bind(&reservation_id, &digest, &model, path, body.len(), sequence)

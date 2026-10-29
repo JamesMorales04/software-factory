@@ -296,9 +296,9 @@ impl Database {
         let requirement =
             super::inference_ledger::campaign_requirement_in_tx(&mut transaction, &campaign_id)
                 .await?;
-        let ledger_turn_cost_bound = match requirement {
-            crate::inference_ledger::CampaignInferenceRequirement::EnvelopeBound { .. } => {
-                let quote = super::inference_ledger::latest_pricing_quote_in_tx(
+        let ledger_quote = match requirement {
+            crate::inference_ledger::CampaignInferenceRequirement::EnvelopeBound { .. } => Some(
+                super::inference_ledger::latest_pricing_quote_in_tx(
                     &mut transaction,
                     &provider,
                     &model,
@@ -308,22 +308,26 @@ impl Database {
                     Error::Forbidden(
                         "inference-bound provider turn has no enforceable pricing quote".into(),
                     )
-                })?;
-                Some(
-                    quote
-                        .upper_bound_micros
-                        .get()
-                        .checked_mul(u64::from(max_requests))
-                        .ok_or(Error::Validation(
-                            "provider turn cost bound overflow".into(),
-                        ))?,
-                )
-            }
+                })?,
+            ),
             crate::inference_ledger::CampaignInferenceRequirement::LegacyV1 => None,
         };
-        // V2 has no cumulative per-role token/cost ceiling. The per-request
-        // envelope hold is the monetary authority; provider settings bound one
-        // request, and the frozen operation limits bound its timeout.
+        let ledger_turn_cost_bound = ledger_quote
+            .as_ref()
+            .map(|quote| {
+                quote
+                    .upper_bound_micros
+                    .get()
+                    .checked_mul(u64::from(max_requests))
+                    .ok_or(Error::Validation(
+                        "provider turn cost bound overflow".into(),
+                    ))
+            })
+            .transpose()?;
+        // V2 has no cumulative per-role token/cost ceiling. The frozen quote
+        // bounds one request; provider settings bound its context and the
+        // frozen operation limits bound its timeout. V1 keeps its historical
+        // accounting path and caps.
         let (
             max_input,
             max_output,
@@ -336,7 +340,60 @@ impl Database {
             reserved_input,
             reserved_output,
             reserved_cost,
-        ) = if authorization_version == 1 {
+        ) = if authorization_version == 2 {
+            let Some(quote) = ledger_quote.as_ref() else {
+                super::lead::record_blocking_progress_hold_in_tx(
+                    &mut transaction,
+                    &attempt_id,
+                    "BLOCKED",
+                    "V2 provider turn authorization requires a bound inference envelope",
+                )
+                .await?;
+                transaction.commit().await?;
+                return Err(Error::Unavailable(
+                    "V2 provider turn authorization requires a bound inference envelope".into(),
+                ));
+            };
+            let max_input = i64::try_from(quote.input_tokens)
+                .map_err(|_| Error::Invalid("provider turn input quote"))?;
+            let max_output = i64::try_from(quote.output_tokens)
+                .map_err(|_| Error::Invalid("provider turn output quote"))?;
+            let max_cost = i64::try_from(quote.upper_bound_micros.get())
+                .map_err(|_| Error::Invalid("provider turn cost quote"))?;
+            let operation_limits: Option<String> = sqlx::query_scalar::query_scalar(
+                "SELECT ep.operation_limits_json
+                 FROM campaigns c
+                 JOIN campaign_authorizations ca ON ca.campaign_id=c.id
+                 JOIN execution_policies ep ON ep.policy_id=ca.policy_id
+                 WHERE c.id=?1",
+            )
+            .bind(&campaign_id)
+            .fetch_optional(&mut *transaction)
+            .await?;
+            let Some(operation_limits) = operation_limits else {
+                return Err(Error::Unavailable(
+                    "V2 provider turn has no frozen operation limits".into(),
+                ));
+            };
+            let operation_limits: crate::execution_policy::OperationLimits =
+                serde_json::from_str(&operation_limits).map_err(|_| {
+                    Error::Invalid("V2 provider turn operation limits are malformed")
+                })?;
+            let deadline_secs = i64::from(operation_limits.model_request_timeout_secs.get());
+            (
+                max_input,
+                max_output,
+                max_cost,
+                deadline_secs,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            )
+        } else if authorization_version == 1 {
             let max_input: Option<i64> = lease.try_get("max_input_tokens")?;
             let max_output: Option<i64> = lease.try_get("max_output_tokens")?;
             let max_cost: Option<i64> = lease.try_get("max_cost_micros")?;
@@ -352,20 +409,20 @@ impl Database {
                 };
             let used: (i64, i64, i64, i64) = sqlx::query_as::query_as(
                 "SELECT COALESCE(SUM(ps.input_tokens),0),COALESCE(SUM(ps.output_tokens),0),
-                            COALESCE(SUM(ps.total_tokens),0),COALESCE(SUM(ps.cost_micros),0)
-                     FROM provider_sessions ps JOIN attempts a ON a.id=ps.attempt_id
-                     JOIN runs r ON r.id=a.run_id WHERE r.campaign_id=?1",
+                        COALESCE(SUM(ps.total_tokens),0),COALESCE(SUM(ps.cost_micros),0)
+                 FROM provider_sessions ps JOIN attempts a ON a.id=ps.attempt_id
+                 JOIN runs r ON r.id=a.run_id WHERE r.campaign_id=?1",
             )
             .bind(&campaign_id)
             .fetch_one(&mut *transaction)
             .await?;
             let reserved: (i64, i64, i64) = sqlx::query_as::query_as(
                 "SELECT COALESCE(SUM(ptr.max_input_tokens),0),
-                            COALESCE(SUM(ptr.max_output_tokens),0),
-                            COALESCE(SUM(ptr.max_cost_micros),0)
-                     FROM provider_turn_reservations ptr JOIN attempts a ON a.id=ptr.attempt_id
-                     JOIN runs r ON r.id=a.run_id
-                     WHERE r.campaign_id=?1 AND ptr.state='RESERVED'",
+                        COALESCE(SUM(ptr.max_output_tokens),0),
+                        COALESCE(SUM(ptr.max_cost_micros),0)
+                 FROM provider_turn_reservations ptr JOIN attempts a ON a.id=ptr.attempt_id
+                 JOIN runs r ON r.id=a.run_id
+                 WHERE r.campaign_id=?1 AND ptr.state='RESERVED'",
             )
             .bind(&campaign_id)
             .fetch_one(&mut *transaction)
@@ -382,72 +439,6 @@ impl Database {
                 reserved.0,
                 reserved.1,
                 reserved.2,
-            )
-        } else if authorization_version == 2 {
-            if !matches!(
-                requirement,
-                crate::inference_ledger::CampaignInferenceRequirement::EnvelopeBound { .. }
-            ) {
-                super::lead::record_blocking_progress_hold_in_tx(
-                    &mut transaction,
-                    &attempt_id,
-                    "BLOCKED",
-                    "V2 provider turn authorization requires a bound inference envelope",
-                )
-                .await?;
-                transaction.commit().await?;
-                return Err(Error::Unavailable(
-                    "V2 provider turn authorization requires a bound inference envelope".into(),
-                ));
-            }
-            let settings: Option<(i64, i64)> = sqlx::query_as::query_as(
-                    "SELECT max_input_tokens,max_output_tokens FROM provider_settings WHERE provider=?1",
-                )
-                .bind(&provider)
-                .fetch_optional(&mut *transaction)
-                .await?;
-            let Some((max_input, max_output)) = settings else {
-                return Err(Error::Unavailable(
-                    "V2 provider turn has no provider settings for its request bounds".into(),
-                ));
-            };
-            let operation_limits: Option<String> = sqlx::query_scalar::query_scalar(
-                "SELECT ep.operation_limits_json
-                     FROM campaigns c
-                     JOIN campaign_authorizations ca ON ca.campaign_id=c.id
-                     JOIN execution_policies ep ON ep.policy_id=ca.policy_id
-                     WHERE c.id=?1",
-            )
-            .bind(&campaign_id)
-            .fetch_optional(&mut *transaction)
-            .await?;
-            let Some(operation_limits) = operation_limits else {
-                return Err(Error::Unavailable(
-                    "V2 provider turn has no frozen operation limits".into(),
-                ));
-            };
-            let operation_limits: crate::execution_policy::OperationLimits =
-                serde_json::from_str(&operation_limits).map_err(|_| {
-                    Error::Invalid("V2 provider turn operation limits are malformed")
-                })?;
-            let deadline_secs = i64::from(operation_limits.model_request_timeout_secs.get());
-            let max_cost = match ledger_turn_cost_bound {
-                Some(bound) => i64::try_from(bound)
-                    .map_err(|_| Error::Invalid("provider turn ledger bound"))?,
-                None => 0,
-            };
-            (
-                max_input,
-                max_output,
-                max_cost,
-                deadline_secs,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
             )
         } else {
             return Err(Error::Invalid("unknown authorization policy version"));
@@ -466,11 +457,29 @@ impl Database {
         let remaining_cost = max_cost
             .saturating_sub(used_cost)
             .saturating_sub(reserved_cost);
-        let grant_output = i64::try_from(requested_output_tokens)
-            .map_err(|_| Error::Invalid("provider turn output"))?
-            .min(remaining_output)
-            .min(remaining_total);
-        if remaining_input <= 0
+        let (reservation_input, grant_output, reservation_total) =
+            if let Some(quote) = &ledger_quote {
+                // V2 grants only the frozen per-request token envelope; it does
+                // not subtract lifetime campaign token allowances.
+                let input = i64::try_from(quote.input_tokens)
+                    .map_err(|_| Error::Invalid("provider turn input quote"))?;
+                let output = i64::try_from(quote.output_tokens)
+                    .map_err(|_| Error::Invalid("provider turn output quote"))?;
+                let grant = i64::try_from(requested_output_tokens)
+                    .map_err(|_| Error::Invalid("provider turn output"))?
+                    .min(output);
+                let total = input
+                    .checked_add(grant)
+                    .ok_or(Error::Invalid("provider turn total quote"))?;
+                (input, grant, total)
+            } else {
+                let grant = i64::try_from(requested_output_tokens)
+                    .map_err(|_| Error::Invalid("provider turn output"))?
+                    .min(remaining_output)
+                    .min(remaining_total);
+                (remaining_input, grant, remaining_total)
+            };
+        if reservation_input <= 0
             || grant_output <= 0
             || (ledger_turn_cost_bound.is_none() && remaining_cost <= 0)
         {
@@ -500,9 +509,9 @@ impl Database {
         .bind(generation)
         .bind(&provider)
         .bind(&model)
-        .bind(remaining_input)
+        .bind(reservation_input)
         .bind(grant_output)
-        .bind(remaining_total)
+        .bind(reservation_total)
         .bind(reservation_cost)
         .bind(request_sha256)
         .bind(expires_at_ms)
@@ -525,11 +534,11 @@ impl Database {
             generation,
             provider,
             model,
-            max_input_tokens: u64::try_from(remaining_input)
+            max_input_tokens: u64::try_from(reservation_input)
                 .map_err(|_| Error::Invalid("provider turn input"))?,
             max_output_tokens: u64::try_from(grant_output)
                 .map_err(|_| Error::Invalid("provider turn output"))?,
-            max_total_tokens: u64::try_from(remaining_total)
+            max_total_tokens: u64::try_from(reservation_total)
                 .map_err(|_| Error::Invalid("provider turn total"))?,
             max_cost_micros: u64::try_from(reservation_cost)
                 .map_err(|_| Error::Invalid("provider turn cost"))?,
@@ -565,7 +574,7 @@ impl Database {
         let row = sqlx::query::query(
             "SELECT ptr.session_record_id,ptr.attempt_id,ptr.generation,ptr.provider,ptr.model,
                     ptr.state,ptr.actual_request_sha256,ptr.expires_at_ms,ptr.max_requests,
-                    ptr.requests_bound,
+                    ptr.requests_bound,ptr.max_input_tokens,ptr.max_output_tokens,
                     ps.worker_id,ps.state AS session_state,
                     l.worker_id AS lease_worker,l.generation AS lease_generation,
                     l.expires_at_ms AS lease_expires, a.status AS attempt_status,
@@ -594,6 +603,8 @@ impl Database {
         let expires_at_ms: i64 = row.try_get("expires_at_ms")?;
         let max_requests: i64 = row.try_get("max_requests")?;
         let requests_bound: i64 = row.try_get("requests_bound")?;
+        let reservation_input_tokens: i64 = row.try_get("max_input_tokens")?;
+        let reservation_output_tokens: i64 = row.try_get("max_output_tokens")?;
         let session_worker: String = row.try_get("worker_id")?;
         let session_state: String = row.try_get("session_state")?;
         let lease_worker: Option<String> = row.try_get("lease_worker")?;
@@ -693,6 +704,15 @@ impl Database {
                     "inference-bound provider request has no enforceable pricing quote".into(),
                 )
             })?;
+            if u64::try_from(reservation_input_tokens)
+                .map_or(true, |value| value > quote.input_tokens)
+                || u64::try_from(reservation_output_tokens)
+                    .map_or(true, |value| value > quote.output_tokens)
+            {
+                return Err(Error::Forbidden(
+                    "provider request exceeds its frozen token quote".into(),
+                ));
+            }
             let (authorization_revision, scope_sha256) =
                 super::inference_ledger::envelope_authorization_context_in_tx(
                     &mut transaction,
@@ -3051,6 +3071,34 @@ mod ledger_link_tests {
                 .await
                 .unwrap();
         assert_eq!(count, 0);
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn v2_provider_turn_uses_quote_token_envelope_not_cumulative_campaign_tokens() {
+        let (_path, db, session) = active_turn_fixture(10).await;
+        // Provider settings author a larger per-request quote than the legacy
+        // campaign token allowance; V2 must grant the quote envelope only.
+        setup_turn_envelope(
+            &db,
+            "opencode",
+            "deepseek-v4.1-flash",
+            "request-token-quote",
+            200,
+        )
+        .await;
+        let quote = db
+            .inference_pricing_quote("opencode", "deepseek-v4.1-flash")
+            .await
+            .unwrap();
+        assert_eq!(quote.upper_bound_micros.get(), 200);
+        let turn = db
+            .authorize_provider_turn(&session, "worker", 1, 500, &"a".repeat(64), 1)
+            .await
+            .unwrap();
+        assert_eq!(turn.max_input_tokens, 100);
+        assert_eq!(turn.max_output_tokens, 100);
+        assert_eq!(turn.max_total_tokens, 200);
         db.close().await;
     }
 
