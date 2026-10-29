@@ -3,6 +3,7 @@
 import copy
 import json
 import os
+import runpy
 import subprocess
 import tempfile
 import unittest
@@ -133,7 +134,7 @@ class ComposePolicyTests(unittest.TestCase):
             lambda c: c["services"]["worker"].__setitem__(
                 "ports", [{"host_ip": "127.0.0.1", "published": "9999", "target": 9999}]
             ),
-            "only core may publish a port",
+            "published ports must match mode",
         )
 
     def test_rejects_privileged_runtime(self):
@@ -170,6 +171,256 @@ class ComposePolicyTests(unittest.TestCase):
             )
 
         self.assert_rejected(mutate, "host bind")
+
+    def test_rejects_office_socket_volume_on_unapproved_services(self):
+        for name in ("supervisor", "worker", "verifier", "reviewer", "runtime"):
+            with self.subTest(service=name):
+                def mount_protected_volume(config):
+                    config["volumes"]["factory-office-socket"] = {}
+                    config["services"][name]["volumes"].append(
+                        {
+                            "type": "volume",
+                            "source": "factory-office-socket",
+                            "target": "/office-socket",
+                            "read_only": True,
+                        }
+                    )
+
+                self.assert_rejected(
+                    mount_protected_volume,
+                    "Office socket volume is restricted to init, core, and tailscale",
+                )
+
+    def test_rejects_named_alias_to_office_socket_volume(self):
+        def mount_named_alias(config):
+            config["volumes"]["shared-bits"] = {
+                "name": "software-factory_factory-office-socket"
+            }
+            config["services"]["worker"]["volumes"].append(
+                {
+                    "type": "volume",
+                    "source": "shared-bits",
+                    "target": "/office-socket",
+                    "read_only": True,
+                }
+            )
+
+        self.assert_rejected(
+            mount_named_alias,
+            "Office socket volume is restricted to init, core, and tailscale",
+        )
+
+    def test_rejects_external_named_alias_to_office_socket_volume(self):
+        def mount_external_alias(config):
+            config["volumes"]["external-office"] = {
+                "external": True,
+                "name": "software-factory_factory-office-socket",
+            }
+            config["services"]["worker"]["volumes"].append(
+                {
+                    "type": "volume",
+                    "source": "external-office",
+                    "target": "/office-socket",
+                    "read_only": True,
+                }
+            )
+
+        self.assert_rejected(
+            mount_external_alias,
+            "Office socket volume is restricted to init, core, and tailscale",
+        )
+
+    def test_rejects_implicit_external_office_socket_volume_on_worker(self):
+        for source_name in (
+            "factory-office-socket",
+            "software-factory_factory-office-socket",
+        ):
+            with self.subTest(source=source_name):
+                def mount_implicit_external_socket(config):
+                    config["volumes"][source_name] = {"external": True}
+                    config["services"]["worker"]["volumes"].append(
+                        {
+                            "type": "volume",
+                            "source": source_name,
+                            "target": "/office-socket",
+                            "read_only": True,
+                        }
+                    )
+
+                self.assert_rejected(
+                    mount_implicit_external_socket,
+                    "Office socket volume is restricted to init, core, and tailscale",
+                )
+
+
+    def test_tailscale_serve_config_is_private_https_only(self):
+        if "tailscale" not in base_config()["services"]:
+            self.skipTest("optional Tailscale overlay is not present in this config")
+        serve_path = HERE.parents[1] / "deploy" / "tailscale" / "serve.json"
+        with serve_path.open(encoding="utf-8") as handle:
+            serve = json.load(handle)
+        self.assertEqual(serve["TCP"], {"443": {"HTTPS": True}})
+        self.assertEqual(
+            serve["Web"]["${TS_CERT_DOMAIN}:443"]["Handlers"]["/"],
+            {"Proxy": "http://core:8768"},
+        )
+        self.assertEqual(serve["AllowFunnel"], {"${TS_CERT_DOMAIN}:443": False})
+        self.assertNotIn("Funnel", serve)
+        checker = runpy.run_path(str(CHECKER))
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
+            serve["Funnel"] = {"443": True}
+            json.dump(serve, handle)
+            serve_path = Path(handle.name)
+        try:
+            errors = checker["tailscale_serve_config_errors"](serve_path)
+        finally:
+            serve_path.unlink()
+        self.assertIn("tailscale: Funnel must be explicitly disabled", errors)
+
+    def test_rejects_non_loopback_office_publication_in_tailscale_mode(self):
+        if "tailscale" not in base_config()["services"]:
+            self.skipTest("optional Tailscale overlay is not present in this config")
+        self.assert_rejected(
+            lambda c: c["services"]["core"]["ports"][0].__setitem__("host_ip", "0.0.0.0"),
+            "published ports must bind 127.0.0.1",
+        )
+
+    def test_rejects_unsafe_optional_tailscale_configuration(self):
+        if "tailscale" not in base_config()["services"]:
+            self.skipTest("optional Tailscale overlay is not present in this config")
+        self.assert_rejected(
+            lambda c: c["services"]["tailscale"].__setitem__("cap_add", ["NET_ADMIN"]),
+            "all capabilities must be dropped",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["tailscale"]["environment"].__setitem__("TS_USERSPACE", "false"),
+            "userspace networking is required",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["tailscale"]["environment"].__setitem__("TS_AUTHKEY", "unexpected"),
+            "unsupported environment variable(s)",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["tailscale"]["environment"].__setitem__("TS_EXTRA_ARGS", "--ssh"),
+            "unsupported environment variable(s)",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["tailscale"]["environment"].__setitem__("TS_STATE_DIR", "/tmp/state"),
+            "persistent node state path is required",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["tailscale"]["environment"].__setitem__(
+                "TS_ENABLE_HEALTH_CHECK", "false"
+            ),
+            "sanitized health endpoint is required",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["tailscale"]["environment"].__setitem__(
+                "TS_LOCAL_ADDR_PORT", "127.0.0.1:9003"
+            ),
+            "health endpoint must use the private container port",
+        )
+        def move_state_volume(config):
+            state_volume = next(
+                volume
+                for volume in config["services"]["tailscale"]["volumes"]
+                if volume.get("source") == "factory-tailscale-state"
+            )
+            state_volume["target"] = "/tmp/state"
+
+        self.assert_rejected(
+            move_state_volume,
+            "node state must use its persistent writable volume",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["tailscale"].__setitem__(
+                "ports",
+                [{"host_ip": "0.0.0.0", "published": "443", "target": 443}],
+            ),
+            "device and published-port grants are forbidden",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["tailscale"].__setitem__("networks", {"factory-control": {}}),
+            "must use only the isolated Office and uplink networks",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["tailscale"]["volumes"].append(
+                {
+                    "type": "volume",
+                    "source": "factory-config-core",
+                    "target": "/stolen-core-config",
+                    "read_only": True,
+                }
+            ),
+            "mounts must be limited to persistent state and read-only Serve config",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["core"]["environment"].__setitem__("FACTORY_TRUSTED_ORIGINS", "https://*.ts.net"),
+            "one exact HTTPS MagicDNS origin",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["core"]["environment"].__setitem__(
+                "FACTORY_TAILSCALE_ORIGIN", "https://other-host.tail4a7adf.ts.net"
+            ),
+            "trusted and status origins must match",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["core"]["environment"].__setitem__(
+                "FACTORY_OFFICE_ACCESS_BIND", "0.0.0.0:8765"
+            ),
+            "restricted Office listener",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["supervisor"]
+            .setdefault("networks", {})
+            .__setitem__("factory-office-private", {}),
+            "only Core and Tailscale may be members",
+        )
+
+    def test_rejects_tailscale_route_proxy_and_feature_environment(self):
+        if "tailscale" not in base_config()["services"]:
+            self.skipTest("optional Tailscale overlay is not present in this config")
+        for name, value in (
+            ("TS_ROUTES", "192.168.0.0/16"),
+            ("TS_DEST_IP", "172.20.0.10"),
+            ("TS_EXPERIMENTAL_DEST_DNS_NAME", "core"),
+            ("TS_SOCKS5_SERVER", ":1055"),
+            ("TS_OUTBOUND_HTTP_PROXY_LISTEN", ":8080"),
+            ("TS_KUBE_SECRET", "factory"),
+        ):
+            with self.subTest(environment_key=name):
+                self.assert_rejected(
+                    lambda c, key=name, item=value: c["services"]["tailscale"][
+                        "environment"
+                    ].__setitem__(key, item),
+                    "unsupported environment variable(s)",
+                )
+
+    def test_rejects_tailscale_command_dns_and_network_overrides(self):
+        if "tailscale" not in base_config()["services"]:
+            self.skipTest("optional Tailscale overlay is not present in this config")
+        for name, value in (
+            ("command", ["tailscale", "funnel", "443"]),
+            ("entrypoint", ["/bin/sh", "-c"]),
+            ("extra_hosts", ["core:203.0.113.9"]),
+            ("dns", ["203.0.113.53"]),
+            ("dns_search", ["attacker.invalid"]),
+            ("links", ["core:office"]),
+            ("network_mode", "service:core"),
+        ):
+            with self.subTest(override=name):
+                self.assert_rejected(
+                    lambda c, key=name, item=value: c["services"]["tailscale"].__setitem__(
+                        key, item
+                    ),
+                    f"{name} overrides are forbidden",
+                )
+        self.assert_rejected(
+            lambda c: c["services"]["tailscale"]["networks"].__setitem__(
+                "factory-office-private", {"aliases": ["core"]}
+            ),
+            "network aliases and address overrides are forbidden",
+        )
 
 
 if __name__ == "__main__":

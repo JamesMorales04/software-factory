@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "record": "personal-access-office-socket-volume-policy-author-run",
+  "base_sha": "715349f80df8c8da9b56a4880bb6e3b056c3caa2",
+  "policy_code_sha": "a1d53d9214375bf37c01b2fe42118e888220d93f",
+  "date": "2026-10-29",
+  "result": "PASS (author-run static policy and negative regression checks; runtime Tailscale/Serve behavior NOT_TESTED in this record)",
+  "environment": {
+    "podman": "6.1.4",
+    "compose_provider": "podman-compose 1.6.0"
+  },
+  "compose_policy": {
+    "base": {
+      "config": "podman compose -f compose.yaml config",
+      "checker": "PASS",
+      "tests": "18 passed, 5 skipped"
+    },
+    "tailscale_overlay": {
+      "config": "FACTORY_TRUSTED_ORIGINS=https://factory-office.example.ts.net podman compose -f compose.yaml -f compose.tailscale.yaml config",
+      "checker": "PASS",
+      "tests": "23 passed"
+    },
+    "normalization_note": "This host's podman-compose 1.6.0 does not support config --format json. Its resolved YAML was normalized to the checker's JSON input shape (volume, network, port, memory-limit fields) before running the repository checker and tests. The canonical GitHub docker-compose --format json job was not run locally."
+  },
+  "regressions": [
+    "reject Office socket volume mounts by Supervisor, Worker, verifier, reviewer and runtime",
+    "reject named and external aliases resolving to the protected physical volume",
+    "reject implicit external volume source keys factory-office-socket and software-factory_factory-office-socket",
+    "base configuration tests declare the protected volume so rejection proves the allowlist guard rather than an undeclared-volume failure"
+  ],
+  "git_diff_check": "PASS",
+  "podman_runtime_test": "NOT_RUN (this split changes static policy and policy fixtures only; it does not change runtime Compose topology)",
+  "remote_tailscale_serve": "NOT_TESTED by this policy-only candidate; historical TCP Serve evidence remains documented separately and is not new acceptance",
+  "security_claims": {
+    "sec_01": false,
+    "paid_inference": false,
+    "credentials_recorded": false
+  }
+}

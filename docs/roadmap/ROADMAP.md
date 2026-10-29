@@ -368,6 +368,7 @@ Decision: `approved`
 ### Capabilities
 
 - CAP-045 — Container-native Compose installation (approved, in_progress)
+- CAP-053 — Private Tailscale Office access (approved, in_progress)
 
 ### Deliverables
 

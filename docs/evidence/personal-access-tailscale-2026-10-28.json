@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "record": "personal-access-tailscale-author-run",
+  "implementation_sha": "b405908ed82fb31b53809f790fef46c8a3e4233f",
+  "date": "2026-10-28",
+  "environment": {
+    "host_os": "CachyOS",
+    "kernel": "7.3.0-3-cachyos",
+    "podman": "6.1.4 rootless",
+    "compose_provider": "podman-compose 1.6.0",
+    "tailscale_image": "docker.io/tailscale/tailscale@sha256:2667499ed87ae29218f292556ba062918402dd5e92e93637af14867e4df12dd3",
+    "tailscale_version": "1.102.4",
+    "networking": "userspace, no host networking, no privileged mode, no host Podman socket",
+    "origin": "one exact https://factory-office.<tailnet>.ts.net origin"
+  },
+  "result": "PASS (author-run authenticated tailnet HTTPS and restricted-boundary evidence; mobile-data UAT, independent acceptance and deployment are not tested)",
+  "status": "author_run",
+  "paid_inference": false,
+  "funnel": false,
+  "checks": [
+    {
+      "name": "deterministic control-route denial",
+      "pass": true,
+      "detail": "Core test proves Office assets and the explicit Office allowlist register, while Worker, Supervisor, reviewer, verifier, Quality Gate control and unknown routes return 404 with and without role credentials"
+    },
+    {
+      "name": "Compose policy and negative policy tests",
+      "pass": true,
+      "detail": "base and Tailscale overlay policy checks pass; 19 policy tests cover image pinning, capabilities, devices, host ports, networks, Serve config, Funnel and origin binding"
+    },
+    {
+      "name": "real rootless Podman overlay",
+      "pass": true,
+      "detail": "pinned Tailscale container started with userspace networking, read-only root, all capabilities dropped, no host port and only the two dedicated networks; Core retained its loopback-only publication"
+    },
+    {
+      "name": "tailnet identity persistence",
+      "pass": true,
+      "detail": "the enrolled node and Serve configuration survived a forced container recreation with the persistent state volume; the node remained the same tailnet identity"
+    },
+    {
+      "name": "authenticated tailnet HTTPS",
+      "pass": true,
+      "detail": "Office HTML, health, setup status and auth session returned 200 over the enrolled HTTPS origin with normal TLS verification; the request traversed the real Tailscale userspace path from a separate test container through a temporary test-only SOCKS listener that is not present in the committed overlay"
+    },
+    {
+      "name": "restricted boundary over HTTPS",
+      "pass": true,
+      "detail": "/worker, /supervisor, /review, /quality/receipts, /quality/pending, /provider/turn_reservations and /actions/{id}/classify returned 404 under both /core-api-prefixed and root URL forms, including encoded, duplicate-slash and dot-segment variants"
+    },
+    {
+      "name": "Host and Origin validation",
+      "pass": true,
+      "detail": "forged Host returned 400; untrusted Origin returned 403; missing Origin on a state-changing request returned 403; the same checks were repeated directly against the restricted Core listener on the private network"
+    },
+    {
+      "name": "Secure session cookies over Serve",
+      "pass": true,
+      "detail": "HTTPS bootstrap returned HttpOnly SameSite=Strict Path=/ Secure session and SameSite=Strict Secure CSRF cookies; authenticated Office projections returned 200 and an unauthenticated project request returned 401"
+    },
+    {
+      "name": "CSRF and logout over Serve",
+      "pass": true,
+      "detail": "missing and wrong CSRF returned 403; a correct CSRF logout returned 204; the revoked cookie returned 401 for a protected route"
+    },
+    {
+      "name": "tailnet identity is not Factory authorization",
+      "pass": true,
+      "detail": "a tailnet-connected request without a Factory session returned 401; the Tailscale identity itself grants no operator authority"
+    }
+  ],
+  "not_tested": [
+    "mobile-data access from the owner's phone (USER_PENDING)",
+    "independent security review",
+    "paid inference",
+    "deployment",
+    "Windows",
+    "SEC-01 isolation"
+  ],
+  "security_notes": [
+    "The committed Tailscale overlay does not enable a SOCKS proxy; the proxy was a temporary test-only listener used to originate the HTTPS check from a separate container.",
+    "No reusable Tailscale auth key, session cookie, bootstrap code or Core credential is recorded in this evidence.",
+    "The node has network access only to Core's restricted Office listener; Factory sessions remain the authorization authority."
+  ],
+  "rebase_provenance": {
+    "tested_original_sha": "e17eb80649a910089c98c6fbf87826ed265de5bc",
+    "rebased_sha": "b405908ed82fb31b53809f790fef46c8a3e4233f",
+    "base_sha": "bda12f0a3d6eda1a75715b917c03a30e807db0e6",
+    "content_equivalent": true
+  }
+}
