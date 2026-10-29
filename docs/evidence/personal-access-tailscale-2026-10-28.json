@@ -80,7 +80,7 @@
   "security_notes": [
     "The committed Tailscale overlay does not enable a SOCKS proxy; the proxy was a temporary test-only listener used to originate the HTTPS check from a separate container.",
     "No reusable Tailscale auth key, session cookie, bootstrap code or Core credential is recorded in this evidence.",
-    "The node can reach only Core's restricted Office listener: the full control listener binds the core-control and core-egress aliases and has no listener on the Office network. The original author-run did not test direct port 8765 reachability; that negative is recorded in the 2026-10-29 repair evidence."
+    "Historical remote Serve/HTTPS checks at candidate e17eb80 used the prior TCP Office listener and are not evidence for the current Unix-socket path. That author-run did not test direct port 8765 reachability; the 2026-10-29 local Podman negative is recorded in personal-access-access-repairs-2026-10-29.json."
   ],
   "rebase_provenance": {
     "tested_original_sha": "e17eb80649a910089c98c6fbf87826ed265de5bc",
@@ -94,7 +94,7 @@
       "field": "security_notes",
       "earlier_claim": "The node has network access only to Core's restricted Office listener",
       "reason": "Core bound the full API on 0.0.0.0:8765, which was also reachable on the shared Office network interface. Serve's configured target did not restrict raw network reachability.",
-      "repair": "The full control listener now binds only core-control:8765 and core-egress:8765; the Office listener binds only core-office:8768. A real Podman probe from the Office network records 8765 unreachable.",
+      "repair": "The full control listener binds only core-control:8765 and core-egress:8765 and shares no network with Tailscale. The Office API is served over a dedicated Unix socket volume. The local Podman probe records Core addresses unreachable from the Tailscale network and the socket reachable through its read-only mount.",
       "evidence": "docs/evidence/personal-access-access-repairs-2026-10-29.json"
     }
   ]

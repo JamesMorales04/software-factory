@@ -83,16 +83,18 @@ contains no credentials.
 - A tailnet member still needs an independent Factory device session. Tailnet
   membership does not enroll or authorize an Office user.
 - This container/network topology is packaging, not a new isolation claim.
-- Rootless Podman networking, node identity persistence across restart, Serve
-  HTTPS, Secure session cookies, forged Host/Origin rejection and negative
-  control-route reachability passed in an author-run at candidate `e17eb80`.
-  That run did not test direct reachability of the full Core port 8765 from the
+- The earlier author-run at candidate `e17eb80` exercised rootless Podman,
+  node-state persistence, Serve HTTPS to the then-TCP Office listener, Secure
+  session cookies, forged Host/Origin rejection and negative control-route
+  access. That historical result does not verify the current Unix-socket Serve
+  path. It also did not test direct reachability of Core port 8765 from the
   Tailscale network. The 2026-10-29 repair removes the shared network and
   records a real Podman probe from the Tailscale container: Core's control and
-  egress addresses are unreachable, no port 8768 TCP listener exists, and the
-  restricted Office socket is reachable only through the dedicated volume.
-  Serve over the socket could not be exercised without a tailnet login in this
-  slice, so the live HTTPS path remains `NOT_TESTED`. Mobile-network
+  egress addresses are unreachable, no TCP Office listener exists, and the
+  restricted Office socket can be reached by a container with only the
+  dedicated read-only volume. Serve over this socket was not exercised because
+  the disposable node was left unauthenticated. Current remote Serve/HTTPS is
+  `NOT_TESTED`. Mobile-network
   reachability from a phone, independent acceptance and deployment remain
   `USER_PENDING` or `NOT_TESTED`. Funnel remains explicitly disabled and is not
   an offered capability.
