@@ -130,7 +130,7 @@ CREATE TABLE IF NOT EXISTS inference_ledger_policy (
 );
 
 INSERT OR IGNORE INTO inference_ledger_policy(id,mode,actor,evidence_sha256,updated_at_ms)
-VALUES (1, 'V1', 'migration:0036',
+VALUES (1, 'V1', 'migration:0037',
         '0000000000000000000000000000000000000000000000000000000000000000',
         CAST(strftime('%s','now') AS INTEGER) * 1000);
 

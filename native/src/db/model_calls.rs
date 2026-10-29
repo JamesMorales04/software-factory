@@ -1256,21 +1256,51 @@ impl Database {
                         ));
                     }
                 }
-                let grant =
-                    super::delegations::load_delegation(transaction, &delegation_id).await?;
-                grant.validate(Utc::now())?;
-                if grant.principal_id != input.principal_id || grant.project_id != input.project_id
-                {
-                    return Err(Error::Forbidden(
-                        "Lead model call differs from the active delegation".into(),
-                    ));
-                }
-                if frozen_lead_route.is_none()
-                    && (grant.route.provider != input.provider || grant.route.model != input.model)
-                {
-                    return Err(Error::Forbidden(
-                        "Lead model call differs from the active delegation".into(),
-                    ));
+                let delegation_version: i64 = sqlx::query_scalar::query_scalar(
+                    "SELECT schema_version FROM standing_delegations WHERE id=?1",
+                )
+                .bind(&delegation_id)
+                .fetch_optional(&mut *transaction)
+                .await?
+                .ok_or(Error::NotFound)?;
+                if delegation_version == 2 {
+                    let grant =
+                        super::delegations::load_delegation_v2(transaction, &delegation_id).await?;
+                    grant.validate(Utc::now())?;
+                    if grant.principal_id != input.principal_id
+                        || grant.project_id != input.project_id
+                    {
+                        return Err(Error::Forbidden(
+                            "Lead model call differs from the active V2 delegation".into(),
+                        ));
+                    }
+                    if frozen_lead_route.is_none()
+                        && (grant.route.provider != input.provider
+                            || grant.route.model != input.model)
+                    {
+                        return Err(Error::Forbidden(
+                            "Lead model call differs from the active V2 delegation".into(),
+                        ));
+                    }
+                } else {
+                    let grant =
+                        super::delegations::load_delegation(transaction, &delegation_id).await?;
+                    grant.validate(Utc::now())?;
+                    if grant.principal_id != input.principal_id
+                        || grant.project_id != input.project_id
+                    {
+                        return Err(Error::Forbidden(
+                            "Lead model call differs from the active delegation".into(),
+                        ));
+                    }
+                    if frozen_lead_route.is_none()
+                        && (grant.route.provider != input.provider
+                            || grant.route.model != input.model)
+                    {
+                        return Err(Error::Forbidden(
+                            "Lead model call differs from the active delegation".into(),
+                        ));
+                    }
                 }
             }
             ModelCallRole::SemanticReviewer => {

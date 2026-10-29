@@ -3883,7 +3883,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn upgrade_from_released_0035_applies_0036_and_preserves_rows() {
+    async fn upgrade_from_released_0035_applies_0037_and_preserves_rows() {
         let repo_migrations = Path::new(env!("CARGO_MANIFEST_DIR")).join("../migrations");
         let subset =
             std::env::temp_dir().join(format!("factory-migrations-0035-{}", Uuid::new_v4()));
@@ -3905,7 +3905,7 @@ mod tests {
             }
         }
         assert!(applied >= 33);
-        let path = temp_path("factory-ledger-upgrade-0036");
+        let path = temp_path("factory-ledger-upgrade-0037");
         let options = SqliteConnectOptions::new()
             .filename(&path)
             .create_if_missing(true)
@@ -3996,7 +3996,7 @@ mod tests {
                 .fetch_one(&db.pool)
                 .await
                 .unwrap();
-        assert_eq!(migration_count, i64::from(applied) + 1);
+        assert_eq!(migration_count, i64::from(applied) + 2);
         let (model_state, dispatch, provider_request): (String, Option<i64>, Option<String>) =
             sqlx::query_as::query_as(
                 "SELECT state,dispatched_at_ms,provider_request_id FROM model_call_reservations
@@ -4043,7 +4043,7 @@ mod tests {
             .execute(&db.pool)
             .await
             .is_err(),
-            "0036 dispatch immutability trigger must be installed on upgrade"
+            "0037 dispatch immutability trigger must be installed on upgrade"
         );
         db.close().await;
         std::fs::remove_dir_all(subset).unwrap();
@@ -4175,7 +4175,7 @@ mod tests {
                 .fetch_one(&db.pool)
                 .await
                 .unwrap();
-        assert_eq!(migration_count, i64::from(applied) + 2);
+        assert_eq!(migration_count, i64::from(applied) + 4);
         let model_call: (String, i64, Option<String>) = sqlx::query_as::query_as(
             "SELECT state,cost_micros,ledger_reservation_id FROM model_call_reservations
              WHERE reservation_id='legacy-call'",

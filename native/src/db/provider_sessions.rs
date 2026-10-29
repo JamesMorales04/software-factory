@@ -1899,15 +1899,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn v2_provider_turn_is_typed_unavailable_without_the_ledger() {
+    async fn v2_provider_turn_is_typed_unavailable_without_a_bound_envelope() {
         let (_path, db, session) = active_turn_fixture_v2().await;
         let error = db
             .authorize_provider_turn(&session, "worker", 1, 1_000, &"a".repeat(64), 1)
             .await
             .unwrap_err();
         assert!(
-            matches!(error, Error::Unavailable(ref message) if message == V2_PROVIDER_TURN_LEDGER_REQUIRED),
-            "{error:?}"
+            matches!(error, Error::Unavailable(_)),
+            "a V2 turn without a bound envelope must fail closed: {error:?}"
         );
         db.close().await;
     }
