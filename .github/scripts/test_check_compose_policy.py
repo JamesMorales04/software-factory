@@ -172,6 +172,21 @@ class ComposePolicyTests(unittest.TestCase):
 
         self.assert_rejected(mutate, "host bind")
 
+    def test_rejects_office_socket_volume_on_unapproved_services(self):
+        for name in ("supervisor", "worker", "verifier", "reviewer", "runtime"):
+            with self.subTest(service=name):
+                self.assert_rejected(
+                    lambda config: config["services"][name]["volumes"].append(
+                        {
+                            "type": "volume",
+                            "source": "factory-office-socket",
+                            "target": "/office-socket",
+                            "read_only": True,
+                        }
+                    ),
+                    "Office socket volume is restricted to init, core, and tailscale",
+                )
+
 
     def test_tailscale_serve_config_is_private_https_only(self):
         if "tailscale" not in base_config()["services"]:

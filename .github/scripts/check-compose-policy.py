@@ -144,6 +144,18 @@ def main(path: str) -> int:
         for volume in service.get("volumes", []) or []:
             source = str(volume.get("source", ""))
             target = str(volume.get("target", ""))
+            if source == "factory-office-socket":
+                if name not in {"init", "core", "tailscale"}:
+                    fail(
+                        f"{name}: Office socket volume is restricted to init, core, and tailscale"
+                    )
+                else:
+                    expected_read_only = name == "tailscale"
+                    if target != "/office-socket":
+                        fail(f"{name}: Office socket volume must mount at /office-socket")
+                    if (volume.get("read_only") is True) != expected_read_only:
+                        access = "read-only" if expected_read_only else "writable"
+                        fail(f"{name}: Office socket volume must be {access}")
             for forbidden in FORBIDDEN_VOLUME_SUBSTRINGS:
                 if forbidden in source:
                     fail(f"{name}: forbidden volume source {source!r}")
