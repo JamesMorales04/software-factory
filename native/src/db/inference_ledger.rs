@@ -37,6 +37,7 @@ type WorkerDispatchLease = (
     String,
     String,
 );
+type ProviderPricingSettings = (String, String, i64, i64, i64, i64, i64, i64);
 
 #[derive(Debug, Clone)]
 struct EnvelopeRow {
@@ -184,7 +185,9 @@ impl Database {
         Ok(next)
     }
 
-    /// Frozen per-request ceiling supplied by a trusted adapter quote.
+    /// Derive a frozen per-request ceiling from Core-owned provider settings
+    /// and the adapter's trusted billing-coverage declaration. A caller cannot
+    /// supply a bound, coverage flag or snapshot.
     pub async fn create_inference_pricing_quote(
         &self,
         input: &NewInferencePricingQuote,
@@ -192,7 +195,102 @@ impl Database {
         input.validate().map_err(ledger_error)?;
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        let coverage_sha256 = sha256_hex(input.coverage_json.as_bytes());
+        let settings: Option<ProviderPricingSettings> = sqlx::query_as::query_as(
+            "SELECT kind,model,max_input_tokens,max_output_tokens,
+                        input_micros_per_million,output_micros_per_million,enabled,revision
+                 FROM provider_settings WHERE provider=?1",
+        )
+        .bind(&input.provider)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let Some((
+            kind,
+            model,
+            max_input_tokens,
+            max_output_tokens,
+            input_rate,
+            output_rate,
+            enabled,
+            provider_revision,
+        )) = settings
+        else {
+            return Err(Error::Unavailable(
+                "no Core provider settings exist for the pricing quote".into(),
+            ));
+        };
+        if model != input.model || enabled != 1 {
+            return Err(Error::Unavailable(
+                "provider settings are not enabled for the requested model".into(),
+            ));
+        }
+        let Some(coverage) = crate::inference_ledger::adapter_billing_coverage(&kind) else {
+            return Err(Error::Unavailable(
+                "provider adapter has no enforceable billing coverage".into(),
+            ));
+        };
+        if max_input_tokens <= 0 || max_output_tokens <= 0 || input_rate < 0 || output_rate < 0 {
+            return Err(Error::Unavailable(
+                "provider settings do not define an enforceable token envelope".into(),
+            ));
+        }
+        let billed_rate = u64::try_from(input_rate.max(output_rate))
+            .map_err(|_| Error::Unavailable("provider rate is invalid".into()))?;
+        if billed_rate == 0 {
+            return Err(Error::Unavailable(
+                "provider token rate is unavailable".into(),
+            ));
+        }
+        let total_tokens = u64::try_from(max_input_tokens)
+            .ok()
+            .and_then(|input| {
+                u64::try_from(max_output_tokens)
+                    .ok()
+                    .and_then(|output| input.checked_add(output))
+            })
+            .ok_or(Error::Unavailable(
+                "provider token envelope overflow".into(),
+            ))?;
+        let bound = u128::from(total_tokens)
+            .checked_mul(u128::from(billed_rate))
+            .ok_or(Error::Unavailable("provider price overflow".into()))?
+            .div_ceil(1_000_000);
+        let upper_bound_micros = UsdMicros::new(
+            u64::try_from(bound)
+                .map_err(|_| Error::Unavailable("provider price overflow".into()))?,
+        )
+        .map_err(|_| Error::Unavailable("provider quote bound exceeds range".into()))?;
+        if upper_bound_micros == UsdMicros::ZERO {
+            return Err(Error::Unavailable(
+                "provider token envelope produces a zero price".into(),
+            ));
+        }
+        let coverage_json = serde_json::json!({
+            "input": coverage.input,
+            "output": coverage.output,
+            "cachedInput": coverage.cached_input,
+            "reasoning": coverage.reasoning,
+            "tools": coverage.tools,
+            "retries": coverage.retries,
+            "requestOverhead": coverage.request_overhead,
+        })
+        .to_string();
+        let snapshot_json = serde_json::json!({
+            "basis": "provider-settings-token-envelope",
+            "provider": input.provider,
+            "model": input.model,
+            "kind": kind,
+            "providerRevision": provider_revision,
+            "inputMicrosPerMillion": input_rate,
+            "outputMicrosPerMillion": output_rate,
+            "billedRateMicrosPerMillion": billed_rate,
+            "inputTokens": max_input_tokens,
+            "outputTokens": max_output_tokens,
+            "upperBoundMicros": upper_bound_micros.get(),
+            "coverage": serde_json::from_str::<serde_json::Value>(&coverage_json)
+                .map_err(|_| Error::Unavailable("coverage document".into()))?,
+        })
+        .to_string();
+        let coverage_sha256 = sha256_hex(coverage_json.as_bytes());
         if let Some(existing) = load_pricing_quote_by_revision(
             &mut transaction,
             &input.provider,
@@ -201,9 +299,9 @@ impl Database {
         )
         .await?
         {
-            if existing.upper_bound_micros == input.upper_bound_micros
+            if existing.upper_bound_micros == upper_bound_micros
                 && existing.coverage_sha256 == coverage_sha256
-                && existing.snapshot_json == input.snapshot_json
+                && existing.snapshot_json == snapshot_json
                 && existing.evidence_sha256 == input.evidence_sha256
             {
                 transaction.commit().await?;
@@ -218,9 +316,9 @@ impl Database {
             provider: input.provider.clone(),
             model: input.model.clone(),
             revision: input.revision,
-            upper_bound_micros: input.upper_bound_micros,
+            upper_bound_micros,
             coverage_sha256,
-            snapshot_json: input.snapshot_json.clone(),
+            snapshot_json,
             evidence_sha256: input.evidence_sha256.clone(),
         };
         sqlx::query::query(
@@ -235,7 +333,7 @@ impl Database {
         .bind(quote.revision)
         .bind(micros_to_i64(quote.upper_bound_micros)?)
         .bind(&quote.coverage_sha256)
-        .bind(&input.coverage_json)
+        .bind(&coverage_json)
         .bind(&quote.snapshot_json)
         .bind(&quote.evidence_sha256)
         .bind(Utc::now().timestamp_millis())
@@ -766,6 +864,21 @@ pub(crate) async fn reserve_inference_in_tx(
     .ok_or(Error::Validation(
         "inference reservation requires a frozen pricing quote".into(),
     ))?;
+    let snapshot: serde_json::Value = serde_json::from_str(&pricing_quote.snapshot_json)
+        .map_err(|_| Error::Unavailable("frozen pricing snapshot is invalid".into()))?;
+    if snapshot
+        .get("upperBoundMicros")
+        .and_then(serde_json::Value::as_u64)
+        != Some(pricing_quote.upper_bound_micros.get())
+        || snapshot.get("provider").and_then(serde_json::Value::as_str)
+            != Some(pricing_quote.provider.as_str())
+        || snapshot.get("model").and_then(serde_json::Value::as_str)
+            != Some(pricing_quote.model.as_str())
+    {
+        return Err(Error::Conflict(
+            "frozen pricing snapshot does not encode its stored bound/route",
+        ));
+    }
     if pricing_quote.snapshot_json != input.pricing_snapshot_json {
         return Err(Error::Conflict(
             "inference pricing snapshot differs from the frozen quote",
@@ -2565,28 +2678,41 @@ mod tests {
     }
 
     async fn test_quote(db: &Database, bound: u64) -> InferencePricingQuote {
+        assert_eq!(bound % 2, 0, "test quote bounds must be even");
+        let now = Utc::now().to_rfc3339();
         let (revision,): (i64,) = sqlx::query_as::query_as(
             "SELECT COALESCE(MAX(revision),0)+1 FROM inference_pricing_quotes",
         )
         .fetch_one(&db.pool)
         .await
         .unwrap();
+        sqlx::query::query(
+            "INSERT INTO provider_settings
+             (provider,kind,model,base_url,auth_mode,credential_ciphertext,credential_nonce,
+              credential_fingerprint,enabled,is_default,max_turns,max_input_tokens,
+              max_output_tokens,max_cost_micros,input_micros_per_million,
+              output_micros_per_million,revision,updated_at)
+             VALUES ('opencode-go','opencode','deepseek-v4.1-flash','http://127.0.0.1:9','api_key',
+                     'cipher','nonce','fingerprint',1,0,1,?1,?2,?3,1000000,0,?4,?5)
+             ON CONFLICT(provider) DO UPDATE SET
+               kind=excluded.kind,model=excluded.model,max_input_tokens=excluded.max_input_tokens,
+               max_output_tokens=excluded.max_output_tokens,max_cost_micros=excluded.max_cost_micros,
+               input_micros_per_million=excluded.input_micros_per_million,
+               output_micros_per_million=excluded.output_micros_per_million,
+               revision=excluded.revision,updated_at=excluded.updated_at",
+        )
+        .bind(i64::try_from(bound / 2).unwrap())
+        .bind(i64::try_from(bound / 2).unwrap())
+        .bind(i64::try_from(bound).unwrap())
+        .bind(revision)
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
         db.create_inference_pricing_quote(&NewInferencePricingQuote {
             provider: "opencode-go".into(),
             model: "deepseek-v4.1-flash".into(),
             revision,
-            upper_bound_micros: UsdMicros::new(bound).unwrap(),
-            coverage_json: serde_json::json!({
-                "input": true,
-                "output": true,
-                "cachedInput": true,
-                "reasoning": true,
-                "tools": true,
-                "retries": true,
-                "requestOverhead": true,
-            })
-            .to_string(),
-            snapshot_json: format!("{{\"quoteRevision\":{revision},\"upperBoundMicros\":{bound}}}"),
             evidence_sha256: "e".repeat(64),
             actor: "operator".into(),
         })
@@ -3546,6 +3672,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn quote_creation_requires_trusted_provider_settings() {
+        let path = temp_path("factory-ledger-quote-trust");
+        let db = Database::open(&path).await.unwrap();
+        seed_project(&db, "project").await;
+        assert!(matches!(
+            db.create_inference_pricing_quote(&NewInferencePricingQuote {
+                provider: "unknown-provider".into(),
+                model: "unknown-model".into(),
+                revision: 1,
+                evidence_sha256: "e".repeat(64),
+                actor: "operator".into(),
+            })
+            .await,
+            Err(Error::Unavailable(_))
+        ));
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn forged_quote_snapshot_bound_is_rejected() {
+        let path = temp_path("factory-ledger-quote-forged");
+        let db = Database::open(&path).await.unwrap();
+        seed_project(&db, "project").await;
+        let (envelope_id, _) = create_envelope(&db, "request-forged", 10_000).await;
+        let quote_id = "forged-quote";
+        sqlx::query::query(
+            "INSERT INTO inference_pricing_quotes
+             (quote_id,provider,model,revision,currency,upper_bound_micros,coverage_sha256,
+              coverage_json,snapshot_json,evidence_sha256,created_at_ms)
+             VALUES (?1,'opencode-go','deepseek-v4.1-flash',1,'USD',1,?2,?3,?4,?5,1)",
+        )
+        .bind(quote_id)
+        .bind("a".repeat(64))
+        .bind(r#"{"input":true,"output":true,"cachedInput":true,"reasoning":true,"tools":true,"retries":true,"requestOverhead":true}"#)
+        .bind(r#"{"provider":"opencode-go","model":"deepseek-v4.1-flash","upperBoundMicros":2}"#)
+        .bind("b".repeat(64))
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let mut input = reserve_input(
+            &test_quote(&db, 1_000).await,
+            &envelope_id,
+            "operation",
+            "idempotency",
+            &"a".repeat(64),
+            1_000,
+            InferenceRole::Lead,
+            future_ms(60_000),
+        );
+        input.pricing_revision = quote_id.into();
+        input.pricing_snapshot_json =
+            r#"{"provider":"opencode-go","model":"deepseek-v4.1-flash","upperBoundMicros":2}"#
+                .into();
+        input.upper_bound_micros = UsdMicros::new(1).unwrap();
+        assert!(matches!(
+            db.reserve_inference(&input).await,
+            Err(Error::Conflict(_))
+        ));
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
     async fn quote_bound_cannot_be_lowered_by_the_caller() {
         let path = temp_path("factory-ledger-quote-bound");
         let db = Database::open(&path).await.unwrap();
@@ -3693,6 +3883,174 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn upgrade_from_released_0035_applies_0036_and_preserves_rows() {
+        let repo_migrations = Path::new(env!("CARGO_MANIFEST_DIR")).join("../migrations");
+        let subset =
+            std::env::temp_dir().join(format!("factory-migrations-0035-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&subset).unwrap();
+        let mut applied = 0u32;
+        for entry in std::fs::read_dir(&repo_migrations).unwrap() {
+            let entry = entry.unwrap();
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let Some(version) = name
+                .split_once('_')
+                .and_then(|(prefix, _)| prefix.parse::<u32>().ok())
+            else {
+                continue;
+            };
+            if version <= 35 && name.ends_with(".sql") {
+                std::fs::copy(entry.path(), subset.join(name.as_ref())).unwrap();
+                applied += 1;
+            }
+        }
+        assert!(applied >= 33);
+        let path = temp_path("factory-ledger-upgrade-0036");
+        let options = SqliteConnectOptions::new()
+            .filename(&path)
+            .create_if_missing(true)
+            .foreign_keys(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap();
+        sqlx::migrate::Migrator::new(subset.as_path())
+            .await
+            .unwrap()
+            .run(&pool)
+            .await
+            .unwrap();
+        let now = Utc::now().to_rfc3339();
+        let now_ms = Utc::now().timestamp_millis();
+        sqlx::query::query(
+            "INSERT INTO projects(id,repository,base_commit,created_at,identity)
+             VALUES ('project','/fixture','base',?1,'')",
+        )
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO inference_envelopes
+             (id,request_id,project_id,currency,state,authorized_micros,authorization_revision,
+              created_at_ms,revoked_at_ms)
+             VALUES ('envelope','request','project','USD','ACTIVE',10000,1,?1,NULL)",
+        )
+        .bind(now_ms)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO inference_authorizations
+             (id,envelope_id,revision,limit_micros,actor,scope_sha256,evidence_sha256,
+              idempotency_key,created_at_ms)
+             VALUES ('auth','envelope',1,10000,'operator',?1,?2,'auth-key',?3)",
+        )
+        .bind("a".repeat(64))
+        .bind("b".repeat(64))
+        .bind(now_ms)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO inference_reservations
+             (id,envelope_id,operation_id,idempotency_key,request_sha256,role,
+              authorization_revision,scope_sha256,principal_id,parent_operation_id,provider,model,
+              pricing_revision,pricing_snapshot_json,upper_bound_micros,settled_micros,state,
+              worker_id,generation,dispatched_at_ms,provider_request_id,expires_at_ms,
+              settlement_sha256,created_at_ms,updated_at_ms)
+             VALUES ('reservation','envelope','operation','idempotency',?1,'LEAD',1,?2,
+                     'principal',NULL,'opencode-go','deepseek-v4.1-flash','old-quote','{}',1000,
+                     NULL,'RESERVED',NULL,NULL,NULL,NULL,?3,NULL,?3,?3)",
+        )
+        .bind("c".repeat(64))
+        .bind("a".repeat(64))
+        .bind(now_ms + 60_000)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO model_call_reservations
+             (reservation_id,role,principal_id,project_id,objective_id,scope_id,provider,model,
+              purpose,request_sha256,max_input_tokens,max_output_tokens,max_total_tokens,
+              max_cost_micros,state,expires_at_ms,created_at,updated_at)
+             VALUES ('legacy-call','LEAD','principal','project','objective','scope','opencode-go',
+                     'deepseek-v4.1-flash','assess',?1,100,100,200,300,'SETTLED',?2,?3,?3)",
+        )
+        .bind("d".repeat(64))
+        .bind(now_ms + 60_000)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool.close().await;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let db = Database::open(&path).await.unwrap();
+        let (migration_count,): (i64,) =
+            sqlx::query_as::query_as("SELECT COUNT(*) FROM _sqlx_migrations")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(migration_count, i64::from(applied) + 1);
+        let (model_state, dispatch, provider_request): (String, Option<i64>, Option<String>) =
+            sqlx::query_as::query_as(
+                "SELECT state,dispatched_at_ms,provider_request_id FROM model_call_reservations
+                 WHERE reservation_id='legacy-call'",
+            )
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(model_state, "SETTLED");
+        assert!(dispatch.is_none() && provider_request.is_none());
+        let (reservation_state,): (String,) = sqlx::query_as::query_as(
+            "SELECT state FROM inference_reservations WHERE id='reservation'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(reservation_state, "RESERVED");
+        for table in [
+            "inference_ledger_policy",
+            "inference_campaign_modes",
+            "inference_pricing_quotes",
+            "provider_turn_ledger_requests",
+        ] {
+            let (count,): (i64,) = sqlx::query_as::query_as(&format!(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='{table}'"
+            ))
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+            assert_eq!(count, 1, "missing {table}");
+        }
+        sqlx::query::query(
+            "UPDATE inference_reservations
+             SET worker_id='worker',generation=1,dispatched_at_ms=1,provider_request_id='request'
+             WHERE id='reservation'",
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        assert!(
+            sqlx::query::query(
+                "UPDATE inference_reservations SET worker_id='other' WHERE id='reservation'"
+            )
+            .execute(&db.pool)
+            .await
+            .is_err(),
+            "0036 dispatch immutability trigger must be installed on upgrade"
+        );
+        db.close().await;
+        std::fs::remove_dir_all(subset).unwrap();
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
     async fn migration_from_populated_0033_preserves_legacy_rows() {
         let repo_migrations = Path::new(env!("CARGO_MANIFEST_DIR")).join("../migrations");
         let subset =
@@ -3817,7 +4175,7 @@ mod tests {
                 .fetch_one(&db.pool)
                 .await
                 .unwrap();
-        assert_eq!(migration_count, i64::from(applied) + 1);
+        assert_eq!(migration_count, i64::from(applied) + 2);
         let model_call: (String, i64, Option<String>) = sqlx::query_as::query_as(
             "SELECT state,cost_micros,ledger_reservation_id FROM model_call_reservations
              WHERE reservation_id='legacy-call'",

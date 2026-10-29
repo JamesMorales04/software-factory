@@ -1755,22 +1755,23 @@ mod tests {
     }
 
     async fn quote(db: &Database) {
+        sqlx::query::query(
+            "INSERT INTO provider_settings
+             (provider,kind,model,base_url,auth_mode,credential_ciphertext,credential_nonce,
+              credential_fingerprint,enabled,is_default,max_turns,max_input_tokens,
+              max_output_tokens,max_cost_micros,input_micros_per_million,
+              output_micros_per_million,revision,updated_at)
+             VALUES ('opencode-go','opencode','deepseek-v4.1-flash','http://127.0.0.1:9',
+                     'api_key','cipher','nonce','fingerprint',1,0,1,250,250,500,1000000,0,1,?1)",
+        )
+        .bind(Utc::now().to_rfc3339())
+        .execute(&db.pool)
+        .await
+        .unwrap();
         db.create_inference_pricing_quote(&crate::inference_ledger::NewInferencePricingQuote {
             provider: "opencode-go".into(),
             model: "deepseek-v4.1-flash".into(),
             revision: 1,
-            upper_bound_micros: UsdMicros::new(500).unwrap(),
-            coverage_json: serde_json::json!({
-                "input": true,
-                "output": true,
-                "cachedInput": true,
-                "reasoning": true,
-                "tools": true,
-                "retries": true,
-                "requestOverhead": true,
-            })
-            .to_string(),
-            snapshot_json: "{\"quoteRevision\":1,\"upperBoundMicros\":500}".into(),
             evidence_sha256: "f".repeat(64),
             actor: "operator".into(),
         })
@@ -1956,27 +1957,7 @@ mod tests {
         .execute(&db.pool)
         .await
         .unwrap();
-        db.create_inference_pricing_quote(&crate::inference_ledger::NewInferencePricingQuote {
-            provider: "opencode-go".into(),
-            model: "deepseek-v4.1-flash".into(),
-            revision: 1,
-            upper_bound_micros: UsdMicros::new(500).unwrap(),
-            coverage_json: serde_json::json!({
-                "input": true,
-                "output": true,
-                "cachedInput": true,
-                "reasoning": true,
-                "tools": true,
-                "retries": true,
-                "requestOverhead": true,
-            })
-            .to_string(),
-            snapshot_json: "{\"quoteRevision\":1,\"upperBoundMicros\":500}".into(),
-            evidence_sha256: "f".repeat(64),
-            actor: "operator".into(),
-        })
-        .await
-        .unwrap();
+        quote(&db).await;
         let envelope = db
             .create_inference_envelope(&NewInferenceEnvelope {
                 request_id: "evaluation-1".into(),

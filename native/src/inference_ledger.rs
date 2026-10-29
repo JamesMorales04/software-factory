@@ -81,31 +81,50 @@ const MAX_TOKEN_LEN: usize = 256;
 const MAX_TEXT_LEN: usize = 512;
 const MAX_JSON_LEN: usize = 64 * 1024;
 
-/// A frozen per-request price ceiling supplied by a provider adapter. The
-/// coverage document must cover every billable component; an incomplete quote
-/// is rejected rather than promoted into an invented bound.
+/// Trusted adapter billing coverage. This is a Core-owned declaration, not a
+/// caller boolean: the HTTP OpenCode/Codex API-key adapters report token usage
+/// only, cached and reasoning tokens are token classes billed at the input or
+/// output rate, tool use is part of the prompt, each retry is a separate
+/// reservation, and there is no fixed request fee. Providers outside this
+/// contract fail closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AdapterBillingCoverage {
+    pub input: bool,
+    pub output: bool,
+    pub cached_input: bool,
+    pub reasoning: bool,
+    pub tools: bool,
+    pub retries: bool,
+    pub request_overhead: bool,
+}
+
+pub fn adapter_billing_coverage(kind: &str) -> Option<AdapterBillingCoverage> {
+    match kind {
+        "opencode" | "codex" => Some(AdapterBillingCoverage {
+            input: true,
+            output: true,
+            cached_input: true,
+            reasoning: true,
+            tools: true,
+            retries: true,
+            request_overhead: true,
+        }),
+        _ => None,
+    }
+}
+
+/// Create a frozen quote from Core-owned provider settings. The caller chooses
+/// only the provider/model/revision and supplies operator evidence; the bound,
+/// coverage document and snapshot are derived by Core.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct NewInferencePricingQuote {
     pub provider: String,
     pub model: String,
     pub revision: i64,
-    pub upper_bound_micros: UsdMicros,
-    pub coverage_json: String,
-    pub snapshot_json: String,
     pub evidence_sha256: String,
     pub actor: String,
 }
-
-pub const PRICING_COVERAGE_COMPONENTS: [&str; 7] = [
-    "input",
-    "output",
-    "cachedInput",
-    "reasoning",
-    "tools",
-    "retries",
-    "requestOverhead",
-];
 
 impl NewInferencePricingQuote {
     pub fn validate(&self) -> Result<(), InferenceLedgerError> {
@@ -116,32 +135,8 @@ impl NewInferencePricingQuote {
                 "pricing revision must be positive".into(),
             ));
         }
-        if self.upper_bound_micros == UsdMicros::ZERO {
-            return Err(InferenceLedgerError::Invalid(
-                "pricing quote bound must be positive".into(),
-            ));
-        }
         validate_sha256("evidence_sha256", &self.evidence_sha256)?;
         validate_text("actor", &self.actor)?;
-        let coverage: serde_json::Value = serde_json::from_str(&self.coverage_json)
-            .map_err(|_| InferenceLedgerError::Invalid("coverage_json is not JSON".into()))?;
-        let Some(object) = coverage.as_object() else {
-            return Err(InferenceLedgerError::Invalid(
-                "coverage_json must be an object".into(),
-            ));
-        };
-        for component in PRICING_COVERAGE_COMPONENTS {
-            if !object
-                .get(component)
-                .is_some_and(serde_json::Value::is_boolean)
-                || object.get(component).and_then(serde_json::Value::as_bool) != Some(true)
-            {
-                return Err(InferenceLedgerError::Invalid(format!(
-                    "pricing quote does not enforce {component}"
-                )));
-            }
-        }
-        validate_json("snapshot_json", &self.snapshot_json)?;
         Ok(())
     }
 }

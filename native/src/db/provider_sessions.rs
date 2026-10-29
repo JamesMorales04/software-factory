@@ -2724,22 +2724,35 @@ mod ledger_link_tests {
         .execute(&db.pool)
         .await
         .unwrap();
+        sqlx::query::query(
+            "INSERT INTO provider_settings
+             (provider,kind,model,base_url,auth_mode,credential_ciphertext,credential_nonce,
+              credential_fingerprint,enabled,is_default,max_turns,max_input_tokens,
+              max_output_tokens,max_cost_micros,input_micros_per_million,
+              output_micros_per_million,revision,updated_at)
+             VALUES (?1,?2,?3,'http://127.0.0.1:9','api_key','cipher','nonce','fingerprint',
+                     1,0,1,?4,?5,?6,1000000,0,1,?7)
+             ON CONFLICT(provider) DO UPDATE SET
+               kind=excluded.kind,model=excluded.model,max_input_tokens=excluded.max_input_tokens,
+               max_output_tokens=excluded.max_output_tokens,max_cost_micros=excluded.max_cost_micros,
+               input_micros_per_million=excluded.input_micros_per_million,
+               output_micros_per_million=excluded.output_micros_per_million,
+               revision=excluded.revision,updated_at=excluded.updated_at",
+        )
+        .bind(provider)
+        .bind(if provider == "codex" { "codex" } else { "opencode" })
+        .bind(model)
+        .bind(i64::try_from(bound / 2).unwrap())
+        .bind(i64::try_from(bound / 2).unwrap())
+        .bind(i64::try_from(bound).unwrap())
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
         db.create_inference_pricing_quote(&crate::inference_ledger::NewInferencePricingQuote {
             provider: provider.into(),
             model: model.into(),
             revision: 1,
-            upper_bound_micros: UsdMicros::new(bound).unwrap(),
-            coverage_json: serde_json::json!({
-                "input": true,
-                "output": true,
-                "cachedInput": true,
-                "reasoning": true,
-                "tools": true,
-                "retries": true,
-                "requestOverhead": true,
-            })
-            .to_string(),
-            snapshot_json: format!("{{\"quoteRevision\":1,\"upperBoundMicros\":{bound}}}"),
             evidence_sha256: "f".repeat(64),
             actor: "operator".into(),
         })
@@ -2997,22 +3010,23 @@ mod ledger_link_tests {
         .execute(&db.pool)
         .await
         .unwrap();
+        sqlx::query::query(
+            "INSERT INTO provider_settings
+             (provider,kind,model,base_url,auth_mode,credential_ciphertext,credential_nonce,
+              credential_fingerprint,enabled,is_default,max_turns,max_input_tokens,
+              max_output_tokens,max_cost_micros,input_micros_per_million,
+              output_micros_per_million,revision,updated_at)
+             VALUES ('opencode','opencode','deepseek-v4.1-flash','http://127.0.0.1:9','api_key',
+                     'cipher','nonce','fingerprint',1,0,1,500,500,1000,1000000,0,1,?1)",
+        )
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
         db.create_inference_pricing_quote(&crate::inference_ledger::NewInferencePricingQuote {
             provider: "opencode".into(),
             model: "deepseek-v4.1-flash".into(),
             revision: 1,
-            upper_bound_micros: UsdMicros::new(1_000).unwrap(),
-            coverage_json: serde_json::json!({
-                "input": true,
-                "output": true,
-                "cachedInput": true,
-                "reasoning": true,
-                "tools": true,
-                "retries": true,
-                "requestOverhead": true,
-            })
-            .to_string(),
-            snapshot_json: "{\"quoteRevision\":1,\"upperBoundMicros\":1000}".into(),
             evidence_sha256: "f".repeat(64),
             actor: "operator".into(),
         })
@@ -3024,19 +3038,6 @@ mod ledger_link_tests {
             actor: "operator".into(),
             evidence_sha256: "c".repeat(64),
         })
-        .await
-        .unwrap();
-        sqlx::query::query(
-            "INSERT INTO provider_settings
-             (provider,kind,model,base_url,auth_mode,credential_ciphertext,credential_nonce,
-              credential_fingerprint,enabled,is_default,max_turns,max_input_tokens,
-              max_output_tokens,max_cost_micros,input_micros_per_million,
-              output_micros_per_million,revision,updated_at)
-             VALUES ('opencode','opencode','deepseek-v4.1-flash','http://127.0.0.1:9','api_key',
-                     'cipher','nonce','fingerprint',1,0,1,100,100,1000,1000000,2000000,1,?1)",
-        )
-        .bind(Utc::now().to_rfc3339())
-        .execute(&db.pool)
         .await
         .unwrap();
         let turn = db
