@@ -27,9 +27,22 @@ pub enum ExecutionPolicyError {
 ///
 /// The Factory never uses floating point for money. Construction is checked so
 /// an amount always fits the durable `INTEGER` representation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(transparent)]
 pub struct UsdMicros(u64);
+
+/// Deserialization must not bypass the SQLite `INTEGER` range. A derived
+/// implementation would accept any `u64`, including values that cannot be
+/// stored durably.
+impl<'de> Deserialize<'de> for UsdMicros {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = u64::deserialize(deserializer)?;
+        Self::new(value).map_err(serde::de::Error::custom)
+    }
+}
 
 impl UsdMicros {
     pub const ZERO: Self = Self(0);
@@ -245,6 +258,16 @@ pub struct ReserveInferenceInput {
     pub pricing_snapshot_json: String,
     pub upper_bound_micros: UsdMicros,
     pub expires_at_ms: i64,
+    /// Authorization revision the caller believes is current. Core re-reads
+    /// the durable revision inside the ledger transaction and rejects a stale
+    /// expectation; this field is never trusted on its own.
+    pub authorization_revision: i64,
+    /// The exact scope digest bound to the frozen policy.
+    pub scope_sha256: String,
+    /// Fencing identity for Worker-dispatched calls. Assessment and review
+    /// calls legitimately have no Worker lease.
+    pub worker_id: Option<String>,
+    pub generation: Option<i64>,
 }
 
 impl ReserveInferenceInput {
@@ -279,6 +302,25 @@ impl ReserveInferenceInput {
                 "expires_at_ms must be positive".into(),
             ));
         }
+        if self.authorization_revision <= 0 {
+            return Err(ExecutionPolicyError::Invalid(
+                "authorization_revision must be positive".into(),
+            ));
+        }
+        if !is_sha256(&self.scope_sha256) {
+            return Err(ExecutionPolicyError::Invalid(
+                "scope_sha256 is not a lowercase SHA-256".into(),
+            ));
+        }
+        match (&self.worker_id, self.generation) {
+            (None, None) => {}
+            (Some(worker), Some(generation)) if !worker.trim().is_empty() && generation > 0 => {}
+            _ => {
+                return Err(ExecutionPolicyError::Invalid(
+                    "worker_id and generation must be both absent or both valid".into(),
+                ));
+            }
+        }
         Ok(())
     }
 }
@@ -289,9 +331,18 @@ pub struct InferenceReservation {
     pub reservation_id: String,
     pub envelope_id: String,
     pub operation_id: String,
+    pub idempotency_key: String,
+    pub request_sha256: String,
     pub role: InferenceRole,
+    pub principal_id: String,
+    pub parent_operation_id: Option<String>,
     pub provider: String,
     pub model: String,
+    pub pricing_revision: String,
+    pub pricing_snapshot_json: String,
+    pub authorization_revision: i64,
+    pub worker_id: Option<String>,
+    pub generation: Option<i64>,
     pub state: ReservationState,
     pub upper_bound_micros: UsdMicros,
     pub settled_micros: Option<UsdMicros>,
@@ -303,6 +354,9 @@ pub struct InferenceReservation {
 pub struct InferenceSettlement {
     pub reservation_id: String,
     pub settled_micros: UsdMicros,
+    /// Settlement identity is `(reservation_id, settled_micros,
+    /// usage_evidence_sha256)`: an identical duplicate replays its receipt, a
+    /// different amount or evidence for the same reservation conflicts.
     pub usage_evidence_sha256: String,
 }
 
@@ -332,13 +386,28 @@ pub struct SpendingStatus {
     pub settled_micros: UsdMicros,
     pub reserved_micros: UsdMicros,
     pub ambiguous_micros: UsdMicros,
+    /// Floors at zero; an overrun is reported in `overrun_micros` instead of
+    /// producing a negative available balance.
     pub available_micros: UsdMicros,
     pub overrun_micros: UsdMicros,
     pub authorization_revision: i64,
     pub billing_basis: String,
     pub pricing_provenance: String,
     pub unresolved_count: u64,
+    pub by_role: Vec<SpendingBreakdown>,
+    pub by_provider: Vec<SpendingBreakdown>,
     pub as_of: String,
+}
+
+/// Attributed spending for one role or provider. Breakdowns are telemetry and
+/// never create per-role authorization ceilings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct SpendingBreakdown {
+    pub key: String,
+    pub settled_micros: UsdMicros,
+    pub reserved_micros: UsdMicros,
+    pub ambiguous_micros: UsdMicros,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -463,6 +532,10 @@ mod tests {
             pricing_snapshot_json: "{}".into(),
             upper_bound_micros: UsdMicros::new(1_000).unwrap(),
             expires_at_ms: 1_800_000_000_000,
+            authorization_revision: 1,
+            scope_sha256: "d".repeat(64),
+            worker_id: Some("worker-1".into()),
+            generation: Some(3),
         };
         assert!(input.validate().is_ok());
         let mut bad = input.clone();
@@ -471,6 +544,60 @@ mod tests {
         let mut empty = input;
         empty.envelope_id = " ".into();
         assert!(empty.validate().is_err());
+    }
+
+    #[test]
+    fn money_deserialization_cannot_bypass_the_sqlite_range() {
+        let max: UsdMicros = serde_json::from_str(&MAX_USD_MICROS.to_string()).unwrap();
+        assert_eq!(max.get(), MAX_USD_MICROS);
+        for invalid in [
+            "9223372036854775808",
+            "18446744073709551615",
+            "-1",
+            "1.5",
+            "\"1\"",
+        ] {
+            assert!(
+                serde_json::from_str::<UsdMicros>(invalid).is_err(),
+                "{invalid} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn reserve_context_requires_stale_revision_and_fencing_pairing() {
+        let mut input = ReserveInferenceInput {
+            envelope_id: "envelope".into(),
+            operation_id: "operation".into(),
+            idempotency_key: "idempotency".into(),
+            request_sha256: "c".repeat(64),
+            role: InferenceRole::Implementer,
+            principal_id: "owner".into(),
+            parent_operation_id: None,
+            provider: "opencode-go".into(),
+            model: "deepseek-v4.1-flash".into(),
+            pricing_revision: "models.dev@1".into(),
+            pricing_snapshot_json: "{}".into(),
+            upper_bound_micros: UsdMicros::new(1_000).unwrap(),
+            expires_at_ms: 1_800_000_000_000,
+            authorization_revision: 2,
+            scope_sha256: "d".repeat(64),
+            worker_id: Some("worker-1".into()),
+            generation: Some(3),
+        };
+        assert!(input.validate().is_ok());
+        input.authorization_revision = 0;
+        assert!(input.validate().is_err());
+        let mut unfenced = input.clone();
+        unfenced.authorization_revision = 2;
+        unfenced.worker_id = Some("worker-1".into());
+        unfenced.generation = None;
+        assert!(unfenced.validate().is_err());
+        let mut bad_scope = input;
+        bad_scope.worker_id = None;
+        bad_scope.generation = None;
+        bad_scope.scope_sha256 = "not-a-digest".into();
+        assert!(bad_scope.validate().is_err());
     }
 
     #[test]
