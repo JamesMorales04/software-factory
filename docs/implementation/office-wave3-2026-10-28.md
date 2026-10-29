@@ -317,6 +317,59 @@ evidence record; no runtime behavior changed after `66a71bf`.
 - Wave 3 remains a development branch. No `main` merge and no product
   acceptance are claimed.
 
+## 12. Final development checkpoint — 2026-10-29
+
+**Code candidate:** `66a71bf99453ea507514d12cae63bdbe59758b96`.
+**Final branch head:** `1c7621d` (docs/test-only delta after the frozen code
+candidate: no runtime code changed).
+**Branch:** `campaign/office-ux-wave3-20261028`. `main` remains unchanged.
+
+### Acceptance evidence
+
+| Gate | Exact result |
+|---|---|
+| Rust library | **487 passed, 0 failed, 2 ignored** |
+| Core binary | **31 passed, 0 failed** |
+| Fixture dispatch E2E | **12 passed, 0 failed** |
+| Office | typecheck pass, lint pass, **241 tests passed**, build pass |
+| Clippy | `-D warnings` clean |
+| Compose E2E | run **40825390549 SUCCESS** on `66a71bf` (intake → assessment → exact approval → request envelope → Worker → verifier/reviewer → Gate ACCEPTED → restart) |
+| Migrations | `0001…0040` apply; foreign-key/integrity clean; populated 0033→0040 fixture passes; binding quarantine upgrade passes |
+| Provider sandbox | 2 host-environment failures; reproduced on clean base; requires the containerized OpenCode runtime |
+
+### Independent review — exact candidate
+
+- **Sol:** APPROVE WITH CONDITIONS on `66a71bf`.
+- **Luna:** APPROVE WITH CONDITIONS on `66a71bf`.
+- No HIGH findings remain. Conditions are: live paid inference
+  (`NOT_RUN_PENDING_OWNER_SPEND_AUTHORIZATION`), real-browser Office journey,
+  OS-process-kill injection, upstream pricing correctness, and the remaining
+  Home boundary tests (now added for zero/negative/over-limit and edited
+  amounts; retry-edit coverage remains a condition).
+
+### Delivered vertical slices
+
+- #59 OpenCode Go sibling-catalog discovery, catalog/credential/inference
+  separation, searchable selector; PR #74.
+- #70 dynamic isometric Agent Office V0 with real participant identity,
+  0/1/5/12/30 layout, filters, selection, pan/zoom, visual amendment and
+  deterministic fixtures; PR #76.
+- #72 Execution Policy V2, durable progress, receipt-bound evidence,
+  first-pass handling and no artificial productivity caps.
+- #73 one request-scoped monetary envelope, trusted quotes, per-egress holds,
+  durable dispatch intent, ambiguity recovery, binding quarantine and
+  overdraw settlement.
+
+### Remaining conditions / not done
+
+- Live provider inference and real billing evidence are **NOT_RUN**; no spend
+  authorization was used.
+- Real-browser Office journey, OS-kill crash injection, upstream pricing
+  correctness and independent verifier/Gate acceptance remain **NOT_VERIFIED**.
+- Access PRs #36–#38 are still draft/unmerged. `main` has no branch protection;
+  no promotion or merge is authorized by this ledger.
+- #60, #51 and the remaining #62/#63/#64/#66/#67 UX slices remain open.
+
 ## 8. Change log
 
 - 2026-10-28: Wave 3 opened at `4e0a43e`. Model routes verified
