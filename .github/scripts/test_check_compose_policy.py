@@ -175,15 +175,19 @@ class ComposePolicyTests(unittest.TestCase):
     def test_rejects_office_socket_volume_on_unapproved_services(self):
         for name in ("supervisor", "worker", "verifier", "reviewer", "runtime"):
             with self.subTest(service=name):
-                self.assert_rejected(
-                    lambda config: config["services"][name]["volumes"].append(
+                def mount_protected_volume(config):
+                    config["volumes"]["factory-office-socket"] = {}
+                    config["services"][name]["volumes"].append(
                         {
                             "type": "volume",
                             "source": "factory-office-socket",
                             "target": "/office-socket",
                             "read_only": True,
                         }
-                    ),
+                    )
+
+                self.assert_rejected(
+                    mount_protected_volume,
                     "Office socket volume is restricted to init, core, and tailscale",
                 )
 
