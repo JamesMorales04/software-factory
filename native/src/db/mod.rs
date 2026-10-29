@@ -840,9 +840,11 @@ mod inference_ledger;
 mod lead;
 mod model_calls;
 pub use crate::inference_ledger::{
-    CampaignEnvelopeBindingInput, InferenceEnvelopeRecord, InferenceReservationRecord,
+    CampaignEnvelopeBindingInput, CampaignInferenceRequirement, InferenceEnvelopeRecord,
+    InferenceLedgerMode, InferencePricingQuote, InferenceReservationRecord,
     MarkInferenceDispatchedInput, NewInferenceAuthorization, NewInferenceEnvelope,
-    ReconcileInferenceInput, ReconciliationOutcome, RevokeInferenceEnvelopeInput,
+    NewInferencePricingQuote, ReconcileInferenceInput, ReconciliationOutcome,
+    RevokeInferenceEnvelopeInput,
 };
 pub use lead::{
     ActionDraftRecord, AuthenticatedOperatorApproval, CampaignExecutionBindingRecord,
