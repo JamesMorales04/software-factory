@@ -448,13 +448,16 @@
         "stale-snapshot",
         "provider-unconfigured",
         "credential-configured",
-        "connection-authenticated",
-        "connection-denied",
-        "connection-unreachable",
-        "connection-unsupported",
         "model-discovery-unavailable",
         "unverified-model",
-        "not-tested"
+        "not-tested",
+        "catalog-available",
+        "catalog-endpoint-unsupported",
+        "catalog-unreachable",
+        "catalog-invalid-response",
+        "credential-present",
+        "credential-rejected",
+        "inference-not-tested"
       ],
       "acceptance": [
         "office/e2e-browser/rust-journey.mjs",
