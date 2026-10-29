@@ -61,6 +61,14 @@ filters. It never mixes a second client-side source of participants.
   Re-rendering, polling or receiving the same records in a different order
   cannot move an avatar. Adding or removing a participant can renumber later
   slots in the same station; the next render is still deterministic.
+- Avatar pitch is larger than the avatar bounds (92 × 104 px pitch for an
+  84 × 100 px button), so avatar buttons never overlap at any tested density.
+  Depth ordering remains only a painting concern, not a hit-target or
+  legibility dependency.
+- Conflicting duplicate projections of one `participant_id` are resolved
+  deterministically: `CURRENT` before unresolved/terminal observations, then
+  the newest `last_observed_at`, then a stable lexical field tiebreak. Reversing
+  the input page cannot change the winner, station or appearance.
 - Painter-order depth follows the station feet position, so nearer rows render
   in front. Selection raises only the selected avatar.
 - The world grows with the largest station (up to six columns and five rows per

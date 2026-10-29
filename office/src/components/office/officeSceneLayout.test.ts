@@ -7,6 +7,8 @@ import {
   clampCamera,
   clampZoom,
   fitCamera,
+  OFFICE_AVATAR_HEIGHT,
+  OFFICE_AVATAR_WIDTH,
   OFFICE_MAX_ZOOM,
   OFFICE_MIN_ZOOM,
   panCamera,
@@ -110,6 +112,54 @@ describe("buildOfficeSceneLayout", () => {
     },
   );
 
+  it("keeps every avatar bounding box inside its station and non-overlapping", () => {
+    for (const count of [0, 1, 5, 12, 30]) {
+      const layout = buildOfficeSceneLayout(mixedParticipants(count));
+      for (const zone of layout.zones) {
+        for (const slot of zone.slots) {
+          expect(slot.x).toBeGreaterThanOrEqual(zone.x);
+          expect(slot.y).toBeGreaterThanOrEqual(zone.y);
+          expect(slot.x + OFFICE_AVATAR_WIDTH).toBeLessThanOrEqual(
+            zone.x + zone.width,
+          );
+          expect(slot.y + OFFICE_AVATAR_HEIGHT).toBeLessThanOrEqual(
+            zone.y + zone.height,
+          );
+        }
+      }
+      const bounds = layout.slots.map((slot) => ({
+        x: slot.x,
+        y: slot.y,
+        width: OFFICE_AVATAR_WIDTH,
+        height: OFFICE_AVATAR_HEIGHT,
+      }));
+      for (let left = 0; left < bounds.length; left += 1) {
+        for (let right = left + 1; right < bounds.length; right += 1) {
+          expect(
+            overlaps(bounds[left], bounds[right]),
+            `avatars ${left} and ${right} overlap at ${count} entities`,
+          ).toBe(false);
+        }
+      }
+    }
+
+    const dense = buildOfficeSceneLayout(implementers(30));
+    const denseBounds = dense.slots.map((slot) => ({
+      x: slot.x,
+      y: slot.y,
+      width: OFFICE_AVATAR_WIDTH,
+      height: OFFICE_AVATAR_HEIGHT,
+    }));
+    for (let left = 0; left < denseBounds.length; left += 1) {
+      for (let right = left + 1; right < denseBounds.length; right += 1) {
+        expect(
+          overlaps(denseBounds[left], denseBounds[right]),
+          `avatars ${left} and ${right} overlap at 30 implementers`,
+        ).toBe(false);
+      }
+    }
+  });
+
   it("keeps every station inside the world and non-overlapping", () => {
     for (const count of [0, 1, 5, 12, 30]) {
       const layout = buildOfficeSceneLayout(mixedParticipants(count));
@@ -191,6 +241,53 @@ describe("buildOfficeSceneLayout", () => {
     const layout = buildOfficeSceneLayout([first, duplicate]);
     expect(layout.slots).toHaveLength(1);
     expect(layout.duplicateIds).toEqual([first.participant_id]);
+  });
+
+  it("resolves conflicting duplicate identities deterministically", () => {
+    const id = "implementer:participant-00";
+    const current = participant(0, "IMPLEMENTER", {
+      participant_id: id,
+      observation: "CURRENT",
+      status: "ACTIVE",
+      last_observed_at: "2026-10-28T10:01:00Z",
+    });
+    const final = participant(0, "LEAD", {
+      participant_id: id,
+      observation: "FINAL",
+      status: "COMPLETED",
+      last_observed_at: "2026-10-28T10:09:00Z",
+    });
+    const stale = participant(0, "VERIFIER", {
+      participant_id: id,
+      observation: "STALE",
+      status: "ACTIVE",
+      last_observed_at: "2026-10-28T10:08:00Z",
+    });
+    const first = buildOfficeSceneLayout([final, current, stale]);
+    const second = buildOfficeSceneLayout([stale, current, final]);
+    expect(first.slots).toHaveLength(1);
+    expect(second.slots).toHaveLength(1);
+    const winner = first.slots[0];
+    expect(winner.participant.observation).toBe("CURRENT");
+    expect(winner.participant.role).toBe("IMPLEMENTER");
+    expect(winner.participant.status).toBe("ACTIVE");
+    expect(first.duplicateIds).toEqual([id]);
+    expect(second.duplicateIds).toEqual([id]);
+    expect({
+      role: second.slots[0].participant.role,
+      observation: second.slots[0].participant.observation,
+      status: second.slots[0].participant.status,
+      lookIndex: second.slots[0].lookIndex,
+      x: second.slots[0].x,
+      y: second.slots[0].y,
+    }).toEqual({
+      role: winner.participant.role,
+      observation: winner.participant.observation,
+      status: winner.participant.status,
+      lookIndex: winner.lookIndex,
+      x: winner.x,
+      y: winner.y,
+    });
   });
 
   it("assigns deterministic painter-order depth", () => {

@@ -13,8 +13,13 @@ import type { ParticipantRecord, ParticipantRole } from "../../coreApi";
 
 export const OFFICE_AVATAR_WIDTH = 84;
 export const OFFICE_AVATAR_HEIGHT = 100;
-export const OFFICE_SLOT_COLUMN = 76;
-export const OFFICE_SLOT_ROW = 78;
+/**
+ * Pitch is deliberately larger than the avatar footprint. A slot owns its
+ * complete button bounds, so two slots must never overlap even when the
+ * depth painter later draws one closer to the viewer.
+ */
+export const OFFICE_SLOT_COLUMN = 92;
+export const OFFICE_SLOT_ROW = 104;
 export const OFFICE_SLOT_STAGGER = 28;
 export const OFFICE_ZONE_HEADER = 50;
 export const OFFICE_ZONE_PADDING = 14;
@@ -227,6 +232,63 @@ function buildZone(
   };
 }
 
+const DUPLICATE_OBSERVATION_PRIORITY: Record<string, number> = {
+  CURRENT: 0,
+  STALE: 1,
+  FINAL: 2,
+  NOT_EXPOSED: 3,
+  UNKNOWN: 4,
+};
+
+function duplicateRecordKey(participant: ParticipantRecord): string {
+  return [
+    participant.role,
+    participant.identity_kind,
+    participant.identity_id,
+    participant.principal_id ?? "",
+    participant.project_id ?? "",
+    participant.action_id ?? "",
+    participant.campaign_id ?? "",
+    participant.request_id ?? "",
+    participant.work_unit_id ?? "",
+    participant.run_id ?? "",
+    participant.attempt_id ?? "",
+    participant.worker_id ?? "",
+    participant.status,
+    participant.status_source,
+    participant.lease_state,
+    participant.observation,
+    participant.session?.session_record_id ?? "",
+    participant.failure_reason ?? "",
+    participant.observation_note,
+    participant.recorded_at,
+    participant.last_observed_at,
+  ].join("\u0000");
+}
+
+/**
+ * Deterministic winner for duplicate projections of the same participant_id.
+ *
+ * A live observation beats an unresolved or terminal one; among equal
+ * observations the newest recorded observation wins. The remaining fields are
+ * a total lexical tiebreak so reversing the API page cannot change the station,
+ * state or appearance rendered for an identity.
+ */
+export function compareDuplicateRecords(
+  left: ParticipantRecord,
+  right: ParticipantRecord,
+): number {
+  const leftPriority =
+    DUPLICATE_OBSERVATION_PRIORITY[left.observation] ?? Number.MAX_SAFE_INTEGER;
+  const rightPriority =
+    DUPLICATE_OBSERVATION_PRIORITY[right.observation] ??
+    Number.MAX_SAFE_INTEGER;
+  if (leftPriority !== rightPriority) return leftPriority - rightPriority;
+  const recency = right.last_observed_at.localeCompare(left.last_observed_at);
+  if (recency !== 0) return recency;
+  return duplicateRecordKey(left).localeCompare(duplicateRecordKey(right));
+}
+
 /**
  * Lay out five role stations around a central implementation floor.
  *
@@ -237,18 +299,25 @@ function buildZone(
 export function buildOfficeSceneLayout(
   participants: ParticipantRecord[],
 ): OfficeSceneLayout {
-  const seen = new Set<string>();
-  const duplicateIds: string[] = [];
-  const unique = participants.filter((participant) => {
-    if (seen.has(participant.participant_id)) {
-      if (!duplicateIds.includes(participant.participant_id)) {
-        duplicateIds.push(participant.participant_id);
-      }
-      return false;
+  const byId = new Map<string, ParticipantRecord>();
+  const duplicateSet = new Set<string>();
+  for (const participant of participants) {
+    const current = byId.get(participant.participant_id);
+    if (!current) {
+      byId.set(participant.participant_id, participant);
+      continue;
     }
-    seen.add(participant.participant_id);
-    return true;
-  });
+    duplicateSet.add(participant.participant_id);
+    if (compareDuplicateRecords(participant, current) < 0) {
+      byId.set(participant.participant_id, participant);
+    }
+  }
+  const duplicateIds = [...duplicateSet].sort((left, right) =>
+    left.localeCompare(right),
+  );
+  const unique = [...byId.values()].sort((left, right) =>
+    left.participant_id.localeCompare(right.participant_id),
+  );
 
   const groups = new Map<ParticipantRole, ParticipantRecord[]>();
   for (const role of OFFICE_ROLE_ORDER) groups.set(role, []);
