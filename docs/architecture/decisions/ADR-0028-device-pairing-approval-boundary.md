@@ -8,7 +8,7 @@ amends: ADR-0026
 ---
 # ADR-0028: QR device pairing and approval boundary
 
-- **Status:** Proposed for Product Owner review. Author-run implementation evidence at candidate `9afbb6f` covers the deterministic lifecycle, restricted listener, real Chromium pairing and revocation; independent review and mobile-data UAT remain pending.
+- **Status:** Proposed for Product Owner review. The 2026-10-29 repair candidate `7bca751` has author-run Rust and real Chromium pairing/revocation evidence; independent review, remote Tailscale HTTPS, mobile-data UAT and Product Owner promotion approval remain pending.
 - **Amends:** [ADR-0026](ADR-0026-device-sessions-and-local-owner-bootstrap.md) with the device enrollment and approval boundary.
 
 ## Context
@@ -19,8 +19,8 @@ Factory Office needs a safe way to enroll a phone without copying a permanent op
 
 - Core creates a short-lived random challenge and persists its lifecycle and audit records. A QR carries only the challenge identifier, which grants no Factory access by itself.
 - A single phone claim changes the challenge from `AVAILABLE` to `PENDING`. Core returns a separate random poll capability to the claimant and persists only its hash. The claimant presents it in a POST body, never in a URL.
-- The phone and authenticated Office display the same short verification code. Core approves only when the authenticated operator submits the matching code. Rejection, expiry, replay and a second claim fail closed.
-- Core consumes approval atomically before issuing a new independent device session. The raw session and CSRF values are returned only through the session cookies and the CSRF response contract; session storage contains hashes. A failed session issue requires a new pairing challenge.
+- The phone and authenticated Office display the same short verification code. The code is generated from `ring::rand::SystemRandom` with rejection sampling, so all one million values are equally likely. Core approves only when the authenticated operator submits the matching code. A per-challenge persisted failed-attempt counter cancels the challenge after five invalid approvals. Rejection, expiry, replay, throttling and a second claim fail closed.
+- Core consumes approval and creates the independent device session in one SQLite transaction. The transaction requires the challenge's approval epoch to equal the current global access epoch. Logout-all, revoke-all and local recovery advance that epoch and cancel outstanding `AVAILABLE`, `PENDING` and `APPROVED` challenges, so an approval delayed across a global revocation cannot issue a session. A revocation that commits after the exchange revokes the session the exchange created. The raw session and CSRF values are returned only through the session cookies and the CSRF response contract; session storage contains hashes. A failed session issue requires a new pairing challenge.
 - Per-device and all-device revocation are Core operations and are audited. Tailscale supplies private transport only; it does not provide a Factory identity or session.
 - The claim and polling routes are capability-scoped public operations under strict Core Host/Origin checks. Device-management operations require an authenticated Factory operator session and CSRF validation.
 
@@ -30,8 +30,8 @@ The QR can be copied without transferring a reusable secret. An unauthorized cla
 
 ## Verification obligations
 
-Test one-time claim, expiry, replay, matching and mismatching verification codes, approval, rejection, cancellation, concurrent poll consumption, independent session creation, session revocation, unauthenticated management denial, CSRF/Origin/Host negatives and audit persistence. Real HTTPS remote access and real mobile browser behavior remain separate acceptance obligations.
+Test one-time claim, expiry, replay, matching and mismatching verification codes, approval, rejection, cancellation, concurrent exchange, failed-attempt throttling under concurrency, delayed polling after logout-all/revoke-all/recovery, concurrent exchange versus global revocation, independent session creation, session revocation, unauthenticated management denial, CSRF/Origin/Host negatives and audit persistence. Real HTTPS remote access and real mobile browser behavior remain separate acceptance obligations.
 
 ## Evidence
 
-The deterministic DB, listener and Office tests plus a real Chromium desktop-and-phone journey passed at implementation `9afbb6f`; the owner approved with the matching code, the phone received an independent session, replay and rejection failed closed, a cancelled challenge could not be claimed, single-device and all-device revocation took effect, the audit stayed readable and the 390 px layout did not overflow. See [personal-access-pairing-2026-10-28.json](../evidence/personal-access-pairing-2026-10-28.json). Mobile-data Tailscale access, independent review and Product Owner approval remain pending.
+The 2026-10-29 author-run evidence at implementation `7bca751` records the access-epoch fence, atomic exchange, CSPRNG code generation, persisted per-challenge throttling, delayed-poll and concurrent-revocation tests, and a real Compose/Chromium desktop-and-phone journey. That journey confirms the matching-code approval, independent phone session, replay rejection, single-device revocation and responsive layouts; the Rust tests cover failure throttling, cancellation, global revocation and concurrent exchange. The full package test run had three provider-sandbox fixture failures in this host environment; they are recorded separately and are not represented as pairing failures. See [personal-access-access-repairs-2026-10-29.json](../evidence/personal-access-access-repairs-2026-10-29.json) and the earlier [personal-access-pairing-2026-10-28.json](../evidence/personal-access-pairing-2026-10-28.json). Mobile-data Tailscale access, independent review and Product Owner approval remain pending.
