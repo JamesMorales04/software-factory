@@ -9,7 +9,10 @@
 use std::{env, time::Duration};
 
 use chrono::Utc;
-use factory_native::db::{ActionSpec, ProviderTerminal, ProviderTurnAuthorization};
+use factory_native::db::{
+    ActionSpec, ExecutionCheckReceiptRecord, ProviderTerminal, ProviderToolEventRecord,
+    ProviderTurnAuthorization,
+};
 use factory_native::execution::{
     ApplyFilesRequest, ExecuteWorkspace, ExecutionResult, ToolRunRequest, WorkspaceAllocation,
     WorkspaceHandle, WorkspaceStatus, WriteFilesRequest,
@@ -1699,6 +1702,7 @@ impl std::error::Error for WorkerProgressHalt {}
 struct TurnProgress {
     campaign_id: String,
     work_item_id: String,
+    attempt_id: String,
     /// Attempt/run-scoped prefix keeps checkpoint/operation ids unique across
     /// repair attempts and Worker restarts while progress counters remain
     /// work-item scoped.
@@ -1736,6 +1740,7 @@ impl TurnProgress {
         Self {
             campaign_id,
             work_item_id,
+            attempt_id,
             operation_prefix,
             run_identity,
             turn: 0,
@@ -1778,11 +1783,13 @@ impl TurnProgress {
             evidence_id: format!("{}-write-{sequence}", self.run_identity),
             campaign_id: self.campaign_id.clone(),
             work_item_id: self.work_item_id.clone(),
+            attempt_id: self.attempt_id.clone(),
             kind: ProgressKind::CandidateChanged,
             artifact_ref: path.to_owned(),
             artifact_sha256: artifact,
             baseline_ref: baseline,
             observed_sequence: sequence,
+            execution_receipt_id: String::new(),
         });
     }
 
@@ -1794,28 +1801,30 @@ impl TurnProgress {
         sha256_hex(parts.join("\n").as_bytes())
     }
 
-    /// Record both PASS and FAIL outcomes. A failing receipt establishes the
-    /// suite baseline; only a later PASS for the identical suite can count as
-    /// progress. A changed receipt hash alone never earns progress.
-    fn observe_check(&mut self, call_id: &str, argv: &[String], success: bool) {
-        let suite = format!("check:{}", argv.join("\u{0}"));
-        let outcome = if success { "PASS" } else { "FAIL" };
-        let receipt =
-            sha256_hex(format!("{argv:?}|{outcome}|{}", self.candidate_digest()).as_bytes());
-        if self.last_check.get(&suite) == Some(&receipt) {
+    /// Record both PASS and FAIL outcomes from the immutable Core execution
+    /// receipt. The receipt supplies the exact suite, outcome and result digest;
+    /// the Worker cannot relabel a check by choosing its own identity.
+    fn observe_check(&mut self, receipt: &ExecutionCheckReceiptRecord) {
+        if self.last_check.get(&receipt.suite) == Some(&receipt.result_sha256) {
             return;
         }
-        self.last_check.insert(suite.clone(), receipt.clone());
+        self.last_check
+            .insert(receipt.suite.clone(), receipt.result_sha256.clone());
         let sequence = self.next_sequence();
         self.evidence.push(ProgressEvidence {
             evidence_id: format!("{}-check-{sequence}", self.run_identity),
             campaign_id: self.campaign_id.clone(),
             work_item_id: self.work_item_id.clone(),
+            attempt_id: self.attempt_id.clone(),
             kind: ProgressKind::TestsImproved,
-            artifact_ref: format!("suite:{suite}|{outcome}|{call_id}"),
-            artifact_sha256: receipt,
-            baseline_ref: suite,
+            artifact_ref: format!(
+                "suite:{}|{}|{}",
+                receipt.suite, receipt.outcome, receipt.call_id
+            ),
+            artifact_sha256: receipt.result_sha256.clone(),
+            baseline_ref: receipt.suite.clone(),
             observed_sequence: sequence,
+            execution_receipt_id: receipt.receipt_id.clone(),
         });
     }
 
@@ -2468,24 +2477,20 @@ async fn run_provider_tool_loop(
                         .await
                         {
                             Ok(result) => {
-                                progress.observe_check(
+                                let receipt = post_check_result(
+                                    context,
                                     &call_id,
                                     &argv,
-                                    result.exit_code == Some(0),
-                                );
-                                let status = if result.exit_code == Some(0) {
+                                    &progress.candidate_digest(),
+                                    result.exit_code,
+                                )
+                                .await?;
+                                progress.observe_check(&receipt);
+                                let status = if receipt.outcome == "PASS" {
                                     "ok"
                                 } else {
                                     "failed"
                                 };
-                                post_tool_event(
-                                    context,
-                                    &call_id,
-                                    &tool,
-                                    "RESULT",
-                                    &format!("exit={:?}", result.exit_code),
-                                )
-                                .await?;
                                 prompt = tool_result(
                                     context.assignment.provider.as_str(),
                                     context.assignment.model.as_str(),
@@ -2810,17 +2815,17 @@ async fn execute_codex_tool(
             .await;
             match run {
                 Ok(Ok(result)) => {
-                    progress.observe_check(call_id, &argv, result.exit_code == Some(0));
-                    post_tool_event(
+                    let receipt = post_check_result(
                         context,
                         call_id,
-                        tool,
-                        "RESULT",
-                        &format!("exit={:?}", result.exit_code),
+                        &argv,
+                        &progress.candidate_digest(),
+                        result.exit_code,
                     )
                     .await?;
+                    progress.observe_check(&receipt);
                     Ok((
-                        true,
+                        receipt.outcome == "PASS",
                         bounded_tool_text(&format!(
                             "exit={:?}\nstdout:\n{}\nstderr:\n{}",
                             result.exit_code, result.stdout, result.stderr
@@ -3542,6 +3547,42 @@ async fn post_tool_event(
         return Err(format!("Core rejected provider tool event: {}", response.status()).into());
     }
     Ok(())
+}
+
+async fn post_check_result(
+    context: &ProviderContext<'_>,
+    call_id: &str,
+    command: &[String],
+    candidate_sha256: &str,
+    exit_code: Option<i32>,
+) -> Result<ExecutionCheckReceiptRecord, Box<dyn std::error::Error>> {
+    let response = context
+        .client
+        .post(context.core.join("worker/provider_tool_event")?)
+        .bearer_auth(context.session_token)
+        .json(&json!({
+            "session_record_id": context.session_record_id,
+            "worker_id": context.worker_id,
+            "generation": context.assignment.lease.generation,
+            "call_id": call_id,
+            "tool": "run_command",
+            "decision": "RESULT",
+            "detail": format!("exit={exit_code:?}"),
+            "check": {
+                "command": command,
+                "candidate_sha256": candidate_sha256,
+                "exit_code": exit_code
+            }
+        }))
+        .send()
+        .await?;
+    if !response.status().is_success() {
+        return Err(format!("Core rejected execution receipt: {}", response.status()).into());
+    }
+    let record: ProviderToolEventRecord = response.json().await?;
+    record
+        .execution_check
+        .ok_or_else(|| "Core did not return an execution receipt".into())
 }
 
 struct WorkspaceOperation<'a> {
@@ -4532,6 +4573,25 @@ mod tests {
         WorkerProgressHalt, opencode_first_action_instruction, sha256_hex, strict_request_digest,
         submit_progress_checkpoint, validate_provider_tools, validated_loopback_url,
     };
+    use factory_native::db::ExecutionCheckReceiptRecord;
+
+    fn check_receipt(call_id: &str, outcome: &str, result: &str) -> ExecutionCheckReceiptRecord {
+        ExecutionCheckReceiptRecord {
+            receipt_id: format!("receipt-{call_id}"),
+            campaign_id: "campaign".into(),
+            work_item_id: "unit-1".into(),
+            attempt_id: "attempt-1".into(),
+            session_record_id: "session".into(),
+            sequence: 1,
+            call_id: call_id.into(),
+            suite: "check:cargo\u{0}test".into(),
+            candidate_sha256: "c".repeat(64),
+            exit_code: Some(if outcome == "PASS" { 0 } else { 1 }),
+            expected_exit: 0,
+            outcome: outcome.into(),
+            result_sha256: sha256_hex(result.as_bytes()),
+        }
+    }
 
     #[test]
     fn first_action_instruction_requires_a_write_only_when_authorized() {
@@ -4610,11 +4670,11 @@ mod tests {
         for turn in 0..12 {
             progress.begin_turn();
             progress.observe_write("src/lib.rs", &format!("candidate-{turn}"));
-            progress.observe_check(
+            progress.observe_check(&check_receipt(
                 &format!("call-{turn}"),
-                &["cargo".into(), "test".into()],
-                true,
-            );
+                "PASS",
+                &format!("pass-{turn}"),
+            ));
             let request = progress.checkpoint_request().expect("checkpoint request");
             assert_eq!(request.campaign_id, "campaign");
             assert_eq!(request.work_item_id, "unit-1");
@@ -4642,8 +4702,8 @@ mod tests {
         );
         progress.begin_turn();
         progress.observe_write("src/lib.rs", "candidate");
-        progress.observe_check("call-fail", &["cargo".into(), "test".into()], false);
-        progress.observe_check("call-pass", &["cargo".into(), "test".into()], true);
+        progress.observe_check(&check_receipt("call-fail", "FAIL", "fail-result"));
+        progress.observe_check(&check_receipt("call-pass", "PASS", "pass-result"));
         let request = progress.checkpoint_request().unwrap();
         let outcomes: Vec<_> = request
             .evidence
@@ -4673,7 +4733,7 @@ mod tests {
         );
         progress.begin_turn();
         progress.observe_write("src/lib.rs", "same");
-        progress.observe_check("call-1", &["cargo".into(), "test".into()], true);
+        progress.observe_check(&check_receipt("call-1", "PASS", "same-pass"));
         let first = progress.checkpoint_request().unwrap();
         let first_checks = first
             .evidence
@@ -4683,7 +4743,7 @@ mod tests {
         assert_eq!(first_checks, 1);
         progress.begin_turn();
         progress.observe_write("src/lib.rs", "same");
-        progress.observe_check("call-2", &["cargo".into(), "test".into()], true);
+        progress.observe_check(&check_receipt("call-2", "PASS", "same-pass"));
         let second = progress.checkpoint_request().unwrap();
         assert!(
             second

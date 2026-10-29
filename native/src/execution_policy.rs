@@ -162,11 +162,17 @@ pub struct ProgressEvidence {
     pub evidence_id: String,
     pub campaign_id: String,
     pub work_item_id: String,
+    /// Attempt that produced this observation. Required for V2 progress.
+    #[serde(default)]
+    pub attempt_id: String,
     pub kind: ProgressKind,
     pub artifact_ref: String,
     pub artifact_sha256: String,
     pub baseline_ref: String,
     pub observed_sequence: u64,
+    /// The immutable Core execution receipt for `TestsImproved`.
+    #[serde(default)]
+    pub execution_receipt_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
