@@ -3157,6 +3157,7 @@ mod ledger_link_tests {
     use super::tests::active_turn_fixture;
     use super::*;
     use crate::db::CampaignEnvelopeBindingInput;
+    use crate::execution_policy::ReservationState;
     use crate::inference_ledger::NewInferenceEnvelope;
 
     async fn setup_turn_envelope(
@@ -3258,6 +3259,339 @@ mod ledger_link_tests {
         .await
         .unwrap();
         envelope.envelope_id
+    }
+
+    // Seed an already-persisted, previously authorized dispatch via the normal
+    // ledger APIs. Tests exercise recovery/settlement without sending upstream.
+    async fn seed_worker_ledger_link(
+        db: &Database,
+        worker_reservation_id: &str,
+        envelope_id: &str,
+        sequence: u32,
+    ) -> String {
+        let provider = "opencode";
+        let model = "deepseek-v4.1-flash";
+        let quote = db.inference_pricing_quote(provider, model).await.unwrap();
+        let request_sha256 = if sequence == 0 { "b" } else { "c" }.repeat(64);
+        let operation_id = format!("provider_turn:{worker_reservation_id}:request:{sequence}");
+        let ledger = db
+            .reserve_inference(&ReserveInferenceInput {
+                envelope_id: envelope_id.into(),
+                operation_id: operation_id.clone(),
+                idempotency_key: operation_id,
+                request_sha256: request_sha256.clone(),
+                role: InferenceRole::Implementer,
+                principal_id: "worker".into(),
+                parent_operation_id: None,
+                provider: provider.into(),
+                model: model.into(),
+                pricing_revision: quote.quote_id,
+                pricing_snapshot_json: quote.snapshot_json,
+                upper_bound_micros: quote.upper_bound_micros,
+                expires_at_ms: Utc::now().timestamp_millis() + 60_000,
+                authorization_revision: 1,
+                scope_sha256: "a".repeat(64),
+                worker_id: Some("worker".into()),
+                generation: Some(1),
+            })
+            .await
+            .unwrap();
+        let provider_request_id = format!("historical-provider-request-{sequence}");
+        db.mark_inference_dispatched(&MarkInferenceDispatchedInput {
+            reservation_id: ledger.reservation_id.clone(),
+            worker_id: Some("worker".into()),
+            generation: Some(1),
+            provider_request_id: Some(provider_request_id),
+            attempt_id: Some("attempt".into()),
+            actor: "test:persisted_worker_dispatch".into(),
+        })
+        .await
+        .unwrap();
+
+        let now = Utc::now().timestamp_millis();
+        sqlx::query::query(
+            "INSERT INTO provider_turn_egress_requests
+             (request_id,reservation_id,sequence,actual_request_sha256,model,path,body_bytes,created_at)
+             VALUES (?1,?2,?3,?4,?5,'/v1/chat/completions',128,?6)",
+        )
+        .bind(format!("historical-egress-{worker_reservation_id}-{sequence}"))
+        .bind(worker_reservation_id)
+        .bind(i64::from(sequence))
+        .bind(&request_sha256)
+        .bind(model)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO provider_turn_ledger_requests
+             (reservation_id,sequence,ledger_reservation_id,created_at_ms)
+             VALUES (?1,?2,?3,?4)",
+        )
+        .bind(worker_reservation_id)
+        .bind(i64::from(sequence))
+        .bind(&ledger.reservation_id)
+        .bind(now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        if sequence == 0 {
+            sqlx::query::query(
+                "UPDATE provider_turn_reservations
+                 SET actual_request_sha256=?1,requests_bound=1,ledger_reservation_id=?2
+                 WHERE reservation_id=?3",
+            )
+            .bind(&request_sha256)
+            .bind(&ledger.reservation_id)
+            .bind(worker_reservation_id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        } else {
+            sqlx::query::query(
+                "UPDATE provider_turn_reservations SET requests_bound=?1 WHERE reservation_id=?2",
+            )
+            .bind(i64::from(sequence + 1))
+            .bind(worker_reservation_id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        }
+        ledger.reservation_id
+    }
+
+    #[tokio::test]
+    async fn persisted_worker_egress_links_replay_and_settle_after_restart() {
+        let (path, db, session) = active_turn_fixture(100).await;
+        let envelope_id = setup_turn_envelope(
+            &db,
+            "opencode",
+            "deepseek-v4.1-flash",
+            "request-linked-restart",
+            1_000,
+        )
+        .await;
+        super::tests::insert_reserved_turn(
+            &db,
+            &session,
+            "worker-linked-turn",
+            "opencode",
+            "deepseek-v4.1-flash",
+        )
+        .await;
+        sqlx::query::query(
+            "UPDATE provider_turn_reservations SET max_requests=2,max_cost_micros=3000 WHERE reservation_id='worker-linked-turn'",
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let first_ledger_id =
+            seed_worker_ledger_link(&db, "worker-linked-turn", &envelope_id, 0).await;
+        let second_ledger_id =
+            seed_worker_ledger_link(&db, "worker-linked-turn", &envelope_id, 1).await;
+        let mappings: (i64,) = sqlx::query_as::query_as(
+            "SELECT COUNT(*) FROM provider_turn_ledger_requests WHERE reservation_id='worker-linked-turn'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(mappings.0, 2, "each persisted egress owns one ledger hold");
+        db.close().await;
+
+        let reopened = Database::open(&path).await.unwrap();
+        let replay = reopened
+            .bind_provider_turn(&ProviderTurnBindingInput {
+                reservation_id: "worker-linked-turn".into(),
+                session_record_id: session.clone(),
+                worker_id: "worker".into(),
+                generation: 1,
+                request_sha256: "b".repeat(64),
+                model: "deepseek-v4.1-flash".into(),
+                path: "/v1/chat/completions".into(),
+                body_bytes: 128,
+                sequence: 0,
+            })
+            .await;
+        assert!(matches!(replay, Err(Error::Conflict(_))));
+        let (next_request,): (i64,) = sqlx::query_as::query_as(
+            "SELECT requests_bound FROM provider_turn_reservations WHERE reservation_id='worker-linked-turn'",
+        )
+        .fetch_one(&reopened.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            next_request, 2,
+            "persisted second egress cannot be replayed"
+        );
+        let replay_counts: (i64, i64) = sqlx::query_as::query_as(
+            "SELECT (SELECT COUNT(*) FROM provider_turn_ledger_requests WHERE reservation_id='worker-linked-turn'),
+                    (SELECT COUNT(*) FROM provider_turn_egress_requests WHERE reservation_id='worker-linked-turn')",
+        )
+        .fetch_one(&reopened.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            replay_counts,
+            (2, 2),
+            "restart replay must not duplicate per-egress links"
+        );
+
+        reopened
+            .settle_provider_turn(&ProviderTurnUsage {
+                reservation_id: "worker-linked-turn".into(),
+                worker_id: "worker".into(),
+                input_tokens: 10,
+                output_tokens: 20,
+                total_tokens: 30,
+                cost_micros: 1_500,
+                usage_known: true,
+            })
+            .await
+            .unwrap();
+        reopened
+            .settle_provider_turn(&ProviderTurnUsage {
+                reservation_id: "worker-linked-turn".into(),
+                worker_id: "worker".into(),
+                input_tokens: 10,
+                output_tokens: 20,
+                total_tokens: 30,
+                cost_micros: 1_500,
+                usage_known: true,
+            })
+            .await
+            .unwrap();
+        for (ledger_id, expected) in [(first_ledger_id, 1_000), (second_ledger_id, 500)] {
+            let record = reopened.inference_reservation(&ledger_id).await.unwrap();
+            assert_eq!(record.state, ReservationState::Settled);
+            assert_eq!(record.settled_micros.unwrap().get(), expected);
+            assert!(record.dispatched_at_ms.is_some());
+        }
+        let status = reopened
+            .inference_spending_status(&envelope_id)
+            .await
+            .unwrap();
+        assert_eq!(status.settled_micros.get(), 1_500);
+        assert_eq!(status.reserved_micros.get(), 0);
+        reopened.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn mid_turn_revocation_blocks_next_egress_and_preserves_first_hold() {
+        let (path, db, session) = active_turn_fixture(100).await;
+        let envelope_id = setup_turn_envelope(
+            &db,
+            "opencode",
+            "deepseek-v4.1-flash",
+            "request-revoke-linked",
+            1_000,
+        )
+        .await;
+        super::tests::insert_reserved_turn(
+            &db,
+            &session,
+            "revoked-worker-turn",
+            "opencode",
+            "deepseek-v4.1-flash",
+        )
+        .await;
+        sqlx::query::query(
+            "UPDATE provider_turn_reservations SET max_requests=2 WHERE reservation_id='revoked-worker-turn'",
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let first_ledger_id =
+            seed_worker_ledger_link(&db, "revoked-worker-turn", &envelope_id, 0).await;
+        db.revoke_inference_envelope(&crate::inference_ledger::RevokeInferenceEnvelopeInput {
+            envelope_id: envelope_id.clone(),
+            actor: "operator".into(),
+            evidence_ref: "mid-turn-revoke".into(),
+            evidence_sha256: "d".repeat(64),
+        })
+        .await
+        .unwrap();
+
+        let next = db
+            .bind_provider_turn(&ProviderTurnBindingInput {
+                reservation_id: "revoked-worker-turn".into(),
+                session_record_id: session,
+                worker_id: "worker".into(),
+                generation: 1,
+                request_sha256: "c".repeat(64),
+                model: "deepseek-v4.1-flash".into(),
+                path: "/v1/chat/completions".into(),
+                body_bytes: 128,
+                sequence: 1,
+            })
+            .await;
+        assert!(matches!(next, Err(Error::Unavailable(_))));
+        let quote = db
+            .inference_pricing_quote("opencode", "deepseek-v4.1-flash")
+            .await
+            .unwrap();
+        let second_request = db
+            .reserve_inference(&ReserveInferenceInput {
+                envelope_id: envelope_id.clone(),
+                operation_id: "provider_turn:revoked-worker-turn:request:1".into(),
+                idempotency_key: "provider_turn:revoked-worker-turn:request:1".into(),
+                request_sha256: "c".repeat(64),
+                role: InferenceRole::Implementer,
+                principal_id: "worker".into(),
+                parent_operation_id: None,
+                provider: "opencode".into(),
+                model: "deepseek-v4.1-flash".into(),
+                pricing_revision: quote.quote_id,
+                pricing_snapshot_json: quote.snapshot_json,
+                upper_bound_micros: quote.upper_bound_micros,
+                expires_at_ms: Utc::now().timestamp_millis() + 60_000,
+                authorization_revision: 1,
+                scope_sha256: "a".repeat(64),
+                worker_id: Some("worker".into()),
+                generation: Some(1),
+            })
+            .await;
+        assert!(
+            matches!(second_request, Err(Error::Forbidden(_))),
+            "the lower-level ledger must reject a second request after envelope revocation"
+        );
+        let counts: (i64, i64) = sqlx::query_as::query_as(
+            "SELECT requests_bound,(SELECT COUNT(*) FROM provider_turn_egress_requests WHERE reservation_id='revoked-worker-turn') FROM provider_turn_reservations WHERE reservation_id='revoked-worker-turn'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            counts,
+            (1, 1),
+            "failed second egress must preserve first request only"
+        );
+        assert!(matches!(
+            db.inference_reservation(&first_ledger_id)
+                .await
+                .unwrap()
+                .state,
+            ReservationState::Reserved
+        ));
+        db.settle_provider_turn(&ProviderTurnUsage {
+            reservation_id: "revoked-worker-turn".into(),
+            worker_id: "worker".into(),
+            input_tokens: 4,
+            output_tokens: 8,
+            total_tokens: 12,
+            cost_micros: 500,
+            usage_known: true,
+        })
+        .await
+        .unwrap();
+        let first = db.inference_reservation(&first_ledger_id).await.unwrap();
+        assert_eq!(first.state, ReservationState::Settled);
+        assert_eq!(first.settled_micros.unwrap().get(), 500);
+        let status = db.inference_spending_status(&envelope_id).await.unwrap();
+        assert_eq!(status.settled_micros.get(), 500);
+        assert_eq!(status.reserved_micros.get(), 0);
+        db.close().await;
+        let _ = std::fs::remove_file(path);
     }
 
     #[tokio::test]
