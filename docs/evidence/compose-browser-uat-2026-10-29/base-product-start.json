@@ -1,0 +1,46 @@
+{
+  "schema": "factory.compose-base-product-start.v1",
+  "candidate_sha": "086a63f730f0a3db25c178b7dbcac2951d2db7b4",
+  "compose_project": "software-factory-uat60-base",
+  "compose_files": [
+    "compose.yaml"
+  ],
+  "command": "podman compose -p software-factory-uat60-base -f compose.yaml up -d --build",
+  "office_url": "http://127.0.0.1:8899",
+  "core_health": {
+    "healthy": true,
+    "version": "0.1.0"
+  },
+  "core_api_health": {
+    "healthy": true,
+    "version": "0.1.0"
+  },
+  "runtime_broker": {
+    "engine_exposed": false,
+    "healthy": true,
+    "isolation_certified": false,
+    "network": "none"
+  },
+  "supervisor": {
+    "healthy": true,
+    "host_workspace_mounted": false,
+    "isolation_certified": false,
+    "mount": "named-volume"
+  },
+  "worker_provider_kind": "opencode",
+  "runtime_provider_kind": "opencode",
+  "services": [
+    "software-factory-uat60-base_init_1 Exited (0) About a minute ago",
+    "software-factory-uat60-base_provider-bundle_1 Exited (0) 59 seconds ago",
+    "software-factory-uat60-base_runtime_1 Up About a minute (healthy)",
+    "software-factory-uat60-base_core_1 Up About a minute (healthy)",
+    "software-factory-uat60-base_supervisor_1 Up About a minute (healthy)",
+    "software-factory-uat60-base_worker_1 Up About a minute",
+    "software-factory-uat60-base_verifier_1 Up About a minute",
+    "software-factory-uat60-base_reviewer_1 Up About a minute"
+  ],
+  "paid_inference": false,
+  "execution_performed": false,
+  "note": "Startup and health only. The base deployment selects the live OpenCode route and has no provider credential configured; no request, model call or execution was started."
+}
+

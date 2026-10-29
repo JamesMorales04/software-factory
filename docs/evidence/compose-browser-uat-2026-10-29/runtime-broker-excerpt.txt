@@ -1,0 +1,11 @@
+2026-10-29T14:15:59.813602Z  INFO factory_runtime_broker: provider container started container=factory-provider-b975b8c4-0716-40ff-bbb7-9538eb8a4c56 subdir=b975b8c4-0716-40ff-bbb7-9538eb8a4c56
+2026-10-29T14:16:00.025973Z  INFO factory_runtime_broker: child execution started container=factory-exec-275169c1-ad93-4d77-939d-e3e174c8161d volume=factory-ws-59fb66df-c7c4-4b98-ba58-62c743175a57
+2026-10-29T14:16:02.229760Z  INFO factory_runtime_broker: child execution finished container=factory-exec-275169c1-ad93-4d77-939d-e3e174c8161d exit_code=Some(0)
+2026-10-29T14:16:04.202691Z  INFO factory_runtime_broker: child execution started container=factory-exec-ac331c46-c300-40df-950a-39941e59ca90 volume=factory-ws-d5b4ed60-f1ab-4ce3-90d6-830b12771654
+2026-10-29T14:16:06.422845Z  INFO factory_runtime_broker: child execution finished container=factory-exec-ac331c46-c300-40df-950a-39941e59ca90 exit_code=Some(0)
+2026-10-29T14:16:06.423115Z  INFO factory_runtime_broker: child execution started container=factory-exec-2d2aa8c2-fa7c-498e-8137-a5015bb6a3f0 volume=factory-ws-d5b4ed60-f1ab-4ce3-90d6-830b12771654
+2026-10-29T14:16:08.678626Z  INFO factory_runtime_broker: child execution finished container=factory-exec-2d2aa8c2-fa7c-498e-8137-a5015bb6a3f0 exit_code=Some(0)
+2026-10-29T14:16:08.678900Z  INFO factory_runtime_broker: child execution started container=factory-exec-60e2883a-19fe-4cde-a03c-dad9d84f4f7d volume=factory-ws-d5b4ed60-f1ab-4ce3-90d6-830b12771654
+2026-10-29T14:16:11.074127Z  INFO factory_runtime_broker: child execution finished container=factory-exec-60e2883a-19fe-4cde-a03c-dad9d84f4f7d exit_code=Some(0)
+2026-10-29T14:16:11.074625Z  INFO factory_runtime_broker: child execution started container=factory-exec-295595bb-4fa0-43f6-aa5c-44d9166602fa volume=factory-ws-d5b4ed60-f1ab-4ce3-90d6-830b12771654
+2026-10-29T14:16:13.282663Z  INFO factory_runtime_broker: child execution finished container=factory-exec-295595bb-4fa0-43f6-aa5c-44d9166602fa exit_code=Some(1)
