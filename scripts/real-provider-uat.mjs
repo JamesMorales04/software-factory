@@ -2616,10 +2616,8 @@ export async function resume(client, gate) {
   return finishExecution(client, gate, state, pre, new Date(), projection);
 }
 
-export async function main(argv = process.argv.slice(2), env = process.env, options = {}) {
+async function runUat(argv, env, options = {}) {
   const gate = parseGate(env, argv);
-  // This dependency injection is used only by the separate test simulation
-  // runner. The executable CLI never accepts a simulation flag or env var.
   gate.simulation = options.simulation === true;
   try {
     gate.verification = loadSubscriptionVerification(gate);
@@ -2732,6 +2730,20 @@ export async function main(argv = process.argv.slice(2), env = process.env, opti
   } finally {
     // Intentionally no token/header logging.
   }
+}
+
+export async function main(argv = process.argv.slice(2), env = process.env) {
+  return runUat(argv, env);
+}
+
+export async function runFakeCoreSimulation(argv, env, client) {
+  if (!client || client instanceof CoreClient || client.simulationTransport !== true) {
+    throw refuse(
+      "FAKE_CORE_TRANSPORT_REQUIRED",
+      "downstream simulation requires an explicit fake-Core transport; live Core transport is forbidden",
+    );
+  }
+  return runUat(argv, env, { simulation: true, client });
 }
 
 function printSummary(result, lines, { simulation = false } = {}) {
