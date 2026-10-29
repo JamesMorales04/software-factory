@@ -10,20 +10,17 @@ function jsonResponse(body: unknown, status = 200) {
   } as Response;
 }
 
-function clearTestCookies() {
-  // biome-ignore lint/suspicious/noDocumentCookie: jsdom exposes cookie state only through document.cookie.
-  document.cookie = "factory_csrf=; Max-Age=0; path=/";
-}
-
-function setCsrfCookie(value: string) {
-  // biome-ignore lint/suspicious/noDocumentCookie: the CSRF cookie is the production source read by coreApi.
-  document.cookie = `factory_csrf=${value}; path=/; SameSite=Strict`;
+function setCookie(value: string) {
+  Object.defineProperty(document, "cookie", {
+    configurable: true,
+    get: () => value,
+  });
 }
 
 describe("Office device-session API", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    clearTestCookies();
+    setCookie("");
   });
 
   it("loads the cookie session without sending a bearer credential", async () => {
@@ -44,7 +41,7 @@ describe("Office device-session API", () => {
   });
 
   it("submits owner confirmation in the request body and uses the CSRF cookie", async () => {
-    setCsrfCookie("csrf-value");
+    setCookie("factory_csrf=csrf-value");
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(
@@ -67,7 +64,7 @@ describe("Office device-session API", () => {
   });
 
   it("sends CSRF on logout and does not persist a session token", async () => {
-    setCsrfCookie("csrf-value");
+    setCookie("factory_csrf=csrf-value");
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(jsonResponse(undefined, 204));

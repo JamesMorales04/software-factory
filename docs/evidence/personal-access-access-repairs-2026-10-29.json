@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "record": "personal-access-access-repairs-author-run",
+  "implementation_sha": "48a1346f776086ec484905e69c9a7239b5f71649",
+  "runtime_tested_sha": "7bca75159ee39ed74106744dc19f5c0dec4b82e1",
+  "date": "2026-10-29",
+  "environment": {
+    "host_os": "CachyOS",
+    "podman": "6.1.4 rootless",
+    "compose_provider": "podman-compose 1.6.0",
+    "dev_image_toolchain": "Rust 1.90.0 and Node 22.23.2",
+    "browser": "Playwright Chromium 1248 with playwright-core 1.64.1",
+    "tailscale_image": "docker.io/tailscale/tailscale@sha256:ed6480b33c6eb67c9cbd203ed42b9fb57e361986725b6856def71b7a3d9e276c",
+    "tailscale_image_id": "sha256:9cb91ed119a2c502813cfef5a14430944163dfb2b290ccfc69d671d1469ec09d",
+    "tailscale_version": "1.104.4"
+  },
+  "result": "PARTIAL PASS (access repair tests and disposable Compose/Chromium checks passed; full crate suite has three provider-sandbox failures; remote Tailscale HTTPS and independent review are not tested)",
+  "status": "author_run",
+  "paid_inference": false,
+  "checks": [
+    {
+      "name": "format and focused Clippy",
+      "pass": true,
+      "candidate_sha": "7bca75159ee39ed74106744dc19f5c0dec4b82e1",
+      "detail": "cargo fmt --all -- --check and cargo clippy -p factory-native --bin factory-core --test device_sessions --all-features --locked -- -D warnings passed"
+    },
+    {
+      "name": "Rust access regression suites",
+      "pass": true,
+      "candidate_sha": "7bca75159ee39ed74106744dc19f5c0dec4b82e1",
+      "detail": "In the containerized development workflow, the pairing-filtered tests passed 11/11; device_sessions integration tests passed 5/5; the complete Rust library suite passed 271 tests with 2 ignored; the Core binary suite passed 17/17. Coverage includes challenge-scoped failed-attempt throttling, uniform CSPRNG code generation, delayed polls after global revocation, concurrent exchange/revocation, session persistence and revocation, restricted socket routing, and forged Host/Origin rejection."
+    },
+    {
+      "name": "Office access tests and static checks",
+      "pass": true,
+      "candidate_sha": "7bca75159ee39ed74106744dc19f5c0dec4b82e1",
+      "detail": "Containerized legacy credential cleanup and Access Devices tests passed 12/12; TypeScript typecheck and Biome passed."
+    },
+    {
+      "name": "Compose policy and negative regressions",
+      "pass": true,
+      "candidate_sha": "48a1346f776086ec484905e69c9a7239b5f71649",
+      "detail": "The checker passed on both base and optional Tailscale configurations. All 27 tests passed with the Tailscale overlay; 27 passed with 5 Tailscale-only tests skipped on the base configuration. Regressions reject the former v1.102.4 image digest, Office socket volume mounts by Supervisor, Worker, Verifier, Reviewer, and Runtime, named and external named aliases resolving to software-factory_factory-office-socket, and implicit external Office socket volumes whose source key is either factory-office-socket or software-factory_factory-office-socket when mounted by Worker. Local podman-compose 1.6.0 lacks config --format json; its normalized YAML was converted to the checker’s JSON input shape for this author-run."
+    },
+    {
+      "name": "disposable rootless Podman Compose runtime",
+      "pass": true,
+      "candidate_sha": "7bca75159ee39ed74106744dc19f5c0dec4b82e1",
+      "project": "sf-access-repairs-e2e",
+      "detail": "A fresh project built and started the candidate with a dedicated port 18993 and disposable volumes. Core health returned HTTP 200 on host loopback. The Tailscale container ran v1.104.4 without credentials and remained NeedsLogin. From its uplink network namespace, direct probes to Core control/egress IPs on ports 8765 and 8768 were unreachable. A disposable probe attached to that same uplink network with only the read-only Office socket volume received HTTP 200 from /health over the Unix socket. The test project containers, networks, and volumes were removed with down -v."
+    },
+    {
+      "name": "real Chromium device pairing and revocation journey",
+      "pass": true,
+      "candidate_sha": "7bca75159ee39ed74106744dc19f5c0dec4b82e1",
+      "project": "sf-access-repairs-e2e",
+      "detail": "The existing personal-access.mjs journey ran in the pinned dev image against the real disposable Compose Core. It verified desktop session persistence across reload, owner approval using the matching verification code, an independent phone session, pairing replay rejection, owner rejection and cancellation, single-device revocation, revoke-all recovery behavior, unauthenticated forged proxy identity denial, no legacy token in browser storage, and viewport layouts at 1440, 834, and 390 pixels. A short-lived bootstrap code was passed only through the command environment and was not retained in evidence."
+    },
+    {
+      "name": "deterministic real Chromium Office journey",
+      "pass": true,
+      "candidate_sha": "7bca75159ee39ed74106744dc19f5c0dec4b82e1",
+      "detail": "cargo xtask e2e office passed in the containerized development workflow; the observed candidate reached ACCEPTED with journey candidate d0f1d4a5d0c2c12f8663b28fe457638bfaaa088d. This is general Office/Core smoke evidence, separate from the personal-access journey."
+    },
+    {
+      "name": "full Rust package test run",
+      "pass": false,
+      "candidate_sha": "7bca75159ee39ed74106744dc19f5c0dec4b82e1",
+      "detail": "cargo test -p factory-native --locked stopped in e2e_fixture_dispatch: 9 cases passed and 3 failed because the provider sandbox process exited before readiness. Failures were provider_backed_campaign_reaches_accepted_gate_with_source_and_tools, codex_fixture_runs_a_mediated_tool_turn_and_records_core_accounting, and model_lead_start_dispatches_through_supervisor_to_accepted_gate. The access-specific library, Core, and session suites passed separately."
+    }
+  ],
+  "not_tested": [
+    "Tailscale authentication, Serve configuration activation, or remote HTTPS through the tailnet",
+    "mobile-data access from a phone",
+    "independent verification or exact-SHA security review",
+    "Product Owner authorization to promote PRs #36 through #38",
+    "paid inference",
+    "deployment",
+    "Windows",
+    "SEC-01 isolation"
+  ],
+  "security_notes": [
+    "The requested Tailscale multi-architecture digest was verified from the official OCI registry and resolves at runtime to the recorded image ID and version 1.104.4. Tailscale TS-2026-016 and TS-2026-017 are cited in ADR-0027; the prior v1.102.4 pin is rejected by policy tests.",
+    "The Tailscale test node was not authenticated. The test proves local container network separation and read-only Unix socket access only; it does not prove Serve HTTPS behavior or tailnet authorization.",
+    "The rootless Compose package is not independently certified isolation. No SEC-01 claim is made.",
+    "No provider inference or billing operation was performed. No auth key, pairing code, session cookie, CSRF value, bootstrap code, or login URL is recorded here."
+  ],
+  "sources": [
+    "https://tailscale.com/security-bulletins",
+    "https://tailscale.com/changelog",
+    "https://tailscale.com/docs/features/containers/docker/docker-params"
+  ],
+  "independent_review": "PENDING_AFTER_ALIAS_HARDENING",
+  "promotion_status": "NOT_PROMOTED"
+}

@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "record": "personal-access-pairing-author-run",
+  "implementation_sha": "70ccc362525506ef86cd932192adfefc6ba515b5",
+  "date": "2026-10-28",
+  "environment": {
+    "host_os": "CachyOS",
+    "kernel": "7.3.0-3-cachyos",
+    "podman": "6.1.4 rootless",
+    "compose_provider": "podman-compose 1.6.0",
+    "node": "22.23.2 in software-factory-dev:local",
+    "browser": "Playwright Chromium 1248 with playwright-core 1.64.1"
+  },
+  "result": "PASS (author-run deterministic and real Chromium pairing evidence; mobile-data Tailscale UAT and independent acceptance are not tested)",
+  "status": "author_run",
+  "paid_inference": false,
+  "checks": [
+    {
+      "name": "deterministic Core and Office gates",
+      "pass": true,
+      "detail": "268 Rust library tests passed, 13 Core binary tests passed, Clippy is clean, Office typecheck and Biome pass, 66 Office tests pass and the production build succeeds"
+    },
+    {
+      "name": "restricted Office pairing listener",
+      "pass": true,
+      "detail": "the deterministic listener test proves access status requires an operator session, the current device is marked, a challenge can be claimed and approved with the matching code, the phone receives an independent session, the phone cookie is revoked, and the audit remains readable"
+    },
+    {
+      "name": "real desktop and phone Chromium journey",
+      "pass": true,
+      "detail": "desktop enrollment, reload persistence, Settings to Access & Devices, QR challenge, phone claim, matching-code approval, independent phone session, challenge replay rejection, owner rejection, owner cancellation, single-device revocation, revoke-all and 1440/834/390 px layout passed"
+    },
+    {
+      "name": "PWA cache and credential boundary",
+      "pass": true,
+      "detail": "the service worker registers with no cache entries; browser storage contains no operator token, bearer value, authorization value or session-shaped secret"
+    },
+    {
+      "name": "forged proxy identity",
+      "pass": true,
+      "detail": "a forged x-tailscale-user header on an unauthenticated project request returned 401"
+    },
+    {
+      "name": "revoked-session shell recovery",
+      "pass": true,
+      "detail": "a revoked phone cookie is cleared on the Office document request and the SPA renders its local recovery gate; protected API access remains denied"
+    },
+    {
+      "name": "audit and cancellation",
+      "pass": true,
+      "detail": "Core returns a bounded session and pairing audit; cancellation is terminal, expired approvals cannot be consumed, and neither action creates a phone session"
+    }
+  ],
+  "not_tested": [
+    "mobile-data access from the owner's phone over Tailscale (USER_PENDING)",
+    "independent verification and security review",
+    "paid inference",
+    "deployment",
+    "Windows",
+    "SEC-01 isolation"
+  ],
+  "security_notes": [
+    "The QR contains only a random challenge identifier. The phone receives a separate hashed poll capability, and Core creates a session only after the authenticated owner submits the matching verification code.",
+    "The phone session cookie is HttpOnly and SameSite=Strict. The CSRF token is a separate readable SameSite cookie used only in the x-factory-csrf header.",
+    "Revocation is immediate for protected API access. An invalid session cookie does not block the public Office shell; it is cleared so the app can show its recovery gate.",
+    "No pairing code, poll token, session cookie, CSRF value or operator credential is recorded in this evidence."
+  ],
+  "rebase_provenance": {
+    "tested_original_sha": "9afbb6f3620895c2815a91475b05b00d3b10b23a",
+    "rebased_sha": "70ccc362525506ef86cd932192adfefc6ba515b5",
+    "base_sha": "715349f80df8c8da9b56a4880bb6e3b056c3caa2",
+    "content_equivalent": true
+  }
+}

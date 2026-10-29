@@ -880,16 +880,72 @@ export interface SetupStatus {
 export interface DeviceSession {
   id: string;
   name: string;
-  createdAt: string;
-  lastActivityAt: string;
-  expiresAt: string;
+  createdAt: string | number;
+  lastActivityAt: string | number;
+  expiresAt: string | number;
 }
 
 export interface AuthSession {
   authenticated: boolean;
+  status?: string;
   bootstrapAvailable?: boolean;
   csrfToken?: string;
   device?: DeviceSession;
+}
+
+export interface AccessOverview {
+  local: { status: string };
+  tailscale: {
+    enabled: boolean;
+    status: string;
+    httpsEndpoint: string | null;
+    error: string | null;
+  };
+}
+
+export interface DeviceSessionView extends DeviceSession {
+  status: "PENDING" | "CONNECTED" | "CANCELLED" | string;
+  current?: boolean;
+  verificationCode?: string;
+}
+
+export interface DeviceChallenge {
+  challengeId: string;
+  verificationCode: string;
+  expiresAt: string | number;
+}
+
+export interface DeviceClaim {
+  deviceId: string;
+  verificationCode: string;
+  status:
+    | "PENDING"
+    | "APPROVED"
+    | "REJECTED"
+    | "CANCELLED"
+    | "EXPIRED"
+    | string;
+  expiresAt: string | number;
+  pollToken: string;
+}
+
+export interface DeviceClaimPoll {
+  status:
+    | "PENDING"
+    | "APPROVED"
+    | "REJECTED"
+    | "CANCELLED"
+    | "EXPIRED"
+    | string;
+  verificationCode?: string;
+  expiresAt?: string | number;
+}
+
+export interface SecurityAuditEntry {
+  action: string;
+  actor: string;
+  deviceName: string | null;
+  occurredAt: string | number;
 }
 
 let csrfToken: string | null = null;
@@ -968,6 +1024,33 @@ export async function logoutCurrentDevice(): Promise<void> {
 export async function logoutAllDevices(): Promise<void> {
   await authPost("/auth/logout-all");
   csrfToken = null;
+}
+
+async function accessRequest<T>(
+  path: string,
+  init: RequestInit = {},
+): Promise<T> {
+  const headers = new Headers(init.headers);
+  if (init.body !== undefined) headers.set("content-type", "application/json");
+  const method = (init.method ?? "GET").toUpperCase();
+  if (method !== "GET" && method !== "HEAD") {
+    const token = csrfToken ?? readCsrfCookie();
+    if (token) headers.set("x-factory-csrf", token);
+  }
+  const response = await fetch(`${BASE}${path}`, {
+    ...init,
+    credentials: "same-origin",
+    headers,
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new CoreApiError(
+      response.status,
+      messageFromBody(response.status, text),
+    );
+  }
+  if (response.status === 204) return undefined as T;
+  return (await response.json()) as T;
 }
 
 async function authPost(path: string): Promise<void> {
@@ -1049,6 +1132,48 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 export const coreApi = {
+  getAccessOverview: () => accessRequest<AccessOverview>("/auth/access"),
+  createDeviceChallenge: () =>
+    accessRequest<DeviceChallenge>("/auth/device-challenges", {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
+  cancelDeviceChallenge: (challengeId: string) =>
+    accessRequest<DeviceSessionView>(
+      `/auth/device-challenges/${encodeURIComponent(challengeId)}/cancel`,
+      { method: "POST", body: JSON.stringify({}) },
+    ),
+  listDeviceSessions: () =>
+    accessRequest<{ devices: DeviceSessionView[] }>("/auth/devices"),
+  getSecurityAudit: () =>
+    accessRequest<{ entries: SecurityAuditEntry[] }>("/auth/devices/audit"),
+  approveDevice: (deviceId: string, verificationCode: string) =>
+    accessRequest<DeviceSessionView>(
+      `/auth/devices/${encodeURIComponent(deviceId)}/approve`,
+      { method: "POST", body: JSON.stringify({ verificationCode }) },
+    ),
+  rejectDevice: (deviceId: string) =>
+    accessRequest<DeviceSessionView>(
+      `/auth/devices/${encodeURIComponent(deviceId)}/reject`,
+      { method: "POST", body: JSON.stringify({}) },
+    ),
+  revokeDevice: (deviceId: string) =>
+    accessRequest<void>(`/auth/devices/${encodeURIComponent(deviceId)}`, {
+      method: "DELETE",
+    }),
+  claimDevice: (challengeId: string, deviceName: string) =>
+    accessRequest<DeviceClaim>(
+      `/auth/device-claims/${encodeURIComponent(challengeId)}`,
+      {
+        method: "POST",
+        body: JSON.stringify({ deviceName }),
+      },
+    ),
+  pollDeviceClaim: (challengeId: string, pollToken: string) =>
+    accessRequest<DeviceClaimPoll>(
+      `/auth/device-claims/${encodeURIComponent(challengeId)}/poll`,
+      { method: "POST", body: JSON.stringify({ pollToken }) },
+    ),
   health: () => request<Health>("/health"),
   listProjects: () => request<Project[]>("/projects"),
   listProviders: () =>

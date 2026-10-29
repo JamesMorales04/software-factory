@@ -111,7 +111,8 @@ export const NAV_GROUPS: NavGroup[] = [
         to: "/settings",
         label: "Settings",
         icon: Settings,
-        keywords: "providers models credentials runtime policy",
+        keywords:
+          "providers models credentials runtime policy access devices sessions tailscale pairing",
       },
     ],
   },

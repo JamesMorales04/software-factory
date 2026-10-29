@@ -262,7 +262,7 @@ class ComposePolicyTests(unittest.TestCase):
         self.assertEqual(serve["TCP"], {"443": {"HTTPS": True}})
         self.assertEqual(
             serve["Web"]["${TS_CERT_DOMAIN}:443"]["Handlers"]["/"],
-            {"Proxy": "http://core:8768"},
+            {"Proxy": "unix:/office-socket/office.sock"},
         )
         self.assertEqual(serve["AllowFunnel"], {"${TS_CERT_DOMAIN}:443": False})
         self.assertNotIn("Funnel", serve)
@@ -341,7 +341,19 @@ class ComposePolicyTests(unittest.TestCase):
         )
         self.assert_rejected(
             lambda c: c["services"]["tailscale"].__setitem__("networks", {"factory-control": {}}),
-            "must use only the isolated Office and uplink networks",
+            "must not share any Core network",
+        )
+
+    def test_rejects_tailscale_before_unix_backend_security_fixes(self):
+        if "tailscale" not in base_config()["services"]:
+            return
+        self.assert_rejected(
+            lambda c: c["services"]["tailscale"].__setitem__(
+                "image",
+                "docker.io/tailscale/tailscale@sha256:"
+                "2667499ed87ae29218f292556ba062918402dd5e92e93637af14867e4df12dd3",
+            ),
+            "official image must remain pinned to the reviewed digest",
         )
         self.assert_rejected(
             lambda c: c["services"]["tailscale"]["volumes"].append(
@@ -352,7 +364,7 @@ class ComposePolicyTests(unittest.TestCase):
                     "read_only": True,
                 }
             ),
-            "mounts must be limited to persistent state and read-only Serve config",
+            "mounts must be limited to persistent state, the read-only Office socket and Serve config",
         )
         self.assert_rejected(
             lambda c: c["services"]["core"]["environment"].__setitem__("FACTORY_TRUSTED_ORIGINS", "https://*.ts.net"),
@@ -368,13 +380,67 @@ class ComposePolicyTests(unittest.TestCase):
             lambda c: c["services"]["core"]["environment"].__setitem__(
                 "FACTORY_OFFICE_ACCESS_BIND", "0.0.0.0:8765"
             ),
-            "restricted Office listener",
+            "must not bind a TCP port",
         )
         self.assert_rejected(
-            lambda c: c["services"]["supervisor"]
-            .setdefault("networks", {})
-            .__setitem__("factory-office-private", {}),
-            "only Core and Tailscale may be members",
+            lambda c: c["services"]["core"]["environment"].__setitem__(
+                "FACTORY_OFFICE_ACCESS_SOCKET", "/tmp/office.sock"
+            ),
+            "Office socket listener path is required",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["tailscale"]["networks"].__setitem__(
+                "factory-control", {}
+            ),
+            "must not share any Core network",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["tailscale"]["networks"].__setitem__(
+                "unexpected-network", {}
+            ),
+            "must use only the dedicated uplink network",
+        )
+
+    def test_rejects_wildcard_or_misplaced_full_control_listener(self):
+        self.assert_rejected(
+            lambda c: c["services"]["core"]["environment"].__setitem__(
+                "FACTORY_BIND", "0.0.0.0:8765"
+            ),
+            "full control listener must bind",
+        )
+        if "tailscale" not in base_config()["services"]:
+            return
+        self.assert_rejected(
+            lambda c: c["services"]["core"]["environment"].__setitem__(
+                "FACTORY_BIND", "core-office:8765"
+            ),
+            "full control listener must bind",
+        )
+
+    def test_rejects_office_tcp_listener(self):
+        self.assert_rejected(
+            lambda c: c["services"]["core"]["environment"].__setitem__(
+                "FACTORY_OFFICE_ACCESS_BIND", "0.0.0.0:8768"
+            ),
+            "must not bind a TCP port",
+        )
+        if "tailscale" not in base_config()["services"]:
+            return
+        self.assert_rejected(
+            lambda c: [
+                volume.__setitem__("read_only", False)
+                for volume in c["services"]["tailscale"]["volumes"]
+                if volume.get("source") == "factory-office-socket"
+            ],
+            "read-only Office socket",
+        )
+
+    def test_rejects_core_network_address_overrides(self):
+        self.assert_rejected(
+            lambda c: c["services"]["core"]["networks"]["factory-control"].__setitem__(
+                "ipv4_address", "10.213.5.10"
+            ),
+            "address overrides are forbidden",
         )
 
     def test_rejects_tailscale_route_proxy_and_feature_environment(self):
@@ -417,9 +483,9 @@ class ComposePolicyTests(unittest.TestCase):
                 )
         self.assert_rejected(
             lambda c: c["services"]["tailscale"]["networks"].__setitem__(
-                "factory-office-private", {"aliases": ["core"]}
+                "factory-tailscale-uplink", {"aliases": ["core"]}
             ),
-            "network aliases and address overrides are forbidden",
+            "tailscale: network aliases are forbidden",
         )
 
 

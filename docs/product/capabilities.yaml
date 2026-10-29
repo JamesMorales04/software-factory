@@ -279,6 +279,7 @@ milestones:
   - CAP-050
   - CAP-051
   - CAP-052
+  - CAP-054
   exclusions:
   - Generic SaaS dashboard scope
   - invented backend capability or decorative actions
@@ -2446,7 +2447,7 @@ capabilities:
     - .github/scripts/check-compose-policy.py
     - .github/scripts/test_check_compose_policy.py
   acceptance:
-    deterministic: The pinned official Tailscale service uses userspace networking, a persistent identity volume, private HTTPS Serve and a restricted Office listener; control routes and forged Host or Origin requests are denied.
+    deterministic: The pinned official Tailscale service uses userspace networking, a persistent identity volume and private HTTPS Serve to a restricted Office Unix socket; it shares no network with Core, so Core's control and egress addresses are unreachable from the Tailscale container. Control routes and forged Host or Origin requests are denied.
     real: An authenticated Office journey works over the enrolled tailnet HTTPS origin with Secure session cookies, while tailnet membership alone is unauthenticated and mobile-data reachability is confirmed by the owner.
   evidence:
     deterministic:
@@ -2458,6 +2459,61 @@ capabilities:
   limitations:
   - Only Tailscale Serve is supported; public Funnel, host networking, privileged mode and a host Podman socket are forbidden.
   - Tailnet device identity does not confer Factory operator authorization; a separate Core device session is required.
+  - Because Core shares no network with Tailscale, Access & Devices reports the configured endpoint as CONFIGURED; it does not claim a live probe of the Serve path.
   - The optional overlay does not start for the default local-only installation.
   blockers:
   - Mobile-data UAT, independent security review and deployment remain pending.
+
+- id: CAP-054
+  name: Personal Access and Device Sessions
+  category: Product
+  purpose: Operators enroll browsers without exposing permanent credentials, pair independent devices through explicit owner approval, and inspect optional private remote access
+  product_objective: Secure local-first multi-device Factory access
+  decision_status: approved
+  implementation_status: in_progress
+  verification:
+    deterministic: verified
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Office
+  dependencies:
+  - CAP-011
+  - CAP-045
+  - CAP-052
+  target_milestone: F1-S9
+  refs:
+    adr:
+    - docs/architecture/decisions/ADR-0025-container-native-and-office-parity.md
+    - docs/architecture/decisions/ADR-0028-device-pairing-approval-boundary.md
+    contract:
+    - docs/product/office-design-system.md
+    - docs/operations/compose-deployment.md
+    source:
+    - office/src/App.tsx
+    - office/src/coreApi.ts
+    - office/src/views/AccessDevices.tsx
+    - office/src/views/DevicePairClaim.tsx
+    - office/src/styles/access.css
+    test:
+    - office/src/coreApi.auth.test.ts
+    - office/src/views/AccessDevices.test.tsx
+    - office/src/views/DevicePairClaim.test.tsx
+    - office/e2e-browser/personal-access.mjs
+  acceptance:
+    deterministic: Office uses the cookie session contract with CSRF headers, renders device pairing and revocation against Core APIs, strips the public challenge identifier from phone browser history before submitting, and keeps Core responses network-only in the PWA service worker.
+    real: A fresh Compose installation enrolls the owner, preserves desktop session across restart, pairs a phone using code confirmation, approves and rejects requests, revokes sessions and inspects access at 1440px, 834px and 390px; remote mobile-data acceptance requires private HTTPS through Tailscale and no Funnel or public service exposure.
+  evidence:
+    deterministic:
+    - docs/evidence/personal-access-pairing-2026-10-28.json
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations:
+  - Tailscale status reports the configured private Office endpoint as CONFIGURED; Core has no network path to probe it and does not claim reachability from mobile data. HTTPS certificate hostnames appear in public Certificate Transparency logs.
+  - The service worker does not cache API responses and does not offer offline authorization.
+  - The Office shell remains available without a session so recovery and enrollment can render; protected API access still fails closed.
+  blockers:
+  - Mobile-data Tailscale UAT, independent review and Product Owner approval remain pending.
