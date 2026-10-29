@@ -103,6 +103,8 @@ CREATE TABLE IF NOT EXISTS inference_reservations (
   request_sha256 TEXT NOT NULL CHECK (length(request_sha256) = 64),
   role TEXT NOT NULL CHECK
     (role IN ('LEAD', 'IMPLEMENTER', 'SEMANTIC_REVIEWER', 'EVALUATION', 'AUXILIARY')),
+  authorization_revision INTEGER NOT NULL CHECK (authorization_revision > 0),
+  scope_sha256 TEXT NOT NULL CHECK (length(scope_sha256) = 64),
   principal_id TEXT NOT NULL CHECK (length(principal_id) > 0),
   parent_operation_id TEXT,
   provider TEXT NOT NULL CHECK (length(provider) > 0),
@@ -139,6 +141,8 @@ WHEN OLD.id <> NEW.id
   OR OLD.idempotency_key <> NEW.idempotency_key
   OR OLD.request_sha256 <> NEW.request_sha256
   OR OLD.role <> NEW.role
+  OR OLD.authorization_revision <> NEW.authorization_revision
+  OR OLD.scope_sha256 <> NEW.scope_sha256
   OR OLD.principal_id <> NEW.principal_id
   OR OLD.parent_operation_id IS NOT NEW.parent_operation_id
   OR OLD.provider <> NEW.provider

@@ -336,6 +336,20 @@ impl Database {
         let ledger_envelope_id =
             super::inference_ledger::envelope_for_campaign_in_tx(&mut transaction, &campaign_id)
                 .await?;
+        let ledger_context = if let Some(envelope_id) = &ledger_envelope_id {
+            Some(
+                super::inference_ledger::envelope_authorization_context_in_tx(
+                    &mut transaction,
+                    envelope_id,
+                )
+                .await?
+                .ok_or(Error::Conflict(
+                    "inference envelope has no durable authorization",
+                ))?,
+            )
+        } else {
+            None
+        };
         let ledger_pricing = if ledger_envelope_id.is_some() {
             let row: Option<(i64, i64, i64)> = sqlx::query_as::query_as(
                 "SELECT input_micros_per_million,output_micros_per_million,revision
@@ -434,6 +448,9 @@ impl Database {
                 let (input_rate, output_rate, revision) = ledger_pricing.ok_or(
                     Error::Validation("provider turn pricing basis is missing".into()),
                 )?;
+                let (authorization_revision, scope_sha256) = ledger_context.clone().ok_or(
+                    Error::Conflict("inference envelope has no durable authorization"),
+                )?;
                 let pricing_snapshot_json = serde_json::json!({
                     "basis": "provider-settings",
                     "revision": revision,
@@ -463,6 +480,10 @@ impl Database {
                         upper_bound_micros: UsdMicros::new(bound)
                             .map_err(|_| Error::Invalid("provider turn ledger bound"))?,
                         expires_at_ms,
+                        authorization_revision,
+                        scope_sha256,
+                        worker_id: Some(worker_id.to_owned()),
+                        generation: Some(generation),
                     },
                     now_ms,
                 )
@@ -2773,6 +2794,21 @@ mod ledger_link_tests {
         .await
         .unwrap();
         let ledger_reservation_id = ledger_reservation_id.unwrap();
+        let (ledger_worker, ledger_generation, ledger_revision): (
+            Option<String>,
+            Option<i64>,
+            i64,
+        ) = sqlx::query_as::query_as(
+            "SELECT worker_id,generation,authorization_revision
+                 FROM inference_reservations WHERE id=?1",
+        )
+        .bind(&ledger_reservation_id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(ledger_worker.as_deref(), Some("worker"));
+        assert_eq!(ledger_generation, Some(1));
+        assert_eq!(ledger_revision, 1);
         db.bind_provider_turn(&ProviderTurnBindingInput {
             reservation_id: turn.reservation_id.clone(),
             session_record_id: session.clone(),

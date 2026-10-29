@@ -22,10 +22,10 @@ use crate::execution_policy::{
 };
 use crate::inference_ledger::{
     CampaignEnvelopeBindingInput, EnvelopeSnapshot, InferenceEnvelopeRecord,
-    InferenceReservationRecord, InferenceSpendingBreakdown, MarkInferenceDispatchedInput,
-    NewInferenceAuthorization, NewInferenceEnvelope, ReconcileInferenceInput,
-    ReconciliationOutcome, ReservationAmounts, RevokeInferenceEnvelopeInput, project_breakdown,
-    project_spending, spending_totals, validate_reserve_input, validate_settlement,
+    InferenceReservationRecord, MarkInferenceDispatchedInput, NewInferenceAuthorization,
+    NewInferenceEnvelope, ReconcileInferenceInput, ReconciliationOutcome, ReservationAmounts,
+    RevokeInferenceEnvelopeInput, project_spending, spending_totals, validate_reserve_input,
+    validate_settlement,
 };
 
 #[derive(Debug, Clone)]
@@ -74,12 +74,15 @@ struct ReservationRow {
     operation_id: String,
     idempotency_key: String,
     request_sha256: String,
+    authorization_revision: i64,
+    scope_sha256: String,
     role: InferenceRole,
     principal_id: String,
     parent_operation_id: Option<String>,
     provider: String,
     model: String,
     pricing_revision: String,
+    pricing_snapshot_json: String,
     upper_bound_micros: UsdMicros,
     settled_micros: Option<UsdMicros>,
     state: ReservationState,
@@ -99,12 +102,17 @@ impl ReservationRow {
             reservation_id: self.id.clone(),
             envelope_id: self.envelope_id.clone(),
             operation_id: self.operation_id.clone(),
+            idempotency_key: self.idempotency_key.clone(),
+            request_sha256: self.request_sha256.clone(),
             role: self.role,
             principal_id: self.principal_id.clone(),
             parent_operation_id: self.parent_operation_id.clone(),
             provider: self.provider.clone(),
             model: self.model.clone(),
             pricing_revision: self.pricing_revision.clone(),
+            pricing_snapshot_json: self.pricing_snapshot_json.clone(),
+            authorization_revision: self.authorization_revision,
+            scope_sha256: self.scope_sha256.clone(),
             upper_bound_micros: self.upper_bound_micros,
             settled_micros: self.settled_micros,
             state: self.state,
@@ -113,6 +121,7 @@ impl ReservationRow {
             dispatched_at_ms: self.dispatched_at_ms,
             provider_request_id: self.provider_request_id.clone(),
             expires_at_ms: self.expires_at_ms,
+            settlement_sha256: self.settlement_sha256.clone(),
             created_at_ms: self.created_at_ms,
             updated_at_ms: self.updated_at_ms,
         }
@@ -500,21 +509,6 @@ impl Database {
         Ok(status)
     }
 
-    /// Role and provider attribution for Office and diagnostics.
-    pub async fn inference_spending_breakdown(
-        &self,
-        envelope_id: &str,
-    ) -> Result<InferenceSpendingBreakdown, Error> {
-        let _write = self.write_lock.lock().await;
-        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        expire_inference_in_tx(&mut transaction, Utc::now().timestamp_millis()).await?;
-        let rows = load_envelope_reservations(&mut transaction, envelope_id).await?;
-        let amounts: Vec<ReservationAmounts> = rows.iter().map(ReservationRow::amounts).collect();
-        let breakdown = project_breakdown(envelope_id, &amounts).map_err(ledger_error)?;
-        transaction.commit().await?;
-        Ok(breakdown)
-    }
-
     pub async fn inference_envelope_for_request(
         &self,
         request_id: &str,
@@ -569,17 +563,6 @@ pub(crate) async fn reserve_inference_in_tx(
     let envelope = load_envelope(connection, &input.envelope_id)
         .await?
         .ok_or(Error::NotFound)?;
-    match envelope.state {
-        EnvelopeState::Active => {}
-        EnvelopeState::Overdrawn => {
-            return Err(Error::Forbidden(
-                "inference spending authorization is exhausted".into(),
-            ));
-        }
-        EnvelopeState::Revoked | EnvelopeState::Closed => {
-            return Err(Error::Forbidden("inference envelope is not active".into()));
-        }
-    }
     if let Some(existing) = load_reservation_by_identity(
         connection,
         &input.envelope_id,
@@ -597,6 +580,8 @@ pub(crate) async fn reserve_inference_in_tx(
             || existing.provider != input.provider
             || existing.model != input.model
             || existing.pricing_revision != input.pricing_revision
+            || existing.authorization_revision != input.authorization_revision
+            || existing.scope_sha256 != input.scope_sha256
             || existing.upper_bound_micros != input.upper_bound_micros
             || existing.expires_at_ms != input.expires_at_ms
         {
@@ -619,6 +604,34 @@ pub(crate) async fn reserve_inference_in_tx(
                 return Ok(existing.record());
             }
         }
+    }
+    match envelope.state {
+        EnvelopeState::Active => {}
+        EnvelopeState::Overdrawn => {
+            return Err(Error::Forbidden(
+                "inference spending authorization is exhausted".into(),
+            ));
+        }
+        EnvelopeState::Revoked | EnvelopeState::Closed => {
+            return Err(Error::Forbidden("inference envelope is not active".into()));
+        }
+    }
+    // The caller's expected revision and scope are re-read from durable state.
+    // A stale expectation can never create a new hold.
+    if input.authorization_revision != envelope.authorization_revision {
+        return Err(Error::Conflict("inference authorization revision is stale"));
+    }
+    let Some(stored_scope) =
+        load_authorization_scope(connection, &envelope.id, input.authorization_revision).await?
+    else {
+        return Err(Error::Conflict(
+            "inference authorization revision is not recorded",
+        ));
+    };
+    if stored_scope != input.scope_sha256 {
+        return Err(Error::Conflict(
+            "inference scope digest does not match the durable authorization",
+        ));
     }
     if input.expires_at_ms <= now_ms {
         return Err(Error::Validation(
@@ -659,10 +672,12 @@ pub(crate) async fn reserve_inference_in_tx(
     let reservation_id = Uuid::new_v4().to_string();
     sqlx::query::query(
         "INSERT INTO inference_reservations
-         (id,envelope_id,operation_id,idempotency_key,request_sha256,role,principal_id,
-          parent_operation_id,provider,model,pricing_revision,pricing_snapshot_json,
-          upper_bound_micros,settled_micros,state,expires_at_ms,created_at_ms,updated_at_ms)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,NULL,'RESERVED',?14,?15,?15)",
+         (id,envelope_id,operation_id,idempotency_key,request_sha256,role,
+          authorization_revision,scope_sha256,principal_id,parent_operation_id,provider,model,
+          pricing_revision,pricing_snapshot_json,upper_bound_micros,settled_micros,state,
+          worker_id,generation,expires_at_ms,created_at_ms,updated_at_ms)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,NULL,'RESERVED',
+                 ?16,?17,?18,?19,?19)",
     )
     .bind(&reservation_id)
     .bind(&input.envelope_id)
@@ -670,6 +685,8 @@ pub(crate) async fn reserve_inference_in_tx(
     .bind(&input.idempotency_key)
     .bind(&input.request_sha256)
     .bind(input.role.as_str())
+    .bind(input.authorization_revision)
+    .bind(&input.scope_sha256)
     .bind(&input.principal_id)
     .bind(&input.parent_operation_id)
     .bind(&input.provider)
@@ -677,6 +694,8 @@ pub(crate) async fn reserve_inference_in_tx(
     .bind(&input.pricing_revision)
     .bind(&input.pricing_snapshot_json)
     .bind(micros_to_i64(input.upper_bound_micros)?)
+    .bind(&input.worker_id)
+    .bind(input.generation)
     .bind(input.expires_at_ms)
     .bind(now_ms)
     .execute(&mut *connection)
@@ -728,6 +747,11 @@ pub(crate) async fn mark_inference_dispatched_in_tx(
         }
         return Err(Error::Conflict(
             "inference dispatch intent conflicts with the recorded dispatch",
+        ));
+    }
+    if reservation.worker_id != input.worker_id || reservation.generation != input.generation {
+        return Err(Error::Conflict(
+            "inference dispatch fencing differs from the reservation",
         ));
     }
     if reservation.expires_at_ms <= now_ms {
@@ -1434,10 +1458,11 @@ async fn load_envelope_reservations(
     envelope_id: &str,
 ) -> Result<Vec<ReservationRow>, Error> {
     let rows = sqlx::query::query(
-        "SELECT id,envelope_id,operation_id,idempotency_key,request_sha256,role,principal_id,
-                parent_operation_id,provider,model,pricing_revision,upper_bound_micros,
-                settled_micros,state,worker_id,generation,dispatched_at_ms,provider_request_id,
-                expires_at_ms,settlement_sha256,created_at_ms,updated_at_ms
+        "SELECT id,envelope_id,operation_id,idempotency_key,request_sha256,role,
+                authorization_revision,scope_sha256,principal_id,parent_operation_id,provider,model,
+                pricing_revision,pricing_snapshot_json,upper_bound_micros,settled_micros,state,
+                worker_id,generation,dispatched_at_ms,provider_request_id,expires_at_ms,
+                settlement_sha256,created_at_ms,updated_at_ms
          FROM inference_reservations WHERE envelope_id=?1 ORDER BY created_at_ms,id",
     )
     .bind(envelope_id)
@@ -1493,10 +1518,11 @@ async fn load_reservation(
     reservation_id: &str,
 ) -> Result<Option<ReservationRow>, Error> {
     let row = sqlx::query::query(
-        "SELECT id,envelope_id,operation_id,idempotency_key,request_sha256,role,principal_id,
-                parent_operation_id,provider,model,pricing_revision,upper_bound_micros,
-                settled_micros,state,worker_id,generation,dispatched_at_ms,provider_request_id,
-                expires_at_ms,settlement_sha256,created_at_ms,updated_at_ms
+        "SELECT id,envelope_id,operation_id,idempotency_key,request_sha256,role,
+                authorization_revision,scope_sha256,principal_id,parent_operation_id,provider,model,
+                pricing_revision,pricing_snapshot_json,upper_bound_micros,settled_micros,state,
+                worker_id,generation,dispatched_at_ms,provider_request_id,expires_at_ms,
+                settlement_sha256,created_at_ms,updated_at_ms
          FROM inference_reservations WHERE id=?1",
     )
     .bind(reservation_id)
@@ -1512,10 +1538,11 @@ async fn load_reservation_by_identity(
     operation_id: &str,
 ) -> Result<Option<ReservationRow>, Error> {
     let row = sqlx::query::query(
-        "SELECT id,envelope_id,operation_id,idempotency_key,request_sha256,role,principal_id,
-                parent_operation_id,provider,model,pricing_revision,upper_bound_micros,
-                settled_micros,state,worker_id,generation,dispatched_at_ms,provider_request_id,
-                expires_at_ms,settlement_sha256,created_at_ms,updated_at_ms
+        "SELECT id,envelope_id,operation_id,idempotency_key,request_sha256,role,
+                authorization_revision,scope_sha256,principal_id,parent_operation_id,provider,model,
+                pricing_revision,pricing_snapshot_json,upper_bound_micros,settled_micros,state,
+                worker_id,generation,dispatched_at_ms,provider_request_id,expires_at_ms,
+                settlement_sha256,created_at_ms,updated_at_ms
          FROM inference_reservations
          WHERE envelope_id=?1 AND (idempotency_key=?2 OR operation_id=?3)
          LIMIT 1",
@@ -1535,6 +1562,39 @@ struct AuthorizationRow {
     actor: String,
     scope_sha256: String,
     evidence_sha256: String,
+}
+
+async fn load_authorization_scope(
+    connection: &mut SqliteConnection,
+    envelope_id: &str,
+    revision: i64,
+) -> Result<Option<String>, Error> {
+    let row: Option<(String,)> = sqlx::query_as::query_as(
+        "SELECT scope_sha256 FROM inference_authorizations
+         WHERE envelope_id=?1 AND revision=?2",
+    )
+    .bind(envelope_id)
+    .bind(revision)
+    .fetch_optional(&mut *connection)
+    .await?;
+    Ok(row.map(|(scope,)| scope))
+}
+
+/// Durable authorization revision and frozen scope for a request envelope.
+pub(crate) async fn envelope_authorization_context_in_tx(
+    connection: &mut SqliteConnection,
+    envelope_id: &str,
+) -> Result<Option<(i64, String)>, Error> {
+    let envelope = load_envelope(connection, envelope_id).await?;
+    let Some(envelope) = envelope else {
+        return Ok(None);
+    };
+    let Some(scope) =
+        load_authorization_scope(connection, envelope_id, envelope.authorization_revision).await?
+    else {
+        return Ok(None);
+    };
+    Ok(Some((envelope.authorization_revision, scope)))
 }
 
 async fn load_authorization_by_key(
@@ -1584,12 +1644,15 @@ fn reservation_from_row(row: &sqlx_sqlite::SqliteRow) -> Result<ReservationRow, 
         operation_id: row.try_get("operation_id")?,
         idempotency_key: row.try_get("idempotency_key")?,
         request_sha256: row.try_get("request_sha256")?,
+        authorization_revision: row.try_get("authorization_revision")?,
+        scope_sha256: row.try_get("scope_sha256")?,
         role: crate::inference_ledger::parse_role(&role).map_err(ledger_error)?,
         principal_id: row.try_get("principal_id")?,
         parent_operation_id: row.try_get("parent_operation_id")?,
         provider: row.try_get("provider")?,
         model: row.try_get("model")?,
         pricing_revision: row.try_get("pricing_revision")?,
+        pricing_snapshot_json: row.try_get("pricing_snapshot_json")?,
         upper_bound_micros: micros_from_i64(row.try_get("upper_bound_micros")?)?,
         settled_micros: row
             .try_get::<Option<i64>, _>("settled_micros")?
@@ -1716,6 +1779,10 @@ mod tests {
             pricing_snapshot_json: "{}".into(),
             upper_bound_micros: UsdMicros::new(bound).unwrap(),
             expires_at_ms,
+            authorization_revision: 1,
+            scope_sha256: "a".repeat(64),
+            worker_id: None,
+            generation: None,
         }
     }
 
@@ -1790,6 +1857,14 @@ mod tests {
         let replay = db.reserve_inference(&input).await.unwrap();
         assert_eq!(replay.reservation_id, first.reservation_id);
         assert_eq!(replay.state, ReservationState::Reserved);
+        assert_eq!(replay.idempotency_key, input.idempotency_key);
+        assert_eq!(replay.request_sha256, input.request_sha256);
+        assert_eq!(replay.authorization_revision, 1);
+        let detail = db
+            .inference_reservation(&replay.reservation_id)
+            .await
+            .unwrap();
+        assert_eq!(detail.scope_sha256, "a".repeat(64));
 
         let mut conflicting_digest = input.clone();
         conflicting_digest.request_sha256 = "b".repeat(64);
@@ -1799,8 +1874,31 @@ mod tests {
         ));
         let mut conflicting_identity = input.clone();
         conflicting_identity.operation_id = "other-operation".into();
+        conflicting_identity.authorization_revision = 2;
         assert!(matches!(
             db.reserve_inference(&conflicting_identity).await,
+            Err(Error::Conflict(_))
+        ));
+        let mut wrong_scope = reserve_input(
+            &envelope_id,
+            "operation-scope",
+            "idempotency-scope",
+            &"d".repeat(64),
+            1_000,
+            InferenceRole::Lead,
+            future_ms(60_000),
+        );
+        wrong_scope.scope_sha256 = "e".repeat(64);
+        assert!(matches!(
+            db.reserve_inference(&wrong_scope).await,
+            Err(Error::Conflict(_))
+        ));
+        let mut stale_revision = wrong_scope;
+        stale_revision.operation_id = "operation-revision".into();
+        stale_revision.idempotency_key = "idempotency-revision".into();
+        stale_revision.authorization_revision = 2;
+        assert!(matches!(
+            db.reserve_inference(&stale_revision).await,
             Err(Error::Conflict(_))
         ));
         let status = db.inference_spending_status(&envelope_id).await.unwrap();
@@ -1916,18 +2014,18 @@ mod tests {
         let db = Database::open(&path).await.unwrap();
         seed_project(&db, "project").await;
         let (envelope_id, _) = create_envelope(&db, "request-revocation", 10_000).await;
-        let reservation = db
-            .reserve_inference(&reserve_input(
-                &envelope_id,
-                "operation",
-                "idempotency",
-                &"a".repeat(64),
-                4_000,
-                InferenceRole::Implementer,
-                future_ms(60_000),
-            ))
-            .await
-            .unwrap();
+        let mut evidence_turn = reserve_input(
+            &envelope_id,
+            "operation",
+            "idempotency",
+            &"a".repeat(64),
+            4_000,
+            InferenceRole::Implementer,
+            future_ms(60_000),
+        );
+        evidence_turn.worker_id = Some("worker".into());
+        evidence_turn.generation = Some(1);
+        let reservation = db.reserve_inference(&evidence_turn).await.unwrap();
         let revoke = RevokeInferenceEnvelopeInput {
             envelope_id: envelope_id.clone(),
             actor: "operator".into(),
@@ -2040,18 +2138,18 @@ mod tests {
             let db = Database::open(&path).await.unwrap();
             seed_project(&db, "project").await;
             let (envelope_id, _) = create_envelope(&db, "request-ambiguous", 10_000).await;
-            let reservation = db
-                .reserve_inference(&reserve_input(
-                    &envelope_id,
-                    "operation",
-                    "idempotency",
-                    &"a".repeat(64),
-                    3_000,
-                    InferenceRole::Implementer,
-                    expires,
-                ))
-                .await
-                .unwrap();
+            let mut uncertain = reserve_input(
+                &envelope_id,
+                "operation",
+                "idempotency",
+                &"a".repeat(64),
+                3_000,
+                InferenceRole::Implementer,
+                expires,
+            );
+            uncertain.worker_id = Some("worker".into());
+            uncertain.generation = Some(1);
+            let reservation = db.reserve_inference(&uncertain).await.unwrap();
             db.mark_inference_dispatched(&MarkInferenceDispatchedInput {
                 reservation_id: reservation.reservation_id.clone(),
                 worker_id: Some("worker".into()),
@@ -2087,18 +2185,19 @@ mod tests {
             .unwrap();
         assert_eq!(record.state, ReservationState::Ambiguous);
         let envelope_id = record.envelope_id.clone();
+        let mut replay = reserve_input(
+            &envelope_id,
+            "operation",
+            "idempotency",
+            &"a".repeat(64),
+            3_000,
+            InferenceRole::Implementer,
+            expires,
+        );
+        replay.worker_id = Some("worker".into());
+        replay.generation = Some(1);
         assert!(matches!(
-            reopened
-                .reserve_inference(&reserve_input(
-                    &envelope_id,
-                    "operation",
-                    "idempotency",
-                    &"a".repeat(64),
-                    3_000,
-                    InferenceRole::Implementer,
-                    expires,
-                ))
-                .await,
+            reopened.reserve_inference(&replay).await,
             Err(Error::Forbidden(_))
         ));
         assert!(matches!(
@@ -2196,18 +2295,18 @@ mod tests {
             Err(Error::Conflict(_))
         ));
 
-        let uncertain = db
-            .reserve_inference(&reserve_input(
-                &envelope_id,
-                "operation-uncertain",
-                "idempotency-uncertain",
-                &"c".repeat(64),
-                3_000,
-                InferenceRole::Auxiliary,
-                future_ms(60_000),
-            ))
-            .await
-            .unwrap();
+        let mut uncertain_input = reserve_input(
+            &envelope_id,
+            "operation-uncertain",
+            "idempotency-uncertain",
+            &"c".repeat(64),
+            3_000,
+            InferenceRole::Implementer,
+            future_ms(60_000),
+        );
+        uncertain_input.worker_id = Some("worker".into());
+        uncertain_input.generation = Some(2);
+        let uncertain = db.reserve_inference(&uncertain_input).await.unwrap();
         db.mark_inference_dispatched(&MarkInferenceDispatchedInput {
             reservation_id: uncertain.reservation_id.clone(),
             worker_id: Some("worker".into()),
@@ -2245,6 +2344,95 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dispatch_fencing_must_match_the_recorded_reservation() {
+        let path = temp_path("factory-ledger-fencing");
+        let db = Database::open(&path).await.unwrap();
+        seed_project(&db, "project").await;
+        let (envelope_id, _) = create_envelope(&db, "request-fencing", 10_000).await;
+        let mut input = reserve_input(
+            &envelope_id,
+            "operation",
+            "idempotency",
+            &"a".repeat(64),
+            1_000,
+            InferenceRole::Implementer,
+            future_ms(60_000),
+        );
+        input.worker_id = Some("worker-1".into());
+        input.generation = Some(3);
+        let reservation = db.reserve_inference(&input).await.unwrap();
+        assert!(matches!(
+            db.mark_inference_dispatched(&MarkInferenceDispatchedInput {
+                reservation_id: reservation.reservation_id.clone(),
+                worker_id: Some("worker-2".into()),
+                generation: Some(3),
+                provider_request_id: None,
+                actor: "core:test".into(),
+            })
+            .await,
+            Err(Error::Conflict(_))
+        ));
+        let dispatched = db
+            .mark_inference_dispatched(&MarkInferenceDispatchedInput {
+                reservation_id: reservation.reservation_id.clone(),
+                worker_id: Some("worker-1".into()),
+                generation: Some(3),
+                provider_request_id: Some("request-1".into()),
+                actor: "core:test".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(dispatched.state, ReservationState::Reserved);
+        assert_eq!(dispatched.worker_id.as_deref(), Some("worker-1"));
+        assert_eq!(dispatched.generation, Some(3));
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn stale_authorization_revision_and_scope_are_rejected() {
+        let path = temp_path("factory-ledger-revision");
+        let db = Database::open(&path).await.unwrap();
+        seed_project(&db, "project").await;
+        let (envelope_id, _) = create_envelope(&db, "request-revision", 10_000).await;
+        db.authorize_inference_envelope(&NewInferenceAuthorization {
+            envelope_id: envelope_id.clone(),
+            limit_micros: UsdMicros::new(20_000).unwrap(),
+            actor: "operator".into(),
+            scope_sha256: "c".repeat(64),
+            evidence_sha256: "d".repeat(64),
+            idempotency_key: "revision-two".into(),
+        })
+        .await
+        .unwrap();
+        let mut stale = reserve_input(
+            &envelope_id,
+            "operation-stale",
+            "idempotency-stale",
+            &"a".repeat(64),
+            1_000,
+            InferenceRole::Lead,
+            future_ms(60_000),
+        );
+        assert!(matches!(
+            db.reserve_inference(&stale).await,
+            Err(Error::Conflict(_))
+        ));
+        stale.authorization_revision = 2;
+        stale.scope_sha256 = "a".repeat(64);
+        assert!(matches!(
+            db.reserve_inference(&stale).await,
+            Err(Error::Conflict(_))
+        ));
+        stale.scope_sha256 = "c".repeat(64);
+        stale.operation_id = "operation-current".into();
+        stale.idempotency_key = "idempotency-current".into();
+        db.reserve_inference(&stale).await.unwrap();
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
     async fn aggregation_covers_every_inference_role() {
         let path = temp_path("factory-ledger-aggregation");
         let db = Database::open(&path).await.unwrap();
@@ -2273,15 +2461,14 @@ mod tests {
         }
         let status = db.inference_spending_status(&envelope_id).await.unwrap();
         assert_eq!(status.settled_micros.get(), 2_500);
-        let breakdown = db.inference_spending_breakdown(&envelope_id).await.unwrap();
-        assert_eq!(breakdown.by_role.len(), 5);
-        let settled_by_role: u64 = breakdown
+        assert_eq!(status.by_role.len(), 5);
+        let settled_by_role: u64 = status
             .by_role
             .iter()
             .map(|role| role.settled_micros.get())
             .sum();
         assert_eq!(settled_by_role, 2_500);
-        assert_eq!(breakdown.by_provider.len(), 1);
+        assert_eq!(status.by_provider.len(), 1);
         db.close().await;
         let _ = std::fs::remove_file(path);
     }

@@ -22,7 +22,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::execution_policy::{
     EnvelopeState, ExecutionPolicyError, InferenceLedgerError, InferenceReservation, InferenceRole,
-    InferenceSettlement, ReservationState, ReserveInferenceInput, SpendingStatus, UsdMicros,
+    InferenceSettlement, ReservationState, ReserveInferenceInput, SpendingBreakdown,
+    SpendingStatus, UsdMicros,
 };
 
 impl From<ExecutionPolicyError> for InferenceLedgerError {
@@ -220,12 +221,17 @@ pub struct InferenceReservationRecord {
     pub reservation_id: String,
     pub envelope_id: String,
     pub operation_id: String,
+    pub idempotency_key: String,
+    pub request_sha256: String,
     pub role: InferenceRole,
     pub principal_id: String,
     pub parent_operation_id: Option<String>,
     pub provider: String,
     pub model: String,
     pub pricing_revision: String,
+    pub pricing_snapshot_json: String,
+    pub authorization_revision: i64,
+    pub scope_sha256: String,
     pub upper_bound_micros: UsdMicros,
     pub settled_micros: Option<UsdMicros>,
     pub state: ReservationState,
@@ -234,6 +240,7 @@ pub struct InferenceReservationRecord {
     pub dispatched_at_ms: Option<i64>,
     pub provider_request_id: Option<String>,
     pub expires_at_ms: i64,
+    pub settlement_sha256: Option<String>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }
@@ -244,9 +251,18 @@ impl InferenceReservationRecord {
             reservation_id: self.reservation_id.clone(),
             envelope_id: self.envelope_id.clone(),
             operation_id: self.operation_id.clone(),
+            idempotency_key: self.idempotency_key.clone(),
+            request_sha256: self.request_sha256.clone(),
             role: self.role,
+            principal_id: self.principal_id.clone(),
+            parent_operation_id: self.parent_operation_id.clone(),
             provider: self.provider.clone(),
             model: self.model.clone(),
+            pricing_revision: self.pricing_revision.clone(),
+            pricing_snapshot_json: self.pricing_snapshot_json.clone(),
+            authorization_revision: self.authorization_revision,
+            worker_id: self.worker_id.clone(),
+            generation: self.generation,
             state: self.state,
             upper_bound_micros: self.upper_bound_micros,
             settled_micros: self.settled_micros,
@@ -287,34 +303,6 @@ pub struct SpendingTotals {
     pub unresolved_count: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct InferenceRoleSpending {
-    pub role: InferenceRole,
-    pub settled_micros: UsdMicros,
-    pub reserved_micros: UsdMicros,
-    pub ambiguous_micros: UsdMicros,
-    pub unresolved_count: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct InferenceProviderSpending {
-    pub provider: String,
-    pub settled_micros: UsdMicros,
-    pub reserved_micros: UsdMicros,
-    pub ambiguous_micros: UsdMicros,
-    pub unresolved_count: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct InferenceSpendingBreakdown {
-    pub envelope_id: String,
-    pub by_role: Vec<InferenceRoleSpending>,
-    pub by_provider: Vec<InferenceProviderSpending>,
-}
-
 /// Mechanical validation shared by the persistence boundary.
 pub fn validate_reserve_input(input: &ReserveInferenceInput) -> Result<(), InferenceLedgerError> {
     input.validate()?;
@@ -328,6 +316,24 @@ pub fn validate_reserve_input(input: &ReserveInferenceInput) -> Result<(), Infer
     if let Some(parent) = &input.parent_operation_id {
         validate_token("parent_operation_id", parent)?;
     }
+    if let Some(worker_id) = &input.worker_id {
+        validate_token("worker_id", worker_id)?;
+    }
+    if matches!(
+        input.role,
+        InferenceRole::Lead | InferenceRole::SemanticReviewer
+    ) && input.worker_id.is_some()
+    {
+        return Err(InferenceLedgerError::Invalid(
+            "assessment and review reservations must not carry Worker fencing".into(),
+        ));
+    }
+    if input.authorization_revision <= 0 {
+        return Err(InferenceLedgerError::Invalid(
+            "authorization_revision must be positive".into(),
+        ));
+    }
+    validate_sha256("scope_sha256", &input.scope_sha256)?;
     validate_sha256("request_sha256", &input.request_sha256)?;
     validate_json("pricing_snapshot_json", &input.pricing_snapshot_json)?;
     if input.upper_bound_micros == UsdMicros::ZERO {
@@ -425,95 +431,94 @@ pub fn project_spending(
         billing_basis: USD_BILLING_BASIS.into(),
         pricing_provenance: pricing_provenance(pricing_revisions),
         unresolved_count: totals.unresolved_count,
+        by_role: role_breakdowns(reservations)?,
+        by_provider: provider_breakdowns(reservations)?,
         as_of: as_of.into(),
     })
 }
 
-pub fn project_breakdown(
-    envelope_id: &str,
+struct BreakdownTotals {
+    settled: UsdMicros,
+    reserved: UsdMicros,
+    ambiguous: UsdMicros,
+}
+
+impl BreakdownTotals {
+    fn zero() -> Self {
+        Self {
+            settled: UsdMicros::ZERO,
+            reserved: UsdMicros::ZERO,
+            ambiguous: UsdMicros::ZERO,
+        }
+    }
+
+    fn add(&mut self, reservation: &ReservationAmounts) -> Result<(), InferenceLedgerError> {
+        match reservation.state {
+            ReservationState::Settled => {
+                let amount = reservation.settled_micros.ok_or_else(|| {
+                    InferenceLedgerError::Invalid(
+                        "settled reservation has no settled amount".into(),
+                    )
+                })?;
+                self.settled = self.settled.checked_add(amount)?;
+            }
+            ReservationState::Reserved => {
+                self.reserved = self.reserved.checked_add(reservation.upper_bound_micros)?;
+            }
+            ReservationState::Ambiguous => {
+                self.ambiguous = self.ambiguous.checked_add(reservation.upper_bound_micros)?;
+            }
+            ReservationState::Released => {}
+        }
+        Ok(())
+    }
+}
+
+fn role_breakdowns(
     reservations: &[ReservationAmounts],
-) -> Result<InferenceSpendingBreakdown, InferenceLedgerError> {
-    struct Totals {
-        settled: UsdMicros,
-        reserved: UsdMicros,
-        ambiguous: UsdMicros,
-        unresolved: u64,
-    }
-
-    impl Totals {
-        fn zero() -> Self {
-            Self {
-                settled: UsdMicros::ZERO,
-                reserved: UsdMicros::ZERO,
-                ambiguous: UsdMicros::ZERO,
-                unresolved: 0,
-            }
-        }
-
-        fn add(&mut self, reservation: &ReservationAmounts) -> Result<(), InferenceLedgerError> {
-            match reservation.state {
-                ReservationState::Settled => {
-                    let amount = reservation.settled_micros.ok_or_else(|| {
-                        InferenceLedgerError::Invalid(
-                            "settled reservation has no settled amount".into(),
-                        )
-                    })?;
-                    self.settled = self.settled.checked_add(amount)?;
-                }
-                ReservationState::Reserved => {
-                    self.reserved = self.reserved.checked_add(reservation.upper_bound_micros)?;
-                    self.unresolved = self.unresolved.saturating_add(1);
-                }
-                ReservationState::Ambiguous => {
-                    self.ambiguous = self.ambiguous.checked_add(reservation.upper_bound_micros)?;
-                    self.unresolved = self.unresolved.saturating_add(1);
-                }
-                ReservationState::Released => {}
-            }
-            Ok(())
-        }
-    }
-
-    let mut roles: BTreeMap<InferenceRole, Totals> = BTreeMap::new();
-    let mut providers: BTreeMap<String, Totals> = BTreeMap::new();
+) -> Result<Vec<SpendingBreakdown>, InferenceLedgerError> {
+    let mut totals: BTreeMap<InferenceRole, BreakdownTotals> = BTreeMap::new();
     for reservation in reservations {
-        roles
+        totals
             .entry(reservation.role)
-            .or_insert_with(Totals::zero)
-            .add(reservation)?;
-        providers
-            .entry(reservation.provider.clone())
-            .or_insert_with(Totals::zero)
+            .or_insert_with(BreakdownTotals::zero)
             .add(reservation)?;
     }
-    let by_role = InferenceRole::ALL
+    InferenceRole::ALL
         .into_iter()
         .map(|role| {
-            let totals = roles.get(&role);
-            InferenceRoleSpending {
-                role,
+            let totals = totals.get(&role);
+            Ok(SpendingBreakdown {
+                key: role.as_str().into(),
                 settled_micros: totals.map_or(UsdMicros::ZERO, |value| value.settled),
                 reserved_micros: totals.map_or(UsdMicros::ZERO, |value| value.reserved),
                 ambiguous_micros: totals.map_or(UsdMicros::ZERO, |value| value.ambiguous),
-                unresolved_count: totals.map_or(0, |value| value.unresolved),
-            }
+            })
         })
-        .collect();
-    let by_provider = providers
+        .collect()
+}
+
+fn provider_breakdowns(
+    reservations: &[ReservationAmounts],
+) -> Result<Vec<SpendingBreakdown>, InferenceLedgerError> {
+    let mut totals: BTreeMap<String, BreakdownTotals> = BTreeMap::new();
+    for reservation in reservations {
+        totals
+            .entry(reservation.provider.clone())
+            .or_insert_with(BreakdownTotals::zero)
+            .add(reservation)?;
+    }
+    totals
         .into_iter()
-        .map(|(provider, totals)| InferenceProviderSpending {
-            provider,
-            settled_micros: totals.settled,
-            reserved_micros: totals.reserved,
-            ambiguous_micros: totals.ambiguous,
-            unresolved_count: totals.unresolved,
+        .map(|(provider, totals)| {
+            Ok(SpendingBreakdown {
+                key: provider,
+                settled_micros: totals.settled,
+                reserved_micros: totals.reserved,
+                ambiguous_micros: totals.ambiguous,
+            })
         })
-        .collect();
-    Ok(InferenceSpendingBreakdown {
-        envelope_id: envelope_id.into(),
-        by_role,
-        by_provider,
-    })
+        .collect()
 }
 
 /// Admission is the only point at which new liability may be created.
@@ -775,17 +780,24 @@ mod tests {
                 settled_micros: Some(UsdMicros::new(50).unwrap()),
             });
         }
-        let breakdown = project_breakdown("envelope", &reservations).unwrap();
-        assert_eq!(breakdown.by_role.len(), 5);
-        assert_eq!(breakdown.by_provider.len(), 2);
+        let status = project_spending(
+            &snapshot(10_000, EnvelopeState::Active),
+            &reservations,
+            &[],
+            "2026-10-28T00:00:00Z",
+        )
+        .unwrap();
+        assert_eq!(status.by_role.len(), 5);
+        assert_eq!(status.by_provider.len(), 2);
         assert_eq!(
-            breakdown
+            status
                 .by_role
                 .iter()
                 .map(|role| role.settled_micros.get())
                 .sum::<u64>(),
             250
         );
+        assert_eq!(status.by_role[0].key, "LEAD");
     }
 
     #[test]
@@ -804,6 +816,10 @@ mod tests {
             pricing_snapshot_json: "{}".into(),
             upper_bound_micros: UsdMicros::new(1_000).unwrap(),
             expires_at_ms: 2_000,
+            authorization_revision: 1,
+            scope_sha256: "b".repeat(64),
+            worker_id: None,
+            generation: None,
         };
         assert!(validate_reserve_input(&input).is_ok());
         input.upper_bound_micros = UsdMicros::ZERO;

@@ -354,6 +354,15 @@ impl Database {
         let expires_at_ms = now_ms.saturating_add(RESERVATION_LIFETIME_MS);
         let now_text = now.to_rfc3339();
         let ledger_reservation_id = if let Some(envelope_id) = &ledger_envelope_id {
+            let (authorization_revision, scope_sha256) =
+                super::inference_ledger::envelope_authorization_context_in_tx(
+                    &mut transaction,
+                    envelope_id,
+                )
+                .await?
+                .ok_or(Error::Conflict(
+                    "inference envelope has no durable authorization",
+                ))?;
             let pricing_snapshot_json = serde_json::json!({
                 "basis": "conservative-model-call-bound",
                 "estimatedInputTokens": input.estimated_input_tokens,
@@ -379,6 +388,10 @@ impl Database {
                 upper_bound_micros: UsdMicros::new(max_cost)
                     .map_err(|_| Error::Invalid("model call ledger bound"))?,
                 expires_at_ms,
+                authorization_revision,
+                scope_sha256,
+                worker_id: None,
+                generation: None,
             };
             let reserved = super::inference_ledger::reserve_inference_in_tx(
                 &mut transaction,

@@ -840,8 +840,7 @@ mod inference_ledger;
 mod lead;
 mod model_calls;
 pub use crate::inference_ledger::{
-    CampaignEnvelopeBindingInput, InferenceEnvelopeRecord, InferenceProviderSpending,
-    InferenceReservationRecord, InferenceRoleSpending, InferenceSpendingBreakdown,
+    CampaignEnvelopeBindingInput, InferenceEnvelopeRecord, InferenceReservationRecord,
     MarkInferenceDispatchedInput, NewInferenceAuthorization, NewInferenceEnvelope,
     ReconcileInferenceInput, ReconciliationOutcome, RevokeInferenceEnvelopeInput,
 };
