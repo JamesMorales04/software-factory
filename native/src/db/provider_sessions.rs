@@ -9,7 +9,17 @@ use chrono::Utc;
 use sqlx_sqlite::SqliteConnection;
 use uuid::Uuid;
 
-type IntentContext = (String, i64, i64, String, String, String, String, String);
+type IntentContext = (
+    String,
+    i64,
+    i64,
+    String,
+    String,
+    String,
+    String,
+    String,
+    i64,
+);
 type TerminalRow = (String, String, i64, String, String, String, String, String);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -225,7 +235,7 @@ impl Database {
         }
         let lease = sqlx::query::query(
             "SELECT l.worker_id,l.generation,l.expires_at_ms,a.status,c.status AS campaign_status,
-                    r.campaign_id,ca.max_input_tokens,ca.max_output_tokens,
+                    r.campaign_id,ca.schema_version,ca.max_input_tokens,ca.max_output_tokens,
                     ca.max_cost_micros,ca.deadline_secs
              FROM attempts a JOIN runs r ON r.id=a.run_id
              JOIN campaigns c ON c.id=r.campaign_id
@@ -257,6 +267,15 @@ impl Database {
             ));
         }
         let campaign_id: String = lease.try_get("campaign_id")?;
+        let authorization_version: i64 = lease.try_get("schema_version")?;
+        if authorization_version != 1 {
+            // Execution Policy V2 has no cumulative per-role token/cost ceiling.
+            // Per-request reservation is the shared inference ledger's job
+            // (#73, migration 0035). Fail closed until that linkage exists.
+            return Err(Error::Forbidden(
+                "V2 provider turn authorization requires the shared inference ledger".into(),
+            ));
+        }
         let max_input: i64 = lease.try_get("max_input_tokens")?;
         let max_output: i64 = lease.try_get("max_output_tokens")?;
         let max_cost: i64 = lease.try_get("max_cost_micros")?;
@@ -878,7 +897,7 @@ impl Database {
         let mut transaction = self.pool.begin().await?;
         let context: Option<IntentContext> = sqlx::query_as::query_as(
             "SELECT l.worker_id,l.generation,l.expires_at_ms,ca.execution_mode,
-                        ca.provider,ca.model,ca.provider_mode,r.campaign_id
+                        ca.provider,ca.model,ca.provider_mode,r.campaign_id,ca.schema_version
                  FROM attempts a
                  JOIN runs r ON r.id=a.run_id
                  JOIN campaigns c ON c.id=r.campaign_id
@@ -898,6 +917,7 @@ impl Database {
             model,
             provider_mode,
             campaign_id,
+            authorization_version,
         ) = context.ok_or(Error::Forbidden(
             "provider intent requires a live Worker lease and authorization".into(),
         ))?;
@@ -944,16 +964,28 @@ impl Database {
         .bind(&campaign_id)
         .fetch_one(&mut *transaction)
         .await?;
-        let (max_sessions,): (i64,) = sqlx::query_as::query_as(
+        let (stored_max_sessions,): (Option<i64>,) = sqlx::query_as::query_as(
             "SELECT max_sessions FROM campaign_authorizations WHERE campaign_id=?1",
         )
         .bind(&campaign_id)
         .fetch_one(&mut *transaction)
         .await?;
-        if session_count >= max_sessions {
-            return Err(Error::Forbidden(
-                "provider session budget is exhausted".into(),
-            ));
+        match authorization_version {
+            1 => {
+                let max_sessions = stored_max_sessions.ok_or(Error::Invalid(
+                    "legacy provider authorization is missing its session cap",
+                ))?;
+                if session_count >= max_sessions {
+                    return Err(Error::Forbidden(
+                        "provider session budget is exhausted".into(),
+                    ));
+                }
+            }
+            2 => {
+                // V2 has no lifetime provider-session cap. Session count remains
+                // diagnostic telemetry.
+            }
+            _ => return Err(Error::Invalid("provider authorization schema version")),
         }
         let now = Utc::now().to_rfc3339();
         let record = ProviderSessionRecord {
@@ -1052,17 +1084,18 @@ impl Database {
         if !matches!(state.as_str(), "INTENT" | "ACTIVE") {
             return Err(Error::Conflict("provider session is already terminal"));
         }
-        let campaign: (String, i64, i64, i64) = sqlx::query_as::query_as(
-            "SELECT r.campaign_id,ca.max_input_tokens,ca.max_output_tokens,ca.max_cost_micros
-             FROM attempts a JOIN runs r ON r.id=a.run_id
-             JOIN campaign_authorizations ca ON ca.campaign_id=r.campaign_id
-             WHERE a.id=?1",
-        )
-        .bind(&attempt_id)
-        .fetch_one(&mut *transaction)
-        .await?;
-        let (campaign_id, max_input, max_output, max_cost) = campaign;
-        let max_total = max_input.saturating_add(max_output);
+        let campaign: (String, i64, Option<i64>, Option<i64>, Option<i64>) =
+            sqlx::query_as::query_as(
+                "SELECT r.campaign_id,ca.schema_version,ca.max_input_tokens,
+                        ca.max_output_tokens,ca.max_cost_micros
+                 FROM attempts a JOIN runs r ON r.id=a.run_id
+                 JOIN campaign_authorizations ca ON ca.campaign_id=r.campaign_id
+                 WHERE a.id=?1",
+            )
+            .bind(&attempt_id)
+            .fetch_one(&mut *transaction)
+            .await?;
+        let (campaign_id, authorization_version, max_input, max_output, max_cost) = campaign;
         let (used_input, used_output, used_total, used_cost): (i64, i64, i64, i64) =
             sqlx::query_as::query_as(
                 "SELECT COALESCE(SUM(ps.input_tokens),0),COALESCE(SUM(ps.output_tokens),0),
@@ -1099,10 +1132,29 @@ impl Database {
         let next_output = used_output.saturating_add(session_output);
         let next_total = used_total.saturating_add(session_total);
         let next_cost = used_cost.saturating_add(session_cost);
-        let over_budget = next_input > max_input
-            || next_output > max_output
-            || next_total > max_total
-            || next_cost > max_cost;
+        let over_budget = match authorization_version {
+            1 => {
+                let max_input = max_input.ok_or(Error::Invalid(
+                    "legacy provider authorization is missing its input cap",
+                ))?;
+                let max_output = max_output.ok_or(Error::Invalid(
+                    "legacy provider authorization is missing its output cap",
+                ))?;
+                let max_cost = max_cost.ok_or(Error::Invalid(
+                    "legacy provider authorization is missing its cost cap",
+                ))?;
+                let max_total = max_input.saturating_add(max_output);
+                next_input > max_input
+                    || next_output > max_output
+                    || next_total > max_total
+                    || next_cost > max_cost
+            }
+            // V2 usage is recorded truthfully. Monetary authority lives in the
+            // shared inference ledger; provider-session totals are evidence
+            // projections, never a cumulative role ceiling.
+            2 => false,
+            _ => return Err(Error::Invalid("provider authorization schema version")),
+        };
         let cancel_requested = state == "CANCEL_REQUESTED";
         let stored_state = if over_budget {
             "FAILED"
@@ -1379,6 +1431,17 @@ mod tests {
     use chrono::Utc;
 
     async fn fixture(max_input: i64) -> (std::path::PathBuf, Database) {
+        fixture_with_authorization(max_input, false).await
+    }
+
+    async fn v2_fixture() -> (std::path::PathBuf, Database) {
+        fixture_with_authorization(100, true).await
+    }
+
+    async fn fixture_with_authorization(
+        max_input: i64,
+        v2: bool,
+    ) -> (std::path::PathBuf, Database) {
         let path = std::env::temp_dir().join(format!(
             "factory-provider-session-{}.sqlite",
             Uuid::new_v4()
@@ -1427,20 +1490,65 @@ mod tests {
         .execute(&db.pool)
         .await
         .unwrap();
-        sqlx::query::query(
-            "INSERT INTO campaign_authorizations
-             (campaign_id,authorization_id,risk_class,execution_mode,actor,rationale,
-              authorized_paths_json,max_attempts,provider,model,provider_mode,delegation_id,
-              max_sessions,max_turns,max_input_tokens,max_output_tokens,max_cost_micros,
-              deadline_secs,allowed_tools_json,created_at)
-             VALUES ('campaign','auth','R0','TRUSTED_LOCAL_PROVIDER','test','test','[\"src\"]',1,
-                     'opencode','deepseek-v4.1-flash','build','grant',1,1,?1,100,1000,30,'[]',?2)",
-        )
-        .bind(max_input)
-        .bind(&now)
-        .execute(&db.pool)
-        .await
-        .unwrap();
+        if v2 {
+            let hash = "a".repeat(64);
+            sqlx::query::query(
+                "INSERT INTO standing_delegations
+                 (id,principal_id,audit_id,project_id,revision,content_hash,content_json,
+                  revoked_at,created_at,schema_version,authority_json,authority_sha256)
+                 VALUES ('grant','test','audit','project',1,?1,'',NULL,?2,2,'{}',?1)",
+            )
+            .bind(&hash)
+            .bind(&now)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+            sqlx::query::query(
+                "INSERT INTO delegation_usage(delegation_id,requests,sessions,attempts)
+                 VALUES ('grant',0,0,0)",
+            )
+            .execute(&db.pool)
+            .await
+            .unwrap();
+            sqlx::query::query(
+                "INSERT INTO execution_policies
+                 (policy_id,schema_version,authorization_id,monetary_envelope_id,scope_sha256,
+                  progress_policy_json,operation_limits_json,policy_json,policy_sha256,created_at)
+                 VALUES ('policy',2,'auth','envelope',?1,'{}','{}','{}',?1,?2)",
+            )
+            .bind(&hash)
+            .bind(&now)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+            sqlx::query::query(
+                "INSERT INTO campaign_authorizations
+                 (campaign_id,authorization_id,risk_class,execution_mode,actor,rationale,
+                  authorized_paths_json,provider,model,provider_mode,delegation_id,
+                  allowed_tools_json,created_at,schema_version,policy_id)
+                 VALUES ('campaign','auth','R0','TRUSTED_LOCAL_PROVIDER','test','test','[\"src\"]',
+                         'opencode','deepseek-v4.1-flash','build','grant','[]',?1,2,'policy')",
+            )
+            .bind(&now)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        } else {
+            sqlx::query::query(
+                "INSERT INTO campaign_authorizations
+                 (campaign_id,authorization_id,risk_class,execution_mode,actor,rationale,
+                  authorized_paths_json,max_attempts,provider,model,provider_mode,delegation_id,
+                  max_sessions,max_turns,max_input_tokens,max_output_tokens,max_cost_micros,
+                  deadline_secs,allowed_tools_json,created_at)
+                 VALUES ('campaign','auth','R0','TRUSTED_LOCAL_PROVIDER','test','test','[\"src\"]',1,
+                         'opencode','deepseek-v4.1-flash','build','grant',1,1,?1,100,1000,30,'[]',?2)",
+            )
+            .bind(max_input)
+            .bind(&now)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        }
         (path, db)
     }
 
@@ -1462,6 +1570,18 @@ mod tests {
 
     async fn active_turn_fixture(max_input: i64) -> (std::path::PathBuf, Database, String) {
         let (path, db) = fixture(max_input).await;
+        active_turn_fixture_with(db, path).await
+    }
+
+    async fn active_turn_fixture_v2() -> (std::path::PathBuf, Database, String) {
+        let (path, db) = v2_fixture().await;
+        active_turn_fixture_with(db, path).await
+    }
+
+    async fn active_turn_fixture_with(
+        db: Database,
+        path: std::path::PathBuf,
+    ) -> (std::path::PathBuf, Database, String) {
         let now = Utc::now().timestamp_millis();
         sqlx::query::query("INSERT INTO worker_leases VALUES ('attempt','worker',1,?1)")
             .bind(now + 60_000)
@@ -1476,8 +1596,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn provider_profile_requires_live_attempt_campaign_and_deadline() {
-        let (_path, db, _session) = active_turn_fixture(100).await;
+    async fn provider_profile_requires_live_v2_assignment_and_lease_fence() {
+        let (_path, db, _session) = active_turn_fixture_v2().await;
         let now_ms = Utc::now().timestamp_millis();
         assert_eq!(
             db.assigned_provider_route("worker", "attempt", 1, now_ms)
@@ -1514,6 +1634,15 @@ mod tests {
             .execute(&db.pool)
             .await
             .unwrap();
+        sqlx::query::query("UPDATE worker_leases SET expires_at_ms=1 WHERE attempt_id='attempt'")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        assert!(matches!(
+            db.assigned_provider_route("worker", "attempt", 1, now_ms)
+                .await,
+            Err(Error::Forbidden(_))
+        ));
         db.close().await;
     }
 

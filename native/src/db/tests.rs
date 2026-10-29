@@ -12,6 +12,25 @@ fn temp_path(prefix: &str) -> PathBuf {
     std::env::temp_dir().join(format!("{prefix}-{}.sqlite", Uuid::new_v4()))
 }
 
+fn fixture_operations() -> crate::execution_policy::OperationLimits {
+    crate::execution_policy::OperationLimits {
+        model_request_timeout_secs: std::num::NonZeroU32::new(300).unwrap(),
+        tool_call_timeout_secs: std::num::NonZeroU32::new(600).unwrap(),
+        max_request_bytes: std::num::NonZeroU32::new(2 * 1024 * 1024).unwrap(),
+        max_response_bytes: std::num::NonZeroU32::new(2 * 1024 * 1024).unwrap(),
+        max_generation_tokens: std::num::NonZeroU32::new(8_192).unwrap(),
+        max_in_flight_operations: std::num::NonZeroU32::new(4).unwrap(),
+    }
+}
+
+fn fixture_progress() -> crate::execution_policy::ProgressPolicy {
+    crate::execution_policy::ProgressPolicy {
+        diagnose_after_stagnant_checkpoints: std::num::NonZeroU32::new(2).unwrap(),
+        escalate_after_unsuccessful_replans: std::num::NonZeroU32::new(1).unwrap(),
+        observation_timeout_secs: std::num::NonZeroU32::new(300).unwrap(),
+    }
+}
+
 async fn temp_db(prefix: &str) -> (PathBuf, Database) {
     let path = temp_path(prefix);
     let db = Database::open(&path).await.unwrap();
@@ -568,8 +587,14 @@ async fn authorized_attempt(db: &Database) -> String {
             actor: "test".into(),
             rationale: "fixture setup".into(),
             authorized_paths: vec!["seed.txt".into()],
-            max_attempts: 1,
-            ..Default::default()
+            provider: String::new(),
+            model: String::new(),
+            provider_mode: String::new(),
+            delegation_id: String::new(),
+            allowed_tools: Vec::new(),
+            monetary_envelope_id: crate::db::authorization::NO_BILLABLE_ENVELOPE.into(),
+            progress: fixture_progress(),
+            operations: fixture_operations(),
         },
     )
     .await
@@ -749,8 +774,14 @@ async fn p6_concurrent_workers_claim_distinct_attempts() {
             actor: "test".into(),
             rationale: "fixture setup".into(),
             authorized_paths: vec!["seed.txt".into()],
-            max_attempts: 1,
-            ..Default::default()
+            provider: String::new(),
+            model: String::new(),
+            provider_mode: String::new(),
+            delegation_id: String::new(),
+            allowed_tools: Vec::new(),
+            monetary_envelope_id: crate::db::authorization::NO_BILLABLE_ENVELOPE.into(),
+            progress: fixture_progress(),
+            operations: fixture_operations(),
         },
     )
     .await
@@ -1004,8 +1035,14 @@ async fn candidate_fixture() -> CandidateFixture {
             actor: "test".into(),
             rationale: "quality fixture".into(),
             authorized_paths: vec!["seed.txt".into()],
-            max_attempts: 1,
-            ..Default::default()
+            provider: String::new(),
+            model: String::new(),
+            provider_mode: String::new(),
+            delegation_id: String::new(),
+            allowed_tools: Vec::new(),
+            monetary_envelope_id: crate::db::authorization::NO_BILLABLE_ENVELOPE.into(),
+            progress: fixture_progress(),
+            operations: fixture_operations(),
         },
     )
     .await
@@ -2030,8 +2067,14 @@ async fn authorization_rejects_unratified_risk_and_execution_modes() {
                     actor: "test".into(),
                     rationale: "negative authorization".into(),
                     authorized_paths: vec!["src".into()],
-                    max_attempts: 1,
-                    ..Default::default()
+                    provider: String::new(),
+                    model: String::new(),
+                    provider_mode: String::new(),
+                    delegation_id: String::new(),
+                    allowed_tools: Vec::new(),
+                    monetary_envelope_id: crate::db::authorization::NO_BILLABLE_ENVELOPE.into(),
+                    progress: fixture_progress(),
+                    operations: fixture_operations(),
                 },
             )
             .await;
@@ -2087,8 +2130,14 @@ async fn candidate_outside_scope_and_symlink_are_rejected() {
             actor: "test".into(),
             rationale: "scope negative".into(),
             authorized_paths: vec!["src".into()],
-            max_attempts: 1,
-            ..Default::default()
+            provider: String::new(),
+            model: String::new(),
+            provider_mode: String::new(),
+            delegation_id: String::new(),
+            allowed_tools: Vec::new(),
+            monetary_envelope_id: crate::db::authorization::NO_BILLABLE_ENVELOPE.into(),
+            progress: fixture_progress(),
+            operations: fixture_operations(),
         },
     )
     .await

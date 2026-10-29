@@ -1753,12 +1753,23 @@ impl TurnProgress {
         });
     }
 
+    fn candidate_digest(&self) -> String {
+        let mut parts = Vec::with_capacity(self.last_content.len());
+        for (path, sha) in &self.last_content {
+            parts.push(format!("{path}:{sha}"));
+        }
+        sha256_hex(parts.join("\n").as_bytes())
+    }
+
     fn observe_check(&mut self, argv: &[String], success: bool) {
         if !success {
             return;
         }
         let suite = format!("check:{}", argv.join("\u{0}"));
-        let result = sha256_hex(format!("{argv:?}|exit=0").as_bytes());
+        // A check receipt is candidate-bound: the same passing check against a
+        // new candidate is new evidence; replaying it against the same
+        // candidate earns nothing.
+        let result = sha256_hex(format!("{argv:?}|exit=0|{}", self.candidate_digest()).as_bytes());
         if self.last_check.get(&suite) == Some(&result) {
             return;
         }
@@ -4408,6 +4419,7 @@ mod tests {
         for turn in 0..10 {
             progress.begin_turn();
             progress.observe_write("src/lib.rs", &format!("candidate-{turn}"));
+            progress.observe_check(&["cargo".into(), "test".into()], true);
             let halt = progress.finish_previous_turn().unwrap();
             assert!(halt.is_none(), "verified progress halted at turn {turn}");
         }
@@ -4468,6 +4480,7 @@ mod tests {
         for turn in 0..12 {
             progress.begin_turn();
             progress.observe_write("src/lib.rs", &format!("candidate-{turn}"));
+            progress.observe_check(&["cargo".into(), "test".into()], true);
             assert!(progress.finish_previous_turn().unwrap().is_none());
         }
     }

@@ -11,13 +11,15 @@
 //!    registry route or real discovery).
 //!
 //! The resulting gateway is bound to the role and carries the intersection of
-//! the profile route caps, the provider settings caps and Core's deployment
-//! caps. Credentials never leave this module. Model output never grants
-//! authority.
+//! the frozen technical generation bound, the provider settings bounds and
+//! Core's deployment bounds. A role route no longer carries cumulative token or
+//! monetary ceilings: monetary authority lives in the shared inference ledger.
+//! Credentials never leave this module. Model output never grants authority.
 
 use std::time::Duration;
 
 use crate::db::{Database, ModelCallPolicy, ModelCallRole, ProviderSettingsRecord};
+use crate::execution_policy::OperationLimits;
 use crate::execution_profile::{ExecutionRole, ExecutionRoleRoute};
 use crate::model_gateway::{ModelGateway, ModelGatewayConfig, ModelGatewayError};
 use crate::provider_adapter::ProviderAdapter;
@@ -174,6 +176,7 @@ impl<'a> RoleGatewayFactory<'a> {
         &self,
         role: ExecutionRole,
         route: &ExecutionRoleRoute,
+        operations: &OperationLimits,
     ) -> Result<ModelGateway, RouteError> {
         let (call_role, core_policy) = match role {
             ExecutionRole::Lead => (ModelCallRole::Lead, self.caps.lead),
@@ -186,8 +189,14 @@ impl<'a> RoleGatewayFactory<'a> {
                 });
             }
         };
-        self.build(call_role, role.as_str(), route, core_policy)
-            .await
+        self.build(
+            call_role,
+            role.as_str(),
+            route,
+            Some(operations),
+            core_policy,
+        )
+        .await
     }
 
     /// Construct a bounded Evaluation gateway for an explicit CAP-014 route.
@@ -201,6 +210,7 @@ impl<'a> RoleGatewayFactory<'a> {
             ModelCallRole::Evaluation,
             "evaluation",
             route,
+            None,
             self.caps.evaluation,
         )
         .await
@@ -211,6 +221,7 @@ impl<'a> RoleGatewayFactory<'a> {
         call_role: ModelCallRole,
         role_label: &str,
         route: &ExecutionRoleRoute,
+        operations: Option<&OperationLimits>,
         core_policy: ModelCallPolicy,
     ) -> Result<ModelGateway, RouteError> {
         let settings = self
@@ -261,12 +272,18 @@ impl<'a> RoleGatewayFactory<'a> {
             });
         }
         let credential = self.decrypt_credential(&settings)?;
+        // The profile contributes one technical bound: generation tokens. It
+        // supplies no cumulative role token or monetary ceiling. Provider
+        // settings and Core deployment policy retain their request bounds.
+        let profile_policy = ModelCallPolicy {
+            max_input_tokens: settings.max_input_tokens,
+            max_output_tokens: operations
+                .map(|limits| u64::from(limits.max_generation_tokens.get()))
+                .unwrap_or(settings.max_output_tokens),
+            max_cost_micros: settings.max_cost_micros,
+        };
         let policy = intersect_policies(
-            ModelCallPolicy {
-                max_input_tokens: route.max_input_tokens,
-                max_output_tokens: route.max_output_tokens,
-                max_cost_micros: route.max_cost_micros,
-            },
+            profile_policy,
             ModelCallPolicy {
                 max_input_tokens: settings.max_input_tokens,
                 max_output_tokens: settings.max_output_tokens,
@@ -326,8 +343,9 @@ impl<'a> RoleGatewayFactory<'a> {
     }
 }
 
-/// Intersect three policies. Every limit takes the strictest value; a route can
-/// never raise provider or deployment caps.
+/// Intersect profile technical bounds, provider bounds and Core deployment
+/// policy. Every limit takes the strictest value; a profile can never raise
+/// provider or deployment bounds.
 pub fn intersect_policies(
     route: ModelCallPolicy,
     provider: ModelCallPolicy,
@@ -441,14 +459,22 @@ mod integration_tests {
         )
     }
 
-    fn route(provider: &str, model: &str, output: u64, cost: u64) -> ExecutionRoleRoute {
+    fn route(provider: &str, model: &str) -> ExecutionRoleRoute {
         ExecutionRoleRoute {
             provider: provider.into(),
             model: model.into(),
             reasoning: Some(ReasoningEffort::Medium),
-            max_input_tokens: 64_000,
-            max_output_tokens: output,
-            max_cost_micros: cost,
+        }
+    }
+
+    fn operations() -> OperationLimits {
+        OperationLimits {
+            model_request_timeout_secs: std::num::NonZeroU32::new(300).unwrap(),
+            tool_call_timeout_secs: std::num::NonZeroU32::new(600).unwrap(),
+            max_request_bytes: std::num::NonZeroU32::new(2 * 1024 * 1024).unwrap(),
+            max_response_bytes: std::num::NonZeroU32::new(2 * 1024 * 1024).unwrap(),
+            max_generation_tokens: std::num::NonZeroU32::new(8_192).unwrap(),
+            max_in_flight_operations: std::num::NonZeroU32::new(4).unwrap(),
         }
     }
 
@@ -582,14 +608,15 @@ mod integration_tests {
         let lead = factory
             .for_role(
                 ExecutionRole::Lead,
-                &route("opencode-go", "deepseek-v4.1-flash", 8_192, 300_000),
+                &route("opencode-go", "deepseek-v4.1-flash"),
+                &operations(),
             )
             .await
             .unwrap();
         assert_eq!(lead.provider(), "opencode-go");
         assert_eq!(lead.model(), "deepseek-v4.1-flash");
         assert_eq!(lead.bound_role(), Some(ModelCallRole::Lead));
-        // Route output cap is intersected with the provider's.
+        // The frozen generation bound is intersected with the provider's.
         assert_eq!(
             lead.role_policy(ModelCallRole::Lead).max_output_tokens,
             4_096
@@ -613,7 +640,8 @@ mod integration_tests {
         let reviewer = factory
             .for_role(
                 ExecutionRole::SemanticReviewer,
-                &route("opencode", "reviewer-model", 8_192, 1_000_000),
+                &route("opencode", "reviewer-model"),
+                &operations(),
             )
             .await
             .unwrap();
@@ -630,7 +658,7 @@ mod integration_tests {
         // Evaluation is a real Core model role with no profile row. It uses
         // the same factory and the same provider credential boundary.
         let evaluation = factory
-            .for_evaluation(&route("opencode", "reviewer-model", 8_192, 1_000_000))
+            .for_evaluation(&route("opencode", "reviewer-model"))
             .await
             .unwrap();
         evaluation
@@ -685,7 +713,8 @@ mod integration_tests {
             factory
                 .for_role(
                     ExecutionRole::Lead,
-                    &route("opencode-go", "deepseek-v4.1-flash", 8_192, 300_000),
+                    &route("opencode-go", "deepseek-v4.1-flash"),
+                    &operations(),
                 )
                 .await,
             Err(RouteError::ProviderDisabled { .. })
@@ -694,7 +723,8 @@ mod integration_tests {
             factory
                 .for_role(
                     ExecutionRole::Lead,
-                    &route("codex", "gpt-6-luna", 8_192, 300_000),
+                    &route("codex", "gpt-6-luna"),
+                    &operations(),
                 )
                 .await,
             Err(RouteError::AdapterUnsupported { .. })
@@ -723,7 +753,8 @@ mod integration_tests {
             factory_two
                 .for_role(
                     ExecutionRole::Lead,
-                    &route("opencode-go", "not-advertised", 8_192, 300_000),
+                    &route("opencode-go", "not-advertised"),
+                    &operations(),
                 )
                 .await,
             Err(RouteError::ModelUnavailable { .. })
@@ -732,7 +763,8 @@ mod integration_tests {
             factory_two
                 .for_role(
                     ExecutionRole::Implementer,
-                    &route("opencode-go", "deepseek-v4.1-flash", 8_192, 300_000),
+                    &route("opencode-go", "deepseek-v4.1-flash"),
+                    &operations(),
                 )
                 .await,
             Err(RouteError::NotAGatewayRole { .. })
@@ -748,7 +780,8 @@ mod integration_tests {
             )
             .for_role(
                 ExecutionRole::Lead,
-                &route("opencode-go", "deepseek-v4.1-flash", 8_192, 300_000),
+                &route("opencode-go", "deepseek-v4.1-flash"),
+                &operations(),
             )
             .await,
             Err(RouteError::CredentialUnavailable { .. })
@@ -767,7 +800,8 @@ mod integration_tests {
             )
             .for_role(
                 ExecutionRole::Lead,
-                &route("opencode-go", "deepseek-v4.1-flash", 8_192, 300_000),
+                &route("opencode-go", "deepseek-v4.1-flash"),
+                &operations(),
             )
             .await,
             Err(RouteError::CredentialUnavailable { .. })
