@@ -114,6 +114,7 @@ export function Home() {
   const [thread, setThread] = useState<IntakeRequestProjection | null>(null);
   const [threadError, setThreadError] = useState<string | null>(null);
   const [threadLoading, setThreadLoading] = useState(false);
+  const threadGeneration = useRef(0);
 
   const [projectId, setProjectId] = useState("");
   const [profileId, setProfileId] = useState("");
@@ -201,21 +202,6 @@ export function Home() {
     }
   }, [t]);
 
-  const loadThread = useCallback(
-    async (requestId: string) => {
-      try {
-        const next = await coreApi.getIntakeRequest(requestId);
-        setThread(next);
-        setThreadError(null);
-      } catch (cause) {
-        setThreadError(errorMessage(cause, t("home.thread.error")));
-      } finally {
-        setThreadLoading(false);
-      }
-    },
-    [t],
-  );
-
   const threadSummary = useMemo(
     () => latestConversation(recentRequests),
     [recentRequests],
@@ -223,19 +209,52 @@ export function Home() {
   const threadId = threadSummary?.id ?? null;
 
   useEffect(() => {
+    const generation = ++threadGeneration.current;
     if (threadId === null) {
       setThread(null);
       setThreadError(null);
       setThreadLoading(false);
-      return;
+      return () => {
+        if (threadGeneration.current === generation) {
+          threadGeneration.current += 1;
+        }
+      };
     }
     setThread(null);
     setThreadError(null);
     setThreadLoading(true);
-    void loadThread(threadId);
-    const timer = setInterval(() => void loadThread(threadId), 8000);
-    return () => clearInterval(timer);
-  }, [threadId, loadThread]);
+
+    let active = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const refresh = async () => {
+      try {
+        const next = await coreApi.getIntakeRequest(threadId);
+        if (!active || threadGeneration.current !== generation) return;
+        setThread(next);
+        setThreadError(null);
+      } catch (cause) {
+        if (!active || threadGeneration.current !== generation) return;
+        setThreadError(errorMessage(cause, t("home.thread.error")));
+      } finally {
+        if (active && threadGeneration.current === generation) {
+          setThreadLoading(false);
+          // Schedule the next poll only after this one settles. This prevents
+          // overlapping requests from resolving out of order and replacing a
+          // fresher Core projection with an older response.
+          timer = setTimeout(() => void refresh(), 8000);
+        }
+      }
+    };
+    void refresh();
+
+    return () => {
+      active = false;
+      if (timer !== undefined) clearTimeout(timer);
+      if (threadGeneration.current === generation) {
+        threadGeneration.current += 1;
+      }
+    };
+  }, [threadId, t]);
 
   useEffect(() => {
     void loadProjects();

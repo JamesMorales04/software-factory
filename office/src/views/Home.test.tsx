@@ -261,6 +261,14 @@ function renderHome(locale?: Locale) {
   );
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
+
 describe("Home", () => {
   beforeEach(() => {
     mocks.listProjects.mockReset().mockResolvedValue([project]);
@@ -306,6 +314,96 @@ describe("Home", () => {
     expect(within(recent).getByText("Awaiting approval")).toBeDefined();
     expect(screen.getByText("Unresolved model usage")).toBeDefined();
     expect(screen.getByText("Factory status")).toBeDefined();
+  });
+
+  it("ignores a stale thread response after Core selects a newer request", async () => {
+    vi.useFakeTimers();
+    const staleResponse = deferred<IntakeRequestProjection>();
+    const newerSummary: IntakeRequestSummary = {
+      ...summary,
+      id: "request-2",
+      objective: "Inspect a newer request",
+      state: "ASSESSING",
+      stateDetail: "Assessment is in progress",
+    };
+    const staleProjection: IntakeRequestProjection = {
+      ...projection,
+      assessment: { ...assessment, suggestedNextAction: "Stale assessment" },
+    };
+    const newerProjection: IntakeRequestProjection = {
+      ...projection,
+      ...newerSummary,
+      assessment: { ...assessment, suggestedNextAction: "Current assessment" },
+    };
+    mocks.listIntakeRequests
+      .mockReset()
+      .mockResolvedValueOnce([summary])
+      .mockResolvedValue([newerSummary]);
+    mocks.getIntakeRequest.mockImplementation((requestId: string) =>
+      requestId === summary.id
+        ? staleResponse.promise
+        : Promise.resolve(newerProjection),
+    );
+
+    const view = renderHome();
+    try {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(mocks.getIntakeRequest).toHaveBeenCalledWith(summary.id);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(8000);
+      });
+      expect(mocks.getIntakeRequest).toHaveBeenCalledWith(newerSummary.id);
+
+      await act(async () => {
+        staleResponse.resolve(staleProjection);
+        await Promise.resolve();
+      });
+      const thread = screen.getByTestId("home-thread");
+      expect(
+        within(thread).getByText(/Next: Current assessment/),
+      ).toBeDefined();
+      expect(within(thread).queryByText(/Next: Stale assessment/)).toBeNull();
+    } finally {
+      view.unmount();
+      vi.useRealTimers();
+    }
+  });
+
+  it("waits for each thread poll to settle before scheduling another", async () => {
+    vi.useFakeTimers();
+    const firstResponse = deferred<IntakeRequestProjection>();
+    mocks.getIntakeRequest
+      .mockReset()
+      .mockReturnValueOnce(firstResponse.promise)
+      .mockResolvedValue(projection);
+
+    const view = renderHome();
+    try {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(mocks.getIntakeRequest).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(24_000);
+      });
+      expect(mocks.getIntakeRequest).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        firstResponse.resolve(projection);
+        await Promise.resolve();
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(8000);
+      });
+      expect(mocks.getIntakeRequest).toHaveBeenCalledTimes(2);
+    } finally {
+      view.unmount();
+      vi.useRealTimers();
+    }
   });
 
   it("does not require productivity caps or expose budget tables on Home", async () => {
