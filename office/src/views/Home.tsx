@@ -12,7 +12,7 @@ import {
   Sparkles,
   Wallet,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Badge } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
@@ -23,6 +23,7 @@ import {
   coreApi,
   type ExecutionProfile,
   type IntakeExecutionPolicyScope,
+  type IntakeRequestProjection,
   type IntakeRequestSummary,
   type NewIntakeRequest,
   newIdempotencyKey,
@@ -30,8 +31,9 @@ import {
   type Project,
 } from "../coreApi";
 import { shortId } from "../format";
-import { useI18n } from "../i18n";
-import { IntakeModeBadge, IntakeStateBadge } from "./RequestState";
+import { type MessageKey, useI18n } from "../i18n";
+import { HomeThread } from "./HomeThread";
+import { IntakeStateBadge, isTerminalIntakeState } from "./RequestState";
 
 function errorMessage(cause: unknown, fallback: string): string {
   return cause instanceof CoreApiError
@@ -70,6 +72,30 @@ function projectName(
   );
 }
 
+const SUGGESTIONS: Array<{ label: MessageKey; seed: MessageKey }> = [
+  { label: "home.suggestions.issue", seed: "home.suggestions.issueSeed" },
+  {
+    label: "home.suggestions.performance",
+    seed: "home.suggestions.performanceSeed",
+  },
+  {
+    label: "home.suggestions.integration",
+    seed: "home.suggestions.integrationSeed",
+  },
+  { label: "home.suggestions.refactor", seed: "home.suggestions.refactorSeed" },
+  { label: "home.suggestions.tests", seed: "home.suggestions.testsSeed" },
+];
+
+function latestConversation(
+  requests: IntakeRequestSummary[] | null,
+): IntakeRequestSummary | null {
+  if (requests === null || requests.length === 0) return null;
+  return (
+    requests.find((request) => !isTerminalIntakeState(request.state)) ??
+    requests[0]
+  );
+}
+
 export function Home() {
   const navigate = useNavigate();
   const { t, formatDate, formatNumber } = useI18n();
@@ -85,6 +111,10 @@ export function Home() {
   >(null);
   const [recentError, setRecentError] = useState<string | null>(null);
   const [recentUnavailable, setRecentUnavailable] = useState(false);
+  const [thread, setThread] = useState<IntakeRequestProjection | null>(null);
+  const [threadError, setThreadError] = useState<string | null>(null);
+  const [threadLoading, setThreadLoading] = useState(false);
+  const threadGeneration = useRef(0);
 
   const [projectId, setProjectId] = useState("");
   const [profileId, setProfileId] = useState("");
@@ -172,6 +202,60 @@ export function Home() {
     }
   }, [t]);
 
+  const threadSummary = useMemo(
+    () => latestConversation(recentRequests),
+    [recentRequests],
+  );
+  const threadId = threadSummary?.id ?? null;
+
+  useEffect(() => {
+    const generation = ++threadGeneration.current;
+    if (threadId === null) {
+      setThread(null);
+      setThreadError(null);
+      setThreadLoading(false);
+      return () => {
+        if (threadGeneration.current === generation) {
+          threadGeneration.current += 1;
+        }
+      };
+    }
+    setThread(null);
+    setThreadError(null);
+    setThreadLoading(true);
+
+    let active = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const refresh = async () => {
+      try {
+        const next = await coreApi.getIntakeRequest(threadId);
+        if (!active || threadGeneration.current !== generation) return;
+        setThread(next);
+        setThreadError(null);
+      } catch (cause) {
+        if (!active || threadGeneration.current !== generation) return;
+        setThreadError(errorMessage(cause, t("home.thread.error")));
+      } finally {
+        if (active && threadGeneration.current === generation) {
+          setThreadLoading(false);
+          // Schedule the next poll only after this one settles. This prevents
+          // overlapping requests from resolving out of order and replacing a
+          // fresher Core projection with an older response.
+          timer = setTimeout(() => void refresh(), 8000);
+        }
+      }
+    };
+    void refresh();
+
+    return () => {
+      active = false;
+      if (timer !== undefined) clearTimeout(timer);
+      if (threadGeneration.current === generation) {
+        threadGeneration.current += 1;
+      }
+    };
+  }, [threadId, t]);
+
   useEffect(() => {
     void loadProjects();
     void loadProfiles();
@@ -191,8 +275,22 @@ export function Home() {
 
   const selectedProfile = profiles?.find((profile) => profile.id === profileId);
   const profileUnavailable = selectedProfile?.executable === false;
+  const profileDefaultLabel = selectedProfile
+    ? projectId && selectedProfile.projectDefaults.includes(projectId)
+      ? t("home.profile.projectDefault")
+      : selectedProfile.globalDefault
+        ? t("home.profile.globalDefault")
+        : null
+    : null;
   const pendingDecisions =
     overview?.recent_decisions.filter((decision) => decision.actionable) ?? [];
+  const needsReview = overview
+    ? overview.runtime.unresolved_sessions +
+      overview.runtime.unresolved_model_calls
+    : 0;
+  const threadProject = threadSummary
+    ? projectName(threadSummary.projectId, projects, t)
+    : "";
 
   function resetRequestKey() {
     requestKey.current = newIdempotencyKey();
@@ -200,6 +298,24 @@ export function Home() {
     setPolicySetup(null);
     setPolicyAcknowledged(false);
     setPolicyError(null);
+  }
+
+  function applySuggestion(seed: string) {
+    setObjective((current) => {
+      if (current.trim() === "") return seed;
+      return `${current}${current.endsWith("\n") ? "" : "\n"}${seed}`;
+    });
+    setFieldErrors((current) => ({ ...current, objective: undefined }));
+    resetRequestKey();
+    document.getElementById("home-objective")?.focus();
+  }
+
+  function handleComposerKeyDown(
+    event: React.KeyboardEvent<HTMLTextAreaElement>,
+  ) {
+    if (event.key !== "Enter" || (!event.metaKey && !event.ctrlKey)) return;
+    event.preventDefault();
+    event.currentTarget.form?.requestSubmit();
   }
 
   async function submitRequest(input: NewIntakeRequest) {
@@ -333,9 +449,7 @@ export function Home() {
                 <Sparkles size={22} />
               </span>
               <div className="home-composer-head-copy">
-                <span className="home-kicker">
-                  {t("home.newRequest.title")}
-                </span>
+                <span className="home-kicker">{t("home.lead.kicker")}</span>
                 <h2>{t("home.composer.title")}</h2>
                 <p>{t("home.composer.description")}</p>
               </div>
@@ -382,82 +496,134 @@ export function Home() {
                   placeholder={t("home.objective.placeholder")}
                   error={fieldErrors.objective}
                   className="home-objective"
-                  rows={5}
+                  rows={4}
+                  onKeyDown={handleComposerKeyDown}
                   required
                 />
 
-                <div className="home-context-grid">
-                  <Select
-                    id="home-project"
-                    label={
-                      <>
-                        <FolderGit2 size={13} aria-hidden="true" />
-                        {t("home.project.label")}
-                      </>
-                    }
-                    value={projectId}
-                    onChange={(event) => {
-                      setProjectId(event.target.value);
-                      setFieldErrors((current) => ({
-                        ...current,
-                        project: undefined,
-                      }));
-                      resetRequestKey();
-                    }}
-                    error={fieldErrors.project}
-                    required
-                  >
-                    <option value="">{t("home.project.select")}</option>
-                    {projects.map((project) => (
-                      <option key={project.id} value={project.id}>
-                        {project.repository}
-                      </option>
-                    ))}
-                  </Select>
+                <fieldset className="home-suggestions">
+                  <legend className="ui-visually-hidden">
+                    {t("home.suggestions.label")}
+                  </legend>
+                  {SUGGESTIONS.map((suggestion) => (
+                    <button
+                      key={suggestion.label}
+                      type="button"
+                      className="home-suggestion"
+                      onClick={() => applySuggestion(t(suggestion.seed))}
+                    >
+                      {t(suggestion.label)}
+                    </button>
+                  ))}
+                </fieldset>
 
-                  <Select
-                    id="home-profile"
-                    label={
-                      <>
-                        <SlidersHorizontal size={13} aria-hidden="true" />
-                        {t("home.profile.label")}
-                      </>
-                    }
-                    value={profileId}
-                    onChange={(event) => {
-                      setProfileId(event.target.value);
-                      resetRequestKey();
-                    }}
-                    disabled={profiles === null}
-                  >
-                    <option value="">
-                      {profilesUnavailable
-                        ? t("home.profile.coreDefaultUnavailable")
-                        : profiles === null
-                          ? t("home.profile.loading")
-                          : t("home.profile.coreDefault")}
-                    </option>
-                    {(profiles ?? []).map((profile) => (
-                      <option
-                        key={profile.id}
-                        value={profile.id}
-                        disabled={!profile.executable}
-                      >
-                        {profile.name}
-                        {profile.executable
-                          ? ""
-                          : t("home.profile.unavailableSuffix")}
-                        {profile.globalDefault
-                          ? t("home.profile.globalSuffix")
-                          : ""}
-                        {profile.projectDefaults.includes(projectId) &&
-                        projectId
-                          ? t("home.profile.projectSuffix")
-                          : ""}
+                <div className="home-composer-toolbar">
+                  <div className="home-context-chips">
+                    <Select
+                      id="home-project"
+                      label={
+                        <>
+                          <FolderGit2 size={13} aria-hidden="true" />
+                          {t("home.project.label")}
+                        </>
+                      }
+                      value={projectId}
+                      onChange={(event) => {
+                        setProjectId(event.target.value);
+                        setFieldErrors((current) => ({
+                          ...current,
+                          project: undefined,
+                        }));
+                        resetRequestKey();
+                      }}
+                      error={fieldErrors.project}
+                      required
+                    >
+                      <option value="">{t("home.project.select")}</option>
+                      {projects.map((project) => (
+                        <option key={project.id} value={project.id}>
+                          {project.repository}
+                        </option>
+                      ))}
+                    </Select>
+
+                    <Select
+                      id="home-profile"
+                      label={
+                        <>
+                          <SlidersHorizontal size={13} aria-hidden="true" />
+                          {t("home.profile.label")}
+                        </>
+                      }
+                      value={profileId}
+                      onChange={(event) => {
+                        setProfileId(event.target.value);
+                        resetRequestKey();
+                      }}
+                      disabled={profiles === null}
+                    >
+                      <option value="">
+                        {profilesUnavailable
+                          ? t("home.profile.coreDefaultUnavailable")
+                          : profiles === null
+                            ? t("home.profile.loading")
+                            : t("home.profile.coreDefault")}
                       </option>
-                    ))}
-                  </Select>
+                      {(profiles ?? []).map((profile) => (
+                        <option
+                          key={profile.id}
+                          value={profile.id}
+                          disabled={!profile.executable}
+                        >
+                          {profile.name}
+                          {profile.executable
+                            ? ""
+                            : t("home.profile.unavailableSuffix")}
+                        </option>
+                      ))}
+                    </Select>
+
+                    <Input
+                      id="home-spend"
+                      className="home-spend-input"
+                      label={
+                        <>
+                          <Wallet size={13} aria-hidden="true" />
+                          {t("home.spend.label")}
+                        </>
+                      }
+                      type="number"
+                      min="0.01"
+                      step="0.01"
+                      value={spendUsd}
+                      onChange={(event) => {
+                        setSpendUsd(event.target.value);
+                        setFieldErrors((current) => ({
+                          ...current,
+                          spend: undefined,
+                        }));
+                        resetRequestKey();
+                      }}
+                      error={fieldErrors.spend}
+                      required
+                    />
+                  </div>
+                  <Button
+                    type="submit"
+                    variant="primary"
+                    size="lg"
+                    className="home-send"
+                    busy={busy}
+                    disabled={
+                      busy || profileUnavailable || policySetup !== null
+                    }
+                  >
+                    {busy ? t("home.submitting") : t("home.submit")}
+                    {!busy && <Send size={17} aria-hidden="true" />}
+                  </Button>
                 </div>
+
+                <p className="home-spend-note">{t("home.spend.help")}</p>
 
                 {profilesUnavailable && (
                   <p className="ui-callout ui-callout--info" role="status">
@@ -484,18 +650,11 @@ export function Home() {
                 {selectedProfile && (
                   <details className="home-profile-details">
                     <summary>
-                      <span className="home-profile-summary-name">
-                        {selectedProfile.name}
-                      </span>
-                      <Badge
-                        tone={
-                          selectedProfile.executable ? "success" : "attention"
-                        }
-                      >
-                        {selectedProfile.executable
-                          ? t("execProfiles.state.executable")
-                          : t("execProfiles.state.draftNotExecutable")}
-                      </Badge>
+                      {profileDefaultLabel && (
+                        <span className="home-profile-default">
+                          {profileDefaultLabel}
+                        </span>
+                      )}
                       <span>{t("home.profile.routes")}</span>
                       <ChevronDown size={14} aria-hidden="true" />
                     </summary>
@@ -546,35 +705,6 @@ export function Home() {
                     {t("home.profile.notExecutable")}
                   </p>
                 )}
-
-                <div className="home-authorization">
-                  <Input
-                    id="home-spend"
-                    label={
-                      <>
-                        <Wallet size={13} aria-hidden="true" />
-                        {t("home.spend.label")}
-                      </>
-                    }
-                    type="number"
-                    min="0.01"
-                    step="0.01"
-                    value={spendUsd}
-                    onChange={(event) => {
-                      setSpendUsd(event.target.value);
-                      setFieldErrors((current) => ({
-                        ...current,
-                        spend: undefined,
-                      }));
-                      resetRequestKey();
-                    }}
-                    error={fieldErrors.spend}
-                    required
-                  />
-                  <p className="home-authorization-note">
-                    {t("home.spend.help")}
-                  </p>
-                </div>
 
                 <p className="home-approval-note">
                   <ShieldCheck size={16} aria-hidden="true" />
@@ -749,27 +879,12 @@ export function Home() {
                   </p>
                 )}
 
-                <div className="home-form-actions">
-                  <p className="home-submit-hint">{t("home.submitHint")}</p>
-                  <Button
-                    type="submit"
-                    variant="primary"
-                    size="lg"
-                    className="home-submit"
-                    busy={busy}
-                    disabled={
-                      busy || profileUnavailable || policySetup !== null
-                    }
-                  >
-                    {busy ? t("home.submitting") : t("home.submit")}
-                    {!busy && <Send size={17} aria-hidden="true" />}
-                  </Button>
-                </div>
+                <p className="home-keyboard-hint">{t("home.keyboardHint")}</p>
               </form>
             )}
           </Panel>
 
-          <Panel className="home-recent">
+          <Panel className="home-recent" data-testid="home-recent">
             <div className="home-section-head">
               <div className="home-section-title">
                 <span className="home-section-icon" aria-hidden="true">
@@ -818,7 +933,6 @@ export function Home() {
                     </div>
                     <div className="home-request-badges">
                       <IntakeStateBadge state={request.state} />
-                      <IntakeModeBadge mode={request.mode} />
                     </div>
                   </li>
                 ))}
@@ -827,8 +941,16 @@ export function Home() {
           </Panel>
         </div>
 
-        <aside className="home-side" aria-label={t("home.status.aria")}>
-          <Panel className="home-decisions">
+        <aside className="home-side" aria-label={t("home.side.aria")}>
+          <HomeThread
+            summary={threadSummary}
+            projection={thread}
+            projectName={threadProject}
+            loading={threadLoading}
+            error={threadError}
+          />
+
+          <Panel className="home-decisions" data-testid="home-decisions">
             <div className="home-section-head">
               <div className="home-section-title">
                 <span className="home-section-icon" aria-hidden="true">
@@ -883,7 +1005,7 @@ export function Home() {
             )}
           </Panel>
 
-          <Panel className="home-status">
+          <Panel className="home-status" data-testid="home-status">
             <div className="home-section-head">
               <div className="home-section-title">
                 <span className="home-section-icon" aria-hidden="true">
@@ -895,7 +1017,9 @@ export function Home() {
                 <Badge
                   tone={overview.runtime.core_healthy ? "success" : "danger"}
                 >
-                  {overview.runtime.core_healthy ? "HEALTHY" : "UNHEALTHY"}
+                  {overview.runtime.core_healthy
+                    ? t("home.status.healthy")
+                    : t("home.status.unhealthy")}
                 </Badge>
               )}
             </div>
@@ -913,7 +1037,7 @@ export function Home() {
             {overview && (
               <>
                 <p className="home-status-time">
-                  {t("home.status.snapshot", {
+                  {t("home.status.updated", {
                     date: formatDate(overview.as_of),
                   })}
                 </p>
@@ -938,22 +1062,18 @@ export function Home() {
                     <dd>{formatNumber(overview.runtime.workers)}</dd>
                   </div>
                   <div>
-                    <dt>{t("home.status.runningAgents")}</dt>
+                    <dt>{t("home.status.activeAgents")}</dt>
                     <dd>{formatNumber(overview.counts.active_agents)}</dd>
                   </div>
-                  <div>
-                    <dt>{t("home.status.unresolvedSessions")}</dt>
-                    <dd>
-                      {formatNumber(overview.runtime.unresolved_sessions)}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>{t("home.status.unresolvedModelCalls")}</dt>
-                    <dd>
-                      {formatNumber(overview.runtime.unresolved_model_calls)}
-                    </dd>
-                  </div>
                 </dl>
+                {needsReview > 0 && (
+                  <p className="home-status-attention">
+                    <span className="home-status-dot" aria-hidden="true" />
+                    {t("home.status.needsReview", {
+                      count: formatNumber(needsReview),
+                    })}
+                  </p>
+                )}
                 <div className="home-status-links">
                   <Link to="/runtime">{t("home.status.openRuntime")}</Link>
                   <Link to="/overview">{t("home.status.openOverview")}</Link>

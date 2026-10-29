@@ -1,4 +1,5 @@
 use crate::process::cargo_run;
+use std::process::Command;
 
 const SUITES: &[(&str, &str)] = &[
     (
@@ -56,10 +57,19 @@ pub(crate) fn dispatch() -> Result<(), String> {
     ])
 }
 
+fn office_commands() -> [Command; 2] {
+    let mut build = crate::cargo();
+    build.args(["build", "--bins", "--locked"]);
+
+    let mut browser = Command::new("node");
+    browser.args(["office/e2e-browser/rust-journey.mjs"]);
+    [build, browser]
+}
+
 pub(crate) fn office() -> Result<(), String> {
-    let mut command = std::process::Command::new("node");
-    command.args(["office/e2e-browser/rust-journey.mjs"]);
-    crate::process::run(command).map_err(|error| {
+    let [build, browser] = office_commands();
+    crate::process::run(build)?;
+    crate::process::run(browser).map_err(|error| {
         format!("{error}\nInstall Office browser dependencies with `npm ci` in office/e2e-browser.")
     })
 }
@@ -113,4 +123,24 @@ pub(crate) fn unsupported(name: &str) -> Result<(), String> {
             .collect::<Vec<_>>()
             .join(", ")
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::office_commands;
+
+    #[test]
+    fn office_journey_builds_candidate_binaries_before_launching_browser() {
+        let [build, browser] = office_commands();
+
+        assert_eq!(
+            build.get_args().collect::<Vec<_>>(),
+            ["build", "--bins", "--locked"]
+        );
+        assert_eq!(browser.get_program(), "node");
+        assert_eq!(
+            browser.get_args().collect::<Vec<_>>(),
+            ["office/e2e-browser/rust-journey.mjs"]
+        );
+    }
 }

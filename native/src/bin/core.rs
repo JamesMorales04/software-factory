@@ -8576,6 +8576,14 @@ async fn get_lead_request(
     let assessment = app.db.lead_assessment(&id).await.ok();
     let proposal = app.db.lead_proposal(&id).await.ok();
     let plan = app.db.frozen_lead_plan(&id).await.ok();
+    let start_binding = if plan.is_some() {
+        match app.db.lead_expected_start_binding(&id).await {
+            Ok(binding) => Some(binding),
+            Err(error) => return api_error(error),
+        }
+    } else {
+        None
+    };
     let withdrawal = app.db.lead_withdrawal(&id).await.ok().flatten();
     let evidence = app.db.lead_start_evidence(&id).await.ok().flatten();
     let execution_binding = match &request.campaign_id {
@@ -8601,6 +8609,7 @@ async fn get_lead_request(
         "assessment": assessment,
         "proposal": proposal,
         "plan": plan,
+        "start_binding": start_binding,
         "withdrawal": withdrawal,
         "start_evidence": evidence,
         "execution_binding": execution_binding,
