@@ -99,7 +99,10 @@ contains no credentials.
   dedicated read-only volume. An earlier socket-only candidate still allowed
   uplink-to-control traffic because Podman did not bridge-isolate the
   `internal` control network; the final `isolate=strict` /
-  `no_default_route=true` policy and its probe supersede that claim. Serve over
+  `no_default_route=true` policy and its probe supersede that claim. The
+  isolation repair and real Podman probes are recorded in
+  [personal-access-tailscale-isolation-2026-11-02.json](../evidence/personal-access-tailscale-isolation-2026-11-02.json).
+  Serve over
   this socket was not exercised because the disposable node was left
   unauthenticated. Current remote Serve/HTTPS is `NOT_TESTED`. Mobile-network
   reachability from a phone, independent acceptance and deployment remain
