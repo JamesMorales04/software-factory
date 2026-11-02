@@ -16,6 +16,7 @@ import {
   OFFICE_SLOT_COLUMN,
   OFFICE_ZONE_SIDE_LANE,
   panCamera,
+  selectParticipantRecord,
   zoomCamera,
   zoomPercent,
 } from "./officeSceneLayout";
@@ -341,6 +342,30 @@ describe("buildOfficeSceneLayout", () => {
       x: winner.x,
       y: winner.y,
     });
+  });
+
+  it("selects the same duplicate winner the floor renders", () => {
+    const id = "implementer:participant-00";
+    const current = participant(0, "IMPLEMENTER", {
+      participant_id: id,
+      observation: "CURRENT",
+      status: "ACTIVE",
+      last_observed_at: "2026-10-28T10:01:00Z",
+    });
+    const final = participant(0, "LEAD", {
+      participant_id: id,
+      observation: "FINAL",
+      status: "COMPLETED",
+      last_observed_at: "2026-10-28T10:09:00Z",
+    });
+    expect(selectParticipantRecord([final, current], id)?.observation).toBe(
+      "CURRENT",
+    );
+    expect(selectParticipantRecord([current, final], id)?.observation).toBe(
+      "CURRENT",
+    );
+    expect(selectParticipantRecord([final], "missing")).toBeNull();
+    expect(selectParticipantRecord([current], null)).toBeNull();
   });
 
   it("assigns deterministic painter-order depth", () => {

@@ -10,6 +10,7 @@ import {
   AgentOfficeTimeline,
 } from "../components/office/AgentOfficeFloor";
 import { AgentOfficeIsometric } from "../components/office/AgentOfficeIsometric";
+import { selectParticipantRecord } from "../components/office/officeSceneLayout";
 import { ParticipantInspector } from "../components/office/ParticipantInspector";
 import { StatusBadge } from "../components/office/StatusBadge";
 import { Button, buttonClass } from "../components/ui/Button";
@@ -212,11 +213,10 @@ export function AgentOffice() {
   }, [load, t]);
 
   const allParticipants = page?.participants ?? [];
-  const selected =
-    allParticipants.find(
-      (participant) => participant.participant_id === participantId,
-    ) ??
-    (selectedExtra?.participant_id === participantId ? selectedExtra : null);
+  const selectionPool = selectedExtra
+    ? [...allParticipants, selectedExtra]
+    : allParticipants;
+  const selected = selectParticipantRecord(selectionPool, participantId);
   const participants =
     selectedExtra &&
     !allParticipants.some(
