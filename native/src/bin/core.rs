@@ -14450,6 +14450,7 @@ mod tests {
             (url, hits)
         }
 
+        #[cfg(feature = "test-support")]
         #[tokio::test]
         async fn semantic_review_uses_the_frozen_reviewer_route() {
             // Only relaxes the HTTPS rule for loopback test upstreams; every
@@ -14674,6 +14675,7 @@ mod tests {
             let _ = std::fs::remove_dir_all(fixture.repository);
         }
 
+        #[cfg(feature = "test-support")]
         #[tokio::test]
         async fn billable_assessment_requires_creation_amount_and_shares_request_envelope() {
             unsafe { std::env::set_var("FACTORY_ALLOW_TEST_UPSTREAM", "1") };
