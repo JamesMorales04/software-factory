@@ -33,7 +33,7 @@
 |---|---|---|
 | #77 Home/design-system | **MERGED into Wave 3** (`8c4e1ff`) | 256 Office tests at review; Chromium 1440/834/390/320; `docs/evidence/office-home-visual-polish-2026-10-29/` |
 | #78 Agent Office V2 | **MERGED into Wave 3** (`f7479c0`, final inspector fix `f2322fc`) | 265 Office tests after final merge; Chromium 0/1/5/12/30; `docs/evidence/office-isometric-v2-2026-10-29/` |
-| #79 provider prep | OPEN draft (`7366488`) | 29 contract tests; subscription-only gate |
+| #79 provider prep | OPEN draft (`7366488`) | 29 subscription-only contract tests; no live inference |
 
 The Home direction is approved as a design foundation, not final conversational
 acceptance. The Office V2 is accepted functionally; final visual fidelity and
@@ -46,9 +46,12 @@ exhausted**.
 - Sol/Luna BLOCKED the original access stack: legacy `sessionStorage` token,
   Tailscale reachability to Core `8765`, pairing surviving
   revocation/recovery/consume-issue race, six-digit pairing entropy/throttling.
-- The access-repairs branch reached `ad04aca` with Tailscale socket/compose
-  policy work and a revocation-fencing proposal. A few policy-test/compose files
-  remain uncommitted in the worktree; no access PR was opened or merged.
+- The access-repairs branch reached `603f823` and is pushed. Sol and Luna
+  independently reviewed the full `c8bf930...603f823` delta at that exact head:
+  **APPROVE WITH CONDITIONS**, no remaining HIGH. Conditions: full Compose E2E
+  after the isolation change, live Tailscale/Serve/mobile verification, and ADR
+  wording/evidence-link cleanup. Promotion order remains #36 -> #37 -> #38 with
+  restacking and exact-head revalidation. No access PR was merged.
 - `main` protection remains prepared, not applied. Payload uses 0 required
   GitHub approvals (single maintainer), strict required checks
   (`architecture-consistency`, `rust`, `compose-policy`, `container-dev`),
