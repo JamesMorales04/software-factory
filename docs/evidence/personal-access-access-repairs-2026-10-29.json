@@ -100,6 +100,14 @@
       "reason": "Netavark 2.1.0 did not include the internal factory-control bridge in its isolation chain, so the Tailscale uplink could reach Core's control listener when it was bound. The socket-only topology alone was insufficient.",
       "repair": "Commit e473919c sets isolate=strict on every bridge and makes factory-control non-internal with no_default_route=true, preserving control-only egress denial while isolating it from the Tailscale uplink.",
       "evidence": "docs/evidence/personal-access-tailscale-isolation-2026-11-02.json"
+    },
+    {
+      "date": "2026-11-02",
+      "field": "checks[full Rust package test run].detail",
+      "earlier_claim": "cargo test -p factory-native --locked stopped in e2e_fixture_dispatch: 9 cases passed and 3 failed because the provider sandbox process exited before readiness.",
+      "reason": "The final re-run at the repaired tree passed e2e_fixture_dispatch 12/12. It instead failed two provider_sandbox tests because the OpenCode provider process did not start in this host environment.",
+      "final_result": "cargo test -p factory-native --locked exited 101: provider_sandbox passed 5 and failed 2 (actual_opencode_executable_uses_the_egress_broker; confined_opencode_reaches_the_pinned_egress_broker_without_a_host_credential). All access-specific lib/Core/session suites passed separately.",
+      "classification": "environment/provider-sandbox failure, not an access repair regression"
     }
   ]
 }
