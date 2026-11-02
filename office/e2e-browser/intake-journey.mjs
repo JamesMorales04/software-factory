@@ -6,7 +6,13 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer } from "node:http";
 import { createServer as createTcpServer } from "node:net";
 import { homedir } from "node:os";
@@ -46,9 +52,13 @@ const masterKey = randomBytes(32).toString("hex");
 const workerId = "intake-full-worker";
 const verifierPrincipal = "verifier-intake-full";
 const reviewerPrincipal = "reviewer-intake-full";
-const tempBase = process.env.FACTORY_E2E_TMP_BASE || "/tmp/opencode";
+// Create an owned, isolated directory. A fixed shared base such as
+// /tmp/opencode can be root-owned in CI images, and os.tmpdir() may resolve to
+// such a mount through TMPDIR, so default to the writable container /tmp and
+// allocate atomically. FACTORY_E2E_TMP_BASE still overrides the base.
+const tempBase = process.env.FACTORY_E2E_TMP_BASE?.trim() || "/tmp";
 mkdirSync(tempBase, { recursive: true });
-const temp = join(tempBase, `f-${randomBytes(4).toString("hex")}`);
+const temp = mkdtempSync(join(tempBase, "factory-intake-e2e-"));
 const repository = join(temp, "repo");
 const database = join(temp, "factory.sqlite");
 const enrollmentCodeFile = join(temp, "enrollment-code");
@@ -628,13 +638,16 @@ try {
     }),
   });
   // The full deterministic journey proves a profile whose frozen Lead route
-  // differs from the Implementer route. The provider's configured model also
-  // substantiates the Lead-only ID; the fake gateway accepts any model name.
+  // differs from the Implementer route. Each route is priced by its own
+  // deterministic provider connection: Core only prices a model that matches
+  // the configured model of that connection. The fake gateway accepts any
+  // model name.
   const leadModel = full && !live ? `${model}-lead` : model;
+  const leadProvider = full && !live ? "opencode" : provider;
   await coreApi(`/settings/providers/${encodeURIComponent(provider)}`, {
     method: "PUT",
     body: JSON.stringify({
-      model: leadModel,
+      model,
       baseUrl: liveConfig?.providerBaseUrl ?? modelUrl,
       credential:
         liveConfig?.providerCredential ?? "fake-provider-credential-0123456789",
@@ -648,6 +661,31 @@ try {
       outputMicrosPerMillion: 2000,
     }),
   });
+  if (leadProvider !== provider) {
+    await coreApi(`/settings/providers/${encodeURIComponent(leadProvider)}`, {
+      method: "PUT",
+      body: JSON.stringify({
+        model: leadModel,
+        baseUrl: modelUrl,
+        credential: "fake-lead-provider-credential-0123456789",
+        enabled: true,
+        isDefault: false,
+        maxTurns: 4,
+        maxInputTokens: 100000,
+        maxOutputTokens: 12000,
+        maxCostMicros: 500000,
+        inputMicrosPerMillion: 1000,
+        outputMicrosPerMillion: 2000,
+      }),
+    });
+  }
+  const configuredProviders = await coreApi("/settings/providers");
+  assert.ok(
+    configuredProviders.providers.some(
+      (entry) => entry.provider === provider && entry.enabled,
+    ),
+    "the fixture provider connection must be enabled",
+  );
   if (full) {
     await coreApi("/settings/runtime", {
       method: "PUT",
@@ -661,11 +699,8 @@ try {
     provider,
     model,
     reasoning: "medium",
-    maxInputTokens: 64000,
-    maxOutputTokens: 8192,
-    maxCostMicros: 300000,
   };
-  const leadRole = { ...role, model: leadModel };
+  const leadRole = { ...role, provider: leadProvider, model: leadModel };
   const profile = await coreApi("/execution-profiles", {
     method: "POST",
     body: JSON.stringify({
@@ -674,22 +709,21 @@ try {
       category: "BALANCED",
       roles: {
         lead: leadRole,
-        implementer: {
-          ...role,
-          maxInputTokens: 40000,
-          maxOutputTokens: 12000,
-          maxCostMicros: 500000,
-        },
+        implementer: role,
         semanticReviewer: role,
       },
-      budgets: {
-        maxAttempts: 3,
-        maxSessions: 4,
-        maxTurns: 4,
-        maxInputTokens: 40000,
-        maxOutputTokens: 12000,
-        maxCostMicros: 500000,
-        deadlineSecs: 600,
+      operations: {
+        modelRequestTimeoutSecs: 60,
+        toolCallTimeoutSecs: 60,
+        maxRequestBytes: 1048576,
+        maxResponseBytes: 1048576,
+        maxGenerationTokens: 8192,
+        maxInFlightOperations: 1,
+      },
+      progress: {
+        diagnoseAfterStagnantCheckpoints: 2,
+        escalateAfterUnsuccessfulReplans: 1,
+        observationTimeoutSecs: 60,
       },
       auto_start: { enabled: false, risk_classes: [] },
     }),
@@ -712,8 +746,8 @@ try {
     .selectOption(profile.id);
   const objective =
     "Add a deterministic CSV export endpoint and cover it with tests.";
-  await page.getByLabel("What should the Factory do?").fill(objective);
-  await page.getByRole("button", { name: "Submit request" }).click();
+  await page.getByLabel("Your instruction to the Lead").fill(objective);
+  await page.getByRole("button", { name: "Send to Lead" }).click();
   await page
     .getByRole("heading", { name: "Enable governed execution" })
     .waitFor();
@@ -721,7 +755,15 @@ try {
     .getByLabel(/I authorize this bounded non-autonomous R0 execution policy/)
     .check();
   await page.getByRole("button", { name: "Enable governed execution" }).click();
-  await page.waitForURL(/#\/requests\//);
+  try {
+    await page.waitForURL(/#\/requests\//);
+  } catch (error) {
+    console.error(
+      "HOME POLICY SETUP PAGE",
+      await page.locator("body").innerText(),
+    );
+    throw error;
+  }
   const requestId = page.url().match(/#\/requests\/([^/?]+)/)?.[1];
   assert.ok(requestId, "request id in URL");
 
@@ -767,16 +809,18 @@ try {
     `/campaigns/${encodeURIComponent(projection.campaignId)}`,
   );
   assert.ok(["AUTHORIZED", "RUNNING"].includes(campaign.campaign.status));
-  assert.equal(campaign.authorization.execution_mode, "TRUSTED_LOCAL_PROVIDER");
+  assert.equal(campaign.authorization.executionMode, "TRUSTED_LOCAL_PROVIDER");
   assert.equal(campaign.campaign.action_id, projection.actionId);
   assert.equal(projection.profile.revisionId, profile.revisionId);
   assert.equal(projection.profile.contentHash, profile.contentHash);
   assert.equal(campaign.authorization.provider, provider);
   assert.equal(campaign.authorization.model, model);
-  assert.deepEqual(campaign.authorization.authorized_paths, ["src"]);
-  assert.equal(campaign.authorization.risk_class, "R0");
-  assert.equal(campaign.authorization.delegation_id, projection.delegationId);
-  assert.equal(campaign.authorization.max_attempts, 1);
+  assert.deepEqual(campaign.authorization.authorizedPaths, ["src"]);
+  assert.equal(campaign.authorization.riskClass, "R0");
+  assert.equal(campaign.authorization.delegationId, projection.delegationId);
+  assert.equal(campaign.authorization.schemaVersion, 2);
+  assert.ok(campaign.authorization.policy.operations);
+  assert.ok(campaign.authorization.policy.progress);
   assert.equal(projection.actionId, campaign.campaign.action_id);
   assert.equal(campaign.tasks.length, 1, "the frozen plan has one unit");
   const frozenTask = campaign.tasks[0];
@@ -873,6 +917,53 @@ try {
       await coreApi(`/campaigns/${encodeURIComponent(campaign.campaign.id)}`)
     ).attempts.find((attempt) => attempt.id === frozenAttempt.id);
     assert.equal(claimedAttempt.status, "CANDIDATE_READY");
+
+    // The Worker used the local deterministic fixture provider under the
+    // existing request-scoped TRUSTED_LOCAL_PROVIDER authorization. Inspect
+    // Core's durable session and tool-event projection; this never contacts a
+    // remote provider. The fixture's final explanation includes a canary to
+    // prove withheld provider detail does not reach Office.
+    await page.goto(`${viteUrl}/#/agents`);
+    await page
+      .getByRole("heading", { name: "Agent Office", exact: true, level: 1 })
+      .waitFor();
+    await page
+      .getByTestId("agent-filters")
+      .getByLabel("Campaign", { exact: true })
+      .selectOption(campaign.campaign.id);
+    const providerParticipant = page.getByRole("button", {
+      name: /Inspect Implementer implementer:/,
+    });
+    await providerParticipant.waitFor();
+    await providerParticipant.click();
+    const providerInspector = page.getByTestId("participant-inspector");
+    await providerInspector.getByText("ses_fixture").waitFor();
+    const providerToolEvents = page.getByTestId("tool-event-table");
+    await providerToolEvents.getByText("write_file").first().waitFor();
+    await providerToolEvents.getByText("write applied").waitFor();
+    await providerToolEvents
+      .getByText("provider content withheld")
+      .first()
+      .waitFor();
+    assert.equal(
+      await page.getByText("canary-secret", { exact: false }).count(),
+      0,
+      "free-form provider detail must remain withheld in Office",
+    );
+    const providerParticipantUrl = page.url();
+    await page.reload();
+    await page
+      .getByRole("heading", { name: "Agent Office", exact: true, level: 1 })
+      .waitFor();
+    await page
+      .getByTestId("tool-event-table")
+      .getByText("write applied")
+      .waitFor();
+    assert.equal(
+      page.url(),
+      providerParticipantUrl,
+      "the selected provider participant and filters must survive reload",
+    );
 
     const diff = await coreApi(
       `/campaigns/${encodeURIComponent(campaign.campaign.id)}/candidates/${encodeURIComponent(candidate.id)}/diff`,
@@ -991,10 +1082,20 @@ try {
 
     // Browser projection: the Campaign workspace must show the exact
     // WorkGraph, candidate diff, independent receipts and Gate outcome.
-    await page
+    // The Agent Office inspection above left the browser on that view, so
+    // return to the request projection that owns the Open Campaign link.
+    await page.goto(`${viteUrl}/#/requests/${encodeURIComponent(requestId)}`);
+    await page.getByRole("heading", { name: objective }).waitFor();
+    const openCampaign = page
       .getByRole("link", { name: /Open Campaign/ })
-      .first()
-      .click();
+      .first();
+    await openCampaign.waitFor();
+    assert.equal(
+      await openCampaign.getAttribute("href"),
+      `#/campaigns/${encodeURIComponent(campaign.campaign.id)}`,
+      "the request projection must link to the exact Core Campaign id",
+    );
+    await openCampaign.click();
     await page
       .getByRole("heading", {
         name: `Campaign ${campaign.campaign.id.slice(0, 8)}`,

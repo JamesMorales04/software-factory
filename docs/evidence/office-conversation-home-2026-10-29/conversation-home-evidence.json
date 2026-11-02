@@ -1,0 +1,118 @@
+{
+  "fixture_only": true,
+  "note": "Mocked Core fixtures only. Not live activity, not visual acceptance.",
+  "branch": "factory/office-conversation/20261029",
+  "base": "f7479c0",
+  "viewports": [
+    {
+      "name": "home-1440-thread.png",
+      "viewport": 1440,
+      "documentScrollWidth": 1440,
+      "bodyScrollWidth": 1440,
+      "offenders": []
+    },
+    {
+      "name": "home-834-thread.png",
+      "viewport": 834,
+      "documentScrollWidth": 834,
+      "bodyScrollWidth": 834,
+      "offenders": []
+    },
+    {
+      "name": "home-390-thread.png",
+      "viewport": 390,
+      "documentScrollWidth": 390,
+      "bodyScrollWidth": 390,
+      "offenders": []
+    },
+    {
+      "name": "home-320-thread.png",
+      "viewport": 320,
+      "documentScrollWidth": 320,
+      "bodyScrollWidth": 320,
+      "offenders": []
+    },
+    {
+      "name": "home-1440-focus.png",
+      "viewport": 1440,
+      "documentScrollWidth": 1440,
+      "bodyScrollWidth": 1440,
+      "offenders": []
+    },
+    {
+      "name": "home-1440-hover.png",
+      "viewport": 1440,
+      "documentScrollWidth": 1440,
+      "bodyScrollWidth": 1440,
+      "offenders": []
+    },
+    {
+      "name": "home-1440-suggestion.png",
+      "viewport": 1440,
+      "documentScrollWidth": 1440,
+      "bodyScrollWidth": 1440,
+      "offenders": []
+    },
+    {
+      "name": "home-1440-initial.png",
+      "viewport": 1440,
+      "documentScrollWidth": 1440,
+      "bodyScrollWidth": 1440,
+      "offenders": []
+    },
+    {
+      "name": "home-390-initial.png",
+      "viewport": 390,
+      "documentScrollWidth": 390,
+      "bodyScrollWidth": 390,
+      "offenders": []
+    },
+    {
+      "name": "home-1440-es.png",
+      "viewport": 1440,
+      "documentScrollWidth": 1440,
+      "bodyScrollWidth": 1440,
+      "offenders": []
+    },
+    {
+      "name": "home-390-es.png",
+      "viewport": 390,
+      "documentScrollWidth": 390,
+      "bodyScrollWidth": 390,
+      "offenders": []
+    },
+    {
+      "name": "home-1440-empty.png",
+      "viewport": 1440,
+      "documentScrollWidth": 1440,
+      "bodyScrollWidth": 1440,
+      "offenders": []
+    },
+    {
+      "name": "home-1440-error.png",
+      "viewport": 1440,
+      "documentScrollWidth": 1440,
+      "bodyScrollWidth": 1440,
+      "offenders": []
+    },
+    {
+      "name": "home-1440-loading.png",
+      "viewport": 1440,
+      "documentScrollWidth": 1440,
+      "bodyScrollWidth": 1440,
+      "offenders": []
+    }
+  ],
+  "interaction_checks": {
+    "suggestion_fill": "PASS — Improve performance inserted 'Improve performance in ' and focused the composer",
+    "thread_continuation": "PASS — the active thread linked to /requests/fixture-request-active",
+    "initial_no_thread": "PASS — empty history rendered no Lead thread card",
+    "empty_projects_no_thread": "PASS — empty Project state rendered no Lead thread card"
+  },
+  "unverified": [
+    "Real Core/Compose behavior, persistence and provider inference",
+    "Product Owner visual acceptance",
+    "Cross-browser rendering",
+    "Quota or subscription balance context (no Core data is exposed to Office)"
+  ]
+}

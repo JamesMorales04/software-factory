@@ -2222,16 +2222,18 @@ capabilities:
     - office/src/styles/components.css
     - office/src/styles/home.css
     - office/src/views/Home.tsx
+    - office/src/views/HomeThread.tsx
     test:
     - office/src/components/ui/Button.test.tsx
     - office/src/components/ui/Field.test.tsx
     - office/src/views/Home.test.tsx
     - office/src/views/Home.styles.test.ts
+    - office/e2e-browser/office-conversation-home.mjs
     - office/src/theme.test.tsx
     - office/e2e-browser/office-home-visual-polish.mjs
     - office/e2e-browser/rust-journey.mjs
   acceptance:
-    deterministic: Semantic tokens, light/dark themes, density, grouped navigation, command search and shared accessible primitives typecheck, lint, pass component tests and build inside the container-native workflow. The visual-polish slice adds semantic shell/content tokens, deep-navy navigation and a conversation-first Home with 1440/834/390/320 component and fixture-browser checks.
+    deterministic: Semantic tokens, light/dark themes, density, grouped navigation, command search and shared accessible primitives typecheck, lint, pass component tests and build inside the container-native workflow. The conversational Home slice renders the latest durable intake request and Lead state from Core, supports keyboard submission and objective prompts, and links to the existing Request workspace; component and fixture Chromium checks cover 1440/834/390/320 widths.
     real: Primary Office journeys remain usable at desktop, tablet and narrow widths with visible focus, truthful states and real Core-backed browser acceptance.
   evidence:
     deterministic:
@@ -2246,6 +2248,7 @@ capabilities:
   - Provider connection tests read model discovery only; no live coding inference is authorized by these Office slices.
   - The 2026-10-29 visual-polish slice propagates the new tokens and primitives only to the shell and Home; Projects, Campaigns, Settings and Agent Office keep their existing composition until their own slices.
   - Fixture Chromium screenshots at 1440/834/390/320 are style evidence only. Real Core/Compose browser acceptance and Product Owner visual acceptance remain NOT_TESTED.
+  - The Home Lead thread is a compact projection of the existing Request workspace, not a new chat or approval API; fixture screenshots use mocked Core responses.
   - Existing operational views still use the legacy compatibility surface until their module redesign.
   blockers:
   - The full accessible WorkGraph and Agent Office journeys remain to be implemented.

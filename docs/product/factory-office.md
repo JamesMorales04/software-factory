@@ -129,7 +129,11 @@ workspace derives its state from the authoritative Lead request, shows the
 frozen profile revision and plan hash, runs the bounded assessment, approves
 the exact frozen plan, appends pre-freeze operator messages and withdraws
 through the authoritative Lead boundary. It does not expose an intake-only
-terminal flag. Execution profiles resolve each model-backed role independently:
+terminal flag. Home also shows the latest non-terminal (or most recent completed)
+intake request as a compact Lead thread, refreshing its status from Core and
+linking back to that same Request workspace. It displays durable operator
+messages and Lead state details only; it does not simulate replies or activity.
+Execution profiles resolve each model-backed role independently:
 the frozen Lead route runs intake assessment, the frozen Semantic Reviewer
 route runs candidate review, and the implementer route remains the Campaign
 authorization route. The profile editor keeps provider/model/reasoning routes

@@ -7,6 +7,7 @@ import {
   type Action,
   type CampaignDetail as CampaignDetailData,
   coreApi,
+  type DelegationProjection,
   type OfficeOverview,
   type Project,
   type ProjectFileProjection,
@@ -437,10 +438,29 @@ describe("newly translated operational surfaces", () => {
     document.documentElement.lang = "es";
     vi.mocked(coreApi.getOverview).mockResolvedValue(overview);
     vi.mocked(coreApi.listProjects).mockResolvedValue([project]);
-    vi.mocked(coreApi.listDelegations).mockResolvedValue([delegation]);
+    vi.mocked(coreApi.listDelegations).mockResolvedValue([
+      {
+        schemaVersion: 1,
+        historical: true,
+        delegation,
+        usage: {
+          delegation_id: delegation.id,
+          requests: 2,
+          sessions: 1,
+          attempts: 1,
+        },
+      } satisfies DelegationProjection,
+    ]);
     vi.mocked(coreApi.getDelegation).mockResolvedValue({
       delegation,
-      usage: { requests: 2, sessions: 1, attempts: 1 },
+      usage: {
+        delegation_id: delegation.id,
+        requests: 2,
+        sessions: 1,
+        attempts: 1,
+      },
+      schemaVersion: 1,
+      historical: true,
     });
     vi.mocked(coreApi.getCampaignDetail).mockResolvedValue(campaignDetail);
     vi.mocked(coreApi.listActions).mockResolvedValue([action]);
@@ -492,7 +512,8 @@ describe("newly translated operational surfaces", () => {
     expect(
       screen.getByText("Rutas permitidas (separadas por comas)"),
     ).toBeDefined();
-    expect(screen.getByRole("button", { name: "Revocar" })).toBeDefined();
+    expect(screen.getByText("HISTORICAL")).toBeDefined();
+    expect(screen.queryByRole("button", { name: "Revocar" })).toBeNull();
     expect(screen.getByText("delegation-1")).toBeDefined();
     expect(screen.getByText(/deepseek-v4\.1-flash/)).toBeDefined();
     expect(screen.getByText("2 sol · 1 ses · 1 int")).toBeDefined();

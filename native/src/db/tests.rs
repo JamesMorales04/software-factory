@@ -605,6 +605,27 @@ async fn authorized_attempt(db: &Database) -> String {
 }
 
 #[tokio::test]
+async fn fixture_assignment_claim_does_not_require_provider_route_identity() {
+    let (path, db) = temp_db("factory-fixture-assignment").await;
+    let attempt_id = authorized_attempt(&db).await;
+
+    let assignment = db
+        .claim_assignment("worker-fixture", 100, 60_000)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        assignment
+            .expect("authorized fixture attempt is claimable")
+            .lease
+            .attempt_id,
+        attempt_id
+    );
+    db.close().await;
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
 async fn heartbeat_does_not_shorten_a_longer_claim_lease() {
     let path = temp_path("factory-lease-no-shorten");
     let db = Database::open(&path).await.unwrap();
