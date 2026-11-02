@@ -507,7 +507,7 @@ impl Database {
             .connect_with(options)
             .await?;
         migrate!("../migrations").run(&pool).await?;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         install_test_subscription_dispatch_admissions(&pool).await?;
         issue_intake::recover_issue_intake_leases_on_open(&pool).await?;
         // Fail closed if an unrelated/older schema was present and the
@@ -918,17 +918,18 @@ pub use device_pairing::{DevicePairingPoll, DevicePairingRecord, SecurityAuditEn
 ///
 /// Safety properties:
 ///
-/// * the table and helpers exist only under `#[cfg(test)]`; production builds
+/// * the table and helpers exist only under `cfg(test)` or the explicit
+///   `test-support` feature; default/release builds
 ///   contain no such table, helper or branch;
 /// * it is not an environment variable or a runtime switch;
 /// * the gate consults it only when no `subscription_funding_policies` row
 ///   exists for the Campaign, so a persisted proposal in any state always wins;
 /// * admission is keyed by the exact scope, so opting one test scope in does not
 ///   admit another.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 const TEST_SUBSCRIPTION_DISPATCH_ADMISSIONS: &str = "test_subscription_dispatch_admissions";
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 async fn install_test_subscription_dispatch_admissions(pool: &SqlitePool) -> Result<(), Error> {
     sqlx::query::query(
         "CREATE TABLE IF NOT EXISTS test_subscription_dispatch_admissions (
@@ -941,7 +942,7 @@ async fn install_test_subscription_dispatch_admissions(pool: &SqlitePool) -> Res
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl Database {
     /// Opt one test scope into the ledger fixture. This grants no provider
     /// entitlement outside the test process and is never reachable in a
@@ -962,7 +963,7 @@ impl Database {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) async fn test_subscription_dispatch_admitted_in_tx(
     connection: &mut sqlx_sqlite::SqliteConnection,
     scope: &str,

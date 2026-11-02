@@ -46,7 +46,7 @@ fn model_call_ledger_role(role: ModelCallRole) -> InferenceRole {
 /// Test-only admission for campaign-less ledger scopes. Production always
 /// refuses; only a scope explicitly opted into the per-database fixture can
 /// proceed. See `super::test_subscription_dispatch_admissions`.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 async fn test_scope_admitted(
     connection: &mut SqliteConnection,
     objective_id: &str,
@@ -64,10 +64,21 @@ async fn model_call_ledger_requirement(
 ) -> Result<Option<String>, Error> {
     match role {
         ModelCallRole::Lead => {
-            #[cfg(not(test))]
+            #[cfg(not(any(test, feature = "test-support")))]
             let _ = (connection, objective_id);
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             if test_scope_admitted(connection, objective_id).await? {
+                // The test admission opens the subscription gate; it does not
+                // erase a request-scoped monetary envelope that an existing
+                // billable regression is exercising.
+                if let Some(envelope) = super::inference_ledger::find_envelope_for_request_alias(
+                    connection,
+                    objective_id,
+                )
+                .await?
+                {
+                    return Ok(Some(envelope));
+                }
                 return Ok(None);
             }
             Err(SubscriptionFundingRefusal::BindingRequired.into())
@@ -100,9 +111,13 @@ async fn model_call_ledger_requirement(
             if let Some((campaign_id,)) = campaign {
                 return campaign_requirement_to_envelope(connection, &campaign_id).await;
             }
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             if test_scope_admitted(connection, objective_id).await? {
-                return Ok(None);
+                return super::inference_ledger::test_request_envelope_in_tx(
+                    connection,
+                    objective_id,
+                )
+                .await;
             }
             Err(SubscriptionFundingRefusal::BindingRequired.into())
         }
@@ -622,9 +637,9 @@ impl Database {
             )
             .await?;
         } else {
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             let admitted = test_scope_admitted(&mut transaction, &objective_id).await?;
-            #[cfg(not(test))]
+            #[cfg(not(any(test, feature = "test-support")))]
             let admitted = false;
             if !admitted {
                 let refusal = match role.as_str() {

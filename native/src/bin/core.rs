@@ -14525,6 +14525,15 @@ mod tests {
                     .await;
             assert_eq!(status, StatusCode::CREATED, "{created}");
             let intake_id = created["id"].as_str().unwrap().to_owned();
+            let intake_request = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            for scope in [&intake_id, &intake_request.lead_request_id] {
+                fixture
+                    .app
+                    .db
+                    .admit_test_subscription_dispatch(scope)
+                    .await
+                    .unwrap();
+            }
             let context = fixture_plan(&fixture, &intake_id, "MODEL").await;
             let (status, approved) = send(
                 &fixture.router,
@@ -14540,6 +14549,12 @@ mod tests {
             .await;
             assert_eq!(status, StatusCode::CREATED, "{approved}");
             let campaign_id = approved["campaignId"].as_str().unwrap().to_owned();
+            fixture
+                .app
+                .db
+                .admit_test_subscription_dispatch(&campaign_id)
+                .await
+                .unwrap();
             assert_eq!(
                 approved["spending"]["envelope"]["envelopeId"],
                 approved["spending"]["status"]["envelopeId"],
@@ -14685,6 +14700,15 @@ mod tests {
             let (status, created) = create_intake(&fixture, "assessment-without-amount").await;
             assert_eq!(status, StatusCode::CREATED, "{created}");
             let refused_id = created["id"].as_str().unwrap().to_owned();
+            let refused_request = fixture.app.db.intake_request(&refused_id).await.unwrap();
+            for scope in [&refused_id, &refused_request.lead_request_id] {
+                fixture
+                    .app
+                    .db
+                    .admit_test_subscription_dispatch(scope)
+                    .await
+                    .unwrap();
+            }
             let (status, refused) = send(
                 &fixture.router,
                 "POST",
@@ -14703,6 +14727,15 @@ mod tests {
                     .await;
             assert_eq!(status, StatusCode::CREATED, "{created}");
             let intake_id = created["id"].as_str().unwrap().to_owned();
+            let intake_request = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            for scope in [&intake_id, &intake_request.lead_request_id] {
+                fixture
+                    .app
+                    .db
+                    .admit_test_subscription_dispatch(scope)
+                    .await
+                    .unwrap();
+            }
             let envelope = fixture
                 .app
                 .db
@@ -14815,6 +14848,12 @@ mod tests {
             .await;
             assert_eq!(status, StatusCode::CREATED, "{approved}");
             let campaign_id = approved["campaignId"].as_str().unwrap().to_owned();
+            fixture
+                .app
+                .db
+                .admit_test_subscription_dispatch(&campaign_id)
+                .await
+                .unwrap();
             let bound = fixture
                 .app
                 .db

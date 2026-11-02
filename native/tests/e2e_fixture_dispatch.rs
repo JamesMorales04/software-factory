@@ -973,6 +973,7 @@ async fn fixture_campaign_dispatches_candidate_and_gate_without_provider() {
 }
 
 struct FixtureCandidate {
+    campaign_id: String,
     candidate_id: String,
     commit_sha: String,
     tree_sha: String,
@@ -1116,6 +1117,7 @@ async fn drive_fixture_campaign_to_candidate(
                 .find(|candidate| candidate["action_spec_sha256"] == action_spec_sha256)
         }) {
             return FixtureCandidate {
+                campaign_id,
                 candidate_id: candidate["id"].as_str().unwrap().to_owned(),
                 commit_sha: candidate["commit_sha"].as_str().unwrap().to_owned(),
                 tree_sha: candidate["tree_sha"].as_str().unwrap().to_owned(),
@@ -1163,6 +1165,19 @@ async fn run_fixture_verifier(
     );
 }
 
+#[cfg(feature = "test-support")]
+async fn admit_test_campaign(database: &Path, campaign_id: &str) {
+    let database = factory_native::db::Database::open(database)
+        .await
+        .expect("open Core database for test admission");
+    database
+        .admit_test_subscription_dispatch(campaign_id)
+        .await
+        .expect("test subscription admission");
+    database.close().await;
+}
+
+#[cfg(feature = "test-support")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn semantic_reviewer_model_mode_binds_findings_provenance_and_rejects_malformed_output() {
     use axum::{Router, routing::post};
@@ -1302,6 +1317,7 @@ async fn semantic_reviewer_model_mode_binds_findings_provenance_and_rejects_malf
         "findings": []
     })
     .to_string();
+    admit_test_campaign(&database, &first.campaign_id).await;
     run_reviewer_with(
         &root,
         &base_url,
@@ -1393,6 +1409,7 @@ async fn semantic_reviewer_model_mode_binds_findings_provenance_and_rejects_malf
     )
     .await;
     *model_content.lock().unwrap() = r#"{"verdict":"approve"}"#.into();
+    admit_test_campaign(&database, &second.campaign_id).await;
     run_reviewer_with(
         &root,
         &base_url,

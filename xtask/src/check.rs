@@ -33,7 +33,13 @@ pub(crate) fn check() -> Result<(), String> {
 }
 
 pub(crate) fn test() -> Result<(), String> {
-    cargo_stream(&["test", "--workspace", "--locked"])
+    cargo_stream(&[
+        "test",
+        "--workspace",
+        "--locked",
+        "--features",
+        "test-support",
+    ])
 }
 
 /// Containerized development check. The development container does not receive
@@ -56,6 +62,8 @@ pub(crate) fn check_container() -> Result<(), String> {
         "test",
         "--workspace",
         "--locked",
+        "--features",
+        "test-support",
         "--",
         "--skip",
         "provider_backed_campaign_reaches_accepted_gate_with_source_and_tools",

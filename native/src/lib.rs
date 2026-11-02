@@ -1,3 +1,6 @@
+#[cfg(all(feature = "test-support", not(debug_assertions)))]
+compile_error!("feature `test-support` is restricted to debug test builds");
+
 pub mod attempt_grant;
 pub mod browser;
 pub mod candidate_diff;

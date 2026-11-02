@@ -129,3 +129,20 @@ Evidence for this repair (host toolchain 1.90.0, no provider calls):
   bypass was added to satisfy them.
 - Independent verification, runtime/browser acceptance, live provider
   entitlement and quota recovery remain **NOT_TESTED**.
+
+## Test-only admission seam (2026-11-02)
+
+Production `factory-core` and `factory-native` remain fail-closed. The
+`test-support` Cargo feature is disabled by default and is rejected in
+non-debug builds. It enables an opt-in, per-scope SQLite admission table used
+only by deterministic tests: binary API tests and the process-level CAP-014
+evaluator opt their exact evaluation/request scope in after Core is healthy.
+It is not an environment variable, a runtime policy switch, or a provider
+entitlement. A persisted subscription-policy row still outranks the fixture for
+the same Campaign, and a test admission for one scope does not admit another.
+The test commands in `xtask` and the Rust CI workflow explicitly enable the
+feature; production build commands do not.
+
+The CAP-014 tests are compiled only when this feature is enabled. A default
+`cargo test` without the feature skips those positive provider-dispatch tests;
+it does not enable a production route.

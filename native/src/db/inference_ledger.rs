@@ -2023,7 +2023,7 @@ async fn load_envelope(
     row.map(|row| envelope_from_row(&row)).transpose()
 }
 
-async fn find_envelope_for_request_alias(
+pub(super) async fn find_envelope_for_request_alias(
     connection: &mut SqliteConnection,
     request_id: &str,
 ) -> Result<Option<String>, Error> {
@@ -2170,7 +2170,7 @@ pub(crate) async fn require_enabled_subscription_funding_in_tx(
         // Test builds may opt an individual scope into the ledger/admission
         // fixture. It applies only when no policy row exists, so it can never
         // relax a disabled, paused or invalid persisted proposal.
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if super::test_subscription_dispatch_admitted_in_tx(connection, campaign_id).await? {
             return Ok(());
         }
@@ -2639,6 +2639,14 @@ fn ledger_error(error: InferenceLedgerError) -> Error {
 
 fn envelope_state_str(state: EnvelopeState) -> &'static str {
     crate::inference_ledger::envelope_state_str(state)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) async fn test_request_envelope_in_tx(
+    connection: &mut SqliteConnection,
+    request_id: &str,
+) -> Result<Option<String>, Error> {
+    find_envelope_for_request_alias(connection, request_id).await
 }
 
 #[cfg(test)]
