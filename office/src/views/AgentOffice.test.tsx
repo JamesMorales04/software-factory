@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -484,6 +484,28 @@ describe("AgentOffice", () => {
     await screen.findByRole("heading", { name: "Agent Office" });
     expect(screen.getByText("No recorded participants")).toBeDefined();
     expect(screen.queryByTestId("agent-floor")).toBeNull();
+  });
+
+  it("uses the floor's duplicate winner in the inspector", async () => {
+    const duplicate: ParticipantRecord = {
+      ...implementer,
+      observation: "FINAL",
+      status: "COMPLETED",
+      lease_state: "RELEASED",
+      evidence: null,
+      last_observed_at: "2026-10-29T10:09:00Z",
+    };
+    mocks.listParticipants.mockResolvedValue({
+      ...page,
+      participants: [duplicate, implementer],
+      page: { ...page.page, returned: 2 },
+    });
+    renderOffice(`/agents/${encodeURIComponent(implementer.participant_id)}`);
+    await screen.findByTestId("participant-inspector");
+    const inspector = screen.getByTestId("participant-inspector");
+    expect(within(inspector).getAllByText("ACTIVE").length).toBeGreaterThan(0);
+    expect(within(inspector).queryByText("COMPLETED")).toBeNull();
+    expect(within(inspector).getAllByText("CURRENT").length).toBeGreaterThan(0);
   });
 
   it("does not inject a deep-linked participant outside the active filters", async () => {

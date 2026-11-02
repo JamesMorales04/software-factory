@@ -313,6 +313,27 @@ export function compareDuplicateRecords(
 }
 
 /**
+ * Pick the same projection winner that the floor would render for an identity.
+ *
+ * The inspector must not show the raw first duplicate when the floor renders a
+ * different CURRENT projection for the same participant_id.
+ */
+export function selectParticipantRecord(
+  records: ParticipantRecord[],
+  participantId: string | null | undefined,
+): ParticipantRecord | null {
+  if (!participantId) return null;
+  let winner: ParticipantRecord | null = null;
+  for (const record of records) {
+    if (record.participant_id !== participantId) continue;
+    if (!winner || compareDuplicateRecords(record, winner) < 0) {
+      winner = record;
+    }
+  }
+  return winner;
+}
+
+/**
  * Lay out five role stations around a central implementation floor.
  *
  * All coordinates are in unscaled world pixels; the camera applies pan/zoom.
