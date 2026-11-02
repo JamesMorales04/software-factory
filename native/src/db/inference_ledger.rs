@@ -2158,20 +2158,34 @@ pub(crate) async fn require_enabled_subscription_funding_in_tx(
     connection: &mut SqliteConnection,
     campaign_id: &str,
 ) -> Result<(), Error> {
-    let row: Option<(String, String)> = sqlx::query_as::query_as(
-        "SELECT state,policy_sha256 FROM subscription_funding_policies WHERE campaign_id=?1",
+    let row: Option<(String, String, i64, Option<i64>, Option<String>)> = sqlx::query_as::query_as(
+        "SELECT state,policy_sha256,observed_at_ms,resets_at_ms,reason
+         FROM subscription_funding_policies WHERE campaign_id=?1",
     )
     .bind(campaign_id)
     .fetch_optional(&mut *connection)
     .await?;
     use crate::execution_policy::SubscriptionFundingRefusal;
     let refusal = match row {
-        Some((state, digest))
+        Some((state, digest, observed_at_ms, resets_at_ms, reason))
             if !matches!(state.as_str(), "DISABLED" | "PAUSED_QUOTA" | "RECOVERABLE")
                 || digest.len() != 64
-                || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) =>
+                || !digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+                || observed_at_ms <= 0
+                || resets_at_ms.is_some_and(|reset| reset <= observed_at_ms)
+                || (state == "PAUSED_QUOTA"
+                    && reason
+                        .as_deref()
+                        .is_none_or(|reason| reason.trim().is_empty() || reason.len() > 512))
+                || (state != "PAUSED_QUOTA" && (reason.is_some() || resets_at_ms.is_some())) =>
         {
             SubscriptionFundingRefusal::InvalidEvidence
+        }
+        Some((state, _, observed_at_ms, resets_at_ms, _)) if state == "PAUSED_QUOTA" => {
+            SubscriptionFundingRefusal::QuotaPaused {
+                observed_at_ms,
+                resets_at_ms,
+            }
         }
         Some(_) => SubscriptionFundingRefusal::VerificationRequired,
         None => SubscriptionFundingRefusal::BindingRequired,
@@ -2726,7 +2740,8 @@ mod tests {
             "INSERT INTO subscription_funding_policies
              (campaign_id,authorization_id,policy_json,policy_sha256,state,reason,
               observed_at_ms,resets_at_ms,created_at_ms,updated_at_ms)
-             VALUES ('subscription-campaign','subscription-auth',?1,?2,'DISABLED',NULL,1,NULL,1,1)",
+             VALUES ('subscription-campaign','subscription-auth',?1,?2,'PAUSED_QUOTA',
+                     'provider subscription quota exhausted',2,NULL,1,2)",
         )
         .bind(policy_json)
         .bind("a".repeat(64))
@@ -2743,7 +2758,7 @@ mod tests {
             matches!(
                 error,
                 Error::SubscriptionFunding(
-                    crate::execution_policy::SubscriptionFundingRefusal::VerificationRequired
+                    crate::execution_policy::SubscriptionFundingRefusal::QuotaPaused
                 )
             ),
             "a disabled subscription proposal must not fall through to legacy/billable inference: {error:?}"

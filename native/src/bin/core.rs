@@ -10245,6 +10245,14 @@ mod tests {
                 "SUBSCRIPTION_FUNDING_VERIFICATION_REQUIRED",
             ),
             (
+                SubscriptionFundingRefusal::QuotaPaused {
+                    observed_at_ms: 10,
+                    resets_at_ms: None,
+                },
+                StatusCode::SERVICE_UNAVAILABLE,
+                "SUBSCRIPTION_FUNDING_QUOTA_PAUSED",
+            ),
+            (
                 SubscriptionFundingRefusal::InvalidEvidence,
                 StatusCode::FORBIDDEN,
                 "SUBSCRIPTION_FUNDING_EVIDENCE_INVALID",

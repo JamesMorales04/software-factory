@@ -2112,7 +2112,8 @@ mod tests {
             "INSERT INTO subscription_funding_policies
              (campaign_id,authorization_id,policy_json,policy_sha256,state,reason,
               observed_at_ms,resets_at_ms,created_at_ms,updated_at_ms)
-             VALUES ('campaign','subscription-auth',?1,?2,'DISABLED',NULL,1,NULL,1,1)",
+             VALUES ('campaign','subscription-auth',?1,?2,'PAUSED_QUOTA',
+                     'verified quota exhaustion',2,NULL,1,2)",
         )
         .bind(policy_json)
         .bind("a".repeat(64))
@@ -2125,15 +2126,31 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            matches!(error, Error::SubscriptionFunding(_)),
+            matches!(
+                error,
+                Error::SubscriptionFunding(
+                    crate::execution_policy::SubscriptionFundingRefusal::QuotaPaused {
+                        observed_at_ms: 2,
+                        resets_at_ms: None,
+                    }
+                )
+            ),
             "a subscription proposal cannot authorize Worker egress without runtime admission: {error:?}"
         );
-        let reservations: (i64,) =
-            sqlx::query_as::query_as("SELECT COUNT(*) FROM provider_turn_reservations")
-                .fetch_one(&db.pool)
-                .await
-                .unwrap();
-        assert_eq!(reservations.0, 0, "refusal must precede reservation");
+        let counts: (i64, i64, i64, i64) = sqlx::query_as::query_as(
+            "SELECT (SELECT COUNT(*) FROM provider_turn_reservations),
+                    (SELECT COUNT(*) FROM provider_turn_egress_requests),
+                    (SELECT COUNT(*) FROM inference_reservations),
+                    (SELECT COUNT(*) FROM progress_holds)",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            counts,
+            (0, 0, 0, 1),
+            "paused funding must create one durable Worker hold and no provider or ledger dispatch"
+        );
     }
 
     #[tokio::test]
@@ -2160,6 +2177,22 @@ mod tests {
         let (_path, db, session) = active_turn_fixture(100).await;
         let now = Utc::now().to_rfc3339();
         let now_ms = Utc::now().timestamp_millis();
+        sqlx::query::query("DROP TRIGGER subscription_funding_policy_requires_unapproved_campaign")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        sqlx::query::query(
+            "INSERT INTO subscription_funding_policies
+             (campaign_id,authorization_id,policy_json,policy_sha256,state,reason,
+              observed_at_ms,resets_at_ms,created_at_ms,updated_at_ms)
+             VALUES ('campaign','subscription-auth',?1,?2,'PAUSED_QUOTA',
+                     'verified quota exhaustion',2,NULL,1,2)",
+        )
+        .bind(r#"{"funding":{"kind":"SUBSCRIPTION"}}"#)
+        .bind("a".repeat(64))
+        .execute(&db.pool)
+        .await
+        .unwrap();
         sqlx::query::query(
             "INSERT INTO provider_turn_reservations
              (reservation_id,session_record_id,attempt_id,generation,provider,model,
@@ -2191,7 +2224,15 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            matches!(error, Error::SubscriptionFunding(_)),
+            matches!(
+                error,
+                Error::SubscriptionFunding(
+                    crate::execution_policy::SubscriptionFundingRefusal::QuotaPaused {
+                        observed_at_ms: 2,
+                        resets_at_ms: None,
+                    }
+                )
+            ),
             "Worker egress must recheck funding before binding an external request: {error:?}"
         );
         let bound: (i64, i64) = sqlx::query_as::query_as(

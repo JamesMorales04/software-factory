@@ -1949,6 +1949,22 @@ mod tests {
         .execute(&db.pool)
         .await
         .unwrap();
+        sqlx::query::query("DROP TRIGGER subscription_funding_policy_requires_unapproved_campaign")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        sqlx::query::query(
+            "INSERT INTO subscription_funding_policies
+             (campaign_id,authorization_id,policy_json,policy_sha256,state,reason,
+              observed_at_ms,resets_at_ms,created_at_ms,updated_at_ms)
+             VALUES ('campaign-subscription','subscription-auth',?1,?2,'PAUSED_QUOTA',
+                     'verified quota exhaustion',2,NULL,1,2)",
+        )
+        .bind(r#"{"funding":{"kind":"SUBSCRIPTION"}}"#)
+        .bind("a".repeat(64))
+        .execute(&db.pool)
+        .await
+        .unwrap();
         let request = evaluation_input("candidate-subscription");
         sqlx::query::query(
             "INSERT INTO model_call_reservations
@@ -1974,9 +1990,12 @@ mod tests {
         assert!(
             matches!(
                 error,
-                Error::SubscriptionFunding(SubscriptionFundingRefusal::BindingRequired)
+                Error::SubscriptionFunding(SubscriptionFundingRefusal::QuotaPaused {
+                    observed_at_ms: 2,
+                    resets_at_ms: None,
+                })
             ),
-            "Core dispatch must refuse missing funding before writing dispatch intent: {error:?}"
+            "Core dispatch must preserve the quota hold and refuse before writing dispatch intent: {error:?}"
         );
         let dispatched: (Option<i64>,) = sqlx::query_as::query_as(
             "SELECT dispatched_at_ms FROM model_call_reservations

@@ -290,6 +290,11 @@ pub enum SubscriptionFundingRefusal {
         "subscription funding execution remains disabled pending trusted provider verification"
     )]
     VerificationRequired,
+    #[error("subscription funding is durably paused after a provider quota exhaustion observation")]
+    QuotaPaused {
+        observed_at_ms: i64,
+        resets_at_ms: Option<i64>,
+    },
     #[error("subscription funding evidence is invalid; provider dispatch is disabled")]
     InvalidEvidence,
 }
@@ -299,6 +304,7 @@ impl SubscriptionFundingRefusal {
         match self {
             Self::BindingRequired => "SUBSCRIPTION_FUNDING_BINDING_REQUIRED",
             Self::VerificationRequired => "SUBSCRIPTION_FUNDING_VERIFICATION_REQUIRED",
+            Self::QuotaPaused { .. } => "SUBSCRIPTION_FUNDING_QUOTA_PAUSED",
             Self::InvalidEvidence => "SUBSCRIPTION_FUNDING_EVIDENCE_INVALID",
         }
     }

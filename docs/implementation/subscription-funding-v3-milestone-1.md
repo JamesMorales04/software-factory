@@ -34,6 +34,7 @@ share typed subscription refusal reasons. Existing API error responses retain
 |---|---|---|
 | `SUBSCRIPTION_FUNDING_BINDING_REQUIRED` | 503 | No verified request/Campaign subscription binding exists. |
 | `SUBSCRIPTION_FUNDING_VERIFICATION_REQUIRED` | 503 | A persisted proposal exists but execution remains disabled. |
+| `SUBSCRIPTION_FUNDING_QUOTA_PAUSED` | 503 | A durable quota pause exists; execution remains held and re-admission is unavailable. |
 | `SUBSCRIPTION_FUNDING_EVIDENCE_INVALID` | 403 | Stored evidence shape or dispatch role is invalid. |
 
 These are refusals, never authority or advice to retry a model call. Worker
@@ -75,3 +76,35 @@ No provider call was authorized or performed. Full-workspace checks, runtime
 stack/browser acceptance and independent verification were NOT_RUN for this
 bounded slice; these containerized regressions do not certify product behavior.
 The temporary development containers used `--rm` and exited after their jobs.
+
+## Follow-up: persisted quota hold at Core and Worker gates (2026-10-29)
+
+Core model-call dispatch acquisition and Worker turn authorization/egress
+binding now distinguish a valid persisted `PAUSED_QUOTA` record from a
+disabled or unverified subscription proposal. Both continue to refuse before
+writing dispatch intent or binding a provider egress request. Worker records
+its existing blocking progress hold, which prevents another assignment; Core
+leaves a reserved model-call row undispatched. An absent provider reset remains
+`None` in the refusal; no timestamp is synthesized. This is a fail-closed hold
+projection, not quota classification or recovery.
+
+Quota recovery remains **BLOCKED / NOT_TESTED**. The current Core has no
+authenticated quota-recovery endpoint that atomically rechecks authorization
+revision, funding revision, provider/account/model/settings binding and fresh
+trusted quota evidence before resuming an Attempt. It also has no transactional
+Campaign/Attempt pause-and-reconcile operation for in-flight provider work, no
+trusted provider-specific terminal quota classifier, and no append-only quota
+observation table. Provider egress currently preserves upstream status/body;
+a generic HTTP 429 is not proof of subscription quota exhaustion and must not
+call the persistence pause method. Migration 0041's single mutable row is
+insufficient for observation history; additionally its state/reason check
+requires `reason` exactly for `PAUSED_QUOTA`, while the row decoder requires a
+reason for `RECOVERABLE`, making that state unrepresentable. No recovery route,
+provider classifier, migration or live provider execution was added here.
+
+The next safe recovery slice therefore needs a reviewed Core contract covering
+trusted provider evidence, append-only observations, in-flight dispatch
+reconciliation, atomic Campaign/Attempt pause, and authenticated fresh
+re-admission. Until that exists, quota pauses stay held and all retries or
+restarts remain refused. Provider calls, credential flows, billing behavior,
+quota recovery and full runtime/browser acceptance remain NOT_TESTED.
