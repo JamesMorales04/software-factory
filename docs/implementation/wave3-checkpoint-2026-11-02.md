@@ -1,6 +1,12 @@
 # Wave 3 checkpoint — subscription-only policy and visual foundation (2026-11-02)
 
-**Integration HEAD:** `f2322fc` (remote). **`main`:** unchanged; no merge.
+> **Superseded by
+> [`wave3-resumption-checkpoint-2026-11-02.md`](wave3-resumption-checkpoint-2026-11-02.md).**
+> This file records the earlier local checkpoint at `f2322fc`; that commit was
+> local only, not remote. It predates the PR #83 funding repair and the current
+> Office/funding CI investigation.
+
+**Integration HEAD at that checkpoint:** `f2322fc` (local only). **`main`:** unchanged; no merge.
 **Code-UAT candidate carried forward:** `40d44ec` (real Compose/Chromium PASS).
 
 ## Funding policy correction

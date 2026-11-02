@@ -1,5 +1,13 @@
 # Subscription-only funding policy — architecture contract (2026-11-02)
 
+> **Status note (Director, 2026-11-02):** This is the earlier proposed contract.
+> PR #83 now implements the typed V3 foundation and fail-closed Core/Worker
+> refusals; full request admission, provider entitlement and quota recovery
+> remain **NOT_IMPLEMENTED**. The later bounded Sol decision in
+> [`wave3-resumption-checkpoint-2026-11-02.md`](wave3-resumption-checkpoint-2026-11-02.md)
+> governs the trust-anchor/admission sequence and rejects promoting an Owner
+> Console observation to `core_verifiable`.
+
 Source: GPT-6.1 Sol critical-architecture review against Wave 3 candidate
 `c7016b5`/`f7479c0`. This is a proposed implementation contract; runtime
 provider entitlement and quota behavior remain **NOT_VERIFIED**.
