@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { DelegationProjection } from "./coreApi";
-import { selectableLeadDelegations } from "./leadDelegations";
+import {
+  delegationProjectionStatus,
+  selectableLeadDelegations,
+} from "./leadDelegations";
 
 const v1Historical = {
   schemaVersion: 1,
@@ -75,6 +78,7 @@ describe("selectableLeadDelegations", () => {
   });
 
   it("selects only active V2 grants scoped to the chosen Project", () => {
+    const now = Date.parse("2026-10-29T12:00:00Z");
     const revoked = {
       ...v2Current,
       delegation: { ...v2Current.delegation, id: "revoked", revokedAt: "now" },
@@ -87,12 +91,65 @@ describe("selectableLeadDelegations", () => {
         projectId: "project-b",
       },
     } satisfies DelegationProjection;
+    const expired = {
+      ...v2Current,
+      delegation: {
+        ...v2Current.delegation,
+        id: "expired",
+        expiresAt: "2026-10-29T11:59:59Z",
+      },
+    } satisfies DelegationProjection;
+    const expiresNow = {
+      ...v2Current,
+      delegation: {
+        ...v2Current.delegation,
+        id: "expires-now",
+        expiresAt: "2026-10-29T12:00:00Z",
+      },
+    } satisfies DelegationProjection;
+    const malformedExpiry = {
+      ...v2Current,
+      delegation: {
+        ...v2Current.delegation,
+        id: "unknown-expiry",
+        expiresAt: "not-a-timestamp",
+      },
+    } satisfies DelegationProjection;
 
     expect(
       selectableLeadDelegations(
-        [v1Historical, v2Current, revoked, otherProject],
+        [
+          v1Historical,
+          v2Current,
+          revoked,
+          otherProject,
+          expired,
+          expiresNow,
+          malformedExpiry,
+        ],
         "project-a",
+        now,
       ).map((grant) => grant.id),
     ).toEqual(["current-grant"]);
+  });
+
+  it("reports projected revocation and expiry states accurately", () => {
+    const now = Date.parse("2026-10-29T12:00:00Z");
+    const expired = {
+      ...v2Current,
+      delegation: {
+        ...v2Current.delegation,
+        expiresAt: "2026-10-29T11:59:59Z",
+      },
+    } satisfies DelegationProjection;
+    const malformedExpiry = {
+      ...v2Current,
+      delegation: { ...v2Current.delegation, expiresAt: "unknown" },
+    } satisfies DelegationProjection;
+
+    expect(delegationProjectionStatus(v1Historical, now)).toBe("HISTORICAL");
+    expect(delegationProjectionStatus(v2Current, now)).toBe("ACTIVE");
+    expect(delegationProjectionStatus(expired, now)).toBe("EXPIRED");
+    expect(delegationProjectionStatus(malformedExpiry, now)).toBe("UNKNOWN");
   });
 });

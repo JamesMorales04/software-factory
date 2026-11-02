@@ -389,10 +389,21 @@ try {
       FACTORY_FIXTURE_CONTENT: "fixture candidate\n",
     },
   });
+  let workerOutput = "";
+  worker.stdout.on("data", (chunk) => {
+    workerOutput += chunk.toString();
+  });
+  worker.stderr.on("data", (chunk) => {
+    workerOutput += chunk.toString();
+  });
   const workerExit = await new Promise((resolvePromise) =>
     worker.on("exit", resolvePromise),
   );
-  assert.equal(workerExit, 0, "fixture Worker must succeed");
+  assert.equal(
+    workerExit,
+    0,
+    `fixture Worker must succeed; output: ${workerOutput.slice(-8000)}`,
+  );
 
   const candidates = await api("/candidates");
   assert.equal(candidates.length, 1);

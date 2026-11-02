@@ -519,6 +519,52 @@ describe("newly translated operational surfaces", () => {
     expect(screen.getByText("2 sol · 1 ses · 1 int")).toBeDefined();
   });
 
+  it("labels an expired V2 delegation as expired in the Core projection", async () => {
+    const expired = {
+      schemaVersion: 2,
+      delegation: {
+        id: "expired-v2-grant",
+        principalId: "operator",
+        auditId: "audit-expired",
+        projectId: project.id,
+        revision: 2,
+        contentHash: "expired-hash",
+        objectiveClasses: ["feature"],
+        allowedPaths: ["src"],
+        capabilities: ["repository-edit"],
+        riskClasses: ["R0"],
+        autonomousStart: false,
+        autonomousRiskClasses: [],
+        route: { provider: "opencode-go", model: "model", mode: "build" },
+        maxTimeoutSecs: 60,
+        maxParallel: 1,
+        operations: {
+          modelRequestTimeoutSecs: 60,
+          toolCallTimeoutSecs: 60,
+          maxRequestBytes: 1024,
+          maxResponseBytes: 1024,
+          maxGenerationTokens: 128,
+          maxInFlightOperations: 1,
+        },
+        progress: {
+          diagnoseAfterStagnantCheckpoints: 1,
+          escalateAfterUnsuccessfulReplans: 1,
+          observationTimeoutSecs: 60,
+        },
+        expiresAt: "2020-01-01T00:00:00Z",
+      },
+      usage: null,
+    } satisfies DelegationProjection;
+    vi.mocked(coreApi.listDelegations).mockResolvedValue([expired]);
+
+    renderRoutes("/delegations", "/delegations", <Delegations />, "es");
+    expect(
+      await screen.findByRole("heading", { name: "Delegaciones" }),
+    ).toBeDefined();
+    expect(screen.getByText("EXPIRED", { exact: true })).toBeDefined();
+    expect(screen.queryByText("ACTIVE", { exact: true })).toBeNull();
+  });
+
   it("renders the Spanish Campaign detail tabs, WorkGraph and cancellation affordance", async () => {
     renderRoutes(
       "/campaigns/campaign-1",

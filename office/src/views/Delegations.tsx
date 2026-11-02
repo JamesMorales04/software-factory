@@ -8,6 +8,7 @@ import {
 } from "../coreApi";
 import { formatTimestamp, shortId } from "../format";
 import { useI18n } from "../i18n";
+import { delegationProjectionStatus } from "../leadDelegations";
 
 function split(value: string): string[] {
   return value
@@ -262,6 +263,7 @@ export function Delegations() {
               {delegations.map((projection) => {
                 const delegation = projection.delegation;
                 const historical = projection.schemaVersion === 1;
+                const status = delegationProjectionStatus(projection);
                 return (
                   <tr key={delegation.id}>
                     <td data-label={t("delegations.table.id")}>
@@ -281,13 +283,9 @@ export function Delegations() {
                     </td>
                     <td data-label={t("delegations.table.state")}>
                       <span
-                        className={`pill ${delegation.revokedAt ? "blocked" : "accepted"}`}
+                        className={`pill ${status === "ACTIVE" ? "accepted" : "blocked"}`}
                       >
-                        {historical
-                          ? "HISTORICAL"
-                          : delegation.revokedAt
-                            ? "REVOKED"
-                            : "ACTIVE"}
+                        {status}
                       </span>
                       {!historical && delegation.autonomousStart && (
                         <span className="pill blocked">

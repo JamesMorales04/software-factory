@@ -115,13 +115,15 @@ export function Lead() {
     setActions(nextActions);
     setDelegations(nextDelegations);
     setRequests(nextRequests);
-    if (!projectId && nextProjects[0]) setProjectId(nextProjects[0].id);
+    const currentProjectId = projectId || nextProjects[0]?.id || "";
+    if (!projectId && currentProjectId) setProjectId(currentProjectId);
     if (!actionId && nextActions[0]) setActionId(nextActions[0].id);
-    const firstCurrentGrant = nextDelegations.find(
-      (projection) => projection.schemaVersion === 2,
+    const activeGrants = selectableLeadDelegations(
+      nextDelegations,
+      currentProjectId,
     );
-    if (!delegationId && firstCurrentGrant)
-      setDelegationId(firstCurrentGrant.delegation.id);
+    if (!activeGrants.some((grant) => grant.id === delegationId))
+      setDelegationId(activeGrants[0]?.id ?? "");
   }, [projectId, actionId, delegationId]);
 
   useEffect(() => {
