@@ -408,11 +408,9 @@ class ComposePolicyTests(unittest.TestCase):
             ),
             "full control listener must bind",
         )
-        if "tailscale" not in base_config()["services"]:
-            return
         self.assert_rejected(
             lambda c: c["services"]["core"]["environment"].__setitem__(
-                "FACTORY_BIND", "core-office:8765"
+                "FACTORY_BIND", "core-control:8765"
             ),
             "full control listener must bind",
         )
