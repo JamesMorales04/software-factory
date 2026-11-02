@@ -128,14 +128,22 @@ const supervisorPort = await freePort();
 const supervisorUrl = `http://127.0.0.1:${supervisorPort}`;
 const vitePort = await freePort();
 
+// Child processes are piped so a fixture failure can report the real error.
+// Only the tail is retained to keep long-running services bounded in memory.
+const LOG_TAIL_CHARS = 8000;
+
 function launch(command, args, options = {}) {
   const child = spawn(command, args, {
     stdio: ["ignore", "pipe", "pipe"],
     ...options,
   });
   processes.push(child);
-  child.stdout.on("data", () => {});
-  child.stderr.on("data", () => {});
+  child.log = "";
+  const capture = (chunk) => {
+    child.log = (child.log + chunk.toString()).slice(-LOG_TAIL_CHARS);
+  };
+  child.stdout.on("data", capture);
+  child.stderr.on("data", capture);
   return child;
 }
 
@@ -392,7 +400,11 @@ try {
   const workerExit = await new Promise((resolvePromise) =>
     worker.on("exit", resolvePromise),
   );
-  assert.equal(workerExit, 0, "fixture Worker must succeed");
+  assert.equal(
+    workerExit,
+    0,
+    `fixture Worker must succeed; worker output:\n${worker.log}`,
+  );
 
   const candidates = await api("/candidates");
   assert.equal(candidates.length, 1);
