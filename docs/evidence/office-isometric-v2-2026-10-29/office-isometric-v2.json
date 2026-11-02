@@ -2,7 +2,7 @@
   "schema_version": 1,
   "capability": "CAP-011",
   "slice": "office-isometric-v2",
-  "code_candidate": "a9f191e",
+  "code_candidate": "ec246df",
   "evidence_level": "AUTHOR_SELF_TEST_FIXTURE_ONLY",
   "live_core": false,
   "live_activity": false,
@@ -446,7 +446,7 @@
   "code_checks": {
     "typecheck": "PASS \u2014 tsc --noEmit",
     "lint": "PASS \u2014 biome check src e2e-browser",
-    "tests": "PASS \u2014 33 files, 255 tests",
+    "tests": "PASS \u2014 33 files, 257 tests",
     "build": "PASS \u2014 vite build (existing >500 kB chunk warning only)"
   },
   "interactions_verified": [
@@ -466,5 +466,5 @@
   ],
   "product_owner_decision": "PENDING",
   "visual_candidate": "3f13242",
-  "candidate_note": "Screenshots were captured from 3f13242; a9f191e is a test-only timeout commit with identical renderer output."
+  "candidate_note": "Screenshots were captured from 3f13242. Later commits are test timeout, dead-CSS cleanup and duplicate-inspector selection; none changes the captured renderer output."
 }
