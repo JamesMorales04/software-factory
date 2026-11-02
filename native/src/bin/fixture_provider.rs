@@ -217,7 +217,9 @@ async fn message(State(state): State<Fixture>) -> Response {
         3 => {
             "{\"type\":\"tool_request\",\"call_id\":\"call-3\",\"tool\":\"run_command\",\"argv\":[\"grep\",\"-q\",\"provider candidate\",\"src/provider.txt\"],\"timeout_secs\":30}"
         }
-        _ => "{\"type\":\"final\",\"files\":[],\"explanation\":\"fixture response api_key=canary-secret\"}",
+        _ => {
+            "{\"type\":\"final\",\"files\":[],\"explanation\":\"fixture response api_key=canary-secret\"}"
+        }
     };
     Json(json!([{
         "info": {
