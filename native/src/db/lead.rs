@@ -7533,6 +7533,13 @@ mod tests {
             .await
             .unwrap();
         db.begin_lead_assessment(&request.id).await.unwrap();
+        // This regression exercises ledger authorization versus withdrawal
+        // serialization, not subscription admission. Opt the exact Lead request
+        // scope into the test-only dispatch fixture so the race cannot fail with
+        // the unrelated production funding refusal.
+        db.admit_test_subscription_dispatch(&request.id)
+            .await
+            .unwrap();
         let grant = db.standing_delegation_v2("grant").await.unwrap();
         let input = lead_model_call_authorization(&request.id, &grant);
         let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));

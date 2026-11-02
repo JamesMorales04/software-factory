@@ -33,7 +33,8 @@ share typed subscription refusal reasons. Existing API error responses retain
 | Code | HTTP status | Meaning |
 |---|---|---|
 | `SUBSCRIPTION_FUNDING_BINDING_REQUIRED` | 503 | No verified request/Campaign subscription binding exists. |
-| `SUBSCRIPTION_FUNDING_VERIFICATION_REQUIRED` | 503 | A persisted proposal exists but execution remains disabled. |
+| `SUBSCRIPTION_FUNDING_VERIFICATION_REQUIRED` | 503 | A persisted proposal or recoverable row exists but execution remains disabled. |
+| `SUBSCRIPTION_FUNDING_QUOTA_PAUSED` | 503 | A durable quota pause exists; execution remains held and re-admission is unavailable. |
 | `SUBSCRIPTION_FUNDING_EVIDENCE_INVALID` | 403 | Stored evidence shape or dispatch role is invalid. |
 
 These are refusals, never authority or advice to retry a model call. Worker
@@ -75,3 +76,56 @@ No provider call was authorized or performed. Full-workspace checks, runtime
 stack/browser acceptance and independent verification were NOT_RUN for this
 bounded slice; these containerized regressions do not certify product behavior.
 The temporary development containers used `--rm` and exited after their jobs.
+
+## Phase 1 repair: ledger test admission, quota schema and RECOVERABLE (2026-11-02)
+
+PR #83's fail-closed gate left the ledger/dispatch regression suite red: those
+tests exercise reservation, settlement, replay, ambiguity, dispatch-intent and
+egress-fence semantics rather than funding. They now opt in through an explicit
+test-only fixture:
+
+- `test_subscription_dispatch_admissions` is created only in `#[cfg(test)]`
+  builds and is keyed by one exact objective/scope or Campaign id.
+- The gate consults it **only when no `subscription_funding_policies` row
+  exists**, so a persisted proposal in any state (including `DISABLED`,
+  `PAUSED_QUOTA`, `RECOVERABLE` or invalid evidence) always outranks it.
+- Admission is per database and requires an explicit
+  `Database::admit_test_subscription_dispatch` call; there is no environment
+  switch, default-on admission or production build surface.
+- Negative funding tests remain negative, with added coverage that an
+  unrelated scope and a fresh non-opted-in database still refuse with
+  `SUBSCRIPTION_FUNDING_BINDING_REQUIRED`.
+
+`0042_subscription_funding_recovery_state.sql` repairs the 0041 recovery-state
+constraint without editing the applied migration. 0041 required `reason`
+exactly for `PAUSED_QUOTA`, which made the decoder's documented
+`RECOVERABLE { reason }` state unrepresentable. The repaired schema requires a
+reason for every non-`DISABLED` state, forbids one for `DISABLED`, permits
+`resets_at_ms` only for `PAUSED_QUOTA`, and keeps the JSON discriminator,
+foreign key, uniqueness and trigger set. The read model and the dispatch gate
+now share one decoder, so a state cannot be valid for one and contradictory for
+the other. The identity trigger refuses every transition out of
+`PAUSED_QUOTA`, making a quota hold durable; quota recovery remains
+**NOT_IMPLEMENTED / NOT_TESTED**. A durable pause now surfaces as the distinct
+`SUBSCRIPTION_FUNDING_QUOTA_PAUSED` refusal (HTTP 503); it carries no dispatch
+authority.
+
+Evidence for this repair (host toolchain 1.90.0, no provider calls):
+
+- `cargo fmt --all -- --check`: passed.
+- `cargo clippy --locked -p factory-native --lib --bins --all-features -- -D warnings`: passed.
+- `cargo test --locked -p factory-native --lib`: 509 passed, 0 failed, 2 ignored
+  (ignored tests require a cached Podman alpine image).
+- Focused funding/ledger/lead/gateway/routing selection: 75 passed, 0 failed.
+- `cargo test --workspace --locked`: `factory-native` lib 509 passed,
+  `factory-cli` 47 passed, `xtask` 9 passed, `factory-native` 8 passed; the
+  `factory-core` bin target had 30 passed / 2 failed
+  (`tests::intake_api::billable_assessment_requires_creation_amount_and_shares_request_envelope`
+  and `tests::intake_api::semantic_review_uses_the_frozen_reviewer_route`).
+  Both fail with `SUBSCRIPTION_FUNDING_BINDING_REQUIRED` because the bin test
+  target links the library without `cfg(test)` and therefore cannot reach the
+  test-only admission fixture. They are **BLOCKED / NOT_IMPLEMENTED** for this
+  slice; production behavior is correct and remains fail-closed. No production
+  bypass was added to satisfy them.
+- Independent verification, runtime/browser acceptance, live provider
+  entitlement and quota recovery remain **NOT_TESTED**.

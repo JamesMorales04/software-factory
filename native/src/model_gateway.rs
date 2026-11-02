@@ -729,6 +729,10 @@ mod integration_tests {
     #[tokio::test]
     async fn success_settles_and_replays_without_a_second_upstream_call() {
         let (path, database) = database().await;
+        database
+            .admit_test_subscription_dispatch("gateway-success")
+            .await
+            .unwrap();
         let (url, calls, server) = upstream(Behavior::Success).await;
         let gateway = gateway(&url, 5_000);
         let first = gateway
@@ -752,6 +756,10 @@ mod integration_tests {
     #[tokio::test]
     async fn missing_usage_marks_the_call_unknown_and_blocks_retry() {
         let (path, database) = database().await;
+        database
+            .admit_test_subscription_dispatch("gateway-unknown")
+            .await
+            .unwrap();
         let (url, calls, server) = upstream(Behavior::NoUsage).await;
         let gateway = gateway(&url, 5_000);
         assert!(
@@ -785,6 +793,10 @@ mod integration_tests {
             ("gateway-oversized", Behavior::Oversized),
         ] {
             let (path, database) = database().await;
+            database
+                .admit_test_subscription_dispatch(scope)
+                .await
+                .unwrap();
             let (url, _, server) = upstream(behavior).await;
             let gateway = gateway(&url, 5_000);
             assert!(
@@ -811,6 +823,10 @@ mod integration_tests {
     #[tokio::test]
     async fn timeout_is_ambiguous_and_never_retries_automatically() {
         let (path, database) = database().await;
+        database
+            .admit_test_subscription_dispatch("gateway-timeout")
+            .await
+            .unwrap();
         let (url, calls, server) = upstream(Behavior::Timeout).await;
         let gateway = gateway(&url, 100);
         assert!(matches!(
@@ -840,6 +856,10 @@ mod integration_tests {
     #[tokio::test]
     async fn client_error_after_dispatch_is_ambiguous_not_released() {
         let (path, database) = database().await;
+        database
+            .admit_test_subscription_dispatch("gateway-rejected")
+            .await
+            .unwrap();
         let (url, _, server) = upstream(Behavior::Reject).await;
         let gateway = gateway(&url, 5_000);
         assert!(

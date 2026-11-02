@@ -38,7 +38,7 @@ type WorkerDispatchLease = (
     String,
 );
 type ProviderPricingSettings = (String, String, String, i64, i64, i64, i64, i64, i64);
-
+type SubscriptionFundingRow = (String, String, i64, Option<i64>, Option<String>);
 #[derive(Debug, Clone)]
 struct EnvelopeRow {
     id: String,
@@ -2158,23 +2158,48 @@ pub(crate) async fn require_enabled_subscription_funding_in_tx(
     connection: &mut SqliteConnection,
     campaign_id: &str,
 ) -> Result<(), Error> {
-    let row: Option<(String, String)> = sqlx::query_as::query_as(
-        "SELECT state,policy_sha256 FROM subscription_funding_policies WHERE campaign_id=?1",
+    use crate::execution_policy::{FundingRecoveryState, SubscriptionFundingRefusal};
+    let row: Option<SubscriptionFundingRow> = sqlx::query_as::query_as(
+        "SELECT state,policy_sha256,observed_at_ms,resets_at_ms,reason
+             FROM subscription_funding_policies WHERE campaign_id=?1",
     )
     .bind(campaign_id)
     .fetch_optional(&mut *connection)
     .await?;
-    use crate::execution_policy::SubscriptionFundingRefusal;
-    let refusal = match row {
-        Some((state, digest))
-            if !matches!(state.as_str(), "DISABLED" | "PAUSED_QUOTA" | "RECOVERABLE")
-                || digest.len() != 64
-                || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) =>
-        {
-            SubscriptionFundingRefusal::InvalidEvidence
+    let Some((state, digest, observed_at_ms, resets_at_ms, reason)) = row else {
+        // Test builds may opt an individual scope into the ledger/admission
+        // fixture. It applies only when no policy row exists, so it can never
+        // relax a disabled, paused or invalid persisted proposal.
+        #[cfg(test)]
+        if super::test_subscription_dispatch_admitted_in_tx(connection, campaign_id).await? {
+            return Ok(());
         }
-        Some(_) => SubscriptionFundingRefusal::VerificationRequired,
-        None => SubscriptionFundingRefusal::BindingRequired,
+        return Err(SubscriptionFundingRefusal::BindingRequired.into());
+    };
+    if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(SubscriptionFundingRefusal::InvalidEvidence.into());
+    }
+    let recovery = super::authorization::decode_funding_recovery_state(
+        &state,
+        reason.as_deref(),
+        observed_at_ms,
+        resets_at_ms,
+    )
+    .map_err(|_| SubscriptionFundingRefusal::InvalidEvidence)?;
+    let refusal = match recovery {
+        FundingRecoveryState::PausedQuota {
+            observed_at_ms,
+            resets_at_ms,
+            ..
+        } => SubscriptionFundingRefusal::QuotaPaused {
+            observed_at_ms,
+            resets_at_ms,
+        },
+        // A proposal, a recovered row, or a disabled row never authorizes
+        // publication: trusted subscription verification is still absent.
+        FundingRecoveryState::Disabled { .. } | FundingRecoveryState::Recoverable { .. } => {
+            SubscriptionFundingRefusal::VerificationRequired
+        }
     };
     Err(refusal.into())
 }
@@ -2748,6 +2773,68 @@ mod tests {
             ),
             "a disabled subscription proposal must not fall through to legacy/billable inference: {error:?}"
         );
+
+        // The test-only fixture must never relax a persisted policy row. Opt the
+        // exact campaign into the fixture and confirm the proposal still wins.
+        db.admit_test_subscription_dispatch("subscription-campaign")
+            .await
+            .unwrap();
+        let error =
+            require_enabled_subscription_funding_in_tx(&mut connection, "subscription-campaign")
+                .await
+                .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Error::SubscriptionFunding(
+                    crate::execution_policy::SubscriptionFundingRefusal::VerificationRequired
+                )
+            ),
+            "a persisted proposal must outrank the test admission fixture: {error:?}"
+        );
+
+        // A durable quota pause is a distinct typed refusal and cannot be
+        // transitioned back to a dispatchable or recoverable state.
+        sqlx::query::query(
+            "UPDATE subscription_funding_policies
+             SET state='PAUSED_QUOTA',reason='provider quota exhausted',
+                 observed_at_ms=2,updated_at_ms=2
+             WHERE campaign_id='subscription-campaign'",
+        )
+        .execute(&mut *connection)
+        .await
+        .unwrap();
+        let error =
+            require_enabled_subscription_funding_in_tx(&mut connection, "subscription-campaign")
+                .await
+                .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Error::SubscriptionFunding(
+                    crate::execution_policy::SubscriptionFundingRefusal::QuotaPaused {
+                        observed_at_ms: 2,
+                        resets_at_ms: None,
+                    }
+                )
+            ),
+            "a paused quota hold must surface as a durable refusal: {error:?}"
+        );
+        for state in ["DISABLED", "RECOVERABLE"] {
+            let error = sqlx::query::query(
+                "UPDATE subscription_funding_policies SET state=?1,reason='attempted recovery'
+                 WHERE campaign_id='subscription-campaign'",
+            )
+            .bind(state)
+            .execute(&mut *connection)
+            .await
+            .unwrap_err();
+            assert!(
+                error.to_string().contains("immutable"),
+                "a durable quota pause must not transition to {state}: {error}"
+            );
+        }
+        drop(connection);
         db.close().await;
         let _ = std::fs::remove_file(path);
     }

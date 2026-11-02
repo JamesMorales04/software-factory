@@ -43,6 +43,17 @@ fn model_call_ledger_role(role: ModelCallRole) -> InferenceRole {
     }
 }
 
+/// Test-only admission for campaign-less ledger scopes. Production always
+/// refuses; only a scope explicitly opted into the per-database fixture can
+/// proceed. See `super::test_subscription_dispatch_admissions`.
+#[cfg(test)]
+async fn test_scope_admitted(
+    connection: &mut SqliteConnection,
+    objective_id: &str,
+) -> Result<bool, Error> {
+    super::test_subscription_dispatch_admitted_in_tx(connection, objective_id).await
+}
+
 /// Resolve the ledger requirement only after current Owner funding policy has
 /// admitted the provider route. The ledger continues to retain V1/V2 billing
 /// protections for a future explicitly authorized billable mode.
@@ -53,7 +64,12 @@ async fn model_call_ledger_requirement(
 ) -> Result<Option<String>, Error> {
     match role {
         ModelCallRole::Lead => {
+            #[cfg(not(test))]
             let _ = (connection, objective_id);
+            #[cfg(test)]
+            if test_scope_admitted(connection, objective_id).await? {
+                return Ok(None);
+            }
             Err(SubscriptionFundingRefusal::BindingRequired.into())
         }
         ModelCallRole::SemanticReviewer => {
@@ -83,6 +99,10 @@ async fn model_call_ledger_requirement(
             .await?;
             if let Some((campaign_id,)) = campaign {
                 return campaign_requirement_to_envelope(connection, &campaign_id).await;
+            }
+            #[cfg(test)]
+            if test_scope_admitted(connection, objective_id).await? {
+                return Ok(None);
             }
             Err(SubscriptionFundingRefusal::BindingRequired.into())
         }
@@ -602,13 +622,19 @@ impl Database {
             )
             .await?;
         } else {
-            let refusal = match role.as_str() {
-                "LEAD" | "SEMANTIC_REVIEWER" | "EVALUATION" => {
-                    SubscriptionFundingRefusal::BindingRequired
-                }
-                _ => SubscriptionFundingRefusal::InvalidEvidence,
-            };
-            return Err(refusal.into());
+            #[cfg(test)]
+            let admitted = test_scope_admitted(&mut transaction, &objective_id).await?;
+            #[cfg(not(test))]
+            let admitted = false;
+            if !admitted {
+                let refusal = match role.as_str() {
+                    "LEAD" | "SEMANTIC_REVIEWER" | "EVALUATION" => {
+                        SubscriptionFundingRefusal::BindingRequired
+                    }
+                    _ => SubscriptionFundingRefusal::InvalidEvidence,
+                };
+                return Err(refusal.into());
+            }
         }
         if dispatched_at_ms.is_some() {
             if let Some(ledger_id) = &ledger_reservation_id {

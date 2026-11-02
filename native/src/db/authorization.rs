@@ -123,6 +123,67 @@ pub(super) enum AuthorizationReservationPolicy {
     LeadStart,
 }
 
+/// Decode one persisted subscription recovery state.
+///
+/// The schema (`0042_subscription_funding_recovery_state.sql`) and this decoder
+/// must agree exactly:
+///
+/// * `DISABLED`      — no reason, no reset observation;
+/// * `PAUSED_QUOTA`  — required reason, optional future reset;
+/// * `RECOVERABLE`   — required reason, no reset observation.
+///
+/// Both the read model and the fail-closed dispatch gate share this decoder so
+/// a state can never be representable in one place and contradictory in the
+/// other. Any contradiction is reported as invalid evidence, never silently
+/// coerced into a dispatchable state.
+pub(super) fn decode_funding_recovery_state(
+    state_name: &str,
+    reason: Option<&str>,
+    observed_at_ms: i64,
+    resets_at_ms: Option<i64>,
+) -> Result<crate::execution_policy::FundingRecoveryState, Error> {
+    use crate::execution_policy::FundingRecoveryState;
+    if observed_at_ms <= 0 {
+        return Err(Error::Invalid("funding observation time"));
+    }
+    if resets_at_ms.is_some_and(|reset| reset <= observed_at_ms) {
+        return Err(Error::Invalid("funding reset observation"));
+    }
+    let reason = reason.filter(|reason| !reason.trim().is_empty());
+    if reason.is_some_and(|reason| reason.len() > 512) {
+        return Err(Error::Invalid("funding reason"));
+    }
+    match state_name {
+        "DISABLED" => {
+            if reason.is_some() || resets_at_ms.is_some() {
+                return Err(Error::Invalid("disabled funding evidence"));
+            }
+            Ok(FundingRecoveryState::Disabled {
+                recorded_at_ms: observed_at_ms,
+            })
+        }
+        "PAUSED_QUOTA" => Ok(FundingRecoveryState::PausedQuota {
+            observed_at_ms,
+            resets_at_ms,
+            reason: reason
+                .ok_or(Error::Invalid("paused funding reason is missing"))?
+                .to_owned(),
+        }),
+        "RECOVERABLE" => {
+            if resets_at_ms.is_some() {
+                return Err(Error::Invalid("recoverable funding reset observation"));
+            }
+            Ok(FundingRecoveryState::Recoverable {
+                observed_at_ms,
+                reason: reason
+                    .ok_or(Error::Invalid("recovery reason is missing"))?
+                    .to_owned(),
+            })
+        }
+        _ => Err(Error::Invalid("unsupported funding recovery state")),
+    }
+}
+
 impl Database {
     /// Persist a subscription authorization proposal without enabling model
     /// execution. Runtime admission is deliberately a later milestone.
@@ -262,21 +323,12 @@ impl Database {
         let reason: Option<String> = row.try_get("reason")?;
         let observed_at_ms: i64 = row.try_get("observed_at_ms")?;
         let resets_at_ms: Option<i64> = row.try_get("resets_at_ms")?;
-        let state = match state_name.as_str() {
-            "DISABLED" => crate::execution_policy::FundingRecoveryState::Disabled {
-                recorded_at_ms: observed_at_ms,
-            },
-            "PAUSED_QUOTA" => crate::execution_policy::FundingRecoveryState::PausedQuota {
-                observed_at_ms,
-                resets_at_ms,
-                reason: reason.ok_or(Error::Invalid("paused funding reason is missing"))?,
-            },
-            "RECOVERABLE" => crate::execution_policy::FundingRecoveryState::Recoverable {
-                observed_at_ms,
-                reason: reason.ok_or(Error::Invalid("recovery reason is missing"))?,
-            },
-            _ => return Err(Error::Invalid("unsupported funding recovery state")),
-        };
+        let state = decode_funding_recovery_state(
+            &state_name,
+            reason.as_deref(),
+            observed_at_ms,
+            resets_at_ms,
+        )?;
         Ok(SubscriptionFundingRecord {
             campaign_id: campaign_id.into(),
             authorization_id,
@@ -1095,6 +1147,123 @@ mod tests {
             "existing monetary ledger evidence must survive migration and reopen"
         );
         reopened.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn recoverable_funding_state_round_trips_and_remains_unavailable() {
+        let (path, db, _) = fixture().await;
+        let action_id: (String,) = sqlx::query_as::query_as("SELECT id FROM actions LIMIT 1")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        let campaign = db
+            .create_campaign(&action_id.0, "subscription-recoverable")
+            .await
+            .unwrap();
+        let policy = subscription_policy();
+        db.record_subscription_funding_policy(&campaign.id, &policy, 10)
+            .await
+            .unwrap();
+        // No Core operation produces RECOVERABLE today. Recording it directly
+        // proves the repaired schema can represent the state the decoder
+        // documents instead of rejecting it as a contradiction.
+        sqlx::query::query(
+            "UPDATE subscription_funding_policies
+             SET state='RECOVERABLE',reason='quota observation expired',
+                 observed_at_ms=20,updated_at_ms=20
+             WHERE campaign_id=?1",
+        )
+        .bind(&campaign.id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        db.close().await;
+
+        let reopened = Database::open(&path).await.unwrap();
+        let loaded = reopened
+            .subscription_funding_policy(&campaign.id)
+            .await
+            .unwrap();
+        assert!(
+            !loaded.enabled,
+            "recovery evidence is never dispatch authority"
+        );
+        match loaded.state {
+            crate::execution_policy::FundingRecoveryState::Recoverable {
+                observed_at_ms,
+                reason,
+            } => {
+                assert_eq!(observed_at_ms, 20);
+                assert_eq!(reason, "quota observation expired");
+            }
+            other => panic!("expected a decoded recoverable state: {other:?}"),
+        }
+        let mut connection = reopened.pool.acquire().await.unwrap();
+        let error = super::inference_ledger::require_enabled_subscription_funding_in_tx(
+            &mut connection,
+            &campaign.id,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Error::SubscriptionFunding(
+                    crate::execution_policy::SubscriptionFundingRefusal::VerificationRequired
+                )
+            ),
+            "recovery must not enable dispatch: {error:?}"
+        );
+        drop(connection);
+        let repair_version: (i64,) = sqlx::query_as::query_as(
+            "SELECT COUNT(*) FROM _sqlx_migrations WHERE version=42 AND success=1",
+        )
+        .fetch_one(&reopened.pool)
+        .await
+        .unwrap();
+        assert_eq!(repair_version.0, 1);
+        reopened.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn funding_recovery_state_schema_rejects_contradictory_evidence() {
+        let (path, db, _) = fixture().await;
+        let action_id: (String,) = sqlx::query_as::query_as("SELECT id FROM actions LIMIT 1")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        let campaign = db
+            .create_campaign(&action_id.0, "subscription-contradiction")
+            .await
+            .unwrap();
+        for (state, reason, resets) in [
+            ("RECOVERABLE", None, None),
+            ("PAUSED_QUOTA", None, None),
+            ("DISABLED", Some("must not carry a reason"), None),
+            ("RECOVERABLE", Some("recovered"), Some(30_i64)),
+        ] {
+            let inserted = sqlx::query::query(
+                "INSERT INTO subscription_funding_policies
+                 (campaign_id,authorization_id,policy_json,policy_sha256,state,reason,
+                  observed_at_ms,resets_at_ms,created_at_ms,updated_at_ms)
+                 VALUES (?1,'contradiction-auth',?2,?3,?4,?5,10,?6,1,10)",
+            )
+            .bind(&campaign.id)
+            .bind(r#"{"funding":{"kind":"SUBSCRIPTION"}}"#)
+            .bind("a".repeat(64))
+            .bind(state)
+            .bind(reason)
+            .bind(resets)
+            .execute(&db.pool)
+            .await;
+            assert!(
+                inserted.is_err(),
+                "contradictory {state} evidence must be rejected"
+            );
+        }
+        db.close().await;
         let _ = std::fs::remove_file(path);
     }
 

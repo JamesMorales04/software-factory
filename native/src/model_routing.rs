@@ -574,6 +574,9 @@ mod integration_tests {
     async fn each_role_uses_its_own_provider_model_and_credential() {
         let key = master_key();
         let (path, db) = database().await;
+        db.admit_test_subscription_dispatch("review-route")
+            .await
+            .unwrap();
         let (lead_url, lead_seen) = upstream().await;
         let (review_url, review_seen) = upstream().await;
         configure(
