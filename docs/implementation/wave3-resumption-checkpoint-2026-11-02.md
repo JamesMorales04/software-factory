@@ -84,6 +84,51 @@ promotion occurred.**
   - `cargo xtask e2e intake`: FAIL; local repair in progress for temp-directory
     ownership and current profile/campaign wire contracts.
 
+## Additional exact-candidate checks
+
+- `factory/wave3-foundation/20261102` = PR #80 head `1a2c0ab` + CAP evidence
+  correction `13adff7` = `79b73e9`.
+  - `factory-architecture-check --base-ref f7479c0`: PASS.
+  - Rust lib: 490 passed, 2 ignored.
+  - `cargo fmt --all -- --check`: PASS.
+  - strict Clippy for lib/bins: PASS.
+  - Real Chromium `cargo xtask e2e office` in the canonical environment:
+    PASS, candidate `b4ac518ceb9c976a484c5caf15c42729be4ee897`, gate
+    `ACCEPTED`. The intake journey is still being repaired.
+- PR #38 exact head `ad04aca`: GPT-6 Luna independent review returned
+  **APPROVE WITH CONDITIONS**, no HIGH/BLOCKER finding. Conditions are:
+  authenticate Serve over the new Unix-socket backend at this exact candidate;
+  align deployment docs that cite older TCP-Serve evidence; add a close/reopen
+  restart test for revocation/pairing authority. Director-run Rust lib suite:
+  271 passed, 2 ignored; focused pairing/revocation suite: 11 passed.
+  Compose/browser, Serve and mobile-data remain NOT_TESTED.
+
+## Sol architecture decision — subscription admission
+
+GPT-6.1 Sol reviewed `c0eb767` plus the in-progress repair and PR #79's harness.
+Decision: keep real dispatch **BLOCKED** until a legitimate provider-issued
+no-overage trust anchor exists. An Owner-signed Console observation remains
+`OWNER_ATTESTED` with `core_verifiable: false`; hashing, importing,
+countersigning or re-exporting it cannot promote its trust. Real admission
+requires one atomic claim binding principal/authority, objective,
+repository/base, config/hash, exact profile/policy acknowledgement, assessment
+authority, technical limits, provider/model/account/authentication/credential/
+settings bindings, funding-evidence IDs/digests/trust-anchor revisions, and
+idempotency, with rollback of admission-created resources and no inference in
+the transaction.
+
+Minimum contracts are a read-only authenticated
+`GET /funding/subscription/{provider}` (truthfully `core_verifiable:false`,
+`admissible:false` today), a side-effect-free `POST /intake/admissions/check`,
+and an atomic `POST /intake/admissions`; PR #79 must consume the admission
+receipt rather than sequentially creating resources. Unknown quota is not
+admissible. Ambiguous provider errors are `PAUSED_PROVIDER_UNKNOWN`, never
+verified exhaustion. A reset time or manual observation never resumes work.
+Recovery requires a future reviewed contract with fresh authority and no replay
+of ambiguous requests. No route may be enabled until the negative invariants
+(evidence provenance, exact bindings, one-winner claims, crash/restart,
+revocation and dispatch rechecks) pass.
+
 ## Immediate next tasks
 
 1. Finish PR #80 intake-journey repair and rerun canonical Office + intake E2E.
