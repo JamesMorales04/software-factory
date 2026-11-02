@@ -372,6 +372,47 @@ describe("Home", () => {
     }
   });
 
+  it("ignores a stale recent-request list response", async () => {
+    vi.useFakeTimers();
+    const staleResponse = deferred<IntakeRequestSummary[]>();
+    const newerSummary: IntakeRequestSummary = {
+      ...summary,
+      id: "request-newest",
+      objective: "Newest request",
+      state: "ASSESSING",
+    };
+    mocks.listIntakeRequests
+      .mockReset()
+      .mockReturnValueOnce(staleResponse.promise)
+      .mockResolvedValue([newerSummary]);
+
+    const view = renderHome();
+    try {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(mocks.listIntakeRequests).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(8000);
+      });
+      expect(mocks.listIntakeRequests).toHaveBeenCalledTimes(2);
+
+      await act(async () => {
+        staleResponse.resolve([summary]);
+        await Promise.resolve();
+      });
+      const recent = screen.getByTestId("home-recent");
+      expect(within(recent).getByText("Newest request")).toBeDefined();
+      expect(
+        within(recent).queryByText("Add a CSV export endpoint"),
+      ).toBeNull();
+    } finally {
+      view.unmount();
+      vi.useRealTimers();
+    }
+  });
+
   it("waits for each thread poll to settle before scheduling another", async () => {
     vi.useFakeTimers();
     const firstResponse = deferred<IntakeRequestProjection>();

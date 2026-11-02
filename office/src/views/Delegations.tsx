@@ -8,6 +8,7 @@ import {
 } from "../coreApi";
 import { formatTimestamp, shortId } from "../format";
 import { useI18n } from "../i18n";
+import { isDelegationExpired } from "../leadDelegations";
 
 function split(value: string): string[] {
   return value
@@ -262,6 +263,7 @@ export function Delegations() {
               {delegations.map((projection) => {
                 const delegation = projection.delegation;
                 const historical = projection.schemaVersion === 1;
+                const expired = !historical && isDelegationExpired(delegation);
                 return (
                   <tr key={delegation.id}>
                     <td data-label={t("delegations.table.id")}>
@@ -281,13 +283,19 @@ export function Delegations() {
                     </td>
                     <td data-label={t("delegations.table.state")}>
                       <span
-                        className={`pill ${delegation.revokedAt ? "blocked" : "accepted"}`}
+                        className={`pill ${
+                          delegation.revokedAt || expired
+                            ? "blocked"
+                            : "accepted"
+                        }`}
                       >
                         {historical
                           ? "HISTORICAL"
                           : delegation.revokedAt
                             ? "REVOKED"
-                            : "ACTIVE"}
+                            : expired
+                              ? "EXPIRED"
+                              : "ACTIVE"}
                       </span>
                       {!historical && delegation.autonomousStart && (
                         <span className="pill blocked">
@@ -314,7 +322,7 @@ export function Delegations() {
                       {formatTimestamp(delegation.expiresAt)}
                     </td>
                     <td data-label={t("delegations.table.actions")}>
-                      {!historical && !delegation.revokedAt && (
+                      {!historical && !delegation.revokedAt && !expired && (
                         <button
                           type="button"
                           className="danger"

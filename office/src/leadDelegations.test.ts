@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { DelegationProjection } from "./coreApi";
-import { selectableLeadDelegations } from "./leadDelegations";
+import {
+  isDelegationExpired,
+  selectableLeadDelegations,
+} from "./leadDelegations";
 
 const v1Historical = {
   schemaVersion: 1,
@@ -94,5 +97,43 @@ describe("selectableLeadDelegations", () => {
         "project-a",
       ).map((grant) => grant.id),
     ).toEqual(["current-grant"]);
+  });
+
+  it("rejects expired and malformed expiry grants at the boundary", () => {
+    const now = Date.parse("2026-11-02T22:00:00Z");
+    const expired = {
+      ...v2Current,
+      delegation: {
+        ...v2Current.delegation,
+        id: "expired",
+        expiresAt: "2026-11-02T22:00:00Z",
+      },
+    } satisfies DelegationProjection;
+    const malformed = {
+      ...v2Current,
+      delegation: {
+        ...v2Current.delegation,
+        id: "malformed",
+        expiresAt: "not-a-date",
+      },
+    } satisfies DelegationProjection;
+    const future = {
+      ...v2Current,
+      delegation: {
+        ...v2Current.delegation,
+        id: "future",
+        expiresAt: "2026-11-02T22:00:01Z",
+      },
+    } satisfies DelegationProjection;
+
+    expect(isDelegationExpired(expired.delegation, now)).toBe(true);
+    expect(isDelegationExpired(future.delegation, now)).toBe(false);
+    expect(
+      selectableLeadDelegations(
+        [expired, malformed, future],
+        "project-a",
+        now,
+      ).map((grant) => grant.id),
+    ).toEqual(["future"]);
   });
 });

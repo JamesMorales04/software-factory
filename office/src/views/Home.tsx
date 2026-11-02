@@ -115,6 +115,7 @@ export function Home() {
   const [threadError, setThreadError] = useState<string | null>(null);
   const [threadLoading, setThreadLoading] = useState(false);
   const threadGeneration = useRef(0);
+  const recentGeneration = useRef(0);
 
   const [projectId, setProjectId] = useState("");
   const [profileId, setProfileId] = useState("");
@@ -186,12 +187,15 @@ export function Home() {
   }, [t]);
 
   const loadRecent = useCallback(async () => {
+    const generation = ++recentGeneration.current;
     try {
       const next = await coreApi.listIntakeRequests({ limit: 8 });
+      if (recentGeneration.current !== generation) return;
       setRecentRequests(next);
       setRecentError(null);
       setRecentUnavailable(false);
     } catch (cause) {
+      if (recentGeneration.current !== generation) return;
       if (endpointUnavailable(cause)) {
         setRecentUnavailable(true);
         setRecentRequests(null);
