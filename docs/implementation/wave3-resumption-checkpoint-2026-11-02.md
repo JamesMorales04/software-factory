@@ -2,10 +2,33 @@
 
 **Campaign branch:** `campaign/office-ux-wave3-20261028`
 **Remote campaign HEAD at resumption:** `f7479c0c5f936d1097426dd1293ef43ea6e72fb6`
+**Remote campaign HEAD after recovering prior local work:** `bb22524e6e899bdb51e3600814798ccd63b5b0a5`
 **Remote `main`:** `d58725266d132fafb96a79970ff292acc876feb8`
 **Integration worktree:** `/home/james/Escritorio/Development/sf-wave3/integration`
 **No `main` merge, branch-protection change, paid inference, or access-stack
 promotion occurred.**
+
+## Recovered prior Director work
+
+While resuming, the campaign branch advanced from the previously observed
+`f7479c0` to `bb22524` through recovered prior work:
+
+- `ec246df` — deterministic duplicate-participant winner shared by the Agent
+  Office floor and inspector, with unit/integration coverage.
+- `17aa3e9` — V2 evidence rebound to that repair.
+- `f2322fc` — merge of the V2 inspector repair into the campaign branch.
+- `bb22524` — earlier checkpoint and proposed funding contract.
+
+These were preserved rather than discarded. The recovered inspector fix passes
+Office typecheck, Biome, 265 Vitest tests and production build on the integration
+worktree. The earlier checkpoint is now marked superseded because it predates the
+PR #83 foundation. Remote `main` is unchanged.
+
+A separate recovered access-repair branch is at
+`factory/access-repairs/20261029` = `603f823`, with two prior commits
+(`56aeb58`, `4387040`) and a docs-only evidence addendum. This is newer than the
+Luna-reviewed `ad04aca`; it has **not** been exact-head re-reviewed and was not
+promoted. It remains local/unpushed.
 
 ## Subscription routes actually observed
 
