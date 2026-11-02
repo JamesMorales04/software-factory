@@ -4,8 +4,8 @@
 activity, **not** independent acceptance, **not** Compose acceptance and **not**
 Owner visual approval.
 
-- Code candidate: `a9f191e` (visual V2 on `main` base `2907b17`)
-- Visual capture candidate: `3f13242`; `a9f191e` is a test-only timeout commit with identical renderer output.
+- Code candidate: `ec246df` (visual V2 on `main` base `2907b17`)
+- Visual capture candidate: `3f13242`; later commits are a test timeout, dead-CSS cleanup and duplicate-inspector selection with no change to the captured renderer output.
 - Browser: Chromium `156.0.8078.4` via pinned `playwright-core` 1.64.1,
   headless, isolated temporary profile.
 - App: the real Office Vite bundle at `/#/agents`; Core API responses were
@@ -56,7 +56,7 @@ bars that the implementation does not copy.
 
 - `npm run typecheck` — PASS (`tsc --noEmit`)
 - `npm run lint` — PASS (`biome check src e2e-browser`)
-- `npm run test` — PASS (33 files, 255 tests)
+- `npm run test` — PASS (33 files, 257 tests)
 - `npm run build` — PASS (existing >500 kB chunk-size warning only)
 - Component tests cover identity/deduplication, stable slots, cluster aisles,
   the reserved furniture lane, 0/1/5/12/30 density, 5/30 distinct looks,

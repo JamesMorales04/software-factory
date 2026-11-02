@@ -1,0 +1,142 @@
+# Wave 3 resumption checkpoint — 2026-11-02
+
+**Campaign branch:** `campaign/office-ux-wave3-20261028`
+**Remote campaign HEAD at resumption:** `f7479c0c5f936d1097426dd1293ef43ea6e72fb6`
+**Remote `main`:** `d58725266d132fafb96a79970ff292acc876feb8`
+**Integration worktree:** `/home/james/Escritorio/Development/sf-wave3/integration`
+**No `main` merge, branch-protection change, paid inference, or access-stack
+promotion occurred.**
+
+## Subscription routes actually observed
+
+- OpenCode Go: available. Paseo reported the Go rolling window at 93 % remaining,
+  weekly at 97 %, monthly at 29 % remaining. This proves quota availability, not
+  that Extra Usage is disabled.
+- Codex: ChatGPT-authenticated (`codex login status`: logged in using ChatGPT),
+  Plus plan; 66 % weekly remaining. Credits balance is zero; no API-key route was
+  used.
+- No separate positive-USD test authorization was created. Real provider UAT
+  remains blocked pending no-overage proof and atomic request admission.
+
+## Open PRs and exact heads
+
+| PR | Branch | GitHub head | State |
+|---|---|---|---|
+| #79 | `factory/provider-acceptance/20261029` | `73664882316acfc18928ab697ec04da435187dd8` | harness prepared; Core subscription admission still missing |
+| #80 | `factory/office-conversation/20261029` | `f310192c33a02d9191fd9cfbcaf90264c2c6e8cf` | Home implementation; local diagnostic commit `1a2c0ab` not yet pushed |
+| #81 | `factory/capability-evidence-shape/20261029` | `13adff74a8de434fd46c527ea92608b695a98d03` | CAP-050/CAP-052 correction; local fixture-Worker fix `3b0c983` not yet pushed |
+| #82 | `factory/office-isometric-v3/20261029` | `95346734a4c3d99384388f84c15c7cb2996e2efa` | V3 visual; exact-head review approved; browser acceptance blocked by fixture Worker and Office harness foundations |
+| #83 | `factory/subscription-funding/20261029` | `c0eb767d84d774362c7bed27fc5a7834fbbc2436` | fail-closed funding gate; full Rust suite red |
+
+## Current implementation ownership
+
+| Lane | Worktree | Writer | State |
+|---|---|---|---|
+| Funding/Rust | `sf-wave3/funding-repair` | DeepSeek implementer A | repairing test-only non-billable funding fixture and RECOVERABLE schema contradiction |
+| Home/Office | `sf-wave3/home-repair` | DeepSeek implementer B | `cargo xtask e2e office` passes at `1a2c0ab`; repairing `cargo xtask e2e intake` |
+| PR81 evidence/Worker | `sf-wave3/capability-evidence-shape` | Director | full Rust suite PASS at `3b0c983`; Compose Office journey blocked by base Office contract |
+| PR38 security review | `sf-wave3/access-luna-ad04aca` | GPT-6 Luna | independent exact-SHA review running at `ad04aca` |
+| Integration | `sf-wave3/integration` | Director | local checkpoint commits only |
+
+## Verified regressions and root causes
+
+1. **CAP-050/CAP-052 governance failure.** Existing README evidence entries are
+   invalid for `deterministic: verified`; PR #81 removes those two entries and
+   passes `factory-architecture-check` locally.
+2. **Fixture Worker exits 1 on PR #82/#83-style branches.** The pre-fix
+   `Database::load_assignment` rejected empty provider route identity for
+   `FIXTURE` assignments. The fix, present in PR #80 as `3d39465` and locally in
+   PR #81 as `3b0c983`, scopes route identity validation to
+   `TRUSTED_LOCAL_PROVIDER` and adds positive/negative coverage.
+3. **Office/Lead base harness mismatch.** The campaign base UI expects direct
+   `StandingDelegation[]` while Core returns Delegation projections, and the old
+   Lead journey creates a V1 delegation that cannot authorize the current request
+   path. PR #80 repairs this and its Office journey passes locally.
+4. **PR #80 Office-impact parser failure.** The declaration used
+   `/actions/{id}` and the non-path `Office Vitest suite`. The checker is correct;
+   the declaration was corrected to `/actions/:actionId`, `/requests/:requestId`
+   and real test paths.
+5. **PR #83 funding regression.** Nine ledger/gateway/routing tests are blocked
+   by `SubscriptionFunding(BindingRequired)`. Production must stay fail-closed;
+   the repair uses a `#[cfg(test)]` per-scope non-billable admission fixture and
+   keeps persisted proposals/quota pauses authoritative.
+6. **RECOVERABLE schema contradiction.** Migration 0041 cannot represent the
+   decoder's required reason for `RECOVERABLE`. Repair is in progress with a
+   forward migration/test; quota recovery remains unavailable.
+
+## Tests run at this checkpoint
+
+- PR #81 candidate `3b0c983`:
+  - `cargo test -p factory-native --lib --locked`: PASS, 490 passed, 2 ignored.
+  - `cargo clippy --locked -p factory-native --lib --bins --all-features -- -D warnings`: PASS.
+  - `cargo fmt --all -- --check`: PASS.
+  - `factory-architecture-check --base-ref f7479c0`: PASS.
+  - Host/Compose `cargo xtask e2e office`: FAIL before Agent Office because the
+    campaign base Office/Lead contract is older than PR #80. Not a PR #81 code
+    regression.
+- PR #82 candidate `9534673`:
+  - typecheck, Biome, 268 Vitest tests, production build: PASS.
+  - Exact-head independent review was previously approved; browser acceptance
+    remains blocked by the shared fixture/Office harness foundation.
+- PR #80 candidate `1a2c0ab` (implementer self-test):
+  - Office typecheck/lint/272 tests/build: PASS.
+  - `cargo xtask e2e office`: PASS.
+  - `cargo xtask e2e intake`: FAIL; local repair in progress for temp-directory
+    ownership and current profile/campaign wire contracts.
+
+## Additional exact-candidate checks
+
+- `factory/wave3-foundation/20261102` = PR #80 head `1a2c0ab` + CAP evidence
+  correction `13adff7` = `79b73e9`.
+  - `factory-architecture-check --base-ref f7479c0`: PASS.
+  - Rust lib: 490 passed, 2 ignored.
+  - `cargo fmt --all -- --check`: PASS.
+  - strict Clippy for lib/bins: PASS.
+  - Real Chromium `cargo xtask e2e office` in the canonical environment:
+    PASS, candidate `b4ac518ceb9c976a484c5caf15c42729be4ee897`, gate
+    `ACCEPTED`. The intake journey is still being repaired.
+- PR #38 exact head `ad04aca`: GPT-6 Luna independent review returned
+  **APPROVE WITH CONDITIONS**, no HIGH/BLOCKER finding. Conditions are:
+  authenticate Serve over the new Unix-socket backend at this exact candidate;
+  align deployment docs that cite older TCP-Serve evidence; add a close/reopen
+  restart test for revocation/pairing authority. Director-run Rust lib suite:
+  271 passed, 2 ignored; focused pairing/revocation suite: 11 passed.
+  Compose/browser, Serve and mobile-data remain NOT_TESTED.
+
+## Sol architecture decision — subscription admission
+
+GPT-6.1 Sol reviewed `c0eb767` plus the in-progress repair and PR #79's harness.
+Decision: keep real dispatch **BLOCKED** until a legitimate provider-issued
+no-overage trust anchor exists. An Owner-signed Console observation remains
+`OWNER_ATTESTED` with `core_verifiable: false`; hashing, importing,
+countersigning or re-exporting it cannot promote its trust. Real admission
+requires one atomic claim binding principal/authority, objective,
+repository/base, config/hash, exact profile/policy acknowledgement, assessment
+authority, technical limits, provider/model/account/authentication/credential/
+settings bindings, funding-evidence IDs/digests/trust-anchor revisions, and
+idempotency, with rollback of admission-created resources and no inference in
+the transaction.
+
+Minimum contracts are a read-only authenticated
+`GET /funding/subscription/{provider}` (truthfully `core_verifiable:false`,
+`admissible:false` today), a side-effect-free `POST /intake/admissions/check`,
+and an atomic `POST /intake/admissions`; PR #79 must consume the admission
+receipt rather than sequentially creating resources. Unknown quota is not
+admissible. Ambiguous provider errors are `PAUSED_PROVIDER_UNKNOWN`, never
+verified exhaustion. A reset time or manual observation never resumes work.
+Recovery requires a future reviewed contract with fresh authority and no replay
+of ambiguous requests. No route may be enabled until the negative invariants
+(evidence provenance, exact bindings, one-winner claims, crash/restart,
+revocation and dispatch rechecks) pass.
+
+## Immediate next tasks
+
+1. Finish PR #80 intake-journey repair and rerun canonical Office + intake E2E.
+2. Add the PR #81 CAP evidence correction to the first integration candidate;
+   PR #81's Worker fix is already present in PR #80 as `3d39465`.
+3. Get PR #83 full Rust suite green with the explicit test-only funding fixture;
+   do not enable provider dispatch.
+4. Obtain independent Luna review of the final PR #80/#83 heads and the exact
+   PR #38 access head.
+5. Integrate the resulting reviewed foundation into Wave 3, then rebase #79/#82.
+6. Update every PR's three impact declarations to the actual integrated base/head.
