@@ -87,6 +87,32 @@ promoted. It remains local/unpushed.
    decoder's required reason for `RECOVERABLE`. Repair is in progress with a
    forward migration/test; quota recovery remains unavailable.
 
+## Current reviewed candidates (2026-11-02)
+
+- PR #80 final candidate `d2dd02ccff6a4566e1178d992ab42fb89e1a85c4`
+  (`base 36079cf`): GPT-6 Luna exact-head review **APPROVE**. The
+  candidate adds Home/Lead V2 behavior, the FIXTURE Worker admission fix, the
+  current intake journey contract and the CAP evidence correction. Final local
+  canonical rootless Compose run passed both `cargo xtask e2e office`
+  (candidate `d148cbb3…`, Gate ACCEPTED) and `cargo xtask e2e intake`
+  (request `13b3d5a4…`, Campaign `cb7f912e…`, Gate ACCEPTED). Office
+  typecheck, Biome, 276 Vitest tests and build pass.
+- PR #83 final candidate `75d3894b30d5cca8d39bc749cc841454adfcd120`
+  (`base 36079cf`): GPT-6 Luna approved the funding implementation at
+  `da462d2` and is reviewing the delta. It adds the fail-closed V3 funding
+  gate, migration 0042, the debug-only `test-support` admission seam and
+  explicit test admissions for the positive CAP-014/provider fixtures.
+  `cargo test --workspace --locked --features test-support` passes on the host
+  excluding only the two environment-dependent OpenCode sandbox tests;
+  509 library tests, 32 Core API tests, 12 fixture-dispatch tests and the
+  CAP-014 tests pass. Production `cargo build --bins` without the feature
+  passes. Real provider entitlement, no-overage proof, request admission and
+  quota recovery remain NOT_IMPLEMENTED/NOT_TESTED.
+
+Both candidates remain unmerged pending fresh required-check results on their
+exact heads. PR #81 is superseded by the CAP correction carried in both
+candidates.
+
 ## Tests run at this checkpoint
 
 - PR #81 candidate `3b0c983`:
@@ -151,6 +177,28 @@ Recovery requires a future reviewed contract with fresh authority and no replay
 of ambiguous requests. No route may be enabled until the negative invariants
 (evidence provenance, exact bindings, one-winner claims, crash/restart,
 revocation and dispatch rechecks) pass.
+
+## Baseline candidate status (2026-11-02 22:30 UTC-05)
+
+- **PR #80 final candidate:** `d2dd02ccff6a4566e1178d992ab42fb89e1a85c4`
+  against base `36079cf`. GPT-6 Luna exact-head review: **APPROVE** after two
+  MEDIUM findings were repaired (expired delegation filtering/display and
+  recent-request poll fencing). Office typecheck, Biome, 276 Vitest tests and
+  production build pass; canonical rootless Compose `e2e office` and `e2e
+  intake` pass at this head, including 14 responsive Home captures and the
+  deterministic intake lifecycle. Local/Fixture evidence only; live provider
+  and Owner visual acceptance remain NOT_TESTED.
+- **PR #83 final candidate:** `75d3894b30d5cca8d39bc749cc841454adfcd120`
+  against base `36079cf`. GPT-6 Luna approved `da462d2` and the earlier
+  funding implementation; the remaining delta is test-only scoped admissions
+  for three positive provider integration tests. Host `cargo test --workspace
+  --locked --features test-support` passed excluding only the two
+  environment-dependent OpenCode sandbox tests; all 12 fixture-dispatch tests
+  pass. CI is pending. Production remains fail-closed.
+- **PR #80/#83 CI:** PR #80 `architecture-consistency` and `compose-policy`
+  PASS; `rust` and `container-dev` in progress. PR #83 architecture and
+  compose-policy pass; `rust` and `container-dev` in progress. No merge has
+  occurred yet.
 
 ## Immediate next tasks
 
