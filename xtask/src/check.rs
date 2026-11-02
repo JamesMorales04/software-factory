@@ -22,7 +22,13 @@ pub(crate) fn check() -> Result<(), String> {
         "-D",
         "warnings",
     ])?;
-    cargo_stream(&["test", "--workspace", "--locked"])?;
+    cargo_stream(&[
+        "test",
+        "--workspace",
+        "--locked",
+        "--features",
+        "test-support",
+    ])?;
     cargo_stream(&["build", "--workspace", "--locked", "--bins"])?;
     cargo_stream(&["doc", "--workspace", "--no-deps", "--locked"])?;
     let mut audit = cargo();
