@@ -41,6 +41,10 @@ model, inspector, table and timeline.
   counter-scale within a bounded factor so they remain legible when the
   clamped fit camera shrinks a 30-person floor. The scene still has no
   animation, movement, progress or fabricated activity.
+- **Scene/inspector identity agreement.** When Core returns conflicting
+  projections of one `participant_id`, the inspector now opens the same
+  deterministic winner that the floor renders (CURRENT before terminal, then
+  newest observation, then the stable lexical tiebreak).
 
 The Studio Inspector remains the ordinary participant inspector with the dark
 studio token set, and the Table/Timeline alternatives are untouched.
