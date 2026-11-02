@@ -9,7 +9,7 @@ promotion occurred.**
 
 ## Subscription routes actually observed
 
-- OpenCode Go: available. Paseo reported the Go rolling window at 93 % remaining,
+- OpenCode Go: available. The account usage report showed the Go rolling window at 93 % remaining,
   weekly at 97 %, monthly at 29 % remaining. This proves quota availability, not
   that Extra Usage is disabled.
 - Codex: ChatGPT-authenticated (`codex login status`: logged in using ChatGPT),

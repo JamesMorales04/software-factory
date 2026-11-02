@@ -3,6 +3,28 @@ use super::*;
 use chrono::Utc;
 use uuid::Uuid;
 
+fn validate_assignment_provider_route(
+    execution_mode: &str,
+    provider: &str,
+    model: &str,
+    provider_mode: &str,
+    delegation_id: &str,
+) -> Result<(), Error> {
+    if execution_mode == "TRUSTED_LOCAL_PROVIDER"
+        && (provider_mode.is_empty() || delegation_id.is_empty())
+    {
+        return Err(Error::Forbidden(
+            "provider assignment has no route identity".into(),
+        ));
+    }
+    if execution_mode == "TRUSTED_LOCAL_PROVIDER" && (provider.is_empty() || model.is_empty()) {
+        return Err(Error::Forbidden(
+            "provider assignment has no authorized route".into(),
+        ));
+    }
+    Ok(())
+}
+
 impl Database {
     pub async fn register_worker_session(
         &self,
@@ -329,19 +351,16 @@ impl Database {
         let policy_json = policy_json
             .ok_or_else(|| Error::Forbidden("V2 assignment has no frozen policy".into()))?;
         let execution_policy = super::authorization::decode_execution_policy(&policy_json)?;
-        if provider_mode.is_empty() || delegation_id.is_empty() {
-            return Err(Error::Forbidden(
-                "provider assignment has no route identity".into(),
-            ));
-        }
+        validate_assignment_provider_route(
+            &execution_mode,
+            &provider,
+            &model,
+            &provider_mode,
+            &delegation_id,
+        )?;
         if revocation.is_some() {
             return Err(Error::Forbidden(
                 "delegation was revoked; assignment is no longer authorized".into(),
-            ));
-        }
-        if execution_mode == "TRUSTED_LOCAL_PROVIDER" && (provider.is_empty() || model.is_empty()) {
-            return Err(Error::Forbidden(
-                "provider assignment has no authorized route".into(),
             ));
         }
         if let Option::<String>::Some(policy_id) = row.try_get("policy_id")?
@@ -789,5 +808,50 @@ impl Database {
         .await?;
         transaction.commit().await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_assignment_provider_route;
+    use crate::db::Error;
+
+    #[test]
+    fn fixture_assignments_do_not_require_provider_route_identity() {
+        assert!(validate_assignment_provider_route("FIXTURE", "", "", "", "").is_ok());
+    }
+
+    #[test]
+    fn provider_assignments_require_route_and_delegation_identity() {
+        assert!(matches!(
+            validate_assignment_provider_route(
+                "TRUSTED_LOCAL_PROVIDER",
+                "opencode",
+                "model",
+                "build",
+                ""
+            ),
+            Err(Error::Forbidden(message)) if message == "provider assignment has no route identity"
+        ));
+        assert!(matches!(
+            validate_assignment_provider_route(
+                "TRUSTED_LOCAL_PROVIDER",
+                "opencode",
+                "model",
+                "",
+                "delegation"
+            ),
+            Err(Error::Forbidden(message)) if message == "provider assignment has no route identity"
+        ));
+        assert!(matches!(
+            validate_assignment_provider_route(
+                "TRUSTED_LOCAL_PROVIDER",
+                "",
+                "model",
+                "build",
+                "delegation"
+            ),
+            Err(Error::Forbidden(message)) if message == "provider assignment has no authorized route"
+        ));
     }
 }

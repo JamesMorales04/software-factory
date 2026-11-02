@@ -1173,6 +1173,48 @@ export interface StandingDelegation {
   revokedAt?: string;
 }
 
+export interface StandingDelegationV2 {
+  id: string;
+  principalId: string;
+  auditId: string;
+  projectId: string;
+  revision: number;
+  contentHash: string;
+  objectiveClasses: string[];
+  allowedPaths: string[];
+  capabilities: string[];
+  riskClasses: string[];
+  autonomousStart: boolean;
+  autonomousRiskClasses: string[];
+  route: ProviderRoute;
+  maxTimeoutSecs: number;
+  maxParallel: number;
+  operations: ExecutionOperationLimits;
+  progress: ExecutionProgressPolicy;
+  expiresAt: string;
+  revokedAt?: string;
+}
+
+export interface DelegationUsage {
+  delegation_id: string;
+  requests: number;
+  sessions: number;
+  attempts: number;
+}
+
+export type DelegationProjection =
+  | {
+      schemaVersion: 2;
+      delegation: StandingDelegationV2;
+      usage: DelegationUsage | null;
+    }
+  | {
+      schemaVersion: 1;
+      historical: true;
+      delegation: StandingDelegation;
+      usage: DelegationUsage | null;
+    };
+
 export interface LeadRequestRecord {
   id: string;
   project_id: string;
@@ -1230,7 +1272,18 @@ export interface LeadRequestProjection {
   assessment: LeadAssessmentRecord | null;
   proposal: LeadProposalRecord | null;
   plan: FrozenLeadPlanRecord | null;
+  start_binding: LeadStartBinding | null;
   model_calls: ModelCallRecord[];
+}
+
+export interface LeadStartBinding {
+  request_hash: string;
+  plan_hash: string;
+  spec_sha256: string;
+  config_hash: string;
+  delegation_hash: string;
+  profile_revision_id: string | null;
+  profile_hash: string | null;
 }
 
 export interface EffortEstimateView {
@@ -1460,7 +1513,7 @@ export interface ExecutionPolicyGrant {
 
 export interface ExecutionPolicyResult {
   grant: ExecutionPolicyGrant;
-  delegation: StandingDelegation;
+  delegation: StandingDelegationV2;
   usage: {
     delegation_id: string;
     requests: number;
@@ -1505,6 +1558,18 @@ export interface StartLeadCampaignResult {
   campaign: Campaign;
   run: Run;
   attempt: Attempt;
+}
+
+export interface ApproveLeadRequestInput {
+  expected_request_hash: string;
+  expected_plan_hash: string;
+  expected_spec_sha256: string;
+  expected_config_hash: string;
+  expected_delegation_hash: string;
+  profile_revision_id?: string;
+  profile_hash?: string;
+  rationale: string;
+  provider_authorization?: NewCampaignAuthorization;
 }
 
 function campaignAuthorizationWire(
@@ -1838,12 +1903,10 @@ export interface NewDelegationRequest {
 }
 
 export interface DelegationDetail {
-  delegation: StandingDelegation;
-  usage: {
-    sessions: number;
-    attempts: number;
-    requests: number;
-  };
+  delegation: StandingDelegation | StandingDelegationV2;
+  usage: DelegationUsage;
+  schemaVersion: 1 | 2;
+  historical?: true;
 }
 
 export interface SetupStatus {
@@ -2711,7 +2774,7 @@ export const coreApi = {
       `/projects/${encodeURIComponent(projectId)}/config`,
       { method: "PUT", body: JSON.stringify(input) },
     ),
-  listDelegations: () => request<StandingDelegation[]>("/delegations"),
+  listDelegations: () => request<DelegationProjection[]>("/delegations"),
   listLeadRequests: () => request<LeadRequestRecord[]>("/lead/requests"),
   getLeadRequest: (id: string) =>
     request<LeadRequestProjection>(`/lead/requests/${encodeURIComponent(id)}`),
@@ -2730,14 +2793,32 @@ export const coreApi = {
       `/lead/requests/${encodeURIComponent(id)}/freeze`,
       { method: "POST" },
     ),
-  startLeadRequest: (id: string, authorization?: NewCampaignAuthorization) =>
+  approveLeadRequest: (id: string, input: ApproveLeadRequestInput) =>
     request<StartLeadCampaignResult>(
-      `/lead/requests/${encodeURIComponent(id)}/start`,
+      `/lead/requests/${encodeURIComponent(id)}/approve`,
       {
         method: "POST",
-        ...(authorization === undefined
-          ? {}
-          : { body: JSON.stringify(campaignAuthorizationWire(authorization)) }),
+        body: JSON.stringify({
+          expected_request_hash: input.expected_request_hash,
+          expected_plan_hash: input.expected_plan_hash,
+          expected_spec_sha256: input.expected_spec_sha256,
+          expected_config_hash: input.expected_config_hash,
+          expected_delegation_hash: input.expected_delegation_hash,
+          ...(input.profile_revision_id === undefined
+            ? {}
+            : { profile_revision_id: input.profile_revision_id }),
+          ...(input.profile_hash === undefined
+            ? {}
+            : { profile_hash: input.profile_hash }),
+          rationale: input.rationale,
+          ...(input.provider_authorization === undefined
+            ? {}
+            : {
+                provider_authorization: campaignAuthorizationWire(
+                  input.provider_authorization,
+                ),
+              }),
+        }),
       },
     ),
   withdrawLeadRequest: (id: string, reason: string) =>

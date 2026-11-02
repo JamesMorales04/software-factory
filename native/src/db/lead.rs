@@ -661,6 +661,33 @@ impl Database {
         load_lead_request(&mut connection, id).await
     }
 
+    /// Return the authoritative identities an operator must echo when
+    /// approving a frozen Lead plan. The approval transaction rechecks every
+    /// value before creating a Campaign.
+    pub async fn lead_expected_start_binding(
+        &self,
+        id: &str,
+    ) -> Result<ExpectedStartBinding, Error> {
+        let mut connection = self.pool.acquire().await?;
+        let request = load_lead_request(&mut connection, id).await?;
+        let identity = load_start_identity(&mut connection, &request).await?;
+        ExpectedStartBinding::new(
+            &identity.request_hash,
+            &identity.plan_hash,
+            &identity.spec_sha256,
+            &identity.config_hash,
+            &identity.delegation_hash,
+            identity
+                .profile
+                .as_ref()
+                .map(|profile| profile.profile_revision_id.as_str()),
+            identity
+                .profile
+                .as_ref()
+                .map(|profile| profile.profile_hash.as_str()),
+        )
+    }
+
     /// Derived Office disposition with Campaign/gate precedence over the
     /// withdrawal fact and the Lead request's own progress.
     pub async fn lead_request_projection(
@@ -6687,6 +6714,13 @@ mod tests {
         let ready = draft_ready_lead(&db, "operator").await;
         let usage_before = db.delegation_usage(&ready.grant.id).await.unwrap();
         let expected = expected_binding(&ready);
+        assert_eq!(
+            db.lead_expected_start_binding(&ready.request.id)
+                .await
+                .unwrap(),
+            expected,
+            "the authenticated detail projection must expose the exact frozen start binding"
+        );
 
         let autonomous = db
             .start_lead_campaign(
