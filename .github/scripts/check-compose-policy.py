@@ -540,6 +540,23 @@ def main(path: str) -> int:
         if (config.get("networks", {}).get("factory-tailscale-uplink", {}).get("internal") is True):
             fail("factory-tailscale-uplink: outbound connectivity is required")
 
+    for network_name, network in (config.get("networks") or {}).items():
+        driver_opts = (network or {}).get("driver_opts") or {}
+        if driver_opts.get("isolate") != "strict":
+            fail(f"network {network_name}: driver_opts.isolate must be 'strict'")
+    if (config.get("networks", {}).get("factory-control", {}).get("internal") is True):
+        fail("factory-control: internal networks are not bridge-isolated by Netavark")
+    if (
+        (config.get("networks", {}).get("factory-control", {}).get("driver_opts") or {}).get(
+            "no_default_route"
+        )
+        != "true"
+    ):
+        fail("factory-control: no_default_route=true is required to deny egress")
+    for network_name in ("factory-egress", "factory-tailscale-uplink"):
+        if (config.get("networks", {}).get(network_name, {}).get("internal") is True):
+            fail(f"{network_name}: outbound connectivity is required")
+
     for name, volume in (config.get("volumes") or {}).items():
         if volume.get("driver_opts"):
             fail(f"named volume {name}: driver_opts are forbidden (host bind risk)")

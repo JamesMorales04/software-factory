@@ -443,6 +443,37 @@ class ComposePolicyTests(unittest.TestCase):
             "address overrides are forbidden",
         )
 
+    def test_rejects_unisolated_or_egress_capable_control_network(self):
+        self.assert_rejected(
+            lambda c: c["networks"]["factory-control"].__setitem__("internal", True),
+            "not bridge-isolated by Netavark",
+        )
+        self.assert_rejected(
+            lambda c: c["networks"]["factory-control"]["driver_opts"].pop(
+                "no_default_route", None
+            ),
+            "no_default_route=true is required",
+        )
+
+    def test_rejects_missing_or_weakened_network_isolation(self):
+        self.assert_rejected(
+            lambda c: c["networks"]["factory-control"].pop("driver_opts", None),
+            "isolate must be 'strict'",
+        )
+        self.assert_rejected(
+            lambda c: c["networks"]["factory-egress"]["driver_opts"].__setitem__(
+                "isolate", "true"
+            ),
+            "isolate must be 'strict'",
+        )
+        if "tailscale" in base_config()["services"]:
+            self.assert_rejected(
+                lambda c: c["networks"]["factory-tailscale-uplink"].pop(
+                    "driver_opts", None
+                ),
+                "isolate must be 'strict'",
+            )
+
     def test_rejects_tailscale_route_proxy_and_feature_environment(self):
         if "tailscale" not in base_config()["services"]:
             self.skipTest("optional Tailscale overlay is not present in this config")

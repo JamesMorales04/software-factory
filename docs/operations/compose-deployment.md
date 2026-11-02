@@ -306,6 +306,9 @@ The overlay uses the pinned official Tailscale image, userspace networking,
 a persistent `factory-tailscale-state` volume, and private Tailscale Serve on
 HTTPS 443. Tailscale joins only its outbound `factory-tailscale-uplink`
 network; it shares no network with Core and cannot reach any Core TCP listener.
+Every bridge network sets `isolate=strict`; the control network is non-internal
+with `no_default_route=true` because Netavark does not isolate `internal`
+bridges, preserving egress denial for control-only roles.
 It does not mount a host runtime socket, join the Factory control/egress
 networks, publish its own host port, configure Funnel, or pass
 Factory/provider credentials to Tailscale. Core keeps its existing `127.0.0.1`

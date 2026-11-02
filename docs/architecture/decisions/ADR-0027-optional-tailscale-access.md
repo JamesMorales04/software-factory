@@ -47,9 +47,13 @@ Tailscale service joins one network only:
 - `factory-tailscale-uplink` provides outbound tailnet connectivity and has no
   other Factory service members.
 
-It shares no network with Core and cannot reach any Core TCP listener. Tailscale
-Serve proxies HTTPS to Core's restricted Office listener through a dedicated
-Unix domain socket volume (`factory-office-socket`) mounted read-only in the
+It shares no network with Core and cannot reach any Core TCP listener. Every
+bridge network sets Netavark `isolate=strict`. The control network is
+non-internal with `no_default_route=true` because Netavark does not include
+`internal` bridges in its isolation rules; this keeps control-only roles
+without egress while blocking uplink-to-control traffic. Tailscale Serve
+proxies HTTPS to Core's restricted Office listener through a dedicated Unix
+domain socket volume (`factory-office-socket`) mounted read-only in the
 Tailscale container. That listener serves Office assets and an explicit
 operator/auth route allowlist; Worker, Supervisor, verifier, reviewer, and
 Quality Gate authority endpoints are absent even when their role tokens are
@@ -92,9 +96,12 @@ contains no credentials.
   records a real Podman probe from the Tailscale container: Core's control and
   egress addresses are unreachable, no TCP Office listener exists, and the
   restricted Office socket can be reached by a container with only the
-  dedicated read-only volume. Serve over this socket was not exercised because
-  the disposable node was left unauthenticated. Current remote Serve/HTTPS is
-  `NOT_TESTED`. Mobile-network
+  dedicated read-only volume. An earlier socket-only candidate still allowed
+  uplink-to-control traffic because Podman did not bridge-isolate the
+  `internal` control network; the final `isolate=strict` /
+  `no_default_route=true` policy and its probe supersede that claim. Serve over
+  this socket was not exercised because the disposable node was left
+  unauthenticated. Current remote Serve/HTTPS is `NOT_TESTED`. Mobile-network
   reachability from a phone, independent acceptance and deployment remain
   `USER_PENDING` or `NOT_TESTED`. Funnel remains explicitly disabled and is not
   an offered capability.

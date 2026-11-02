@@ -378,6 +378,15 @@ volumes:
   factory-reviewer-state:
 
 networks:
+  # Netavark applies bridge isolation only to non-internal networks. The
+  # control network therefore declares an explicit no-default-route policy
+  # instead of `internal: true`, so it is isolated from other bridges while
+  # still denying container egress.
   factory-control:
-    internal: true
+    internal: false
+    driver_opts:
+      isolate: "strict"
+      no_default_route: "true"
   factory-egress:
+    driver_opts:
+      isolate: "strict"
