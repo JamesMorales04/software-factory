@@ -2525,3 +2525,40 @@ async fn model_call_scope_and_global_budgets_are_enforced() {
     db.close().await;
     let _ = std::fs::remove_file(path);
 }
+
+#[tokio::test]
+async fn test_subscription_admission_supports_exact_and_e2e_wildcard_scopes() {
+    let path = std::env::temp_dir().join(format!(
+        "factory-test-admissions-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let db = Database::open(&path).await.unwrap();
+    let mut connection = db.pool.acquire().await.unwrap();
+    assert!(
+        !test_subscription_dispatch_admitted_in_tx(&mut connection, "campaign-exact")
+            .await
+            .unwrap()
+    );
+    db.admit_test_subscription_dispatch("campaign-exact")
+        .await
+        .unwrap();
+    assert!(
+        test_subscription_dispatch_admitted_in_tx(&mut connection, "campaign-exact")
+            .await
+            .unwrap()
+    );
+    assert!(
+        !test_subscription_dispatch_admitted_in_tx(&mut connection, "campaign-other")
+            .await
+            .unwrap()
+    );
+    db.admit_test_subscription_dispatch("*").await.unwrap();
+    assert!(
+        test_subscription_dispatch_admitted_in_tx(&mut connection, "campaign-other")
+            .await
+            .unwrap()
+    );
+    drop(connection);
+    db.close().await;
+    let _ = std::fs::remove_file(path);
+}

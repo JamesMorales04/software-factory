@@ -219,6 +219,9 @@ INTAKE_ACTION_ID="$(printf '%s' "$INTAKE_CREATED" | json 'import json,sys; print
 INTAKE_LEAD_REQUEST_ID="$(printf '%s' "$INTAKE_CREATED" | json 'import json,sys; print(json.load(sys.stdin)["leadRequestId"])')"
 admit_scope "$INTAKE_ID"
 admit_scope "$INTAKE_LEAD_REQUEST_ID"
+# Approval creates the Campaign id inside Core, so admit the disposable E2E
+# database once. Persisted funding policies still take precedence.
+admit_scope "*"
 cat > "$MODEL_DIR/context.json" <<JSON
 {
   "schema": "factory-compose-model-fixture-v1",

@@ -968,8 +968,14 @@ pub(crate) async fn test_subscription_dispatch_admitted_in_tx(
     connection: &mut sqlx_sqlite::SqliteConnection,
     scope: &str,
 ) -> Result<bool, Error> {
+    // `*` is reserved for the disposable Compose E2E database, where the
+    // Campaign identity is created inside approval and cannot be admitted
+    // before the Worker may claim it. This seam is still debug-only, applies
+    // only when no funding policy row exists, and can never relax a persisted
+    // disabled, paused or invalid policy.
     let row: Option<(String,)> = sqlx::query_as::query_as(&format!(
-        "SELECT scope FROM {TEST_SUBSCRIPTION_DISPATCH_ADMISSIONS} WHERE scope=?1"
+        "SELECT scope FROM {TEST_SUBSCRIPTION_DISPATCH_ADMISSIONS}
+         WHERE scope=?1 OR scope='*' LIMIT 1"
     ))
     .bind(scope)
     .fetch_optional(&mut *connection)
