@@ -1100,6 +1100,38 @@ try {
     [],
     `browser page errors: ${pageErrors.join("; ")}`,
   );
+  const screenshotDir = process.env.FACTORY_E2E_SCREENSHOT_DIR;
+  if (screenshotDir) {
+    mkdirSync(screenshotDir, { recursive: true });
+    await page.getByLabel(/language|idioma/i).selectOption("en");
+    await page.goto(`${viteUrl}/#/agents`);
+    await page
+      .getByRole("heading", { name: "Agent Office", exact: true })
+      .first()
+      .waitFor();
+    await page.locator(".agent-floor").first().waitFor({ timeout: 15000 });
+    for (const [name, width, height] of [
+      ["agent-office-1440", 1440, 900],
+      ["agent-office-834", 834, 900],
+      ["agent-office-390", 390, 844],
+    ]) {
+      await page.setViewportSize({ width, height });
+      await page.screenshot({
+        path: join(screenshotDir, `${name}.png`),
+        fullPage: false,
+      });
+      const viewport = await page.evaluate(() => ({
+        scrollWidth: document.documentElement.scrollWidth,
+        clientWidth: document.documentElement.clientWidth,
+      }));
+      assert.equal(
+        viewport.scrollWidth,
+        viewport.clientWidth,
+        `Agent Office must not overflow the document at ${width}px`,
+      );
+    }
+    await page.setViewportSize({ width: 1440, height: 900 });
+  }
   // A missing gate is a normal pending projection. The UI intentionally probes
   // that endpoint and renders PENDING; all other 404s are broken resources.
   // Unified intake is not merged into this integration candidate yet; Home
