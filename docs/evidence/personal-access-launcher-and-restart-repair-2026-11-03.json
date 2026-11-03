@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "record": "personal-access-launcher-and-restart-repair",
+  "implementation_sha": "407773246067f2467b44ac9a5b067f5242b096d7",
+  "repair_base_sha": "603f823fe28000e2b33493e482f8b3c01cf46973",
+  "date": "2026-11-03",
+  "result": "PARTIAL PASS (launcher static repair and restart-authority regression pass; no Compose, Tailscale Serve, mobile or independent review evidence)",
+  "status": "author_run",
+  "paid_inference": false,
+  "checks": [
+    {
+      "name": "format",
+      "pass": true,
+      "detail": "cargo fmt --all -- --check"
+    },
+    {
+      "name": "focused Clippy",
+      "pass": true,
+      "detail": "cargo clippy -p factory-native --lib --test device_sessions --all-features --locked -- -D warnings"
+    },
+    {
+      "name": "pairing and revocation library tests",
+      "pass": true,
+      "detail": "cargo test -p factory-native --lib --locked db::device_pairing: 8 passed, 0 failed, including the new close/reopen test"
+    },
+    {
+      "name": "device session integration tests",
+      "pass": true,
+      "detail": "cargo test -p factory-native --test device_sessions --locked: 5 passed, 0 failed"
+    }
+  ],
+  "repairs": [
+    {
+      "finding": "The ./factory open/recover launcher probed http://127.0.0.1:8765/health after Core stopped binding a loopback listener.",
+      "repair": "wait_for_core now runs curl -fsS -H 'Host: localhost:8765' http://core-control:8765/health, matching the Compose healthcheck.",
+      "verification": "Static inspection only. A real Compose first-run/recovery is NOT_TESTED at this record."
+    },
+    {
+      "finding": "Luna's condition required a close/reopen test for revocation and pairing authority.",
+      "repair": "Added pairing_and_revocation_authority_survive_close_and_reopen covering session persistence, consumed-challenge replay rejection, unconsumed approval survival, persisted global revocation and the epoch fence.",
+      "verification": "The focused test passes; no real Compose or browser run was performed for this record."
+    }
+  ],
+  "not_tested": [
+    "real Compose first-run and recovery after the launcher repair",
+    "authenticated Tailscale Serve over the Office Unix socket",
+    "mobile-data access from a phone",
+    "exact-head independent security review",
+    "full Compose/browser pairing journey at this candidate",
+    "paid inference"
+  ],
+  "promotion_status": "NOT_PROMOTED",
+  "independent_review": "PENDING"
+}
