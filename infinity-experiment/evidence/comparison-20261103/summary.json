@@ -1,6 +1,24 @@
 {
   "results": [
     {
+      "label": "factory-cancellation-restart-e2e",
+      "command": [
+        "target/debug/deps/e2e_fixture_dispatch-d70a187ff64776d3",
+        "campaign_cancellation_fences_a_leased_attempt_through_restart",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "wall_ms": 397.63,
+      "peak_rss_kib": 55196,
+      "peak_processes": 2,
+      "peak_threads": 23,
+      "sampled_cpu_ms": 290.0,
+      "direct_child_rusage_cpu_ms": 404.799,
+      "direct_child_maxrss_kib": 48300,
+      "samples": 19,
+      "profile": "debug"
+    },
+    {
       "label": "factory-core-recovery-e2e",
       "command": [
         "/home/james/Escritorio/Development/sf-wave3/infinity-runtime/target/debug/deps/e2e_core_recovery-55bf35475ea727d3",

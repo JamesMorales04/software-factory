@@ -28,6 +28,7 @@ target/debug/deps/e2e_core_recovery-55bf35475ea727d3 \
 | --- | ---: | ---: | ---: | ---: | ---: |
 | Factory parallel workgraph E2E | 753 | 113,332 | 7 | 61 | 390 |
 | Factory Core restart E2E | 364 | 43,920 | 2 | 22 | 240 |
+| Factory cancellation/restart fencing E2E | 398 | 55,196 | 2 | 23 | 290 |
 | Infinity prototype (5 runs) | 350–408 | 47,424–52,528 | 3 | 10–11 | 290–370 |
 | Infinity prototype restart (start + resume) | 360 | 49,500 | 4 | 12 | 300 |
 | Infinity prototype with Podman fixture execution | 1,636 | 301,368 | 7 | 67 | 1,420 |
@@ -62,7 +63,7 @@ zero ambiguous outcomes.
 | Restart recovery | PASS; one APPLIED effect recovered, 3/3 callbacks, 0 duplicate applications | Core restart E2E PASS | Both measured, different scopes |
 | Duplicate external effects | 0 | not directly instrumented in fixture E2E | Prototype measured |
 | Task completion correctness | PASS candidate `f3037e…` | ACCEPTED fixture candidate | Both PASS |
-| Cancellation | PASS (no unsettled effect delivered) | not measured | Prototype only |
+| Cancellation | PASS (no unsettled effect delivered) | PASS (`campaign_cancellation_fences_a_leased_attempt_through_restart`) | Both measured, different scope |
 | Operational complexity | 5,037 src + 934 test lines; 1 runtime process; 4 pinned Infinity crates | 83,901 native src lines; Compose/7-process E2E | Static + process count |
 
 ## Interpretation limits

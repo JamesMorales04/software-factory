@@ -1,5 +1,6 @@
 | label | exit | wall ms | peak RSS KiB | processes | threads | sampled CPU ms |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| factory-cancellation-restart-e2e | 0 | 397.63 | 55196 | 2 | 23 | 290.0 |
 | factory-core-recovery-e2e | 0 | 364.449 | 43920 | 2 | 22 | 240.0 |
 | factory-parallel-workgraph | 0 | 752.999 | 113332 | 7 | 61 | 390.0 |
 | prototype-1 | 0 | 407.773 | 47424 | 3 | 10 | 370.0 |
