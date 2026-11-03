@@ -174,3 +174,25 @@ The candidate-bound deterministic and live UAT passes above are not a merge
 authorization. Two independent reviews found and closed the hardening gaps; the
 focused re-review of the semantic-review gate fix returned **MERGE_READY**.
 Product Owner merge approval remains pending.
+
+## Wave 3 integrated candidate (2026-11-03)
+
+**Code candidate:** `54f653736a97eaf2c5cbb023feba37962ae4ccbe` on
+`campaign/office-ux-wave3-20261028`. `main` remains
+`d58725266d132fafb96a79970ff292acc876feb8`.
+
+The canonical rootless Compose journey `scripts/compose-e2e.sh` passed on a
+disposable project with request `edbfd5bd-7523-4023-9f6d-ab115c258ac6`,
+Campaign `1e00fe3d-eec6-4ba3-805e-3b1a61843d76`, gate `ACCEPTED`,
+`model_mechanism: DETERMINISTIC_FIXTURE`, restart persistence and no paid
+inference. The journey uses a `core-e2e` debug image with the debug-only
+`test-support` admission seam; the production `core` target remains a release
+binary without the feature or the admission endpoint. `cargo xtask
+check-container` and the containerized Office gates passed in the pinned
+development image.
+
+This is author-run developer-preview evidence, not independent certification or
+deployment. Live provider inference, verified subscription no-overage,
+ISOLATED execution, SEC-01, Windows and Owner visual acceptance remain
+`NOT_TESTED`. See the
+[Wave 3 closure checkpoint](wave3-closure-checkpoint-2026-11-03.md).
