@@ -776,7 +776,9 @@ try {
   assert.ok(requestId, "request id in URL");
 
   if (!live) {
-    const intake = await coreApi(`/intake/requests/${encodeURIComponent(requestId)}`);
+    const intake = await coreApi(
+      `/intake/requests/${encodeURIComponent(requestId)}`,
+    );
     assert.ok(intake.leadRequestId, "Lead request id for test admission");
     await admitTestSubscriptionScope(requestId);
     await admitTestSubscriptionScope(intake.leadRequestId);
