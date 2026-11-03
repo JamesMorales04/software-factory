@@ -5,9 +5,12 @@
 **Prepared candidate:** `3290799` plus this subscription-policy amendment
 **Status:** **PREPARED — NOT RUN; LIVE EXECUTION BLOCKED.** No provider inference
 has been performed for this runbook. `#60` live-provider acceptance remains
-`NOT_TESTED`. The current Core lacks subscription admission; Owner Console
-verification and the separate go-ahead cannot authorize a run until Core
-subscription admission is implemented and the read-only preflight passes.
+`NOT_TESTED`. Core now exposes a read-only subscription readiness projection at
+`GET /funding/subscription/{provider}`, but it always reports
+`coreVerifiable: false` and `admissible: false`: no provider-issued entitlement,
+no-overage or quota evidence and no atomic request admission exist. Owner
+Console verification and the separate go-ahead cannot authorize a run until
+those contracts are implemented, reviewed and the read-only preflight passes.
 
 This runbook prepares one small, bounded real-model Factory Campaign under the
 current subscription-only policy. It does not authorize merge, deployment, a
@@ -131,9 +134,14 @@ assume Off-Peak.
    merged or commented on.
 7. Core V3 subscription admission must be implemented and independently verified
    before any live run. The harness requires
-   `GET /funding/subscription/opencode-go` to return a matching, fresh
-   subscription binding (plan, account, exact model, Extra Usage OFF, balance
-   fallback OFF, no-charge route VERIFIED and quota). Even when this provider
+   `GET /funding/subscription/opencode-go` to return a matching, fresh,
+   provider-issued subscription binding (plan, account, exact model, Extra Usage
+   OFF, balance fallback OFF, no-charge route VERIFIED and quota). Today the
+   endpoint reports readiness only: `coreVerifiable: false`, `admissible: false`,
+   `authenticationClass: API_KEY` and a `missingEvidence` list. The harness
+   refuses with `CORE_SUBSCRIPTION_READINESS_UNVERIFIED` before creating any
+   resource; it does not treat an Owner Console observation as that binding.
+   Even when this provider
    observation is available, it does not authorize a specific Lead request.
    Core currently has no read-only request-admission decision or atomic
    create-and-admit boundary that binds the proposed objective, repository/base,
@@ -437,7 +445,8 @@ authorization. Do not silently reclassify a subscription run as paid.
 - Authorization id, funding policy, provider/model, plan, account fingerprint,
   Console observation time/validity and explicit limitation.
 - Core V3 `GET /funding/subscription/{provider}` binding, or the fail-closed
-  `CORE_V3_SUBSCRIPTION_ADMISSION_REQUIRED` result.
+  `CORE_V3_SUBSCRIPTION_ADMISSION_REQUIRED` / `CORE_SUBSCRIPTION_READINESS_UNVERIFIED`
+  result with the exact `missingEvidence` list.
 - Atomic request-admission authority; until it exists the evidence must record
   `request_admission: NOT_VERIFIED` and create no resources.
 - Subscription entitlement, Extra Usage OFF, balance fallback OFF,

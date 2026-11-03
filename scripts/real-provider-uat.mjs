@@ -778,6 +778,32 @@ export function summarizeVerification(verification) {
   };
 }
 
+function fundingField(record, snake, camel) {
+  return record[snake] ?? record[camel];
+}
+
+/// Accept both the Core API's camelCase readiness projection and the
+/// snake_case evidence shape used by the verified verification contract.
+export function normalizeCoreSubscriptionVerification(record) {
+  return {
+    provider: record.provider,
+    model: record.model,
+    route: record.route,
+    plan: record.plan,
+    account_fingerprint: fundingField(record, "account_fingerprint", "accountFingerprint"),
+    core_verifiable: fundingField(record, "core_verifiable", "coreVerifiable"),
+    admissible: record.admissible,
+    entitlement: record.entitlement,
+    extra_usage: fundingField(record, "extra_usage", "extraUsage"),
+    balance_fallback: fundingField(record, "balance_fallback", "balanceFallback"),
+    no_charge_route: fundingField(record, "no_charge_route", "noChargeRoute"),
+    quota: record.quota,
+    observed_at: fundingField(record, "observed_at", "observedAt"),
+    valid_until: fundingField(record, "valid_until", "validUntil"),
+    missing_evidence: fundingField(record, "missing_evidence", "missingEvidence"),
+  };
+}
+
 export async function loadCoreSubscriptionVerification(client, gate) {
   const response = await client.get(
     `/funding/subscription/${encodeURIComponent(gate.provider)}`,
@@ -790,12 +816,13 @@ export async function loadCoreSubscriptionVerification(client, gate) {
       1,
     );
   }
-  const record = response.payload;
+  const payload = response.payload;
   assert(
-    record && typeof record === "object" && !Array.isArray(record),
+    payload && typeof payload === "object" && !Array.isArray(payload),
     "CORE_SUBSCRIPTION_VERIFICATION_INVALID",
     "Core returned no subscription funding verification object",
   );
+  const record = normalizeCoreSubscriptionVerification(payload);
   assert(
     record.provider === gate.provider &&
       record.model === gate.model &&
@@ -803,6 +830,16 @@ export async function loadCoreSubscriptionVerification(client, gate) {
     "CORE_SUBSCRIPTION_VERIFICATION_MISMATCH",
     "Core subscription verification does not bind the authorized provider/model/route",
   );
+  if (record.core_verifiable !== true || record.admissible === false) {
+    const missing = Array.isArray(record.missing_evidence)
+      ? record.missing_evidence.join(",")
+      : "UNKNOWN";
+    throw new UatError(
+      "CORE_SUBSCRIPTION_READINESS_UNVERIFIED",
+      `Core reports ${record.provider} readiness but cannot verify subscription entitlement, Extra Usage OFF, balance fallback OFF or a no-charge route; missing evidence: ${missing}; no Project or Request was created`,
+      1,
+    );
+  }
   assert(
     record.plan === gate.verification.record.plan &&
       record.account_fingerprint ===

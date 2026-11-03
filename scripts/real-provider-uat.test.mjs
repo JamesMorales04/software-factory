@@ -296,6 +296,7 @@ const flow = {
   githubWrite: false,
   admissionRejected: false,
   coreSubscriptionUnavailable: false,
+  coreSubscriptionReadiness: false,
 };
 
 function resetFlow(overrides = {}) {
@@ -322,6 +323,7 @@ function resetFlow(overrides = {}) {
     githubWrite: false,
     admissionRejected: false,
     coreSubscriptionUnavailable: false,
+    coreSubscriptionReadiness: false,
     ...overrides,
   });
 }
@@ -685,6 +687,36 @@ async function handleFakeCoreRequest(request, response) {
     if (path === `/funding/subscription/${PROVIDER}` && request.method === "GET") {
       if (flow.coreSubscriptionUnavailable) {
         send(404, { error: "not found" });
+        return;
+      }
+      if (flow.coreSubscriptionReadiness) {
+        send(200, {
+          provider: PROVIDER,
+          kind: "opencode",
+          route: "GO_SUBSCRIPTION_INCLUDED",
+          configured: true,
+          enabled: true,
+          model: MODEL,
+          settingsRevision: 7,
+          authenticationClass: "API_KEY",
+          coreVerifiable: false,
+          admissible: false,
+          entitlement: "UNVERIFIED",
+          extraUsage: "UNKNOWN",
+          balanceFallback: "UNKNOWN",
+          noChargeRoute: "UNVERIFIED",
+          quota: {
+            state: "UNKNOWN",
+            reason: "NO_PROVIDER_ISSUED_QUOTA_OBSERVATION",
+          },
+          missingEvidence: [
+            "PROVIDER_ISSUED_SUBSCRIPTION_ENTITLEMENT",
+            "PROVIDER_ISSUED_NO_OVERAGE_GUARANTEE",
+            "PROVIDER_ISSUED_QUOTA_OBSERVATION",
+            "CORE_ATOMIC_REQUEST_ADMISSION",
+          ],
+          note: "test fixture: Core readiness only",
+        });
         return;
       }
       const record = validVerification();
@@ -1202,6 +1234,23 @@ test("a Core without subscription verification fails closed before creating a Pr
   const result = await runDriver(["assess"], env);
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /CORE_V3_SUBSCRIPTION_ADMISSION_REQUIRED/);
+  assert.equal(flow.projectCalls, 0);
+  assert.equal(flow.requestCalls, 0);
+  assert.ok(requests.every((request) => !request.url.endsWith("/projects")));
+});
+
+test("Core readiness without verified entitlement blocks before creating a Project", async () => {
+  requests = [];
+  resetFlow({ coreSubscriptionReadiness: true });
+  const env = baseGate(port, {
+    FACTORY_REAL_PROVIDER_UAT: "1",
+    FACTORY_REAL_PROVIDER_EVIDENCE_DIR: join(ROOT, "core-readiness-evidence"),
+    FACTORY_REAL_PROVIDER_TIMEOUT_SECS: "120",
+  });
+  const result = await runDriver(["assess"], env);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /CORE_SUBSCRIPTION_READINESS_UNVERIFIED/);
+  assert.match(result.stderr, /PROVIDER_ISSUED_NO_OVERAGE_GUARANTEE/);
   assert.equal(flow.projectCalls, 0);
   assert.equal(flow.requestCalls, 0);
   assert.ok(requests.every((request) => !request.url.endsWith("/projects")));
