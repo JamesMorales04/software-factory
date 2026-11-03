@@ -66,6 +66,7 @@ function lookVariables(look: OfficeAvatarLook): CSSProperties {
     "--office-accent": `var(--office-accent-${look.accent})`,
     "--office-trouser": `var(--office-trouser-${look.trouser})`,
     "--office-jacket-colour": `var(--office-jacket-${look.jacket})`,
+    "--office-chair": `var(--office-chair-${look.trouser})`,
   } as CSSProperties;
 }
 
@@ -120,6 +121,7 @@ export function OfficeAvatar({
           top: slot.y - offsetY,
           width: OFFICE_AVATAR_WIDTH,
           height: OFFICE_AVATAR_HEIGHT,
+          "--office-perspective-scale": slot.perspectiveScale.toFixed(2),
           "--office-depth": 10 + slot.depth,
         } as CSSProperties
       }
@@ -167,7 +169,7 @@ export function OfficeAvatar({
         focusable="false"
       >
         {working ? (
-          <SeatedFigure look={look} />
+          <SeatedFigure look={look} role={participant.role} />
         ) : (
           <StandingFigure look={look} observation={participant.observation} />
         )}

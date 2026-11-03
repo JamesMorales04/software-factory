@@ -316,7 +316,10 @@ describe("AgentOffice", () => {
     await screen.findByRole("heading", { name: "Agent Office" });
     expect(screen.getByText("Implementation")).toBeDefined();
     expect(screen.getByText("Planning")).toBeDefined();
-    expect(screen.getByText("Operations")).toBeDefined();
+    const emptyStations = screen.getByTestId("office-empty-stations");
+    expect(emptyStations.textContent).toContain("Verification");
+    expect(emptyStations.textContent).toContain("Review");
+    expect(emptyStations.textContent).toContain("Operations");
     expect(
       screen.getByText(/unresolved participant observation is stale/),
     ).toBeDefined();
@@ -328,8 +331,6 @@ describe("AgentOffice", () => {
     expect(
       screen.getByRole("button", { name: /Inspect Lead lead:lead-1/ }),
     ).toBeDefined();
-    expect(screen.getByRole("heading", { name: "Verification" })).toBeDefined();
-    expect(screen.getByRole("heading", { name: "Review" })).toBeDefined();
     expect(screen.getByTestId("location").textContent).toBe("/agents");
   });
 
@@ -338,9 +339,10 @@ describe("AgentOffice", () => {
     await screen.findByRole("heading", { name: "Oficina de agentes" });
     expect(screen.getByText("Planificación")).toBeDefined();
     expect(screen.getByText("Implementación")).toBeDefined();
-    expect(screen.getByText("Verificación")).toBeDefined();
-    expect(screen.getByText("Revisión")).toBeDefined();
-    expect(screen.getByText("Operaciones")).toBeDefined();
+    const emptyStations = screen.getByTestId("office-empty-stations");
+    expect(emptyStations.textContent).toContain("Verificación");
+    expect(emptyStations.textContent).toContain("Revisión");
+    expect(emptyStations.textContent).toContain("Operaciones");
     expect(screen.getByLabelText("Rol")).toBeDefined();
     expect(screen.getByLabelText("Proveedor")).toBeDefined();
     expect(
@@ -348,7 +350,6 @@ describe("AgentOffice", () => {
         name: /Inspeccionar Implementador implementer:session-1/,
       }),
     ).toBeDefined();
-    expect(screen.getByRole("heading", { name: "Verificación" })).toBeDefined();
     expect(screen.getByText("Estado veraz")).toBeDefined();
   });
 

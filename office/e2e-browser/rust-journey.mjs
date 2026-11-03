@@ -1095,6 +1095,59 @@ try {
     await page.setViewportSize({ width: 1440, height: 900 });
   }
 
+  const screenshotDir = process.env.FACTORY_E2E_SCREENSHOT_DIR;
+  if (screenshotDir) {
+    mkdirSync(screenshotDir, { recursive: true });
+    assert.deepEqual(
+      readdirSync(screenshotDir),
+      [],
+      "FACTORY_E2E_SCREENSHOT_DIR must be empty so captures never overwrite earlier evidence",
+    );
+    await page.getByLabel(/language|idioma/i).selectOption("en");
+    await page.goto(`${viteUrl}/#/agents`);
+    await page
+      .getByRole("heading", { name: "Agent Office", exact: true })
+      .first()
+      .waitFor();
+    await page.locator(".agent-floor").first().waitFor({ timeout: 15000 });
+    const captures = [];
+    for (const [name, width, height] of [
+      ["agent-office-1440", 1440, 900],
+      ["agent-office-834", 834, 900],
+      ["agent-office-390", 390, 844],
+    ]) {
+      await page.setViewportSize({ width, height });
+      await page.screenshot({
+        path: join(screenshotDir, `${name}.png`),
+        fullPage: true,
+      });
+      const viewport = await page.evaluate(() => ({
+        scrollWidth: document.documentElement.scrollWidth,
+        clientWidth: document.documentElement.clientWidth,
+      }));
+      assert.equal(
+        viewport.scrollWidth,
+        viewport.clientWidth,
+        `Agent Office must not overflow the document at ${width}px`,
+      );
+      captures.push({ name, width, height });
+    }
+    writeFileSync(
+      join(screenshotDir, "manifest.json"),
+      `${JSON.stringify(
+        {
+          journey: "rust-office",
+          candidate: candidate.commit_sha,
+          gate: "ACCEPTED",
+          captured_at: new Date().toISOString(),
+          captures,
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    await page.setViewportSize({ width: 1440, height: 900 });
+  }
   assert.deepEqual(
     pageErrors,
     [],

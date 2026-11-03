@@ -342,7 +342,7 @@ describe("AgentOfficeIsometric", () => {
       await user.click(zoomOut);
     }
     expect(screen.getByTestId("office-zoom").getAttribute("data-zoom")).toBe(
-      "0.450",
+      "0.200",
     );
     expect(zoomOut.hasAttribute("disabled")).toBe(true);
 
