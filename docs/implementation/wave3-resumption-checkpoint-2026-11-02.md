@@ -22,7 +22,10 @@ promotion occurred.**
   `5b07e6215cf66a1c9f0427b1d7152b7beda8d3ae`; GPT-6 Luna exact-head
   **APPROVE**. Required CI run `41571994723`: architecture-consistency,
   compose-policy, rust and container-dev all PASS. The container lane ran the
-  canonical Office and unified-intake Chromium journeys at this exact head.
+  canonical Office and unified-intake Chromium journeys at this exact head:
+  Office candidate `a19f51bda492f374c81f7987ec51da9d2fe6abd4` with gate
+  `ACCEPTED`; intake request `77b355fe-2dda-4b52-b99d-960f99ec22a5`, Campaign
+  `9e82d45f-163c-4508-a86b-a57ca2e98a72`, mode `DETERMINISTIC_FAKE_MODEL`.
 - **PR #81** was closed as explicitly superseded; its CAP-050/CAP-052
   correction is carried by PR #80.
 - **Local evidence at `fe0eeba`** (parent of the formatting-only `5b07e62`):
