@@ -4,7 +4,7 @@
 **Harness:** `cargo xtask e2e office` with
 `FACTORY_E2E_SCREENSHOT_DIR` set. The journey starts the real Rust Core and
 Worker, a Vite Office build and Playwright Chromium with disposable state.
-**Journey result:** `{"ok":true,"candidate":"1b642871cd286bde26815544eec5d921228d76ee","gate":"ACCEPTED"}`
+**Journey result:** `{"ok":true,"candidate":"e709473d2f8285f12be58b989a8061a5e5c436bf","gate":"ACCEPTED"}`
 The candidate id is the fixture Campaign candidate created by the journey, not
 the Office branch commit.
 
@@ -30,10 +30,13 @@ scopes now set `--surface-inset: #081421`. They also define the dark semantic
 foregrounds (`--success`, `--attention`, `--danger`, `--info`, `--text-subtle`,
 `--accent-contrast`) so badges and controls keep contrast in both themes.
 
-Avatar appearance is now seeded from the stable person `identity_id` against
-the extended palette, with deterministic in-scene collision resolution. A
-participant no longer changes appearance merely because an earlier filtered
-row disappeared.
+Avatar appearance is now seeded from the stable person `identity_id` within the
+injective look range, and the deterministic probe compares rendered signatures
+rather than raw palette indices. A participant no longer changes appearance
+merely because an earlier filtered row disappeared, and distinct participants
+cannot share a look signature through palette aliasing. If two identities
+genuinely collide, the later one is deterministically reassigned; guaranteed
+uniqueness and absolute stability cannot both hold for an arbitrary set.
 
 ## Scope of this evidence
 

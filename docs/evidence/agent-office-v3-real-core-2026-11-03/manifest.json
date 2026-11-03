@@ -1,8 +1,8 @@
 {
   "journey": "rust-office",
-  "candidate": "1b642871cd286bde26815544eec5d921228d76ee",
+  "candidate": "e709473d2f8285f12be58b989a8061a5e5c436bf",
   "gate": "ACCEPTED",
-  "captured_at": "2026-11-03T19:49:53.606Z",
+  "captured_at": "2026-11-03T19:58:51.432Z",
   "captures": [
     {
       "name": "agent-office-1440",

@@ -265,6 +265,23 @@ describe("buildOfficeSceneLayout", () => {
     ).toBe(200);
   });
 
+  it("probes rendered signatures when the extended palette aliases indices", () => {
+    const make = (identity: string) =>
+      participant(0, "IMPLEMENTER", {
+        participant_id: `implementer:${identity}`,
+        identity_id: identity,
+      });
+    const layout = buildOfficeSceneLayout([
+      make("identity-1548"),
+      make("identity-3995"),
+    ]);
+    const signatures = layout.slots.map(
+      (slot) => officeAvatarLook(slot.lookIndex).signature,
+    );
+    expect(signatures).toHaveLength(2);
+    expect(new Set(signatures).size).toBe(2);
+  });
+
   it("keeps a participant appearance when an earlier participant is filtered out", () => {
     const participants = implementers(6);
     const full = buildOfficeSceneLayout(participants);

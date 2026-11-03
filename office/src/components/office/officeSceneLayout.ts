@@ -1,5 +1,8 @@
 import type { ParticipantRecord, ParticipantRole } from "../../coreApi";
-import { OFFICE_AVATAR_LOOK_COUNT } from "./officeAvatarAppearance";
+import {
+  OFFICE_UNIQUE_LOOK_RANGE,
+  officeAvatarLook,
+} from "./officeAvatarAppearance";
 
 /**
  * Deterministic planar (2.5D) layout for the isometric Agent Office studio.
@@ -511,7 +514,7 @@ export function buildOfficeSceneLayout(
   // palette collision deterministically inside the current scene. Using the
   // rank alone made a participant change appearance whenever an earlier row
   // was filtered out; the extended mixed-radix palette keeps collisions rare.
-  const usedLooks = new Set<number>();
+  const usedLooks = new Set<string>();
   for (const slot of [...slots].sort((left, right) =>
     left.participant.participant_id.localeCompare(
       right.participant.participant_id,
@@ -519,11 +522,20 @@ export function buildOfficeSceneLayout(
   )) {
     const seed =
       slot.participant.identity_id || slot.participant.participant_id;
-    let lookIndex = hashIdentity(seed) % OFFICE_AVATAR_LOOK_COUNT;
-    while (usedLooks.has(lookIndex)) {
-      lookIndex = (lookIndex + 1) % OFFICE_AVATAR_LOOK_COUNT;
+    let lookIndex = hashIdentity(seed) % OFFICE_UNIQUE_LOOK_RANGE;
+    let look = officeAvatarLook(lookIndex);
+    let attempts = 0;
+    // Probe for a distinct rendered signature, not merely a distinct raw
+    // index: the extended palette aliases a few indices onto legacy looks.
+    while (
+      usedLooks.has(look.signature) &&
+      attempts < OFFICE_UNIQUE_LOOK_RANGE
+    ) {
+      lookIndex = (lookIndex + 1) % OFFICE_UNIQUE_LOOK_RANGE;
+      look = officeAvatarLook(lookIndex);
+      attempts += 1;
     }
-    usedLooks.add(lookIndex);
+    usedLooks.add(look.signature);
     slot.lookIndex = lookIndex;
   }
   const ordered = [...slots].sort(

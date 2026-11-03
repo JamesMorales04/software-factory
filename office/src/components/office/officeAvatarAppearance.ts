@@ -176,6 +176,14 @@ const EXTENDED_LOOK_OFFSET =
   Math.max(...LEGACY_LOOKS.map((look) => encodeLook(look))) + 1;
 const EXTENDED_LOOK_COUNT = OFFICE_AVATAR_LOOK_COUNT - EXTENDED_LOOK_OFFSET;
 
+/**
+ * Number of look indices that map without the modulo aliasing in
+ * `officeAvatarLook`. Hash-based assignment must stay inside this range;
+ * probing for a distinct look signature (not just a distinct index) then
+ * resolves the rare extended-palette collision.
+ */
+export const OFFICE_UNIQUE_LOOK_RANGE = LEGACY_LOOK_COUNT + EXTENDED_LOOK_COUNT;
+
 export function officeAvatarLook(lookIndex: number): OfficeAvatarLook {
   const normalized = Number.isFinite(lookIndex) ? Math.trunc(lookIndex) : 0;
   const index =
