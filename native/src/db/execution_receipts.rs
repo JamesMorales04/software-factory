@@ -71,21 +71,36 @@ pub(super) fn suite_for_command(command: &[String]) -> String {
     format!("check:{}", command.join("\u{0}"))
 }
 
-/// Insert the receipt for one `run_command` result in the same transaction as
-/// the provider tool event. The command must exactly match a frozen check in
-/// the Attempt spec; the Worker cannot name an arbitrary suite.
-pub(super) async fn record_execution_check_receipt_in_tx(
+/// The fully validated facts for one execution-check receipt. Resolution is
+/// read-only: it must succeed before the caller writes anything, so an
+/// invalid `run_command` result can never leave a partial provider tool event
+/// behind or force a rollback that races the next writer.
+#[derive(Debug, Clone)]
+pub(super) struct ResolvedExecutionCheck {
+    campaign_id: String,
+    attempt_id: String,
+    work_item_id: String,
+    suite: String,
+    command_json: String,
+    command_sha256: String,
+    candidate_sha256: String,
+    exit_code: Option<i32>,
+    expected_exit: i32,
+    outcome: &'static str,
+    result_sha256: String,
+}
+
+/// Validate one `run_command` result against the frozen Attempt spec without
+/// writing. The command must exactly match a frozen check in the Attempt spec;
+/// the Worker cannot name an arbitrary suite.
+pub(super) async fn resolve_execution_check(
     connection: &mut SqliteConnection,
     session_record_id: &str,
-    sequence: i64,
     generation: i64,
-    call_id: &str,
     input: &ExecutionCheckInput,
-) -> Result<ExecutionCheckReceiptRecord, Error> {
-    if sequence <= 0
-        || generation <= 0
+) -> Result<ResolvedExecutionCheck, Error> {
+    if generation <= 0
         || session_record_id.trim().is_empty()
-        || call_id.trim().is_empty()
         || input.command.is_empty()
         || input
             .command
@@ -142,20 +157,59 @@ pub(super) async fn record_execution_check_receipt_in_tx(
         expected_exit,
         outcome,
     );
+    Ok(ResolvedExecutionCheck {
+        campaign_id,
+        attempt_id,
+        work_item_id,
+        suite,
+        command_json,
+        command_sha256,
+        candidate_sha256: input.candidate_sha256.clone(),
+        exit_code: input.exit_code,
+        expected_exit,
+        outcome,
+        result_sha256,
+    })
+}
+
+/// Insert a previously resolved receipt in the same transaction as the
+/// provider tool event. The caller must already hold SQLite's write lock, so
+/// the prior-receipt read and the insert stay serialized.
+pub(super) async fn insert_execution_check_receipt(
+    connection: &mut SqliteConnection,
+    resolved: &ResolvedExecutionCheck,
+    session_record_id: &str,
+    sequence: i64,
+    generation: i64,
+    call_id: &str,
+) -> Result<ExecutionCheckReceiptRecord, Error> {
+    let ResolvedExecutionCheck {
+        campaign_id,
+        attempt_id,
+        work_item_id,
+        suite,
+        command_json,
+        command_sha256,
+        candidate_sha256,
+        exit_code,
+        expected_exit,
+        outcome,
+        result_sha256,
+    } = resolved;
     let prior: Option<(String, String)> = sqlx::query_as::query_as(
         "SELECT outcome,candidate_sha256 FROM execution_check_receipts
          WHERE campaign_id=?1 AND work_item_id=?2 AND suite=?3 AND command_sha256=?4
          ORDER BY rowid DESC LIMIT 1",
     )
-    .bind(&campaign_id)
-    .bind(&work_item_id)
-    .bind(&suite)
-    .bind(&command_sha256)
+    .bind(campaign_id)
+    .bind(work_item_id)
+    .bind(suite)
+    .bind(command_sha256)
     .fetch_optional(&mut *connection)
     .await?;
-    let fail_to_pass = outcome == "PASS"
+    let fail_to_pass = *outcome == "PASS"
         && prior.is_some_and(|(prior_outcome, prior_candidate)| {
-            prior_outcome == "FAIL" && prior_candidate != input.candidate_sha256
+            prior_outcome == "FAIL" && prior_candidate != *candidate_sha256
         });
     let receipt_id = format!("{session_record_id}:{sequence}");
     let created_at = Utc::now().to_rfc3339();
@@ -169,36 +223,36 @@ pub(super) async fn record_execution_check_receipt_in_tx(
     .bind(&receipt_id)
     .bind(session_record_id)
     .bind(sequence)
-    .bind(&campaign_id)
-    .bind(&attempt_id)
-    .bind(&work_item_id)
+    .bind(campaign_id)
+    .bind(attempt_id)
+    .bind(work_item_id)
     .bind(generation)
     .bind(call_id)
-    .bind(&suite)
-    .bind(&command_json)
-    .bind(&command_sha256)
-    .bind(&input.candidate_sha256)
-    .bind(input.exit_code)
+    .bind(suite)
+    .bind(command_json)
+    .bind(command_sha256)
+    .bind(candidate_sha256)
+    .bind(exit_code)
     .bind(expected_exit)
     .bind(outcome)
-    .bind(&result_sha256)
+    .bind(result_sha256)
     .bind(&created_at)
     .execute(&mut *connection)
     .await?;
     Ok(ExecutionCheckReceiptRecord {
         receipt_id,
-        campaign_id,
-        work_item_id,
-        attempt_id,
+        campaign_id: campaign_id.clone(),
+        work_item_id: work_item_id.clone(),
+        attempt_id: attempt_id.clone(),
         session_record_id: session_record_id.to_owned(),
         sequence,
         call_id: call_id.to_owned(),
-        suite,
-        candidate_sha256: input.candidate_sha256.clone(),
-        exit_code: input.exit_code,
-        expected_exit,
-        outcome: outcome.into(),
-        result_sha256,
+        suite: suite.clone(),
+        candidate_sha256: candidate_sha256.clone(),
+        exit_code: *exit_code,
+        expected_exit: *expected_exit,
+        outcome: (*outcome).into(),
+        result_sha256: result_sha256.clone(),
         fail_to_pass,
     })
 }
