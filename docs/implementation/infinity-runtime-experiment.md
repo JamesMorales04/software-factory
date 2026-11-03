@@ -80,6 +80,19 @@ Evidence files:
    - Windows: **NOT_TESTED**;
    - production Office/Core integration: **NOT_IMPLEMENTED**.
 
+## Commit slices
+
+| Slice | SHA | Content |
+| --- | --- | --- |
+| Prototype | `ce1987079a9ff501f1ad20087aabf7bef89fa265` | Pinned dependency, SQLx store, journal, tools, RAP, subscription guards, tests. |
+| Evidence | `85ba625e611cdc1a2da1b45dc03266e9322d22e6` | Restart/comparison evidence and subscription matrix. |
+| Decision | `5d5c7f50782b8fcd225dae36b6d3f156fecd7702` | ADR-0030 and first implementation record. |
+| Podman/ambiguity | `9c6d6f9466507d67782a257edca7e4d4bb11f8b7` | Optional rootless Podman execution; ambiguous-effect settlement. |
+| Evidence/docs update | `fb7e6296309b9b45c0a3a188c28819fa90f87b6d` | Podman measurements, final recommendation text. |
+
+The exact branch head is reported by `git rev-parse HEAD`; later
+documentation-only commits do not invalidate these code slices.
+
 ## Checkpoint
 
 The experiment is restartable from the branch and the commands above. The only
