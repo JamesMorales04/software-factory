@@ -31,7 +31,10 @@ compose() {
 
 wait_for_core() {
   attempts=0
-  until compose exec -T core curl -fsS http://127.0.0.1:8765/health >/dev/null 2>&1; do
+  # Core binds only the `core-control`/`core-egress` aliases; the loopback
+  # listener was removed when the Tailscale socket separation landed. Match the
+  # Compose healthcheck exactly instead of probing 127.0.0.1.
+  until compose exec -T core curl -fsS -H 'Host: localhost:8765' http://core-control:8765/health >/dev/null 2>&1; do
     attempts=$((attempts + 1))
     if [ "$attempts" -ge 180 ]; then
       echo "Factory Core did not become healthy" >&2

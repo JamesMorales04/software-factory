@@ -502,6 +502,24 @@ mod tests {
         seed.to_string().repeat(64)
     }
 
+    fn exchange<'a>(
+        challenge: &'a str,
+        session: &'a str,
+        poll: &'a str,
+        session_hash: &'a str,
+    ) -> PairingExchange<'a> {
+        PairingExchange {
+            challenge_id: challenge,
+            poll_token_sha256: poll,
+            session_id: session,
+            device_name: "Phone",
+            session_token_sha256: session_hash,
+            csrf_token_sha256: CSRF_HASH,
+            now_ms: 103,
+            expires_at_ms: 2_103,
+        }
+    }
+
     async fn claimed_and_approved(
         db: &super::super::Database,
         id: &str,
@@ -598,6 +616,106 @@ mod tests {
         .await
         .expect("audit query");
         assert_eq!(audit, 4);
+        db.close().await;
+        let _ = fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn pairing_and_revocation_authority_survive_close_and_reopen() {
+        let (db, path) = database().await;
+        let poll = digest('a');
+        let second_session_hash = digest('d');
+        let third_session_hash = digest('e');
+        claimed_and_approved(&db, "restart-one", "314159", &poll).await;
+        db.exchange_device_pairing(exchange("restart-one", "session-one", &poll, SESSION_HASH))
+            .await
+            .expect("approved pairing exchanges");
+        // A second approval is frozen before the restart as well.
+        let second_poll = digest('b');
+        claimed_and_approved(&db, "restart-two", "271828", &second_poll).await;
+        db.close().await;
+
+        let db = super::super::Database::open(&path)
+            .await
+            .expect("database reopens");
+        assert!(
+            db.device_session_by_token_hash(SESSION_HASH, 104)
+                .await
+                .expect("session lookup")
+                .is_some(),
+            "an approved session survives restart"
+        );
+        assert!(
+            db.exchange_device_pairing(exchange(
+                "restart-one",
+                "session-replay",
+                &poll,
+                SESSION_HASH
+            ))
+            .await
+            .is_err(),
+            "a consumed challenge cannot be replayed after restart"
+        );
+        assert!(
+            db.exchange_device_pairing(exchange(
+                "restart-two",
+                "session-two",
+                &second_poll,
+                &second_session_hash
+            ))
+            .await
+            .is_ok(),
+            "an unconsumed approval survives restart"
+        );
+        let epoch_before: i64 = query_scalar("SELECT epoch FROM access_security_epoch WHERE id=1")
+            .fetch_one(&db.pool)
+            .await
+            .expect("epoch query");
+        assert_eq!(
+            db.revoke_all_device_sessions("owner-session", 106)
+                .await
+                .expect("global revocation"),
+            2
+        );
+        db.close().await;
+
+        let db = super::super::Database::open(&path)
+            .await
+            .expect("database reopens after revocation");
+        assert!(
+            db.device_session_by_token_hash(SESSION_HASH, 107)
+                .await
+                .expect("session lookup")
+                .is_none(),
+            "revocation survives restart"
+        );
+        let epoch_after: i64 = query_scalar("SELECT epoch FROM access_security_epoch WHERE id=1")
+            .fetch_one(&db.pool)
+            .await
+            .expect("epoch query");
+        assert_eq!(epoch_after, epoch_before + 1);
+        // An approval created before the revocation cannot cross the persisted
+        // epoch fence, even after a restart.
+        let third_poll = digest('c');
+        claimed_and_approved(&db, "restart-three", "161803", &third_poll).await;
+        db.revoke_all_device_sessions("owner-session", 108)
+            .await
+            .expect("second global revocation");
+        db.close().await;
+        let db = super::super::Database::open(&path)
+            .await
+            .expect("database reopens after the second revocation");
+        assert!(
+            db.exchange_device_pairing(exchange(
+                "restart-three",
+                "session-three",
+                &third_poll,
+                &third_session_hash
+            ))
+            .await
+            .is_err(),
+            "a revoked approval cannot be exchanged after restart"
+        );
         db.close().await;
         let _ = fs::remove_file(path);
     }
