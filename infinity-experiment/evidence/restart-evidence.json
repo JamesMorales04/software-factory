@@ -21,7 +21,7 @@
     "recovery": {
       "run_id": "evidence",
       "recovered_completed": [
-        "evidence:659bdaad-55f5-48de-a15e-10cfc0efffb0-engineering"
+        "evidence:5fda2c33-c9e9-4a59-b13c-a38c2eb241d4-engineering"
       ],
       "ambiguous": [],
       "callbacks_delivered": 3,
@@ -29,8 +29,8 @@
       "stale_callbacks": []
     },
     "metrics": {
-      "wall_ms": 47,
-      "restart_recovery_ms": 47,
+      "wall_ms": 35,
+      "restart_recovery_ms": 35,
       "duplicate_external_effects": 0
     }
   }

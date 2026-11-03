@@ -1,0 +1,114 @@
+date: 2026-11-03T00:11:18-05:00
+rustc: rustc 1.90.0 (1159e78c4 2025-09-14)
+cargo: cargo 1.90.0 (840b83a10 2025-07-30)
+head: af1b1b0277136aea92d3c5a3038083b68c24db37
+
+== fmt
+FMT_OK
+
+== clippy
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.16s
+
+== tests
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.17s
+     Running unittests src/lib.rs (target/debug/deps/factory_infinity_experiment-b3ddf1224ec10ce1)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/infinity-experiment.rs (target/debug/deps/infinity_experiment-576a1a3055ddcac4)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/durability.rs (target/debug/deps/durability-152fe1a688be8275)
+
+running 6 tests
+test ambiguous_effect_is_not_replayed_and_accepts_no_callback ... ok
+test concurrent_and_stale_callbacks_are_fenced ... ok
+test verified_marker_reconciles_to_completed_and_enqueues_once ... ok
+test cancellation_prevents_unsettled_effects_and_callbacks ... ok
+test restart_after_review_effect_recovers_without_duplicate_effects ... ok
+test fresh_children_have_independent_reconstructable_contexts ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.37s
+
+     Running tests/journey.rs (target/debug/deps/journey-cf09a27e388561ee)
+
+running 1 test
+test deterministic_director_journey_reaches_candidate ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.33s
+
+     Running tests/podman.rs (target/debug/deps/podman-c576bcc2d2294b10)
+
+running 1 test
+test podman_mode_runs_the_fixture_when_the_image_is_available ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.64s
+
+     Running tests/rap.rs (target/debug/deps/rap-71b24488359b6932)
+
+running 1 test
+test rap_async_command_callback_resumes_infinity_and_is_idempotent ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s
+
+     Running tests/subscription.rs (target/debug/deps/subscription-aea85360bf07a3e5)
+
+running 5 tests
+test codex_app_server_is_an_agent_not_a_completion_provider ... ok
+test default_attestation_fails_closed ... ok
+test opencode_go_requires_every_no_overage_attestation ... ok
+test fake_completion_adapter_refuses_non_subscription_billing ... ok
+test matrix_separates_completion_adapters_from_coding_agents ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests factory_infinity_experiment
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+== restart evidence
+{
+  "crash_exit_code": 23,
+  "before_resume": {
+    "effects": 3,
+    "applied_not_completed": 1,
+    "callbacks": 2,
+    "external_applications": 3
+  },
+  "after_resume": {
+    "effects": 3,
+    "completed": 3,
+    "ambiguous": 0,
+    "callbacks": 3,
+    "delivered": 3,
+    "external_applications": 3,
+    "duplicate_applications": 0
+  },
+  "report": {
+    "success": true,
+    "candidate_sha256": "f3037e35242b45c04ca46a0296852f0c305ba7ede3d07da28ece0696b30f3070",
+    "recovery": {
+      "run_id": "evidence",
+      "recovered_completed": [
+        "evidence:5fda2c33-c9e9-4a59-b13c-a38c2eb241d4-engineering"
+      ],
+      "ambiguous": [],
+      "callbacks_delivered": 3,
+      "duplicate_callbacks": 2,
+      "stale_callbacks": []
+    },
+    "metrics": {
+      "wall_ms": 35,
+      "restart_recovery_ms": 35,
+      "duplicate_external_effects": 0
+    }
+  }
+}
