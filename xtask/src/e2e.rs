@@ -52,6 +52,8 @@ pub(crate) fn dispatch() -> Result<(), String> {
         "test",
         "--workspace",
         "--locked",
+        "--features",
+        "test-support",
         "--test",
         "e2e_fixture_dispatch",
     ])
@@ -94,10 +96,15 @@ pub(crate) fn intake_full() -> Result<(), String> {
 }
 
 pub(crate) fn provider() -> Result<(), String> {
+    // The provider-backed case is compiled only with the debug-only
+    // `test-support` feature. Without it the filter matched zero tests and the
+    // suite reported a false pass.
     cargo_run(&[
         "test",
         "--workspace",
         "--locked",
+        "--features",
+        "test-support",
         "--test",
         "e2e_fixture_dispatch",
         "provider_backed_campaign_reaches_accepted_gate_with_source_and_tools",
