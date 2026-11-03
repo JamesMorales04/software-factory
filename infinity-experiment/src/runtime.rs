@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::effects::{
     CrashPolicy, EngineeringTaskTool, RecoveryReport, deliver_pending, reconcile_effects,
 };
-use crate::engineering::EngineeringWorkspace;
+use crate::engineering::{EngineeringWorkspace, SandboxMode};
 use crate::journal::{CallbackRecord, CandidateRecord, EffectJournal, EffectRecord};
 use crate::model::{JourneyPlan, ScriptedModelSource};
 use crate::store::{SqliteStore, StoreError};
@@ -42,6 +42,7 @@ pub struct PrototypeConfig {
     pub objective: String,
     pub plan: JourneyPlan,
     pub crash: CrashPolicy,
+    pub sandbox: SandboxMode,
     pub effect_delay: Duration,
     pub model_delay: Duration,
     pub timeout: Duration,
@@ -64,6 +65,7 @@ impl PrototypeConfig {
                 .to_owned(),
             plan: JourneyPlan::default_calculator(),
             crash: CrashPolicy::None,
+            sandbox: SandboxMode::LocalProcess,
             effect_delay: Duration::from_millis(40),
             model_delay: Duration::ZERO,
             timeout: Duration::from_secs(30),
@@ -154,6 +156,7 @@ pub async fn run_journey(config: &PrototypeConfig) -> Result<JourneyReport, Runt
     let engineering = Arc::new(EngineeringWorkspace::new(
         &config.workspace_root,
         Arc::new(config.plan.clone()),
+        config.sandbox.clone(),
     ));
     engineering
         .initialize()
@@ -233,6 +236,7 @@ pub async fn resume_journey(config: &PrototypeConfig) -> Result<JourneyReport, R
     let engineering = Arc::new(EngineeringWorkspace::new(
         &config.workspace_root,
         Arc::new(config.plan.clone()),
+        config.sandbox.clone(),
     ));
     engineering
         .initialize()
@@ -368,7 +372,14 @@ fn build_system(
         run_id: config.run_id.clone(),
         effect_delay: config.effect_delay,
         crash: config.crash.clone(),
-        confinement: crate::effects::ConfinementMode::LocalProcessFixedAllowlistNotCertified,
+        confinement: match &config.sandbox {
+            SandboxMode::LocalProcess => {
+                crate::effects::ConfinementMode::LocalProcessFixedAllowlistNotCertified
+            }
+            SandboxMode::Podman { .. } => {
+                crate::effects::ConfinementMode::RootlessPodmanUncertified
+            }
+        },
     };
     AgentSystemBuilder::new_local(store.clone(), store.clone(), model)
         .tool(Box::new(tool))

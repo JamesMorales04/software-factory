@@ -67,6 +67,16 @@ pub struct CandidateEvidence {
 }
 
 #[derive(Debug, Clone)]
+pub enum SandboxMode {
+    /// Fixed command allowlist in a disposable directory on the host. Not a
+    /// security sandbox; used for fast deterministic tests.
+    LocalProcess,
+    /// Fixed command allowlist executed in a rootless Podman container with no
+    /// network, dropped capabilities, read-only rootfs and a workspace mount.
+    Podman { image: String },
+}
+
+#[derive(Debug, Clone)]
 pub struct EngineeringWorkspace {
     root: PathBuf,
     base: PathBuf,
@@ -75,10 +85,11 @@ pub struct EngineeringWorkspace {
     reviews: PathBuf,
     markers: PathBuf,
     candidate_lock: Arc<tokio::sync::Mutex<()>>,
+    sandbox: SandboxMode,
 }
 
 impl EngineeringWorkspace {
-    pub fn new(root: impl Into<PathBuf>, _plan: Arc<JourneyPlan>) -> Self {
+    pub fn new(root: impl Into<PathBuf>, _plan: Arc<JourneyPlan>, sandbox: SandboxMode) -> Self {
         let root = root.into();
         Self {
             base: root.join("base"),
@@ -88,6 +99,7 @@ impl EngineeringWorkspace {
             markers: root.join("markers"),
             root,
             candidate_lock: Default::default(),
+            sandbox,
         }
     }
 
@@ -154,7 +166,7 @@ impl EngineeringWorkspace {
         let test = run_command(
             &workspace,
             &["python3", "-m", "unittest", "-q"],
-            CommandMode::Local,
+            &self.sandbox,
         )
         .await?;
         if test.exit_code != 0 || test.timed_out {
@@ -172,7 +184,7 @@ impl EngineeringWorkspace {
                 "workspace": workspace.display().to_string(),
                 "files": files,
                 "tests": test,
-                "confinement": "LOCAL_PROCESS_FIXED_ALLOWLIST_NOT_CERTIFIED"
+                "confinement": self.confinement_label()
             }),
             None,
         )
@@ -186,8 +198,12 @@ impl EngineeringWorkspace {
         )?;
         let syntax = run_command(
             &workspace,
-            &["python3", "-m", "py_compile", "test_calculator.py"],
-            CommandMode::Local,
+            &[
+                "python3",
+                "-c",
+                "import ast; ast.parse(open('test_calculator.py').read())",
+            ],
+            &self.sandbox,
         )
         .await?;
         if syntax.exit_code != 0 || syntax.timed_out {
@@ -205,7 +221,7 @@ impl EngineeringWorkspace {
                 "test_calculator.TestCalculator.test_add",
                 "-q",
             ],
-            CommandMode::Local,
+            &self.sandbox,
         )
         .await?;
         if baseline.exit_code != 0 || baseline.timed_out {
@@ -224,7 +240,7 @@ impl EngineeringWorkspace {
                 "files": files,
                 "checks": [syntax, baseline],
                 "full_suite": "DEFERRED_TO_INTEGRATION",
-                "confinement": "LOCAL_PROCESS_FIXED_ALLOWLIST_NOT_CERTIFIED"
+                "confinement": self.confinement_label()
             }),
             None,
         )
@@ -261,7 +277,7 @@ impl EngineeringWorkspace {
         let tests_run = run_command(
             &self.candidate,
             &["python3", "-m", "unittest", "-q"],
-            CommandMode::Local,
+            &self.sandbox,
         )
         .await?;
         if tests_run.exit_code != 0 || tests_run.timed_out {
@@ -295,7 +311,7 @@ impl EngineeringWorkspace {
         let review_tests = run_command(
             &review_dir,
             &["python3", "-m", "unittest", "-q"],
-            CommandMode::Local,
+            &self.sandbox,
         )
         .await?;
         let review_manifest = candidate_manifest(&review_dir, &git_revision, &review_tests)?;
@@ -320,7 +336,7 @@ impl EngineeringWorkspace {
             "git_revision": git_revision,
             "tests": review_tests,
             "original_manifest": manifest,
-            "confinement": "LOCAL_PROCESS_FIXED_ALLOWLIST_NOT_CERTIFIED"
+            "confinement": self.confinement_label()
         });
         let candidate = CandidateEvidence {
             candidate_sha256: candidate_sha256.clone(),
@@ -340,6 +356,13 @@ impl EngineeringWorkspace {
             }),
             Some(candidate),
         )
+    }
+
+    fn confinement_label(&self) -> &'static str {
+        match self.sandbox {
+            SandboxMode::LocalProcess => "LOCAL_PROCESS_FIXED_ALLOWLIST_NOT_CERTIFIED",
+            SandboxMode::Podman { .. } => "ROOTLESS_PODMAN_UNCERTIFIED",
+        }
     }
 
     fn agent_workspace(&self, task_id: &str) -> Result<PathBuf, EngineeringError> {
@@ -423,26 +446,53 @@ fn git_command(cwd: &Path, arguments: &[&str]) -> Command {
     command
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CommandMode {
-    Local,
-}
-
 async fn run_command(
     cwd: &Path,
     argv: &[&str],
-    mode: CommandMode,
+    sandbox: &SandboxMode,
 ) -> Result<CommandEvidence, EngineeringError> {
-    let _ = mode;
-    let mut command = TokioCommand::new(argv[0]);
-    command
-        .args(&argv[1..])
-        .current_dir(cwd)
-        .env_clear()
-        .env("PATH", "/usr/bin:/bin")
-        .env("PYTHONDONTWRITEBYTECODE", "1")
-        .env("HOME", cwd)
-        .kill_on_drop(true);
+    let mut command = match sandbox {
+        SandboxMode::LocalProcess => {
+            let mut command = TokioCommand::new(argv[0]);
+            command
+                .args(&argv[1..])
+                .current_dir(cwd)
+                .env_clear()
+                .env("PATH", "/usr/bin:/bin")
+                .env("PYTHONDONTWRITEBYTECODE", "1")
+                .env("HOME", cwd);
+            command
+        }
+        SandboxMode::Podman { image } => {
+            let mut command = TokioCommand::new("podman");
+            command
+                .args([
+                    "run",
+                    "--rm",
+                    "--network=none",
+                    "--read-only",
+                    "--cap-drop=ALL",
+                    "--security-opt=no-new-privileges",
+                    "--pids-limit=128",
+                    "--memory=512m",
+                    "--cpus=1",
+                    "--userns=keep-id",
+                    "--tmpfs",
+                    "/tmp:rw,noexec,nosuid,size=64m",
+                    "-e",
+                    "HOME=/tmp",
+                    "-e",
+                    "PYTHONDONTWRITEBYTECODE=1",
+                    "--volume",
+                ])
+                .arg(format!("{}:/workspace:Z", cwd.display()))
+                .args(["--workdir", "/workspace", "--entrypoint", argv[0], image])
+                .args(&argv[1..])
+                .env("PATH", "/usr/bin:/bin");
+            command
+        }
+    };
+    command.kill_on_drop(true);
     let result = tokio::time::timeout(COMMAND_TIMEOUT, command.output()).await;
     let (timed_out, output) = match result {
         Ok(Ok(output)) => (false, output),

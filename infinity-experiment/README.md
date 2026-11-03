@@ -137,8 +137,11 @@ charge that already occurred.
 
 - Deterministic fake model only; no live engineering quality or subscription
   consumption result.
-- Process-level workspace confinement with a fixed command allowlist; **not** a
-  certified sandbox and not Podman isolation. Do not infer SEC-01 status.
+- The default workspace runs fixed commands on the host with a cleared
+  environment and timeout; **not** a security sandbox. An optional rootless
+  Podman mode runs the same fixed commands with no network, dropped
+  capabilities, read-only rootfs, resource limits and a workspace mount. It was
+  exercised on this host, but it is **not** SEC-01 certified isolation.
 - No Office projection, Core authorization/budget/delegation, Quality Gate,
   GitHub delivery, or production candidate acceptance.
 - The local Infinity driver is single-process (`Rc`/`LocalSet`); a production

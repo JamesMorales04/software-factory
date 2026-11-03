@@ -38,6 +38,7 @@ pub enum CrashPolicy {
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ConfinementMode {
     LocalProcessFixedAllowlistNotCertified,
+    RootlessPodmanUncertified,
 }
 
 #[derive(Clone)]

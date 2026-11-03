@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use factory_infinity_experiment::effects::CrashPolicy;
+use factory_infinity_experiment::engineering::SandboxMode;
 use factory_infinity_experiment::runtime::{
     JourneyReport, PrototypeConfig, resume_journey, run_journey,
 };
@@ -41,6 +42,8 @@ struct RunArgs {
     #[arg(long, default_value_t = 40)]
     effect_delay_ms: u64,
     #[arg(long)]
+    podman_image: Option<String>,
+    #[arg(long)]
     out: Option<PathBuf>,
     #[arg(long)]
     json: bool,
@@ -57,6 +60,8 @@ struct StartArgs {
     crash_after_effect: String,
     #[arg(long, default_value_t = 40)]
     effect_delay_ms: u64,
+    #[arg(long)]
+    podman_image: Option<String>,
 }
 
 #[derive(clap::Args)]
@@ -89,6 +94,9 @@ async fn main() {
 async fn run(args: RunArgs) -> i32 {
     let mut config = PrototypeConfig::fixture(&args.root, &args.run_id);
     config.effect_delay = Duration::from_millis(args.effect_delay_ms);
+    if let Some(image) = args.podman_image {
+        config.sandbox = SandboxMode::Podman { image };
+    }
     match run_journey(&config).await {
         Ok(report) => emit(report, args.out.as_ref(), args.json),
         Err(error) => {
@@ -101,6 +109,9 @@ async fn run(args: RunArgs) -> i32 {
 async fn start(args: StartArgs) -> i32 {
     let mut config = PrototypeConfig::fixture(&args.root, &args.run_id);
     config.effect_delay = Duration::from_millis(args.effect_delay_ms);
+    if let Some(image) = args.podman_image {
+        config.sandbox = SandboxMode::Podman { image };
+    }
     config.crash = if args.crash_after_effect == "any" {
         CrashPolicy::AfterEffect
     } else {
@@ -118,6 +129,9 @@ async fn start(args: StartArgs) -> i32 {
 async fn resume(args: RunArgs) -> i32 {
     let mut config = PrototypeConfig::fixture(&args.root, &args.run_id);
     config.effect_delay = Duration::from_millis(args.effect_delay_ms);
+    if let Some(image) = args.podman_image {
+        config.sandbox = SandboxMode::Podman { image };
+    }
     match resume_journey(&config).await {
         Ok(report) => emit(report, args.out.as_ref(), args.json),
         Err(error) => {
