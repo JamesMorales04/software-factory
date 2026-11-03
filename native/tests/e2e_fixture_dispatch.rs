@@ -605,7 +605,12 @@ async fn start_request_scoped_provider_campaign(
     let status = started.status();
     let body = started.text().await.unwrap_or_default();
     assert_eq!(status, StatusCode::CREATED, "{body}");
-    serde_json::from_str(&body).expect("started Campaign projection")
+    let projection: Value = serde_json::from_str(&body).expect("started Campaign projection");
+    #[cfg(feature = "test-support")]
+    if let Some(campaign_id) = projection["campaign"]["id"].as_str() {
+        admit_test_campaign(database, campaign_id).await;
+    }
+    projection
 }
 
 #[tokio::test]
@@ -973,6 +978,7 @@ async fn fixture_campaign_dispatches_candidate_and_gate_without_provider() {
 }
 
 struct FixtureCandidate {
+    campaign_id: String,
     candidate_id: String,
     commit_sha: String,
     tree_sha: String,
@@ -1116,6 +1122,7 @@ async fn drive_fixture_campaign_to_candidate(
                 .find(|candidate| candidate["action_spec_sha256"] == action_spec_sha256)
         }) {
             return FixtureCandidate {
+                campaign_id,
                 candidate_id: candidate["id"].as_str().unwrap().to_owned(),
                 commit_sha: candidate["commit_sha"].as_str().unwrap().to_owned(),
                 tree_sha: candidate["tree_sha"].as_str().unwrap().to_owned(),
@@ -1163,6 +1170,19 @@ async fn run_fixture_verifier(
     );
 }
 
+#[cfg(feature = "test-support")]
+async fn admit_test_campaign(database: &Path, campaign_id: &str) {
+    let database = factory_native::db::Database::open(database)
+        .await
+        .expect("open Core database for test admission");
+    database
+        .admit_test_subscription_dispatch(campaign_id)
+        .await
+        .expect("test subscription admission");
+    database.close().await;
+}
+
+#[cfg(feature = "test-support")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn semantic_reviewer_model_mode_binds_findings_provenance_and_rejects_malformed_output() {
     use axum::{Router, routing::post};
@@ -1302,6 +1322,7 @@ async fn semantic_reviewer_model_mode_binds_findings_provenance_and_rejects_malf
         "findings": []
     })
     .to_string();
+    admit_test_campaign(&database, &first.campaign_id).await;
     run_reviewer_with(
         &root,
         &base_url,
@@ -1393,6 +1414,7 @@ async fn semantic_reviewer_model_mode_binds_findings_provenance_and_rejects_malf
     )
     .await;
     *model_content.lock().unwrap() = r#"{"verdict":"approve"}"#.into();
+    admit_test_campaign(&database, &second.campaign_id).await;
     run_reviewer_with(
         &root,
         &base_url,
@@ -1447,6 +1469,7 @@ async fn semantic_reviewer_model_mode_binds_findings_provenance_and_rejects_malf
     let _ = std::fs::remove_dir_all(root);
 }
 
+#[cfg(feature = "test-support")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn model_lead_start_dispatches_through_supervisor_to_accepted_gate() {
     use axum::{Router, routing::post};
@@ -1643,6 +1666,8 @@ async fn model_lead_start_dispatches_through_supervisor_to_accepted_gate() {
     .await
     .unwrap();
     let request_id = lead["id"].as_str().unwrap().to_owned();
+    #[cfg(feature = "test-support")]
+    admit_test_campaign(&database, &request_id).await;
     let project_config: ProjectConfig = serde_json::from_value(config.clone()).unwrap();
     let action_spec: factory_native::db::ActionSpec =
         serde_json::from_value(action["spec"].clone()).unwrap();
@@ -1859,6 +1884,8 @@ async fn model_lead_start_dispatches_through_supervisor_to_accepted_gate() {
     let attempt_id = started["attempt"]["id"].as_str().unwrap().to_owned();
     assert_eq!(started["campaign"]["status"], "AUTHORIZED");
     let campaign_id = started["campaign"]["id"].as_str().unwrap().to_owned();
+    #[cfg(feature = "test-support")]
+    admit_test_campaign(&database, &campaign_id).await;
     let authorization: Value = operator(
         &client,
         reqwest::Method::GET,
@@ -3723,6 +3750,7 @@ async fn campaign_cancellation_fences_a_leased_attempt_through_restart() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+#[cfg(feature = "test-support")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn provider_backed_campaign_reaches_accepted_gate_with_source_and_tools() {
     let root = std::env::temp_dir().join(format!(
@@ -4430,6 +4458,7 @@ async fn codex_mock_responses(
         .into_response()
 }
 
+#[cfg(feature = "test-support")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn codex_fixture_runs_a_mediated_tool_turn_and_records_core_accounting() {
     let root = std::env::temp_dir().join(format!(

@@ -4848,18 +4848,18 @@ mod tests {
         assert!(first > 0);
         assert!(second > first);
         assert!(third > second);
-        // The sequence is epoch-millisecond based, so a later run (or a
-        // restart after the previous run) starts above older observations.
-        let later = TurnProgress::from_identity(
+        // Production seeds a later run from Core's durable last accepted
+        // sequence, so it must stay above older observations even when the
+        // process clock has not advanced beyond that microsecond.
+        let mut later = TurnProgress::from_identity(
             "campaign".into(),
             "unit-1".into(),
             "attempt-1".into(),
             1,
             "run-2".into(),
-            0,
+            third,
         );
-        let mut later = later;
-        assert!(later.next_sequence() >= third);
+        assert!(later.next_sequence() > third);
     }
 
     #[test]

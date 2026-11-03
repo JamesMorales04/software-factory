@@ -38,7 +38,7 @@ type WorkerDispatchLease = (
     String,
 );
 type ProviderPricingSettings = (String, String, String, i64, i64, i64, i64, i64, i64);
-
+type SubscriptionFundingRow = (String, String, i64, Option<i64>, Option<String>);
 #[derive(Debug, Clone)]
 struct EnvelopeRow {
     id: String,
@@ -1765,34 +1765,6 @@ pub(crate) async fn settle_provider_turn_ledger_at_bounds_in_tx(
     Ok(())
 }
 
-/// Envelope lookup for a Lead request. The operator request identity may be the
-/// Lead request itself or the unified-intake request that owns it.
-pub(crate) async fn envelope_for_lead_in_tx(
-    connection: &mut SqliteConnection,
-    lead_request_id: &str,
-) -> Result<Option<String>, Error> {
-    let direct: Option<(String,)> =
-        sqlx::query_as::query_as("SELECT id FROM inference_envelopes WHERE request_id=?1")
-            .bind(lead_request_id)
-            .fetch_optional(&mut *connection)
-            .await?;
-    let intake: Option<(String,)> = sqlx::query_as::query_as(
-        "SELECT e.id FROM intake_requests ir
-         JOIN inference_envelopes e ON e.request_id=ir.id
-         WHERE ir.lead_request_id=?1",
-    )
-    .bind(lead_request_id)
-    .fetch_optional(&mut *connection)
-    .await?;
-    match (direct, intake) {
-        (Some((direct,)), Some((intake,))) if direct != intake => Err(Error::Conflict(
-            "lead request resolves to more than one inference envelope",
-        )),
-        (Some((id,)), _) | (_, Some((id,))) => Ok(Some(id)),
-        (None, None) => Ok(None),
-    }
-}
-
 pub(crate) async fn envelope_for_campaign_in_tx(
     connection: &mut SqliteConnection,
     campaign_id: &str,
@@ -1804,15 +1776,6 @@ pub(crate) async fn envelope_for_campaign_in_tx(
     .fetch_optional(&mut *connection)
     .await?;
     Ok(row.map(|(id,)| id))
-}
-
-pub(crate) async fn envelope_for_request_in_tx(
-    connection: &mut SqliteConnection,
-    request_id: &str,
-) -> Result<Option<String>, Error> {
-    Ok(load_envelope_by_request(connection, request_id)
-        .await?
-        .map(|envelope| envelope.id))
 }
 
 async fn insert_envelope(
@@ -2060,7 +2023,7 @@ async fn load_envelope(
     row.map(|row| envelope_from_row(&row)).transpose()
 }
 
-async fn find_envelope_for_request_alias(
+pub(super) async fn find_envelope_for_request_alias(
     connection: &mut SqliteConnection,
     request_id: &str,
 ) -> Result<Option<String>, Error> {
@@ -2186,6 +2149,59 @@ pub(crate) async fn load_ledger_mode(
             .fetch_one(&mut *connection)
             .await?;
     InferenceLedgerMode::parse(&mode).map_err(ledger_error)
+}
+
+/// Current Owner policy allows only verified subscription-included inference.
+/// V1/V2 monetary accounting remains available to the ledger for a future
+/// explicitly authorized billable mode, but it is not dispatch authority.
+pub(crate) async fn require_enabled_subscription_funding_in_tx(
+    connection: &mut SqliteConnection,
+    campaign_id: &str,
+) -> Result<(), Error> {
+    use crate::execution_policy::{FundingRecoveryState, SubscriptionFundingRefusal};
+    let row: Option<SubscriptionFundingRow> = sqlx::query_as::query_as(
+        "SELECT state,policy_sha256,observed_at_ms,resets_at_ms,reason
+             FROM subscription_funding_policies WHERE campaign_id=?1",
+    )
+    .bind(campaign_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    let Some((state, digest, observed_at_ms, resets_at_ms, reason)) = row else {
+        // Test builds may opt an individual scope into the ledger/admission
+        // fixture. It applies only when no policy row exists, so it can never
+        // relax a disabled, paused or invalid persisted proposal.
+        #[cfg(any(test, feature = "test-support"))]
+        if super::test_subscription_dispatch_admitted_in_tx(connection, campaign_id).await? {
+            return Ok(());
+        }
+        return Err(SubscriptionFundingRefusal::BindingRequired.into());
+    };
+    if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(SubscriptionFundingRefusal::InvalidEvidence.into());
+    }
+    let recovery = super::authorization::decode_funding_recovery_state(
+        &state,
+        reason.as_deref(),
+        observed_at_ms,
+        resets_at_ms,
+    )
+    .map_err(|_| SubscriptionFundingRefusal::InvalidEvidence)?;
+    let refusal = match recovery {
+        FundingRecoveryState::PausedQuota {
+            observed_at_ms,
+            resets_at_ms,
+            ..
+        } => SubscriptionFundingRefusal::QuotaPaused {
+            observed_at_ms,
+            resets_at_ms,
+        },
+        // A proposal, a recovered row, or a disabled row never authorizes
+        // publication: trusted subscription verification is still absent.
+        FundingRecoveryState::Disabled { .. } | FundingRecoveryState::Recoverable { .. } => {
+            SubscriptionFundingRefusal::VerificationRequired
+        }
+    };
+    Err(refusal.into())
 }
 
 pub(crate) async fn campaign_requirement_in_tx(
@@ -2625,6 +2641,14 @@ fn envelope_state_str(state: EnvelopeState) -> &'static str {
     crate::inference_ledger::envelope_state_str(state)
 }
 
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) async fn test_request_envelope_in_tx(
+    connection: &mut SqliteConnection,
+    request_id: &str,
+) -> Result<Option<String>, Error> {
+    find_envelope_for_request_alias(connection, request_id).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2704,6 +2728,123 @@ mod tests {
         .execute(&db.pool)
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn subscription_funding_proposal_never_falls_through_to_v1_ledger() {
+        let path = temp_path("factory-subscription-admission-fail-closed");
+        let db = Database::open(&path).await.unwrap();
+        seed_project(&db, "project").await;
+        let now = Utc::now().to_rfc3339();
+        sqlx::query::query(
+            "INSERT INTO actions
+             (id,project_id,objective,provider,model,risk,status,objective_sha256,created_at)
+             VALUES ('subscription-action','project','objective','opencode','model',
+                     'R0','AUTHORIZED','hash',?1)",
+        )
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO campaigns(id,action_id,status,created_at)
+             VALUES ('subscription-campaign','subscription-action','BLOCKED_AUTHORIZATION',?1)",
+        )
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let policy_json = r#"{"funding":{"kind":"SUBSCRIPTION"}}"#;
+        sqlx::query::query(
+            "INSERT INTO subscription_funding_policies
+             (campaign_id,authorization_id,policy_json,policy_sha256,state,reason,
+              observed_at_ms,resets_at_ms,created_at_ms,updated_at_ms)
+             VALUES ('subscription-campaign','subscription-auth',?1,?2,'DISABLED',NULL,1,NULL,1,1)",
+        )
+        .bind(policy_json)
+        .bind("a".repeat(64))
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+        let mut connection = db.pool.acquire().await.unwrap();
+        let error =
+            require_enabled_subscription_funding_in_tx(&mut connection, "subscription-campaign")
+                .await
+                .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Error::SubscriptionFunding(
+                    crate::execution_policy::SubscriptionFundingRefusal::VerificationRequired
+                )
+            ),
+            "a disabled subscription proposal must not fall through to legacy/billable inference: {error:?}"
+        );
+
+        // The test-only fixture must never relax a persisted policy row. Opt the
+        // exact campaign into the fixture and confirm the proposal still wins.
+        db.admit_test_subscription_dispatch("subscription-campaign")
+            .await
+            .unwrap();
+        let error =
+            require_enabled_subscription_funding_in_tx(&mut connection, "subscription-campaign")
+                .await
+                .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Error::SubscriptionFunding(
+                    crate::execution_policy::SubscriptionFundingRefusal::VerificationRequired
+                )
+            ),
+            "a persisted proposal must outrank the test admission fixture: {error:?}"
+        );
+
+        // A durable quota pause is a distinct typed refusal and cannot be
+        // transitioned back to a dispatchable or recoverable state.
+        sqlx::query::query(
+            "UPDATE subscription_funding_policies
+             SET state='PAUSED_QUOTA',reason='provider quota exhausted',
+                 observed_at_ms=2,updated_at_ms=2
+             WHERE campaign_id='subscription-campaign'",
+        )
+        .execute(&mut *connection)
+        .await
+        .unwrap();
+        let error =
+            require_enabled_subscription_funding_in_tx(&mut connection, "subscription-campaign")
+                .await
+                .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Error::SubscriptionFunding(
+                    crate::execution_policy::SubscriptionFundingRefusal::QuotaPaused {
+                        observed_at_ms: 2,
+                        resets_at_ms: None,
+                    }
+                )
+            ),
+            "a paused quota hold must surface as a durable refusal: {error:?}"
+        );
+        for state in ["DISABLED", "RECOVERABLE"] {
+            let error = sqlx::query::query(
+                "UPDATE subscription_funding_policies SET state=?1,reason='attempted recovery'
+                 WHERE campaign_id='subscription-campaign'",
+            )
+            .bind(state)
+            .execute(&mut *connection)
+            .await
+            .unwrap_err();
+            assert!(
+                error.to_string().contains("immutable"),
+                "a durable quota pause must not transition to {state}: {error}"
+            );
+        }
+        drop(connection);
+        db.close().await;
+        let _ = std::fs::remove_file(path);
     }
 
     async fn create_envelope(

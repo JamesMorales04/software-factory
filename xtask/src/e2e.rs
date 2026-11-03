@@ -75,7 +75,7 @@ pub(crate) fn office() -> Result<(), String> {
 }
 
 pub(crate) fn intake() -> Result<(), String> {
-    cargo_run(&["build", "--bins", "--locked"])?;
+    cargo_run(&["build", "--bins", "--locked", "--features", "test-support"])?;
     let mut command = std::process::Command::new("node");
     command.args(["office/e2e-browser/intake-journey.mjs"]);
     crate::process::run(command).map_err(|error| {
@@ -84,7 +84,7 @@ pub(crate) fn intake() -> Result<(), String> {
 }
 
 pub(crate) fn intake_full() -> Result<(), String> {
-    cargo_run(&["build", "--bins", "--locked"])?;
+    cargo_run(&["build", "--bins", "--locked", "--features", "test-support"])?;
     let mut command = std::process::Command::new("node");
     command.args(["office/e2e-browser/intake-journey.mjs"]);
     command.env("FACTORY_INTAKE_FULL", "1");

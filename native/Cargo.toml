@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 
+[features]
+# Explicit test-only seam for binary-level API tests. This feature is enabled
+# only by test commands; default and release builds do not contain the
+# per-scope subscription admission fixture.
+test-support = []
+
 [dependencies]
 axum = { version = "0.8.4", features = ["json"] }
 chrono = { version = "0.4.42", features = ["serde"] }

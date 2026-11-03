@@ -2283,8 +2283,49 @@ fn model_call_policy(input: u64, output: u64, cost: u64) -> ModelCallPolicy {
 }
 
 #[tokio::test]
+async fn test_subscription_dispatch_admission_is_scoped_to_opted_in_scopes() {
+    let (path, db) = temp_db("factory-model-call-admission-scope").await;
+    db.admit_test_subscription_dispatch("admitted-scope")
+        .await
+        .unwrap();
+    let policy = model_call_policy(1_000, 500, 10_000);
+    let admitted = model_call_input(&"3".repeat(64), "admitted-scope", 100, 50, 100, policy);
+    assert!(matches!(
+        db.authorize_model_call(&admitted).await.unwrap(),
+        ModelCallDecision::Reserved(_)
+    ));
+    let other = model_call_input(&"4".repeat(64), "unadmitted-scope", 100, 50, 100, policy);
+    assert!(
+        matches!(
+            db.authorize_model_call(&other).await,
+            Err(Error::SubscriptionFunding(
+                crate::execution_policy::SubscriptionFundingRefusal::BindingRequired
+            ))
+        ),
+        "opting one scope in must not admit an unrelated scope"
+    );
+    db.close().await;
+
+    // A separate database that never opts in stays fully fail-closed.
+    let (second_path, second) = temp_db("factory-model-call-admission-absent").await;
+    let refused = model_call_input(&"5".repeat(64), "admitted-scope", 100, 50, 100, policy);
+    assert!(matches!(
+        second.authorize_model_call(&refused).await,
+        Err(Error::SubscriptionFunding(
+            crate::execution_policy::SubscriptionFundingRefusal::BindingRequired
+        ))
+    ));
+    second.close().await;
+    let _ = std::fs::remove_file(path);
+    let _ = std::fs::remove_file(second_path);
+}
+
+#[tokio::test]
 async fn model_call_reservations_settle_replay_and_fence_duplicates() {
     let (path, db) = temp_db("factory-model-calls").await;
+    db.admit_test_subscription_dispatch("evaluation-1")
+        .await
+        .unwrap();
     let policy = model_call_policy(1_000, 500, 10_000);
     let input = model_call_input(&"a".repeat(64), "evaluation-1", 120, 300, 200, policy);
     let ModelCallDecision::Reserved(grant) = db.authorize_model_call(&input).await.unwrap() else {
@@ -2331,6 +2372,9 @@ async fn model_call_reservations_settle_replay_and_fence_duplicates() {
 #[tokio::test]
 async fn model_call_budget_unknown_usage_and_ambiguity_fail_closed() {
     let (path, db) = temp_db("factory-model-call-safety").await;
+    for scope in ["evaluation-2", "evaluation-3", "evaluation-4"] {
+        db.admit_test_subscription_dispatch(scope).await.unwrap();
+    }
     let policy = model_call_policy(1_000, 500, 10_000);
     let first = model_call_input(&"b".repeat(64), "evaluation-2", 120, 300, 200, policy);
     let ModelCallDecision::Reserved(grant) = db.authorize_model_call(&first).await.unwrap() else {
@@ -2412,6 +2456,13 @@ async fn model_call_budget_unknown_usage_and_ambiguity_fail_closed() {
 #[tokio::test]
 async fn model_call_scope_and_global_budgets_are_enforced() {
     let (path, db) = temp_db("factory-model-call-budget").await;
+    for scope in [
+        "evaluation-budget",
+        "evaluation-global-a",
+        "evaluation-global-b",
+    ] {
+        db.admit_test_subscription_dispatch(scope).await.unwrap();
+    }
     let policy = model_call_policy(100, 50, 1_000);
     let first = model_call_input(&"e".repeat(64), "evaluation-budget", 40, 10, 20, policy);
     let ModelCallDecision::Reserved(grant) = db.authorize_model_call(&first).await.unwrap() else {

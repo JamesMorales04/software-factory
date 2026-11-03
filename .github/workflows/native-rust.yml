@@ -44,7 +44,7 @@ jobs:
       - name: Clippy
         run: cargo +1.90.0 clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: Tests
-        run: cargo +1.90.0 test --workspace --locked
+        run: cargo +1.90.0 test --workspace --locked --features test-support
       - name: Build
         run: cargo +1.90.0 build --bins --locked
       - name: Documentation

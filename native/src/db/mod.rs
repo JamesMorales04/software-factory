@@ -46,6 +46,8 @@ pub enum Error {
     RateLimited(String),
     #[error("service unavailable: {0}")]
     Unavailable(String),
+    #[error("subscription funding refused: {0}")]
+    SubscriptionFunding(#[from] crate::execution_policy::SubscriptionFundingRefusal),
     #[error("conflict: {0}")]
     Conflict(&'static str),
     #[error("forbidden: {0}")]
@@ -505,6 +507,8 @@ impl Database {
             .connect_with(options)
             .await?;
         migrate!("../migrations").run(&pool).await?;
+        #[cfg(any(test, feature = "test-support"))]
+        install_test_subscription_dispatch_admissions(&pool).await?;
         issue_intake::recover_issue_intake_leases_on_open(&pool).await?;
         // Fail closed if an unrelated/older schema was present and the
         // migrations could not establish the expected columns.
@@ -828,6 +832,7 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
 mod authorization;
 pub use authorization::{
     CampaignAuthorizationRecord, NO_BILLABLE_ENVELOPE, NewCampaignAuthorization,
+    SubscriptionFundingRecord,
 };
 mod delegations;
 mod device_sessions;
@@ -902,3 +907,72 @@ mod issue_intake_tests;
 #[cfg(test)]
 mod tests;
 pub use device_pairing::{DevicePairingPoll, DevicePairingRecord, SecurityAuditEntry};
+
+/// Test-only subscription dispatch admission fixtures.
+///
+/// Milestone 1 deliberately records subscription proposals and refuses every
+/// provider dispatch until trusted verification exists. Ledger, gateway, routing
+/// and Worker regressions still need to exercise dispatch intent, ambiguity,
+/// settlement, replay and egress binding, so an individual test can opt a
+/// specific scope into this explicit per-database fixture.
+///
+/// Safety properties:
+///
+/// * the table and helpers exist only under `cfg(test)` or the explicit
+///   `test-support` feature; default/release builds
+///   contain no such table, helper or branch;
+/// * it is not an environment variable or a runtime switch;
+/// * the gate consults it only when no `subscription_funding_policies` row
+///   exists for the Campaign, so a persisted proposal in any state always wins;
+/// * admission is keyed by the exact scope, so opting one test scope in does not
+///   admit another.
+#[cfg(any(test, feature = "test-support"))]
+const TEST_SUBSCRIPTION_DISPATCH_ADMISSIONS: &str = "test_subscription_dispatch_admissions";
+
+#[cfg(any(test, feature = "test-support"))]
+async fn install_test_subscription_dispatch_admissions(pool: &SqlitePool) -> Result<(), Error> {
+    sqlx::query::query(
+        "CREATE TABLE IF NOT EXISTS test_subscription_dispatch_admissions (
+           scope TEXT PRIMARY KEY CHECK (length(scope) > 0),
+           created_at_ms INTEGER NOT NULL CHECK (created_at_ms > 0)
+         )",
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Database {
+    /// Opt one test scope into the ledger fixture. This grants no provider
+    /// entitlement outside the test process and is never reachable in a
+    /// production build.
+    pub async fn admit_test_subscription_dispatch(&self, scope: &str) -> Result<(), Error> {
+        if scope.trim().is_empty() {
+            return Err(Error::Invalid("test dispatch admission scope"));
+        }
+        sqlx::query::query(&format!(
+            "INSERT INTO {TEST_SUBSCRIPTION_DISPATCH_ADMISSIONS}(scope,created_at_ms)
+             VALUES (?1,?2) ON CONFLICT(scope) DO NOTHING"
+        ))
+        .bind(scope)
+        .bind(Utc::now().timestamp_millis())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) async fn test_subscription_dispatch_admitted_in_tx(
+    connection: &mut sqlx_sqlite::SqliteConnection,
+    scope: &str,
+) -> Result<bool, Error> {
+    let row: Option<(String,)> = sqlx::query_as::query_as(&format!(
+        "SELECT scope FROM {TEST_SUBSCRIPTION_DISPATCH_ADMISSIONS} WHERE scope=?1"
+    ))
+    .bind(scope)
+    .fetch_optional(&mut *connection)
+    .await?;
+    Ok(row.is_some())
+}

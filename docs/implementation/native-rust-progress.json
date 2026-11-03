@@ -47,6 +47,18 @@
     "Egress broker per-turn policy with Core-authorized model, output cap, request digest and request-count enforcement",
     "Provider-backed Intelligent Lead assessor with strict schema/domain validation"
   ],
+  "subscription_funding_followup": {
+    "date": "2026-10-29",
+    "scope": "Shared typed Core/Worker subscription refusal; Worker funding check precedes monetary prerequisites",
+    "decision_mechanism": "DETERMINISTIC",
+    "dispatch_enabled": false,
+    "author_validation": "Compose development service: fmt and relevant strict clippy passed; 33 Worker, 10 Core model-call, 1 ledger and 1 API refusal tests passed",
+    "independent_verification": "NOT_VERIFIED",
+    "live_provider_proof": "NOT_VERIFIED",
+    "browser_acceptance": "NOT_VERIFIED",
+    "request_admission_before_project": "NOT_IMPLEMENTED",
+    "reference": "docs/implementation/subscription-funding-v3-milestone-1.md"
+  },
   "not_implemented": [
     "Live Codex/OpenCode provider coding with sandboxed model egress",
     "Model-backed Lead assessment",

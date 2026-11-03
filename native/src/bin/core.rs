@@ -387,6 +387,13 @@ struct NewIntakeRequest {
     authorized_micros: Option<u64>,
 }
 
+#[cfg(feature = "test-support")]
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TestSubscriptionDispatchAdmission {
+    scope: String,
+}
+
 #[derive(Deserialize, Default)]
 struct IntakeListQuery {
     state: Option<String>,
@@ -946,7 +953,15 @@ fn office_api_router(app: Arc<App>) -> Router {
         .route("/candidates", get(candidates))
         .route("/workers", get(workers))
         .merge(github_integration_routes())
-        .merge(issue_intake_routes())
+        .merge(issue_intake_routes());
+
+    #[cfg(feature = "test-support")]
+    let api = api.route(
+        "/test-support/subscription-dispatch-admissions",
+        post(admit_test_subscription_dispatch),
+    );
+
+    let api = api
         .with_state(Arc::clone(&app))
         .merge(factory_native::device_pairing::routes(app.db.clone()));
 
@@ -973,7 +988,7 @@ async fn office_api_route_not_found() -> Response {
 }
 
 fn api_router(app: Arc<App>) -> Router {
-    Router::new()
+    let api = Router::new()
         .route(
             "/health",
             get(|| async { Json(json!({"healthy":true,"version":"0.1.0"})) }),
@@ -1168,8 +1183,15 @@ fn api_router(app: Arc<App>) -> Router {
         .route("/candidates", get(candidates))
         .route("/workers", get(workers))
         .merge(github_integration_routes())
-        .merge(issue_intake_routes())
-        .with_state(app)
+        .merge(issue_intake_routes());
+
+    #[cfg(feature = "test-support")]
+    let api = api.route(
+        "/test-support/subscription-dispatch-admissions",
+        post(admit_test_subscription_dispatch),
+    );
+
+    api.with_state(app)
 }
 
 impl App {
@@ -1740,8 +1762,19 @@ fn api_error(error: Error) -> Response {
         Error::NotFound => StatusCode::NOT_FOUND,
         Error::RateLimited(_) => StatusCode::TOO_MANY_REQUESTS,
         Error::Busy | Error::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+        Error::SubscriptionFunding(
+            factory_native::execution_policy::SubscriptionFundingRefusal::InvalidEvidence,
+        ) => StatusCode::FORBIDDEN,
+        Error::SubscriptionFunding(_) => StatusCode::SERVICE_UNAVAILABLE,
         Error::Sqlx(_) | Error::Migrate(_) | Error::File(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
+    if let Error::SubscriptionFunding(refusal) = &error {
+        return (
+            status,
+            Json(json!({"error": refusal.to_string(), "code": refusal.code()})),
+        )
+            .into_response();
+    }
     if let Error::IntakeConflict { code, message } = &error {
         return (status, Json(json!({"error": message, "code": code}))).into_response();
     }
@@ -9181,6 +9214,21 @@ async fn create_intake_request(
     }
 }
 
+#[cfg(feature = "test-support")]
+async fn admit_test_subscription_dispatch(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(input): Json<TestSubscriptionDispatchAdmission>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.admit_test_subscription_dispatch(&input.scope).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
 async fn assess_intake_request(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
@@ -10227,6 +10275,50 @@ mod tests {
     use super::*;
     use axum::http::HeaderValue;
     use serde_json::Value;
+
+    #[tokio::test]
+    async fn subscription_funding_refusals_have_stable_codes_without_authority() {
+        use factory_native::execution_policy::SubscriptionFundingRefusal;
+        for (refusal, status, code) in [
+            (
+                SubscriptionFundingRefusal::BindingRequired,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "SUBSCRIPTION_FUNDING_BINDING_REQUIRED",
+            ),
+            (
+                SubscriptionFundingRefusal::VerificationRequired,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "SUBSCRIPTION_FUNDING_VERIFICATION_REQUIRED",
+            ),
+            (
+                SubscriptionFundingRefusal::QuotaPaused {
+                    observed_at_ms: 10,
+                    resets_at_ms: None,
+                },
+                StatusCode::SERVICE_UNAVAILABLE,
+                "SUBSCRIPTION_FUNDING_QUOTA_PAUSED",
+            ),
+            (
+                SubscriptionFundingRefusal::InvalidEvidence,
+                StatusCode::FORBIDDEN,
+                "SUBSCRIPTION_FUNDING_EVIDENCE_INVALID",
+            ),
+        ] {
+            let response = api_error(refusal.into());
+            assert_eq!(response.status(), status);
+            let bytes = axum::body::to_bytes(response.into_body(), 4096)
+                .await
+                .unwrap();
+            let body: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(body["code"], code);
+            assert!(
+                body["error"]
+                    .as_str()
+                    .is_some_and(|message| !message.is_empty())
+            );
+            assert_eq!(body.as_object().unwrap().len(), 2);
+        }
+    }
 
     #[test]
     fn github_connection_projection_never_contains_credential_material() {
@@ -14404,6 +14496,7 @@ mod tests {
             (url, hits)
         }
 
+        #[cfg(feature = "test-support")]
         #[tokio::test]
         async fn semantic_review_uses_the_frozen_reviewer_route() {
             // Only relaxes the HTTPS rule for loopback test upstreams; every
@@ -14479,6 +14572,15 @@ mod tests {
                     .await;
             assert_eq!(status, StatusCode::CREATED, "{created}");
             let intake_id = created["id"].as_str().unwrap().to_owned();
+            let intake_request = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            for scope in [&intake_id, &intake_request.lead_request_id] {
+                fixture
+                    .app
+                    .db
+                    .admit_test_subscription_dispatch(scope)
+                    .await
+                    .unwrap();
+            }
             let context = fixture_plan(&fixture, &intake_id, "MODEL").await;
             let (status, approved) = send(
                 &fixture.router,
@@ -14494,6 +14596,12 @@ mod tests {
             .await;
             assert_eq!(status, StatusCode::CREATED, "{approved}");
             let campaign_id = approved["campaignId"].as_str().unwrap().to_owned();
+            fixture
+                .app
+                .db
+                .admit_test_subscription_dispatch(&campaign_id)
+                .await
+                .unwrap();
             assert_eq!(
                 approved["spending"]["envelope"]["envelopeId"],
                 approved["spending"]["status"]["envelopeId"],
@@ -14613,6 +14721,7 @@ mod tests {
             let _ = std::fs::remove_dir_all(fixture.repository);
         }
 
+        #[cfg(feature = "test-support")]
         #[tokio::test]
         async fn billable_assessment_requires_creation_amount_and_shares_request_envelope() {
             unsafe { std::env::set_var("FACTORY_ALLOW_TEST_UPSTREAM", "1") };
@@ -14639,6 +14748,15 @@ mod tests {
             let (status, created) = create_intake(&fixture, "assessment-without-amount").await;
             assert_eq!(status, StatusCode::CREATED, "{created}");
             let refused_id = created["id"].as_str().unwrap().to_owned();
+            let refused_request = fixture.app.db.intake_request(&refused_id).await.unwrap();
+            for scope in [&refused_id, &refused_request.lead_request_id] {
+                fixture
+                    .app
+                    .db
+                    .admit_test_subscription_dispatch(scope)
+                    .await
+                    .unwrap();
+            }
             let (status, refused) = send(
                 &fixture.router,
                 "POST",
@@ -14657,6 +14775,15 @@ mod tests {
                     .await;
             assert_eq!(status, StatusCode::CREATED, "{created}");
             let intake_id = created["id"].as_str().unwrap().to_owned();
+            let intake_request = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            for scope in [&intake_id, &intake_request.lead_request_id] {
+                fixture
+                    .app
+                    .db
+                    .admit_test_subscription_dispatch(scope)
+                    .await
+                    .unwrap();
+            }
             let envelope = fixture
                 .app
                 .db
@@ -14769,6 +14896,12 @@ mod tests {
             .await;
             assert_eq!(status, StatusCode::CREATED, "{approved}");
             let campaign_id = approved["campaignId"].as_str().unwrap().to_owned();
+            fixture
+                .app
+                .db
+                .admit_test_subscription_dispatch(&campaign_id)
+                .await
+                .unwrap();
             let bound = fixture
                 .app
                 .db
@@ -14856,6 +14989,38 @@ mod tests {
             fixture.app.db.close().await;
             let _ = std::fs::remove_file(fixture.path);
             let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn test_support_subscription_admission_is_authenticated_and_exact() {
+            let fixture = setup().await;
+            let path = "/test-support/subscription-dispatch-admissions";
+
+            let (status, _) = send_as(
+                &fixture.router,
+                "POST",
+                path,
+                "wrong-token",
+                Some(json!({"scope": "scope-a"})),
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+            let (status, _) = send(
+                &fixture.router,
+                "POST",
+                path,
+                Some(json!({"scope": "scope-a"})),
+            )
+            .await;
+            assert_eq!(status, StatusCode::NO_CONTENT);
+
+            let (status, _) = send(&fixture.router, "POST", path, Some(json!({"scope": ""}))).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
         }
 
         #[tokio::test]

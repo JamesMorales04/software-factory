@@ -206,6 +206,14 @@ async function coreApi(path, options = {}, bearer = operator) {
   return body;
 }
 
+async function admitTestSubscriptionScope(scope) {
+  assert.ok(scope, "test subscription scope");
+  await coreApi("/test-support/subscription-dispatch-admissions", {
+    method: "POST",
+    body: JSON.stringify({ scope }),
+  });
+}
+
 function checks() {
   return [
     {
@@ -767,6 +775,15 @@ try {
   const requestId = page.url().match(/#\/requests\/([^/?]+)/)?.[1];
   assert.ok(requestId, "request id in URL");
 
+  if (!live) {
+    const intake = await coreApi(
+      `/intake/requests/${encodeURIComponent(requestId)}`,
+    );
+    assert.ok(intake.leadRequestId, "Lead request id for test admission");
+    await admitTestSubscriptionScope(requestId);
+    await admitTestSubscriptionScope(intake.leadRequestId);
+  }
+
   await page.getByRole("button", { name: "Run assessment" }).click();
   try {
     await page
@@ -805,6 +822,9 @@ try {
   );
   assert.equal(projection.state, "EXECUTING");
   assert.ok(projection.campaignId, "campaign id");
+  if (!live) {
+    await admitTestSubscriptionScope(projection.campaignId);
+  }
   const campaign = await coreApi(
     `/campaigns/${encodeURIComponent(projection.campaignId)}`,
   );
