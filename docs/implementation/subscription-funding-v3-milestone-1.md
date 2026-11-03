@@ -110,25 +110,32 @@ the other. The identity trigger refuses every transition out of
 `SUBSCRIPTION_FUNDING_QUOTA_PAUSED` refusal (HTTP 503); it carries no dispatch
 authority.
 
-Evidence for this repair (host toolchain 1.90.0, no provider calls):
+Evidence for the final merged candidate (host toolchain 1.90.0, no provider
+calls):
 
 - `cargo fmt --all -- --check`: passed.
-- `cargo clippy --locked -p factory-native --lib --bins --all-features -- -D warnings`: passed.
-- `cargo test --locked -p factory-native --lib`: 509 passed, 0 failed, 2 ignored
-  (ignored tests require a cached Podman alpine image).
-- Focused funding/ledger/lead/gateway/routing selection: 75 passed, 0 failed.
-- `cargo test --workspace --locked`: `factory-native` lib 509 passed,
-  `factory-cli` 47 passed, `xtask` 9 passed, `factory-native` 8 passed; the
-  `factory-core` bin target had 30 passed / 2 failed
-  (`tests::intake_api::billable_assessment_requires_creation_amount_and_shares_request_envelope`
-  and `tests::intake_api::semantic_review_uses_the_frozen_reviewer_route`).
-  Both fail with `SUBSCRIPTION_FUNDING_BINDING_REQUIRED` because the bin test
-  target links the library without `cfg(test)` and therefore cannot reach the
-  test-only admission fixture. They are **BLOCKED / NOT_IMPLEMENTED** for this
-  slice; production behavior is correct and remains fail-closed. No production
-  bypass was added to satisfy them.
-- Independent verification, runtime/browser acceptance, live provider
-  entitlement and quota recovery remain **NOT_TESTED**.
+- `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`: passed.
+- `cargo test --locked -p factory-native --lib --features test-support`:
+  512 passed, 0 failed, 2 ignored (ignored tests require a cached Podman
+  alpine image).
+- `cargo test --locked -p factory-native --bin factory-core --features test-support`:
+  33 passed, 0 failed. Without the feature the same target has 30 passed and
+  compiles out the test-only route and positive provider fixtures.
+- `cargo test --locked -p factory-native --bin factory-worker --features test-support`:
+  13 passed, 0 failed.
+- `cargo test --locked -p factory-native --test e2e_cap014 --features test-support`:
+  2 passed, 0 failed.
+- `cargo test --locked -p factory-native --test e2e_fixture_dispatch --features test-support`:
+  12 passed, 0 failed.
+- `cargo build -p factory-native --bins --locked` without `test-support`:
+  passed; production remains fail-closed.
+- Strict repository hygiene (`factory-repo-hygiene --mode strict`): passed,
+  0 findings.
+- `cargo xtask e2e intake`: passed with the deterministic fake model.
+- `cargo xtask e2e intake-full`: passed through Worker, candidate, verifier,
+  reviewer and Gate `ACCEPTED` with the deterministic fixture provider.
+- Independent verification, live provider entitlement, real quota recovery
+  and live inference remain **NOT_TESTED**.
 
 ## Test-only admission seam (2026-11-02)
 
@@ -146,3 +153,15 @@ feature; production build commands do not.
 The CAP-014 tests are compiled only when this feature is enabled. A default
 `cargo test` without the feature skips those positive provider-dispatch tests;
 it does not enable a production route.
+
+### Process-level browser fixture admission (2026-11-02)
+
+`cargo xtask e2e intake` and `cargo xtask e2e intake-full` build the debug
+binaries with the `test-support` feature. After creating the intake request,
+the journey opts the exact intake request, Lead request and resulting Campaign
+scopes into the per-database fixture before assessment and provider dispatch.
+The opt-in route is registered only when the feature is compiled in, requires
+the operator token, and stores an exact scope string; it is absent from
+production builds and from `cargo xtask check-container`. The deterministic
+fake model and fixture provider remain the only inference sources in this lane,
+and no live provider call is made.

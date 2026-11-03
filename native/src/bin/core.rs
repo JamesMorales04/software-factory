@@ -387,6 +387,13 @@ struct NewIntakeRequest {
     authorized_micros: Option<u64>,
 }
 
+#[cfg(feature = "test-support")]
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TestSubscriptionDispatchAdmission {
+    scope: String,
+}
+
 #[derive(Deserialize, Default)]
 struct IntakeListQuery {
     state: Option<String>,
@@ -946,7 +953,15 @@ fn office_api_router(app: Arc<App>) -> Router {
         .route("/candidates", get(candidates))
         .route("/workers", get(workers))
         .merge(github_integration_routes())
-        .merge(issue_intake_routes())
+        .merge(issue_intake_routes());
+
+    #[cfg(feature = "test-support")]
+    let api = api.route(
+        "/test-support/subscription-dispatch-admissions",
+        post(admit_test_subscription_dispatch),
+    );
+
+    let api = api
         .with_state(Arc::clone(&app))
         .merge(factory_native::device_pairing::routes(app.db.clone()));
 
@@ -973,7 +988,7 @@ async fn office_api_route_not_found() -> Response {
 }
 
 fn api_router(app: Arc<App>) -> Router {
-    Router::new()
+    let api = Router::new()
         .route(
             "/health",
             get(|| async { Json(json!({"healthy":true,"version":"0.1.0"})) }),
@@ -1168,8 +1183,15 @@ fn api_router(app: Arc<App>) -> Router {
         .route("/candidates", get(candidates))
         .route("/workers", get(workers))
         .merge(github_integration_routes())
-        .merge(issue_intake_routes())
-        .with_state(app)
+        .merge(issue_intake_routes());
+
+    #[cfg(feature = "test-support")]
+    let api = api.route(
+        "/test-support/subscription-dispatch-admissions",
+        post(admit_test_subscription_dispatch),
+    );
+
+    api.with_state(app)
 }
 
 impl App {
@@ -9192,6 +9214,21 @@ async fn create_intake_request(
     }
 }
 
+#[cfg(feature = "test-support")]
+async fn admit_test_subscription_dispatch(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(input): Json<TestSubscriptionDispatchAdmission>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.admit_test_subscription_dispatch(&input.scope).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
 async fn assess_intake_request(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
@@ -14952,6 +14989,38 @@ mod tests {
             fixture.app.db.close().await;
             let _ = std::fs::remove_file(fixture.path);
             let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn test_support_subscription_admission_is_authenticated_and_exact() {
+            let fixture = setup().await;
+            let path = "/test-support/subscription-dispatch-admissions";
+
+            let (status, _) = send_as(
+                &fixture.router,
+                "POST",
+                path,
+                "wrong-token",
+                Some(json!({"scope": "scope-a"})),
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+            let (status, _) = send(
+                &fixture.router,
+                "POST",
+                path,
+                Some(json!({"scope": "scope-a"})),
+            )
+            .await;
+            assert_eq!(status, StatusCode::NO_CONTENT);
+
+            let (status, _) = send(&fixture.router, "POST", path, Some(json!({"scope": ""}))).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
         }
 
         #[tokio::test]
