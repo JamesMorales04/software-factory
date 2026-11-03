@@ -49,6 +49,22 @@ effect before crash (review), three total external applications before and
 after, three delivered callbacks after recovery, zero duplicate applications,
 zero ambiguous outcomes.
 
+## Dimension coverage
+
+| Dimension | Prototype | Factory baseline | Status |
+| --- | --- | --- | --- |
+| Resident memory | 47–52 MiB local; 301 MiB with container runtime | 113 MiB parallel E2E; 44 MiB Core recovery | Measured, not equivalent workloads |
+| CPU overhead | 290–370 ms sampled | 390 ms parallel; 240 ms recovery | Measured |
+| Process / task count | 3 processes local; 4 agent threads (Director + 3) | 7 peak processes; 2 work units + Core/Supervisor/Worker/Verifier/Reviewer | Measured processes; baseline agent task count from test definition |
+| Subagent startup latency | 36–46 ms to first child | not instrumented | Prototype measured; baseline `NOT_MEASURED` |
+| Idle resource consumption | workload exits; not sampled while idle | Core runs during test; idle not sampled | `NOT_MEASURED` |
+| Callback-to-resume latency | 0.33–1.0 ms queue; 1.0–1.33 ms effect→callback | not instrumented | Prototype measured |
+| Restart recovery | PASS; one APPLIED effect recovered, 3/3 callbacks, 0 duplicate applications | Core restart E2E PASS | Both measured, different scopes |
+| Duplicate external effects | 0 | not directly instrumented in fixture E2E | Prototype measured |
+| Task completion correctness | PASS candidate `f3037e…` | ACCEPTED fixture candidate | Both PASS |
+| Cancellation | PASS (no unsettled effect delivered) | not measured | Prototype only |
+| Operational complexity | 5,037 src + 934 test lines; 1 runtime process; 4 pinned Infinity crates | 83,901 native src lines; Compose/7-process E2E | Static + process count |
+
 ## Interpretation limits
 
 - The Factory test includes Core/Supervisor/Worker/Verifier/Reviewer and the
