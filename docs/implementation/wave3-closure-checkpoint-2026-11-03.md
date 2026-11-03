@@ -168,6 +168,21 @@ the campaign contains unreconciled partial access code. Keep `main` at
 `d587252`. Any promotion requires separate Owner authorization, access-stack
 reconciliation and exact-head security review.
 
+## Owner decisions required
+
+1. **Live model authorization and funding trust anchor.** Provide a reviewed
+   provider-issued no-overage/entitlement contract or keep dispatch blocked.
+   A separate explicit authorization is required before any real inference.
+2. **Secondary model profile.** The Wave 3 amendment specified the primary
+   profile (OpenCode Go / `deepseek-v4.1-flash`) but the secondary model text
+   was truncated after the provider. Confirm the secondary provider/model and
+   its intended roles; no profile is guessed.
+3. **Access stack.** Authorize or reject promotion of PRs #36–#38 after the
+   campaign's embedded PR #36 code is reconciled, exact-head review is
+   complete and real Tailscale Serve/mobile testing is available.
+4. **Promotion.** No `main` merge, deployment, branch-protection change or
+   privilege expansion has been performed.
+
 ## Next Factory-native architecture milestone
 
 A separate initiative, not part of this Wave 3 closure, should evaluate
