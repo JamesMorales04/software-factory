@@ -1000,6 +1000,10 @@ fn api_router(app: Arc<App>) -> Router {
         .route("/auth/rotate", post(auth_rotate))
         .route("/setup/status", get(setup_status))
         .route("/quality/pending", get(pending_quality))
+        .route(
+            "/funding/subscription/{provider}",
+            get(subscription_funding_readiness),
+        )
         .route("/settings/providers", get(provider_settings_list))
         .route(
             "/settings/runtime",
@@ -2237,6 +2241,39 @@ fn provider_view(
         "inputMicrosPerMillion": settings.map(|settings| settings.input_micros_per_million).unwrap_or(default_input_rate()),
         "outputMicrosPerMillion": settings.map(|settings| settings.output_micros_per_million).unwrap_or(default_output_rate()),
     })
+}
+
+async fn subscription_funding_readiness(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(provider): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let settings = match app.db.provider_settings(&provider).await {
+        Ok(settings) => Some(settings),
+        Err(Error::NotFound) => None,
+        Err(error) => return api_error(error),
+    };
+    let facts =
+        settings.as_ref().map(
+            |settings| factory_native::funding_status::ProviderFundingFacts {
+                kind: settings.kind.clone(),
+                configured: !settings.credential_ciphertext.is_empty(),
+                enabled: settings.enabled,
+                model: settings.model.clone(),
+                settings_revision: settings.revision,
+            },
+        );
+    match factory_native::funding_status::project(&provider, facts.as_ref()) {
+        Some(status) => Json(status).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error":"provider is not a subscription funding route"})),
+        )
+            .into_response(),
+    }
 }
 
 async fn provider_settings_list(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
@@ -10275,6 +10312,78 @@ mod tests {
     use super::*;
     use axum::http::HeaderValue;
     use serde_json::Value;
+
+    #[tokio::test]
+    async fn subscription_funding_readiness_is_authenticated_and_never_claims_verification() {
+        use tower::ServiceExt;
+
+        let path = std::env::temp_dir().join(format!(
+            "factory-core-funding-status-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let app = test_app(&path).await;
+        let unauthenticated = api_router(app.clone())
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/funding/subscription/opencode-go")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+
+        let response = api_router(app.clone())
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/funding/subscription/opencode-go")
+                    .header("authorization", "Bearer operator-token")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["provider"], "opencode-go");
+        assert_eq!(body["route"], "GO_SUBSCRIPTION_INCLUDED");
+        assert_eq!(body["configured"], false);
+        assert_eq!(body["coreVerifiable"], false);
+        assert_eq!(body["admissible"], false);
+        assert_eq!(body["authenticationClass"], "UNKNOWN");
+        assert_eq!(body["quota"]["state"], "UNKNOWN");
+        assert!(
+            body["missingEvidence"]
+                .as_array()
+                .is_some_and(|values| values.iter().any(|value| value == "PROVIDER_CONNECTION"))
+        );
+        assert!(body["missingEvidence"].as_array().is_some_and(|values| {
+            values
+                .iter()
+                .any(|value| value == "PROVIDER_ISSUED_NO_OVERAGE_GUARANTEE")
+        }));
+
+        let unknown = api_router(app.clone())
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/funding/subscription/opencode")
+                    .header("authorization", "Bearer operator-token")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+
+        app.db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
 
     #[tokio::test]
     async fn subscription_funding_refusals_have_stable_codes_without_authority() {

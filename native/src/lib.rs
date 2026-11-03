@@ -10,6 +10,7 @@ pub mod evaluation;
 pub mod execution;
 pub mod execution_policy;
 pub mod execution_profile;
+pub mod funding_status;
 pub mod github;
 pub mod github_sync;
 pub mod inference_ledger;

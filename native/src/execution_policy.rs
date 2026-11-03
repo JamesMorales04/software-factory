@@ -381,9 +381,12 @@ pub fn evaluate_funding_admission(
     if grant_id != context.grant_id {
         return FundingAdmissionDecision::AuthorizationInvalid;
     }
+    // The route identity is exact: `opencode` is the API-key provider, while
+    // `opencode-go` is the subscription route. Admitting the plain provider
+    // here would let an API-key connection satisfy a subscription binding.
     let expected = match binding.route {
         SubscriptionRoute::OpenCodeGo => (
-            "opencode",
+            "opencode-go",
             ProviderAuthenticationClass::OpenCodeSubscription,
         ),
         SubscriptionRoute::CodexChatGpt => ("codex", ProviderAuthenticationClass::ChatGptPlan),
@@ -987,7 +990,7 @@ mod subscription_funding_tests {
     fn admission(policy: &ExecutionPolicyV3) -> FundingAdmissionDecision {
         admission_for(
             policy,
-            "opencode",
+            "opencode-go",
             "model",
             ProviderAuthenticationClass::OpenCodeSubscription,
             &"b".repeat(64),
@@ -1101,7 +1104,7 @@ mod subscription_funding_tests {
         assert_eq!(
             admission_for(
                 &policy,
-                "opencode",
+                "opencode-go",
                 "model",
                 ProviderAuthenticationClass::OpenCodeSubscription,
                 &"b".repeat(64),
@@ -1142,7 +1145,7 @@ mod subscription_funding_tests {
         assert_eq!(
             admission_for(
                 &policy,
-                "opencode",
+                "opencode-go",
                 "different-model",
                 ProviderAuthenticationClass::OpenCodeSubscription,
                 &"b".repeat(64),
@@ -1155,6 +1158,18 @@ mod subscription_funding_tests {
                 &policy,
                 "opencode",
                 "model",
+                ProviderAuthenticationClass::OpenCodeSubscription,
+                &"b".repeat(64),
+                true,
+            ),
+            FundingAdmissionDecision::BillableRouteForbidden,
+            "the plain API-key provider must never satisfy the Go subscription route"
+        );
+        assert_eq!(
+            admission_for(
+                &policy,
+                "opencode-go",
+                "model",
                 ProviderAuthenticationClass::ApiKey,
                 &"b".repeat(64),
                 true,
@@ -1164,7 +1179,7 @@ mod subscription_funding_tests {
         assert_eq!(
             admission_for(
                 &policy,
-                "opencode",
+                "opencode-go",
                 "model",
                 ProviderAuthenticationClass::OpenCodeSubscription,
                 &"c".repeat(64),
@@ -1185,7 +1200,7 @@ mod subscription_funding_tests {
             authorization_revoked: false,
             funding_revoked: false,
             grant_id: "grant-1",
-            provider: "opencode",
+            provider: "opencode-go",
             model: "model",
             authentication: ProviderAuthenticationClass::OpenCodeSubscription,
             scope_sha256: &scope_sha256,
