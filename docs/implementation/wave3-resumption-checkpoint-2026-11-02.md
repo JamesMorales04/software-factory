@@ -26,6 +26,11 @@ promotion occurred.**
   Office candidate `a19f51bda492f374c81f7987ec51da9d2fe6abd4` with gate
   `ACCEPTED`; intake request `77b355fe-2dda-4b52-b99d-960f99ec22a5`, Campaign
   `9e82d45f-163c-4508-a86b-a57ca2e98a72`, mode `DETERMINISTIC_FAKE_MODEL`.
+- A post-merge rerun of PR #83 at `5b07e62` (run `41573710950`) also passed
+  all jobs. One post-merge PR #80 rerun at `01cc72b` hit a SQLite `Busy` flake
+  in `db::provider_sessions::tests::execution_check_receipts_bind_the_frozen_command_and_candidate`;
+  the required run on that head passed, and the final head passed twice. This
+  remains test-reliability debt, not a product assertion failure.
 - **PR #81** was closed as explicitly superseded; its CAP-050/CAP-052
   correction is carried by PR #80.
 - **Local evidence at `fe0eeba`** (parent of the formatting-only `5b07e62`):
