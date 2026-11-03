@@ -98,9 +98,10 @@ api() {
 
 json() { python3 -c "$1"; }
 
-# The Compose acceptance Core is the debug/test-support image. Admit exactly
-# the request, Lead request and Campaign scopes that this deterministic run
-# creates; production images do not contain this endpoint or the feature.
+# The Compose acceptance Core is the debug/test-support image. Admit the exact
+# request and Lead scopes; the disposable E2E database also admits '*' so the
+# Campaign id created inside approval cannot race the Worker. Production images
+# do not contain this endpoint or the feature.
 admit_scope() {
   api POST /test-support/subscription-dispatch-admissions "{\"scope\":\"$1\"}" >/dev/null
 }
