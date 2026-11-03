@@ -4,6 +4,9 @@
 # explicit test-only insecure-Git/plain-HTTP opt-ins for disposable services.
 services:
   core:
+    build:
+      target: core-e2e
+    image: software-factory-core-e2e:dev
     environment:
       FACTORY_ALLOW_INSECURE_GIT: "1"
       FACTORY_ALLOW_TEST_UPSTREAM: "1"

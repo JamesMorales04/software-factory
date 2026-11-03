@@ -98,6 +98,13 @@ api() {
 
 json() { python3 -c "$1"; }
 
+# The Compose acceptance Core is the debug/test-support image. Admit exactly
+# the request, Lead request and Campaign scopes that this deterministic run
+# creates; production images do not contain this endpoint or the feature.
+admit_scope() {
+  api POST /test-support/subscription-dispatch-admissions "{\"scope\":\"$1\"}" >/dev/null
+}
+
 log "== preparing disposable Git fixture"
 mkdir -p "$GIT_DIR/source/src"
 git -C "$GIT_DIR/source" init -q
@@ -210,6 +217,8 @@ INTAKE_CREATED="$(api POST /intake/requests \
 INTAKE_ID="$(printf '%s' "$INTAKE_CREATED" | json 'import json,sys; print(json.load(sys.stdin)["id"])')"
 INTAKE_ACTION_ID="$(printf '%s' "$INTAKE_CREATED" | json 'import json,sys; print(json.load(sys.stdin)["actionId"])')"
 INTAKE_LEAD_REQUEST_ID="$(printf '%s' "$INTAKE_CREATED" | json 'import json,sys; print(json.load(sys.stdin)["leadRequestId"])')"
+admit_scope "$INTAKE_ID"
+admit_scope "$INTAKE_LEAD_REQUEST_ID"
 cat > "$MODEL_DIR/context.json" <<JSON
 {
   "schema": "factory-compose-model-fixture-v1",
@@ -250,6 +259,7 @@ INTAKE_ATTEMPT_ID="$(printf '%s' "$INTAKE_APPROVED" | json 'import json,sys; pri
 [[ -n "$INTAKE_CAMPAIGN_ID" && "$INTAKE_CAMPAIGN_ID" != "None" ]] || {
   log "intake approval returned no Campaign"; exit 1;
 }
+admit_scope "$INTAKE_CAMPAIGN_ID"
 [[ "$(printf '%s' "$INTAKE_APPROVED" | json 'import json,sys; print(json.load(sys.stdin)["profile"]["revisionId"])')" == "$PROFILE_REVISION_ID" ]] || {
   log "intake Campaign did not bind the frozen profile revision"; exit 1;
 }
