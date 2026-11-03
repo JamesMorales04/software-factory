@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "record": "personal-access-launcher-and-restart-repair",
-  "implementation_sha": "407773246067f2467b44ac9a5b067f5242b096d7",
+  "implementation_sha": "cce98d174a1c484b0b0433b1d528902ad238a1b4",
   "repair_base_sha": "603f823fe28000e2b33493e482f8b3c01cf46973",
   "date": "2026-11-03",
   "result": "PARTIAL PASS (launcher static repair and restart-authority regression pass; no Compose, Tailscale Serve, mobile or independent review evidence)",
@@ -27,6 +27,11 @@
       "name": "device session integration tests",
       "pass": true,
       "detail": "cargo test -p factory-native --test device_sessions --locked: 5 passed, 0 failed"
+    },
+    {
+      "name": "isolated epoch-fence regression",
+      "pass": true,
+      "detail": "The restart test advances only access_security_epoch, reopens the database, and verifies an APPROVED challenge still refuses exchange while remaining APPROVED; this separates the persisted epoch fence from challenge cancellation."
     }
   ],
   "repairs": [
@@ -39,6 +44,11 @@
       "finding": "Luna's condition required a close/reopen test for revocation and pairing authority.",
       "repair": "Added pairing_and_revocation_authority_survive_close_and_reopen covering session persistence, consumed-challenge replay rejection, unconsumed approval survival, persisted global revocation and the epoch fence.",
       "verification": "The focused test passes; no real Compose or browser run was performed for this record."
+    },
+    {
+      "finding": "The launcher health probe had no connect or total timeout, so a hung response could outlive the 180-attempt budget.",
+      "repair": "curl now uses --connect-timeout 3 and --max-time 5.",
+      "verification": "Static inspection and bash -n only; real Compose first-run/recovery remains NOT_TESTED."
     }
   ],
   "not_tested": [
