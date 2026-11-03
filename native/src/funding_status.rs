@@ -94,7 +94,7 @@ pub fn project(
         enabled: facts.is_some_and(|facts| facts.enabled),
         model: facts.map(|facts| facts.model.clone()).unwrap_or_default(),
         settings_revision: facts.map(|facts| facts.settings_revision).unwrap_or(0),
-        authentication_class: if facts.is_some() {
+        authentication_class: if facts.is_some_and(|facts| facts.configured) {
             "API_KEY"
         } else {
             "UNKNOWN"
@@ -171,6 +171,24 @@ mod tests {
             Some(&"PROVIDER_CONNECTION")
         );
         assert!(!status.admissible);
+    }
+
+    #[test]
+    fn a_settings_row_without_a_credential_is_not_called_api_key_authenticated() {
+        let facts = ProviderFundingFacts {
+            kind: "opencode".into(),
+            configured: false,
+            enabled: false,
+            model: "deepseek-v4.1-flash".into(),
+            settings_revision: 4,
+        };
+        let status = project("opencode-go", Some(&facts)).unwrap();
+        assert!(!status.configured);
+        assert_eq!(status.authentication_class, "UNKNOWN");
+        assert_eq!(
+            status.missing_evidence.first(),
+            Some(&"PROVIDER_CONNECTION")
+        );
     }
 
     #[test]
