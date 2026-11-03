@@ -265,6 +265,27 @@ describe("buildOfficeSceneLayout", () => {
     ).toBe(200);
   });
 
+  it("keeps a participant appearance when an earlier participant is filtered out", () => {
+    const participants = implementers(6);
+    const full = buildOfficeSceneLayout(participants);
+    const kept = participants[5];
+    const reduced = buildOfficeSceneLayout(
+      participants.filter(
+        (participant) =>
+          participant.participant_id !== participants[0].participant_id,
+      ),
+    );
+    const before = full.slots.find(
+      (slot) => slot.participant.participant_id === kept.participant_id,
+    );
+    const after = reduced.slots.find(
+      (slot) => slot.participant.participant_id === kept.participant_id,
+    );
+    expect(before).toBeDefined();
+    expect(after).toBeDefined();
+    expect(after?.lookIndex).toBe(before?.lookIndex);
+  });
+
   it("seats 30 implementers without duplicate positions", () => {
     const layout = buildOfficeSceneLayout(implementers(30));
     const implementation = layout.zones.find(

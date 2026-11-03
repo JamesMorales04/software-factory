@@ -1,4 +1,5 @@
 import type { ParticipantRecord, ParticipantRole } from "../../coreApi";
+import { OFFICE_AVATAR_LOOK_COUNT } from "./officeAvatarAppearance";
 
 /**
  * Deterministic planar (2.5D) layout for the isometric Agent Office studio.
@@ -144,6 +145,15 @@ const ZONE_IDS: Record<ParticipantRole, string> = {
   REVIEWER: "review",
   WORKER: "operations",
 };
+
+function hashIdentity(value: string): number {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return hash >>> 0;
+}
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
@@ -497,19 +507,25 @@ export function buildOfficeSceneLayout(
   }
 
   const slots = zones.flatMap((zone) => zone.slots);
-  // Assigning in stable identity order keeps the same set deterministic and
-  // gives every participant a unique palette combination without collision
-  // probing. The mixed-radix appearance palette supports far more combinations
-  // than the current Office projection's 200-participant page size.
-  [...slots]
-    .sort((left, right) =>
-      left.participant.participant_id.localeCompare(
-        right.participant.participant_id,
-      ),
-    )
-    .forEach((slot, index) => {
-      slot.lookIndex = index;
-    });
+  // Seed the appearance from the stable person identity, then resolve the rare
+  // palette collision deterministically inside the current scene. Using the
+  // rank alone made a participant change appearance whenever an earlier row
+  // was filtered out; the extended mixed-radix palette keeps collisions rare.
+  const usedLooks = new Set<number>();
+  for (const slot of [...slots].sort((left, right) =>
+    left.participant.participant_id.localeCompare(
+      right.participant.participant_id,
+    ),
+  )) {
+    const seed =
+      slot.participant.identity_id || slot.participant.participant_id;
+    let lookIndex = hashIdentity(seed) % OFFICE_AVATAR_LOOK_COUNT;
+    while (usedLooks.has(lookIndex)) {
+      lookIndex = (lookIndex + 1) % OFFICE_AVATAR_LOOK_COUNT;
+    }
+    usedLooks.add(lookIndex);
+    slot.lookIndex = lookIndex;
+  }
   const ordered = [...slots].sort(
     (left, right) =>
       left.anchorY - right.anchorY ||

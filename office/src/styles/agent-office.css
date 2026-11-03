@@ -71,14 +71,21 @@
   --border-strong: #3b526f;
   --text: #e7eef8;
   --text-muted: #9fb0c7;
+  --text-subtle: #94a6bd;
   --accent: #2dd4bf;
   --accent-hover: #5eead4;
   --accent-soft: #0f3b3a;
+  --accent-contrast: #06121f;
+  --attention: #fbbf24;
   --attention-soft: #422d0c;
+  --success: #4ade80;
   --success-soft: #12351f;
+  --info: #38bdf8;
   --info-soft: #0d3045;
+  --danger: #f87171;
   --danger-soft: #451a1a;
   --focus: #67e8f9;
+  --focus-soft: rgb(125 211 252 / 0.22);
 }
 
 .office-scene {
@@ -2373,14 +2380,21 @@
   --border-strong: #3b526f;
   --text: #e7eef8;
   --text-muted: #9fb0c7;
+  --text-subtle: #94a6bd;
   --accent: #2dd4bf;
   --accent-hover: #5eead4;
   --accent-soft: #0f3b3a;
+  --accent-contrast: #06121f;
+  --attention: #fbbf24;
   --attention-soft: #422d0c;
+  --success: #4ade80;
   --success-soft: #12351f;
+  --info: #38bdf8;
   --info-soft: #0d3045;
+  --danger: #f87171;
   --danger-soft: #451a1a;
   --focus: #67e8f9;
+  --focus-soft: rgb(125 211 252 / 0.22);
   padding: var(--space-4);
   border: 1px solid #1b3147;
   border-radius: var(--radius-xl);
@@ -2408,14 +2422,21 @@
   --border-strong: #3b526f;
   --text: #e7eef8;
   --text-muted: #9fb0c7;
+  --text-subtle: #94a6bd;
   --accent: #2dd4bf;
   --accent-hover: #5eead4;
   --accent-soft: #0f3b3a;
+  --accent-contrast: #06121f;
+  --attention: #fbbf24;
   --attention-soft: #422d0c;
+  --success: #4ade80;
   --success-soft: #12351f;
+  --info: #38bdf8;
   --info-soft: #0d3045;
+  --danger: #f87171;
   --danger-soft: #451a1a;
   --focus: #67e8f9;
+  --focus-soft: rgb(125 211 252 / 0.22);
 }
 
 .agent-office--studio .agent-filter-panel {
