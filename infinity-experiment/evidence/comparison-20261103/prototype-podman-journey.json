@@ -1,0 +1,27 @@
+{
+  "label": "prototype-podman-journey",
+  "command": [
+    "target/debug/infinity-experiment",
+    "run",
+    "--root",
+    "/tmp/sf-podman-measure",
+    "--run-id",
+    "podman",
+    "--effect-delay-ms",
+    "5",
+    "--podman-image",
+    "localhost/software-factory-runtime:dev",
+    "--out",
+    "/tmp/sf-podman-measure/report.json"
+  ],
+  "exit_code": 0,
+  "wall_ms": 1636.387,
+  "peak_rss_kib": 301368,
+  "peak_processes": 7,
+  "peak_threads": 67,
+  "sampled_cpu_ms": 1420.0,
+  "direct_child_rusage_cpu_ms": 1928.657,
+  "direct_child_maxrss_kib": 79296,
+  "samples": 77,
+  "profile": "debug"
+}

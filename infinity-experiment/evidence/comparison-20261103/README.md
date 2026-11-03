@@ -30,6 +30,7 @@ target/debug/deps/e2e_core_recovery-55bf35475ea727d3 \
 | Factory Core restart E2E | 364 | 43,920 | 2 | 22 | 240 |
 | Infinity prototype (5 runs) | 350–408 | 47,424–52,528 | 3 | 10–11 | 290–370 |
 | Infinity prototype restart (start + resume) | 360 | 49,500 | 4 | 12 | 300 |
+| Infinity prototype with Podman fixture execution | 1,636 | 301,368 | 7 | 67 | 1,420 |
 
 Prototype internal metrics (5 runs):
 
@@ -61,6 +62,8 @@ zero ambiguous outcomes.
 - Subagent startup latency for the Factory baseline was not instrumented;
   `NOT_MEASURED`. Idle daemon resource use was not measured; both observed
   workloads exit or are torn down after completion.
+- The Podman row starts a container per fixture command; most of its RSS/threads
+  belong to the container runtime/storage layers, not the Infinity process.
 - Cancellation behavior was tested only in the prototype. Real engineering
   quality, subscription consumption and live provider latency are `NOT_TESTED`
   because no live-inference authorization exists.

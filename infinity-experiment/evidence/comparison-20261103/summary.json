@@ -162,6 +162,33 @@
       "profile": "debug"
     },
     {
+      "label": "prototype-podman-journey",
+      "command": [
+        "target/debug/infinity-experiment",
+        "run",
+        "--root",
+        "/tmp/sf-podman-measure",
+        "--run-id",
+        "podman",
+        "--effect-delay-ms",
+        "5",
+        "--podman-image",
+        "localhost/software-factory-runtime:dev",
+        "--out",
+        "/tmp/sf-podman-measure/report.json"
+      ],
+      "exit_code": 0,
+      "wall_ms": 1636.387,
+      "peak_rss_kib": 301368,
+      "peak_processes": 7,
+      "peak_threads": 67,
+      "sampled_cpu_ms": 1420.0,
+      "direct_child_rusage_cpu_ms": 1928.657,
+      "direct_child_maxrss_kib": 79296,
+      "samples": 77,
+      "profile": "debug"
+    },
+    {
       "label": "prototype-restart-recovery",
       "command": [
         "bash",
@@ -178,74 +205,6 @@
       "direct_child_maxrss_kib": 48456,
       "samples": 17,
       "profile": "debug"
-    }
-  ],
-  "prototype_internal": [
-    {
-      "label": "prototype-1",
-      "success": true,
-      "wall_ms": 379,
-      "first_child_ms": 46,
-      "callback_queue_latency_ms": 0.6666666666666666,
-      "effect_to_callback_ms": 1.3333333333333333,
-      "duplicate_external_effects": 0,
-      "event_count": 83,
-      "candidate_sha256": "f3037e35242b45c04ca46a0296852f0c305ba7ede3d07da28ece0696b30f3070"
-    },
-    {
-      "label": "prototype-2",
-      "success": true,
-      "wall_ms": 345,
-      "first_child_ms": 40,
-      "callback_queue_latency_ms": 0.6666666666666666,
-      "effect_to_callback_ms": 1.0,
-      "duplicate_external_effects": 0,
-      "event_count": 81,
-      "candidate_sha256": "f3037e35242b45c04ca46a0296852f0c305ba7ede3d07da28ece0696b30f3070"
-    },
-    {
-      "label": "prototype-3",
-      "success": true,
-      "wall_ms": 344,
-      "first_child_ms": 37,
-      "callback_queue_latency_ms": 1.0,
-      "effect_to_callback_ms": 1.3333333333333333,
-      "duplicate_external_effects": 0,
-      "event_count": 84,
-      "candidate_sha256": "f3037e35242b45c04ca46a0296852f0c305ba7ede3d07da28ece0696b30f3070"
-    },
-    {
-      "label": "prototype-4",
-      "success": true,
-      "wall_ms": 344,
-      "first_child_ms": 36,
-      "callback_queue_latency_ms": 0.6666666666666666,
-      "effect_to_callback_ms": 1.3333333333333333,
-      "duplicate_external_effects": 0,
-      "event_count": 84,
-      "candidate_sha256": "f3037e35242b45c04ca46a0296852f0c305ba7ede3d07da28ece0696b30f3070"
-    },
-    {
-      "label": "prototype-5",
-      "success": true,
-      "wall_ms": 340,
-      "first_child_ms": 36,
-      "callback_queue_latency_ms": 0.3333333333333333,
-      "effect_to_callback_ms": 1.3333333333333333,
-      "duplicate_external_effects": 0,
-      "event_count": 84,
-      "candidate_sha256": "f3037e35242b45c04ca46a0296852f0c305ba7ede3d07da28ece0696b30f3070"
-    },
-    {
-      "label": "prototype-restart",
-      "success": true,
-      "wall_ms": 37,
-      "first_child_ms": 10,
-      "callback_queue_latency_ms": 1.0,
-      "effect_to_callback_ms": 1.3333333333333333,
-      "duplicate_external_effects": 0,
-      "event_count": 25,
-      "candidate_sha256": "f3037e35242b45c04ca46a0296852f0c305ba7ede3d07da28ece0696b30f3070"
     }
   ]
 }

@@ -43,6 +43,8 @@ A separate crate (`infinity-experiment`) depends on the pinned Infinity crates
   and ambiguous-outcome settlement;
 - process-exit restart recovery with marker verification and no effect replay;
 - a RAP command server, callback bridge and Infinity resume path;
+- optional rootless Podman execution for the same fixed fixture commands,
+  exercised against an approved local image;
 - deterministic subscription-route guards and fake providers;
 - a process-tree measurement harness for prototype and Factory baseline.
 
@@ -66,6 +68,7 @@ Debug-profile, same host, deterministic fixtures, 2026-11-03. Full data:
 | Infinity prototype, 5 runs | 350–408 | 47,424–52,528 | 3 | 10–11 | 290–370 |
 | Factory Core restart E2E | 364 | 43,920 | 2 | 22 | 240 |
 | Infinity prototype restart (start crash + resume) | 360 | 49,500 | 4 | 12 | 300 |
+| Infinity prototype with Podman fixture execution | 1,636 | 301,368 | 7 | 67 | 1,420 |
 
 Prototype internal metrics: first child 36–46 ms; callback queue latency
 0.33–1.0 ms; effect-to-callback 1.0–1.33 ms; 81–84 lifecycle/display events;
@@ -73,8 +76,9 @@ Prototype internal metrics: first child 36–46 ms; callback queue latency
 `f3037e35242b45c04ca46a0296852f0c305ba7ede3d07da28ece0696b30f3070` stable
 across restart.
 
-The prototype is smaller at runtime, but the Factory baseline also runs the
-full governance/quality pipeline. This is **not** evidence that the prototype is
+The prototype is smaller at runtime in local mode, but the Factory baseline
+also runs the full governance/quality pipeline, and the optional Podman mode is
+heavier because it starts a container per fixture command. This is **not** evidence that the prototype is
 a replacement for that pipeline. The prototype’s durability, effect and funding
 code is largely code the experiment had to write; Infinity itself did not
 supply those guarantees at the pinned revision.

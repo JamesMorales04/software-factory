@@ -37,6 +37,8 @@ cargo run --bin infinity-experiment -- subscription \
 - `tests/rap.rs` — Infinity → RAP invocation → idempotent server effect →
   callback → Infinity thread resume; duplicate invocation does not duplicate
   history or the external effect.
+- `tests/podman.rs` — optional full journey under rootless Podman when the
+  approved fixture image exists; records `ROOTLESS_PODMAN_UNCERTIFIED`.
 - `tests/subscription.rs` — matrix classification, default-deny attestation,
   OpenCode Go no-overage controls, fake billing-source rejection, and
   Codex-app-server agent-vs-completion semantics.
@@ -73,8 +75,8 @@ Evidence files:
 5. Run judgment is not attached. `FAILED`/`BLOCKED`/`NOT_TESTED` distinctions:
    - live provider subscription consumption: **NOT_TESTED / BLOCKED**;
    - GPT-6 Luna independent review: **BLOCKED** (no inference authorization);
-   - Podman/SEC-01 isolation: **NOT_TESTED** (local process fixture is not a
-     sandbox);
+   - SEC-01 isolation certification: **NOT_TESTED**; the optional Podman mode
+     was exercised but is not certified isolation;
    - Windows: **NOT_TESTED**;
    - production Office/Core integration: **NOT_IMPLEMENTED**.
 

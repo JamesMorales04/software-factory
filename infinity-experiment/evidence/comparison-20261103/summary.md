@@ -7,13 +7,5 @@
 | prototype-3 | 0 | 369.231 | 51608 | 3 | 11 | 290.0 |
 | prototype-4 | 0 | 354.946 | 52528 | 3 | 11 | 300.0 |
 | prototype-5 | 0 | 350.378 | 52284 | 3 | 10 | 310.0 |
+| prototype-podman-journey | 0 | 1636.387 | 301368 | 7 | 67 | 1420.0 |
 | prototype-restart-recovery | 0 | 360.421 | 49500 | 4 | 12 | 300.0 |
-
-| prototype | success | wall ms | first child ms | callback queue ms | effect→callback ms | duplicate effects | events |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| prototype-1 | True | 379 | 46 | 0.6666666666666666 | 1.3333333333333333 | 0 | 83 |
-| prototype-2 | True | 345 | 40 | 0.6666666666666666 | 1.0 | 0 | 81 |
-| prototype-3 | True | 344 | 37 | 1.0 | 1.3333333333333333 | 0 | 84 |
-| prototype-4 | True | 344 | 36 | 0.6666666666666666 | 1.3333333333333333 | 0 | 84 |
-| prototype-5 | True | 340 | 36 | 0.3333333333333333 | 1.3333333333333333 | 0 | 84 |
-| prototype-restart | True | 37 | 10 | 1.0 | 1.3333333333333333 | 0 | 25 |
