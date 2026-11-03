@@ -94,9 +94,12 @@ No access PR was merged. PRs #36–#38 remain drafts.
 2. Authorize **repair + promotion order** for the access stack: fix #36 legacy
    token removal, #37 network isolation, #38 revocation fencing; re-review;
    merge #36 → #37 → #38 only after checks and approval.
-3. Decide the **live inference authorization**: confirm whether OpenCode Go is
-   subscription-based or billable API, and approve a bounded spend envelope if
-   billable. No live inference is claimed today.
+3. ~~Decide the **live inference authorization**: confirm whether OpenCode Go
+   is subscription-based or billable API, and approve a bounded spend envelope
+   if billable.~~ **Superseded 2026-10-29:** the funding policy is
+   subscription-only, Extra Usage OFF, with no USD spend cap. See the
+   [real-provider UAT runbook](real-provider-uat-runbook-2026-10-29.md). No live
+   inference is claimed today.
 4. Approve or reject the **Office visual slice** after the CampaignDetail V2
    contract fix and screenshots.
 5. Only then open a clean Wave 3 promotion PR to `main`; rerun full Rust/Office/
@@ -104,3 +107,14 @@ No access PR was merged. PRs #36–#38 remain drafts.
 
 No `main` merge, branch protection change or paid inference occurred in this
 checkpoint.
+
+## D. Real-provider acceptance preparation (#60)
+
+The bounded OpenCode Go UAT is now **prepared, not run**:
+[real-provider UAT runbook](real-provider-uat-runbook-2026-10-29.md). It
+documents the subscription-only policy, the exact Owner Console verification and
+separate go-ahead, the two-phase plan-approval flow, quota pause/resume, and a
+default-closed harness with a fake-Core contract test. No USD spend cap is
+required or accepted. Live execution remains blocked until Core V3 exposes
+subscription funding verification and quota resume; current Core fails closed. No credential was read and no paid inference was
+performed.
