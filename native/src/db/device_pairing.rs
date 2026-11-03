@@ -626,6 +626,7 @@ mod tests {
         let poll = digest('a');
         let second_session_hash = digest('d');
         let third_session_hash = digest('e');
+        let fourth_session_hash = digest('f');
         claimed_and_approved(&db, "restart-one", "314159", &poll).await;
         db.exchange_device_pairing(exchange("restart-one", "session-one", &poll, SESSION_HASH))
             .await
@@ -716,6 +717,35 @@ mod tests {
             .is_err(),
             "a revoked approval cannot be exchanged after restart"
         );
+        // Isolate the epoch fence from challenge cancellation: the approval
+        // stays APPROVED and only the persisted epoch changes.
+        let fourth_poll = digest('0');
+        claimed_and_approved(&db, "restart-four", "173205", &fourth_poll).await;
+        sqlx::query::query("UPDATE access_security_epoch SET epoch=epoch+1 WHERE id=1")
+            .execute(&db.pool)
+            .await
+            .expect("epoch advances without cancelling the approval");
+        db.close().await;
+        let db = super::super::Database::open(&path)
+            .await
+            .expect("database reopens after the epoch-only advance");
+        assert!(
+            db.exchange_device_pairing(exchange(
+                "restart-four",
+                "session-four",
+                &fourth_poll,
+                &fourth_session_hash
+            ))
+            .await
+            .is_err(),
+            "a stale approved_epoch must reject exchange after restart"
+        );
+        let status: String =
+            query_scalar("SELECT status FROM device_pairing_challenges WHERE id='restart-four'")
+                .fetch_one(&db.pool)
+                .await
+                .expect("challenge status");
+        assert_eq!(status, "APPROVED");
         db.close().await;
         let _ = fs::remove_file(path);
     }
