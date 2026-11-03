@@ -1,0 +1,18 @@
+{
+  "label": "factory-core-recovery-e2e",
+  "command": [
+    "/home/james/Escritorio/Development/sf-wave3/infinity-runtime/target/debug/deps/e2e_core_recovery-55bf35475ea727d3",
+    "core_restart_preserves_durable_project_action_and_events",
+    "--nocapture"
+  ],
+  "exit_code": 0,
+  "wall_ms": 364.449,
+  "peak_rss_kib": 43920,
+  "peak_processes": 2,
+  "peak_threads": 22,
+  "sampled_cpu_ms": 240.0,
+  "direct_child_rusage_cpu_ms": 358.311,
+  "direct_child_maxrss_kib": 48680,
+  "samples": 18,
+  "profile": "debug"
+}

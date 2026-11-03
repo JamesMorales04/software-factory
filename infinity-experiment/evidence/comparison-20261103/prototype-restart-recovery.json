@@ -1,0 +1,18 @@
+{
+  "label": "prototype-restart-recovery",
+  "command": [
+    "bash",
+    "-c",
+    "'/home/james/Escritorio/Development/sf-wave3/infinity-runtime/infinity-experiment/target/debug/infinity-experiment' start --root '/tmp/sf-comparison/prototype-restart' --run-id restart --crash-after-effect review --effect-delay-ms 10 >/dev/null 2>&1; code=$?; test $code -eq 23 && '/home/james/Escritorio/Development/sf-wave3/infinity-runtime/infinity-experiment/target/debug/infinity-experiment' resume --root '/tmp/sf-comparison/prototype-restart' --run-id restart --effect-delay-ms 10 --out '/tmp/sf-comparison/prototype-restart/report.json' >/dev/null"
+  ],
+  "exit_code": 0,
+  "wall_ms": 360.421,
+  "peak_rss_kib": 49500,
+  "peak_processes": 4,
+  "peak_threads": 12,
+  "sampled_cpu_ms": 300.0,
+  "direct_child_rusage_cpu_ms": 501.979,
+  "direct_child_maxrss_kib": 48456,
+  "samples": 17,
+  "profile": "debug"
+}

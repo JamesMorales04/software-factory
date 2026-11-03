@@ -1,0 +1,25 @@
+{
+  "label": "prototype-5",
+  "command": [
+    "/home/james/Escritorio/Development/sf-wave3/infinity-runtime/infinity-experiment/target/debug/infinity-experiment",
+    "run",
+    "--root",
+    "/tmp/sf-comparison/prototype-5",
+    "--run-id",
+    "measure-5",
+    "--effect-delay-ms",
+    "10",
+    "--out",
+    "/tmp/sf-comparison/prototype-5/report.json"
+  ],
+  "exit_code": 0,
+  "wall_ms": 350.378,
+  "peak_rss_kib": 52284,
+  "peak_processes": 3,
+  "peak_threads": 10,
+  "sampled_cpu_ms": 310.0,
+  "direct_child_rusage_cpu_ms": 496.789,
+  "direct_child_maxrss_kib": 48420,
+  "samples": 17,
+  "profile": "debug"
+}

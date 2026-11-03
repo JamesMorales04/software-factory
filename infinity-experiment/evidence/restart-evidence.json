@@ -1,0 +1,37 @@
+{
+  "crash_exit_code": 23,
+  "before_resume": {
+    "effects": 3,
+    "applied_not_completed": 1,
+    "callbacks": 2,
+    "external_applications": 3
+  },
+  "after_resume": {
+    "effects": 3,
+    "completed": 3,
+    "ambiguous": 0,
+    "callbacks": 3,
+    "delivered": 3,
+    "external_applications": 3,
+    "duplicate_applications": 0
+  },
+  "report": {
+    "success": true,
+    "candidate_sha256": "f3037e35242b45c04ca46a0296852f0c305ba7ede3d07da28ece0696b30f3070",
+    "recovery": {
+      "run_id": "evidence",
+      "recovered_completed": [
+        "evidence:659bdaad-55f5-48de-a15e-10cfc0efffb0-engineering"
+      ],
+      "ambiguous": [],
+      "callbacks_delivered": 3,
+      "duplicate_callbacks": 2,
+      "stale_callbacks": []
+    },
+    "metrics": {
+      "wall_ms": 47,
+      "restart_recovery_ms": 47,
+      "duplicate_external_effects": 0
+    }
+  }
+}

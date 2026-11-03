@@ -1,0 +1,230 @@
+[
+  {
+    "id": "opencode-go-deepseek-v4.1-flash",
+    "display_name": "OpenCode Go — DeepSeek V4.1 Flash",
+    "kind": "completion_adapter",
+    "provider": "opencode-go",
+    "model": "deepseek-v4.1-flash",
+    "authentication": "OpenCode Go subscription API key from the Console; Bearer token to https://opencode.ai/inference/go/openai/v1/chat/completions; stable x-opencode-session header for routing/caching.",
+    "official_permission": "Official OpenCode Go documentation exposes Go models to OpenCode and other coding agents, subject to abuse monitoring and privacy-region settings.",
+    "capabilities": [
+      "Chat Completions compatible",
+      "streaming with final usage/cost metadata",
+      "tool calling supported by the model family",
+      "1M context / 384K max output per third-party catalog; verify from /v1/models"
+    ],
+    "streaming": true,
+    "tool_call_compatible": true,
+    "quota_behavior": "Per-model monthly dollar allowance, with 5-hour (20%) and weekly (50%) sub-limits; each response reports opencode.allowance. DeepSeek V4.1 Flash has a $100 monthly limit on the Go plan.",
+    "no_overage_controls": [
+      "Owner must disable Extra Usage in the OpenCode Console Go page.",
+      "Owner must disable credits/balance fallback; only the Go subscription key may be present.",
+      "Guard requires an explicit owner attestation before a request is dispatched.",
+      "Post-response billing_source must be go/go-plus and cost must be zero; otherwise halt the run and surface a funding violation."
+    ],
+    "known_limitations": [
+      "Extra Usage is an account setting; response metadata cannot undo a charge that already occurred.",
+      "DeepSeek models may require Global region selection in workspace privacy settings.",
+      "The API key is a bearer credential; the Factory must keep it inside its provider boundary.",
+      "Model roster, prices and limits change; re-verify before production."
+    ],
+    "billing_mode": "subscription_included",
+    "allowed_without_further_authorization": false,
+    "decision": "ALLOWED ONLY behind owner attestation, no Extra Usage/credits, a deterministic fake first, and a separate live-test authorization.",
+    "confidence": "official_documentation",
+    "sources": [
+      "https://opencode.ai/v2/docs/console/go/",
+      "https://opencode.ai/v2/docs/console/api/inference",
+      "https://opencode.ai/docs/providers"
+    ]
+  },
+  {
+    "id": "codex-app-server-chatgpt",
+    "display_name": "Codex App Server — ChatGPT subscription",
+    "kind": "external_coding_agent",
+    "provider": "openai-codex",
+    "model": "account-selected (e.g. GPT-6 Luna / GPT-6.1 Sol)",
+    "authentication": "Local Codex sign-in with ChatGPT (`~/.codex/auth.json` or OS keyring); app-server JSON-RPC over stdio/WebSocket/Unix socket. API-key sign-in is a different billing mode and is refused.",
+    "official_permission": "OpenAI documents app-server as the supported way to embed Codex in a product, including authentication, history, approvals and streamed events. It is an agent integration, not a completion API.",
+    "capabilities": [
+      "thread/start, thread/resume, thread/fork",
+      "turn/start, turn/steer, turn/interrupt",
+      "streamed item/turn notifications and approvals",
+      "its own tools, sandbox, skills, MCP servers and context"
+    ],
+    "streaming": true,
+    "tool_call_compatible": false,
+    "quota_behavior": "Uses the signed-in ChatGPT plan's shared Work/Codex usage and workspace limits; /status and the usage dashboard expose remaining capacity.",
+    "no_overage_controls": [
+      "Refuse API-key auth (`forced_login_method = chatgpt` where policy permits).",
+      "Do not enable credits or extra usage for the Factory workspace.",
+      "Do not expose app-server to untrusted clients; keep it loopback/stdio and behind Factory authorization.",
+      "Do not silently switch provider or account when limits are reached; fail closed."
+    ],
+    "known_limitations": [
+      "It is a complete coding agent: wrapping it as a `ModelProvider` loses approvals, tool semantics, context and cancellation boundaries.",
+      "Factory is not a registered Sign in with ChatGPT client; this route relies on local Codex authentication, not Factory OAuth.",
+      "Usage exhaustion and credits behavior are account/workspace settings, not a stable API contract.",
+      "App-server API surface evolves; pin the Codex version and generated schema."
+    ],
+    "billing_mode": "subscription_included",
+    "allowed_without_further_authorization": false,
+    "decision": "ALLOWED ONLY as an external coding-agent integration, after a separate owner authorization and with ChatGPT auth pinned.",
+    "confidence": "official_documentation",
+    "sources": [
+      "https://learn.chatgpt.com/docs/app-server",
+      "https://learn.chatgpt.com/docs/auth",
+      "https://learn.chatgpt.com/docs/pricing"
+    ]
+  },
+  {
+    "id": "codex-sdk-chatgpt",
+    "display_name": "Codex SDK — ChatGPT subscription",
+    "kind": "external_coding_agent",
+    "provider": "openai-codex",
+    "model": "account-selected Codex model",
+    "authentication": "Codex SDK controls the local Codex app-server. It inherits the local ChatGPT sign-in; an API key selects API billing instead.",
+    "official_permission": "OpenAI documents the TypeScript/Python SDK for programmatic coding tasks and internal tools; the Python SDK explicitly controls app-server over JSON-RPC.",
+    "capabilities": [
+      "thread start/resume, run, streaming events",
+      "sandbox presets read_only/workspace_write/full_access",
+      "external tool messages and structured final response"
+    ],
+    "streaming": true,
+    "tool_call_compatible": false,
+    "quota_behavior": "Same ChatGPT plan/Codex usage as app-server; the SDK itself does not create an allowance.",
+    "no_overage_controls": [
+      "Use a ChatGPT-authenticated Codex home; never pass an API key.",
+      "Run with workspace_write or read_only, not full_access, inside Factory's wider confinement.",
+      "Fail closed on authentication-mode mismatch."
+    ],
+    "known_limitations": [
+      "SDK adds a Node.js/Python runtime dependency that conflicts with Factory's container-native preference unless packaged in the image.",
+      "It is an agent, not a completion adapter.",
+      "SDK/Codex version compatibility must be pinned."
+    ],
+    "billing_mode": "subscription_included",
+    "allowed_without_further_authorization": false,
+    "decision": "ALLOWED ONLY as a specialized coding-agent integration; prefer app-server for a Rust host.",
+    "confidence": "official_documentation",
+    "sources": [
+      "https://learn.chatgpt.com/docs/codex-sdk",
+      "https://learn.chatgpt.com/docs/auth"
+    ]
+  },
+  {
+    "id": "sign-in-with-chatgpt-third-party",
+    "display_name": "Sign in with ChatGPT — third-party app OAuth",
+    "kind": "forbidden",
+    "provider": "openai",
+    "model": "n/a",
+    "authentication": "OAuth client registered with OpenAI; the user grants the app permission to use their ChatGPT plan.",
+    "official_permission": "OpenAI requires a registered client ID and lists participating apps. Factory is not registered in this experiment.",
+    "capabilities": [
+      "identity sign-in",
+      "optionally plan usage for eligible apps"
+    ],
+    "streaming": false,
+    "tool_call_compatible": false,
+    "quota_behavior": "Counts toward the user's existing plan; app limits are caps, not a new allowance.",
+    "no_overage_controls": [
+      "Do not invent an entitlement endpoint.",
+      "Do not use an unregistered OAuth client."
+    ],
+    "known_limitations": [
+      "No client ID or owner approval in this experiment.",
+      "Sign-in permission and plan-usage permission are separate consents."
+    ],
+    "billing_mode": "subscription_included",
+    "allowed_without_further_authorization": false,
+    "decision": "BLOCKED: requires OpenAI client registration and a separate product/legal review.",
+    "confidence": "official_documentation",
+    "sources": [
+      "https://learn.chatgpt.com/docs/sign-in-with-chatgpt",
+      "https://developers.openai.com/siwc"
+    ]
+  },
+  {
+    "id": "openai-chatgpt-oauth-completion",
+    "display_name": "ChatGPT OAuth as an OpenAI-compatible completion endpoint",
+    "kind": "forbidden",
+    "provider": "openai",
+    "model": "n/a",
+    "authentication": "ChatGPT browser OAuth token used directly against a completion endpoint.",
+    "official_permission": "No official public completion API with ChatGPT subscription OAuth is documented for third parties. OpenCode's bundled integration is an OpenCode implementation, not a Factory entitlement.",
+    "capabilities": [],
+    "streaming": false,
+    "tool_call_compatible": false,
+    "quota_behavior": "Undocumented for this use.",
+    "no_overage_controls": [
+      "Forbidden: do not scrape tokens or reverse-engineer private endpoints."
+    ],
+    "known_limitations": [
+      "Would violate the Owner's no-unapproved-auth rule.",
+      "Unstable and outside official support."
+    ],
+    "billing_mode": "unknown",
+    "allowed_without_further_authorization": false,
+    "decision": "FORBIDDEN.",
+    "confidence": "official_documentation",
+    "sources": [
+      "https://learn.chatgpt.com/docs/auth"
+    ]
+  },
+  {
+    "id": "openai-api-key",
+    "display_name": "OpenAI API key",
+    "kind": "forbidden",
+    "provider": "openai",
+    "model": "n/a",
+    "authentication": "Platform API key.",
+    "official_permission": "Official API, but billed pay-as-you-go.",
+    "capabilities": [
+      "completion API"
+    ],
+    "streaming": true,
+    "tool_call_compatible": true,
+    "quota_behavior": "Standard API pricing per token.",
+    "no_overage_controls": [
+      "Forbidden by the Owner funding envelope."
+    ],
+    "known_limitations": [
+      "Pay-as-you-go is explicitly forbidden."
+    ],
+    "billing_mode": "pay_as_you_go",
+    "allowed_without_further_authorization": false,
+    "decision": "FORBIDDEN.",
+    "confidence": "official_documentation",
+    "sources": [
+      "https://learn.chatgpt.com/docs/auth"
+    ]
+  },
+  {
+    "id": "aws-bedrock",
+    "display_name": "AWS Bedrock inference",
+    "kind": "forbidden",
+    "provider": "aws-bedrock",
+    "model": "n/a",
+    "authentication": "AWS credentials / SigV4.",
+    "official_permission": "Official AWS service, but outside the allowed funding modes.",
+    "capabilities": [
+      "provider-specific inference"
+    ],
+    "streaming": true,
+    "tool_call_compatible": true,
+    "quota_behavior": "AWS billing.",
+    "no_overage_controls": [
+      "Forbidden by the Owner funding envelope."
+    ],
+    "known_limitations": [
+      "Explicitly forbidden; Infinity's Bedrock provider must not be enabled."
+    ],
+    "billing_mode": "pay_as_you_go",
+    "allowed_without_further_authorization": false,
+    "decision": "FORBIDDEN.",
+    "confidence": "official_documentation",
+    "sources": [
+      "Infinity repository provider-bedrock crate"
+    ]
+  }
+]

@@ -1,0 +1,251 @@
+{
+  "results": [
+    {
+      "label": "factory-core-recovery-e2e",
+      "command": [
+        "/home/james/Escritorio/Development/sf-wave3/infinity-runtime/target/debug/deps/e2e_core_recovery-55bf35475ea727d3",
+        "core_restart_preserves_durable_project_action_and_events",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "wall_ms": 364.449,
+      "peak_rss_kib": 43920,
+      "peak_processes": 2,
+      "peak_threads": 22,
+      "sampled_cpu_ms": 240.0,
+      "direct_child_rusage_cpu_ms": 358.311,
+      "direct_child_maxrss_kib": 48680,
+      "samples": 18,
+      "profile": "debug"
+    },
+    {
+      "label": "factory-parallel-workgraph",
+      "command": [
+        "/home/james/Escritorio/Development/sf-wave3/infinity-runtime/target/debug/deps/e2e_fixture_dispatch-d70a187ff64776d3",
+        "parallel_workgraph_reaches_accepted_on_integrated_candidate",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "wall_ms": 752.999,
+      "peak_rss_kib": 113332,
+      "peak_processes": 7,
+      "peak_threads": 61,
+      "sampled_cpu_ms": 390.0,
+      "direct_child_rusage_cpu_ms": 749.561,
+      "direct_child_maxrss_kib": 48508,
+      "samples": 37,
+      "profile": "debug"
+    },
+    {
+      "label": "prototype-1",
+      "command": [
+        "/home/james/Escritorio/Development/sf-wave3/infinity-runtime/infinity-experiment/target/debug/infinity-experiment",
+        "run",
+        "--root",
+        "/tmp/sf-comparison/prototype-1",
+        "--run-id",
+        "measure-1",
+        "--effect-delay-ms",
+        "10",
+        "--out",
+        "/tmp/sf-comparison/prototype-1/report.json"
+      ],
+      "exit_code": 0,
+      "wall_ms": 407.773,
+      "peak_rss_kib": 47424,
+      "peak_processes": 3,
+      "peak_threads": 10,
+      "sampled_cpu_ms": 370.0,
+      "direct_child_rusage_cpu_ms": 573.374,
+      "direct_child_maxrss_kib": 48808,
+      "samples": 20,
+      "profile": "debug"
+    },
+    {
+      "label": "prototype-2",
+      "command": [
+        "/home/james/Escritorio/Development/sf-wave3/infinity-runtime/infinity-experiment/target/debug/infinity-experiment",
+        "run",
+        "--root",
+        "/tmp/sf-comparison/prototype-2",
+        "--run-id",
+        "measure-2",
+        "--effect-delay-ms",
+        "10",
+        "--out",
+        "/tmp/sf-comparison/prototype-2/report.json"
+      ],
+      "exit_code": 0,
+      "wall_ms": 370.3,
+      "peak_rss_kib": 50384,
+      "peak_processes": 3,
+      "peak_threads": 10,
+      "sampled_cpu_ms": 290.0,
+      "direct_child_rusage_cpu_ms": 511.465,
+      "direct_child_maxrss_kib": 48576,
+      "samples": 18,
+      "profile": "debug"
+    },
+    {
+      "label": "prototype-3",
+      "command": [
+        "/home/james/Escritorio/Development/sf-wave3/infinity-runtime/infinity-experiment/target/debug/infinity-experiment",
+        "run",
+        "--root",
+        "/tmp/sf-comparison/prototype-3",
+        "--run-id",
+        "measure-3",
+        "--effect-delay-ms",
+        "10",
+        "--out",
+        "/tmp/sf-comparison/prototype-3/report.json"
+      ],
+      "exit_code": 0,
+      "wall_ms": 369.231,
+      "peak_rss_kib": 51608,
+      "peak_processes": 3,
+      "peak_threads": 11,
+      "sampled_cpu_ms": 290.0,
+      "direct_child_rusage_cpu_ms": 493.77,
+      "direct_child_maxrss_kib": 48188,
+      "samples": 18,
+      "profile": "debug"
+    },
+    {
+      "label": "prototype-4",
+      "command": [
+        "/home/james/Escritorio/Development/sf-wave3/infinity-runtime/infinity-experiment/target/debug/infinity-experiment",
+        "run",
+        "--root",
+        "/tmp/sf-comparison/prototype-4",
+        "--run-id",
+        "measure-4",
+        "--effect-delay-ms",
+        "10",
+        "--out",
+        "/tmp/sf-comparison/prototype-4/report.json"
+      ],
+      "exit_code": 0,
+      "wall_ms": 354.946,
+      "peak_rss_kib": 52528,
+      "peak_processes": 3,
+      "peak_threads": 11,
+      "sampled_cpu_ms": 300.0,
+      "direct_child_rusage_cpu_ms": 494.047,
+      "direct_child_maxrss_kib": 48712,
+      "samples": 17,
+      "profile": "debug"
+    },
+    {
+      "label": "prototype-5",
+      "command": [
+        "/home/james/Escritorio/Development/sf-wave3/infinity-runtime/infinity-experiment/target/debug/infinity-experiment",
+        "run",
+        "--root",
+        "/tmp/sf-comparison/prototype-5",
+        "--run-id",
+        "measure-5",
+        "--effect-delay-ms",
+        "10",
+        "--out",
+        "/tmp/sf-comparison/prototype-5/report.json"
+      ],
+      "exit_code": 0,
+      "wall_ms": 350.378,
+      "peak_rss_kib": 52284,
+      "peak_processes": 3,
+      "peak_threads": 10,
+      "sampled_cpu_ms": 310.0,
+      "direct_child_rusage_cpu_ms": 496.789,
+      "direct_child_maxrss_kib": 48420,
+      "samples": 17,
+      "profile": "debug"
+    },
+    {
+      "label": "prototype-restart-recovery",
+      "command": [
+        "bash",
+        "-c",
+        "'/home/james/Escritorio/Development/sf-wave3/infinity-runtime/infinity-experiment/target/debug/infinity-experiment' start --root '/tmp/sf-comparison/prototype-restart' --run-id restart --crash-after-effect review --effect-delay-ms 10 >/dev/null 2>&1; code=$?; test $code -eq 23 && '/home/james/Escritorio/Development/sf-wave3/infinity-runtime/infinity-experiment/target/debug/infinity-experiment' resume --root '/tmp/sf-comparison/prototype-restart' --run-id restart --effect-delay-ms 10 --out '/tmp/sf-comparison/prototype-restart/report.json' >/dev/null"
+      ],
+      "exit_code": 0,
+      "wall_ms": 360.421,
+      "peak_rss_kib": 49500,
+      "peak_processes": 4,
+      "peak_threads": 12,
+      "sampled_cpu_ms": 300.0,
+      "direct_child_rusage_cpu_ms": 501.979,
+      "direct_child_maxrss_kib": 48456,
+      "samples": 17,
+      "profile": "debug"
+    }
+  ],
+  "prototype_internal": [
+    {
+      "label": "prototype-1",
+      "success": true,
+      "wall_ms": 379,
+      "first_child_ms": 46,
+      "callback_queue_latency_ms": 0.6666666666666666,
+      "effect_to_callback_ms": 1.3333333333333333,
+      "duplicate_external_effects": 0,
+      "event_count": 83,
+      "candidate_sha256": "f3037e35242b45c04ca46a0296852f0c305ba7ede3d07da28ece0696b30f3070"
+    },
+    {
+      "label": "prototype-2",
+      "success": true,
+      "wall_ms": 345,
+      "first_child_ms": 40,
+      "callback_queue_latency_ms": 0.6666666666666666,
+      "effect_to_callback_ms": 1.0,
+      "duplicate_external_effects": 0,
+      "event_count": 81,
+      "candidate_sha256": "f3037e35242b45c04ca46a0296852f0c305ba7ede3d07da28ece0696b30f3070"
+    },
+    {
+      "label": "prototype-3",
+      "success": true,
+      "wall_ms": 344,
+      "first_child_ms": 37,
+      "callback_queue_latency_ms": 1.0,
+      "effect_to_callback_ms": 1.3333333333333333,
+      "duplicate_external_effects": 0,
+      "event_count": 84,
+      "candidate_sha256": "f3037e35242b45c04ca46a0296852f0c305ba7ede3d07da28ece0696b30f3070"
+    },
+    {
+      "label": "prototype-4",
+      "success": true,
+      "wall_ms": 344,
+      "first_child_ms": 36,
+      "callback_queue_latency_ms": 0.6666666666666666,
+      "effect_to_callback_ms": 1.3333333333333333,
+      "duplicate_external_effects": 0,
+      "event_count": 84,
+      "candidate_sha256": "f3037e35242b45c04ca46a0296852f0c305ba7ede3d07da28ece0696b30f3070"
+    },
+    {
+      "label": "prototype-5",
+      "success": true,
+      "wall_ms": 340,
+      "first_child_ms": 36,
+      "callback_queue_latency_ms": 0.3333333333333333,
+      "effect_to_callback_ms": 1.3333333333333333,
+      "duplicate_external_effects": 0,
+      "event_count": 84,
+      "candidate_sha256": "f3037e35242b45c04ca46a0296852f0c305ba7ede3d07da28ece0696b30f3070"
+    },
+    {
+      "label": "prototype-restart",
+      "success": true,
+      "wall_ms": 37,
+      "first_child_ms": 10,
+      "callback_queue_latency_ms": 1.0,
+      "effect_to_callback_ms": 1.3333333333333333,
+      "duplicate_external_effects": 0,
+      "event_count": 25,
+      "candidate_sha256": "f3037e35242b45c04ca46a0296852f0c305ba7ede3d07da28ece0696b30f3070"
+    }
+  ]
+}

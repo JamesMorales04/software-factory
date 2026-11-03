@@ -1,0 +1,18 @@
+{
+  "label": "factory-parallel-workgraph",
+  "command": [
+    "/home/james/Escritorio/Development/sf-wave3/infinity-runtime/target/debug/deps/e2e_fixture_dispatch-d70a187ff64776d3",
+    "parallel_workgraph_reaches_accepted_on_integrated_candidate",
+    "--nocapture"
+  ],
+  "exit_code": 0,
+  "wall_ms": 752.999,
+  "peak_rss_kib": 113332,
+  "peak_processes": 7,
+  "peak_threads": 61,
+  "sampled_cpu_ms": 390.0,
+  "direct_child_rusage_cpu_ms": 749.561,
+  "direct_child_maxrss_kib": 48508,
+  "samples": 37,
+  "profile": "debug"
+}
