@@ -8,6 +8,8 @@ use super::*;
 use crate::execution_policy::{InferenceRole, ReserveInferenceInput, UsdMicros};
 use crate::inference_ledger::MarkInferenceDispatchedInput;
 use chrono::Utc;
+use sqlx::connection::Connection;
+use sqlx::transaction::Transaction;
 use sqlx_sqlite::SqliteConnection;
 use uuid::Uuid;
 
@@ -2872,6 +2874,99 @@ mod tests {
             matches!(bad_candidate, Error::Invalid(_)),
             "{bad_candidate:?}"
         );
+        // A rejected execution check must not persist a provider tool event.
+        // The recorded flake followed a rejected check that had already
+        // written: its rollback was queued asynchronously while the next
+        // transaction attempted a deferred read-to-write upgrade.
+        let (events,): (i64,) = sqlx::query_as::query_as(
+            "SELECT COUNT(*) FROM provider_tool_events WHERE session_record_id='session-check'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(events, 1);
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn rejected_execution_checks_never_race_the_next_writer() {
+        let (path, db) = fixture(100).await;
+        insert_session(&db, "session-race", "attempt").await;
+        db.mark_provider_active("session-race", "worker", 1, "ses_race", "/tmp/race")
+            .await
+            .unwrap();
+        let db = std::sync::Arc::new(db);
+        let mut accepted = 0_i64;
+        for index in 0..24 {
+            let invalid_call = format!("invalid-{index}");
+            let valid_call = format!("valid-{index}");
+            let invalid = {
+                let db = db.clone();
+                async move {
+                    db.record_provider_tool_event(&ProviderToolEventInput {
+                        session_record_id: "session-race".into(),
+                        worker_id: "worker".into(),
+                        generation: 1,
+                        call_id: invalid_call,
+                        tool: "run_command".into(),
+                        decision: "RESULT".into(),
+                        detail: "exit=Some(0)".into(),
+                        check: Some(ExecutionCheckInput {
+                            command: vec!["false".into()],
+                            candidate_sha256: "c".repeat(64),
+                            exit_code: Some(0),
+                        }),
+                    })
+                    .await
+                }
+            };
+            let valid = {
+                let db = db.clone();
+                async move {
+                    db.record_provider_tool_event(&ProviderToolEventInput {
+                        session_record_id: "session-race".into(),
+                        worker_id: "worker".into(),
+                        generation: 1,
+                        call_id: valid_call,
+                        tool: "run_command".into(),
+                        decision: "RESULT".into(),
+                        detail: "exit=Some(0)".into(),
+                        check: Some(ExecutionCheckInput {
+                            command: vec!["cargo".into(), "test".into()],
+                            candidate_sha256: "c".repeat(64),
+                            exit_code: Some(0),
+                        }),
+                    })
+                    .await
+                }
+            };
+            // The per-database write gate serializes these in-process writers,
+            // so this exercises ordering after a rejected call rather than
+            // cross-process SQLite contention.
+            let (invalid, valid) = tokio::join!(invalid, valid);
+            let invalid = invalid.expect_err("the frozen check does not include `false`");
+            assert!(
+                matches!(invalid, Error::Forbidden(_)),
+                "unexpected invalid outcome: {invalid:?}"
+            );
+            valid.expect("valid execution checks must not fail with Busy");
+            accepted += 1;
+        }
+        let (events,): (i64,) = sqlx::query_as::query_as(
+            "SELECT COUNT(*) FROM provider_tool_events WHERE session_record_id='session-race'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(events, accepted);
+        let (receipts,): (i64,) = sqlx::query_as::query_as(
+            "SELECT COUNT(*) FROM execution_check_receipts WHERE session_record_id='session-race'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(receipts, accepted);
         db.close().await;
         let _ = std::fs::remove_file(path);
     }
@@ -3088,13 +3183,36 @@ impl Database {
             return Err(Error::Invalid("provider tool event"));
         }
         let _write = self.write_lock.lock().await;
-        let mut transaction = self.pool.begin().await?;
+        // `BEGIN` is deferred in SQLite: a read followed by a write upgrades
+        // the snapshot and can fail with BUSY_SNAPSHOT, which bypasses the busy
+        // handler. Writer transactions take the reserved lock up front.
+        let mut connection = self.pool.acquire().await?;
+        let mut transaction = Connection::begin_with(&mut *connection, "BEGIN IMMEDIATE").await?;
+        let outcome = Self::record_provider_tool_event_in_tx(&mut transaction, input).await;
+        match outcome {
+            Ok(record) => {
+                transaction.commit().await?;
+                Ok(record)
+            }
+            Err(error) => {
+                // Await the rollback so the write lock is released before any
+                // queued writer observes the failed attempt.
+                transaction.rollback().await?;
+                Err(error)
+            }
+        }
+    }
+
+    async fn record_provider_tool_event_in_tx(
+        transaction: &mut Transaction<'_, sqlx_sqlite::Sqlite>,
+        input: &ProviderToolEventInput,
+    ) -> Result<ProviderToolEventRecord, Error> {
         let row: Option<(String, i64)> = sqlx::query_as::query_as(
             "SELECT worker_id,generation FROM provider_sessions
              WHERE session_record_id=?1 AND state IN ('ACTIVE','CANCEL_REQUESTED')",
         )
         .bind(&input.session_record_id)
-        .fetch_optional(&mut *transaction)
+        .fetch_optional(&mut **transaction)
         .await?;
         let (worker_id, generation) = row.ok_or(Error::Forbidden(
             "provider tool event requires an active owned session".into(),
@@ -3111,7 +3229,7 @@ impl Database {
             )
             .bind(&input.session_record_id)
             .bind(&input.call_id)
-            .fetch_optional(&mut *transaction)
+            .fetch_optional(&mut **transaction)
             .await?;
             if duplicate.is_some() {
                 return Err(Error::Conflict(
@@ -3126,8 +3244,27 @@ impl Database {
             "SELECT COALESCE(MAX(sequence),0)+1 FROM provider_tool_events WHERE session_record_id=?1",
         )
         .bind(&input.session_record_id)
-        .fetch_one(&mut *transaction)
+        .fetch_one(&mut **transaction)
         .await?;
+        // Resolve every execution-check fact before writing so an invalid
+        // result cannot persist a tool event and then rely on a rollback.
+        let requires_check = input.tool == "run_command" && input.decision == "RESULT";
+        let resolved_check = if requires_check {
+            let check = input.check.as_ref().ok_or(Error::Forbidden(
+                "run_command result requires an execution check receipt".into(),
+            ))?;
+            Some(
+                super::execution_receipts::resolve_execution_check(
+                    transaction,
+                    &input.session_record_id,
+                    input.generation,
+                    check,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
         let created_at = Utc::now().to_rfc3339();
         sqlx::query::query(
             "INSERT INTO provider_tool_events
@@ -3141,28 +3278,24 @@ impl Database {
         .bind(&input.decision)
         .bind(&input.detail)
         .bind(&created_at)
-        .execute(&mut *transaction)
+        .execute(&mut **transaction)
         .await?;
-        let execution_check = if input.tool == "run_command" && input.decision == "RESULT" {
-            let check = input.check.as_ref().ok_or(Error::Forbidden(
-                "run_command result requires an execution check receipt".into(),
-            ))?;
-            Some(
-                super::execution_receipts::record_execution_check_receipt_in_tx(
-                    &mut transaction,
+        let execution_check = match resolved_check {
+            Some(resolved) => Some(
+                super::execution_receipts::insert_execution_check_receipt(
+                    transaction,
+                    &resolved,
                     &input.session_record_id,
                     sequence,
                     input.generation,
                     &input.call_id,
-                    check,
                 )
                 .await?,
-            )
-        } else {
-            None
+            ),
+            None => None,
         };
         record_event(
-            &mut transaction,
+            transaction,
             &input.session_record_id,
             "provider.tool_event",
             &format!(
@@ -3171,7 +3304,6 @@ impl Database {
             ),
         )
         .await?;
-        transaction.commit().await?;
         Ok(ProviderToolEventRecord {
             session_record_id: input.session_record_id.clone(),
             sequence,
