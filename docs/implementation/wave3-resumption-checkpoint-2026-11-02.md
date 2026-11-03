@@ -2,11 +2,49 @@
 
 **Campaign branch:** `campaign/office-ux-wave3-20261028`
 **Remote campaign HEAD at resumption:** `f7479c0c5f936d1097426dd1293ef43ea6e72fb6`
-**Remote campaign HEAD after recovering prior local work:** `bb22524e6e899bdb51e3600814798ccd63b5b0a5`
-**Remote `main`:** `d58725266d132fafb96a79970ff292acc876feb8`
+**Final campaign HEAD (stable baseline):** `25e34783a3195dba3827ae2e2b730bc5b0c6eb9e`
+**Remote `main` (unchanged):** `d58725266d132fafb96a79970ff292acc876feb8`
 **Integration worktree:** `/home/james/Escritorio/Development/sf-wave3/integration`
 **No `main` merge, branch-protection change, paid inference, or access-stack
 promotion occurred.**
+
+## Final stable Wave 3 baseline (2026-11-02)
+
+**Exact code baseline:** `25e34783a3195dba3827ae2e2b730bc5b0c6eb9e`
+(the campaign head after merging PR #83). `main` remains
+`d58725266d132fafb96a79970ff292acc876feb8`.
+
+- **PR #80** merged at `4f732ffb2173561945194508b2f796bad56a1e5f` from head
+  `01cc72b78a61b98cccff229afdf4f2a84ca4f2eb`; GPT-6 Luna exact-head
+  **APPROVE**. Required CI run `41537700176`: architecture-consistency,
+  compose-policy, rust and container-dev all PASS.
+- **PR #83** merged at `25e34783a3195dba3827ae2e2b730bc5b0c6eb9e` from head
+  `5b07e6215cf66a1c9f0427b1d7152b7beda8d3ae`; GPT-6 Luna exact-head
+  **APPROVE**. Required CI run `41571994723`: architecture-consistency,
+  compose-policy, rust and container-dev all PASS. The container lane ran the
+  canonical Office and unified-intake Chromium journeys at this exact head.
+- **PR #81** was closed as explicitly superseded; its CAP-050/CAP-052
+  correction is carried by PR #80.
+- **Local evidence at `fe0eeba`** (parent of the formatting-only `5b07e62`):
+  fmt PASS; Clippy all features PASS; library 512 passed / 2 ignored; Core API
+  33 with `test-support`, 30 without; Worker 13; CAP-014 2; fixture-dispatch
+  12; production build without `test-support` PASS; strict repository hygiene
+  PASS. `cargo xtask e2e office` PASS (candidate `3820eb82…`, gate
+  `ACCEPTED`); `cargo xtask e2e intake` PASS; `cargo xtask e2e intake-full`
+  PASS (candidate `48881581…`, gate `ACCEPTED`, MODEL reviewer).
+- **Funding posture:** production dispatch remains fail-closed. The
+  debug-only `test-support` feature carries exact-scope admissions for
+  deterministic tests and the intake E2E; it is rejected in non-debug builds,
+  is absent from production binaries, and cannot override a persisted
+  subscription policy or quota pause. No provider entitlement, paid fallback,
+  Extra Usage, automatic top-up or live inference was enabled.
+- **NOT_TESTED:** live provider inference, verified subscription
+  entitlement/no-overage proof, real quota recovery, atomic pre-Project request
+  admission, ISOLATED execution, deployment, and Owner visual sign-off. No paid
+  inference occurred.
+- **Deferred, not part of this baseline:** PR #82 visual V3, PR #79 provider
+  preparation and the access stack. The Infinity Runtime comparison must start
+  from the reviewed `25e3478` integration commit in a separate worktree.
 
 ## Recovered prior Director work
 
@@ -41,7 +79,7 @@ promoted. It remains local/unpushed.
 - No separate positive-USD test authorization was created. Real provider UAT
   remains blocked pending no-overage proof and atomic request admission.
 
-## Open PRs and exact heads
+## Historical open-PR snapshot at resumption (superseded)
 
 | PR | Branch | GitHub head | State |
 |---|---|---|---|
@@ -51,7 +89,7 @@ promoted. It remains local/unpushed.
 | #82 | `factory/office-isometric-v3/20261029` | `95346734a4c3d99384388f84c15c7cb2996e2efa` | V3 visual; exact-head review approved; browser acceptance blocked by fixture Worker and Office harness foundations |
 | #83 | `factory/subscription-funding/20261029` | `c0eb767d84d774362c7bed27fc5a7834fbbc2436` | fail-closed funding gate; full Rust suite red |
 
-## Current implementation ownership
+## Historical implementation ownership (superseded)
 
 | Lane | Worktree | Writer | State |
 |---|---|---|---|
@@ -87,7 +125,7 @@ promoted. It remains local/unpushed.
    decoder's required reason for `RECOVERABLE`. Repair is in progress with a
    forward migration/test; quota recovery remains unavailable.
 
-## Current reviewed candidates (2026-11-02)
+## Historical candidate reviews before final merge (superseded)
 
 - PR #80 final candidate `d2dd02ccff6a4566e1178d992ab42fb89e1a85c4`
   (`base 36079cf`): GPT-6 Luna exact-head review **APPROVE**. The
@@ -178,7 +216,7 @@ of ambiguous requests. No route may be enabled until the negative invariants
 (evidence provenance, exact bindings, one-winner claims, crash/restart,
 revocation and dispatch rechecks) pass.
 
-## Baseline candidate status (2026-11-02 22:30 UTC-05)
+## Historical pre-merge checkpoint (2026-11-02 22:30 UTC-05, superseded)
 
 - **PR #80 final candidate:** `d2dd02ccff6a4566e1178d992ab42fb89e1a85c4`
   against base `36079cf`. GPT-6 Luna exact-head review: **APPROVE** after two
@@ -200,14 +238,14 @@ revocation and dispatch rechecks) pass.
   compose-policy pass; `rust` and `container-dev` in progress. No merge has
   occurred yet.
 
-## Immediate next tasks
+## Post-baseline next tasks
 
-1. Finish PR #80 intake-journey repair and rerun canonical Office + intake E2E.
-2. Add the PR #81 CAP evidence correction to the first integration candidate;
-   PR #81's Worker fix is already present in PR #80 as `3d39465`.
-3. Get PR #83 full Rust suite green with the explicit test-only funding fixture;
-   do not enable provider dispatch.
-4. Obtain independent Luna review of the final PR #80/#83 heads and the exact
-   PR #38 access head.
-5. Integrate the resulting reviewed foundation into Wave 3, then rebase #79/#82.
-6. Update every PR's three impact declarations to the actual integrated base/head.
+1. Use `25e3478` as the exact reviewed Factory integration commit for the
+   separately authorized Infinity Runtime comparison. Do not migrate inside the
+   Wave 3 worktrees.
+2. Keep real provider dispatch blocked until a legitimate verified subscription
+   entitlement/no-overage trust anchor and atomic request admission exist.
+3. Keep PR #82 visual V3, PR #79 provider preparation and the access stack
+   deferred unless separately authorized.
+4. Do not claim deployment, ISOLATED execution or Owner visual acceptance from
+   this baseline.
