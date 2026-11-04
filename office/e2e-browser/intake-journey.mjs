@@ -838,9 +838,12 @@ try {
       }),
     });
     await page.goto(`${viteUrl}/#/requests/${requestId}`);
-    await page.getByRole("link", { name: /Open Campaign/ }).first().waitFor({
-      timeout: 30000,
-    });
+    await page
+      .getByRole("link", { name: /Open Campaign/ })
+      .first()
+      .waitFor({
+        timeout: 30000,
+      });
   } else {
     await page
       .getByLabel("Approval rationale")
