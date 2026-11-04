@@ -75,9 +75,34 @@ pub struct ProviderCatalogEntry {
 
 pub const OPENCODE_GO_SUBSCRIPTION_BASE_URL: &str = "https://opencode.ai/inference/go/openai/v1";
 
+/// Test-only upstream exception. It is limited to loopback or explicitly
+/// listed fixture hosts and is never satisfied by an arbitrary HTTPS URL.
+pub fn is_test_upstream_url(value: &str) -> bool {
+    if std::env::var("FACTORY_ALLOW_TEST_UPSTREAM").ok().as_deref() != Some("1") {
+        return false;
+    }
+    is_test_upstream_url_for_hosts(
+        value,
+        &parse_test_upstream_hosts(std::env::var("FACTORY_TEST_UPSTREAM_HOSTS").ok().as_deref()),
+    )
+}
+
+/// Pure host check used by `is_test_upstream_url`; plain HTTP only.
+fn is_test_upstream_url_for_hosts(value: &str, hosts: &[String]) -> bool {
+    let Ok(url) = reqwest::Url::parse(value) else {
+        return false;
+    };
+    if url.scheme() != "http" {
+        return false;
+    }
+    let Some(host) = url.host_str().map(str::to_ascii_lowercase) else {
+        return false;
+    };
+    matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1")
+        || hosts.iter().any(|entry| entry == &host)
+}
+
 /// The Go subscription route must use the exact documented inference base.
-/// Test-only loopback fixtures are admitted through the explicit
-/// `FACTORY_ALLOW_TEST_UPSTREAM` path instead of a production alias.
 pub fn is_canonical_opencode_go_base_url(value: &str) -> bool {
     value.trim_end_matches('/') == OPENCODE_GO_SUBSCRIPTION_BASE_URL
 }
@@ -725,6 +750,31 @@ mod tests {
         ));
         assert!(!is_canonical_opencode_go_base_url(
             "https://opencode.ai/inference/go/openai/v1/extra"
+        ));
+    }
+
+    #[test]
+    fn test_upstream_urls_are_plain_http_fixtures_only() {
+        let hosts = vec!["model-fixture".to_string()];
+        assert!(is_test_upstream_url_for_hosts(
+            "http://127.0.0.1:8080/v1",
+            &hosts
+        ));
+        assert!(is_test_upstream_url_for_hosts(
+            "http://model-fixture:8080/v1",
+            &hosts
+        ));
+        assert!(!is_test_upstream_url_for_hosts(
+            "https://model-fixture:8080/v1",
+            &hosts
+        ));
+        assert!(!is_test_upstream_url_for_hosts(
+            "https://api.openai.com/v1",
+            &hosts
+        ));
+        assert!(!is_test_upstream_url_for_hosts(
+            "http://unlisted:8080/v1",
+            &hosts
         ));
     }
 

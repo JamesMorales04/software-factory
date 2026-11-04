@@ -266,11 +266,14 @@ impl Database {
         // Subscription eligibility precedes historical monetary requirements.
         // Keep V2's durable blocking hold so a refused turn cannot churn
         // through repeated assignments. No monetary reservation is created.
-        if let Err(error) = super::inference_ledger::require_enabled_subscription_funding_in_tx(
-            &mut transaction,
-            &campaign_id,
-        )
-        .await
+        if let Err(error) =
+            super::inference_ledger::require_enabled_subscription_funding_for_route_in_tx(
+                &mut transaction,
+                &campaign_id,
+                &provider,
+                &model,
+            )
+            .await
         {
             if authorization_version == 2 && matches!(error, Error::SubscriptionFunding(_)) {
                 super::lead::record_blocking_progress_hold_in_tx(
@@ -717,12 +720,7 @@ impl Database {
         if sequence == 0 && !actual_request_sha256.is_empty() {
             return Err(Error::Conflict("provider turn request is already bound"));
         }
-        super::inference_ledger::require_enabled_subscription_funding_in_tx(
-            &mut transaction,
-            &campaign_id,
-        )
-        .await?;
-        super::inference_ledger::require_subscription_route_in_tx(
+        super::inference_ledger::require_enabled_subscription_funding_for_route_in_tx(
             &mut transaction,
             &campaign_id,
             &provider,
@@ -4104,6 +4102,8 @@ mod quota_error_tests {
             "invalid model",
             "authentication failed",
             "temporary upstream 500",
+            "HTTP 429 Too Many Requests",
+            "rate limit exceeded",
         ] {
             assert!(!provider_quota_error(message), "{message}");
         }

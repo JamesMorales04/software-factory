@@ -2230,7 +2230,7 @@ async fn enabled_subscription_binding_in_tx(
     }
     if provider == "opencode-go"
         && !crate::provider_catalog::is_canonical_opencode_go_base_url(&base_url)
-        && std::env::var("FACTORY_ALLOW_TEST_UPSTREAM").ok().as_deref() != Some("1")
+        && !crate::provider_catalog::is_test_upstream_url(&base_url)
     {
         return Err(SubscriptionFundingRefusal::InvalidEvidence.into());
     }
@@ -2332,6 +2332,40 @@ pub(crate) async fn require_enabled_subscription_funding_in_tx(
         }
     };
     Err(refusal.into())
+}
+
+/// Route-aware funding gate. A fixture admission is accepted only when the
+/// actual provider route is a fixture adapter or a configured test upstream.
+pub(crate) async fn require_enabled_subscription_funding_for_route_in_tx(
+    connection: &mut SqliteConnection,
+    campaign_id: &str,
+    provider: &str,
+    model: &str,
+) -> Result<(), Error> {
+    use crate::execution_policy::SubscriptionFundingRefusal;
+    let has_policy: Option<(i64,)> = sqlx::query_as::query_as(
+        "SELECT 1 FROM subscription_funding_policies WHERE campaign_id=?1",
+    )
+    .bind(campaign_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    if has_policy.is_some() {
+        require_enabled_subscription_funding_in_tx(connection, campaign_id).await?;
+        require_subscription_route_in_tx(connection, campaign_id, provider, model).await?;
+        return Ok(());
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    if super::test_subscription_dispatch_admitted_for_route_in_tx(
+        connection,
+        campaign_id,
+        provider,
+        model,
+    )
+    .await?
+    {
+        return Ok(());
+    }
+    Err(SubscriptionFundingRefusal::BindingRequired.into())
 }
 
 /// Enforce the exact route on an enabled subscription Campaign. Legacy and

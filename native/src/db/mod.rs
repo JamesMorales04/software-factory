@@ -980,6 +980,29 @@ impl Database {
 }
 
 #[cfg(any(test, feature = "test-support"))]
+pub(crate) async fn test_subscription_dispatch_admitted_for_route_in_tx(
+    connection: &mut sqlx_sqlite::SqliteConnection,
+    scope: &str,
+    provider: &str,
+    model: &str,
+) -> Result<bool, Error> {
+    if !test_subscription_dispatch_admitted_in_tx(connection, scope).await? {
+        return Ok(false);
+    }
+    // Library unit tests never exercise a real adapter; the test-support
+    // feature in a real binary still has to prove a fixture route.
+    if cfg!(test) || provider == "fixture" || model.starts_with("fixture") {
+        return Ok(true);
+    }
+    let base_url: Option<(String,)> =
+        sqlx::query_as::query_as("SELECT base_url FROM provider_settings WHERE provider=?1")
+            .bind(provider)
+            .fetch_optional(&mut *connection)
+            .await?;
+    Ok(base_url.is_some_and(|(value,)| crate::provider_catalog::is_test_upstream_url(&value)))
+}
+
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) async fn test_subscription_dispatch_admitted_in_tx(
     connection: &mut sqlx_sqlite::SqliteConnection,
     scope: &str,

@@ -2344,8 +2344,8 @@ async fn update_provider_settings(
     let allow_loopback_http = env::var("FACTORY_ALLOW_TEST_UPSTREAM").ok().as_deref() == Some("1");
     let test_upstream_hosts = test_upstream_hosts();
     if provider == "opencode-go"
-        && !allow_loopback_http
         && !factory_native::provider_catalog::is_canonical_opencode_go_base_url(&input.base_url)
+        && !factory_native::provider_catalog::is_test_upstream_url(&input.base_url)
     {
         return (
             StatusCode::BAD_REQUEST,
@@ -9661,7 +9661,7 @@ async fn create_intake_subscription_admission(
         && !factory_native::provider_catalog::is_canonical_opencode_go_base_url(
             &assessment_settings.base_url,
         )
-        && std::env::var("FACTORY_ALLOW_TEST_UPSTREAM").ok().as_deref() != Some("1")
+        && !factory_native::provider_catalog::is_test_upstream_url(&assessment_settings.base_url)
     {
         return api_error(Error::Forbidden(
             "OpenCode Go assessment must use the canonical subscription endpoint".into(),

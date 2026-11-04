@@ -50,8 +50,16 @@ fn model_call_ledger_role(role: ModelCallRole) -> InferenceRole {
 async fn test_scope_admitted(
     connection: &mut SqliteConnection,
     objective_id: &str,
+    provider: &str,
+    model: &str,
 ) -> Result<bool, Error> {
-    super::test_subscription_dispatch_admitted_in_tx(connection, objective_id).await
+    super::test_subscription_dispatch_admitted_for_route_in_tx(
+        connection,
+        objective_id,
+        provider,
+        model,
+    )
+    .await
 }
 
 /// Resolve the ledger requirement only after current Owner funding policy has
@@ -67,7 +75,7 @@ async fn model_call_ledger_requirement(
     match role {
         ModelCallRole::Lead => {
             #[cfg(any(test, feature = "test-support"))]
-            if test_scope_admitted(connection, objective_id).await? {
+            if test_scope_admitted(connection, objective_id, provider, model).await? {
                 // The test admission opens the subscription gate; it does not
                 // erase a request-scoped monetary envelope that an existing
                 // billable regression is exercising.
@@ -122,7 +130,7 @@ async fn model_call_ledger_requirement(
                     .await;
             }
             #[cfg(any(test, feature = "test-support"))]
-            if test_scope_admitted(connection, objective_id).await? {
+            if test_scope_admitted(connection, objective_id, provider, model).await? {
                 return super::inference_ledger::test_request_envelope_in_tx(
                     connection,
                     objective_id,
@@ -140,9 +148,7 @@ async fn campaign_requirement_to_envelope(
     provider: &str,
     model: &str,
 ) -> Result<Option<String>, Error> {
-    super::inference_ledger::require_enabled_subscription_funding_in_tx(connection, campaign_id)
-        .await?;
-    super::inference_ledger::require_subscription_route_in_tx(
+    super::inference_ledger::require_enabled_subscription_funding_for_route_in_tx(
         connection,
         campaign_id,
         provider,
@@ -667,12 +673,7 @@ impl Database {
         .fetch_optional(&mut *transaction)
         .await?
         {
-            super::inference_ledger::require_enabled_subscription_funding_in_tx(
-                &mut transaction,
-                &campaign_id,
-            )
-            .await?;
-            super::inference_ledger::require_subscription_route_in_tx(
+            super::inference_ledger::require_enabled_subscription_funding_for_route_in_tx(
                 &mut transaction,
                 &campaign_id,
                 &provider,
@@ -681,7 +682,8 @@ impl Database {
             .await?;
         } else {
             #[cfg(any(test, feature = "test-support"))]
-            let test_admitted = test_scope_admitted(&mut transaction, &objective_id).await?;
+            let test_admitted =
+                test_scope_admitted(&mut transaction, &objective_id, &provider, &model).await?;
             #[cfg(not(any(test, feature = "test-support")))]
             let test_admitted = false;
             if !test_admitted {

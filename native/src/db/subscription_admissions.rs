@@ -341,7 +341,7 @@ pub(super) async fn require_scope_admission_in_tx(
         };
         if provider == "opencode-go"
             && !crate::provider_catalog::is_canonical_opencode_go_base_url(&base_url)
-            && std::env::var("FACTORY_ALLOW_TEST_UPSTREAM").ok().as_deref() != Some("1")
+            && !crate::provider_catalog::is_test_upstream_url(&base_url)
         {
             return Err(Error::Invalid(
                 "OpenCode Go admission route is not the canonical subscription endpoint",
