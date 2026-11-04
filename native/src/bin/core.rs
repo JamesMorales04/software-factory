@@ -10553,7 +10553,7 @@ mod tests {
         assert!(body["missingEvidence"].as_array().is_some_and(|values| {
             values
                 .iter()
-                .any(|value| value == "PROVIDER_ISSUED_NO_OVERAGE_GUARANTEE")
+                .any(|value| value == "OWNER_CONFIRMED_EXTRA_USAGE_ASSUMPTION")
         }));
 
         let unknown = api_router(app.clone())
