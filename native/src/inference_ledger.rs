@@ -74,7 +74,12 @@ impl InferenceLedgerMode {
 #[serde(rename_all = "camelCase")]
 pub enum CampaignInferenceRequirement {
     LegacyV1,
-    EnvelopeBound { envelope_id: String },
+    EnvelopeBound {
+        envelope_id: String,
+    },
+    /// An enabled Owner-confirmed subscription admission. No monetary
+    /// envelope is created or consulted.
+    Subscription,
 }
 
 const MAX_TOKEN_LEN: usize = 256;

@@ -162,6 +162,13 @@ pub enum FundingRecoveryState {
     Disabled {
         recorded_at_ms: i64,
     },
+    /// An explicit, bounded Owner-confirmed subscription admission. This is
+    /// the only state that authorizes provider dispatch; `admission_id` is the
+    /// receipt identity and is never provider-issued evidence.
+    Enabled {
+        admitted_at_ms: i64,
+        admission_id: String,
+    },
     PausedQuota {
         observed_at_ms: i64,
         resets_at_ms: Option<i64>,
@@ -219,6 +226,8 @@ pub struct SubscriptionBinding {
     pub extra_usage_disabled: bool,
     pub api_key_route_disabled: bool,
     pub quota: QuotaObservation,
+    #[serde(default)]
+    pub admission_basis: SubscriptionAdmissionBasis,
 }
 
 impl SubscriptionBinding {
@@ -248,6 +257,28 @@ impl SubscriptionBinding {
                 if observed_at_ms > 0 && observed_at_ms <= now_ms && valid_until_ms > now_ms
         );
         now_ms > 0 && self.is_verified_no_charge_route() && fresh_quota
+    }
+
+    /// Owner-confirmed admission. It does not require provider-issued
+    /// entitlement or no-overage evidence, but it still refuses an exhausted
+    /// quota, a missing/expired Owner assumption, or a paid fallback route.
+    pub fn is_owner_confirmed_admissible_at(&self, now_ms: i64) -> bool {
+        let SubscriptionAdmissionBasis::OwnerConfirmedConfiguration { assumption } =
+            &self.admission_basis
+        else {
+            return false;
+        };
+        assumption.validate_at(now_ms).is_ok()
+            && self.extra_usage_disabled
+            && self.api_key_route_disabled
+            && !matches!(
+                self.quota,
+                QuotaObservation::Exhausted { .. }
+                    | QuotaObservation::Available {
+                        remaining: Some(0),
+                        ..
+                    }
+            )
     }
 }
 
@@ -312,10 +343,72 @@ impl SubscriptionFundingRefusal {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderAuthenticationClass {
+    /// Legacy label for an OpenCode subscription login. New admissions use
+    /// `ApiKey` because OpenCode Go authenticates with an API key; the route,
+    /// not the credential shape, decides billing.
     OpenCodeSubscription,
     ChatGptPlan,
     ApiKey,
     Unknown,
+}
+
+/// The Owner-controlled upstream Extra Usage setting. This is an assumption
+/// recorded by an authenticated operator, not provider-issued evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum OwnerControlledExtraUsage {
+    Disabled,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct OwnerBillingAssumption {
+    pub assumption_id: String,
+    pub confirmed_by: String,
+    pub confirmed_at_ms: i64,
+    pub valid_until_ms: i64,
+    pub extra_usage: OwnerControlledExtraUsage,
+    pub statement: String,
+}
+
+impl OwnerBillingAssumption {
+    pub fn validate_at(&self, now_ms: i64) -> Result<(), &'static str> {
+        if self.assumption_id.trim().is_empty()
+            || self.assumption_id.len() > 128
+            || self.confirmed_by.trim().is_empty()
+            || self.confirmed_by.len() > 128
+            || self.confirmed_at_ms <= 0
+            || self.confirmed_at_ms > now_ms
+            || self.valid_until_ms <= now_ms
+            || self.valid_until_ms <= self.confirmed_at_ms
+        {
+            return Err("Owner billing assumption is invalid or expired");
+        }
+        if self.extra_usage != OwnerControlledExtraUsage::Disabled {
+            return Err("Owner must confirm Extra Usage is disabled");
+        }
+        if self.statement.trim().len() < 20 || self.statement.len() > 2_000 {
+            return Err("Owner billing assumption statement is not bounded");
+        }
+        Ok(())
+    }
+}
+
+/// How a subscription binding was admitted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(
+    tag = "basis",
+    rename_all = "SCREAMING_SNAKE_CASE",
+    deny_unknown_fields
+)]
+pub enum SubscriptionAdmissionBasis {
+    /// Historical path: provider-issued entitlement and no-charge evidence.
+    #[default]
+    ProviderVerified,
+    /// Owner confirms the upstream Extra Usage setting. Core records the
+    /// assumption truthfully and does not claim provider verification.
+    OwnerConfirmedConfiguration { assumption: OwnerBillingAssumption },
 }
 
 /// Trusted facts needed for one deterministic subscription admission check.
@@ -381,50 +474,92 @@ pub fn evaluate_funding_admission(
     if grant_id != context.grant_id {
         return FundingAdmissionDecision::AuthorizationInvalid;
     }
-    // The route identity is exact: `opencode` is the API-key provider, while
-    // `opencode-go` is the subscription route. Admitting the plain provider
-    // here would let an API-key connection satisfy a subscription binding.
-    let expected = match binding.route {
-        SubscriptionRoute::OpenCodeGo => (
-            "opencode-go",
-            ProviderAuthenticationClass::OpenCodeSubscription,
-        ),
-        SubscriptionRoute::CodexChatGpt => ("codex", ProviderAuthenticationClass::ChatGptPlan),
+    // The route identity is exact: `opencode` is the separate operator-supplied
+    // API-key connection, while `opencode-go` is the subscription route.
+    // Authentication is not a billing classification: OpenCode Go uses an API
+    // key on the subscription endpoint.
+    let expected_provider = match binding.route {
+        SubscriptionRoute::OpenCodeGo => "opencode-go",
+        SubscriptionRoute::CodexChatGpt => "codex",
     };
-    if provider != expected.0
+    if provider != expected_provider
         || model != binding.model_id
-        || authentication != expected.1
         || context.settings_revision != binding.settings_revision
     {
         return FundingAdmissionDecision::BillableRouteForbidden;
     }
-    if !binding.extra_usage_disabled
-        || !binding.api_key_route_disabled
-        || !binding.no_charge_route_verified
-    {
-        return FundingAdmissionDecision::ExtraUsageUnverified;
-    }
-    if binding.provider_account_id.trim().is_empty()
-        || binding.plan_id.trim().is_empty()
-        || binding.model_id.trim().is_empty()
-        || binding.settings_revision.trim().is_empty()
-    {
-        return FundingAdmissionDecision::AuthorizationInvalid;
-    }
-    match binding.quota {
-        QuotaObservation::Exhausted { .. } => return FundingAdmissionDecision::QuotaExhausted,
-        QuotaObservation::Unknown { .. } => return FundingAdmissionDecision::UnknownQuota,
-        QuotaObservation::Available {
-            observed_at_ms,
-            valid_until_ms,
-            ..
-        } if observed_at_ms <= 0 || observed_at_ms > now_ms || valid_until_ms <= now_ms => {
-            return FundingAdmissionDecision::UnknownQuota;
+    match &binding.admission_basis {
+        SubscriptionAdmissionBasis::ProviderVerified => {
+            let expected_authentication = match binding.route {
+                SubscriptionRoute::OpenCodeGo => ProviderAuthenticationClass::OpenCodeSubscription,
+                SubscriptionRoute::CodexChatGpt => ProviderAuthenticationClass::ChatGptPlan,
+            };
+            if authentication != expected_authentication {
+                return FundingAdmissionDecision::BillableRouteForbidden;
+            }
+            if !binding.extra_usage_disabled
+                || !binding.api_key_route_disabled
+                || !binding.no_charge_route_verified
+            {
+                return FundingAdmissionDecision::ExtraUsageUnverified;
+            }
+            if binding.provider_account_id.trim().is_empty()
+                || binding.plan_id.trim().is_empty()
+                || binding.model_id.trim().is_empty()
+                || binding.settings_revision.trim().is_empty()
+            {
+                return FundingAdmissionDecision::AuthorizationInvalid;
+            }
+            match binding.quota {
+                QuotaObservation::Exhausted { .. } => {
+                    return FundingAdmissionDecision::QuotaExhausted;
+                }
+                QuotaObservation::Unknown { .. } => {
+                    return FundingAdmissionDecision::UnknownQuota;
+                }
+                QuotaObservation::Available {
+                    observed_at_ms,
+                    valid_until_ms,
+                    ..
+                } if observed_at_ms <= 0 || observed_at_ms > now_ms || valid_until_ms <= now_ms => {
+                    return FundingAdmissionDecision::UnknownQuota;
+                }
+                QuotaObservation::Available { .. } => {}
+            }
+            if !binding.is_verified_no_charge_route_at(now_ms) {
+                return FundingAdmissionDecision::UnverifiedEntitlement;
+            }
         }
-        QuotaObservation::Available { .. } => {}
-    }
-    if !binding.is_verified_no_charge_route_at(now_ms) {
-        return FundingAdmissionDecision::UnverifiedEntitlement;
+        SubscriptionAdmissionBasis::OwnerConfirmedConfiguration { assumption } => {
+            let authentication_allowed = match binding.route {
+                SubscriptionRoute::OpenCodeGo => matches!(
+                    authentication,
+                    ProviderAuthenticationClass::ApiKey
+                        | ProviderAuthenticationClass::OpenCodeSubscription
+                ),
+                SubscriptionRoute::CodexChatGpt => {
+                    authentication == ProviderAuthenticationClass::ChatGptPlan
+                }
+            };
+            if !authentication_allowed {
+                return FundingAdmissionDecision::BillableRouteForbidden;
+            }
+            if assumption.validate_at(now_ms).is_err() {
+                return FundingAdmissionDecision::UnverifiedEntitlement;
+            }
+            if !binding.extra_usage_disabled || !binding.api_key_route_disabled {
+                return FundingAdmissionDecision::ExtraUsageUnverified;
+            }
+            match binding.quota {
+                QuotaObservation::Exhausted { .. } => {
+                    return FundingAdmissionDecision::QuotaExhausted;
+                }
+                QuotaObservation::Available {
+                    remaining: Some(0), ..
+                } => return FundingAdmissionDecision::QuotaExhausted,
+                _ => {}
+            }
+        }
     }
     FundingAdmissionDecision::Allowed
 }
@@ -951,6 +1086,7 @@ mod subscription_funding_tests {
             plan_id: "go".into(),
             model_id: "model".into(),
             settings_revision: "revision-1".into(),
+            admission_basis: SubscriptionAdmissionBasis::ProviderVerified,
             entitlement_verified: true,
             no_charge_route_verified: true,
             extra_usage_disabled: true,
@@ -1039,6 +1175,7 @@ mod subscription_funding_tests {
                 plan_id: "go".into(),
                 model_id: "model".into(),
                 settings_revision: "r1".into(),
+                admission_basis: SubscriptionAdmissionBasis::ProviderVerified,
                 entitlement_verified: true,
                 no_charge_route_verified: true,
                 extra_usage_disabled: true,
@@ -1080,6 +1217,7 @@ mod subscription_funding_tests {
             plan_id: "go".into(),
             model_id: "model".into(),
             settings_revision: "revision-1".into(),
+            admission_basis: SubscriptionAdmissionBasis::ProviderVerified,
             entitlement_verified: true,
             no_charge_route_verified: true,
             extra_usage_disabled: true,
@@ -1231,6 +1369,144 @@ mod subscription_funding_tests {
         assert_eq!(
             evaluate_funding_admission(&context),
             FundingAdmissionDecision::BillableRouteForbidden
+        );
+    }
+
+    fn owner_assumption() -> OwnerBillingAssumption {
+        OwnerBillingAssumption {
+            assumption_id: "owner-extra-usage-2026-11".into(),
+            confirmed_by: "Product Owner".into(),
+            confirmed_at_ms: 10,
+            valid_until_ms: 100,
+            extra_usage: OwnerControlledExtraUsage::Disabled,
+            statement: "Owner confirms OpenCode Console Extra Usage is disabled".into(),
+        }
+    }
+
+    fn owner_confirmed_policy() -> ExecutionPolicyV3 {
+        let binding = SubscriptionBinding {
+            route: SubscriptionRoute::OpenCodeGo,
+            entitlement: ProviderEntitlement::Unknown {
+                reason: "not provider-issued".into(),
+            },
+            provider_account_id: String::new(),
+            plan_id: "OWNER_CONFIRMED".into(),
+            model_id: "deepseek-v4.1-flash".into(),
+            settings_revision: "revision-1".into(),
+            entitlement_verified: false,
+            no_charge_route_verified: false,
+            extra_usage_disabled: true,
+            api_key_route_disabled: true,
+            quota: QuotaObservation::Unknown {
+                observed_at_ms: 10,
+                reason: "no provider quota observation required".into(),
+            },
+            admission_basis: SubscriptionAdmissionBasis::OwnerConfirmedConfiguration {
+                assumption: owner_assumption(),
+            },
+        };
+        ExecutionPolicyV3 {
+            policy_id: "policy-owner".into(),
+            authorization_id: "auth-1".into(),
+            authorization_revision: 1,
+            funding: FundingPolicy::Subscription {
+                grant_id: "grant-1".into(),
+                binding_sha256: "a".repeat(64),
+                binding: Box::new(binding),
+            },
+            scope_sha256: "b".repeat(64),
+            progress: ProgressPolicy {
+                diagnose_after_stagnant_checkpoints: std::num::NonZeroU32::new(2).unwrap(),
+                escalate_after_unsuccessful_replans: std::num::NonZeroU32::new(2).unwrap(),
+                observation_timeout_secs: std::num::NonZeroU32::new(30).unwrap(),
+            },
+            operations: OperationLimits {
+                model_request_timeout_secs: std::num::NonZeroU32::new(60).unwrap(),
+                tool_call_timeout_secs: std::num::NonZeroU32::new(60).unwrap(),
+                max_request_bytes: std::num::NonZeroU32::new(1024).unwrap(),
+                max_response_bytes: std::num::NonZeroU32::new(1024).unwrap(),
+                max_generation_tokens: std::num::NonZeroU32::new(1024).unwrap(),
+                max_in_flight_operations: std::num::NonZeroU32::new(1).unwrap(),
+            },
+        }
+    }
+
+    #[test]
+    fn owner_confirmation_admits_api_key_go_without_provider_evidence() {
+        let policy = owner_confirmed_policy();
+        assert_eq!(
+            admission_for(
+                &policy,
+                "opencode-go",
+                "deepseek-v4.1-flash",
+                ProviderAuthenticationClass::ApiKey,
+                &"b".repeat(64),
+                true,
+            ),
+            FundingAdmissionDecision::Allowed
+        );
+        assert_eq!(
+            admission_for(
+                &policy,
+                "opencode",
+                "deepseek-v4.1-flash",
+                ProviderAuthenticationClass::ApiKey,
+                &"b".repeat(64),
+                true,
+            ),
+            FundingAdmissionDecision::BillableRouteForbidden
+        );
+        assert_eq!(
+            admission_for(
+                &policy,
+                "opencode-go",
+                "gpt-6-luna",
+                ProviderAuthenticationClass::ApiKey,
+                &"b".repeat(64),
+                true,
+            ),
+            FundingAdmissionDecision::BillableRouteForbidden
+        );
+    }
+
+    #[test]
+    fn owner_confirmation_refuses_exhausted_quota_and_expired_assumption() {
+        let mut policy = owner_confirmed_policy();
+        if let FundingPolicy::Subscription { binding, .. } = &mut policy.funding {
+            binding.quota = QuotaObservation::Exhausted {
+                observed_at_ms: 11,
+                resets_at_ms: None,
+            };
+        }
+        assert_eq!(
+            admission_for(
+                &policy,
+                "opencode-go",
+                "deepseek-v4.1-flash",
+                ProviderAuthenticationClass::ApiKey,
+                &"b".repeat(64),
+                true,
+            ),
+            FundingAdmissionDecision::QuotaExhausted
+        );
+        let mut expired = owner_confirmed_policy();
+        if let FundingPolicy::Subscription { binding, .. } = &mut expired.funding {
+            if let SubscriptionAdmissionBasis::OwnerConfirmedConfiguration { assumption } =
+                &mut binding.admission_basis
+            {
+                assumption.valid_until_ms = 11;
+            }
+        }
+        assert_eq!(
+            admission_for(
+                &expired,
+                "opencode-go",
+                "deepseek-v4.1-flash",
+                ProviderAuthenticationClass::ApiKey,
+                &"b".repeat(64),
+                true,
+            ),
+            FundingAdmissionDecision::UnverifiedEntitlement
         );
     }
 

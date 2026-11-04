@@ -57,13 +57,11 @@ pub struct SubscriptionFundingStatus {
 }
 
 const MISSING_EVIDENCE: &[&str] = &[
-    "PROVIDER_ISSUED_SUBSCRIPTION_ENTITLEMENT",
-    "PROVIDER_ISSUED_NO_OVERAGE_GUARANTEE",
-    "PROVIDER_ISSUED_QUOTA_OBSERVATION",
-    "CORE_ATOMIC_REQUEST_ADMISSION",
+    "OWNER_CONFIRMED_EXTRA_USAGE_ASSUMPTION",
+    "EXPLICIT_BOUNDED_SUBSCRIPTION_ADMISSION",
 ];
 
-const NOTE: &str = "Core reports readiness only. It cannot verify subscription entitlement, Extra Usage OFF, balance fallback OFF or a no-charge route, so subscription dispatch remains blocked until a reviewed provider-issued trust anchor and atomic admission exist.";
+const NOTE: &str = "Core does not require a provider-issued no-overage certificate. OpenCode Go uses API-key authentication on the subscription endpoint; the Owner confirms Extra Usage is disabled in the provider Console. Dispatch remains blocked until an authenticated operator records the bounded test admission and exact route binding.";
 
 /// Project the supported subscription routes. `None` means the provider is
 /// not a subscription route at all, which the HTTP layer reports as 404.
@@ -101,13 +99,13 @@ pub fn project(
         },
         core_verifiable: false,
         admissible: false,
-        entitlement: "UNVERIFIED",
-        extra_usage: "UNKNOWN",
-        balance_fallback: "UNKNOWN",
-        no_charge_route: "UNVERIFIED",
+        entitlement: "OWNER_CONFIRMED_CONFIGURATION",
+        extra_usage: "OWNER_CONFIRMED_DISABLED",
+        balance_fallback: "DISABLED_BY_TEST_POLICY",
+        no_charge_route: "EXACT_SUBSCRIPTION_ROUTE_ONLY",
         quota: FundingQuotaStatus {
             state: "UNKNOWN",
-            reason: "NO_PROVIDER_ISSUED_QUOTA_OBSERVATION",
+            reason: "NO_PROVIDER_QUOTA_OBSERVATION_REQUIRED",
         },
         missing_evidence,
         note: NOTE,
@@ -143,18 +141,16 @@ mod tests {
         assert_eq!(status.settings_revision, 3);
         assert!(!status.core_verifiable);
         assert!(!status.admissible);
-        assert_eq!(status.entitlement, "UNVERIFIED");
-        assert_eq!(status.extra_usage, "UNKNOWN");
-        assert_eq!(status.balance_fallback, "UNKNOWN");
-        assert_eq!(status.no_charge_route, "UNVERIFIED");
+        assert_eq!(status.entitlement, "OWNER_CONFIRMED_CONFIGURATION");
+        assert_eq!(status.extra_usage, "OWNER_CONFIRMED_DISABLED");
+        assert_eq!(status.balance_fallback, "DISABLED_BY_TEST_POLICY");
+        assert_eq!(status.no_charge_route, "EXACT_SUBSCRIPTION_ROUTE_ONLY");
         assert_eq!(status.quota.state, "UNKNOWN");
         assert_eq!(
             status.missing_evidence,
             [
-                "PROVIDER_ISSUED_SUBSCRIPTION_ENTITLEMENT",
-                "PROVIDER_ISSUED_NO_OVERAGE_GUARANTEE",
-                "PROVIDER_ISSUED_QUOTA_OBSERVATION",
-                "CORE_ATOMIC_REQUEST_ADMISSION",
+                "OWNER_CONFIRMED_EXTRA_USAGE_ASSUMPTION",
+                "EXPLICIT_BOUNDED_SUBSCRIPTION_ADMISSION",
             ]
         );
     }

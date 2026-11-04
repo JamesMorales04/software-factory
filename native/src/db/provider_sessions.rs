@@ -319,6 +319,10 @@ impl Database {
         let requirement =
             super::inference_ledger::campaign_requirement_in_tx(&mut transaction, &campaign_id)
                 .await?;
+        let subscription = matches!(
+            &requirement,
+            crate::inference_ledger::CampaignInferenceRequirement::Subscription
+        );
         let ledger_quote = match requirement {
             crate::inference_ledger::CampaignInferenceRequirement::EnvelopeBound { .. } => Some(
                 super::inference_ledger::latest_pricing_quote_in_tx(
@@ -333,7 +337,8 @@ impl Database {
                     )
                 })?,
             ),
-            crate::inference_ledger::CampaignInferenceRequirement::LegacyV1 => None,
+            crate::inference_ledger::CampaignInferenceRequirement::LegacyV1
+            | crate::inference_ledger::CampaignInferenceRequirement::Subscription => None,
         };
         let ledger_turn_cost_bound = ledger_quote
             .as_ref()
@@ -363,7 +368,7 @@ impl Database {
             reserved_input,
             reserved_output,
             reserved_cost,
-        ) = if authorization_version == 2 {
+        ) = if authorization_version == 2 && !subscription {
             let Some(quote) = ledger_quote.as_ref() else {
                 super::lead::record_blocking_progress_hold_in_tx(
                     &mut transaction,
@@ -416,6 +421,37 @@ impl Database {
                 0,
                 0,
             )
+        } else if subscription {
+            let (max_input, max_output): (i64, i64) = sqlx::query_as::query_as(
+                "SELECT max_input_tokens,max_output_tokens FROM provider_settings WHERE provider=?1",
+            )
+            .bind(&provider)
+            .fetch_optional(&mut *transaction)
+            .await?
+            .ok_or(Error::Unavailable(
+                "subscription provider settings are missing".into(),
+            ))?;
+            let operation_limits: Option<String> = sqlx::query_scalar::query_scalar(
+                "SELECT ep.operation_limits_json
+                 FROM campaigns c
+                 JOIN campaign_authorizations ca ON ca.campaign_id=c.id
+                 JOIN execution_policies ep ON ep.policy_id=ca.policy_id
+                 WHERE c.id=?1",
+            )
+            .bind(&campaign_id)
+            .fetch_optional(&mut *transaction)
+            .await?;
+            let Some(operation_limits) = operation_limits else {
+                return Err(Error::Unavailable(
+                    "subscription provider turn has no frozen operation limits".into(),
+                ));
+            };
+            let operation_limits: crate::execution_policy::OperationLimits =
+                serde_json::from_str(&operation_limits).map_err(|_| {
+                    Error::Invalid("subscription provider turn operation limits are malformed")
+                })?;
+            let deadline_secs = i64::from(operation_limits.model_request_timeout_secs.get());
+            (max_input, max_output, 0, deadline_secs, 0, 0, 0, 0, 0, 0, 0)
         } else if authorization_version == 1 {
             let max_input: Option<i64> = lease.try_get("max_input_tokens")?;
             let max_output: Option<i64> = lease.try_get("max_output_tokens")?;
@@ -504,7 +540,7 @@ impl Database {
             };
         if reservation_input <= 0
             || grant_output <= 0
-            || (ledger_turn_cost_bound.is_none() && remaining_cost <= 0)
+            || (!subscription && ledger_turn_cost_bound.is_none() && remaining_cost <= 0)
         {
             return Err(Error::Forbidden("provider turn budget is exhausted".into()));
         }

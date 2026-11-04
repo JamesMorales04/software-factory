@@ -422,6 +422,23 @@ struct ApproveIntakeRequest {
     /// billable MODEL request. Core never derives, rounds or invents it.
     #[serde(default)]
     authorized_micros: Option<u64>,
+    /// Exact request-scoped Owner-confirmed subscription admission. The
+    /// approval consumes it into the Campaign policy in the same transaction.
+    #[serde(default)]
+    subscription_admission_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IntakeSubscriptionAdmissionRequest {
+    assumption_id: String,
+    confirmed_by: String,
+    confirmed_at_ms: i64,
+    valid_until_ms: i64,
+    extra_usage_disabled: bool,
+    statement: String,
+    test_profile_id: String,
+    idempotency_key: String,
 }
 
 #[derive(Deserialize)]
@@ -936,6 +953,10 @@ fn office_api_router(app: Arc<App>) -> Router {
             get(intake_requests).post(create_intake_request),
         )
         .route("/intake/requests/{id}", get(get_intake_request))
+        .route(
+            "/intake/requests/{id}/subscription-admission",
+            post(create_intake_subscription_admission),
+        )
         .route("/intake/requests/{id}/assess", post(assess_intake_request))
         .route(
             "/intake/requests/{id}/approve",
@@ -1166,6 +1187,10 @@ fn api_router(app: Arc<App>) -> Router {
             get(intake_requests).post(create_intake_request),
         )
         .route("/intake/requests/{id}", get(get_intake_request))
+        .route(
+            "/intake/requests/{id}/subscription-admission",
+            post(create_intake_subscription_admission),
+        )
         .route("/intake/requests/{id}/assess", post(assess_intake_request))
         .route(
             "/intake/requests/{id}/approve",
@@ -9516,6 +9541,148 @@ async fn assess_intake_request(
     }
 }
 
+fn test_transport_for_provider(provider: &str) -> Option<&'static str> {
+    match provider {
+        "opencode-go" => Some("OPENCODE_GO_SUBSCRIPTION"),
+        "codex" => Some("CODEX_APP_SERVER"),
+        _ => None,
+    }
+}
+
+async fn create_intake_subscription_admission(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    Json(input): Json<IntakeSubscriptionAdmissionRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if !input.extra_usage_disabled {
+        return api_error(Error::Forbidden(
+            "Owner must confirm Extra Usage is disabled".into(),
+        ));
+    }
+    if input.test_profile_id != factory_native::subscription_admission::WAVE3_TEST_PROFILE_ID {
+        return api_error(Error::Forbidden(
+            "subscription acceptance requires the Wave 3 test profile".into(),
+        ));
+    }
+    let (principal_id, _) =
+        authenticated_operator(session.as_ref().map(|Extension(device)| device));
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    if record.campaign_id.is_some() {
+        return api_error(Error::Conflict("intake request already has a Campaign"));
+    }
+    let profile = match app
+        .db
+        .execution_profile_revision(&record.profile_id, &record.profile_revision_id)
+        .await
+    {
+        Ok(profile) => profile,
+        Err(error) => return api_error(error),
+    };
+    let Some(content) = profile.content.v2() else {
+        return api_error(Error::Forbidden(
+            "subscription acceptance requires a V2 execution profile".into(),
+        ));
+    };
+    let gateway = match app.current_model_gateway().await {
+        Some(gateway) => gateway,
+        None => {
+            return api_error(Error::Conflict(
+                "subscription acceptance requires a configured model gateway",
+            ));
+        }
+    };
+    let assessment_provider = gateway.provider().to_owned();
+    let assessment_model = gateway.model().to_owned();
+    let Some(assessment_transport) = test_transport_for_provider(&assessment_provider) else {
+        return api_error(Error::Forbidden(
+            "assessment provider is outside the automated acceptance allowlist".into(),
+        ));
+    };
+    let implementer = &content.roles.implementer;
+    let Some(implementer_transport) = test_transport_for_provider(&implementer.provider) else {
+        return api_error(Error::Forbidden(
+            "implementer provider is outside the automated acceptance allowlist".into(),
+        ));
+    };
+    let implementer_settings = match app.db.provider_settings(&implementer.provider).await {
+        Ok(settings) if settings.enabled && !settings.credential_ciphertext.is_empty() => settings,
+        Ok(_) => {
+            return api_error(Error::Forbidden(
+                "implementer provider is not configured and enabled".into(),
+            ));
+        }
+        Err(error) => return api_error(error),
+    };
+    let mut routes = vec![
+        factory_native::subscription_admission::TestRouteBinding {
+            role: factory_native::subscription_admission::TestModelRole::Lead,
+            provider: assessment_provider.clone(),
+            model: assessment_model.clone(),
+            settings_revision: format!("model-gateway:{assessment_provider}:{assessment_model}"),
+            transport: assessment_transport.to_owned(),
+        },
+        factory_native::subscription_admission::TestRouteBinding {
+            role: factory_native::subscription_admission::TestModelRole::Implementer,
+            provider: implementer.provider.clone(),
+            model: implementer.model.clone(),
+            settings_revision: implementer_settings.revision.to_string(),
+            transport: implementer_transport.to_owned(),
+        },
+    ];
+    if let Some(reviewer_transport) = test_transport_for_provider(&assessment_provider)
+        && assessment_provider == "opencode-go"
+    {
+        routes.push(factory_native::subscription_admission::TestRouteBinding {
+            role: factory_native::subscription_admission::TestModelRole::SemanticReviewer,
+            provider: assessment_provider.clone(),
+            model: assessment_model.clone(),
+            settings_revision: format!("model-gateway:{assessment_provider}:{assessment_model}"),
+            transport: reviewer_transport.to_owned(),
+        });
+    }
+    let assumption = factory_native::execution_policy::OwnerBillingAssumption {
+        assumption_id: input.assumption_id,
+        confirmed_by: format!("{principal_id}:{}", input.confirmed_by),
+        confirmed_at_ms: input.confirmed_at_ms,
+        valid_until_ms: input.valid_until_ms,
+        extra_usage: factory_native::execution_policy::OwnerControlledExtraUsage::Disabled,
+        statement: input.statement,
+    };
+    if assumption
+        .validate_at(chrono::Utc::now().timestamp_millis())
+        .is_err()
+    {
+        return api_error(Error::Invalid(
+            "Owner billing assumption is invalid or expired",
+        ));
+    }
+    let write = factory_native::db::ScopeAdmissionWrite {
+        intake_request_id: record.id.clone(),
+        lead_request_id: record.lead_request_id.clone(),
+        test_profile_id: input.test_profile_id,
+        provider: assessment_provider,
+        model: assessment_model,
+        settings_revision: format!("model-gateway:{}:{}", gateway.provider(), gateway.model()),
+        profile_revision_id: record.profile_revision_id.clone(),
+        profile_hash: record.profile_hash.clone(),
+        assumption,
+        routes,
+        idempotency_key: input.idempotency_key,
+    };
+    match app.db.create_subscription_scope_admission(&write).await {
+        Ok(record) => Json(record).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
 async fn approve_intake_request(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
@@ -9590,10 +9757,30 @@ async fn approve_intake_request(
         Err(error) => return api_error(error),
     };
     let billable = context.mechanism == "MODEL";
-    let monetary_envelope_id = if billable {
-        // The request envelope was created from the operator amount when the
-        // request was submitted. Approval reuses it; it never creates or
-        // re-prices a second allowance.
+    let production = !cfg!(any(test, feature = "test-support"));
+    let monetary_envelope_id = if billable
+        && (production || input.subscription_admission_id.is_some())
+    {
+        // Subscription-only policy: MODEL approval requires an exact
+        // Owner-confirmed admission created before assessment. The legacy
+        // billable envelope path is not accepted in production.
+        if input.subscription_admission_id.is_none() {
+            return api_error(Error::IntakeConflict {
+                code: "SUBSCRIPTION_ADMISSION_REQUIRED",
+                message:
+                    "MODEL execution requires an Owner-confirmed subscription admission created before assessment"
+                        .into(),
+            });
+        }
+        if input.authorized_micros.is_some() {
+            return api_error(Error::IntakeConflict {
+                code: "MONETARY_AUTHORIZATION_NOT_APPLICABLE",
+                message: "subscription execution has no monetary envelope".into(),
+            });
+        }
+        factory_native::db::NO_BILLABLE_ENVELOPE.to_owned()
+    } else if billable {
+        // Debug/test-support fixture path retained for deterministic E2E only.
         let envelope = match app
             .db
             .inference_envelope_for_request(&context.intake.id)
@@ -9641,12 +9828,13 @@ async fn approve_intake_request(
         .unwrap_or_else(|| format!("intake-approve:{id}:{}", context.plan.plan_hash));
     match app
         .db
-        .start_lead_campaign(
+        .start_lead_campaign_with_admission(
             &context.lead.id,
             &idempotency_key,
             factory_native::db::StartAuthority::Operator(approval),
             Some(&expected),
             Some(&authorization),
+            input.subscription_admission_id.as_deref(),
         )
         .await
     {

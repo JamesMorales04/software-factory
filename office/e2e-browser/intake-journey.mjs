@@ -775,6 +775,7 @@ try {
   const requestId = page.url().match(/#\/requests\/([^/?]+)/)?.[1];
   assert.ok(requestId, "request id in URL");
 
+  let subscriptionAdmissionId = null;
   if (!live) {
     const intake = await coreApi(
       `/intake/requests/${encodeURIComponent(requestId)}`,
@@ -782,6 +783,27 @@ try {
     assert.ok(intake.leadRequestId, "Lead request id for test admission");
     await admitTestSubscriptionScope(requestId);
     await admitTestSubscriptionScope(intake.leadRequestId);
+  } else {
+    const now = Date.now();
+    const admission = await coreApi(
+      `/intake/requests/${encodeURIComponent(requestId)}/subscription-admission`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          assumption_id: `wave3-live-${requestId}`,
+          confirmed_by: "Product Owner",
+          confirmed_at_ms: now,
+          valid_until_ms: now + 24 * 60 * 60 * 1000,
+          extra_usage_disabled: true,
+          statement:
+            "Product Owner confirms OpenCode Go Extra Usage is disabled in the web Console",
+          test_profile_id: "wave3-real-model-2026-11",
+          idempotency_key: `wave3-live-admission-${requestId}`,
+        }),
+      },
+    );
+    subscriptionAdmissionId = admission.admissionId;
+    assert.ok(subscriptionAdmissionId, "subscription admission id");
   }
 
   await page.getByRole("button", { name: "Run assessment" }).click();
@@ -805,17 +827,33 @@ try {
   assert.equal(planHash.state, "AWAITING_APPROVAL");
   assert.ok(planHash.plan?.plan_hash, "frozen plan hash");
 
-  await page
-    .getByLabel("Approval rationale")
-    .fill("Reviewed the exact frozen plan.");
-  await page.getByLabel("I reviewed the frozen scope").check();
-  await page
-    .getByRole("button", { name: "Approve frozen plan and start" })
-    .click();
-  await page
-    .getByRole("link", { name: /Open Campaign/ })
-    .first()
-    .waitFor({ timeout: 30000 });
+  if (live) {
+    await coreApi(`/intake/requests/${encodeURIComponent(requestId)}/approve`, {
+      method: "POST",
+      body: JSON.stringify({
+        expected_plan_hash: planHash.plan.plan_hash,
+        rationale: "Reviewed the exact frozen live-model plan.",
+        subscription_admission_id: subscriptionAdmissionId,
+        idempotency_key: `wave3-live-approve-${requestId}`,
+      }),
+    });
+    await page.goto(`${viteUrl}/#/requests/${requestId}`);
+    await page.getByRole("link", { name: /Open Campaign/ }).first().waitFor({
+      timeout: 30000,
+    });
+  } else {
+    await page
+      .getByLabel("Approval rationale")
+      .fill("Reviewed the exact frozen plan.");
+    await page.getByLabel("I reviewed the frozen scope").check();
+    await page
+      .getByRole("button", { name: "Approve frozen plan and start" })
+      .click();
+    await page
+      .getByRole("link", { name: /Open Campaign/ })
+      .first()
+      .waitFor({ timeout: 30000 });
+  }
 
   const projection = await coreApi(
     `/intake/requests/${encodeURIComponent(requestId)}`,

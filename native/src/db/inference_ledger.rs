@@ -1212,9 +1212,9 @@ async fn dispatch_inference_in_tx(
         .ok_or(Error::Forbidden(
             "worker dispatch campaign is not classified V2".into(),
         ))?;
-        if billing_mode != "V2" {
+        if billing_mode != "V2" && billing_mode != "SUBSCRIPTION" {
             return Err(Error::Forbidden(
-                "worker dispatch campaign is not classified V2".into(),
+                "worker dispatch campaign has no supported inference classification".into(),
             ));
         }
     } else if input.attempt_id.is_some() || input.worker_id.is_some() {
@@ -2187,6 +2187,7 @@ pub(crate) async fn require_enabled_subscription_funding_in_tx(
     )
     .map_err(|_| SubscriptionFundingRefusal::InvalidEvidence)?;
     let refusal = match recovery {
+        FundingRecoveryState::Enabled { .. } => return Ok(()),
         FundingRecoveryState::PausedQuota {
             observed_at_ms,
             resets_at_ms,
@@ -2225,6 +2226,9 @@ pub(crate) async fn campaign_requirement_in_tx(
             .bind(campaign_id)
             .fetch_optional(&mut *connection)
             .await?;
+    if row.as_ref().is_some_and(|(mode,)| mode == "SUBSCRIPTION") {
+        return Ok(CampaignInferenceRequirement::Subscription);
+    }
     if row.as_ref().is_some_and(|(mode,)| mode == "V2") {
         let binding: Option<(String,)> = sqlx::query_as::query_as(
             "SELECT envelope_id FROM inference_campaign_bindings WHERE campaign_id=?1",

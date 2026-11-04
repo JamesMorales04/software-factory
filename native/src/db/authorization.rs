@@ -162,6 +162,17 @@ pub(super) fn decode_funding_recovery_state(
                 recorded_at_ms: observed_at_ms,
             })
         }
+        "ENABLED" => {
+            if resets_at_ms.is_some() {
+                return Err(Error::Invalid("enabled funding reset observation"));
+            }
+            Ok(FundingRecoveryState::Enabled {
+                admitted_at_ms: observed_at_ms,
+                admission_id: reason
+                    .ok_or(Error::Invalid("enabled funding admission id is missing"))?
+                    .to_owned(),
+            })
+        }
         "PAUSED_QUOTA" => Ok(FundingRecoveryState::PausedQuota {
             observed_at_ms,
             resets_at_ms,
@@ -329,12 +340,16 @@ impl Database {
             observed_at_ms,
             resets_at_ms,
         )?;
+        let enabled = matches!(
+            state,
+            crate::execution_policy::FundingRecoveryState::Enabled { .. }
+        );
         Ok(SubscriptionFundingRecord {
             campaign_id: campaign_id.into(),
             authorization_id,
             policy,
             state,
-            enabled: false,
+            enabled,
         })
     }
 
@@ -1058,6 +1073,7 @@ mod tests {
             no_charge_route_verified: false,
             extra_usage_disabled: false,
             api_key_route_disabled: false,
+            admission_basis: crate::execution_policy::SubscriptionAdmissionBasis::ProviderVerified,
             quota: crate::execution_policy::QuotaObservation::Unknown {
                 observed_at_ms: 10,
                 reason: "not observed".into(),

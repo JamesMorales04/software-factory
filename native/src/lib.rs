@@ -44,6 +44,7 @@ pub mod secrets;
 pub mod semantic_review;
 pub mod service_network;
 pub mod sse;
+pub mod subscription_admission;
 pub mod telemetry;
 pub mod workspace;
 pub mod workspace_archive;
