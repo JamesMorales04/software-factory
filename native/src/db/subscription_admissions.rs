@@ -447,6 +447,11 @@ pub(super) async fn insert_enabled_campaign_admission_in_tx(
     scope_sha256: &str,
 ) -> Result<(), Error> {
     let now_ms = Utc::now().timestamp_millis();
+    if implementer_provider == "codex" {
+        return Err(Error::Forbidden(
+            "Codex API-key transport cannot be admitted as ChatGPT subscription funding".into(),
+        ));
+    }
     let route = test_route(implementer_provider, implementer_model).ok_or_else(|| {
         Error::Forbidden("implementer route is outside the test allowlist".into())
     })?;
@@ -457,7 +462,6 @@ pub(super) async fn insert_enabled_campaign_admission_in_tx(
     }
     let subscription_route = match implementer_provider {
         "opencode-go" => SubscriptionRoute::OpenCodeGo,
-        "codex" => SubscriptionRoute::CodexChatGpt,
         _ => {
             return Err(Error::Forbidden(
                 "implementer route has no subscription funding route".into(),

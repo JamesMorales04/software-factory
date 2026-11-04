@@ -9570,8 +9570,9 @@ async fn assess_intake_request(
 
 fn test_transport_for_provider(provider: &str) -> Option<&'static str> {
     match provider {
+        // Codex is not admitted until Core can verify the ChatGPT credential
+        // class and the native App Server transport owns the egress route.
         "opencode-go" => Some("OPENCODE_GO_SUBSCRIPTION"),
-        "codex" => Some("CODEX_APP_SERVER"),
         _ => None,
     }
 }

@@ -29,9 +29,14 @@ a billing classification.
    assumption, statement, validity window and the exact provider/model/account
    configuration. Core records it as `OWNER_CONFIRMED_CONFIGURATION` and never
    labels it provider-issued evidence.
-3. **The automated acceptance suite has a separate allowlist.** Only
-   `opencode-go/deepseek-v4.1-flash` and `codex/gpt-6-luna` are admitted. The
-   general product catalog and model selection remain configurable.
+3. **The automated acceptance suite has a separate allowlist.** This
+   admission contract currently admits only
+   `opencode-go/deepseek-v4.1-flash`. `codex/gpt-6-luna` remains the
+   Owner-approved Codex pair for the future native App Server transport, but
+   it is not admitted here: the Codex Worker path uses independently configured
+   egress credentials and Core cannot yet verify that they represent ChatGPT
+   plan authentication rather than an API-key route. The general product
+   catalog and model selection remain configurable.
 4. **Production dispatch stays fail-closed.** A Campaign is admitted only by an
    explicit, request-scoped admission consumed atomically with Campaign
    authorization. A debug `test-support` wildcard is not used for genuine live
@@ -58,5 +63,6 @@ a billing classification.
 - The Owner remains responsible for the external Extra Usage setting.
 - Live-model acceptance still requires real credentials, an explicit bounded
   authorization and a working Codex review integration; this ADR does not grant
-  those.
+  those. Codex admission stays fail-closed until the credential class and the
+  native App Server transport are independently verifiable.
 - General provider/model selection is unchanged.

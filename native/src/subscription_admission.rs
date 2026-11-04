@@ -11,6 +11,13 @@
 //! subscription route. Extra Usage is an Owner-controlled upstream Console
 //! setting, recorded as an assumption and never as provider-issued evidence.
 //!
+//! `codex/gpt-6-luna` remains the Owner-approved Codex pair for the future
+//! native App Server transport. It is deliberately not admitted here: the
+//! Codex Worker path uses independently configured egress credentials, and
+//! Core cannot yet verify that they represent ChatGPT plan authentication
+//! rather than an API-key route. Admitting it before that proof exists would
+//! turn an API-key call into subscription-funded dispatch.
+//!
 //! Decision mechanism: `DETERMINISTIC`. No model output grants admission.
 
 use serde::{Deserialize, Serialize};
@@ -46,27 +53,16 @@ pub struct TestModelRoute {
 
 /// The only provider/model pairs admitted by the current automated real-model
 /// acceptance suite. This is a test policy, not a permanent product catalog.
-pub const TEST_MODEL_ROUTES: &[TestModelRoute] = &[
-    TestModelRoute {
-        provider: "opencode-go",
-        model: "deepseek-v4.1-flash",
-        roles: &[
-            TestModelRole::Lead,
-            TestModelRole::Implementer,
-            TestModelRole::SemanticReviewer,
-        ],
-        transport: "OPENCODE_GO_SUBSCRIPTION",
-    },
-    TestModelRoute {
-        provider: "codex",
-        model: "gpt-6-luna",
-        // The current Codex adapter is a Worker App Server implementation
-        // transport. It has no one-shot review adapter; do not list review
-        // here until that native integration exists.
-        roles: &[TestModelRole::Implementer],
-        transport: "CODEX_APP_SERVER",
-    },
-];
+pub const TEST_MODEL_ROUTES: &[TestModelRoute] = &[TestModelRoute {
+    provider: "opencode-go",
+    model: "deepseek-v4.1-flash",
+    roles: &[
+        TestModelRole::Lead,
+        TestModelRole::Implementer,
+        TestModelRole::SemanticReviewer,
+    ],
+    transport: "OPENCODE_GO_SUBSCRIPTION",
+}];
 
 pub fn test_route(provider: &str, model: &str) -> Option<&'static TestModelRoute> {
     TEST_MODEL_ROUTES
@@ -110,41 +106,46 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_automated_suite_allows_only_the_two_owner_approved_pairs() {
+    fn the_current_contract_admits_only_the_opencode_go_subscription_pair() {
         assert!(test_route("opencode-go", "deepseek-v4.1-flash").is_some());
-        assert!(test_route("codex", "gpt-6-luna").is_some());
         assert!(test_route("opencode-go", "gpt-6-luna").is_none());
         assert!(test_route("opencode", "deepseek-v4.1-flash").is_none());
+        assert!(test_route("codex", "gpt-6-luna").is_none());
         assert!(test_route("codex", "gpt-5").is_none());
     }
 
     #[test]
-    fn codex_is_not_advertised_for_one_shot_review() {
-        let codex = test_route("codex", "gpt-6-luna").unwrap();
-        assert!(role_allowed(codex, TestModelRole::Implementer));
-        assert!(!role_allowed(codex, TestModelRole::SemanticReviewer));
-        assert!(!role_allowed(codex, TestModelRole::Lead));
-        let go = test_route("opencode-go", "deepseek-v4.1-flash").unwrap();
-        assert!(role_allowed(go, TestModelRole::Lead));
-        assert!(role_allowed(go, TestModelRole::Implementer));
-        assert!(role_allowed(go, TestModelRole::SemanticReviewer));
-    }
-
-    #[test]
-    fn route_bindings_reject_unapproved_transport_and_roles() {
-        let valid = TestRouteBinding {
+    fn codex_is_not_admitted_until_credential_class_is_verifiable() {
+        let codex = TestRouteBinding {
             role: TestModelRole::Implementer,
             provider: "codex".into(),
             model: "gpt-6-luna".into(),
             settings_revision: "7".into(),
             transport: "CODEX_APP_SERVER".into(),
         };
+        assert_eq!(
+            codex.validate(),
+            Err("provider/model pair is outside the automated acceptance allowlist")
+        );
+        assert!(
+            TEST_MODEL_ROUTES
+                .iter()
+                .all(|route| route.transport != "CODEX_APP_SERVER")
+        );
+    }
+
+    #[test]
+    fn route_bindings_reject_unapproved_transport() {
+        let valid = TestRouteBinding {
+            role: TestModelRole::Implementer,
+            provider: "opencode-go".into(),
+            model: "deepseek-v4.1-flash".into(),
+            settings_revision: "7".into(),
+            transport: "OPENCODE_GO_SUBSCRIPTION".into(),
+        };
         assert_eq!(valid.validate(), Ok(()));
-        let mut wrong_transport = valid.clone();
+        let mut wrong_transport = valid;
         wrong_transport.transport = "OPENAI_CHAT_COMPLETIONS".into();
         assert!(wrong_transport.validate().is_err());
-        let mut wrong_role = valid;
-        wrong_role.role = TestModelRole::SemanticReviewer;
-        assert!(wrong_role.validate().is_err());
     }
 }
