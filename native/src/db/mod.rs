@@ -984,14 +984,16 @@ pub(crate) async fn test_subscription_dispatch_admitted_for_route_in_tx(
     connection: &mut sqlx_sqlite::SqliteConnection,
     scope: &str,
     provider: &str,
-    model: &str,
+    _model: &str,
 ) -> Result<bool, Error> {
     if !test_subscription_dispatch_admitted_in_tx(connection, scope).await? {
         return Ok(false);
     }
     // Library unit tests never exercise a real adapter; the test-support
-    // feature in a real binary still has to prove a fixture route.
-    if cfg!(test) || provider == "fixture" || model.starts_with("fixture") {
+    // feature in a real binary still has to prove a fixture route. A model
+    // name is not transport evidence, so only the explicit fixture provider
+    // or a configured test upstream is accepted.
+    if cfg!(test) || provider == "fixture" {
         return Ok(true);
     }
     let base_url: Option<(String,)> =
