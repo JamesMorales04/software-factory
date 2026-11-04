@@ -373,7 +373,7 @@ impl Database {
             "UPDATE subscription_funding_policies SET state='PAUSED_QUOTA',reason=?1,
              observed_at_ms=?2,resets_at_ms=?3,updated_at_ms=?2
              WHERE campaign_id=?4 AND authorization_id=?5 AND observed_at_ms < ?2
-               AND state IN ('DISABLED','RECOVERABLE')",
+               AND state IN ('DISABLED','ENABLED','RECOVERABLE')",
         )
         .bind(reason)
         .bind(observed_at_ms)

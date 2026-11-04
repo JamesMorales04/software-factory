@@ -2554,6 +2554,15 @@ async fn test_subscription_admission_supports_exact_and_e2e_wildcard_scopes() {
     );
     db.admit_test_subscription_dispatch("*").await.unwrap();
     assert!(
+        !test_subscription_dispatch_admitted_in_tx(&mut connection, "campaign-other")
+            .await
+            .unwrap()
+    );
+    sqlx::query::query("UPDATE test_subscription_fixture_mode SET enabled=1")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    assert!(
         test_subscription_dispatch_admitted_in_tx(&mut connection, "campaign-other")
             .await
             .unwrap()
@@ -2612,6 +2621,7 @@ async fn owner_confirmed_campaign_admission_enables_subscription_mode() {
         intake_request_id: "intake-1".into(),
         lead_request_id: "lead-1".into(),
         test_profile_id: WAVE3_TEST_PROFILE_ID.into(),
+        execution_profile_id: "profile-admission".into(),
         provider: "opencode-go".into(),
         model: "deepseek-v4.1-flash".into(),
         settings_revision: "1".into(),
@@ -2631,6 +2641,20 @@ async fn owner_confirmed_campaign_admission_enables_subscription_mode() {
         expires_at_ms: Utc::now().timestamp_millis() + 3_600_000,
         receipt_sha256: "c".repeat(64),
     };
+    sqlx::query::query(
+        "INSERT INTO provider_settings
+         (provider,kind,model,base_url,auth_mode,credential_ciphertext,credential_nonce,
+          credential_fingerprint,enabled,is_default,max_turns,max_input_tokens,
+          max_output_tokens,max_cost_micros,input_micros_per_million,
+          output_micros_per_million,revision,updated_at)
+         VALUES ('opencode-go','opencode','deepseek-v4.1-flash','https://example.invalid/v1',
+                 'api_key','ciphertext','nonce','fingerprint',1,0,4,100000,12000,500000,
+                 1000,2000,1,?1)",
+    )
+    .bind(&now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
     let mut connection = db.pool.acquire().await.unwrap();
     super::subscription_admissions::insert_enabled_campaign_admission_in_tx(
         &mut connection,
@@ -2655,6 +2679,23 @@ async fn owner_confirmed_campaign_admission_enables_subscription_mode() {
     .unwrap();
     assert_eq!(state, "ENABLED");
     assert_eq!(mode, "SUBSCRIPTION");
+    let now_ms = Utc::now().timestamp_millis();
+    db.pause_subscription_funding_for_quota(
+        "campaign-admission",
+        "auth-admission",
+        now_ms,
+        None,
+        "provider quota exhausted",
+    )
+    .await
+    .unwrap();
+    let paused: String = sqlx::query_scalar::query_scalar(
+        "SELECT state FROM subscription_funding_policies WHERE campaign_id='campaign-admission'",
+    )
+    .fetch_one(&mut *connection)
+    .await
+    .unwrap();
+    assert_eq!(paused, "PAUSED_QUOTA");
     drop(connection);
     db.close().await;
     let _ = std::fs::remove_file(path);

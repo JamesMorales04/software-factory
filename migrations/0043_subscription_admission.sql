@@ -87,6 +87,7 @@ CREATE TABLE IF NOT EXISTS subscription_scope_admissions (
   intake_request_id TEXT NOT NULL REFERENCES intake_requests(id) ON DELETE RESTRICT,
   lead_request_id TEXT NOT NULL REFERENCES lead_requests(id) ON DELETE RESTRICT,
   test_profile_id TEXT NOT NULL,
+  execution_profile_id TEXT NOT NULL,
   provider TEXT NOT NULL,
   model TEXT NOT NULL,
   settings_revision TEXT NOT NULL,

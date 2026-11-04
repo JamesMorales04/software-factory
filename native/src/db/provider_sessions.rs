@@ -284,6 +284,13 @@ impl Database {
             }
             return Err(error);
         }
+        super::inference_ledger::require_subscription_route_in_tx(
+            &mut transaction,
+            &campaign_id,
+            &provider,
+            &model,
+        )
+        .await?;
         // An expired, unbound turn has provably produced no egress request.
         // Release its shared-ledger hold before reclaiming the legacy row; a
         // linked hold that is already ambiguous refuses new turns instead.
@@ -713,6 +720,13 @@ impl Database {
         super::inference_ledger::require_enabled_subscription_funding_in_tx(
             &mut transaction,
             &campaign_id,
+        )
+        .await?;
+        super::inference_ledger::require_subscription_route_in_tx(
+            &mut transaction,
+            &campaign_id,
+            &provider,
+            &model,
         )
         .await?;
         let now = Utc::now().to_rfc3339();
@@ -1592,6 +1606,29 @@ impl Database {
             &format!("state={stored_state} usage_known={}", input.usage_known),
         )
         .await?;
+        if input.state == "FAILED" && provider_quota_error(&input.error) {
+            let authorization: Option<(String,)> = sqlx::query_as::query_as(
+                "SELECT authorization_id FROM campaign_authorizations WHERE campaign_id=?1",
+            )
+            .bind(&campaign_id)
+            .fetch_optional(&mut *transaction)
+            .await?;
+            if let Some((authorization_id,)) = authorization {
+                let now_ms = Utc::now().timestamp_millis();
+                let reason: String = input.error.chars().take(480).collect::<String>();
+                sqlx::query::query(
+                    "UPDATE subscription_funding_policies
+                     SET state='PAUSED_QUOTA',reason=?1,observed_at_ms=?2,resets_at_ms=NULL,updated_at_ms=?2
+                     WHERE campaign_id=?3 AND authorization_id=?4 AND state='ENABLED'",
+                )
+                .bind(format!("provider quota exhaustion: {reason}"))
+                .bind(now_ms)
+                .bind(&campaign_id)
+                .bind(&authorization_id)
+                .execute(&mut *transaction)
+                .await?;
+            }
+        }
         let record = load_provider_session(&mut transaction, &record_id).await?;
         transaction.commit().await?;
         if over_budget {
@@ -4032,4 +4069,18 @@ mod ledger_link_tests {
                 .unwrap();
         assert_eq!(reservations.0, 0);
     }
+}
+
+fn provider_quota_error(error: &str) -> bool {
+    let lower = error.to_ascii_lowercase();
+    [
+        "insufficient_quota",
+        "quota exhausted",
+        "quota_exhausted",
+        "usage limit",
+        "exceeded your current quota",
+        "included quota",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
 }

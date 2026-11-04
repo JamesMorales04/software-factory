@@ -105,7 +105,7 @@ async fn model_call_ledger_requirement(
             let Some((campaign_id,)) = campaign else {
                 return Err(Error::NotFound);
             };
-            campaign_requirement_to_envelope(connection, &campaign_id).await
+            campaign_requirement_to_envelope(connection, &campaign_id, provider, model).await
         }
         ModelCallRole::Evaluation => {
             let campaign: Option<(String,)> = sqlx::query_as::query_as(
@@ -118,7 +118,8 @@ async fn model_call_ledger_requirement(
             .fetch_optional(&mut *connection)
             .await?;
             if let Some((campaign_id,)) = campaign {
-                return campaign_requirement_to_envelope(connection, &campaign_id).await;
+                return campaign_requirement_to_envelope(connection, &campaign_id, provider, model)
+                    .await;
             }
             #[cfg(any(test, feature = "test-support"))]
             if test_scope_admitted(connection, objective_id).await? {
@@ -136,9 +137,18 @@ async fn model_call_ledger_requirement(
 async fn campaign_requirement_to_envelope(
     connection: &mut SqliteConnection,
     campaign_id: &str,
+    provider: &str,
+    model: &str,
 ) -> Result<Option<String>, Error> {
     super::inference_ledger::require_enabled_subscription_funding_in_tx(connection, campaign_id)
         .await?;
+    super::inference_ledger::require_subscription_route_in_tx(
+        connection,
+        campaign_id,
+        provider,
+        model,
+    )
+    .await?;
     match super::inference_ledger::campaign_requirement_in_tx(connection, campaign_id).await? {
         crate::inference_ledger::CampaignInferenceRequirement::LegacyV1 => Ok(None),
         crate::inference_ledger::CampaignInferenceRequirement::EnvelopeBound { envelope_id } => {
@@ -660,6 +670,13 @@ impl Database {
             super::inference_ledger::require_enabled_subscription_funding_in_tx(
                 &mut transaction,
                 &campaign_id,
+            )
+            .await?;
+            super::inference_ledger::require_subscription_route_in_tx(
+                &mut transaction,
+                &campaign_id,
+                &provider,
+                &model,
             )
             .await?;
         } else {
@@ -2088,9 +2105,14 @@ mod tests {
     async fn core_campaign_model_admission_refuses_missing_subscription_binding() {
         let (path, db) = project_db("factory-core-subscription-funding-missing").await;
         let mut connection = db.pool.acquire().await.unwrap();
-        let error = campaign_requirement_to_envelope(&mut connection, "campaign-without-funding")
-            .await
-            .unwrap_err();
+        let error = campaign_requirement_to_envelope(
+            &mut connection,
+            "campaign-without-funding",
+            "opencode-go",
+            "deepseek-v4.1-flash",
+        )
+        .await
+        .unwrap_err();
         assert!(
             matches!(
                 error,

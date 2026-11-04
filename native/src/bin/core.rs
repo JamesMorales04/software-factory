@@ -9409,23 +9409,6 @@ async fn assess_intake_request(
             message: "a legacy V1 execution profile cannot start billable assessment".into(),
         });
     };
-    match app.db.inference_envelope_for_request(&id).await {
-        Ok(Some(_)) => {}
-        Ok(None) => {
-            return api_error(Error::IntakeConflict {
-                code: "INFERENCE_AUTHORIZATION_REQUIRED",
-                message:
-                    "billable intake assessment requires an explicit operator-authorized monetary amount at request creation"
-                        .into(),
-            });
-        }
-        Err(error) => return api_error(error),
-    }
-    if let Err(error) =
-        ensure_profile_pricing_quotes(&app, profile_content, "intake-assessment").await
-    {
-        return api_error(error);
-    }
     let gateway = match app.intake_assess_gateway(&profile).await {
         Ok(gateway) => gateway,
         Err(route_error) => {
@@ -9440,6 +9423,40 @@ async fn assess_intake_request(
                 .into_response();
         }
     };
+    let subscription_assessment = match app
+        .db
+        .subscription_scope_admitted(&record.id, gateway.provider(), gateway.model())
+        .await
+    {
+        Ok(admitted) => admitted,
+        Err(error) => return api_error(error),
+    } || match app
+        .db
+        .subscription_scope_admitted(&record.lead_request_id, gateway.provider(), gateway.model())
+        .await
+    {
+        Ok(admitted) => admitted,
+        Err(error) => return api_error(error),
+    };
+    if !subscription_assessment {
+        match app.db.inference_envelope_for_request(&id).await {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                return api_error(Error::IntakeConflict {
+                    code: "INFERENCE_AUTHORIZATION_REQUIRED",
+                    message:
+                        "billable intake assessment requires an explicit operator-authorized monetary amount at request creation, or an exact Owner-confirmed subscription admission"
+                            .into(),
+                });
+            }
+            Err(error) => return api_error(error),
+        }
+        if let Err(error) =
+            ensure_profile_pricing_quotes(&app, profile_content, "intake-assessment").await
+        {
+            return api_error(error);
+        }
+    }
     let action_spec = match app.db.intake_assessment_spec(&id).await {
         Ok(spec) => spec,
         Err(error) => return api_error(error),
@@ -9668,6 +9685,7 @@ async fn create_intake_subscription_admission(
         intake_request_id: record.id.clone(),
         lead_request_id: record.lead_request_id.clone(),
         test_profile_id: input.test_profile_id,
+        execution_profile_id: record.profile_id.clone(),
         provider: assessment_provider,
         model: assessment_model,
         settings_revision: format!("model-gateway:{}:{}", gateway.provider(), gateway.model()),

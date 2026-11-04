@@ -26,6 +26,7 @@ pub struct ScopeAdmissionWrite {
     pub intake_request_id: String,
     pub lead_request_id: String,
     pub test_profile_id: String,
+    pub execution_profile_id: String,
     pub provider: String,
     pub model: String,
     pub settings_revision: String,
@@ -43,6 +44,7 @@ pub struct ScopeAdmissionRecord {
     pub intake_request_id: String,
     pub lead_request_id: String,
     pub test_profile_id: String,
+    pub execution_profile_id: String,
     pub provider: String,
     pub model: String,
     pub settings_revision: String,
@@ -71,6 +73,7 @@ fn receipt_digest(
         "intakeRequestId": input.intake_request_id,
         "leadRequestId": input.lead_request_id,
         "testProfileId": input.test_profile_id,
+        "executionProfileId": input.execution_profile_id,
         "provider": input.provider,
         "model": input.model,
         "settingsRevision": input.settings_revision,
@@ -89,6 +92,7 @@ fn validate_write(input: &ScopeAdmissionWrite, now_ms: i64) -> Result<(), Error>
     if input.intake_request_id.trim().is_empty()
         || input.lead_request_id.trim().is_empty()
         || input.test_profile_id != WAVE3_TEST_PROFILE_ID
+        || input.execution_profile_id.trim().is_empty()
         || input.provider.trim().is_empty()
         || input.model.trim().is_empty()
         || input.settings_revision.trim().is_empty()
@@ -177,16 +181,17 @@ impl Database {
             .min(now_ms + SCOPE_ADMISSION_MAX_LIFETIME_MS);
         sqlx::query::query(
             "INSERT INTO subscription_scope_admissions
-             (admission_id,intake_request_id,lead_request_id,test_profile_id,provider,model,
+             (admission_id,intake_request_id,lead_request_id,test_profile_id,execution_profile_id,provider,model,
               settings_revision,profile_revision_id,profile_hash,assumption_json,
               assumption_sha256,routes_json,state,campaign_id,created_at_ms,expires_at_ms,
               consumed_at_ms,idempotency_key,receipt_sha256)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'ACTIVE',NULL,?13,?14,NULL,?15,?16)",
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,'ACTIVE',NULL,?14,?15,NULL,?16,?17)",
         )
         .bind(&admission_id)
         .bind(&input.intake_request_id)
         .bind(&input.lead_request_id)
         .bind(&input.test_profile_id)
+        .bind(&input.execution_profile_id)
         .bind(&input.provider)
         .bind(&input.model)
         .bind(&input.settings_revision)
@@ -208,6 +213,23 @@ impl Database {
         Ok(record)
     }
 
+    /// True when an exact active admission covers this request/Lead scope and
+    /// the configured assessment route. It is used to skip the legacy monetary
+    /// envelope/pricing preflight for subscription assessment.
+    pub async fn subscription_scope_admitted(
+        &self,
+        scope: &str,
+        provider: &str,
+        model: &str,
+    ) -> Result<bool, Error> {
+        let mut connection = self.pool.acquire().await?;
+        match require_scope_admission_in_tx(&mut connection, scope, provider, model).await {
+            Ok(()) => Ok(true),
+            Err(Error::SubscriptionFunding(_)) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
     pub async fn subscription_scope_admission(
         &self,
         admission_id: &str,
@@ -224,7 +246,7 @@ pub(super) async fn load_scope_admission(
     admission_id: &str,
 ) -> Result<Option<ScopeAdmissionRecord>, Error> {
     let row = sqlx::query::query(
-        "SELECT admission_id,intake_request_id,lead_request_id,test_profile_id,provider,model,
+        "SELECT admission_id,intake_request_id,lead_request_id,test_profile_id,execution_profile_id,provider,model,
                 settings_revision,profile_revision_id,profile_hash,assumption_json,
                 assumption_sha256,routes_json,state,campaign_id,created_at_ms,expires_at_ms,
                 receipt_sha256
@@ -251,6 +273,7 @@ pub(super) async fn load_scope_admission(
         intake_request_id: row.try_get("intake_request_id")?,
         lead_request_id: row.try_get("lead_request_id")?,
         test_profile_id: row.try_get("test_profile_id")?,
+        execution_profile_id: row.try_get("execution_profile_id")?,
         provider: row.try_get("provider")?,
         model: row.try_get("model")?,
         settings_revision: row.try_get("settings_revision")?,
@@ -329,10 +352,12 @@ pub(super) async fn consume_scope_admission_in_tx(
     campaign_id: &str,
     intake_request_id: &str,
     lead_request_id: &str,
+    execution_profile_id: &str,
     profile_revision_id: &str,
     profile_hash: &str,
     implementer_provider: &str,
     implementer_model: &str,
+    implementer_settings_revision: &str,
 ) -> Result<ScopeAdmissionRecord, Error> {
     let now_ms = Utc::now().timestamp_millis();
     let record = load_scope_admission(connection, admission_id)
@@ -350,6 +375,7 @@ pub(super) async fn consume_scope_admission_in_tx(
     }
     if record.intake_request_id != intake_request_id
         || record.lead_request_id != lead_request_id
+        || record.execution_profile_id != execution_profile_id
         || record.profile_revision_id != profile_revision_id
         || record.profile_hash != profile_hash
     {
@@ -361,6 +387,7 @@ pub(super) async fn consume_scope_admission_in_tx(
         route.role == TestModelRole::Implementer
             && route.provider == implementer_provider
             && route.model == implementer_model
+            && route.settings_revision == implementer_settings_revision
             && route.validate().is_ok()
     });
     if !implementer_allowed {

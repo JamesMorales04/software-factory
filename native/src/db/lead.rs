@@ -2235,10 +2235,12 @@ async fn start_lead_campaign_in_tx(
             &campaign.id,
             &intake_id,
             &request.id,
+            &profile.profile_id,
             &profile.profile_revision_id,
             &profile.profile_hash,
             &authorization_input.provider,
             &authorization_input.model,
+            &settings_revision.to_string(),
         )
         .await?;
         super::subscription_admissions::insert_enabled_campaign_admission_in_tx(

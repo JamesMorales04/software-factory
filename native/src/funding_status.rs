@@ -99,9 +99,9 @@ pub fn project(
         },
         core_verifiable: false,
         admissible: false,
-        entitlement: "OWNER_CONFIRMED_CONFIGURATION",
-        extra_usage: "OWNER_CONFIRMED_DISABLED",
-        balance_fallback: "DISABLED_BY_TEST_POLICY",
+        entitlement: "NOT_RECORDED",
+        extra_usage: "OWNER_ASSUMED_DISABLED_PENDING_ADMISSION",
+        balance_fallback: "NOT_RECORDED",
         no_charge_route: "EXACT_SUBSCRIPTION_ROUTE_ONLY",
         quota: FundingQuotaStatus {
             state: "UNKNOWN",
@@ -141,9 +141,12 @@ mod tests {
         assert_eq!(status.settings_revision, 3);
         assert!(!status.core_verifiable);
         assert!(!status.admissible);
-        assert_eq!(status.entitlement, "OWNER_CONFIRMED_CONFIGURATION");
-        assert_eq!(status.extra_usage, "OWNER_CONFIRMED_DISABLED");
-        assert_eq!(status.balance_fallback, "DISABLED_BY_TEST_POLICY");
+        assert_eq!(status.entitlement, "NOT_RECORDED");
+        assert_eq!(
+            status.extra_usage,
+            "OWNER_ASSUMED_DISABLED_PENDING_ADMISSION"
+        );
+        assert_eq!(status.balance_fallback, "NOT_RECORDED");
         assert_eq!(status.no_charge_route, "EXACT_SUBSCRIPTION_ROUTE_ONLY");
         assert_eq!(status.quota.state, "UNKNOWN");
         assert_eq!(
