@@ -145,13 +145,13 @@ fn temp_root(label: &str) -> PathBuf {
 
 #[cfg(feature = "test-support")]
 async fn admit_test_evaluation(database: &Path, evaluation_id: &str, model_url: &str) {
-    // Opening the database re-evaluates the persisted fixture-mode flag from
-    // this process environment. Keep it aligned with the fixture Core process
-    // so the admission helper cannot disable the mode the Core already uses.
-    unsafe { std::env::set_var("FACTORY_PROVIDER_KIND", "fixture") };
     let database = factory_native::db::Database::open(database)
         .await
         .expect("open Core database for test admission");
+    database
+        .enable_test_subscription_fixture_mode()
+        .await
+        .expect("enable fixture admission for this database");
     database
         .save_provider_settings(
             &factory_native::db::ProviderSettingsWrite {

@@ -1183,10 +1183,12 @@ async fn seed_test_provider(
     model: &str,
     base_url: &str,
 ) {
-    unsafe { std::env::set_var("FACTORY_PROVIDER_KIND", "fixture") };
     let db = factory_native::db::Database::open(database)
         .await
         .expect("open database to seed test provider");
+    db.enable_test_subscription_fixture_mode()
+        .await
+        .expect("enable fixture admission for this database");
     db.save_provider_settings(
         &factory_native::db::ProviderSettingsWrite {
             provider: provider.into(),
@@ -1215,13 +1217,13 @@ async fn seed_test_provider(
 
 #[cfg(feature = "test-support")]
 async fn admit_test_campaign(database: &Path, campaign_id: &str) {
-    // Opening the database re-evaluates the persisted fixture-mode flag from
-    // this process environment. Keep it aligned with the fixture Core process
-    // so the admission helper cannot disable the mode the Core already uses.
-    unsafe { std::env::set_var("FACTORY_PROVIDER_KIND", "fixture") };
     let database = factory_native::db::Database::open(database)
         .await
         .expect("open Core database for test admission");
+    database
+        .enable_test_subscription_fixture_mode()
+        .await
+        .expect("enable fixture admission for this database");
     database
         .admit_test_subscription_dispatch(campaign_id)
         .await

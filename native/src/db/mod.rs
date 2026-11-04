@@ -980,6 +980,22 @@ impl Database {
 }
 
 #[cfg(any(test, feature = "test-support"))]
+impl Database {
+    /// Explicitly opt this disposable test database into fixture admission.
+    /// Unlike the process environment, this does not affect other tests that
+    /// open a different database concurrently.
+    pub async fn enable_test_subscription_fixture_mode(&self) -> Result<(), Error> {
+        sqlx::query::query(
+            "INSERT INTO test_subscription_fixture_mode(id,enabled) VALUES (1,1)
+             ON CONFLICT(id) DO UPDATE SET enabled=1",
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) async fn test_subscription_dispatch_admitted_for_route_in_tx(
     connection: &mut sqlx_sqlite::SqliteConnection,
     scope: &str,

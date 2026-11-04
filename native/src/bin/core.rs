@@ -14847,7 +14847,6 @@ mod tests {
             // Only relaxes the HTTPS rule for loopback test upstreams; every
             // payload and credential assertion below still runs.
             unsafe { std::env::set_var("FACTORY_ALLOW_TEST_UPSTREAM", "1") };
-            unsafe { std::env::set_var("FACTORY_PROVIDER_KIND", "fixture") };
             let key = master_key();
             let (lead_url, lead_hits) = chat_upstream().await;
             let (review_url, review_hits) = chat_upstream().await;
@@ -14858,6 +14857,12 @@ mod tests {
                 reasoning: Some(ReasoningEffort::Medium),
             };
             let fixture = setup_with(Some(&key), &lead_url, &review_url, content).await;
+            fixture
+                .app
+                .db
+                .enable_test_subscription_fixture_mode()
+                .await
+                .unwrap();
             let opencode_settings = fixture.app.db.provider_settings("opencode").await.unwrap();
             fixture
                 .app
@@ -15071,11 +15076,16 @@ mod tests {
         #[tokio::test]
         async fn billable_assessment_requires_creation_amount_and_shares_request_envelope() {
             unsafe { std::env::set_var("FACTORY_ALLOW_TEST_UPSTREAM", "1") };
-            unsafe { std::env::set_var("FACTORY_PROVIDER_KIND", "fixture") };
             let key = master_key();
             let model_content = Arc::new(Mutex::new(String::new()));
             let (model_url, model_hits) = chat_upstream_with_content(model_content.clone()).await;
             let fixture = setup_with(Some(&key), &model_url, &model_url, profile_content()).await;
+            fixture
+                .app
+                .db
+                .enable_test_subscription_fixture_mode()
+                .await
+                .unwrap();
             let (status, enabled) = send(
                 &fixture.router,
                 "PUT",
