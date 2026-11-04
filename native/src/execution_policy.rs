@@ -1490,12 +1490,11 @@ mod subscription_funding_tests {
             FundingAdmissionDecision::QuotaExhausted
         );
         let mut expired = owner_confirmed_policy();
-        if let FundingPolicy::Subscription { binding, .. } = &mut expired.funding {
-            if let SubscriptionAdmissionBasis::OwnerConfirmedConfiguration { assumption } =
+        if let FundingPolicy::Subscription { binding, .. } = &mut expired.funding
+            && let SubscriptionAdmissionBasis::OwnerConfirmedConfiguration { assumption } =
                 &mut binding.admission_basis
-            {
-                assumption.valid_until_ms = 11;
-            }
+        {
+            assumption.valid_until_ms = 11;
         }
         assert_eq!(
             admission_for(
