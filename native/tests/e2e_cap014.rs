@@ -144,10 +144,38 @@ fn temp_root(label: &str) -> PathBuf {
 }
 
 #[cfg(feature = "test-support")]
-async fn admit_test_evaluation(database: &Path, evaluation_id: &str) {
+async fn admit_test_evaluation(database: &Path, evaluation_id: &str, model_url: &str) {
+    // Opening the database re-evaluates the persisted fixture-mode flag from
+    // this process environment. Keep it aligned with the fixture Core process
+    // so the admission helper cannot disable the mode the Core already uses.
+    unsafe { std::env::set_var("FACTORY_PROVIDER_KIND", "fixture") };
     let database = factory_native::db::Database::open(database)
         .await
         .expect("open Core database for test admission");
+    database
+        .save_provider_settings(
+            &factory_native::db::ProviderSettingsWrite {
+                provider: "opencode-go".into(),
+                kind: "opencode".into(),
+                model: "deepseek-v4.1-flash".into(),
+                base_url: model_url.into(),
+                auth_mode: "api_key".into(),
+                credential_ciphertext: "ciphertext".into(),
+                credential_nonce: "nonce".into(),
+                credential_fingerprint: "configured".into(),
+                enabled: true,
+                is_default: false,
+                max_turns: 4,
+                max_input_tokens: 100_000,
+                max_output_tokens: 12_000,
+                max_cost_micros: 2_000_000,
+                input_micros_per_million: 1_000,
+                output_micros_per_million: 2_000,
+            },
+            "cap014-test",
+        )
+        .await
+        .expect("seed test provider settings");
     database
         .admit_test_subscription_dispatch(evaluation_id)
         .await
@@ -196,7 +224,7 @@ async fn cap014_executes_through_core_budget_and_records_settled_usage() {
         .unwrap();
     wait_healthy(&client, &base, &mut core).await;
 
-    admit_test_evaluation(&root.join("factory.sqlite"), "cap014-success").await;
+    admit_test_evaluation(&root.join("factory.sqlite"), "cap014-success", &model_url).await;
     let output_path = root.join("cap014.json");
     let output = run_evaluator(&base, "cap014-success", &output_path);
     assert!(
@@ -245,7 +273,7 @@ async fn cap014_budget_exhaustion_produces_failed_evidence_and_stops() {
         .unwrap();
     wait_healthy(&client, &base, &mut core).await;
 
-    admit_test_evaluation(&root.join("factory.sqlite"), "cap014-budget").await;
+    admit_test_evaluation(&root.join("factory.sqlite"), "cap014-budget", &model_url).await;
     let output_path = root.join("cap014.json");
     let output = run_evaluator(&base, "cap014-budget", &output_path);
     assert!(!output.status.success(), "exhausted run must fail");
