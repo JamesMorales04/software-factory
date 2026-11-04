@@ -946,7 +946,7 @@ async fn install_test_subscription_dispatch_admissions(pool: &SqlitePool) -> Res
     )
     .execute(pool)
     .await?;
-    let fixture = std::env::var("FACTORY_PROVIDER_KIND").as_deref() == Ok("fixture");
+    let fixture = cfg!(test) || std::env::var("FACTORY_PROVIDER_KIND").as_deref() == Ok("fixture");
     sqlx::query::query(
         "INSERT INTO test_subscription_fixture_mode(id,enabled) VALUES (1,?1)
          ON CONFLICT(id) DO UPDATE SET enabled=excluded.enabled",
@@ -989,6 +989,13 @@ pub(crate) async fn test_subscription_dispatch_admitted_in_tx(
     // before the Worker may claim it. This seam is still debug-only, applies
     // only when no funding policy row exists, and can never relax a persisted
     // disabled, paused or invalid policy.
+    let fixture: Option<(i64,)> =
+        sqlx::query_as::query_as("SELECT enabled FROM test_subscription_fixture_mode WHERE id=1")
+            .fetch_optional(&mut *connection)
+            .await?;
+    if fixture != Some((1,)) {
+        return Ok(false);
+    }
     let exact: Option<(String,)> = sqlx::query_as::query_as(&format!(
         "SELECT scope FROM {TEST_SUBSCRIPTION_DISPATCH_ADMISSIONS} WHERE scope=?1"
     ))

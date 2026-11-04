@@ -2553,6 +2553,10 @@ async fn test_subscription_admission_supports_exact_and_e2e_wildcard_scopes() {
             .unwrap()
     );
     db.admit_test_subscription_dispatch("*").await.unwrap();
+    sqlx::query::query("UPDATE test_subscription_fixture_mode SET enabled=0")
+        .execute(&db.pool)
+        .await
+        .unwrap();
     assert!(
         !test_subscription_dispatch_admitted_in_tx(&mut connection, "campaign-other")
             .await

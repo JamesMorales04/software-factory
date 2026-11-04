@@ -2343,6 +2343,16 @@ async fn update_provider_settings(
     };
     let allow_loopback_http = env::var("FACTORY_ALLOW_TEST_UPSTREAM").ok().as_deref() == Some("1");
     let test_upstream_hosts = test_upstream_hosts();
+    if provider == "opencode-go"
+        && !allow_loopback_http
+        && !factory_native::provider_catalog::is_canonical_opencode_go_base_url(&input.base_url)
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"OpenCode Go must use the canonical subscription endpoint"})),
+        )
+            .into_response();
+    }
     if let Err(error) = factory_native::provider_catalog::validate_model(&input.model)
         .and_then(|()| {
             factory_native::provider_catalog::validate_base_url(
@@ -9638,12 +9648,31 @@ async fn create_intake_subscription_admission(
         }
         Err(error) => return api_error(error),
     };
+    let assessment_settings = match app.db.provider_settings(&assessment_provider).await {
+        Ok(settings) if settings.enabled && !settings.credential_ciphertext.is_empty() => settings,
+        Ok(_) => {
+            return api_error(Error::Forbidden(
+                "assessment provider is not configured and enabled".into(),
+            ));
+        }
+        Err(error) => return api_error(error),
+    };
+    if assessment_provider == "opencode-go"
+        && !factory_native::provider_catalog::is_canonical_opencode_go_base_url(
+            &assessment_settings.base_url,
+        )
+        && std::env::var("FACTORY_ALLOW_TEST_UPSTREAM").ok().as_deref() != Some("1")
+    {
+        return api_error(Error::Forbidden(
+            "OpenCode Go assessment must use the canonical subscription endpoint".into(),
+        ));
+    }
     let mut routes = vec![
         factory_native::subscription_admission::TestRouteBinding {
             role: factory_native::subscription_admission::TestModelRole::Lead,
             provider: assessment_provider.clone(),
             model: assessment_model.clone(),
-            settings_revision: format!("model-gateway:{assessment_provider}:{assessment_model}"),
+            settings_revision: assessment_settings.revision.to_string(),
             transport: assessment_transport.to_owned(),
         },
         factory_native::subscription_admission::TestRouteBinding {

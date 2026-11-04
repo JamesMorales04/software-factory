@@ -4084,3 +4084,28 @@ fn provider_quota_error(error: &str) -> bool {
     .iter()
     .any(|needle| lower.contains(needle))
 }
+
+#[cfg(test)]
+mod quota_error_tests {
+    use super::provider_quota_error;
+
+    #[test]
+    fn provider_quota_errors_are_classified_narrowly() {
+        for message in [
+            "HTTP 429: insufficient_quota",
+            "included quota exhausted",
+            "usage limit reached",
+            "exceeded your current quota",
+        ] {
+            assert!(provider_quota_error(message), "{message}");
+        }
+        for message in [
+            "connection reset",
+            "invalid model",
+            "authentication failed",
+            "temporary upstream 500",
+        ] {
+            assert!(!provider_quota_error(message), "{message}");
+        }
+    }
+}

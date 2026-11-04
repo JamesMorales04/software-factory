@@ -330,10 +330,28 @@ pub(super) async fn require_scope_admission_in_tx(
         let routes_json: String = row.try_get("routes_json")?;
         let routes: Vec<TestRouteBinding> = serde_json::from_str(&routes_json)
             .map_err(|_| Error::Invalid("subscription admission route encoding"))?;
+        let settings: Option<(i64, String)> = sqlx::query_as::query_as(
+            "SELECT revision,base_url FROM provider_settings WHERE provider=?1",
+        )
+        .bind(provider)
+        .fetch_optional(&mut *connection)
+        .await?;
+        let Some((revision, base_url)) = settings else {
+            continue;
+        };
+        if provider == "opencode-go"
+            && !crate::provider_catalog::is_canonical_opencode_go_base_url(&base_url)
+            && std::env::var("FACTORY_ALLOW_TEST_UPSTREAM").ok().as_deref() != Some("1")
+        {
+            return Err(Error::Invalid(
+                "OpenCode Go admission route is not the canonical subscription endpoint",
+            ));
+        }
         if routes.iter().any(|route| {
             route.provider == provider
                 && route.model == model
                 && route.role == TestModelRole::Lead
+                && route.settings_revision == revision.to_string()
                 && route.validate().is_ok()
         }) {
             return Ok(());

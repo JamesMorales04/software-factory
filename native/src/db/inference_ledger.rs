@@ -2216,15 +2216,22 @@ async fn enabled_subscription_binding_in_tx(
     }
     let now_ms = Utc::now().timestamp_millis();
     let provider = route_provider(binding.route);
-    let settings: Option<(i64,)> =
-        sqlx::query_as::query_as("SELECT revision FROM provider_settings WHERE provider=?1")
-            .bind(provider)
-            .fetch_optional(&mut *connection)
-            .await?;
-    let Some((revision,)) = settings else {
+    let settings: Option<(i64, String)> = sqlx::query_as::query_as(
+        "SELECT revision,base_url FROM provider_settings WHERE provider=?1",
+    )
+    .bind(provider)
+    .fetch_optional(&mut *connection)
+    .await?;
+    let Some((revision, base_url)) = settings else {
         return Err(SubscriptionFundingRefusal::InvalidEvidence.into());
     };
     if revision.to_string() != binding.settings_revision {
+        return Err(SubscriptionFundingRefusal::InvalidEvidence.into());
+    }
+    if provider == "opencode-go"
+        && !crate::provider_catalog::is_canonical_opencode_go_base_url(&base_url)
+        && std::env::var("FACTORY_ALLOW_TEST_UPSTREAM").ok().as_deref() != Some("1")
+    {
         return Err(SubscriptionFundingRefusal::InvalidEvidence.into());
     }
     match &binding.admission_basis {

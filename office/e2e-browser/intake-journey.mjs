@@ -518,6 +518,7 @@ function coreEnvironment() {
   return {
     ...process.env,
     FACTORY_DATABASE: database,
+    FACTORY_PROVIDER_KIND: live ? "opencode" : "fixture",
     FACTORY_BIND: `127.0.0.1:${corePort}`,
     FACTORY_OPERATOR_TOKEN: operator,
     FACTORY_ENROLLMENT_CODE_FILE: enrollmentCodeFile,

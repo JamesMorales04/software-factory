@@ -38,6 +38,7 @@ impl CoreProcess {
         let child = Command::new(env!("CARGO_BIN_EXE_factory-core"))
             .env("FACTORY_DATABASE", database)
             .env("FACTORY_BIND", format!("127.0.0.1:{port}"))
+            .env("FACTORY_PROVIDER_KIND", "fixture")
             .env("FACTORY_OPERATOR_TOKEN", OPERATOR_TOKEN)
             .env("FACTORY_WORKER_BOOTSTRAP_TOKEN", BOOTSTRAP_TOKEN)
             .env("FACTORY_VERIFIER_TOKEN", VERIFIER_TOKEN)

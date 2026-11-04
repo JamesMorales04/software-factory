@@ -73,6 +73,15 @@ pub struct ProviderCatalogEntry {
     pub catalog: ModelCatalogStrategy,
 }
 
+pub const OPENCODE_GO_SUBSCRIPTION_BASE_URL: &str = "https://opencode.ai/inference/go/openai/v1";
+
+/// The Go subscription route must use the exact documented inference base.
+/// Test-only loopback fixtures are admitted through the explicit
+/// `FACTORY_ALLOW_TEST_UPSTREAM` path instead of a production alias.
+pub fn is_canonical_opencode_go_base_url(value: &str) -> bool {
+    value.trim_end_matches('/') == OPENCODE_GO_SUBSCRIPTION_BASE_URL
+}
+
 pub const CATALOG: &[ProviderCatalogEntry] = &[
     ProviderCatalogEntry {
         provider: "opencode-go",
@@ -702,6 +711,22 @@ pub fn validate_budget(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opencode_go_requires_the_canonical_subscription_base() {
+        assert!(is_canonical_opencode_go_base_url(
+            "https://opencode.ai/inference/go/openai/v1"
+        ));
+        assert!(is_canonical_opencode_go_base_url(
+            "https://opencode.ai/inference/go/openai/v1/"
+        ));
+        assert!(!is_canonical_opencode_go_base_url(
+            "https://api.openai.com/v1"
+        ));
+        assert!(!is_canonical_opencode_go_base_url(
+            "https://opencode.ai/inference/go/openai/v1/extra"
+        ));
+    }
 
     fn available(models: &[&str], discovered_at: &str) -> ProviderModelCatalogEntry {
         ProviderModelCatalogEntry {
