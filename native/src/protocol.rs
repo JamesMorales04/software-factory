@@ -96,6 +96,8 @@ pub struct ThreadStartParams {
     pub base_instructions: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub developer_instructions: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allow_provider_model_fallback: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -207,6 +209,7 @@ impl Default for ThreadStartParams {
             dynamic_tools: None,
             base_instructions: None,
             developer_instructions: None,
+            allow_provider_model_fallback: Some(false),
         }
     }
 }

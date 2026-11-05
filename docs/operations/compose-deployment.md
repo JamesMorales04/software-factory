@@ -50,6 +50,13 @@ Supervisor, Worker, verifier, reviewer and the runtime broker, and waits for
 the Core, Supervisor, Worker and runtime health checks. The verifier and reviewer
 are started after the runtime is healthy but have no Compose healthcheck.
 
+Codex ChatGPT authentication and native review are opt-in. The reviewer image
+contains the pinned Codex App Server, and the dedicated `factory-codex-home`
+volume is mounted only into the reviewer and the one-shot `codex-auth` /
+`codex-status` services. See
+[Codex ChatGPT authentication and native review](codex-review-auth.md) for the
+device-code login and `FACTORY_ENABLE_CODEX_REVIEW=1` activation steps.
+
 Office is published only on loopback:
 
 ```text

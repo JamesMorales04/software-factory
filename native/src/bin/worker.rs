@@ -2928,6 +2928,7 @@ async fn run_codex_tool_loop(
                     .into(),
             ),
             developer_instructions: None,
+            allow_provider_model_fallback: Some(false),
         })
         .await
     {

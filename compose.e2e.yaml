@@ -11,6 +11,7 @@ services:
       FACTORY_ALLOW_INSECURE_GIT: "1"
       FACTORY_ALLOW_TEST_UPSTREAM: "1"
       FACTORY_TEST_UPSTREAM_HOSTS: "model-fixture"
+      FACTORY_PROVIDER_KIND: fixture
   git-fixture:
     image: docker.io/library/python:3.12-alpine
     command: ["python3", "-m", "http.server", "8080", "--directory", "/srv"]

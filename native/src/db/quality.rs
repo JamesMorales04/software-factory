@@ -905,12 +905,16 @@ async fn validate_model_review_receipt(
     Ok(())
 }
 
-async fn semantic_review_requires_model(connection: &mut SqliteConnection) -> Result<bool, Error> {
+async fn semantic_review_enabled(connection: &mut SqliteConnection) -> Result<bool, Error> {
     let enabled: Option<(i64,)> =
         sqlx::query_as::query_as("SELECT semantic_review_enabled FROM factory_settings WHERE id=1")
             .fetch_optional(&mut *connection)
             .await?;
-    if enabled.is_none_or(|(enabled,)| enabled == 0) {
+    Ok(enabled.is_some_and(|(enabled,)| enabled != 0))
+}
+
+async fn semantic_review_requires_model(connection: &mut SqliteConnection) -> Result<bool, Error> {
+    if !semantic_review_enabled(connection).await? {
         return Ok(false);
     }
     let configured: Option<(String,)> = sqlx::query_as::query_as(
@@ -951,7 +955,9 @@ async fn decide_gate(
         && reviewer
             .as_ref()
             .is_some_and(|receipt| !receipt.mechanism.is_model_backed())
-        && semantic_review_requires_model(connection).await?
+        && (semantic_review_requires_model(connection).await?
+            || (semantic_review_enabled(connection).await?
+                && std::env::var("FACTORY_ENABLE_CODEX_REVIEW").as_deref() == Ok("1")))
     {
         decision = crate::quality::GateDecision {
             outcome: GateOutcome::NotTested,

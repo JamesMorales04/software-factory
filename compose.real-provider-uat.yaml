@@ -9,6 +9,7 @@ services:
     environment:
       FACTORY_ALLOW_INSECURE_GIT: "1"
       FACTORY_LEAD_FIXTURE_ASSESSOR: "0"
+      FACTORY_ENABLE_CODEX_REVIEW: "1"
   worker:
     environment:
       FACTORY_PROVIDER_KIND: opencode

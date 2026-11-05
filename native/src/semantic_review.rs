@@ -394,6 +394,7 @@ is insufficient. Never approve from the candidate description alone.\n\nJSON Sch
 pub enum SemanticReviewMechanism {
     Deterministic,
     Model,
+    CodexAppServer,
 }
 
 pub fn mechanism_from_env(
@@ -404,6 +405,9 @@ pub fn mechanism_from_env(
         Some(value) if value.eq_ignore_ascii_case("MODEL") => Ok(SemanticReviewMechanism::Model),
         Some(value) if value.eq_ignore_ascii_case("DETERMINISTIC") => {
             Ok(SemanticReviewMechanism::Deterministic)
+        }
+        Some(value) if value.eq_ignore_ascii_case("CODEX_APP_SERVER") => {
+            Ok(SemanticReviewMechanism::CodexAppServer)
         }
         Some(_) => invalid("unsupported review mechanism"),
     }
@@ -561,6 +565,10 @@ mod tests {
         assert_eq!(
             mechanism_from_env(None).unwrap(),
             SemanticReviewMechanism::Deterministic
+        );
+        assert_eq!(
+            mechanism_from_env(Some("codex_app_server")).unwrap(),
+            SemanticReviewMechanism::CodexAppServer
         );
         assert!(mechanism_from_env(Some("anything-else")).is_err());
     }

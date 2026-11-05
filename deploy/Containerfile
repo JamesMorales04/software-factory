@@ -120,6 +120,28 @@ COPY --from=workspace /build/target/release/factory-egress-bridge /usr/local/bin
 USER 10001:10001
 STOPSIGNAL SIGTERM
 
+FROM node:${NODE_VERSION}-bookworm-slim AS reviewer
+
+ARG REVIEWER_CODEX_VERSION=0.165.0
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl git \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install --global --no-audit --no-fund \
+        "@openai/codex@${REVIEWER_CODEX_VERSION}" \
+    && command -v codex \
+    && groupadd --gid 10001 factory \
+    && useradd --uid 10001 --gid factory --no-create-home \
+        --home-dir /nonexistent --shell /usr/sbin/nologin factory \
+    && install -d -o factory -g factory -m 0700 /state /codex-home
+
+COPY --from=workspace /build/target/release/factory-reviewer /usr/local/bin/factory-reviewer
+ENV HOME=/tmp \
+    TMPDIR=/tmp \
+    PATH=/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+USER 10001:10001
+STOPSIGNAL SIGTERM
+
 FROM debian:bookworm-slim AS verifier
 
 RUN apt-get update \

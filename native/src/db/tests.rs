@@ -1266,6 +1266,12 @@ async fn codex_app_server_review_requires_exact_provenance_without_a_reservation
         Err(Error::Forbidden(_))
     ));
 
+    let verifier = quality_receipt(&fixture, "verifier-codex", "verifier");
+    fixture
+        .db
+        .record_quality_receipt(&fixture.candidate_id, QualityRole::Verifier, &verifier)
+        .await
+        .unwrap();
     let ingested = fixture
         .db
         .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &valid)
@@ -1273,6 +1279,51 @@ async fn codex_app_server_review_requires_exact_provenance_without_a_reservation
         .unwrap();
     assert_eq!(ingested.receipt.mechanism, ReviewMechanism::CodexAppServer);
     assert!(ingested.receipt.model_reservation_id.is_empty());
+    assert_eq!(ingested.gate.unwrap().outcome, GateOutcome::Accepted);
+    let mut duplicate = valid;
+    duplicate.receipt_id = "codex-review-duplicate".into();
+    assert!(matches!(
+        fixture
+            .db
+            .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &duplicate)
+            .await,
+        Err(Error::Conflict(_))
+    ));
+    fixture.db.close().await;
+    let _ = std::fs::remove_file(fixture.root.join("factory.sqlite"));
+}
+
+#[tokio::test]
+async fn codex_app_server_failure_receipt_preserves_unknown_usage() {
+    let fixture = candidate_fixture().await;
+    let verifier = quality_receipt(&fixture, "verifier-codex-failure", "verifier");
+    fixture
+        .db
+        .record_quality_receipt(&fixture.candidate_id, QualityRole::Verifier, &verifier)
+        .await
+        .unwrap();
+    let mut failed = quality_receipt(&fixture, "codex-review-failure", "reviewer");
+    failed.mechanism = ReviewMechanism::CodexAppServer;
+    failed.model_provider = "codex".into();
+    failed.model_name = "gpt-6-luna".into();
+    failed.model_request_sha256 = sha256_hex(b"codex-review-failure-request");
+    failed.result = ReceiptResult::NotTested;
+    failed.evidence = EvidenceKind::Unknown;
+    failed.findings = vec![crate::review::ReviewFinding {
+        id: "codex-review-unavailable".into(),
+        severity: crate::review::FindingSeverity::Blocking,
+        category: crate::review::FindingCategory::Other,
+        message: "Codex authentication is unavailable".into(),
+        evidence_refs: vec![fixture.candidate_id.clone()],
+    }];
+    assert!(!failed.usage_known);
+    let ingested = fixture
+        .db
+        .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &failed)
+        .await
+        .unwrap();
+    assert!(!ingested.receipt.usage_known);
+    assert_eq!(ingested.gate.unwrap().outcome, GateOutcome::NotTested);
     fixture.db.close().await;
     let _ = std::fs::remove_file(fixture.root.join("factory.sqlite"));
 }
