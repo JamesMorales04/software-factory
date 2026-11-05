@@ -2553,11 +2553,153 @@ async fn test_subscription_admission_supports_exact_and_e2e_wildcard_scopes() {
             .unwrap()
     );
     db.admit_test_subscription_dispatch("*").await.unwrap();
+    sqlx::query::query("UPDATE test_subscription_fixture_mode SET enabled=0")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    assert!(
+        !test_subscription_dispatch_admitted_in_tx(&mut connection, "campaign-other")
+            .await
+            .unwrap()
+    );
+    sqlx::query::query("UPDATE test_subscription_fixture_mode SET enabled=1")
+        .execute(&db.pool)
+        .await
+        .unwrap();
     assert!(
         test_subscription_dispatch_admitted_in_tx(&mut connection, "campaign-other")
             .await
             .unwrap()
     );
+    drop(connection);
+    db.close().await;
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn owner_confirmed_campaign_admission_enables_subscription_mode() {
+    use crate::execution_policy::{OwnerBillingAssumption, OwnerControlledExtraUsage};
+    use crate::subscription_admission::{TestModelRole, TestRouteBinding, WAVE3_TEST_PROFILE_ID};
+
+    let path = std::env::temp_dir().join(format!(
+        "factory-subscription-admission-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let db = Database::open(&path).await.unwrap();
+    let now = Utc::now().to_rfc3339();
+    sqlx::query::query(
+        "INSERT INTO projects(id,repository,base_commit,created_at,identity)
+         VALUES ('project-admission','/fixture',?1,?2,'')",
+    )
+    .bind("a".repeat(40))
+    .bind(&now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query::query(
+        "INSERT INTO actions(id,project_id,objective,provider,model,risk,status,objective_sha256,created_at)
+         VALUES ('action-admission','project-admission','objective','opencode-go','deepseek-v4.1-flash','R0','PENDING','hash',?1)",
+    )
+    .bind(&now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query::query(
+        "INSERT INTO campaigns(id,action_id,status,created_at)
+         VALUES ('campaign-admission','action-admission','BLOCKED_AUTHORIZATION',?1)",
+    )
+    .bind(&now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let assumption = OwnerBillingAssumption {
+        assumption_id: "owner-extra-usage".into(),
+        confirmed_by: "Product Owner".into(),
+        confirmed_at_ms: Utc::now().timestamp_millis() - 1_000,
+        valid_until_ms: Utc::now().timestamp_millis() + 3_600_000,
+        extra_usage: OwnerControlledExtraUsage::Disabled,
+        statement: "Owner confirms OpenCode Go Extra Usage is disabled in the Console".into(),
+    };
+    let admission = ScopeAdmissionRecord {
+        admission_id: "admission-1".into(),
+        intake_request_id: "intake-1".into(),
+        lead_request_id: "lead-1".into(),
+        test_profile_id: WAVE3_TEST_PROFILE_ID.into(),
+        execution_profile_id: "profile-admission".into(),
+        provider: "opencode-go".into(),
+        model: "deepseek-v4.1-flash".into(),
+        settings_revision: "1".into(),
+        profile_revision_id: "revision-1".into(),
+        profile_hash: "b".repeat(64),
+        assumption,
+        routes: vec![TestRouteBinding {
+            role: TestModelRole::Implementer,
+            provider: "opencode-go".into(),
+            model: "deepseek-v4.1-flash".into(),
+            settings_revision: "1".into(),
+            transport: "OPENCODE_GO_SUBSCRIPTION".into(),
+        }],
+        state: "ACTIVE".into(),
+        campaign_id: None,
+        created_at_ms: Utc::now().timestamp_millis(),
+        expires_at_ms: Utc::now().timestamp_millis() + 3_600_000,
+        receipt_sha256: "c".repeat(64),
+    };
+    sqlx::query::query(
+        "INSERT INTO provider_settings
+         (provider,kind,model,base_url,auth_mode,credential_ciphertext,credential_nonce,
+          credential_fingerprint,enabled,is_default,max_turns,max_input_tokens,
+          max_output_tokens,max_cost_micros,input_micros_per_million,
+          output_micros_per_million,revision,updated_at)
+         VALUES ('opencode-go','opencode','deepseek-v4.1-flash','https://example.invalid/v1',
+                 'api_key','ciphertext','nonce','fingerprint',1,0,4,100000,12000,500000,
+                 1000,2000,1,?1)",
+    )
+    .bind(&now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let mut connection = db.pool.acquire().await.unwrap();
+    super::subscription_admissions::insert_enabled_campaign_admission_in_tx(
+        &mut connection,
+        "campaign-admission",
+        "auth-admission",
+        &admission,
+        "opencode-go",
+        "deepseek-v4.1-flash",
+        "1",
+        &"d".repeat(64),
+    )
+    .await
+    .unwrap();
+    let (state, mode): (String, String) = sqlx::query_as::query_as(
+        "SELECT sfp.state,icm.mode
+         FROM subscription_funding_policies sfp
+         JOIN inference_campaign_modes icm ON icm.campaign_id=sfp.campaign_id
+         WHERE sfp.campaign_id='campaign-admission'",
+    )
+    .fetch_one(&mut *connection)
+    .await
+    .unwrap();
+    assert_eq!(state, "ENABLED");
+    assert_eq!(mode, "SUBSCRIPTION");
+    let now_ms = Utc::now().timestamp_millis();
+    db.pause_subscription_funding_for_quota(
+        "campaign-admission",
+        "auth-admission",
+        now_ms,
+        None,
+        "provider quota exhausted",
+    )
+    .await
+    .unwrap();
+    let paused: String = sqlx::query_scalar::query_scalar(
+        "SELECT state FROM subscription_funding_policies WHERE campaign_id='campaign-admission'",
+    )
+    .fetch_one(&mut *connection)
+    .await
+    .unwrap();
+    assert_eq!(paused, "PAUSED_QUOTA");
     drop(connection);
     db.close().await;
     let _ = std::fs::remove_file(path);

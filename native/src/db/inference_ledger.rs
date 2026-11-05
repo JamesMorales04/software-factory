@@ -39,6 +39,7 @@ type WorkerDispatchLease = (
 );
 type ProviderPricingSettings = (String, String, String, i64, i64, i64, i64, i64, i64);
 type SubscriptionFundingRow = (String, String, i64, Option<i64>, Option<String>);
+type EnabledFundingRow = (String, String, String, i64, Option<i64>, Option<String>);
 #[derive(Debug, Clone)]
 struct EnvelopeRow {
     id: String,
@@ -1212,9 +1213,9 @@ async fn dispatch_inference_in_tx(
         .ok_or(Error::Forbidden(
             "worker dispatch campaign is not classified V2".into(),
         ))?;
-        if billing_mode != "V2" {
+        if billing_mode != "V2" && billing_mode != "SUBSCRIPTION" {
             return Err(Error::Forbidden(
-                "worker dispatch campaign is not classified V2".into(),
+                "worker dispatch campaign has no supported inference classification".into(),
             ));
         }
     } else if input.attempt_id.is_some() || input.worker_id.is_some() {
@@ -2151,6 +2152,131 @@ pub(crate) async fn load_ledger_mode(
     InferenceLedgerMode::parse(&mode).map_err(ledger_error)
 }
 
+fn route_provider(route: crate::execution_policy::SubscriptionRoute) -> &'static str {
+    match route {
+        crate::execution_policy::SubscriptionRoute::OpenCodeGo => "opencode-go",
+        crate::execution_policy::SubscriptionRoute::CodexChatGpt => "codex",
+    }
+}
+
+/// Verify the persisted ENABLED policy at dispatch time. The stored digest,
+/// exact authorization identity, Owner assumption expiry, provider settings
+/// revision and quota are all re-read; a stale or edited policy never
+/// authorizes a provider call.
+async fn enabled_subscription_binding_in_tx(
+    connection: &mut SqliteConnection,
+    campaign_id: &str,
+) -> Result<Option<crate::execution_policy::SubscriptionBinding>, Error> {
+    use crate::execution_policy::{
+        ExecutionPolicyV3, FundingPolicy, SubscriptionAdmissionBasis, SubscriptionFundingRefusal,
+    };
+    let row: Option<EnabledFundingRow> = sqlx::query_as::query_as(
+        "SELECT state,policy_json,policy_sha256,observed_at_ms,resets_at_ms,reason
+             FROM subscription_funding_policies WHERE campaign_id=?1",
+    )
+    .bind(campaign_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    let Some((state, policy_json, digest, observed_at_ms, resets_at_ms, reason)) = row else {
+        return Ok(None);
+    };
+    if state != "ENABLED" {
+        return Ok(None);
+    }
+    if digest.len() != 64
+        || !digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || sha256_hex(policy_json.as_bytes()) != digest
+    {
+        return Err(SubscriptionFundingRefusal::InvalidEvidence.into());
+    }
+    let policy: ExecutionPolicyV3 = serde_json::from_str(&policy_json)
+        .map_err(|_| SubscriptionFundingRefusal::InvalidEvidence)?;
+    let (authorization_id,): (String,) = sqlx::query_as::query_as(
+        "SELECT authorization_id FROM campaign_authorizations WHERE campaign_id=?1",
+    )
+    .bind(campaign_id)
+    .fetch_optional(&mut *connection)
+    .await?
+    .ok_or(SubscriptionFundingRefusal::InvalidEvidence)?;
+    if policy.authorization_id != authorization_id {
+        return Err(SubscriptionFundingRefusal::InvalidEvidence.into());
+    }
+    let FundingPolicy::Subscription {
+        binding_sha256,
+        binding,
+        ..
+    } = &policy.funding
+    else {
+        return Err(SubscriptionFundingRefusal::InvalidEvidence.into());
+    };
+    let binding_json = serde_json::to_string(binding.as_ref())
+        .map_err(|_| SubscriptionFundingRefusal::InvalidEvidence)?;
+    if sha256_hex(binding_json.as_bytes()) != *binding_sha256 {
+        return Err(SubscriptionFundingRefusal::InvalidEvidence.into());
+    }
+    let now_ms = Utc::now().timestamp_millis();
+    let provider = route_provider(binding.route);
+    let settings: Option<(i64, String)> = sqlx::query_as::query_as(
+        "SELECT revision,base_url FROM provider_settings WHERE provider=?1",
+    )
+    .bind(provider)
+    .fetch_optional(&mut *connection)
+    .await?;
+    let Some((revision, base_url)) = settings else {
+        return Err(SubscriptionFundingRefusal::InvalidEvidence.into());
+    };
+    if revision.to_string() != binding.settings_revision {
+        return Err(SubscriptionFundingRefusal::InvalidEvidence.into());
+    }
+    if provider == "opencode-go"
+        && !crate::provider_catalog::is_canonical_opencode_go_base_url(&base_url)
+        && !crate::provider_catalog::is_test_upstream_url(&base_url)
+    {
+        return Err(SubscriptionFundingRefusal::InvalidEvidence.into());
+    }
+    match &binding.admission_basis {
+        SubscriptionAdmissionBasis::OwnerConfirmedConfiguration { assumption } => {
+            if assumption.validate_at(now_ms).is_err()
+                || !binding.extra_usage_disabled
+                || !binding.api_key_route_disabled
+            {
+                return Err(SubscriptionFundingRefusal::VerificationRequired.into());
+            }
+            match binding.quota {
+                crate::execution_policy::QuotaObservation::Exhausted {
+                    observed_at_ms,
+                    resets_at_ms,
+                } => {
+                    return Err(SubscriptionFundingRefusal::QuotaPaused {
+                        observed_at_ms,
+                        resets_at_ms,
+                    }
+                    .into());
+                }
+                crate::execution_policy::QuotaObservation::Available {
+                    remaining: Some(0),
+                    observed_at_ms,
+                    ..
+                } => {
+                    return Err(SubscriptionFundingRefusal::QuotaPaused {
+                        observed_at_ms,
+                        resets_at_ms: None,
+                    }
+                    .into());
+                }
+                _ => {}
+            }
+        }
+        SubscriptionAdmissionBasis::ProviderVerified => {
+            if !binding.is_verified_no_charge_route_at(now_ms) {
+                return Err(SubscriptionFundingRefusal::VerificationRequired.into());
+            }
+        }
+    }
+    let _ = (observed_at_ms, resets_at_ms, reason);
+    Ok(Some(*binding.clone()))
+}
+
 /// Current Owner policy allows only verified subscription-included inference.
 /// V1/V2 monetary accounting remains available to the ledger for a future
 /// explicitly authorized billable mode, but it is not dispatch authority.
@@ -2187,6 +2313,10 @@ pub(crate) async fn require_enabled_subscription_funding_in_tx(
     )
     .map_err(|_| SubscriptionFundingRefusal::InvalidEvidence)?;
     let refusal = match recovery {
+        FundingRecoveryState::Enabled { .. } => {
+            enabled_subscription_binding_in_tx(connection, campaign_id).await?;
+            return Ok(());
+        }
         FundingRecoveryState::PausedQuota {
             observed_at_ms,
             resets_at_ms,
@@ -2202,6 +2332,58 @@ pub(crate) async fn require_enabled_subscription_funding_in_tx(
         }
     };
     Err(refusal.into())
+}
+
+/// Route-aware funding gate. A fixture admission is accepted only when the
+/// actual provider route is a fixture adapter or a configured test upstream.
+pub(crate) async fn require_enabled_subscription_funding_for_route_in_tx(
+    connection: &mut SqliteConnection,
+    campaign_id: &str,
+    provider: &str,
+    model: &str,
+) -> Result<(), Error> {
+    use crate::execution_policy::SubscriptionFundingRefusal;
+    let has_policy: Option<(i64,)> = sqlx::query_as::query_as(
+        "SELECT 1 FROM subscription_funding_policies WHERE campaign_id=?1",
+    )
+    .bind(campaign_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    if has_policy.is_some() {
+        require_enabled_subscription_funding_in_tx(connection, campaign_id).await?;
+        require_subscription_route_in_tx(connection, campaign_id, provider, model).await?;
+        return Ok(());
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    if super::test_subscription_dispatch_admitted_for_route_in_tx(
+        connection,
+        campaign_id,
+        provider,
+        model,
+    )
+    .await?
+    {
+        return Ok(());
+    }
+    Err(SubscriptionFundingRefusal::BindingRequired.into())
+}
+
+/// Enforce the exact route on an enabled subscription Campaign. Legacy and
+/// test-only scopes without a policy row are handled by the earlier gate.
+pub(crate) async fn require_subscription_route_in_tx(
+    connection: &mut SqliteConnection,
+    campaign_id: &str,
+    provider: &str,
+    model: &str,
+) -> Result<(), Error> {
+    use crate::execution_policy::SubscriptionFundingRefusal;
+    let Some(binding) = enabled_subscription_binding_in_tx(connection, campaign_id).await? else {
+        return Ok(());
+    };
+    if provider != route_provider(binding.route) || model != binding.model_id {
+        return Err(SubscriptionFundingRefusal::InvalidEvidence.into());
+    }
+    Ok(())
 }
 
 pub(crate) async fn campaign_requirement_in_tx(
@@ -2225,6 +2407,9 @@ pub(crate) async fn campaign_requirement_in_tx(
             .bind(campaign_id)
             .fetch_optional(&mut *connection)
             .await?;
+    if row.as_ref().is_some_and(|(mode,)| mode == "SUBSCRIPTION") {
+        return Ok(CampaignInferenceRequirement::Subscription);
+    }
     if row.as_ref().is_some_and(|(mode,)| mode == "V2") {
         let binding: Option<(String,)> = sqlx::query_as::query_as(
             "SELECT envelope_id FROM inference_campaign_bindings WHERE campaign_id=?1",

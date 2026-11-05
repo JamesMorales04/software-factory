@@ -1433,6 +1433,7 @@ export interface ApproveIntakeRequest {
   rationale: string;
   principal_label?: string;
   idempotency_key?: string;
+  subscription_admission_id?: string;
 }
 
 export interface IntakeMessageRequest {

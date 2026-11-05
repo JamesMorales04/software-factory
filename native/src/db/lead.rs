@@ -1056,6 +1056,30 @@ impl Database {
         expected: Option<&ExpectedStartBinding>,
         authorization: Option<&NewCampaignAuthorization>,
     ) -> Result<LeadStartResult, Error> {
+        self.start_lead_campaign_with_admission(
+            request_id,
+            idempotency_key,
+            authority,
+            expected,
+            authorization,
+            None,
+        )
+        .await
+    }
+
+    /// Operator start that consumes an exact Owner-confirmed subscription
+    /// admission in the same transaction that creates the Campaign
+    /// authorization. No monetary envelope is involved.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn start_lead_campaign_with_admission(
+        &self,
+        request_id: &str,
+        idempotency_key: &str,
+        authority: StartAuthority,
+        expected: Option<&ExpectedStartBinding>,
+        authorization: Option<&NewCampaignAuthorization>,
+        subscription_admission_id: Option<&str>,
+    ) -> Result<LeadStartResult, Error> {
         if idempotency_key.trim().is_empty() || idempotency_key.len() > 256 {
             return Err(Error::Invalid("lead start idempotency key"));
         }
@@ -1074,6 +1098,7 @@ impl Database {
             &authority,
             expected,
             authorization,
+            subscription_admission_id,
         )
         .await?;
         transaction.commit().await?;
@@ -1759,6 +1784,7 @@ fn evidence_authority_matches(
         && evidence.authorization_digest == submission_digest
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn start_lead_campaign_in_tx(
     connection: &mut SqliteConnection,
     cache: &crate::provider_catalog::ProviderModelCache,
@@ -1767,6 +1793,7 @@ async fn start_lead_campaign_in_tx(
     authority: &StartAuthority,
     expected: Option<&ExpectedStartBinding>,
     authorization: Option<&NewCampaignAuthorization>,
+    subscription_admission_id: Option<&str>,
 ) -> Result<LeadStartResult, Error> {
     let request = load_lead_request(connection, request_id).await?;
     let submission_digest = start_submission_digest(request_id, authority, expected, authorization);
@@ -2032,8 +2059,14 @@ async fn start_lead_campaign_in_tx(
                 ));
             }
             if input.monetary_envelope_id == super::authorization::NO_BILLABLE_ENVELOPE {
+                if subscription_admission_id.is_none() {
+                    return Err(Error::Forbidden(
+                        "provider authorization requires a real monetary envelope reference or an explicit subscription admission".into(),
+                    ));
+                }
+            } else if subscription_admission_id.is_some() {
                 return Err(Error::Forbidden(
-                    "provider authorization requires a real monetary envelope reference".into(),
+                    "subscription admission must not carry a monetary envelope".into(),
                 ));
             }
             if input.authorized_paths.iter().any(|path| {
@@ -2174,6 +2207,55 @@ async fn start_lead_campaign_in_tx(
         .bind(&campaign.created_at)
         .execute(&mut *connection)
         .await?;
+    let mut subscription_admitted = false;
+    if let Some(admission_id) = subscription_admission_id {
+        let intake: Option<(String,)> =
+            sqlx::query_as::query_as("SELECT id FROM intake_requests WHERE lead_request_id=?1")
+                .bind(&request.id)
+                .fetch_optional(&mut *connection)
+                .await?;
+        let (intake_id,) = intake.ok_or(Error::Forbidden(
+            "subscription admission requires a unified intake request".into(),
+        ))?;
+        let profile = identity.profile.as_ref().ok_or(Error::Forbidden(
+            "subscription admission requires a frozen execution profile".into(),
+        ))?;
+        let (settings_revision,): (i64,) = sqlx::query_as::query_as(
+            "SELECT revision FROM provider_settings WHERE provider=?1 AND enabled=1",
+        )
+        .bind(&authorization_input.provider)
+        .fetch_optional(&mut *connection)
+        .await?
+        .ok_or(Error::Forbidden(
+            "subscription implementer provider is not enabled".into(),
+        ))?;
+        let admission = super::subscription_admissions::consume_scope_admission_in_tx(
+            connection,
+            admission_id,
+            &campaign.id,
+            &intake_id,
+            &request.id,
+            &profile.profile_id,
+            &profile.profile_revision_id,
+            &profile.profile_hash,
+            &authorization_input.provider,
+            &authorization_input.model,
+            &settings_revision.to_string(),
+        )
+        .await?;
+        super::subscription_admissions::insert_enabled_campaign_admission_in_tx(
+            connection,
+            &campaign.id,
+            &authorization_input.authorization_id,
+            &admission,
+            &authorization_input.provider,
+            &authorization_input.model,
+            &settings_revision.to_string(),
+            &submission_digest,
+        )
+        .await?;
+        subscription_admitted = true;
+    }
     super::authorization::authorize_campaign_in_tx(
         connection,
         &campaign.id,
@@ -2330,7 +2412,7 @@ async fn start_lead_campaign_in_tx(
     // A billable V2 Campaign and its one operator-request envelope commit
     // together. The evidence row above establishes request ownership; a
     // missing, foreign or already-bound envelope rolls the whole start back.
-    if authorization_input.execution_mode == "TRUSTED_LOCAL_PROVIDER" {
+    if authorization_input.execution_mode == "TRUSTED_LOCAL_PROVIDER" && !subscription_admitted {
         super::inference_ledger::bind_campaign_inference_envelope_in_tx(
             connection,
             &crate::inference_ledger::CampaignEnvelopeBindingInput {

@@ -266,11 +266,14 @@ impl Database {
         // Subscription eligibility precedes historical monetary requirements.
         // Keep V2's durable blocking hold so a refused turn cannot churn
         // through repeated assignments. No monetary reservation is created.
-        if let Err(error) = super::inference_ledger::require_enabled_subscription_funding_in_tx(
-            &mut transaction,
-            &campaign_id,
-        )
-        .await
+        if let Err(error) =
+            super::inference_ledger::require_enabled_subscription_funding_for_route_in_tx(
+                &mut transaction,
+                &campaign_id,
+                &provider,
+                &model,
+            )
+            .await
         {
             if authorization_version == 2 && matches!(error, Error::SubscriptionFunding(_)) {
                 super::lead::record_blocking_progress_hold_in_tx(
@@ -284,6 +287,13 @@ impl Database {
             }
             return Err(error);
         }
+        super::inference_ledger::require_subscription_route_in_tx(
+            &mut transaction,
+            &campaign_id,
+            &provider,
+            &model,
+        )
+        .await?;
         // An expired, unbound turn has provably produced no egress request.
         // Release its shared-ledger hold before reclaiming the legacy row; a
         // linked hold that is already ambiguous refuses new turns instead.
@@ -319,6 +329,10 @@ impl Database {
         let requirement =
             super::inference_ledger::campaign_requirement_in_tx(&mut transaction, &campaign_id)
                 .await?;
+        let subscription = matches!(
+            &requirement,
+            crate::inference_ledger::CampaignInferenceRequirement::Subscription
+        );
         let ledger_quote = match requirement {
             crate::inference_ledger::CampaignInferenceRequirement::EnvelopeBound { .. } => Some(
                 super::inference_ledger::latest_pricing_quote_in_tx(
@@ -333,7 +347,8 @@ impl Database {
                     )
                 })?,
             ),
-            crate::inference_ledger::CampaignInferenceRequirement::LegacyV1 => None,
+            crate::inference_ledger::CampaignInferenceRequirement::LegacyV1
+            | crate::inference_ledger::CampaignInferenceRequirement::Subscription => None,
         };
         let ledger_turn_cost_bound = ledger_quote
             .as_ref()
@@ -363,7 +378,7 @@ impl Database {
             reserved_input,
             reserved_output,
             reserved_cost,
-        ) = if authorization_version == 2 {
+        ) = if authorization_version == 2 && !subscription {
             let Some(quote) = ledger_quote.as_ref() else {
                 super::lead::record_blocking_progress_hold_in_tx(
                     &mut transaction,
@@ -416,6 +431,37 @@ impl Database {
                 0,
                 0,
             )
+        } else if subscription {
+            let (max_input, max_output): (i64, i64) = sqlx::query_as::query_as(
+                "SELECT max_input_tokens,max_output_tokens FROM provider_settings WHERE provider=?1",
+            )
+            .bind(&provider)
+            .fetch_optional(&mut *transaction)
+            .await?
+            .ok_or(Error::Unavailable(
+                "subscription provider settings are missing".into(),
+            ))?;
+            let operation_limits: Option<String> = sqlx::query_scalar::query_scalar(
+                "SELECT ep.operation_limits_json
+                 FROM campaigns c
+                 JOIN campaign_authorizations ca ON ca.campaign_id=c.id
+                 JOIN execution_policies ep ON ep.policy_id=ca.policy_id
+                 WHERE c.id=?1",
+            )
+            .bind(&campaign_id)
+            .fetch_optional(&mut *transaction)
+            .await?;
+            let Some(operation_limits) = operation_limits else {
+                return Err(Error::Unavailable(
+                    "subscription provider turn has no frozen operation limits".into(),
+                ));
+            };
+            let operation_limits: crate::execution_policy::OperationLimits =
+                serde_json::from_str(&operation_limits).map_err(|_| {
+                    Error::Invalid("subscription provider turn operation limits are malformed")
+                })?;
+            let deadline_secs = i64::from(operation_limits.model_request_timeout_secs.get());
+            (max_input, max_output, 0, deadline_secs, 0, 0, 0, 0, 0, 0, 0)
         } else if authorization_version == 1 {
             let max_input: Option<i64> = lease.try_get("max_input_tokens")?;
             let max_output: Option<i64> = lease.try_get("max_output_tokens")?;
@@ -504,7 +550,7 @@ impl Database {
             };
         if reservation_input <= 0
             || grant_output <= 0
-            || (ledger_turn_cost_bound.is_none() && remaining_cost <= 0)
+            || (!subscription && ledger_turn_cost_bound.is_none() && remaining_cost <= 0)
         {
             return Err(Error::Forbidden("provider turn budget is exhausted".into()));
         }
@@ -674,9 +720,11 @@ impl Database {
         if sequence == 0 && !actual_request_sha256.is_empty() {
             return Err(Error::Conflict("provider turn request is already bound"));
         }
-        super::inference_ledger::require_enabled_subscription_funding_in_tx(
+        super::inference_ledger::require_enabled_subscription_funding_for_route_in_tx(
             &mut transaction,
             &campaign_id,
+            &provider,
+            &model,
         )
         .await?;
         let now = Utc::now().to_rfc3339();
@@ -1556,6 +1604,29 @@ impl Database {
             &format!("state={stored_state} usage_known={}", input.usage_known),
         )
         .await?;
+        if input.state == "FAILED" && provider_quota_error(&input.error) {
+            let authorization: Option<(String,)> = sqlx::query_as::query_as(
+                "SELECT authorization_id FROM campaign_authorizations WHERE campaign_id=?1",
+            )
+            .bind(&campaign_id)
+            .fetch_optional(&mut *transaction)
+            .await?;
+            if let Some((authorization_id,)) = authorization {
+                let now_ms = Utc::now().timestamp_millis();
+                let reason: String = input.error.chars().take(480).collect::<String>();
+                sqlx::query::query(
+                    "UPDATE subscription_funding_policies
+                     SET state='PAUSED_QUOTA',reason=?1,observed_at_ms=?2,resets_at_ms=NULL,updated_at_ms=?2
+                     WHERE campaign_id=?3 AND authorization_id=?4 AND state='ENABLED'",
+                )
+                .bind(format!("provider quota exhaustion: {reason}"))
+                .bind(now_ms)
+                .bind(&campaign_id)
+                .bind(&authorization_id)
+                .execute(&mut *transaction)
+                .await?;
+            }
+        }
         let record = load_provider_session(&mut transaction, &record_id).await?;
         transaction.commit().await?;
         if over_budget {
@@ -3995,5 +4066,46 @@ mod ledger_link_tests {
                 .await
                 .unwrap();
         assert_eq!(reservations.0, 0);
+    }
+}
+
+fn provider_quota_error(error: &str) -> bool {
+    let lower = error.to_ascii_lowercase();
+    [
+        "insufficient_quota",
+        "quota exhausted",
+        "quota_exhausted",
+        "usage limit",
+        "exceeded your current quota",
+        "included quota",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+#[cfg(test)]
+mod quota_error_tests {
+    use super::provider_quota_error;
+
+    #[test]
+    fn provider_quota_errors_are_classified_narrowly() {
+        for message in [
+            "HTTP 429: insufficient_quota",
+            "included quota exhausted",
+            "usage limit reached",
+            "exceeded your current quota",
+        ] {
+            assert!(provider_quota_error(message), "{message}");
+        }
+        for message in [
+            "connection reset",
+            "invalid model",
+            "authentication failed",
+            "temporary upstream 500",
+            "HTTP 429 Too Many Requests",
+            "rate limit exceeded",
+        ] {
+            assert!(!provider_quota_error(message), "{message}");
+        }
     }
 }

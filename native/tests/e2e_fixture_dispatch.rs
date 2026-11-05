@@ -49,6 +49,7 @@ impl CoreProcess {
         let child = Command::new(env!("CARGO_BIN_EXE_factory-core"))
             .env("FACTORY_DATABASE", database)
             .env("FACTORY_BIND", format!("127.0.0.1:{port}"))
+            .env("FACTORY_PROVIDER_KIND", "fixture")
             .env("FACTORY_OPERATOR_TOKEN", OPERATOR_TOKEN)
             .env("FACTORY_ATTEMPT_GRANT_KEY", ATTEMPT_GRANT_KEY)
             .env("FACTORY_PROJECTS_ROOT", std::env::temp_dir())
@@ -59,6 +60,7 @@ impl CoreProcess {
             .env("FACTORY_ENABLE_AUTONOMOUS_START", "1")
             .env("FACTORY_LEAD_FIXTURE_UNITS", units.to_string())
             .env("FACTORY_LEAD_FIXTURE_MODE", mode)
+            .env("FACTORY_ALLOW_TEST_UPSTREAM", "1")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::from(file))
@@ -75,6 +77,7 @@ impl CoreProcess {
         let child = Command::new(env!("CARGO_BIN_EXE_factory-core"))
             .env("FACTORY_DATABASE", database)
             .env("FACTORY_BIND", format!("127.0.0.1:{port}"))
+            .env("FACTORY_PROVIDER_KIND", "fixture")
             .env("FACTORY_OPERATOR_TOKEN", OPERATOR_TOKEN)
             .env("FACTORY_ATTEMPT_GRANT_KEY", ATTEMPT_GRANT_KEY)
             .env("FACTORY_PROJECTS_ROOT", std::env::temp_dir())
@@ -410,7 +413,9 @@ async fn seed_provider_settings(database: &Path, provider: &str, kind: &str, mod
             provider: provider.into(),
             kind: kind.into(),
             model: model.into(),
-            base_url: "https://provider.example/v1".into(),
+            // The admission route gate only needs a plain-HTTP fixture
+            // upstream; the Worker regression supplies its own egress URL.
+            base_url: "http://127.0.0.1:9/v1".into(),
             auth_mode: "api_key".into(),
             credential_ciphertext: "ciphertext".into(),
             credential_nonce: "nonce".into(),
@@ -1171,10 +1176,54 @@ async fn run_fixture_verifier(
 }
 
 #[cfg(feature = "test-support")]
+async fn seed_test_provider(
+    database: &Path,
+    provider: &str,
+    kind: &str,
+    model: &str,
+    base_url: &str,
+) {
+    let db = factory_native::db::Database::open(database)
+        .await
+        .expect("open database to seed test provider");
+    db.enable_test_subscription_fixture_mode()
+        .await
+        .expect("enable fixture admission for this database");
+    db.save_provider_settings(
+        &factory_native::db::ProviderSettingsWrite {
+            provider: provider.into(),
+            kind: kind.into(),
+            model: model.into(),
+            base_url: base_url.into(),
+            auth_mode: "api_key".into(),
+            credential_ciphertext: "ciphertext".into(),
+            credential_nonce: "nonce".into(),
+            credential_fingerprint: "configured".into(),
+            enabled: true,
+            is_default: false,
+            max_turns: 4,
+            max_input_tokens: 100_000,
+            max_output_tokens: 12_000,
+            max_cost_micros: 5_000_000,
+            input_micros_per_million: 1_000,
+            output_micros_per_million: 2_000,
+        },
+        "e2e-operator",
+    )
+    .await
+    .expect("seed test provider settings");
+    db.close().await;
+}
+
+#[cfg(feature = "test-support")]
 async fn admit_test_campaign(database: &Path, campaign_id: &str) {
     let database = factory_native::db::Database::open(database)
         .await
         .expect("open Core database for test admission");
+    database
+        .enable_test_subscription_fixture_mode()
+        .await
+        .expect("enable fixture admission for this database");
     database
         .admit_test_subscription_dispatch(campaign_id)
         .await
@@ -1322,6 +1371,14 @@ async fn semantic_reviewer_model_mode_binds_findings_provenance_and_rejects_malf
         "findings": []
     })
     .to_string();
+    seed_test_provider(
+        &database,
+        "opencode",
+        "opencode",
+        "deepseek-v4.1-flash",
+        &model_url,
+    )
+    .await;
     admit_test_campaign(&database, &first.campaign_id).await;
     run_reviewer_with(
         &root,

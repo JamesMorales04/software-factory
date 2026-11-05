@@ -892,7 +892,9 @@ mod project_configs;
 pub use execution_receipts::{ExecutionCheckInput, ExecutionCheckReceiptRecord};
 mod provider_sessions;
 mod provider_settings;
+mod subscription_admissions;
 pub use provider_settings::{ProviderSettingsAudit, ProviderSettingsRecord, ProviderSettingsWrite};
+pub use subscription_admissions::{ScopeAdmissionRecord, ScopeAdmissionWrite};
 mod runtime_settings;
 pub use project_configs::NewProjectConfig;
 pub use runtime_settings::FactorySettings;
@@ -934,9 +936,22 @@ async fn install_test_subscription_dispatch_admissions(pool: &SqlitePool) -> Res
     sqlx::query::query(
         "CREATE TABLE IF NOT EXISTS test_subscription_dispatch_admissions (
            scope TEXT PRIMARY KEY CHECK (length(scope) > 0),
+           fixture_only INTEGER NOT NULL DEFAULT 0 CHECK (fixture_only IN (0,1)),
            created_at_ms INTEGER NOT NULL CHECK (created_at_ms > 0)
+         );
+         CREATE TABLE IF NOT EXISTS test_subscription_fixture_mode (
+           id INTEGER PRIMARY KEY CHECK (id = 1),
+           enabled INTEGER NOT NULL CHECK (enabled IN (0,1))
          )",
     )
+    .execute(pool)
+    .await?;
+    let fixture = cfg!(test) || std::env::var("FACTORY_PROVIDER_KIND").as_deref() == Ok("fixture");
+    sqlx::query::query(
+        "INSERT INTO test_subscription_fixture_mode(id,enabled) VALUES (1,?1)
+         ON CONFLICT(id) DO UPDATE SET enabled=excluded.enabled",
+    )
+    .bind(i64::from(fixture))
     .execute(pool)
     .await?;
     Ok(())
@@ -952,15 +967,57 @@ impl Database {
             return Err(Error::Invalid("test dispatch admission scope"));
         }
         sqlx::query::query(&format!(
-            "INSERT INTO {TEST_SUBSCRIPTION_DISPATCH_ADMISSIONS}(scope,created_at_ms)
-             VALUES (?1,?2) ON CONFLICT(scope) DO NOTHING"
+            "INSERT INTO {TEST_SUBSCRIPTION_DISPATCH_ADMISSIONS}(scope,fixture_only,created_at_ms)
+             VALUES (?1,?2,?3) ON CONFLICT(scope) DO NOTHING"
         ))
         .bind(scope)
+        .bind(i64::from(scope == "*"))
         .bind(Utc::now().timestamp_millis())
         .execute(&self.pool)
         .await?;
         Ok(())
     }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Database {
+    /// Explicitly opt this disposable test database into fixture admission.
+    /// Unlike the process environment, this does not affect other tests that
+    /// open a different database concurrently.
+    pub async fn enable_test_subscription_fixture_mode(&self) -> Result<(), Error> {
+        sqlx::query::query(
+            "INSERT INTO test_subscription_fixture_mode(id,enabled) VALUES (1,1)
+             ON CONFLICT(id) DO UPDATE SET enabled=1",
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) async fn test_subscription_dispatch_admitted_for_route_in_tx(
+    connection: &mut sqlx_sqlite::SqliteConnection,
+    scope: &str,
+    provider: &str,
+    _model: &str,
+) -> Result<bool, Error> {
+    if !test_subscription_dispatch_admitted_in_tx(connection, scope).await? {
+        return Ok(false);
+    }
+    // Library unit tests never exercise a real adapter; the test-support
+    // feature in a real binary still has to prove a fixture route. A model
+    // name is not transport evidence, so only the explicit fixture provider
+    // or a configured test upstream is accepted.
+    if cfg!(test) || provider == "fixture" {
+        return Ok(true);
+    }
+    let base_url: Option<(String,)> =
+        sqlx::query_as::query_as("SELECT base_url FROM provider_settings WHERE provider=?1")
+            .bind(provider)
+            .fetch_optional(&mut *connection)
+            .await?;
+    Ok(base_url.is_some_and(|(value,)| crate::provider_catalog::is_test_upstream_url(&value)))
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -973,12 +1030,29 @@ pub(crate) async fn test_subscription_dispatch_admitted_in_tx(
     // before the Worker may claim it. This seam is still debug-only, applies
     // only when no funding policy row exists, and can never relax a persisted
     // disabled, paused or invalid policy.
-    let row: Option<(String,)> = sqlx::query_as::query_as(&format!(
-        "SELECT scope FROM {TEST_SUBSCRIPTION_DISPATCH_ADMISSIONS}
-         WHERE scope=?1 OR scope='*' LIMIT 1"
+    let fixture: Option<(i64,)> =
+        sqlx::query_as::query_as("SELECT enabled FROM test_subscription_fixture_mode WHERE id=1")
+            .fetch_optional(&mut *connection)
+            .await?;
+    if fixture != Some((1,)) {
+        return Ok(false);
+    }
+    let exact: Option<(String,)> = sqlx::query_as::query_as(&format!(
+        "SELECT scope FROM {TEST_SUBSCRIPTION_DISPATCH_ADMISSIONS} WHERE scope=?1"
     ))
     .bind(scope)
     .fetch_optional(&mut *connection)
     .await?;
-    Ok(row.is_some())
+    if exact.is_some() {
+        return Ok(true);
+    }
+    let wildcard: Option<(i64, i64)> = sqlx::query_as::query_as(&format!(
+        "SELECT a.fixture_only,m.enabled
+         FROM {TEST_SUBSCRIPTION_DISPATCH_ADMISSIONS} a
+         JOIN test_subscription_fixture_mode m ON m.id=1
+         WHERE a.scope='*'"
+    ))
+    .fetch_optional(&mut *connection)
+    .await?;
+    Ok(wildcard == Some((1, 1)))
 }

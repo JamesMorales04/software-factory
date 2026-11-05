@@ -50,8 +50,16 @@ fn model_call_ledger_role(role: ModelCallRole) -> InferenceRole {
 async fn test_scope_admitted(
     connection: &mut SqliteConnection,
     objective_id: &str,
+    provider: &str,
+    model: &str,
 ) -> Result<bool, Error> {
-    super::test_subscription_dispatch_admitted_in_tx(connection, objective_id).await
+    super::test_subscription_dispatch_admitted_for_route_in_tx(
+        connection,
+        objective_id,
+        provider,
+        model,
+    )
+    .await
 }
 
 /// Resolve the ledger requirement only after current Owner funding policy has
@@ -61,13 +69,13 @@ async fn model_call_ledger_requirement(
     connection: &mut SqliteConnection,
     role: ModelCallRole,
     objective_id: &str,
+    provider: &str,
+    model: &str,
 ) -> Result<Option<String>, Error> {
     match role {
         ModelCallRole::Lead => {
-            #[cfg(not(any(test, feature = "test-support")))]
-            let _ = (connection, objective_id);
             #[cfg(any(test, feature = "test-support"))]
-            if test_scope_admitted(connection, objective_id).await? {
+            if test_scope_admitted(connection, objective_id, provider, model).await? {
                 // The test admission opens the subscription gate; it does not
                 // erase a request-scoped monetary envelope that an existing
                 // billable regression is exercising.
@@ -81,7 +89,16 @@ async fn model_call_ledger_requirement(
                 }
                 return Ok(None);
             }
-            Err(SubscriptionFundingRefusal::BindingRequired.into())
+            // Production path: the exact request/Lead admission must exist.
+            // It is created by an authenticated operator before assessment.
+            super::subscription_admissions::require_scope_admission_in_tx(
+                connection,
+                objective_id,
+                provider,
+                model,
+            )
+            .await?;
+            Ok(None)
         }
         ModelCallRole::SemanticReviewer => {
             let campaign: Option<(String,)> = sqlx::query_as::query_as(
@@ -96,7 +113,7 @@ async fn model_call_ledger_requirement(
             let Some((campaign_id,)) = campaign else {
                 return Err(Error::NotFound);
             };
-            campaign_requirement_to_envelope(connection, &campaign_id).await
+            campaign_requirement_to_envelope(connection, &campaign_id, provider, model).await
         }
         ModelCallRole::Evaluation => {
             let campaign: Option<(String,)> = sqlx::query_as::query_as(
@@ -109,10 +126,11 @@ async fn model_call_ledger_requirement(
             .fetch_optional(&mut *connection)
             .await?;
             if let Some((campaign_id,)) = campaign {
-                return campaign_requirement_to_envelope(connection, &campaign_id).await;
+                return campaign_requirement_to_envelope(connection, &campaign_id, provider, model)
+                    .await;
             }
             #[cfg(any(test, feature = "test-support"))]
-            if test_scope_admitted(connection, objective_id).await? {
+            if test_scope_admitted(connection, objective_id, provider, model).await? {
                 return super::inference_ledger::test_request_envelope_in_tx(
                     connection,
                     objective_id,
@@ -127,14 +145,22 @@ async fn model_call_ledger_requirement(
 async fn campaign_requirement_to_envelope(
     connection: &mut SqliteConnection,
     campaign_id: &str,
+    provider: &str,
+    model: &str,
 ) -> Result<Option<String>, Error> {
-    super::inference_ledger::require_enabled_subscription_funding_in_tx(connection, campaign_id)
-        .await?;
+    super::inference_ledger::require_enabled_subscription_funding_for_route_in_tx(
+        connection,
+        campaign_id,
+        provider,
+        model,
+    )
+    .await?;
     match super::inference_ledger::campaign_requirement_in_tx(connection, campaign_id).await? {
         crate::inference_ledger::CampaignInferenceRequirement::LegacyV1 => Ok(None),
         crate::inference_ledger::CampaignInferenceRequirement::EnvelopeBound { envelope_id } => {
             Ok(Some(envelope_id))
         }
+        crate::inference_ledger::CampaignInferenceRequirement::Subscription => Ok(None),
     }
 }
 
@@ -313,7 +339,16 @@ type ReplayRow = (
     i64,
     i64,
 );
-type DispatchReservationRow = (String, String, Option<i64>, Option<String>, String, String);
+type DispatchReservationRow = (
+    String,
+    String,
+    Option<i64>,
+    Option<String>,
+    String,
+    String,
+    String,
+    String,
+);
 const MAX_CALL_OUTPUT_TOKENS: u64 = 8192;
 const RESERVATION_LIFETIME_MS: i64 = 120_000;
 
@@ -357,9 +392,14 @@ impl Database {
         // A campaign-bound call inherits the request envelope. The envelope is
         // the single monetary authority for this operation; the legacy scope
         // and role columns below remain evidence projections.
-        let ledger_envelope_id =
-            model_call_ledger_requirement(&mut transaction, input.role, &input.objective_id)
-                .await?;
+        let ledger_envelope_id = model_call_ledger_requirement(
+            &mut transaction,
+            input.role,
+            &input.objective_id,
+            &input.provider,
+            &input.model,
+        )
+        .await?;
         let (used_input, used_output, used_cost) =
             model_call_usage(&mut transaction, &input.scope_id).await?;
         let (reserved_input, reserved_output, reserved_cost) =
@@ -602,19 +642,21 @@ impl Database {
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let now_ms = Utc::now().timestamp_millis();
         let row: Option<DispatchReservationRow> = sqlx::query_as::query_as(
-            "SELECT role,state,dispatched_at_ms,ledger_reservation_id,request_sha256,objective_id
+            "SELECT role,state,dispatched_at_ms,ledger_reservation_id,request_sha256,objective_id,provider,model
                  FROM model_call_reservations WHERE reservation_id=?1",
         )
         .bind(reservation_id)
         .fetch_optional(&mut *transaction)
         .await?;
         let Some((
-            role,
+            _role,
             state,
             dispatched_at_ms,
             ledger_reservation_id,
             _request_sha256,
             objective_id,
+            provider,
+            model,
         )) = row
         else {
             return Err(Error::NotFound);
@@ -631,24 +673,27 @@ impl Database {
         .fetch_optional(&mut *transaction)
         .await?
         {
-            super::inference_ledger::require_enabled_subscription_funding_in_tx(
+            super::inference_ledger::require_enabled_subscription_funding_for_route_in_tx(
                 &mut transaction,
                 &campaign_id,
+                &provider,
+                &model,
             )
             .await?;
         } else {
             #[cfg(any(test, feature = "test-support"))]
-            let admitted = test_scope_admitted(&mut transaction, &objective_id).await?;
+            let test_admitted =
+                test_scope_admitted(&mut transaction, &objective_id, &provider, &model).await?;
             #[cfg(not(any(test, feature = "test-support")))]
-            let admitted = false;
-            if !admitted {
-                let refusal = match role.as_str() {
-                    "LEAD" | "SEMANTIC_REVIEWER" | "EVALUATION" => {
-                        SubscriptionFundingRefusal::BindingRequired
-                    }
-                    _ => SubscriptionFundingRefusal::InvalidEvidence,
-                };
-                return Err(refusal.into());
+            let test_admitted = false;
+            if !test_admitted {
+                super::subscription_admissions::require_scope_admission_in_tx(
+                    &mut transaction,
+                    &objective_id,
+                    &provider,
+                    &model,
+                )
+                .await?;
             }
         }
         if dispatched_at_ms.is_some() {
@@ -2042,6 +2087,8 @@ mod tests {
             &mut connection,
             ModelCallRole::Lead,
             "lead-request-without-subscription-binding",
+            "opencode-go",
+            "deepseek-v4.1-flash",
         )
         .await
         .unwrap_err();
@@ -2060,9 +2107,14 @@ mod tests {
     async fn core_campaign_model_admission_refuses_missing_subscription_binding() {
         let (path, db) = project_db("factory-core-subscription-funding-missing").await;
         let mut connection = db.pool.acquire().await.unwrap();
-        let error = campaign_requirement_to_envelope(&mut connection, "campaign-without-funding")
-            .await
-            .unwrap_err();
+        let error = campaign_requirement_to_envelope(
+            &mut connection,
+            "campaign-without-funding",
+            "opencode-go",
+            "deepseek-v4.1-flash",
+        )
+        .await
+        .unwrap_err();
         assert!(
             matches!(
                 error,
