@@ -380,13 +380,24 @@ pub enum ReviewMechanism {
     #[default]
     Deterministic,
     Model,
+    /// Independent review executed by the official Codex App Server review
+    /// transport. It is model-backed but does not use Core's chat gateway or a
+    /// model-call reservation.
+    CodexAppServer,
 }
 
 impl ReviewMechanism {
+    /// Model-backed reviews must provide model provenance; the transport may be
+    /// Core's chat gateway or the official Codex App Server.
+    pub const fn is_model_backed(self) -> bool {
+        matches!(self, Self::Model | Self::CodexAppServer)
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Deterministic => "DETERMINISTIC",
             Self::Model => "MODEL",
+            Self::CodexAppServer => "CODEX_APP_SERVER",
         }
     }
 
@@ -394,6 +405,7 @@ impl ReviewMechanism {
         match value {
             "DETERMINISTIC" => Some(Self::Deterministic),
             "MODEL" => Some(Self::Model),
+            "CODEX_APP_SERVER" => Some(Self::CodexAppServer),
             _ => None,
         }
     }

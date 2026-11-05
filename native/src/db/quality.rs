@@ -620,7 +620,7 @@ fn validate_receipt_input(input: &QualityReceiptInput) -> Result<(), Error> {
             "deterministic receipt cannot claim model usage",
         ));
     }
-    if input.mechanism == ReviewMechanism::Model
+    if input.mechanism.is_model_backed()
         && input.result != ReceiptResult::Pass
         && input.findings.is_empty()
     {
@@ -810,9 +810,27 @@ async fn validate_model_review_receipt(
     input: &QualityReceiptInput,
 ) -> Result<(), Error> {
     if role != QualityRole::Reviewer
-        || input.mechanism != ReviewMechanism::Model
+        || !input.mechanism.is_model_backed()
         || input.result != ReceiptResult::Pass
     {
+        return Ok(());
+    }
+    if input.mechanism == ReviewMechanism::CodexAppServer {
+        if input.model_provider != "codex"
+            || input.model_name != "gpt-6-luna"
+            || !input.usage_known
+            || !input.model_reservation_id.is_empty()
+            || input.model_request_sha256.len() != 64
+            || !input
+                .model_request_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(Error::Forbidden(
+                "Codex review approval requires exact codex/gpt-6-luna provenance and known usage"
+                    .into(),
+            ));
+        }
         return Ok(());
     }
     if !input.usage_known
@@ -932,7 +950,7 @@ async fn decide_gate(
     if decision.outcome == GateOutcome::Accepted
         && reviewer
             .as_ref()
-            .is_some_and(|receipt| receipt.mechanism != ReviewMechanism::Model)
+            .is_some_and(|receipt| !receipt.mechanism.is_model_backed())
         && semantic_review_requires_model(connection).await?
     {
         decision = crate::quality::GateDecision {

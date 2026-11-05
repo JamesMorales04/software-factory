@@ -7953,6 +7953,9 @@ fn reviewer_receipt_mechanism_allowed(
     route_available: bool,
     mechanism: factory_native::db::ReviewMechanism,
 ) -> Result<(), &'static str> {
+    if mechanism == factory_native::db::ReviewMechanism::CodexAppServer {
+        return Err("Codex App Server review transport is not enabled");
+    }
     if mechanism == factory_native::db::ReviewMechanism::Model {
         if !semantic_review_enabled {
             return Err("semantic review is disabled by the operator");

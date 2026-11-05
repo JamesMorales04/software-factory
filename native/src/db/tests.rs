@@ -1231,6 +1231,53 @@ fn model_review_receipt(
 }
 
 #[tokio::test]
+async fn codex_app_server_review_requires_exact_provenance_without_a_reservation() {
+    let fixture = candidate_fixture().await;
+    let mut valid = quality_receipt(&fixture, "codex-review", "reviewer");
+    valid.mechanism = ReviewMechanism::CodexAppServer;
+    valid.model_provider = "codex".into();
+    valid.model_name = "gpt-6-luna".into();
+    valid.model_request_sha256 = sha256_hex(b"codex-review-request");
+    valid.usage_known = true;
+
+    let mut wrong_provider = valid.clone();
+    wrong_provider.receipt_id = "codex-review-wrong-provider".into();
+    wrong_provider.model_provider = "opencode".into();
+    assert!(matches!(
+        fixture
+            .db
+            .record_quality_receipt(
+                &fixture.candidate_id,
+                QualityRole::Reviewer,
+                &wrong_provider,
+            )
+            .await,
+        Err(Error::Forbidden(_))
+    ));
+
+    let mut reserved = valid.clone();
+    reserved.receipt_id = "codex-review-reserved".into();
+    reserved.model_reservation_id = "reservation".into();
+    assert!(matches!(
+        fixture
+            .db
+            .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &reserved,)
+            .await,
+        Err(Error::Forbidden(_))
+    ));
+
+    let ingested = fixture
+        .db
+        .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &valid)
+        .await
+        .unwrap();
+    assert_eq!(ingested.receipt.mechanism, ReviewMechanism::CodexAppServer);
+    assert!(ingested.receipt.model_reservation_id.is_empty());
+    fixture.db.close().await;
+    let _ = std::fs::remove_file(fixture.root.join("factory.sqlite"));
+}
+
+#[tokio::test]
 async fn model_review_approval_requires_matching_settled_reservation() {
     let fixture = candidate_fixture().await;
     fixture

@@ -247,6 +247,33 @@ pub struct TurnStartResponse {
     pub turn: TurnSummary,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewStartParams {
+    pub thread_id: String,
+    pub target: ReviewTarget,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum ReviewTarget {
+    Commit {
+        sha: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+    },
+    Custom {
+        instructions: String,
+    },
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewStartResponse {
+    pub review_thread_id: String,
+    pub turn: TurnSummary,
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TurnCompletedParams {
@@ -259,6 +286,40 @@ pub struct TurnCompletedParams {
 pub struct TurnInterruptParams {
     pub thread_id: String,
     pub turn_id: String,
+}
+
+/// Extract the final review text from a `thread/read` response. Review mode
+/// emits an `exitedReviewMode` item whose `review` field is the canonical
+/// summary; fall back to the last agent message when the item is absent.
+pub fn review_text(thread: &Value) -> Option<String> {
+    let turns = thread.pointer("/thread/turns")?.as_array()?;
+    let mut review = None;
+    let mut message = None;
+    for turn in turns {
+        let Some(items) = turn.get("items").and_then(Value::as_array) else {
+            continue;
+        };
+        for item in items {
+            match item.get("type").and_then(Value::as_str) {
+                Some("exitedReviewMode") => {
+                    if let Some(text) = item.get("review").and_then(Value::as_str)
+                        && !text.trim().is_empty()
+                    {
+                        review = Some(text.to_owned());
+                    }
+                }
+                Some("agentMessage") => {
+                    if let Some(text) = item.get("text").and_then(Value::as_str)
+                        && !text.trim().is_empty()
+                    {
+                        message = Some(text.to_owned());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    review.or(message)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -423,6 +484,38 @@ where
             ));
         }
         Ok(response)
+    }
+
+    pub async fn start_review(
+        &mut self,
+        params: ReviewStartParams,
+    ) -> Result<ReviewStartResponse, RpcError> {
+        let value = self
+            .request("review/start", serde_json::to_value(params)?)
+            .await?;
+        let response: ReviewStartResponse = serde_json::from_value(value)?;
+        if response.review_thread_id.trim().is_empty()
+            || response.turn.id.trim().is_empty()
+            || response.turn.status != TurnStatus::InProgress
+        {
+            return Err(RpcError::Protocol(
+                "review/start did not return a nonempty in-progress review turn".into(),
+            ));
+        }
+        Ok(response)
+    }
+
+    pub async fn read_thread_value(&mut self, thread_id: &str) -> Result<Value, RpcError> {
+        if thread_id.trim().is_empty() {
+            return Err(RpcError::Protocol(
+                "thread/read requires a nonempty threadId".into(),
+            ));
+        }
+        self.request(
+            "thread/read",
+            json!({"threadId": thread_id, "includeTurns": true}),
+        )
+        .await
     }
 
     pub async fn interrupt_turn(
@@ -746,6 +839,29 @@ mod tests {
             rpc.request("initialize", json!({})).await.unwrap(),
             json!({"ok":true})
         );
+    }
+
+    #[test]
+    fn review_text_prefers_exited_review_mode_and_falls_back_to_messages() {
+        let thread = json!({
+            "thread": {"turns": [
+                {"items": [
+                    {"type": "agentMessage", "text": "fallback"},
+                    {"type": "exitedReviewMode", "review": "canonical review"}
+                ]}
+            ]}
+        });
+        assert_eq!(review_text(&thread).as_deref(), Some("canonical review"));
+        let fallback = json!({
+            "thread": {"turns": [
+                {"items": [
+                    {"type": "agentMessage", "text": "first"},
+                    {"type": "agentMessage", "text": "last"}
+                ]}
+            ]}
+        });
+        assert_eq!(review_text(&fallback).as_deref(), Some("last"));
+        assert!(review_text(&json!({"thread": {"turns": []}})).is_none());
     }
 
     #[tokio::test]
