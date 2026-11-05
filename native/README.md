@@ -54,8 +54,10 @@ Set `FACTORY_REVIEW_MECHANISM=CODEX_APP_SERVER` (and Core
 `FACTORY_ENABLE_CODEX_REVIEW=1`) for native independent review through the
 official Codex App Server. The reviewer requires a dedicated
 `FACTORY_CODEX_HOME` volume, calls `account/read`, `model/list` and
-`review/start` targeting the exact candidate commit, and submits a
-`CODEX_APP_SERVER` receipt only with exact `codex/gpt-6-luna` provenance.
+`review/start` targeting the exact candidate commit, uses the official
+`factory-review` permissions profile to deny tool reads of the Codex home,
+`/config` and `/projects`, and submits a `CODEX_APP_SERVER` receipt only with
+exact `codex/gpt-6-luna` provenance.
 Logged-out, API-key, wrong-model, interrupted and unknown-usage reviews are
 `NOT_TESTED`. See `docs/operations/codex-review-auth.md`. The reviewer binary
 also supports `codex-login`, `codex-status` and no network inference in those

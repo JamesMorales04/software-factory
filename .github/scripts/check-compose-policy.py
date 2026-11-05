@@ -27,7 +27,9 @@ EXPECTED_NETWORKS = {
     "supervisor": {"factory-control"},
     "worker": {"factory-control", "factory-egress"},
     "verifier": {"factory-control"},
-    "reviewer": {"factory-control"},
+    # The reviewer owns the dedicated Codex ChatGPT credential and needs
+    # outbound access to the official App Server auth/review endpoints.
+    "reviewer": {"factory-control", "factory-egress"},
     "runtime": {"factory-control", "factory-egress"},
 }
 ALLOWED_RUNTIME_CAPS = {

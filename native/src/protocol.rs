@@ -83,7 +83,10 @@ pub struct ThreadLoadedPage {
 pub struct ThreadStartParams {
     pub cwd: String,
     pub approval_policy: DenyApprovalPolicy,
-    pub sandbox: ReadOnlySandbox,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<ReadOnlySandbox>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -202,7 +205,8 @@ impl Default for ThreadStartParams {
         Self {
             cwd: String::new(),
             approval_policy: DenyApprovalPolicy::Never,
-            sandbox: ReadOnlySandbox::ReadOnly,
+            sandbox: Some(ReadOnlySandbox::ReadOnly),
+            permissions: None,
             model: None,
             model_provider: None,
             ephemeral: None,
@@ -842,6 +846,21 @@ mod tests {
             rpc.request("initialize", json!({})).await.unwrap(),
             json!({"ok":true})
         );
+    }
+
+    #[test]
+    fn named_permissions_replace_the_inline_sandbox() {
+        let params = ThreadStartParams {
+            permissions: Some("factory-review".into()),
+            sandbox: None,
+            ..Default::default()
+        };
+        let value = serde_json::to_value(params).unwrap();
+        assert_eq!(value["permissions"], "factory-review");
+        assert!(value.get("sandbox").is_none());
+        let default = serde_json::to_value(ThreadStartParams::default()).unwrap();
+        assert_eq!(default["sandbox"], "read-only");
+        assert!(default.get("permissions").is_none());
     }
 
     #[test]

@@ -27,8 +27,8 @@ use crate::{
     },
     device_session::sha256_hex,
     protocol::{
-        JsonRpc, ReadOnlySandbox, ReviewStartParams, ReviewTarget, ThreadStartParams,
-        ThreadTokenUsageUpdatedParams, review_text,
+        JsonRpc, ReviewStartParams, ReviewTarget, ThreadStartParams, ThreadTokenUsageUpdatedParams,
+        review_text,
     },
     quality::ReceiptResult,
     review::{FindingCategory, FindingSeverity, ReviewFinding},
@@ -295,7 +295,9 @@ pub async fn status(home: &CodexHome) -> Result<Value, CodexReviewError> {
         },
         "reviewModel": REVIEW_MODEL,
         "reviewModelAvailable": model_ok,
-        "ready": matches!(crate::codex_auth::parse_account_response(&account_value)?, crate::codex_auth::AccountState::ChatGpt(_)) && model_ok,
+        "configurationReady": matches!(crate::codex_auth::parse_account_response(&account_value)?, crate::codex_auth::AccountState::ChatGpt(_)) && model_ok,
+        "modelAccessVerified": false,
+        "modelAccess": "NOT_VERIFIED",
     }))
 }
 
@@ -305,6 +307,8 @@ pub async fn run_review(
     validate_review_identity(request)?;
     let home = CodexHome::from_env()?;
     home.validate_auth_file()?;
+    home.ensure_review_permissions()?;
+    home.validate_private_file_for_review()?;
     let binary = codex_binary()?;
     let snapshot = prepare_snapshot(request)?;
     let result = run_review_in_snapshot(request, &home, &binary, &snapshot).await;
@@ -329,7 +333,8 @@ async fn run_review_in_snapshot(
         .start_thread(ThreadStartParams {
             cwd: snapshot.to_string_lossy().to_string(),
             approval_policy: crate::protocol::DenyApprovalPolicy::Never,
-            sandbox: ReadOnlySandbox::ReadOnly,
+            sandbox: None,
+            permissions: Some("factory-review".into()),
             model: Some(REVIEW_MODEL.into()),
             model_provider: Some(APP_SERVER_PROVIDER.into()),
             ephemeral: Some(true),
@@ -710,12 +715,11 @@ pub fn parse_review_text(text: &str) -> (ReceiptResult, Vec<ReviewFinding>) {
     if !findings.is_empty() {
         return (ReceiptResult::ChangesRequested, findings);
     }
-    let lower = trimmed.to_ascii_lowercase();
     let clean = trimmed.lines().any(|line| {
         let line = line.trim().trim_end_matches('.').to_ascii_lowercase();
         line == "no findings" || line == "no issues found"
     });
-    if clean || lower.contains("overall correctness: patch is correct") {
+    if clean {
         return (ReceiptResult::Pass, Vec::new());
     }
     (ReceiptResult::NotTested, Vec::new())

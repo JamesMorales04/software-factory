@@ -816,6 +816,12 @@ async fn validate_model_review_receipt(
         return Ok(());
     }
     if input.mechanism == ReviewMechanism::CodexAppServer {
+        // Trust boundary: a CODEX_APP_SERVER receipt is authored by the
+        // dedicated reviewer role. Core binds the exact candidate, mechanism,
+        // model, no-reservation rule, known usage and request-hash shape, but
+        // the App Server turn is attested by that reviewer process. A
+        // compromised reviewer token is equivalent to a compromised reviewer;
+        // see ADR-0032. This is not a provider-issued attestation.
         if input.model_provider != "codex"
             || input.model_name != "gpt-6-luna"
             || !input.usage_known

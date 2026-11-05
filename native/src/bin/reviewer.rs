@@ -68,7 +68,15 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         let home = CodexHome::from_env()?;
         match command.as_str() {
             "codex-status" => {
-                println!("{}", status(&home).await?);
+                let status = status(&home).await?;
+                println!("{status}");
+                if status
+                    .get("configurationReady")
+                    .and_then(serde_json::Value::as_bool)
+                    != Some(true)
+                {
+                    return Err("Codex review configuration is not ready".into());
+                }
                 return Ok(());
             }
             "codex-login" => {

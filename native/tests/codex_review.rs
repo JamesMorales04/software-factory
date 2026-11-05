@@ -202,11 +202,13 @@ async fn fixture_codex_review_is_exact_and_fail_closed() {
     assert_eq!(authenticated["authenticated"], true);
     set_env("FACTORY_FIXTURE_CODEX_ACCOUNT", "chatgpt");
     let ready = status(&home).await.expect("fixture Codex status");
-    assert_eq!(ready["ready"], true);
+    assert_eq!(ready["configurationReady"], true);
     assert_eq!(ready["reviewModelAvailable"], true);
+    assert_eq!(ready["modelAccessVerified"], false);
+    assert_eq!(ready["modelAccess"], "NOT_VERIFIED");
     set_env("FACTORY_FIXTURE_CODEX_ACCOUNT", "apiKey");
     let not_ready = status(&home).await.expect("fixture API-key status");
-    assert_eq!(not_ready["ready"], false);
+    assert_eq!(not_ready["configurationReady"], false);
     set_env("FACTORY_FIXTURE_CODEX_ACCOUNT", "chatgpt");
     clear_env("FACTORY_FIXTURE_CODEX_REVIEW");
     clear_env("FACTORY_FIXTURE_CODEX_ACCOUNT");
@@ -216,4 +218,50 @@ async fn fixture_codex_review_is_exact_and_fail_closed() {
     clear_env("FACTORY_CODEX_HOME");
     let _ = std::fs::remove_dir_all(state);
     let _ = std::fs::remove_dir_all(repo.parent().unwrap());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reviewer_cli_rejects_logged_out_status_and_completes_device_login() {
+    let _guard = ENV_LOCK.lock().await;
+    let state = temp("cli");
+    let codex_home = state.join("codex-home");
+    std::fs::create_dir_all(&codex_home).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&codex_home, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    set_env("FACTORY_CODEX_HOME", codex_home.to_str().unwrap());
+    set_env(
+        "FACTORY_CODEX_BINARY",
+        env!("CARGO_BIN_EXE_factory-fixture-codex"),
+    );
+    set_env("FACTORY_CODEX_TEST_MODE", "1");
+    set_env("FACTORY_FIXTURE_CODEX_PROVIDER", "openai");
+    set_env("FACTORY_FIXTURE_CODEX_ACCOUNT", "loggedOut");
+
+    let status = Command::new(env!("CARGO_BIN_EXE_factory-reviewer"))
+        .arg("codex-status")
+        .output()
+        .unwrap();
+    assert!(!status.status.success());
+    assert!(String::from_utf8_lossy(&status.stdout).contains("\"configurationReady\":false"));
+
+    let login = Command::new(env!("CARGO_BIN_EXE_factory-reviewer"))
+        .arg("codex-login")
+        .output()
+        .unwrap();
+    assert!(
+        login.status.success(),
+        "{}",
+        String::from_utf8_lossy(&login.stderr)
+    );
+    assert!(String::from_utf8_lossy(&login.stdout).contains("\"authenticated\":true"));
+
+    clear_env("FACTORY_FIXTURE_CODEX_ACCOUNT");
+    clear_env("FACTORY_FIXTURE_CODEX_PROVIDER");
+    clear_env("FACTORY_CODEX_TEST_MODE");
+    clear_env("FACTORY_CODEX_BINARY");
+    clear_env("FACTORY_CODEX_HOME");
+    let _ = std::fs::remove_dir_all(state);
 }

@@ -119,24 +119,67 @@ impl CodexHome {
         self.path.join("auth.json")
     }
 
+    pub fn config_file(&self) -> PathBuf {
+        self.path.join("config.toml")
+    }
+
+    /// Install the reviewer's official App Server permission profile. The
+    /// profile extends read-only access but denies the tool sandbox access to
+    /// the Codex credential home, the reviewer configuration (which contains
+    /// the Core reviewer token) and project mounts. The app-server process
+    /// itself loads auth/config before applying this profile to tools.
+    pub fn validate_private_file_for_review(&self) -> Result<(), CodexAuthError> {
+        self.validate_private_file(&self.config_file(), "config.toml")
+    }
+
+    pub fn ensure_review_permissions(&self) -> Result<(), CodexAuthError> {
+        let home = serde_json::to_string(self.path.to_string_lossy().as_ref())
+            .map_err(|_| CodexAuthError::InvalidHome("home path encoding".into()))?;
+        let config = format!(
+            "default_permissions = \"factory-review\"\n\n\
+             [permissions.factory-review]\n\
+             description = \"Factory reviewer: read-only candidate, credentials denied\"\n\
+             extends = \":read-only\"\n\n\
+             [permissions.factory-review.filesystem]\n\
+             {home} = \"deny\"\n\
+             \"/config\" = \"deny\"\n\
+             \"/projects\" = \"deny\"\n"
+        );
+        let path = self.config_file();
+        let temporary = self
+            .path
+            .join(format!(".config.toml.{}", uuid::Uuid::new_v4()));
+        std::fs::write(&temporary, config)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o600))?;
+        }
+        std::fs::rename(&temporary, &path)?;
+        Ok(())
+    }
+
     /// The App Server owns the auth file. Factory only verifies that an
     /// existing file is a regular, owner-only file and never reads its bytes.
     pub fn validate_auth_file(&self) -> Result<(), CodexAuthError> {
-        let path = self.auth_file();
-        match std::fs::symlink_metadata(&path) {
+        self.validate_private_file(&self.auth_file(), "auth.json")
+    }
+
+    fn validate_private_file(&self, path: &Path, label: &str) -> Result<(), CodexAuthError> {
+        match std::fs::symlink_metadata(path) {
             Ok(metadata) => {
                 if metadata.file_type().is_symlink() || !metadata.is_file() {
-                    return Err(CodexAuthError::InvalidHome(
-                        "auth.json must be a regular file".into(),
-                    ));
+                    return Err(CodexAuthError::InvalidHome(format!(
+                        "{label} must be a regular file"
+                    )));
                 }
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
                     if metadata.permissions().mode() & 0o077 != 0 {
-                        return Err(CodexAuthError::InvalidHome(
-                            "auth.json must not be group- or world-accessible".into(),
-                        ));
+                        return Err(CodexAuthError::InvalidHome(format!(
+                            "{label} must not be group- or world-accessible"
+                        )));
                     }
                 }
                 Ok(())
@@ -335,6 +378,32 @@ mod tests {
                 CodexHome::from_path(root.clone()),
                 Err(CodexAuthError::InvalidHome(_))
             ));
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn review_permissions_deny_credentials_and_projects() {
+        let root =
+            std::env::temp_dir().join(format!("factory-codex-profile-{}", uuid::Uuid::new_v4()));
+        let home = CodexHome::from_path(root.clone()).unwrap();
+        home.ensure_review_permissions().unwrap();
+        let config = std::fs::read_to_string(home.config_file()).unwrap();
+        assert!(config.contains("default_permissions = \"factory-review\""));
+        assert!(config.contains(&format!("\"{}\" = \"deny\"", home.path().to_string_lossy())));
+        assert!(config.contains("\"/config\" = \"deny\""));
+        assert!(config.contains("\"/projects\" = \"deny\""));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(home.config_file())
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
         }
         let _ = std::fs::remove_dir_all(root);
     }

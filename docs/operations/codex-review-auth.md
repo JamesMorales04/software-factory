@@ -21,6 +21,13 @@ The reviewer container is read-only apart from `/tmp`, `/state` and the Codex
 volume. There is no host `CODEX_HOME`, host HOME, Podman socket or arbitrary
 host path mount.
 
+The reviewer writes an official Codex permissions profile named
+`factory-review`. It extends `:read-only` and denies tool-sandbox reads of the
+Codex home, `/config` (which holds the Core reviewer token) and `/projects`.
+The app-server process loads auth/config before applying that profile to tool
+execution. `codex sandbox -P factory-review` was used to verify that a denied
+file is unreadable while ordinary system files remain readable.
+
 ## Login
 
 From the repository root:
@@ -53,10 +60,17 @@ podman compose --profile codex-auth run --rm codex-status
 ```
 
 The output reports the account type, the exact requested model
-(`gpt-6-luna`), whether `model/list` contains it exactly once, and `ready`.
-`ready` is true only for a ChatGPT account with the exact Luna model. Logged
-out, API-key, unsupported-account, hidden-model, duplicate-model and
-missing-model states are not ready.
+(`gpt-6-luna`), whether `model/list` contains it exactly once, and
+`configurationReady`. `configurationReady` is true only for a ChatGPT account
+with the exact Luna model. Logged out, API-key, unsupported-account,
+hidden-model, duplicate-model and missing-model states are not ready, and the
+command exits nonzero after printing the status JSON.
+
+`modelAccess` remains `NOT_VERIFIED`: `model/list` is a catalog check, not
+proof that the plan can use Luna. Only an actual review request can verify
+access for that request; a failed request produces `NOT_TESTED`, never PASS.
+The reviewer service is built from the dedicated `reviewer` image target and
+mounts `factory-codex-home` at `/codex-home`; it is not the verifier image.
 
 ## Enable native review
 
@@ -76,15 +90,15 @@ podman compose -f compose.yaml -f compose.real-provider-uat.yaml up -d core revi
 
 Core then answers `GET /review/config` with `mechanism: "CODEX_APP_SERVER"`.
 The reviewer uses `review/start` on a fresh thread targeting the exact frozen
-candidate commit, with `sandbox: read-only`, `approvalPolicy: never`,
-`allowProviderModelFallback: false`, exact model `gpt-6-luna` and App Server
-provider `openai`. A different model, provider, review thread or candidate SHA
-fails closed.
+candidate commit, with the `factory-review` permissions profile,
+`approvalPolicy: never`, `allowProviderModelFallback: false`, exact model
+`gpt-6-luna` and App Server provider `openai`. A different model, provider,
+review thread or candidate SHA fails closed.
 
 ## Evidence and failure behavior
 
-- A clean review must contain the canonical `No findings.` marker or an
-  explicit `overall correctness: patch is correct` statement.
+- A clean review must contain the canonical `No findings.` marker. Prose such
+  as an overall-correctness sentence is not sufficient.
 - `P0`/`P1` findings are blocking, `P2` warnings, `P3` informational.
 - The review receipt uses mechanism `CODEX_APP_SERVER`, provider `codex`,
   model `gpt-6-luna`, no model reservation and a request hash binding the
