@@ -2781,7 +2781,14 @@ async fn owner_confirmed_campaign_admission_enables_subscription_mode() {
     .unwrap();
     assert_eq!(state, "ENABLED");
     assert_eq!(mode, "SUBSCRIPTION");
-    let now_ms = Utc::now().timestamp_millis();
+    let observed_at_ms: i64 = sqlx::query_scalar::query_scalar(
+        "SELECT observed_at_ms FROM subscription_funding_policies
+         WHERE campaign_id='campaign-admission'",
+    )
+    .fetch_one(&mut *connection)
+    .await
+    .unwrap();
+    let now_ms = observed_at_ms + 1;
     db.pause_subscription_funding_for_quota(
         "campaign-admission",
         "auth-admission",
