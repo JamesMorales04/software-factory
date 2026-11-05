@@ -26,7 +26,11 @@ The reviewer writes an official Codex permissions profile named
 Codex home, `/config` (which holds the Core reviewer token) and `/projects`.
 The app-server process loads auth/config before applying that profile to tool
 execution. `codex sandbox -P factory-review` was used to verify that a denied
-file is unreadable while ordinary system files remain readable.
+file/directory is unreadable while ordinary system files remain readable; see
+[the isolation probe](../evidence/codex-review-isolation-2026-11-05.md).
+The review features disable the shell, unified-exec, web-search and
+collaboration tools. The exact frozen diff is supplied in developer
+instructions, so the reviewer does not execute candidate code.
 
 ## Login
 

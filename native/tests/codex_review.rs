@@ -98,6 +98,10 @@ fn request(
     );
     set_env("FACTORY_CODEX_TEST_MODE", "1");
     set_env("FACTORY_FIXTURE_CODEX_PROVIDER", "openai");
+    set_env(
+        "FACTORY_FIXTURE_CODEX_CAPTURE",
+        state.join("thread-start.json").to_str().unwrap(),
+    );
     CodexReviewRequest {
         repository: repository.to_path_buf(),
         workspace_root: state.to_path_buf(),
@@ -139,6 +143,13 @@ async fn fixture_codex_review_is_exact_and_fail_closed() {
     assert_eq!(outcome.request_sha256.len(), 64);
     assert!(outcome.cleanup_ok);
     assert!(!state.join(&outcome.thread_id).exists());
+    let captured: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(state.join("thread-start.json")).unwrap()).unwrap();
+    let developer = captured["developerInstructions"].as_str().unwrap();
+    assert!(developer.contains("candidate.txt"));
+    assert!(developer.contains("No shell"));
+    assert!(captured.get("sandbox").is_none());
+    assert_eq!(captured["permissions"], "factory-review");
     let mut wrong_tree = request.clone();
     wrong_tree.tree_sha = "f".repeat(40);
     assert!(matches!(
@@ -216,6 +227,7 @@ async fn fixture_codex_review_is_exact_and_fail_closed() {
     clear_env("FACTORY_CODEX_TEST_MODE");
     clear_env("FACTORY_CODEX_BINARY");
     clear_env("FACTORY_CODEX_HOME");
+    clear_env("FACTORY_FIXTURE_CODEX_CAPTURE");
     let _ = std::fs::remove_dir_all(state);
     let _ = std::fs::remove_dir_all(repo.parent().unwrap());
 }
@@ -263,5 +275,6 @@ async fn reviewer_cli_rejects_logged_out_status_and_completes_device_login() {
     clear_env("FACTORY_CODEX_TEST_MODE");
     clear_env("FACTORY_CODEX_BINARY");
     clear_env("FACTORY_CODEX_HOME");
+    clear_env("FACTORY_FIXTURE_CODEX_CAPTURE");
     let _ = std::fs::remove_dir_all(state);
 }

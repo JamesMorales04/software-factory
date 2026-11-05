@@ -125,6 +125,9 @@ fn main() {
                         .get("cwd")
                         .and_then(Value::as_str)
                         .unwrap_or("/session");
+                    if let Ok(path) = std::env::var("FACTORY_FIXTURE_CODEX_CAPTURE") {
+                        let _ = std::fs::write(path, serde_json::to_vec(&params).unwrap());
+                    }
                     send(
                         json!({"method":"thread/started","params":{"thread":{"id":"thread-fixture"}}}),
                     );

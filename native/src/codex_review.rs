@@ -35,6 +35,7 @@ use crate::{
 };
 
 const MAX_REVIEW_TEXT_BYTES: usize = 128 * 1024;
+const MAX_REVIEW_DIFF_BYTES: usize = 512 * 1024;
 const MAX_STDERR_BYTES: usize = 8 * 1024;
 
 #[derive(Debug, thiserror::Error)]
@@ -325,6 +326,11 @@ async fn run_review_in_snapshot(
     binary: &Path,
     snapshot: &Path,
 ) -> Result<CodexReviewOutcome, CodexReviewError> {
+    let diff = frozen_diff(snapshot, &request.base_sha, &request.candidate_sha)?;
+    let developer_instructions = format!(
+        "Review only the exact frozen candidate diff below. The commit is {} with tree {}, based on {}. No shell, network, image, collaboration or sub-agent tools are available; do not attempt to run commands. Return only the review JSON described by the review rubric.\n\n```diff\n{diff}\n```",
+        request.candidate_sha, request.tree_sha, request.base_sha
+    );
     let mut process = CodexProcess::start(home, binary).await?;
     process.account().await?;
     process.require_model().await?;
@@ -340,10 +346,10 @@ async fn run_review_in_snapshot(
             ephemeral: Some(true),
             dynamic_tools: None,
             base_instructions: Some(
-                "Review the exact frozen commit. Do not modify files or execute project code. Report only concrete findings with file and line evidence."
+                "Review only the exact frozen diff supplied in the developer instructions. No shell, network or project-code execution tools are available. Do not modify files. Report only concrete findings with file and line evidence."
                     .into(),
             ),
-            developer_instructions: None,
+            developer_instructions: Some(developer_instructions),
             allow_provider_model_fallback: Some(false),
         })
         .await
@@ -510,6 +516,38 @@ async fn run_review_in_snapshot(
         request_sha256,
         cleanup_ok: false,
     })
+}
+
+fn frozen_diff(
+    snapshot: &Path,
+    base_sha: &str,
+    candidate_sha: &str,
+) -> Result<String, CodexReviewError> {
+    let diff = run_git(
+        &[
+            "-c",
+            "core.pager=cat",
+            "-c",
+            "diff.external=",
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--unified=3",
+            &format!("{base_sha}..{candidate_sha}"),
+        ],
+        Some(snapshot),
+    )?;
+    if diff.len() > MAX_REVIEW_DIFF_BYTES {
+        return Err(CodexReviewError::Setup(
+            "frozen candidate diff exceeds the review bound".into(),
+        ));
+    }
+    if diff.trim().is_empty() {
+        return Err(CodexReviewError::Setup(
+            "frozen candidate diff is empty".into(),
+        ));
+    }
+    Ok(diff)
 }
 
 fn validate_review_identity(request: &CodexReviewRequest) -> Result<(), CodexReviewError> {

@@ -143,7 +143,18 @@ impl CodexHome {
              [permissions.factory-review.filesystem]\n\
              {home} = \"deny\"\n\
              \"/config\" = \"deny\"\n\
-             \"/projects\" = \"deny\"\n"
+             \"/projects\" = \"deny\"\n\n\
+             [features]\n\
+             shell_tool = false\n\
+             view_image = false\n\
+             sleep_tool = false\n\
+             unified_exec = false\n\
+             code_mode = false\n\
+             web_search_request = false\n\
+             web_search_cached = false\n\
+             standalone_web_search = false\n\
+             multi_agent = false\n\
+             multi_agent_v2 = false\n"
         );
         let path = self.config_file();
         let temporary = self
@@ -393,6 +404,9 @@ mod tests {
         assert!(config.contains(&format!("\"{}\" = \"deny\"", home.path().to_string_lossy())));
         assert!(config.contains("\"/config\" = \"deny\""));
         assert!(config.contains("\"/projects\" = \"deny\""));
+        assert!(config.contains("shell_tool = false"));
+        assert!(config.contains("web_search_request = false"));
+        assert!(config.contains("multi_agent_v2 = false"));
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
