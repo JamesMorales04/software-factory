@@ -166,10 +166,12 @@ pub fn redact(value: &str) -> String {
 }
 
 #[cfg(test)]
-pub(crate) fn scoped_secret_count() -> usize {
+pub(crate) fn scoped_secret_refcount(value: &str) -> usize {
+    let digest: [u8; 32] = Sha256::digest(value.as_bytes()).into();
     SCOPED_SECRETS
         .read()
-        .map(|secrets| secrets.len())
+        .ok()
+        .and_then(|secrets| secrets.get(&digest).map(|entry| entry.references))
         .unwrap_or_default()
 }
 
@@ -230,15 +232,15 @@ mod tests {
 
     #[test]
     fn scoped_secrets_refcount_and_are_removed() {
-        let baseline = scoped_secret_count();
-        let first = ScopedSecret::register("scoped-secret-alpha-1234567890").unwrap();
-        let second = ScopedSecret::register("scoped-secret-alpha-1234567890").unwrap();
-        assert_eq!(scoped_secret_count(), baseline + 1);
+        let secret = "scoped-secret-alpha-1234567890";
+        let first = ScopedSecret::register(secret).unwrap();
+        let second = ScopedSecret::register(secret).unwrap();
+        assert_eq!(scoped_secret_refcount(secret), 2);
         assert!(!redact("value=scoped-secret-alpha-1234567890").contains("alpha"));
         drop(first);
-        assert_eq!(scoped_secret_count(), baseline + 1);
+        assert_eq!(scoped_secret_refcount(secret), 1);
         drop(second);
-        assert_eq!(scoped_secret_count(), baseline);
+        assert_eq!(scoped_secret_refcount(secret), 0);
         assert!(redact("value=scoped-secret-alpha-1234567890").contains("alpha"));
     }
 

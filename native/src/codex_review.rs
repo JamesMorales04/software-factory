@@ -7,8 +7,9 @@
 
 use std::{
     env,
+    io::Read,
     path::{Path, PathBuf},
-    process::Stdio,
+    process::{Command as StdCommand, Stdio},
     time::{Duration, Instant},
 };
 
@@ -523,7 +524,7 @@ fn frozen_diff(
     base_sha: &str,
     candidate_sha: &str,
 ) -> Result<String, CodexReviewError> {
-    let diff = run_git(
+    let diff = run_git_bounded(
         &[
             "-c",
             "core.pager=cat",
@@ -535,13 +536,9 @@ fn frozen_diff(
             "--unified=3",
             &format!("{base_sha}..{candidate_sha}"),
         ],
-        Some(snapshot),
+        snapshot,
+        MAX_REVIEW_DIFF_BYTES,
     )?;
-    if diff.len() > MAX_REVIEW_DIFF_BYTES {
-        return Err(CodexReviewError::Setup(
-            "frozen candidate diff exceeds the review bound".into(),
-        ));
-    }
     if diff.trim().is_empty() {
         return Err(CodexReviewError::Setup(
             "frozen candidate diff is empty".into(),
@@ -590,6 +587,71 @@ fn codex_binary() -> Result<PathBuf, CodexReviewError> {
         )));
     }
     Ok(path)
+}
+
+fn run_git_bounded(
+    arguments: &[&str],
+    cwd: &Path,
+    limit: usize,
+) -> Result<String, CodexReviewError> {
+    let mut child = StdCommand::new("git")
+        .args(arguments)
+        .current_dir(cwd)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| CodexReviewError::Setup(format!("git failed: {error}")))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| CodexReviewError::Setup("git stderr unavailable".into()))?;
+    let stderr_task = std::thread::spawn(move || {
+        let mut stderr = stderr.take(4 * 1024);
+        let mut bytes = Vec::new();
+        let _ = stderr.read_to_end(&mut bytes);
+        bytes
+    });
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| CodexReviewError::Setup("git stdout unavailable".into()))?;
+    let mut limited = stdout.take(limit as u64 + 1);
+    let mut output = Vec::new();
+    if let Err(error) = limited.read_to_end(&mut output) {
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = stderr_task.join();
+        return Err(CodexReviewError::Setup(format!(
+            "git output read failed: {error}"
+        )));
+    }
+    if output.len() > limit {
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = stderr_task.join();
+        return Err(CodexReviewError::Setup(
+            "frozen candidate diff exceeds the review bound".into(),
+        ));
+    }
+    let status = child
+        .wait()
+        .map_err(|error| CodexReviewError::Setup(format!("git wait failed: {error}")))?;
+    let stderr = stderr_task.join().unwrap_or_default();
+    if !status.success() {
+        return Err(CodexReviewError::Setup(format!(
+            "git {} failed: {}",
+            arguments.join(" "),
+            String::from_utf8_lossy(&stderr)
+                .chars()
+                .take(300)
+                .collect::<String>()
+        )));
+    }
+    Ok(String::from_utf8_lossy(&output).trim().to_owned())
 }
 
 fn run_git(arguments: &[&str], cwd: Option<&Path>) -> Result<String, CodexReviewError> {
@@ -753,12 +815,16 @@ pub fn parse_review_text(text: &str) -> (ReceiptResult, Vec<ReviewFinding>) {
     if !findings.is_empty() {
         return (ReceiptResult::ChangesRequested, findings);
     }
-    let clean = trimmed.lines().any(|line| {
-        let line = line.trim().trim_end_matches('.').to_ascii_lowercase();
-        line == "no findings" || line == "no issues found"
-    });
-    if clean {
-        return (ReceiptResult::Pass, Vec::new());
+    let nonempty: Vec<&str> = trimmed
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    if nonempty.len() == 1 {
+        let line = nonempty[0].trim_end_matches('.').to_ascii_lowercase();
+        if line == "no findings" || line == "no issues found" {
+            return (ReceiptResult::Pass, Vec::new());
+        }
     }
     (ReceiptResult::NotTested, Vec::new())
 }
@@ -864,6 +930,62 @@ mod tests {
             parse_review_text("The change looks reasonable but I did not inspect it.");
         assert_eq!(result, ReceiptResult::NotTested);
         assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn diff_capture_is_bounded_before_allocation() {
+        let root =
+            std::env::temp_dir().join(format!("factory-codex-diff-bound-{}", uuid::Uuid::new_v4()));
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .current_dir(&repo)
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?}");
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.name", "Diff Bound"]);
+        git(&["config", "user.email", "diff-bound@example.invalid"]);
+        std::fs::write(repo.join("seed.txt"), "base\n").unwrap();
+        git(&["add", "seed.txt"]);
+        git(&["commit", "-qm", "base"]);
+        let base = String::from_utf8(
+            std::process::Command::new("git")
+                .current_dir(&repo)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_owned();
+        std::fs::write(
+            repo.join("large.txt"),
+            "x".repeat(MAX_REVIEW_DIFF_BYTES + 4096),
+        )
+        .unwrap();
+        git(&["add", "large.txt"]);
+        git(&["commit", "-qm", "large"]);
+        let candidate = String::from_utf8(
+            std::process::Command::new("git")
+                .current_dir(&repo)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_owned();
+        assert!(matches!(
+            frozen_diff(&repo, &base, &candidate),
+            Err(CodexReviewError::Setup(_))
+        ));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
