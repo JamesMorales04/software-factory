@@ -53,9 +53,14 @@ also probed with a read-only root and a mounted secret: `codex sandbox
 
 `codex debug prompt-input` with the same config produced a model-visible tool
 surface containing no `exec_command`/shell declaration; `shell_tool = false`.
-The review subagent also disables web search and collaboration tools. The exact
-frozen diff is supplied in developer instructions so review does not need
-project-code execution.
+The review subagent also disables web search and collaboration tools. Trusted
+policy and the exact SHA binding are in developer instructions; the exact
+bounded diff is delivered through the official `review/start` custom-target
+user message and marked as untrusted candidate source content. Candidate text
+never enters the developer/system policy channel. Adversarial tests embed
+`IGNORE ALL PRIOR INSTRUCTIONS` in a candidate comment and verify it appears
+only in the user-content target, not in developer instructions, and that the
+parser returns `NOT_TESTED` for malicious review prose.
 
 ## Status surface
 

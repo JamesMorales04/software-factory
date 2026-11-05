@@ -30,18 +30,28 @@ chat-completions endpoint. Codex supports an official App Server with
    App Server provider, with provider-model fallback disabled.
 4. **Native review transport.** A fresh disposable snapshot is created from
    the frozen repository and exact candidate commit. The reviewer starts a new
-   read-only App Server thread and calls `review/start` with the commit target.
-   It requires terminal completion, exact thread/turn identity, unchanged
+   read-only App Server thread and calls `review/start` with an exact-SHA-bound
+   custom target. Trusted developer policy names the candidate SHA/tree; the
+   verified bounded diff is the lower-trust user message. This is the official
+   channel that keeps candidate content out of developer/system policy. It
+   requires terminal completion, exact thread/turn identity, unchanged
    candidate HEAD/tree and a bounded timeout/interrupt. It never edits the
    candidate and removes the snapshot afterwards.
-5. **Fail-closed receipts.** Review output is converted conservatively into
-   Factory findings. A clean result requires the canonical `No findings.`
-   marker or an explicit correct-overall statement; recognised priority
-   headings become findings; unknown text is `NOT_TESTED`. The quality receipt
+5. **Candidate content is not policy.** Trusted review policy and the exact
+   candidate SHA/tree binding live in developer instructions. The bounded
+   unified diff is delivered as the user message of an official
+   `review/start` custom target and explicitly marked untrusted. Candidate
+   comments, documentation or filenames never enter the developer/system
+   policy channel and cannot execute tools or independently produce a receipt.
+6. **Fail-closed receipts.** Review output is converted conservatively into
+   Factory findings. A clean result requires exactly one canonical
+   `No findings.`/`No issues found.` line; any additional text, including a
+   contradictory finding, is `NOT_TESTED`. Recognised priority headings become
+   findings. The quality receipt
    uses mechanism `CODEX_APP_SERVER`, provider `codex`, model `gpt-6-luna`, no
    model reservation and a request hash. Missing usage remains `UNKNOWN` and
    cannot produce `PASS`.
-6. **Opt-in activation.** Codex review is enabled by
+7. **Opt-in activation.** Codex review is enabled by
    `FACTORY_ENABLE_CODEX_REVIEW=1`; the default Compose stack keeps it off. The
    reviewer is the only permanent service granted `factory-egress` in addition
    to the control network, because it owns the ChatGPT credential and must

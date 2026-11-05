@@ -29,8 +29,14 @@ execution. `codex sandbox -P factory-review` was used to verify that a denied
 file/directory is unreadable while ordinary system files remain readable; see
 [the isolation probe](../evidence/codex-review-isolation-2026-11-05.md).
 The review features disable the shell, unified-exec, web-search and
-collaboration tools. The exact frozen diff is supplied in developer
-instructions, so the reviewer does not execute candidate code.
+collaboration tools. Trusted review policy and the exact SHA binding are in
+developer instructions. The exact bounded diff is delivered as the user
+message of an official `review/start` custom target, explicitly marked as
+untrusted candidate source content. This is the only official lower-trust
+content channel; the reviewer independently verifies the snapshot HEAD/tree,
+generates the bounded diff from the exact SHA pair, and binds the receipt to
+that candidate. Candidate text never enters the developer/system policy
+channel and cannot execute code.
 
 ## Login
 

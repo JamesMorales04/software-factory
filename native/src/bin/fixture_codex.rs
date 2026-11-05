@@ -155,6 +155,15 @@ fn main() {
                         .and_then(Value::as_str)
                         .unwrap_or("thread-fixture")
                         .to_owned();
+                    if let Ok(path) = std::env::var("FACTORY_FIXTURE_CODEX_REVIEW_CAPTURE") {
+                        let _ = std::fs::write(
+                            path,
+                            serde_json::to_vec(
+                                &value.get("params").cloned().unwrap_or_else(|| json!({})),
+                            )
+                            .unwrap(),
+                        );
+                    }
                     send(
                         json!({"id":id,"result":{"reviewThreadId":thread_id,"turn":{"id":"review-turn-fixture","status":"inProgress"}}}),
                     );
