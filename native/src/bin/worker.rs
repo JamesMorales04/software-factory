@@ -2918,7 +2918,8 @@ async fn run_codex_tool_loop(
         .start_thread(ThreadStartParams {
             cwd: "/session".into(),
             approval_policy: factory_native::protocol::DenyApprovalPolicy::Never,
-            sandbox: factory_native::protocol::ReadOnlySandbox::ReadOnly,
+            sandbox: Some(factory_native::protocol::ReadOnlySandbox::ReadOnly),
+            permissions: None,
             model: Some(context.assignment.model.clone()),
             model_provider: Some("factory".into()),
             ephemeral: Some(true),
@@ -2928,6 +2929,7 @@ async fn run_codex_tool_loop(
                     .into(),
             ),
             developer_instructions: None,
+            allow_provider_model_fallback: Some(false),
         })
         .await
     {

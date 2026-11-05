@@ -73,8 +73,28 @@ impl CoreProcess {
     }
 
     fn start_with_lead_model(database: &Path, port: u16, log: &Path, model_url: &str) -> Self {
+        Self::start_with_lead_model_config(database, port, log, model_url, false)
+    }
+
+    fn start_with_lead_model_and_codex(
+        database: &Path,
+        port: u16,
+        log: &Path,
+        model_url: &str,
+    ) -> Self {
+        Self::start_with_lead_model_config(database, port, log, model_url, true)
+    }
+
+    fn start_with_lead_model_config(
+        database: &Path,
+        port: u16,
+        log: &Path,
+        model_url: &str,
+        codex_review: bool,
+    ) -> Self {
         let file = File::create(log).expect("core log");
-        let child = Command::new(env!("CARGO_BIN_EXE_factory-core"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_factory-core"));
+        command
             .env("FACTORY_DATABASE", database)
             .env("FACTORY_BIND", format!("127.0.0.1:{port}"))
             .env("FACTORY_PROVIDER_KIND", "fixture")
@@ -92,9 +112,11 @@ impl CoreProcess {
             .env("FACTORY_ALLOW_TEST_UPSTREAM", "1")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::from(file))
-            .spawn()
-            .expect("spawn factory-core");
+            .stderr(Stdio::from(file));
+        if codex_review {
+            command.env("FACTORY_ENABLE_CODEX_REVIEW", "1");
+        }
+        let child = command.spawn().expect("spawn factory-core");
         Self {
             child,
             log: log.to_path_buf(),
@@ -281,6 +303,29 @@ fn run_reviewer_with(
         .stderr(Stdio::from(log));
     if let Some(mechanism) = mechanism {
         command.env("FACTORY_REVIEW_MECHANISM", mechanism);
+        if mechanism == "CODEX_APP_SERVER" {
+            let codex_home = root.join("codex-home");
+            let review_work = root.join("codex-review-work");
+            std::fs::create_dir_all(&codex_home).unwrap();
+            std::fs::create_dir_all(&review_work).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&codex_home, std::fs::Permissions::from_mode(0o700))
+                    .unwrap();
+            }
+            command
+                .env("FACTORY_CODEX_HOME", &codex_home)
+                .env(
+                    "FACTORY_CODEX_BINARY",
+                    env!("CARGO_BIN_EXE_factory-fixture-codex"),
+                )
+                .env("FACTORY_CODEX_TEST_MODE", "1")
+                .env("FACTORY_FIXTURE_CODEX_PROVIDER", "openai")
+                .env("FACTORY_FIXTURE_CODEX_ACCOUNT", "chatgpt")
+                .env("FACTORY_REVIEW_WORKSPACE", &review_work)
+                .env("FACTORY_CODEX_REVIEW_TIMEOUT_SECS", "30");
+        }
     }
     let status = command.status().expect("reviewer");
     assert!(
@@ -1233,7 +1278,8 @@ async fn admit_test_campaign(database: &Path, campaign_id: &str) {
 
 #[cfg(feature = "test-support")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn semantic_reviewer_model_mode_binds_findings_provenance_and_rejects_malformed_output() {
+async fn semantic_reviewer_model_and_codex_modes_bind_findings_provenance_and_reject_malformed_output()
+ {
     use axum::{Router, routing::post};
     use std::sync::{Arc, Mutex};
 
@@ -1294,8 +1340,12 @@ async fn semantic_reviewer_model_mode_binds_findings_provenance_and_rejects_malf
     let database = root.join("factory.sqlite");
     let port = free_port();
     let base_url = format!("http://127.0.0.1:{port}");
-    let mut core =
-        CoreProcess::start_with_lead_model(&database, port, &root.join("core.log"), &model_url);
+    let mut core = CoreProcess::start_with_lead_model_and_codex(
+        &database,
+        port,
+        &root.join("core.log"),
+        &model_url,
+    );
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()
@@ -1518,6 +1568,79 @@ async fn semantic_reviewer_model_mode_binds_findings_provenance_and_rejects_malf
             .as_array()
             .is_some_and(|findings| !findings.is_empty())
     );
+    assert_eq!(*model_calls.lock().unwrap(), 2);
+
+    let third = drive_fixture_campaign_to_candidate(
+        &client,
+        &base_url,
+        &project_id,
+        &supervisor_url,
+        FIXTURE_IMAGE,
+        "third",
+        "Add a third bounded fixture content.",
+        "fixture candidate three
+",
+    )
+    .await;
+    run_fixture_verifier(
+        &root,
+        &base_url,
+        &third.candidate_id,
+        "semantic-verifier-third",
+        "third",
+        FIXTURE_IMAGE,
+    )
+    .await;
+    admit_test_campaign(&database, &third.campaign_id).await;
+    run_reviewer_with(
+        &root,
+        &base_url,
+        &third.candidate_id,
+        "semantic-reviewer-codex",
+        "reviewer-third.log",
+        Some("CODEX_APP_SERVER"),
+    );
+    let gate: Value = operator(
+        &client,
+        reqwest::Method::GET,
+        format!("{base_url}/quality/candidates/{}/gate", third.candidate_id),
+        None,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(gate["outcome"], "ACCEPTED", "{gate}");
+    let receipts: Value = operator(
+        &client,
+        reqwest::Method::GET,
+        format!(
+            "{base_url}/quality/candidates/{}/receipts",
+            third.candidate_id
+        ),
+        None,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let reviewer = receipts
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|receipt| receipt["role"] == "reviewer")
+        .unwrap()
+        .clone();
+    assert_eq!(reviewer["result"], "PASS");
+    assert_eq!(reviewer["mechanism"], "CODEX_APP_SERVER");
+    assert_eq!(reviewer["model_provider"], "codex");
+    assert_eq!(reviewer["model_name"], "gpt-6-luna");
+    assert_eq!(reviewer["model_reservation_id"], "");
+    assert_eq!(reviewer["usage_known"], true);
+    assert_eq!(reviewer["input_tokens"], 120);
+    assert_eq!(reviewer["output_tokens"], 80);
+    assert_eq!(reviewer["total_tokens"], 200);
+    assert_eq!(reviewer["cost_micros"], 0);
     assert_eq!(*model_calls.lock().unwrap(), 2);
 
     supervisor.stop();

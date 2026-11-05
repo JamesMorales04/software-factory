@@ -15,12 +15,18 @@ is the decision authority.
 | Director / assessment / planning | `opencode-go` | `deepseek-v4.1-flash` | OpenCode Go subscription inference endpoint |
 | Implementation | `opencode-go` | `deepseek-v4.1-flash` | OpenCode provider session |
 | Implementation | `codex` | `gpt-6-luna` | Codex App Server |
-| Independent review | `codex` | `gpt-6-luna` | **not implemented**; Codex App Server has no one-shot review adapter |
+| Independent review | `codex` | `gpt-6-luna` | Native Codex App Server `review/start` transport |
 
 The test allowlist is in `native/src/subscription_admission.rs`. It is not a
-product catalog restriction. `opencode-go` API-key authentication is accepted
-for the subscription route; plain `opencode` and every OpenAI pay-as-you-go
-route are rejected.
+product catalog restriction. This admission contract currently executes only
+the `opencode-go` route. Codex is not admitted as subscription-funded
+implementation because Core cannot verify the credential class; the Codex
+pair is reserved for the independent review transport. Plain `opencode` and
+every OpenAI pay-as-you-go route are rejected.
+
+Native Codex review is implemented behind `FACTORY_ENABLE_CODEX_REVIEW=1`.
+See [Codex ChatGPT authentication and native review](../operations/codex-review-auth.md)
+for credential placement, login, status and review evidence.
 
 ## Admission flow
 
@@ -40,27 +46,41 @@ route are rejected.
 6. Semantic review through OpenCode Go is allowed by the test allowlist; the
    independent Codex review path is still missing.
 
+## Implemented review integration
+
+- Dedicated `factory-codex-home` volume, mounted only into the reviewer and the
+  one-shot `codex-auth`/`codex-status` services.
+- Official App Server `account/login/start` device-code or browser login;
+  `account/read` must return a ChatGPT account.
+- Exact `gpt-6-luna` check through `model/list`; API-key and ambiguous states
+  are rejected.
+- Fresh disposable candidate snapshot, read-only App Server sandbox,
+  `review/start` targeting the exact commit, bounded timeout/interrupt and
+  cleanup.
+- Candidate-bound `CODEX_APP_SERVER` quality receipt with exact provenance;
+  missing usage is `UNKNOWN` and cannot produce a PASS.
+
 ## Remaining concrete blockers
 
 - **No Factory-held OpenCode Go credential.** The key is stored by the host
   OpenCode CLI; it was not read or copied into Factory. The Owner or an
   authorized operator must enter it through Office/provider settings.
-- **No native Codex ChatGPT credential custody.** Codex is ChatGPT-authenticated
-  on the host, but Factory's Codex provider session uses a private empty
-  `CODEX_HOME` and an egress token. There is no reviewed path to mount or
-  delegate the ChatGPT login into a Factory reviewer.
-- **No Codex review adapter.** `ProviderAdapter::CodexAppServer` implements a
-  Worker provider session only. A one-shot review through Codex must be built as
-  a native read-only reviewer transport before the requested independent Luna
-  review can be claimed.
+- **No Factory Codex login has been completed yet.** The dedicated volume is
+  ready; an operator must run the login command and complete the official
+  ChatGPT flow.
 - **No bounded live authorization envelope has been executed.** The corrected
   policy permits an explicit bounded test admission, but no live run has been
   started or charged.
+- **No real inference evidence.** Authentication and review were tested only
+  with the deterministic fixture App Server and local non-inference protocol
+  probing.
 
 ## NOT_TESTED
 
 - Real DeepSeek assessment, planning or implementation through Factory.
-- Real GPT-6 Luna review through Codex.
+- Real GPT-6 Luna review through Codex ChatGPT. The deterministic fixture
+  covers the protocol, auth rejection paths, review parsing, cancellation and
+  receipt conversion.
 - Provider quota exhaustion/pause against a real account.
 - Full natural-language objective to candidate to independent review to Quality
   Gate journey with two real models.

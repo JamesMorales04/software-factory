@@ -52,6 +52,7 @@ services:
       FACTORY_DATA_DIR: /data
       FACTORY_PROJECTS_DIR: /projects
       FACTORY_PROVIDER_SESSIONS_DIR: /provider-sessions
+      FACTORY_CODEX_HOME_DIR: /codex-home
       FACTORY_CONFIG_UID: "10001"
     volumes:
       - factory-config-core:/config-core
@@ -63,6 +64,7 @@ services:
       - factory-data:/data
       - factory-projects:/projects
       - factory-provider-sessions:/provider-sessions
+      - factory-codex-home:/codex-home
     network_mode: none
     restart: "no"
 
@@ -198,6 +200,7 @@ services:
       FACTORY_ATTEMPT_GRANT_KEY_FILE: /config/attempt-grant.key
       FACTORY_LEAD_FIXTURE_ASSESSOR: ${FACTORY_LEAD_FIXTURE_ASSESSOR:-0}
       FACTORY_ENABLE_AUTONOMOUS_START: "0"
+      FACTORY_ENABLE_CODEX_REVIEW: "0"
     networks:
       - factory-control
       - factory-egress
@@ -327,8 +330,8 @@ services:
     build:
       context: .
       dockerfile: deploy/Containerfile
-      target: verifier
-    image: software-factory-verifier:dev
+      target: reviewer
+    image: software-factory-reviewer:dev
     user: "10001:10001"
     <<: *restricted
     read_only: true
@@ -342,14 +345,65 @@ services:
       - factory-projects:/projects:ro
       - factory-reviewer-state:/state
       - factory-config-reviewer:/config:ro
+      - factory-codex-home:/codex-home
     environment:
       <<: *control-env
       FACTORY_REVIEWER_TOKEN_FILE: /config/reviewer.token
       FACTORY_REVIEW_MECHANISM: AUTO
       FACTORY_REVIEWER_WATCH: "1"
+      FACTORY_CODEX_HOME: /codex-home
+      FACTORY_CODEX_BINARY: /usr/local/bin/codex
+      FACTORY_REVIEW_WORKSPACE: /state
+      FACTORY_CODEX_REVIEW_TIMEOUT_SECS: "300"
     networks:
       - factory-control
+      - factory-egress
     stop_grace_period: 20s
+
+  codex-auth:
+    build:
+      context: .
+      dockerfile: deploy/Containerfile
+      target: reviewer
+    image: software-factory-reviewer:dev
+    user: "10001:10001"
+    profiles: ["codex-auth"]
+    <<: *restricted
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    command: ["/usr/local/bin/factory-reviewer", "codex-login"]
+    volumes:
+      - factory-codex-home:/codex-home
+    environment:
+      FACTORY_CODEX_HOME: /codex-home
+      FACTORY_CODEX_BINARY: /usr/local/bin/codex
+      FACTORY_CODEX_LOGIN_MODE: ${FACTORY_CODEX_LOGIN_MODE:-device}
+    networks:
+      - factory-egress
+
+  codex-status:
+    build:
+      context: .
+      dockerfile: deploy/Containerfile
+      target: reviewer
+    image: software-factory-reviewer:dev
+    user: "10001:10001"
+    profiles: ["codex-auth"]
+    <<: *restricted
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    command: ["/usr/local/bin/factory-reviewer", "codex-status"]
+    volumes:
+      - factory-codex-home:/codex-home
+    environment:
+      FACTORY_CODEX_HOME: /codex-home
+      FACTORY_CODEX_BINARY: /usr/local/bin/codex
+    networks:
+      - factory-egress
 
 volumes:
   factory-config-core:
@@ -366,6 +420,7 @@ volumes:
   factory-supervisor-state:
   factory-verifier-state:
   factory-reviewer-state:
+  factory-codex-home:
 
 networks:
   factory-control:

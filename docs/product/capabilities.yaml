@@ -499,11 +499,13 @@ capabilities:
   limitations:
   - OpenCode and Codex App Server adapters support bounded multi-turn tool events and frozen-check execution through
     the Supervisor. OpenCode has managed live acceptance; Codex has deterministic real-executable coverage and a
-    test-only GPT-6 Luna proxy record. Native ChatGPT-authenticated Codex live inference and ISOLATED dispatch
-    remain blocked.
+    test-only GPT-6 Luna proxy record. A reviewer-only native Codex App Server `review/start` transport and
+    dedicated ChatGPT credential volume are implemented behind `FACTORY_ENABLE_CODEX_REVIEW=1`; real ChatGPT
+    login, live Luna review and ISOLATED dispatch remain NOT_TESTED.
   blockers:
   - SEC-01 isolation remains paused; TRUSTED_LOCAL has broad host access.
-  - Native ChatGPT OAuth token refresh and account-header injection are outside the current egress boundary.
+  - Real ChatGPT login, live Luna review and the Office authentication-status surface remain pending; the current
+    bootstrap is the reviewer CLI/Compose flow.
 - id: CAP-005
   name: Candidate revision lineage
   category: Quality
@@ -2486,7 +2488,8 @@ capabilities:
     isolation: []
   limitations:
   - Connection testing reads the provider model list; it does not prove coding inference or pricing.
-  - ChatGPT OAuth remains blocked for Codex; no live OAuth or Codex inference is claimed.
+  - Codex ChatGPT authentication is a reviewer-only CLI/Compose flow backed by the dedicated `factory-codex-home`
+    volume; Office does not yet expose Codex auth status, and no live OAuth or Codex inference is claimed.
   - The UI does not expose arbitrary provider payloads or credential values.
   - Base URL, manual model IDs, token/cost/rate limits and connection details remain in explicit advanced configuration; the V2 technical limits are real Core safety bounds, not productivity caps.
   - Fixture Chromium screenshots cover Home and Execution Profiles at 1440/390; real Core/Compose browser acceptance of the simplified path remains NOT_TESTED.

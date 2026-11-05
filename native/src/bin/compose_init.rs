@@ -55,6 +55,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::env::var("FACTORY_PROVIDER_SESSIONS_DIR")
             .unwrap_or_else(|_| "/provider-sessions".into()),
     );
+    let codex_home = PathBuf::from(
+        std::env::var("FACTORY_CODEX_HOME_DIR").unwrap_or_else(|_| "/codex-home".into()),
+    );
     let uid = std::env::var("FACTORY_CONFIG_UID")
         .ok()
         .and_then(|value| value.parse::<u32>().ok())
@@ -91,6 +94,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     for directory in [&data, &projects, &provider_sessions] {
         prepare_directory(directory, uid)?;
+    }
+    prepare_directory(&codex_home, uid)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&codex_home, fs::Permissions::from_mode(0o700))?;
     }
 
     let mut names = BTreeSet::new();

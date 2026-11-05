@@ -8,9 +8,15 @@
 //! executes candidate code, holds provider credentials, or uses the
 //! implementer/verifier credential.
 
-use std::{env, path::Path, time::Duration};
+use std::{
+    env,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use factory_native::{
+    codex_auth::{CodexHome, RECEIPT_PROVIDER, REVIEW_MODEL},
+    codex_review::{CodexReviewRequest, login, run_review, status},
     db::{CandidateInspection, QualityReceiptRecord, QualityRole, ReviewMechanism},
     quality::{EvidenceKind, ReceiptResult},
     review::{
@@ -58,6 +64,35 @@ struct ReviewerConfig {
 }
 
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(command) = env::args().nth(1) {
+        let home = CodexHome::from_env()?;
+        match command.as_str() {
+            "codex-status" => {
+                let status = status(&home).await?;
+                println!("{status}");
+                if status
+                    .get("configurationReady")
+                    .and_then(serde_json::Value::as_bool)
+                    != Some(true)
+                {
+                    return Err("Codex review configuration is not ready".into());
+                }
+                return Ok(());
+            }
+            "codex-login" => {
+                let device_code =
+                    env::var("FACTORY_CODEX_LOGIN_MODE").ok().as_deref() != Some("browser");
+                println!("{}", login(&home, device_code).await?);
+                return Ok(());
+            }
+            other => {
+                return Err(format!(
+                    "unsupported reviewer command {other:?}; expected codex-status or codex-login"
+                )
+                .into());
+            }
+        }
+    }
     let core = env::var("FACTORY_CORE_URL").unwrap_or_else(|_| "http://127.0.0.1:8765".into());
     let token = factory_native::secrets::required("FACTORY_REVIEWER_TOKEN")?;
     factory_native::telemetry::register_secret(&token);
@@ -112,6 +147,7 @@ async fn review_mechanism(
     let mechanism = match body.get("mechanism").and_then(serde_json::Value::as_str) {
         Some("MODEL") => SemanticReviewMechanism::Model,
         Some("DETERMINISTIC") => SemanticReviewMechanism::Deterministic,
+        Some("CODEX_APP_SERVER") => SemanticReviewMechanism::CodexAppServer,
         _ => return Err("Core returned an unsupported review mechanism".into()),
     };
     let max_output_tokens = body
@@ -205,6 +241,30 @@ async fn run_candidate(
     };
     let outcome = match mechanism {
         SemanticReviewMechanism::Deterministic => deterministic_outcome(inspection).await?,
+        SemanticReviewMechanism::CodexAppServer => {
+            let deterministic = deterministic_evidence(&inspection).await?;
+            if deterministic.verdict == ReviewVerdict::RequestChanges {
+                CompletedOutcome {
+                    commit_sha: deterministic.commit_sha,
+                    tree_sha: deterministic.tree_sha,
+                    result: ReceiptResult::ChangesRequested,
+                    evidence: EvidenceKind::Executed,
+                    findings: Vec::new(),
+                    mechanism: ReviewMechanism::Deterministic,
+                    provider: String::new(),
+                    model: String::new(),
+                    reservation_id: String::new(),
+                    request_sha256: String::new(),
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    total_tokens: 0,
+                    cost_micros: 0,
+                    usage_known: false,
+                }
+            } else {
+                codex_outcome(candidate_id, inspection, deterministic).await?
+            }
+        }
         SemanticReviewMechanism::Model => {
             let deterministic = deterministic_evidence(&inspection).await?;
             if deterministic.verdict == ReviewVerdict::RequestChanges {
@@ -554,6 +614,99 @@ async fn model_outcome(
         total_tokens: call.total_tokens,
         cost_micros: call.cost_micros,
         usage_known: call.usage_known,
+    })
+}
+
+async fn codex_outcome(
+    candidate_id: &str,
+    inspection: CandidateInspection,
+    deterministic: ReviewEvidence,
+) -> Result<CompletedOutcome, Box<dyn std::error::Error>> {
+    let workspace_root =
+        PathBuf::from(env::var("FACTORY_REVIEW_WORKSPACE").unwrap_or_else(|_| "/state".into()));
+    let timeout = env::var("FACTORY_CODEX_REVIEW_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(300)
+        .clamp(10, 900);
+    let request = CodexReviewRequest {
+        repository: PathBuf::from(&inspection.repository),
+        workspace_root,
+        base_sha: inspection.base_commit.clone(),
+        candidate_sha: inspection.candidate.commit_sha.clone(),
+        tree_sha: inspection.candidate.tree_sha.clone(),
+        timeout: Duration::from_secs(timeout),
+    };
+    let deterministic_findings: Vec<ReviewFinding> = deterministic
+        .findings
+        .into_iter()
+        .filter(|finding| !finding.evidence_refs.is_empty())
+        .collect();
+    let outcome = match run_review(&request).await {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            let message = bounded(&format!("Codex App Server review failed: {error}"), 500);
+            let commit_sha = inspection.candidate.commit_sha.clone();
+            return Ok(CompletedOutcome {
+                commit_sha: inspection.candidate.commit_sha,
+                tree_sha: inspection.candidate.tree_sha,
+                result: ReceiptResult::NotTested,
+                evidence: EvidenceKind::Unknown,
+                findings: vec![failure_finding(candidate_id, &message)],
+                mechanism: ReviewMechanism::CodexAppServer,
+                provider: RECEIPT_PROVIDER.into(),
+                model: REVIEW_MODEL.into(),
+                reservation_id: String::new(),
+                request_sha256: factory_native::device_session::sha256_hex(&format!(
+                    "codex-review-failure:v1:{commit_sha}:{message}"
+                )),
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 0,
+                cost_micros: 0,
+                usage_known: false,
+            });
+        }
+    };
+    if !outcome.cleanup_ok {
+        eprintln!("reviewer: Codex review snapshot cleanup failed for candidate {candidate_id}");
+    }
+    let usage_known = outcome.usage.is_some();
+    let usage = outcome.usage.unwrap_or_default();
+    let mut result = outcome.result;
+    let mut findings = deterministic_findings;
+    findings.extend(outcome.findings);
+    if !usage_known {
+        if result == ReceiptResult::Pass {
+            result = ReceiptResult::NotTested;
+        }
+        findings.push(failure_finding(
+            candidate_id,
+            "Codex review completed without measured token usage; acceptance is unavailable",
+        ));
+    }
+    if result != ReceiptResult::Pass && findings.is_empty() {
+        findings.push(failure_finding(
+            candidate_id,
+            "Codex review did not produce an explicit clean result",
+        ));
+    }
+    Ok(CompletedOutcome {
+        commit_sha: inspection.candidate.commit_sha,
+        tree_sha: inspection.candidate.tree_sha,
+        result,
+        evidence: EvidenceKind::Executed,
+        findings,
+        mechanism: ReviewMechanism::CodexAppServer,
+        provider: RECEIPT_PROVIDER.into(),
+        model: REVIEW_MODEL.into(),
+        reservation_id: String::new(),
+        request_sha256: outcome.request_sha256,
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+        total_tokens: usage.total_tokens,
+        cost_micros: 0,
+        usage_known,
     })
 }
 

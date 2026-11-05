@@ -1231,6 +1231,104 @@ fn model_review_receipt(
 }
 
 #[tokio::test]
+async fn codex_app_server_review_requires_exact_provenance_without_a_reservation() {
+    let fixture = candidate_fixture().await;
+    let mut valid = quality_receipt(&fixture, "codex-review", "reviewer");
+    valid.mechanism = ReviewMechanism::CodexAppServer;
+    valid.model_provider = "codex".into();
+    valid.model_name = "gpt-6-luna".into();
+    valid.model_request_sha256 = sha256_hex(b"codex-review-request");
+    valid.usage_known = true;
+
+    let mut wrong_provider = valid.clone();
+    wrong_provider.receipt_id = "codex-review-wrong-provider".into();
+    wrong_provider.model_provider = "opencode".into();
+    assert!(matches!(
+        fixture
+            .db
+            .record_quality_receipt(
+                &fixture.candidate_id,
+                QualityRole::Reviewer,
+                &wrong_provider,
+            )
+            .await,
+        Err(Error::Forbidden(_))
+    ));
+
+    let mut reserved = valid.clone();
+    reserved.receipt_id = "codex-review-reserved".into();
+    reserved.model_reservation_id = "reservation".into();
+    assert!(matches!(
+        fixture
+            .db
+            .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &reserved,)
+            .await,
+        Err(Error::Forbidden(_))
+    ));
+
+    let verifier = quality_receipt(&fixture, "verifier-codex", "verifier");
+    fixture
+        .db
+        .record_quality_receipt(&fixture.candidate_id, QualityRole::Verifier, &verifier)
+        .await
+        .unwrap();
+    let ingested = fixture
+        .db
+        .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &valid)
+        .await
+        .unwrap();
+    assert_eq!(ingested.receipt.mechanism, ReviewMechanism::CodexAppServer);
+    assert!(ingested.receipt.model_reservation_id.is_empty());
+    assert_eq!(ingested.gate.unwrap().outcome, GateOutcome::Accepted);
+    let mut duplicate = valid;
+    duplicate.receipt_id = "codex-review-duplicate".into();
+    assert!(matches!(
+        fixture
+            .db
+            .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &duplicate)
+            .await,
+        Err(Error::Conflict(_))
+    ));
+    fixture.db.close().await;
+    let _ = std::fs::remove_file(fixture.root.join("factory.sqlite"));
+}
+
+#[tokio::test]
+async fn codex_app_server_failure_receipt_preserves_unknown_usage() {
+    let fixture = candidate_fixture().await;
+    let verifier = quality_receipt(&fixture, "verifier-codex-failure", "verifier");
+    fixture
+        .db
+        .record_quality_receipt(&fixture.candidate_id, QualityRole::Verifier, &verifier)
+        .await
+        .unwrap();
+    let mut failed = quality_receipt(&fixture, "codex-review-failure", "reviewer");
+    failed.mechanism = ReviewMechanism::CodexAppServer;
+    failed.model_provider = "codex".into();
+    failed.model_name = "gpt-6-luna".into();
+    failed.model_request_sha256 = sha256_hex(b"codex-review-failure-request");
+    failed.result = ReceiptResult::NotTested;
+    failed.evidence = EvidenceKind::Unknown;
+    failed.findings = vec![crate::review::ReviewFinding {
+        id: "codex-review-unavailable".into(),
+        severity: crate::review::FindingSeverity::Blocking,
+        category: crate::review::FindingCategory::Other,
+        message: "Codex authentication is unavailable".into(),
+        evidence_refs: vec![fixture.candidate_id.clone()],
+    }];
+    assert!(!failed.usage_known);
+    let ingested = fixture
+        .db
+        .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &failed)
+        .await
+        .unwrap();
+    assert!(!ingested.receipt.usage_known);
+    assert_eq!(ingested.gate.unwrap().outcome, GateOutcome::NotTested);
+    fixture.db.close().await;
+    let _ = std::fs::remove_file(fixture.root.join("factory.sqlite"));
+}
+
+#[tokio::test]
 async fn model_review_approval_requires_matching_settled_reservation() {
     let fixture = candidate_fixture().await;
     fixture
@@ -2683,7 +2781,14 @@ async fn owner_confirmed_campaign_admission_enables_subscription_mode() {
     .unwrap();
     assert_eq!(state, "ENABLED");
     assert_eq!(mode, "SUBSCRIPTION");
-    let now_ms = Utc::now().timestamp_millis();
+    let observed_at_ms: i64 = sqlx::query_scalar::query_scalar(
+        "SELECT observed_at_ms FROM subscription_funding_policies
+         WHERE campaign_id='campaign-admission'",
+    )
+    .fetch_one(&mut *connection)
+    .await
+    .unwrap();
+    let now_ms = observed_at_ms + 1;
     db.pause_subscription_funding_for_quota(
         "campaign-admission",
         "auth-admission",

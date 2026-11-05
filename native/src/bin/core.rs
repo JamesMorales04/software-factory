@@ -1946,7 +1946,10 @@ async fn review_config(State(app): State<Arc<App>>, headers: HeaderMap) -> Respo
         Err(error) => return api_error(error),
     };
     let gateway = app.current_model_gateway().await;
-    let mechanism = if settings.semantic_review_enabled && gateway.is_some() {
+    let codex_review = codex_review_enabled();
+    let mechanism = if settings.semantic_review_enabled && codex_review {
+        "CODEX_APP_SERVER"
+    } else if settings.semantic_review_enabled && gateway.is_some() {
         "MODEL"
     } else {
         "DETERMINISTIC"
@@ -1954,10 +1957,12 @@ async fn review_config(State(app): State<Arc<App>>, headers: HeaderMap) -> Respo
     Json(json!({
         "mechanism": mechanism,
         "maxOutputTokens": settings.semantic_review_max_output_tokens,
-        "reason": if mechanism == "MODEL" {
+        "reason": if mechanism == "CODEX_APP_SERVER" {
+            "operator enabled native Codex App Server review"
+        } else if mechanism == "MODEL" {
             "operator enabled semantic review and a default provider is configured"
         } else if settings.semantic_review_enabled {
-            "semantic review is enabled but no model gateway is configured"
+            "semantic review is enabled but no reviewer route is configured"
         } else {
             "semantic review is disabled"
         }
@@ -7948,11 +7953,25 @@ async fn model_call(
     }
 }
 
+fn codex_review_enabled() -> bool {
+    env::var("FACTORY_ENABLE_CODEX_REVIEW").as_deref() == Ok("1")
+}
+
 fn reviewer_receipt_mechanism_allowed(
     semantic_review_enabled: bool,
     route_available: bool,
+    codex_review_enabled: bool,
     mechanism: factory_native::db::ReviewMechanism,
 ) -> Result<(), &'static str> {
+    if mechanism == factory_native::db::ReviewMechanism::CodexAppServer {
+        if !semantic_review_enabled {
+            return Err("semantic review is disabled by the operator");
+        }
+        if !codex_review_enabled {
+            return Err("Codex App Server review transport is not enabled");
+        }
+        return Ok(());
+    }
     if mechanism == factory_native::db::ReviewMechanism::Model {
         if !semantic_review_enabled {
             return Err("semantic review is disabled by the operator");
@@ -7962,8 +7981,12 @@ fn reviewer_receipt_mechanism_allowed(
         }
         return Ok(());
     }
-    if semantic_review_enabled && route_available {
-        return Err("semantic review is enabled; reviewer must submit MODEL evidence");
+    if semantic_review_enabled && (route_available || codex_review_enabled) {
+        return Err(if codex_review_enabled {
+            "semantic review is enabled; reviewer must submit CODEX_APP_SERVER evidence"
+        } else {
+            "semantic review is enabled; reviewer must submit MODEL evidence"
+        });
     }
     Ok(())
 }
@@ -7992,6 +8015,7 @@ async fn quality_receipt(State(app): State<Arc<App>>, headers: HeaderMap, body: 
         if let Err(message) = reviewer_receipt_mechanism_allowed(
             settings.semantic_review_enabled,
             route_available,
+            codex_review_enabled(),
             input.mechanism,
         ) {
             let status =
@@ -13210,23 +13234,34 @@ mod tests {
 
     #[test]
     fn enabled_semantic_review_requires_model_reviewer_evidence() {
-        use factory_native::db::ReviewMechanism::{Deterministic, Model};
-        assert!(reviewer_receipt_mechanism_allowed(true, true, Model).is_ok());
+        use factory_native::db::ReviewMechanism::{CodexAppServer, Deterministic, Model};
+        assert!(reviewer_receipt_mechanism_allowed(true, true, false, Model).is_ok());
+        assert!(reviewer_receipt_mechanism_allowed(true, false, true, CodexAppServer).is_ok());
         assert!(
-            reviewer_receipt_mechanism_allowed(true, true, Deterministic)
+            reviewer_receipt_mechanism_allowed(true, false, false, CodexAppServer)
+                .unwrap_err()
+                .contains("not enabled")
+        );
+        assert!(
+            reviewer_receipt_mechanism_allowed(true, false, true, Deterministic)
+                .unwrap_err()
+                .contains("CODEX_APP_SERVER evidence")
+        );
+        assert!(
+            reviewer_receipt_mechanism_allowed(true, true, false, Deterministic)
                 .unwrap_err()
                 .contains("must submit MODEL evidence")
         );
-        assert!(reviewer_receipt_mechanism_allowed(true, false, Deterministic).is_ok());
-        assert!(reviewer_receipt_mechanism_allowed(false, true, Deterministic).is_ok());
-        assert!(reviewer_receipt_mechanism_allowed(false, false, Deterministic).is_ok());
+        assert!(reviewer_receipt_mechanism_allowed(true, false, false, Deterministic).is_ok());
+        assert!(reviewer_receipt_mechanism_allowed(false, true, false, Deterministic).is_ok());
+        assert!(reviewer_receipt_mechanism_allowed(false, false, false, Deterministic).is_ok());
         assert!(
-            reviewer_receipt_mechanism_allowed(false, true, Model)
+            reviewer_receipt_mechanism_allowed(false, true, false, Model)
                 .unwrap_err()
                 .contains("disabled")
         );
         assert!(
-            reviewer_receipt_mechanism_allowed(true, false, Model)
+            reviewer_receipt_mechanism_allowed(true, false, false, Model)
                 .unwrap_err()
                 .contains("routable semantic reviewer model route")
         );

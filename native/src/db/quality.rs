@@ -620,7 +620,7 @@ fn validate_receipt_input(input: &QualityReceiptInput) -> Result<(), Error> {
             "deterministic receipt cannot claim model usage",
         ));
     }
-    if input.mechanism == ReviewMechanism::Model
+    if input.mechanism.is_model_backed()
         && input.result != ReceiptResult::Pass
         && input.findings.is_empty()
     {
@@ -810,9 +810,33 @@ async fn validate_model_review_receipt(
     input: &QualityReceiptInput,
 ) -> Result<(), Error> {
     if role != QualityRole::Reviewer
-        || input.mechanism != ReviewMechanism::Model
+        || !input.mechanism.is_model_backed()
         || input.result != ReceiptResult::Pass
     {
+        return Ok(());
+    }
+    if input.mechanism == ReviewMechanism::CodexAppServer {
+        // Trust boundary: a CODEX_APP_SERVER receipt is authored by the
+        // dedicated reviewer role. Core binds the exact candidate, mechanism,
+        // model, no-reservation rule, known usage and request-hash shape, but
+        // the App Server turn is attested by that reviewer process. A
+        // compromised reviewer token is equivalent to a compromised reviewer;
+        // see ADR-0032. This is not a provider-issued attestation.
+        if input.model_provider != "codex"
+            || input.model_name != "gpt-6-luna"
+            || !input.usage_known
+            || !input.model_reservation_id.is_empty()
+            || input.model_request_sha256.len() != 64
+            || !input
+                .model_request_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(Error::Forbidden(
+                "Codex review approval requires exact codex/gpt-6-luna provenance and known usage"
+                    .into(),
+            ));
+        }
         return Ok(());
     }
     if !input.usage_known
@@ -887,12 +911,16 @@ async fn validate_model_review_receipt(
     Ok(())
 }
 
-async fn semantic_review_requires_model(connection: &mut SqliteConnection) -> Result<bool, Error> {
+async fn semantic_review_enabled(connection: &mut SqliteConnection) -> Result<bool, Error> {
     let enabled: Option<(i64,)> =
         sqlx::query_as::query_as("SELECT semantic_review_enabled FROM factory_settings WHERE id=1")
             .fetch_optional(&mut *connection)
             .await?;
-    if enabled.is_none_or(|(enabled,)| enabled == 0) {
+    Ok(enabled.is_some_and(|(enabled,)| enabled != 0))
+}
+
+async fn semantic_review_requires_model(connection: &mut SqliteConnection) -> Result<bool, Error> {
+    if !semantic_review_enabled(connection).await? {
         return Ok(false);
     }
     let configured: Option<(String,)> = sqlx::query_as::query_as(
@@ -932,8 +960,10 @@ async fn decide_gate(
     if decision.outcome == GateOutcome::Accepted
         && reviewer
             .as_ref()
-            .is_some_and(|receipt| receipt.mechanism != ReviewMechanism::Model)
-        && semantic_review_requires_model(connection).await?
+            .is_some_and(|receipt| !receipt.mechanism.is_model_backed())
+        && (semantic_review_requires_model(connection).await?
+            || (semantic_review_enabled(connection).await?
+                && std::env::var("FACTORY_ENABLE_CODEX_REVIEW").as_deref() == Ok("1")))
     {
         decision = crate::quality::GateDecision {
             outcome: GateOutcome::NotTested,
