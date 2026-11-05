@@ -930,6 +930,22 @@ mod tests {
             parse_review_text("The change looks reasonable but I did not inspect it.");
         assert_eq!(result, ReceiptResult::NotTested);
         assert!(findings.is_empty());
+
+        let (result, findings) = parse_review_text(
+            "Overall correctness: Patch is correct. I could not verify whether the endpoint is authenticated.",
+        );
+        assert_eq!(result, ReceiptResult::NotTested);
+        assert!(findings.is_empty());
+
+        let (result, findings) = parse_review_text(
+            "The authorization check is bypassable, but I cannot assign a priority.\nNo findings.",
+        );
+        assert_eq!(result, ReceiptResult::NotTested);
+        assert!(findings.is_empty());
+
+        let (result, findings) = parse_review_text("  No findings.  \n");
+        assert_eq!(result, ReceiptResult::Pass);
+        assert!(findings.is_empty());
     }
 
     #[test]
