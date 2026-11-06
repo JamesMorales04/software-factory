@@ -2,7 +2,7 @@ use super::*;
 
 use crate::autonomy::{self, RepairDecision, RepairRequest};
 use crate::execution_policy::AutonomyPolicy;
-use crate::execution_profile::ExecutionProfileRevisionContent;
+use crate::execution_profile::ExecutionProfileContent;
 use crate::semantic_review::ReviewerSelection;
 
 use chrono::Utc;
@@ -1026,11 +1026,8 @@ async fn reviewer_selection_for_candidate_in_tx(
     .await?;
     let (provider, model) = match profile.and_then(|(raw,)| raw) {
         Some(raw) => {
-            let content: ExecutionProfileRevisionContent = serde_json::from_str(&raw)
+            let content: ExecutionProfileContent = serde_json::from_str(&raw)
                 .map_err(|_| Error::Invalid("frozen execution profile content"))?;
-            let content = content
-                .v2()
-                .ok_or_else(|| Error::Unavailable("V1 profile has no reviewer route".into()))?;
             (
                 content.roles.semantic_reviewer.provider.clone(),
                 content.roles.semantic_reviewer.model.clone(),
@@ -1309,9 +1306,9 @@ async fn repair_context(
     let autonomy = profile
         .and_then(|(raw,)| raw)
         .and_then(|raw| {
-            serde_json::from_str::<ExecutionProfileRevisionContent>(&raw)
+            serde_json::from_str::<ExecutionProfileContent>(&raw)
                 .ok()
-                .and_then(|content| content.v2().map(|content| content.progress.autonomy))
+                .map(|content| content.progress.autonomy)
         })
         .unwrap_or_default();
     let prior: i64 = sqlx::query_scalar::query_scalar(
