@@ -291,7 +291,41 @@ impl ModelGateway {
         let content = value
             .pointer("/choices/0/message/content")
             .and_then(serde_json::Value::as_str)
-            .unwrap_or_default();
+            .unwrap_or_default()
+            .trim();
+        let diagnostic = if content.is_empty() {
+            let finish_reason = value
+                .pointer("/choices/0/finish_reason")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown");
+            let message_keys = value
+                .pointer("/choices/0/message")
+                .and_then(serde_json::Value::as_object)
+                .map(|message| message.keys().cloned().collect::<Vec<_>>().join(","))
+                .unwrap_or_default();
+            let refusal = value
+                .pointer("/choices/0/message/refusal")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            let top_error = value
+                .get("error")
+                .map(ToString::to_string)
+                .unwrap_or_default();
+            tracing::warn!(
+                finish_reason,
+                message_keys = %message_keys,
+                refusal,
+                top_error = %top_error,
+                "model upstream returned empty assistant content"
+            );
+            format!(
+                "finish_reason={finish_reason}; message_keys={message_keys}; refusal={}; top_error={}",
+                refusal.chars().take(120).collect::<String>(),
+                top_error.chars().take(240).collect::<String>()
+            )
+        } else {
+            String::new()
+        };
         let (usage, usage_known) = parse_usage(&self.config, &value);
         let content = if content.is_empty() || content.len() > MAX_RESPONSE_BYTES {
             String::new()
@@ -299,15 +333,18 @@ impl ModelGateway {
             content.to_owned()
         };
         let settled = database
-            .settle_model_call(&ModelCallUsage {
-                reservation_id: grant.reservation_id.clone(),
-                input_tokens: usage.0,
-                output_tokens: usage.1,
-                total_tokens: usage.2,
-                cost_micros: usage.3,
-                usage_known,
-                content: content.clone(),
-            })
+            .settle_model_call_with_diagnostic(
+                &ModelCallUsage {
+                    reservation_id: grant.reservation_id.clone(),
+                    input_tokens: usage.0,
+                    output_tokens: usage.1,
+                    total_tokens: usage.2,
+                    cost_micros: usage.3,
+                    usage_known,
+                    content: content.clone(),
+                },
+                &diagnostic,
+            )
             .await?;
         if !usage_known {
             return Err(ModelGatewayError::Usage(
@@ -360,7 +397,7 @@ fn validate_config(config: &ModelGatewayConfig) -> Result<(), ModelGatewayError>
         || config.input_micros_per_million == 0
         || config.output_micros_per_million == 0
         || config.timeout.is_zero()
-        || config.timeout > Duration::from_secs(90)
+        || config.timeout > Duration::from_secs(crate::model_routing::MAX_MODEL_TIMEOUT_SECS)
     {
         return Err(ModelGatewayError::Invalid(
             "provider, model, credential, rates or timeout".into(),
@@ -577,6 +614,18 @@ mod tests {
         };
         assert!(validate_request(&request).is_err());
         assert!(!gateway.config.credential.is_empty());
+    }
+
+    #[test]
+    fn accepts_timeout_up_to_the_bounded_profile_ceiling() {
+        let mut ceiling = config("http://127.0.0.1:9000/v1");
+        ceiling.timeout = Duration::from_secs(crate::model_routing::MAX_MODEL_TIMEOUT_SECS);
+        assert!(ModelGateway::new(ceiling).is_ok());
+
+        let mut beyond = config("http://127.0.0.1:9000/v1");
+        beyond.timeout =
+            Duration::from_secs(crate::model_routing::MAX_MODEL_TIMEOUT_SECS.saturating_add(1));
+        assert!(ModelGateway::new(beyond).is_err());
     }
 
     #[test]

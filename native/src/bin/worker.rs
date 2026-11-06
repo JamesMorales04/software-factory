@@ -1574,7 +1574,11 @@ fn opencode_sandbox_config(
                 "name": format!("Factory {provider}"),
                 "options": {
                     "baseURL": "http://127.0.0.1:18080/v1",
-                    "apiKey": egress_token
+                    "apiKey": egress_token,
+                    // Factory authorizes exactly one provider request per
+                    // turn. OpenCode's own retry would consume a second
+                    // request and mask the first upstream outcome.
+                    "maxRetries": 0
                 },
                 "models": {
                     model: {
@@ -2482,6 +2486,9 @@ async fn run_provider_tool_loop(
                         .await
                         {
                             Ok(result) => {
+                                // post_check_result posts the required
+                                // run_command RESULT event together with its
+                                // execution-check receipt.
                                 let receipt = post_check_result(
                                     context,
                                     &call_id,
@@ -2506,12 +2513,13 @@ async fn run_provider_tool_loop(
                                 );
                             }
                             Err(error) => {
+                                let detail = format!("command failed: {error}");
                                 post_tool_event(
                                     context,
                                     &call_id,
                                     &tool,
                                     "ERROR",
-                                    "command failed",
+                                    &detail.chars().take(800).collect::<String>(),
                                 )
                                 .await?;
                                 prompt = tool_result(
@@ -3213,10 +3221,15 @@ async fn run_codex_tool_loop(
                         "thread/tokenUsage/updated" => {
                             let usage: ThreadTokenUsageUpdatedParams =
                                 serde_json::from_value(notification.params)?;
-                            if usage.thread_id != thread_id || usage.turn_id != turn_id {
+                            if usage.thread_id != thread_id
+                                || usage
+                                    .turn_id
+                                    .as_deref()
+                                    .is_some_and(|notification_turn| notification_turn != turn_id)
+                            {
                                 continue;
                             }
-                            usage_after = Some(usage.token_usage.total);
+                            usage_after = Some(usage.token_usage.total().clone());
                         }
                         "turn/completed" => {
                             let thread = notification
@@ -3628,7 +3641,10 @@ async fn authorize_provider_turn(
     let max_requests = if context.assignment.provider == "codex" {
         8
     } else {
-        1
+        // The OpenCode runtime can retry an empty or stream-truncated first
+        // response. Both requests share this one Core turn reservation and its
+        // split output bound; this grants no additional authority or budget.
+        2
     };
     let response = context
         .client
@@ -3666,6 +3682,8 @@ async fn authorize_provider_turn(
         max_requests: authorization.max_requests as usize,
         strict_request_digest: strict_request_digest(context.provider_kind),
         binding: false,
+        last_upstream_status: None,
+        last_upstream_error: String::new(),
     });
     Ok(authorization)
 }
@@ -3749,10 +3767,12 @@ async fn request_workspace_operation(
         .send()
         .await?;
     if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        let body = body.chars().take(500).collect::<String>();
         return Err(format!(
-            "Core refused workspace operation {}: {}",
-            request.operation,
-            response.status()
+            "Core refused workspace operation {}: {status}: {body}",
+            request.operation
         )
         .into());
     }
@@ -3847,7 +3867,10 @@ async fn supervisor_run(
         .send()
         .await?;
     if !response.status().is_success() {
-        return Err(format!("Supervisor run failed: {}", response.status()).into());
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        let body = body.chars().take(500).collect::<String>();
+        return Err(format!("Supervisor run failed: {status}: {body}").into());
     }
     Ok(response.json().await?)
 }
@@ -4575,6 +4598,23 @@ fn validated_loopback_url(
 
 #[cfg(test)]
 mod tests {
+    use super::opencode_sandbox_config;
+
+    #[test]
+    fn opencode_provider_config_disables_internal_retries() {
+        let config = opencode_sandbox_config(
+            "opencode-go",
+            "deepseek-v4.1-flash",
+            "test-egress-token",
+            128_000,
+            8_192,
+        );
+        assert_eq!(
+            config.pointer("/provider/opencode-go/options/maxRetries"),
+            Some(&serde_json::Value::from(0))
+        );
+    }
+
     use super::{
         ActionSpec, Assignment, ContinuationDecision, Lease, ProgressKind, TurnProgress,
         WorkerProgressHalt, opencode_first_action_instruction, sha256_hex, strict_request_digest,

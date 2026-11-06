@@ -765,6 +765,17 @@ impl Database {
         &self,
         usage: &ModelCallUsage,
     ) -> Result<ModelCallResult, Error> {
+        self.settle_model_call_with_diagnostic(usage, "").await
+    }
+
+    /// Settle a model call while preserving non-content upstream metadata in
+    /// the durable failure reason. The diagnostic must never contain prompt or
+    /// assistant content.
+    pub async fn settle_model_call_with_diagnostic(
+        &self,
+        usage: &ModelCallUsage,
+        diagnostic: &str,
+    ) -> Result<ModelCallResult, Error> {
         if usage.content.len() > 256 * 1024 {
             return Err(Error::Invalid("model call response is too large"));
         }
@@ -848,23 +859,30 @@ impl Database {
             || total > max_total
             || cost > max_cost
             || total < input.saturating_add(output);
+        let diagnostic = diagnostic.trim().chars().take(500).collect::<String>();
         let (next_state, error) = if !usage.usage_known {
             (
                 "UNKNOWN",
-                "model call usage is unknown; budget remains reserved",
+                "model call usage is unknown; budget remains reserved".to_string(),
             )
         } else if usage.content.trim().is_empty() {
             (
                 "UNKNOWN",
-                "model call returned no usable response; budget remains reserved",
+                if diagnostic.is_empty() {
+                    "model call returned no usable response; budget remains reserved".to_string()
+                } else {
+                    format!(
+                        "model call returned no usable response; budget remains reserved; {diagnostic}"
+                    )
+                },
             )
         } else if exceeds {
             (
                 "UNKNOWN",
-                "model call exceeded its authorized budget; budget remains reserved",
+                "model call exceeded its authorized budget; budget remains reserved".to_string(),
             )
         } else {
-            ("SETTLED", "")
+            ("SETTLED", String::new())
         };
         let now = Utc::now().to_rfc3339();
         sqlx::query::query(
@@ -880,7 +898,7 @@ impl Database {
         .bind(cost)
         .bind(i64::from(usage.usage_known))
         .bind(&usage.content)
-        .bind(if error.is_empty() { None } else { Some(error) })
+        .bind(if error.is_empty() { None } else { Some(&error) })
         .bind(&now)
         .bind(&usage.reservation_id)
         .execute(&mut *transaction)
@@ -939,7 +957,7 @@ impl Database {
         .await?;
         transaction.commit().await?;
         if next_state == "UNKNOWN" {
-            return Err(Error::Forbidden(error.into()));
+            return Err(Error::Forbidden(error));
         }
         Ok(ModelCallResult {
             reservation_id: usage.reservation_id.clone(),

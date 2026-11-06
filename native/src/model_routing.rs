@@ -27,7 +27,10 @@ use crate::provider_catalog;
 use crate::provider_secrets::ProviderSecretKey;
 
 pub const DEFAULT_MODEL_TIMEOUT_SECS: u64 = 60;
-pub const MAX_MODEL_TIMEOUT_SECS: u64 = 90;
+/// Upper bound for one Core-owned model HTTP request. The execution profile
+/// carries the same 300-second ceiling for a model request, so a deployment
+/// timeout above this value must be rejected rather than silently clamped.
+pub const MAX_MODEL_TIMEOUT_SECS: u64 = 300;
 
 /// Deployment-wide Core caps. A profile or provider can narrow these, never
 /// widen them.

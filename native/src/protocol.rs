@@ -367,17 +367,39 @@ pub struct TokenUsageBreakdown {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ThreadTokenUsage {
-    pub last: TokenUsageBreakdown,
-    pub total: TokenUsageBreakdown,
+#[serde(untagged)]
+pub enum ThreadTokenUsage {
+    /// Codex App Server 0.165.0 sends the current turn usage as a flat object.
+    Flat(TokenUsageBreakdown),
+    /// Older fixture/protocol shape used nested last/total objects.
+    Nested {
+        last: TokenUsageBreakdown,
+        total: TokenUsageBreakdown,
+    },
+}
+
+impl ThreadTokenUsage {
+    pub fn last(&self) -> &TokenUsageBreakdown {
+        match self {
+            Self::Flat(usage) => usage,
+            Self::Nested { last, .. } => last,
+        }
+    }
+
+    pub fn total(&self) -> &TokenUsageBreakdown {
+        match self {
+            Self::Flat(usage) => usage,
+            Self::Nested { total, .. } => total,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadTokenUsageUpdatedParams {
     pub thread_id: String,
-    pub turn_id: String,
+    #[serde(default)]
+    pub turn_id: Option<String>,
     pub token_usage: ThreadTokenUsage,
 }
 
@@ -518,11 +540,11 @@ where
                 "thread/read requires a nonempty threadId".into(),
             ));
         }
-        self.request(
-            "thread/read",
-            json!({"threadId": thread_id, "includeTurns": true}),
-        )
-        .await
+        // Ephemeral threads reject `includeTurns`; the completed review item
+        // carries the review text, so the bounded review client must not ask
+        // the server to materialize the thread history.
+        self.request("thread/read", json!({"threadId": thread_id}))
+            .await
     }
 
     pub async fn interrupt_turn(
@@ -1231,6 +1253,70 @@ mod tests {
         let mut rpc = JsonRpc::new(&input[..], Vec::new());
         let error = rpc.read_thread("thread-1", false).await.unwrap_err();
         assert!(error.to_string().contains("thread not loaded"));
+    }
+
+    #[test]
+    fn thread_token_usage_accepts_current_flat_and_legacy_nested_shapes() {
+        let flat: ThreadTokenUsageUpdatedParams = serde_json::from_value(json!({
+            "threadId": "thread-1",
+            "turnId": "turn-1",
+            "tokenUsage": {
+                "inputTokens": 120,
+                "cachedInputTokens": 10,
+                "cacheWriteInputTokens": 5,
+                "outputTokens": 80,
+                "reasoningOutputTokens": 7,
+                "totalTokens": 200
+            }
+        }))
+        .unwrap();
+        assert_eq!(flat.thread_id, "thread-1");
+        assert_eq!(flat.token_usage.last().input_tokens, 120);
+        assert_eq!(flat.token_usage.last().output_tokens, 80);
+        assert_eq!(flat.token_usage.last().total_tokens, 200);
+
+        let nested: ThreadTokenUsageUpdatedParams = serde_json::from_value(json!({
+            "threadId": "thread-1",
+            "turnId": "turn-1",
+            "tokenUsage": {
+                "last": {"inputTokens": 120, "outputTokens": 80, "totalTokens": 200},
+                "total": {"inputTokens": 120, "outputTokens": 80, "totalTokens": 200}
+            }
+        }))
+        .unwrap();
+        assert_eq!(nested.token_usage.last().input_tokens, 120);
+
+        let without_turn: ThreadTokenUsageUpdatedParams = serde_json::from_value(json!({
+            "threadId": "thread-1",
+            "tokenUsage": {"inputTokens": 1, "outputTokens": 2, "totalTokens": 3}
+        }))
+        .unwrap();
+        assert_eq!(without_turn.turn_id, None);
+    }
+
+    #[tokio::test]
+    async fn ephemeral_thread_read_omits_include_turns() {
+        let (client, server) = tokio::io::duplex(4096);
+        let (client_read, client_write) = tokio::io::split(client);
+        let server = tokio::spawn(async move {
+            let mut reader = BufReader::new(server);
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            let request: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(request["method"], "thread/read");
+            assert_eq!(request["params"]["threadId"], "thread-1");
+            assert!(request["params"].get("includeTurns").is_none());
+            let response = json!({"id":request["id"],"result":{"thread":{"id":"thread-1"}}});
+            reader
+                .get_mut()
+                .write_all(format!("{response}\n").as_bytes())
+                .await
+                .unwrap();
+        });
+        let mut rpc = JsonRpc::new(client_read, client_write);
+        let value = rpc.read_thread_value("thread-1").await.unwrap();
+        assert_eq!(value["thread"]["id"], "thread-1");
+        server.await.unwrap();
     }
 
     #[tokio::test]

@@ -101,10 +101,20 @@ fn assessment_prompt(request: &AssessmentRequest<'_>) -> Result<String, LeadErro
             "workUnits": [unit]
         }
     });
+    let required_kinds = request
+        .project
+        .quality_profile
+        .required_check_kinds()
+        .iter()
+        .map(|kind| format!("{kind:?}").to_ascii_lowercase())
+        .collect::<Vec<_>>()
+        .join(", ");
     let checks_instruction = if checks_are_frozen {
-        "copy the acceptanceCriteria and negativeCases from the ActionSpec exactly;"
+        "copy the acceptanceCriteria and negativeCases from the ActionSpec exactly;".to_string()
     } else {
-        "the ActionSpec has no pre-frozen checks, so propose at least one acceptance criterion and one negative case with real, non-shell argv commands; negative checks must expect a nonzero exit;"
+        format!(
+            "the ActionSpec has no pre-frozen checks. The active quality profile requires at least one check of every kind: {required_kinds}. Propose those checks with real, non-shell argv commands. Put non-negative checks in acceptanceCriteria and negative checks in negativeCases; negative checks must expect a nonzero exit;"
+        )
     };
     Ok(format!(
         "You are the bounded Intelligent Lead. Return ONLY one JSON object that validates against the \
@@ -112,7 +122,9 @@ JSON Schema below. Do not add prose, markdown, comments or unknown fields. \
 The example below is a valid shape for this request; copy its identities, route, qualityProfile, \
 paths and capabilities exactly, and use your own judgment for intent, complexity, risks, \
 assumptions, uncertainty and the effort estimate. {checks_instruction} A change request must carry \
-a real estimated or unknown effort estimate. Objective: {objective}. Project: {project_id}. Action: \
+a real estimated or unknown effort estimate. For status=estimated, unit must be \"person-hours\", \
+0 <= minPersonHours <= maxPersonHours, maxPersonHours >= 1, assumptions must be non-empty, and \
+unknownReason must be empty. Objective: {objective}. Project: {project_id}. Action: \
 {action_id}. Request: {request_id}. Allowed evidence refs: [\"repository-files\"]. Allowed paths: \
 {paths:?}. Capabilities: {capabilities:?}. Route: {route:?}. ActionSpec: {spec}. Model output is \
 advisory; Core validates and freezes it. Hard constraints: schemaRevision=1; echo projectId, actionId \

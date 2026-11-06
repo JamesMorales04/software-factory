@@ -432,8 +432,14 @@ impl Database {
                 0,
             )
         } else if subscription {
-            let (max_input, max_output): (i64, i64) = sqlx::query_as::query_as(
-                "SELECT max_input_tokens,max_output_tokens FROM provider_settings WHERE provider=?1",
+            // A subscription turn has no billable monetary envelope, but Core
+            // still records the observed token cost. Use the provider
+            // connection's configured cost ceiling so a real turn cannot be
+            // rejected merely because its observed cost is nonzero. This is a
+            // technical bound; it grants no monetary authority.
+            let (max_input, max_output, max_cost): (i64, i64, i64) = sqlx::query_as::query_as(
+                "SELECT max_input_tokens,max_output_tokens,max_cost_micros
+                     FROM provider_settings WHERE provider=?1",
             )
             .bind(&provider)
             .fetch_optional(&mut *transaction)
@@ -461,7 +467,19 @@ impl Database {
                     Error::Invalid("subscription provider turn operation limits are malformed")
                 })?;
             let deadline_secs = i64::from(operation_limits.model_request_timeout_secs.get());
-            (max_input, max_output, 0, deadline_secs, 0, 0, 0, 0, 0, 0, 0)
+            (
+                max_input,
+                max_output,
+                max_cost,
+                deadline_secs,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            )
         } else if authorization_version == 1 {
             let max_input: Option<i64> = lease.try_get("max_input_tokens")?;
             let max_output: Option<i64> = lease.try_get("max_output_tokens")?;

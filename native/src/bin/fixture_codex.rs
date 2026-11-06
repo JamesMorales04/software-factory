@@ -66,6 +66,7 @@ fn main() {
     let mut lines = stdin.lock().lines();
     let mut next_id = 100;
     let mut logged_in = false;
+    let mut ephemeral_thread = false;
     while let Some(Ok(line)) = lines.next() {
         let Ok(value) = serde_json::from_str::<Value>(&line) else {
             continue;
@@ -115,6 +116,10 @@ fn main() {
             "thread/start" => {
                 if let Some(id) = id {
                     let params = value.get("params").cloned().unwrap_or(json!({}));
+                    ephemeral_thread = params
+                        .get("ephemeral")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
                     let model = params
                         .get("model")
                         .and_then(Value::as_str)
@@ -142,10 +147,18 @@ fn main() {
                         .pointer("/params/threadId")
                         .and_then(Value::as_str)
                         .unwrap_or("thread-fixture");
-                    let text = review_text();
-                    send(
-                        json!({"id":id,"result":{"thread":{"id":thread_id,"turns":[{"items":[{"type":"exitedReviewMode","review":text}]}]}}}),
-                    );
+                    if ephemeral_thread && value.pointer("/params/includeTurns").is_some() {
+                        send(
+                            json!({"id":id,"error":{"code":-32600,"message":"ephemeral threads do not support includeTurns"}}),
+                        );
+                        continue;
+                    }
+                    let thread = if ephemeral_thread {
+                        json!({"id":thread_id})
+                    } else {
+                        json!({"id":thread_id,"turns":[{"items":[{"type":"exitedReviewMode","review":review_text()}]}]})
+                    };
+                    send(json!({"id":id,"result":{"thread":thread}}));
                 }
             }
             "review/start" => {
@@ -175,7 +188,7 @@ fn main() {
                         );
                         if std::env::var("FACTORY_FIXTURE_CODEX_NO_USAGE").as_deref() != Ok("1") {
                             send(
-                                json!({"method":"thread/tokenUsage/updated","params":{"threadId":thread_id,"turnId":"review-turn-fixture","tokenUsage":{"last":{"cachedInputTokens":0,"inputTokens":120,"outputTokens":80,"reasoningOutputTokens":0,"totalTokens":200},"total":{"cachedInputTokens":0,"inputTokens":120,"outputTokens":80,"reasoningOutputTokens":0,"totalTokens":200}}}}),
+                                json!({"method":"thread/tokenUsage/updated","params":{"threadId":thread_id,"turnId":"review-turn-fixture","tokenUsage":{"cachedInputTokens":0,"inputTokens":120,"outputTokens":80,"reasoningOutputTokens":0,"totalTokens":200}}}),
                             );
                         }
                     }

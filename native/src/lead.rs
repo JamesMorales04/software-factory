@@ -1250,14 +1250,14 @@ impl EffortEstimate {
         match self.status {
             EffortStatus::Estimated => {
                 if self.unit != "person-hours"
-                    || self.min_person_hours < 1
-                    || self.min_person_hours >= self.max_person_hours
+                    || self.min_person_hours > self.max_person_hours
+                    || self.max_person_hours == 0
                     || self.max_person_hours > MAX_EFFORT_PERSON_HOURS
                     || self.assumptions.is_empty()
                     || !self.unknown_reason.is_empty()
                 {
                     return Err(LeadError::Assessment(
-                        "estimated effort requires person-hours with 1 <= min < max and assumptions"
+                        "estimated effort requires person-hours with 0 <= min <= max and assumptions"
                             .into(),
                     ));
                 }
@@ -2414,9 +2414,20 @@ mod tests {
         duplicate.evidence_refs.push("repository-files".into());
         assert!(duplicate.validate(&input).is_err());
 
-        let mut effort = assessment();
-        effort.effort_estimate.max_person_hours = effort.effort_estimate.min_person_hours;
-        assert!(effort.validate(&input).is_err());
+        let mut point_estimate = assessment();
+        point_estimate.effort_estimate.max_person_hours =
+            point_estimate.effort_estimate.min_person_hours;
+        point_estimate.validate(&input).unwrap();
+
+        let mut inverted = assessment();
+        inverted.effort_estimate.min_person_hours = 2;
+        inverted.effort_estimate.max_person_hours = 1;
+        assert!(inverted.validate(&input).is_err());
+
+        let mut sub_hour = assessment();
+        sub_hour.effort_estimate.min_person_hours = 0;
+        sub_hour.effort_estimate.max_person_hours = 1;
+        sub_hour.validate(&input).unwrap();
 
         let mut missing = assessment();
         missing.effort_estimate = EffortEstimate {

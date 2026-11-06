@@ -432,9 +432,9 @@ async fn run_review_in_snapshot(
                     && value.thread_id == thread_id
                 {
                     usage = Some(CodexTokenUsage {
-                        input_tokens: value.token_usage.last.input_tokens,
-                        output_tokens: value.token_usage.last.output_tokens,
-                        total_tokens: value.token_usage.last.total_tokens,
+                        input_tokens: value.token_usage.last().input_tokens,
+                        output_tokens: value.token_usage.last().output_tokens,
+                        total_tokens: value.token_usage.last().total_tokens,
                     });
                 }
             }
