@@ -514,11 +514,20 @@ async fn run_review_in_snapshot(
         match notification.method.as_str() {
             "item/completed" => {
                 if let Some(item) = notification.params.get("item")
-                    && item.get("type").and_then(Value::as_str) == Some("exitedReviewMode")
-                    && let Some(text) = item.get("review").and_then(Value::as_str)
-                    && !text.trim().is_empty()
+                    && item
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .is_some_and(|kind| kind.eq_ignore_ascii_case("exitedReviewMode"))
                 {
-                    item_review = Some(text.to_owned());
+                    if let Some(text) = item.get("review").and_then(Value::as_str)
+                        && !text.trim().is_empty()
+                    {
+                        item_review = Some(text.to_owned());
+                    } else if let Some(output) = item.get("review_output") {
+                        // Codex 0.165.0 emits the native verdict as a JSON
+                        // object, not the legacy prose `review` string.
+                        item_review = Some(output.to_string());
+                    }
                 }
             }
             "thread/tokenUsage/updated" => {
@@ -618,8 +627,8 @@ async fn run_review_in_snapshot(
     if usage.is_none() {
         eprintln!("codex review completed without measured token usage for thread {thread_id}");
     }
-    let text = review_text(&thread)
-        .or(item_review)
+    let text = item_review
+        .or_else(|| review_text(&thread))
         .ok_or(CodexReviewError::Incomplete)?;
     if text.len() > MAX_REVIEW_TEXT_BYTES {
         return Err(CodexReviewError::OutputTooLarge);
