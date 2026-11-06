@@ -515,6 +515,15 @@ async fn run_review_in_snapshot(
             "item/completed" => {
                 if let Some(item) = notification.params.get("item") {
                     let kind = item.get("type").and_then(Value::as_str).unwrap_or_default();
+                    if kind.to_ascii_lowercase().contains("review")
+                        || notification.method.to_ascii_lowercase().contains("review")
+                    {
+                        eprintln!(
+                            "codex review item type={kind:?} keys={:?}",
+                            item.as_object()
+                                .map(|object| object.keys().cloned().collect::<Vec<_>>())
+                        );
+                    }
                     if kind.eq_ignore_ascii_case("exitedReviewMode") {
                         if let Some(text) = review_item_text(item) {
                             item_review = Some(text);
@@ -567,6 +576,9 @@ async fn run_review_in_snapshot(
                         )));
                     }
                 }
+            }
+            other if other.to_ascii_lowercase().contains("review") => {
+                eprintln!("codex review notification method={other:?}");
             }
             "error" => {
                 return Err(CodexReviewError::Protocol(
@@ -638,6 +650,11 @@ async fn run_review_in_snapshot(
             text.len(),
             text.chars().take(180).collect::<String>()
         );
+        let debug_path = home.path().join(format!("review-debug-{thread_id}.json"));
+        if let Ok(encoded) = serde_json::to_vec_pretty(&thread) {
+            let _ = std::fs::write(&debug_path, encoded);
+            eprintln!("codex review: wrote {}", debug_path.display());
+        }
     }
     let request_sha256 = sha256_hex(&format!(
         "codex-review:v1:{}:{}:{}:{}:{}",
