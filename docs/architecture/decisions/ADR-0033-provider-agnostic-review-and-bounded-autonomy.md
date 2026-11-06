@@ -106,12 +106,12 @@ not reachable.
   and preserve exact candidate binding, measured usage, critical-zero and the
   no-progress breaker. Real acceptance evidence is recorded separately and is
   not implied by unit tests.
-- Author-run final acceptance on 2026-11-06 (exact code head `f4cfaa4`, corrected
+- Author-run final acceptance on 2026-11-06 (exact code head `051a781`, corrected
   Netavark `isolate=true` topology): fresh project
   `f7d2d87d-3263-4f88-a576-14f1108d8190`, profile revision
-  `02989d9c-6ef4-4b79-b490-d52500548779` selecting Codex `gpt-6-luna`, candidate
-  `6eacf2dd-f45c-4c38-93d7-f285ae68d9ed` at commit
-  `b71ce8dc838440ebe4acbac5cd48789b62e02df3`, verifier PASS and reviewer PASS
-  with 9,134 measured tokens; deterministic Quality Gate `ACCEPTED`. Evidence:
+  `9ce954b0-8892-4c1f-8fa7-199ac29b102c` selecting Codex `gpt-6-luna`, candidate
+  `a2e45562-f55e-48db-85bd-be6ffe715c9c` at commit
+  `767d12d07e11e24e1aba7e1c8028964e3b65d5e5`, verifier PASS and reviewer PASS
+  with 9,123 measured tokens; deterministic Quality Gate `ACCEPTED`. Evidence:
   `docs/evidence/wave3-final-real-model-acceptance-2026-11-06.json`. This is
   author-run evidence, not independent certification or SEC-01 isolation.

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "record": "wave3-final-real-model-acceptance-2026-11-06",
-  "factory_head": "f4cfaa4",
+  "factory_head": "051a781b251d3389da05763993546eb41987cb20",
   "factory_branch": "factory/wave3-consolidation-20261106",
   "date": "2026-11-06",
   "environment": {
@@ -14,8 +14,8 @@
     "project_repository": "/projects/wave3-final-20261106",
     "project_base_commit": "5d87bfad758ee56c4bfa9042ed70caaa01b7ba27",
     "execution_profile_id": "c2ca6720-bb30-48ba-8eef-77f346181824",
-    "profile_revision_id": "02989d9c-6ef4-4b79-b490-d52500548779",
-    "profile_hash": "5a230e9365e38f68de7daa25fa08e922641338e950763456506e9e079af03069",
+    "profile_revision_id": "9ce954b0-8892-4c1f-8fa7-199ac29b102c",
+    "profile_hash": "196c10a9c32f532638c95b9a50271780a9f03ab730dbc4f78f56ea3e1f14c83c",
     "profile_semantic_reviewer": {
       "model": "gpt-6-luna",
       "provider": "codex",
@@ -37,34 +37,34 @@
       ]
     },
     "images": {
-      "core": "be4af271845bb051c58ea687f70e741a1c5edde9508d73a83bfaac76d28319ee",
-      "worker": "5b4fc7e4d81c058bb2737d385bd02329b42b81383bf815d2a998c693ed9181cc",
-      "reviewer": "2e0e3221a4570c98abb0f0fabb195303dd3fb529f8126e7062ef31c0d0bac3a5",
-      "supervisor": "050d6666ca9fee3f709dc7cfcbd6574a5352c7cfb3f536739a1a27a53b087c8b",
-      "verifier": "d76225575a0dc3ea517fbd9cdb1d82774a4667e322f046630065dd3ea76664ae"
+      "core": "e3ca7d7e949c3b97000f0347c21f32513944e36accc9ce604d97dc186d90d154",
+      "worker": "191e2dce32e76573eda9f00de397edc31bb9e3923d791c00cbc88a759814b3ba",
+      "reviewer": "e25dc8071832473622f04ec922b552c418d355f028dce6efdc5bb589d0f16836",
+      "supervisor": "a699d1bdafbd3df07a3ec35bb7cf3eb3144a856661116b3e787502a5dcb64955",
+      "verifier": "efc7814b836d45330177741797407bd5e799608889c718ea23bae77f42af2424"
     }
   },
   "campaign": {
-    "action_id": "9a2b0529-58dd-454c-8748-341d310ab7b9",
-    "created_at": "2026-11-06T22:16:29.569691662+00:00",
-    "id": "1509137e-fb57-4c61-991f-1f9aa260f033",
+    "action_id": "c7e64c94-bebd-492b-8977-1006b33130ff",
+    "created_at": "2026-11-06T22:47:58.286323470+00:00",
+    "id": "2fcba7a5-4b95-43fd-8bb1-9817730585ab",
     "status": "AUTHORIZED"
   },
   "attempts": [
     {
-      "created_at": "2026-11-06T22:16:29.569691662+00:00",
-      "id": "371d06c4-3996-4794-b6df-be8669073bc7",
-      "run_id": "c7cfd3ff-29aa-458e-bfae-a3fa56e367bf",
+      "created_at": "2026-11-06T22:47:58.286323470+00:00",
+      "id": "903a7918-45fc-4426-b68b-46cf2b6756de",
+      "run_id": "23f2cb2b-e1ef-41aa-8ee5-bedbb009e74b",
       "status": "CANDIDATE_READY"
     }
   ],
   "candidates": [
     {
-      "action_spec_sha256": "63e88e3a82c4e65ac685ba8fa4ae33b71282eb5c38b65f422419c39a25855920",
-      "attempt_id": "371d06c4-3996-4794-b6df-be8669073bc7",
-      "commit_sha": "b71ce8dc838440ebe4acbac5cd48789b62e02df3",
-      "created_at": "2026-11-06T22:17:19.531816955+00:00",
-      "id": "6eacf2dd-f45c-4c38-93d7-f285ae68d9ed",
+      "action_spec_sha256": "cc9934410f1579186b2e3baa15979e2091076c98daa4794b1d37afab854f2876",
+      "attempt_id": "903a7918-45fc-4426-b68b-46cf2b6756de",
+      "commit_sha": "767d12d07e11e24e1aba7e1c8028964e3b65d5e5",
+      "created_at": "2026-11-06T22:48:57.841322584+00:00",
+      "id": "a2e45562-f55e-48db-85bd-be6ffe715c9c",
       "implementer_id": "compose-worker",
       "integration": false,
       "lineage": [],
@@ -72,19 +72,19 @@
     }
   ],
   "candidate": {
-    "action_spec_sha256": "63e88e3a82c4e65ac685ba8fa4ae33b71282eb5c38b65f422419c39a25855920",
-    "attempt_id": "371d06c4-3996-4794-b6df-be8669073bc7",
-    "commit_sha": "b71ce8dc838440ebe4acbac5cd48789b62e02df3",
-    "created_at": "2026-11-06T22:17:19.531816955+00:00",
-    "id": "6eacf2dd-f45c-4c38-93d7-f285ae68d9ed",
+    "action_spec_sha256": "cc9934410f1579186b2e3baa15979e2091076c98daa4794b1d37afab854f2876",
+    "attempt_id": "903a7918-45fc-4426-b68b-46cf2b6756de",
+    "commit_sha": "767d12d07e11e24e1aba7e1c8028964e3b65d5e5",
+    "created_at": "2026-11-06T22:48:57.841322584+00:00",
+    "id": "a2e45562-f55e-48db-85bd-be6ffe715c9c",
     "implementer_id": "compose-worker",
     "integration": false,
     "lineage": [],
     "tree_sha": "bfed9158098dc265239becae570d0886510379a0"
   },
   "gate": {
-    "candidate_id": "6eacf2dd-f45c-4c38-93d7-f285ae68d9ed",
-    "decided_at": "2026-11-06T22:17:38.881981719+00:00",
+    "candidate_id": "a2e45562-f55e-48db-85bd-be6ffe715c9c",
+    "decided_at": "2026-11-06T22:49:14.657107152+00:00",
     "outcome": "ACCEPTED",
     "reasons": [
       "independent executed evidence accepts exact candidate"
@@ -92,12 +92,12 @@
   },
   "receipts": [
     {
-      "receipt_id": "2ca9c086-ccc2-40ba-be31-27cafda6ed04",
-      "candidate_id": "6eacf2dd-f45c-4c38-93d7-f285ae68d9ed",
+      "receipt_id": "1f05ad26-02ba-4636-a1d0-c525c3e61e7e",
+      "candidate_id": "a2e45562-f55e-48db-85bd-be6ffe715c9c",
       "role": "reviewer",
       "principal_id": "reviewer-process",
-      "action_spec_sha256": "63e88e3a82c4e65ac685ba8fa4ae33b71282eb5c38b65f422419c39a25855920",
-      "commit_sha": "b71ce8dc838440ebe4acbac5cd48789b62e02df3",
+      "action_spec_sha256": "cc9934410f1579186b2e3baa15979e2091076c98daa4794b1d37afab854f2876",
+      "commit_sha": "767d12d07e11e24e1aba7e1c8028964e3b65d5e5",
       "tree_sha": "bfed9158098dc265239becae570d0886510379a0",
       "result": "PASS",
       "evidence": "EXECUTED",
@@ -106,21 +106,21 @@
       "model_provider": "codex",
       "model_name": "gpt-6-luna",
       "model_reservation_id": "",
-      "model_request_sha256": "45826ecc5bf5d01ead42dd6212c83010c5642155c00da2123a390d6314b642d7",
+      "model_request_sha256": "5fe7e2409d891cb21c09b9334492323a8ebe0951733e055e67dcfc6e9a901193",
       "input_tokens": 0,
       "output_tokens": 0,
-      "total_tokens": 9134,
+      "total_tokens": 9123,
       "cost_micros": 0,
       "usage_known": true,
-      "received_at": "2026-11-06T22:17:38.881370408+00:00"
+      "received_at": "2026-11-06T22:49:14.656618303+00:00"
     },
     {
-      "receipt_id": "b635b2a1-de71-4df8-ac38-21be731c51e4",
-      "candidate_id": "6eacf2dd-f45c-4c38-93d7-f285ae68d9ed",
+      "receipt_id": "62b067e7-faca-468f-9122-687014773212",
+      "candidate_id": "a2e45562-f55e-48db-85bd-be6ffe715c9c",
       "role": "verifier",
       "principal_id": "verifier-process",
-      "action_spec_sha256": "63e88e3a82c4e65ac685ba8fa4ae33b71282eb5c38b65f422419c39a25855920",
-      "commit_sha": "b71ce8dc838440ebe4acbac5cd48789b62e02df3",
+      "action_spec_sha256": "cc9934410f1579186b2e3baa15979e2091076c98daa4794b1d37afab854f2876",
+      "commit_sha": "767d12d07e11e24e1aba7e1c8028964e3b65d5e5",
       "tree_sha": "bfed9158098dc265239becae570d0886510379a0",
       "result": "PASS",
       "evidence": "EXECUTED",
@@ -135,26 +135,26 @@
       "total_tokens": 0,
       "cost_micros": 0,
       "usage_known": false,
-      "received_at": "2026-11-06T22:17:32.727141646+00:00"
+      "received_at": "2026-11-06T22:49:09.079662558+00:00"
     }
   ],
   "result": "ACCEPTED",
-  "wall_clock_seconds": 69.312,
+  "wall_clock_seconds": 76.371,
   "tokens": {
-    "reviewer_input": 9051,
-    "reviewer_output": 83,
-    "reviewer_reasoning_output": 23,
-    "reviewer_total": 9134,
+    "reviewer_input": 9066,
+    "reviewer_output": 57,
+    "reviewer_reasoning_output": 0,
+    "reviewer_total": 9123,
     "reviewer_usage_known": true,
     "opencode_go_quota": "UNKNOWN (no provider-issued quota observation)",
     "codex_plan": "plus",
-    "source": "Codex reviewer subagent rollout token_usage_record; the persisted receipt carries the same measured total (9134)."
+    "source": "Codex reviewer subagent rollout token_usage_record; the persisted receipt carries the same measured total (9123)."
   },
   "codex_rate_limits": {
     "primary": {
       "used_percent": 0.0,
       "window_minutes": 300,
-      "resets_at": 1794021456
+      "resets_at": 1794021459
     },
     "secondary": {
       "used_percent": 1.0,
@@ -171,35 +171,28 @@
   },
   "check_receipts": [
     {
-      "receipt_id": "327c9bb3-7397-497a-9840-f35c53a654b5:7",
+      "receipt_id": "15ebec0a-0f3a-41b3-b536-5578a32f5644:7",
       "suite": "check:python3",
       "exit_code": 0,
       "expected_exit": 0,
       "outcome": "PASS"
     },
     {
-      "receipt_id": "327c9bb3-7397-497a-9840-f35c53a654b5:10",
+      "receipt_id": "15ebec0a-0f3a-41b3-b536-5578a32f5644:10",
       "suite": "check:python3",
       "exit_code": 0,
       "expected_exit": 0,
       "outcome": "PASS"
     },
     {
-      "receipt_id": "327c9bb3-7397-497a-9840-f35c53a654b5:13",
+      "receipt_id": "15ebec0a-0f3a-41b3-b536-5578a32f5644:13",
       "suite": "check:python3",
       "exit_code": 0,
       "expected_exit": 0,
       "outcome": "PASS"
     },
     {
-      "receipt_id": "327c9bb3-7397-497a-9840-f35c53a654b5:16",
-      "suite": "check:grep",
-      "exit_code": 1,
-      "expected_exit": 1,
-      "outcome": "PASS"
-    },
-    {
-      "receipt_id": "327c9bb3-7397-497a-9840-f35c53a654b5:19",
+      "receipt_id": "15ebec0a-0f3a-41b3-b536-5578a32f5644:16",
       "suite": "check:grep",
       "exit_code": 1,
       "expected_exit": 1,
@@ -214,7 +207,6 @@
       "VERIFIED",
       "VERIFIED",
       "VERIFIED",
-      "VERIFIED",
       "STAGNANT"
     ],
     "note": "First-time PASS receipts were recognized as verified progress; stagnation stayed below the frozen diagnoseAfter threshold of 3, so no autonomous replan or human hold was needed."
@@ -222,28 +214,28 @@
   "autonomy_repairs": [],
   "resources": {
     "core": {
-      "cpu_percent": 0.47,
-      "memory": "14.03MB / 33.59GB",
+      "cpu_percent": 0.46,
+      "memory": "15MB / 33.59GB",
       "pids": 21
     },
     "worker": {
-      "cpu_percent": 0.16,
-      "memory": "3.42MB / 33.59GB",
+      "cpu_percent": 0.11,
+      "memory": "3.625MB / 33.59GB",
       "pids": 18
     },
     "supervisor": {
-      "cpu_percent": 0.26,
-      "memory": "2.961MB / 33.59GB",
+      "cpu_percent": 0.24,
+      "memory": "2.855MB / 33.59GB",
       "pids": 18
     },
     "verifier": {
-      "cpu_percent": 0.07,
-      "memory": "2.126MB / 33.59GB",
+      "cpu_percent": 0.03,
+      "memory": "2.605MB / 33.59GB",
       "pids": 18
     },
     "reviewer": {
-      "cpu_percent": 0.78,
-      "memory": "10.16MB / 33.59GB",
+      "cpu_percent": 0.89,
+      "memory": "12.23MB / 33.59GB",
       "pids": 18
     },
     "host_memory_gib": 33.59
@@ -251,7 +243,7 @@
   "limitations": [
     "TRUSTED_LOCAL execution is not isolation and does not certify SEC-01.",
     "This is an owner-authorized author-run acceptance on a fresh disposable project, not independent acceptance or a clean-install certification.",
-    "Reviewer input/output token split is from the Codex reviewer subagent token_usage record; the immutable receipt stores the measured total.",
+    "Reviewer input/output token split is from the Codex reviewer subagent token_usage_record; the immutable receipt stores the measured total.",
     "OpenCode Go remaining quota is unknown."
   ]
 }
