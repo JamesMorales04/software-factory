@@ -382,6 +382,10 @@ pub(super) async fn verify_tests_improved_evidence_in_tx(
             "execution receipt was already consumed by progress evidence".into(),
         ));
     }
+    // A first-time PASS is verified progress: greenfield acceptance checks
+    // often start from "not yet executed" rather than an earlier FAIL. A PASS
+    // must still make a real transition: it cannot follow a FAIL for the same
+    // candidate, and it cannot repeat an earlier PASS for the same candidate.
     if receipt.outcome == "PASS" {
         let prior: Option<(String, String)> = sqlx::query_as::query_as(
             "SELECT outcome,candidate_sha256 FROM execution_check_receipts
@@ -396,20 +400,14 @@ pub(super) async fn verify_tests_improved_evidence_in_tx(
         .bind(receipt.rowid)
         .fetch_optional(&mut *connection)
         .await?;
-        let Some((prior_outcome, prior_candidate)) = prior else {
-            return Err(Error::Forbidden(
-                "test PASS has no earlier FAIL receipt for this check".into(),
-            ));
-        };
-        if prior_outcome != "FAIL" {
-            return Err(Error::Forbidden(
-                "test PASS requires the preceding receipt for this check to be FAIL".into(),
-            ));
-        }
-        if prior_candidate == receipt.candidate_sha256 {
-            return Err(Error::Forbidden(
-                "test PASS candidate did not advance from the failing candidate".into(),
-            ));
+        if let Some((prior_outcome, prior_candidate)) = prior {
+            if prior_candidate == receipt.candidate_sha256 {
+                return Err(Error::Forbidden(if prior_outcome == "FAIL" {
+                    "test PASS candidate did not advance from the failing candidate".into()
+                } else {
+                    "test PASS repeats an earlier PASS for the same candidate".into()
+                }));
+            }
         }
     }
     Ok(())

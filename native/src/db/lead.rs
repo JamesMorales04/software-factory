@@ -9227,6 +9227,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_progress_accepts_a_bound_first_time_pass_receipt() {
+        let (path, db, _) = fixture().await;
+        let (campaign_id, _run_id, attempt_id) = progress_attempt_campaign(&db).await;
+        let passed = record_check_receipt(
+            &db,
+            &attempt_id,
+            "first-pass",
+            &sha256_hex(b"candidate-greenfield"),
+            0,
+        )
+        .await;
+        assert_eq!(passed.outcome, "PASS");
+        let evidence = [test_evidence(
+            &campaign_id,
+            &campaign_id,
+            &attempt_id,
+            1,
+            &passed,
+        )];
+        let outcome = db
+            .record_progress_checkpoint(
+                &campaign_id,
+                &progress_checkpoint(&campaign_id, 1, &evidence),
+                &evidence,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome.classification,
+            crate::progress::CheckpointClassification::Verified,
+            "{outcome:?}"
+        );
+        assert_eq!(
+            outcome.decision,
+            crate::execution_policy::ContinuationDecision::Continue
+        );
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
     async fn test_progress_rejects_relabelled_or_foreign_receipts() {
         let (path, db, _) = fixture().await;
         let (campaign_id, _run_id, attempt_id) = progress_attempt_campaign(&db).await;
