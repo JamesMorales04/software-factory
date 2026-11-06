@@ -1,3 +1,8 @@
+import {
+  DEFAULT_OPERATION_LIMITS,
+  DEFAULT_PROGRESS_POLICY,
+} from "./executionDefaults";
+
 export type CheckKind =
   | "format"
   | "lint"
@@ -35,6 +40,229 @@ export interface Project {
   base_commit: string;
   created_at: string;
   identity?: string;
+  name?: string;
+  source_kind?: "local" | "git" | "github";
+  source_url?: string;
+  source_key?: string;
+  source_visibility?: "" | "public" | "private";
+  default_branch?: string;
+  remote_origin?: string;
+}
+
+export interface ProjectImportOptions {
+  github: {
+    connected: boolean;
+    enabled: boolean;
+    login: string | null;
+    scopes: string[];
+    scopes_reported: boolean;
+    revision: number;
+    verified_at: string | null;
+    revoked_at: string | null;
+    detail: string;
+    fine_grained_detail: string;
+    app_oauth_available: boolean;
+  };
+  local: {
+    enabled: boolean;
+    managed_root: string | null;
+    detail: string;
+  };
+  managed_storage_required: boolean;
+}
+
+export interface GitHubProjectImportRequest {
+  owner: string;
+  repo: string;
+  name?: string;
+  default_branch?: string;
+  idempotency_key: string;
+}
+
+export interface GitHubRepositoryPermissions {
+  admin: boolean;
+  maintain: boolean;
+  push: boolean;
+  triage: boolean;
+  pull: boolean;
+}
+
+export interface GitHubRepositoryDetail extends GitHubRepository {
+  permissions: GitHubRepositoryPermissions | null;
+}
+
+export interface GitHubProjectImportResult {
+  project: Project;
+  repository: GitHubRepositoryDetail;
+  binding: ProjectGitHubBinding | null;
+  binding_error: string | null;
+  sync_state: GitHubSyncState | null;
+  connection: GitHubConnection;
+}
+
+export interface ProjectCampaignSummary {
+  id: string;
+  actionId: string;
+  objective: string;
+  status: string;
+  createdAt: string;
+}
+
+export interface ProjectToolchainSummary {
+  id: string;
+  label: string;
+  manifests: string[];
+  evidence: string[];
+}
+
+export interface ProjectDiscoveryTooling {
+  base_commit: string;
+  scanned_at: string;
+  stale: boolean;
+  toolchains: ProjectToolchainSummary[];
+  suggested_capabilities: string[];
+  suggested_checks: SpecCheck[];
+  truncated: boolean;
+  provenance: string;
+}
+
+export interface DiscoveredToolchain extends ProjectToolchainSummary {
+  suggestedCapability: string | null;
+  suggestedChecks: SpecCheck[];
+}
+
+export interface ProjectDiscovery {
+  baseCommit: string;
+  toolchains: DiscoveredToolchain[];
+  suggestedCapabilities: string[];
+  suggestedChecks: SpecCheck[];
+  scannedManifests: string[];
+  truncated: boolean;
+  skippedEntries: number;
+  provenance: string;
+  scannedAt: string;
+}
+
+export interface ProjectDiscoveryRecord {
+  projectId: string;
+  baseCommit: string;
+  scannedAt: string;
+  discovery: ProjectDiscovery;
+}
+
+export interface ProjectDiscoveryView {
+  discovery: ProjectDiscoveryRecord | null;
+  current_base_commit: string;
+  stale: boolean;
+}
+
+export interface ProjectSummary {
+  as_of: string;
+  project: {
+    id: string;
+    name: string;
+    source_kind: "local" | "git" | "github";
+    source_url: string;
+    source_visibility: "" | "public" | "private";
+    default_branch: string;
+    base_commit: string;
+    created_at: string;
+    last_activity_at: string | null;
+    remote_origin: string;
+    technical: {
+      id: string;
+      repository_path: string;
+      identity: string;
+      source_key: string;
+      remote_origin: string;
+    };
+  };
+  github: {
+    health: "NOT_APPLICABLE" | "NOT_CONNECTED" | "REVOKED" | "CONNECTED";
+    connection: GitHubConnection;
+    binding: ProjectGitHubBinding | null;
+    sync_state: GitHubSyncState | null;
+  };
+  config: {
+    revision: number;
+    config_hash: string;
+    allowed_paths: string[];
+    capabilities: string[];
+    quality_profile: string;
+    active: boolean;
+    updated_at: string;
+  };
+  campaigns: {
+    active: ProjectCampaignSummary[];
+    active_count: number;
+    recent: ProjectCampaignSummary[];
+    total: number;
+  };
+  pending_decisions: DecisionItem[];
+  pending_decision_count: number;
+  tooling: ProjectDiscoveryTooling | null;
+}
+
+export type ProjectTreeEntryKind =
+  | "FILE"
+  | "DIRECTORY"
+  | "SYMLINK"
+  | "SUBMODULE";
+
+export interface ProjectRevision {
+  commit: string;
+  tree: string;
+}
+
+export interface ProjectTreeEntry {
+  name: string;
+  path: string;
+  kind: ProjectTreeEntryKind;
+  mode: string;
+  objectId: string;
+  size: number | null;
+}
+
+export interface ProjectTreeProjection {
+  projectId: string;
+  revision: ProjectRevision;
+  path: string;
+  entries: ProjectTreeEntry[];
+  truncated: boolean;
+  skippedEntries: number;
+  provenance: string;
+}
+
+export type ProjectContentOmission = "BINARY" | "TOO_LARGE" | "NOT_A_FILE";
+
+export interface ProjectFileProjection {
+  projectId: string;
+  revision: ProjectRevision;
+  path: string;
+  name: string;
+  kind: ProjectTreeEntryKind;
+  mode: string;
+  objectId: string;
+  size: number | null;
+  content: string | null;
+  omitted: ProjectContentOmission | null;
+  lineCount?: number;
+  provenance: string;
+}
+
+export interface ProjectRef {
+  name: string;
+  kind: "BRANCH";
+  commit: string;
+}
+
+export interface ProjectRefsProjection {
+  projectId: string;
+  baseCommit: string;
+  head: string | null;
+  refs: ProjectRef[];
+  truncated: boolean;
+  provenance: string;
 }
 
 export interface Action {
@@ -123,11 +351,33 @@ export type GateOutcome =
   | "HUMAN_REQUIRED"
   | "NOT_TESTED";
 
+export interface RepairAuthorization {
+  repair_id: string;
+  campaign_id: string;
+  candidate_id: string;
+  work_item_id: string;
+  repair_trigger: string;
+  risk_class: string;
+  total_points: number;
+  critical_count: number;
+  blocking_count: number;
+  warning_count: number;
+  info_count: number;
+  cycle_index: number;
+  decision: "AUTHORIZED" | "DENIED" | "HUMAN_REQUIRED";
+  reason_code: string;
+  reason: string;
+  policy_sha256: string;
+  reviewer_receipt_id: string;
+  created_at: string;
+}
+
 export interface Gate {
   candidate_id: string;
   outcome: GateOutcome;
   reasons: string[];
   decided_at: string;
+  repair_authorization?: RepairAuthorization | null;
 }
 
 export interface FactoryEvent {
@@ -323,14 +573,236 @@ export interface ProviderToolEventProjection {
   note: string;
 }
 
+export type CandidateFileStatus = "ADDED" | "MODIFIED" | "DELETED";
+export type CandidateDiffOmission =
+  | "BINARY"
+  | "TOO_LARGE"
+  | "NOT_A_FILE"
+  | "NON_UTF8"
+  | "BUDGET";
+
+export interface CandidateFileDiff {
+  path: string;
+  status: CandidateFileStatus;
+  oldMode: string;
+  newMode: string;
+  additions: number;
+  deletions: number;
+  binary: boolean;
+  omitted: CandidateDiffOmission | null;
+  patch?: string;
+  patchTruncated: boolean;
+  patchBytes: number;
+}
+
+export interface CandidateDiffCandidateIdentity {
+  id: string;
+  attempt_id: string;
+  action_spec_sha256: string;
+  commit_sha: string;
+  tree_sha: string;
+  implementer_id: string;
+  created_at: string;
+  integration: boolean;
+  lineage: string[];
+}
+
+export interface CandidateGateIdentity {
+  candidate_id: string;
+  outcome: string;
+  reasons: string[];
+  decided_at: string;
+}
+
 export interface CandidateDiffSummary {
   candidate_id: string;
+  candidate: CandidateDiffCandidateIdentity;
+  gate: CandidateGateIdentity | null;
+  project_id: string;
+  campaign_id: string;
   commit_sha: string;
   tree_sha: string;
   base_commit: string;
+  base_tree_sha: string;
   changed_paths: string[];
   changed_paths_truncated: boolean;
   diff_stat: string;
+  files: CandidateFileDiff[];
+  returned_files: number;
+  files_truncated: boolean;
+  total_additions: number;
+  total_deletions: number;
+  patch_bytes: number;
+  patch_truncated: boolean;
+  source: string;
+}
+
+export interface CandidatePullRequest {
+  number: number;
+  title: string;
+  state: "open" | "closed";
+  draft: boolean;
+  merged: boolean;
+  mergeable: boolean | null;
+  mergeableState: string;
+  headRef: string;
+  headSha: string;
+  baseRef: string;
+  baseSha: string;
+  author: string | null;
+  htmlUrl: string;
+  changedFiles: number;
+  additions: number;
+  deletions: number;
+  comments: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CandidateCheckRun {
+  id: number;
+  name: string;
+  status: string;
+  conclusion: string;
+  app: string | null;
+  detailsUrl: string;
+  startedAt: string | null;
+  completedAt: string | null;
+}
+
+export interface CandidateStatusContext {
+  context: string;
+  state: string;
+  description: string;
+  targetUrl: string;
+}
+
+export interface CandidatePullRequestChecks {
+  headSha: string;
+  state: "SUCCESS" | "PENDING" | "FAILURE" | "NO_CHECKS" | string;
+  detail: string;
+  ready: boolean;
+  checkRuns: CandidateCheckRun[];
+  checkRunsTruncated: boolean;
+  combinedStatus: string;
+  statuses: CandidateStatusContext[];
+  statusesTruncated: boolean;
+  fetchedAt: string;
+}
+
+export interface CandidatePullRequestComment {
+  id: number;
+  kind: "issue" | "review" | string;
+  author: string | null;
+  body: string;
+  bodyTruncated: boolean;
+  path: string | null;
+  line: number | null;
+  htmlUrl: string;
+  createdAt: string;
+}
+
+export interface CandidatePullRequestCommentList {
+  comments: CandidatePullRequestComment[];
+  truncated: boolean;
+  fetchedAt: string;
+}
+
+export interface CandidatePullRequestDiff {
+  patch: string;
+  bytes: number;
+  truncated: boolean;
+  fetchedAt: string;
+}
+
+export interface CandidatePullRequestStatus {
+  campaign_id: string;
+  candidate_id: string;
+  candidate_commit_sha: string;
+  candidate_tree_sha: string;
+  project_id: string;
+  gate: CandidateGateIdentity | null;
+  binding: ProjectGitHubBinding;
+  pull_request: CandidatePullRequest;
+  checks: CandidatePullRequestChecks;
+  head_matches_candidate: boolean;
+  merge_ready: boolean;
+  merge_blocked_reasons: string[];
+  checked_at: string;
+  source: string;
+}
+
+export interface CandidatePullRequestDiffResult {
+  campaign_id: string;
+  candidate_id: string;
+  candidate_commit_sha: string;
+  project_id: string;
+  binding: ProjectGitHubBinding;
+  pull_request: CandidatePullRequest;
+  diff: CandidatePullRequestDiff;
+  head_matches_candidate: boolean;
+  source: string;
+}
+
+export interface CandidatePullRequestCommentsResult {
+  campaign_id: string;
+  candidate_id: string;
+  project_id: string;
+  binding: ProjectGitHubBinding;
+  pull_request_number: number;
+  comments: CandidatePullRequestCommentList;
+  source: string;
+}
+
+export interface CandidatePullRequestCommentResult {
+  campaign_id: string;
+  candidate_id: string;
+  project_id: string;
+  pull_request_number: number;
+  comment: CandidatePullRequestComment;
+  recorded_at: string;
+  source: string;
+}
+
+export interface CandidatePullRequestReviewResult {
+  campaign_id: string;
+  candidate_id: string;
+  project_id: string;
+  pull_request_number: number;
+  reviewers: string[];
+  requested_at: string;
+  source: string;
+}
+
+export interface CandidatePullRequestMergeResult {
+  campaign_id: string;
+  candidate_id: string;
+  project_id: string;
+  pull_request_number: number;
+  expected_head_sha: string;
+  merged: boolean;
+  merge_commit_sha: string;
+  message: string;
+  merged_at: string;
+  source: string;
+}
+
+export interface CandidatePullRequestBindingResult {
+  binding: ProjectGitHubBinding | null;
+  sync_state: GitHubSyncState | null;
+}
+
+export interface CandidatePullRequestOpenResult {
+  campaign_id: string;
+  candidate_id: string;
+  candidate_commit_sha: string;
+  project_id: string;
+  gate: CandidateGateIdentity | null;
+  binding: ProjectGitHubBinding;
+  pull_request: CandidatePullRequest;
+  head_sha: string;
+  base: string;
+  opened_at: string;
   source: string;
 }
 
@@ -344,27 +816,45 @@ export interface CampaignDetail {
   events: FactoryEvent[];
 }
 
+export interface ExecutionPolicyV2 {
+  policyId: string;
+  authorizationId: string;
+  monetaryEnvelopeId: string;
+  scopeSha256: string;
+  progress: ExecutionProgressPolicy;
+  operations: ExecutionOperationLimits;
+}
+
+/** Historical V1 caps. Readable provenance only; never current authority. */
+export interface LegacyCampaignAuthorizationCaps {
+  maxAttempts: number;
+  maxSessions: number;
+  maxTurns: number;
+  maxInputTokens: number;
+  maxOutputTokens: number;
+  maxCostMicros: number;
+  deadlineSecs: number;
+}
+
 export interface CampaignAuthorization {
-  campaign_id: string;
-  authorization_id: string;
-  risk_class: string;
-  execution_mode: string;
+  campaignId: string;
+  authorizationId: string;
+  riskClass: string;
+  executionMode: string;
   actor: string;
   rationale: string;
-  authorized_paths: string[];
-  max_attempts: number;
+  authorizedPaths: string[];
   provider: string;
   model: string;
-  provider_mode: string;
-  delegation_id: string;
-  max_sessions: number;
-  max_turns: number;
-  max_input_tokens: number;
-  max_output_tokens: number;
-  max_cost_micros: number;
-  deadline_secs: number;
-  allowed_tools: string[];
-  created_at: string;
+  providerMode: string;
+  delegationId: string;
+  allowedTools: string[];
+  schemaVersion: 1 | 2;
+  /** Present for V2 revisions; never synthesized for a legacy V1 row. */
+  policy: ExecutionPolicyV2 | null;
+  /** Present only for historical V1 rows. */
+  legacy: LegacyCampaignAuthorizationCaps | null;
+  createdAt: string;
 }
 
 export type ReceiptResult =
@@ -375,8 +865,8 @@ export type ReceiptResult =
 export type EvidenceKind = "EXECUTED" | "MOCKED" | "UNKNOWN";
 export type QualityRole = "verifier" | "reviewer";
 
-export type ReviewMechanism = "DETERMINISTIC" | "MODEL";
-export type FindingSeverity = "blocking" | "warning" | "info";
+export type ReviewMechanism = "DETERMINISTIC" | "MODEL" | "CODEX_APP_SERVER";
+export type FindingSeverity = "critical" | "blocking" | "warning" | "info";
 export type FindingCategory =
   | "functional"
   | "architecture"
@@ -390,7 +880,9 @@ export interface ReviewFinding {
   severity: FindingSeverity;
   category: FindingCategory;
   message: string;
-  evidence_refs: string[];
+  points: number;
+  rationale: string;
+  evidenceRefs: string[];
 }
 
 export interface QualityReceipt {
@@ -504,10 +996,90 @@ export interface RecentAcceptedCandidate {
   outcome: GateOutcome;
 }
 
+export type DecisionActionKind =
+  | "resolve_model_call"
+  | "approve_intake_plan"
+  | "cancel_intake"
+  | "withdraw_lead"
+  | "cancel_campaign";
+
+/**
+ * A quick action exposed by Core's actionable decision projection. The browser
+ * never invents an action: each `kind` maps to an existing authenticated Core
+ * operation, and the exact identity fields are revalidated by Core.
+ */
 export interface DecisionAction {
-  kind: "resolve_model_call";
-  model_call_id: string;
+  kind: DecisionActionKind | string;
   label: string;
+  model_call_id?: string;
+  intake_id?: string;
+  lead_request_id?: string;
+  campaign_id?: string;
+  expected_plan_hash?: string;
+  expected_profile_revision_id?: string;
+  expected_profile_hash?: string;
+}
+
+export interface DecisionProject {
+  id: string;
+  repository?: string | null;
+  identity?: string | null;
+}
+
+export interface DecisionCampaign {
+  id: string;
+  status: string;
+  target: string;
+}
+
+export interface DecisionChange {
+  summary: string;
+  work_units?: number;
+  paths?: string[];
+  acceptance_criteria?: number;
+  negative_cases?: number;
+}
+
+export interface DecisionRisk {
+  class?: string | null;
+  summary: string;
+}
+
+export interface DecisionBudget {
+  max_attempts?: number;
+  max_sessions?: number;
+  max_turns?: number;
+  max_input_tokens?: number;
+  max_output_tokens?: number;
+  max_cost_micros?: number;
+  deadline_secs?: number;
+  max_repair_cycles?: number;
+  max_parallel?: number;
+  max_wall_clock_secs?: number;
+  timeout_secs?: number;
+  cost_micros?: number;
+  usage_known?: boolean;
+  note?: string;
+}
+
+export interface DecisionPermissions {
+  execution_mode?: string | null;
+  allowed_paths?: string[];
+  allowed_tools?: string[];
+  delegation_id?: string | null;
+  route?: ProviderRoute;
+}
+
+export interface DecisionImpact {
+  budget?: DecisionBudget | null;
+  permissions?: DecisionPermissions | null;
+  note?: string | null;
+}
+
+export interface DecisionEvidence {
+  label: string;
+  value: string;
+  reference?: string | null;
 }
 
 export interface DecisionItem {
@@ -520,6 +1092,17 @@ export interface DecisionItem {
   target: string;
   subject_id: string;
   updated_at: string;
+  /** Exact Core projection revision used for optimistic concurrency checks. */
+  revision?: string;
+  project?: DecisionProject | null;
+  campaign?: DecisionCampaign | null;
+  change?: DecisionChange | null;
+  risk?: DecisionRisk | null;
+  impact?: DecisionImpact | null;
+  evidence?: DecisionEvidence[];
+  actions?: DecisionAction[];
+  blocked_reason?: string | null;
+  /** Legacy single-action projection retained for older fixtures. */
   action?: DecisionAction;
 }
 
@@ -546,6 +1129,8 @@ export interface DecisionList {
 export interface NewProjectRequest {
   repository: string;
   idempotency_key: string;
+  name?: string;
+  default_branch?: string;
 }
 
 export interface NewActionRequest {
@@ -612,6 +1197,48 @@ export interface StandingDelegation {
   revokedAt?: string;
 }
 
+export interface StandingDelegationV2 {
+  id: string;
+  principalId: string;
+  auditId: string;
+  projectId: string;
+  revision: number;
+  contentHash: string;
+  objectiveClasses: string[];
+  allowedPaths: string[];
+  capabilities: string[];
+  riskClasses: string[];
+  autonomousStart: boolean;
+  autonomousRiskClasses: string[];
+  route: ProviderRoute;
+  maxTimeoutSecs: number;
+  maxParallel: number;
+  operations: ExecutionOperationLimits;
+  progress: ExecutionProgressPolicy;
+  expiresAt: string;
+  revokedAt?: string;
+}
+
+export interface DelegationUsage {
+  delegation_id: string;
+  requests: number;
+  sessions: number;
+  attempts: number;
+}
+
+export type DelegationProjection =
+  | {
+      schemaVersion: 2;
+      delegation: StandingDelegationV2;
+      usage: DelegationUsage | null;
+    }
+  | {
+      schemaVersion: 1;
+      historical: true;
+      delegation: StandingDelegation;
+      usage: DelegationUsage | null;
+    };
+
 export interface LeadRequestRecord {
   id: string;
   project_id: string;
@@ -626,6 +1253,14 @@ export interface LeadRequestRecord {
   campaign_id: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface LeadWithdrawalRecord {
+  request_id: string;
+  principal_id: string;
+  principal_label: string | null;
+  reason: string;
+  created_at: string;
 }
 
 export interface LeadAssessmentRecord {
@@ -661,7 +1296,18 @@ export interface LeadRequestProjection {
   assessment: LeadAssessmentRecord | null;
   proposal: LeadProposalRecord | null;
   plan: FrozenLeadPlanRecord | null;
+  start_binding: LeadStartBinding | null;
   model_calls: ModelCallRecord[];
+}
+
+export interface LeadStartBinding {
+  request_hash: string;
+  plan_hash: string;
+  spec_sha256: string;
+  config_hash: string;
+  delegation_hash: string;
+  profile_revision_id: string | null;
+  profile_hash: string | null;
 }
 
 export interface EffortEstimateView {
@@ -732,36 +1378,302 @@ export interface NewLeadRequest {
   idempotency_key: string;
 }
 
+export type IntakeMode = "REVIEW_PLAN" | "AUTONOMOUS";
+
+export type IntakeState =
+  | "SUBMITTED"
+  | "ASSESSING"
+  | "PLAN_READY"
+  | "AWAITING_APPROVAL"
+  | "EXECUTING"
+  | "BLOCKED"
+  | "FAILED"
+  | "COMPLETED"
+  | "CANCELLED";
+
+export interface IntakeProfileReference {
+  id: string;
+  revisionId: string;
+  revision: number;
+  name: string;
+  contentHash: string;
+}
+
+export interface IntakeAuthorizationState {
+  required: boolean;
+  available: boolean;
+  reason: string | null;
+}
+
+export interface IntakeMessage {
+  id: string;
+  role: string;
+  body: string;
+  createdAt: string;
+}
+
+export interface IntakeRequestSummary {
+  id: string;
+  projectId: string;
+  objective: string;
+  mode: IntakeMode;
+  state: IntakeState;
+  stateDetail: string | null;
+  profile: IntakeProfileReference;
+  actionId: string;
+  delegationId: string;
+  leadRequestId: string;
+  campaignId: string | null;
+  authorization: IntakeAuthorizationState;
+  campaignStatus?: string | null;
+  gateOutcome?: GateOutcome | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface IntakeRequestProjection extends IntakeRequestSummary {
+  assessment: LeadAssessmentView | null;
+  proposal: LeadPlanProposalView | null;
+  plan: FrozenLeadPlanRecord | null;
+  campaign: CampaignDetail | null;
+  messages: IntakeMessage[];
+}
+
+export interface NewIntakeRequest {
+  project_id: string;
+  objective: string;
+  execution_profile_id?: string;
+  mode: IntakeMode;
+  idempotency_key: string;
+  /** Explicit operator monetary authorization for assessment and execution. */
+  authorized_micros?: number;
+}
+
+export interface ApproveIntakeRequest {
+  expected_plan_hash: string;
+  /** Exact frozen profile revision guard; Core rejects a stale revision. */
+  expected_profile_revision_id?: string;
+  expected_profile_hash?: string;
+  rationale: string;
+  principal_label?: string;
+  idempotency_key?: string;
+  subscription_admission_id?: string;
+}
+
+export interface IntakeMessageRequest {
+  body: string;
+  idempotency_key: string;
+}
+
+export interface IntakeRequestFilters {
+  state?: IntakeState;
+  projectId?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface IntakeExecutionPolicyTerms {
+  objectiveClasses: string[];
+  riskClasses: string[];
+  autonomousStart: boolean;
+  validityDays: number;
+  /** Bounded concurrent implementation capacity, not lifetime work. */
+  maxParallel: number;
+  /** Per-operation timeout, not a universal Campaign deadline. */
+  maxTimeoutSecs: number;
+  progress: ExecutionProgressPolicy;
+  operations: ExecutionOperationLimits;
+}
+
+export interface IntakeExecutionPolicyScope {
+  project: {
+    id: string;
+    configHash: string;
+    repository: string;
+    baseCommit: string;
+    allowedPaths: string[];
+    capabilities: string[];
+    qualityProfile: string;
+  } | null;
+  profile: {
+    id: string;
+    revisionId: string;
+    revision: number;
+    schemaVersion: 1 | 2;
+    name: string | null;
+    contentHash: string;
+    executable: boolean;
+    warnings: string[];
+    operations: ExecutionOperationLimits | null;
+    progress: ExecutionProgressPolicy | null;
+    autoStart: { enabled: boolean; riskClasses: ExecutionRiskClass[] } | null;
+    implementer: ExecutionRoleRoute | null;
+    grantTerms: IntakeExecutionPolicyTerms | null;
+    legacyV1?: ExecutionProfileLegacyV1 | null;
+  } | null;
+}
+
+export interface ExecutionPolicyRequest {
+  execution_profile_id: string;
+  expected_revision: number;
+  expected_revision_hash: string;
+  project_config_hash: string;
+  acknowledge: true;
+  idempotency_key: string;
+}
+
+export interface ExecutionPolicyGrant {
+  delegation_id: string;
+  project_id: string;
+  principal_id: string;
+  profile_id: string;
+  profile_revision_id: string;
+  profile_revision: number;
+  profile_hash: string;
+  project_config_hash: string;
+  acknowledged: boolean;
+  idempotency_key: string;
+  created_at: string;
+}
+
+export interface ExecutionPolicyResult {
+  grant: ExecutionPolicyGrant;
+  delegation: StandingDelegationV2;
+  usage: {
+    delegation_id: string;
+    requests: number;
+    sessions: number;
+    attempts: number;
+  };
+  replayed: boolean;
+}
+
 export interface NewCampaignRequest {
   action_id: string;
   idempotency_key: string;
 }
 
+/**
+ * Operator write shape for a Campaign/Lead start. Core's HTTP endpoint still
+ * decodes snake_case fields (it predates the V2 projection), so
+ * `startLeadRequest` and `authorizeFixtureCampaign` adapt these camelCase
+ * fields at the wire boundary. The policy payload is V2: operations/progress,
+ * never legacy turn/session/attempt/deadline caps.
+ */
 export interface NewCampaignAuthorization {
-  authorization_id: string;
-  risk_class: string;
-  execution_mode: string;
+  authorizationId: string;
+  riskClass: string;
+  executionMode: string;
   actor: string;
   rationale: string;
-  authorized_paths: string[];
-  max_attempts: number;
+  authorizedPaths: string[];
   provider: string;
   model: string;
-  provider_mode: string;
-  delegation_id: string;
-  max_sessions: number;
-  max_turns: number;
-  max_input_tokens: number;
-  max_output_tokens: number;
-  max_cost_micros: number;
-  deadline_secs: number;
-  allowed_tools: string[];
+  providerMode: string;
+  delegationId: string;
+  allowedTools: string[];
+  operations: ExecutionOperationLimits;
+  progress: ExecutionProgressPolicy;
+  /** Explicit amount only for a direct Campaign; request-scoped Lead start omits it. */
+  authorizedMicros?: number;
+  monetaryEnvelopeId?: string;
 }
 
 export interface StartLeadCampaignResult {
   campaign: Campaign;
   run: Run;
   attempt: Attempt;
+}
+
+export interface ApproveLeadRequestInput {
+  expected_request_hash: string;
+  expected_plan_hash: string;
+  expected_spec_sha256: string;
+  expected_config_hash: string;
+  expected_delegation_hash: string;
+  profile_revision_id?: string;
+  profile_hash?: string;
+  rationale: string;
+  provider_authorization?: NewCampaignAuthorization;
+}
+
+function campaignAuthorizationWire(
+  input: NewCampaignAuthorization,
+): Record<string, unknown> {
+  return {
+    authorization_id: input.authorizationId,
+    risk_class: input.riskClass,
+    execution_mode: input.executionMode,
+    actor: input.actor,
+    rationale: input.rationale,
+    authorized_paths: input.authorizedPaths,
+    provider: input.provider,
+    model: input.model,
+    provider_mode: input.providerMode,
+    delegation_id: input.delegationId,
+    allowed_tools: input.allowedTools,
+    operations: input.operations,
+    progress: input.progress,
+    ...(input.authorizedMicros === undefined
+      ? {}
+      : { authorized_micros: input.authorizedMicros }),
+    ...(input.monetaryEnvelopeId === undefined
+      ? {}
+      : { monetary_envelope_id: input.monetaryEnvelopeId }),
+  };
+}
+
+export type ProviderDiscoveryStatus =
+  | "AVAILABLE"
+  | "ENDPOINT_UNSUPPORTED"
+  | "CREDENTIAL_REJECTED"
+  | "UNREACHABLE"
+  | "INVALID_RESPONSE"
+  | "UNSUPPORTED";
+
+export type ProviderCatalogSource =
+  | "OPENCODE_GO_CATALOG_URL"
+  | "OPENAI_MODELS_ENDPOINT"
+  | "UNSUPPORTED";
+
+export type ProviderCredentialSignal =
+  | "NOT_OBSERVED"
+  | "NOT_PROVIDED"
+  | "REJECTED";
+
+export interface ProviderCatalogSnapshot {
+  source: ProviderCatalogSource;
+  models: string[];
+  observedAt: string;
+}
+
+export interface ProviderModelCatalogEntry {
+  provider: string;
+  status: ProviderDiscoveryStatus;
+  source: ProviderCatalogSource;
+  catalogUrl: string | null;
+  models: string[];
+  detail: string;
+  discoveredAt: string;
+  credentialSignal: ProviderCredentialSignal;
+  lastKnown: ProviderCatalogSnapshot | null;
+}
+
+export interface ProviderCredentialObservation {
+  presence: "CONFIGURED" | "NOT_CONFIGURED";
+  validation: "NOT_OBSERVED" | "NOT_PROVIDED" | "REJECTED";
+  detail: string;
+}
+
+export interface ProviderInferenceObservation {
+  status: "NOT_TESTED";
+  detail: string;
+}
+
+export interface ProviderModelDiscovery extends ProviderModelCatalogEntry {
+  adapter: string;
+  credential: ProviderCredentialObservation;
+  inference: ProviderInferenceObservation;
 }
 
 export interface ProviderView {
@@ -788,6 +1700,7 @@ export interface ProviderView {
   maxCostMicros: number;
   inputMicrosPerMillion: number;
   outputMicrosPerMillion: number;
+  modelDiscovery: ProviderModelCatalogEntry | null;
 }
 
 export interface UpdateProviderRequest {
@@ -804,13 +1717,11 @@ export interface UpdateProviderRequest {
   outputMicrosPerMillion: number;
 }
 
-export interface ProviderTestResult {
-  provider: string;
-  status: "AUTHENTICATED" | "DENIED" | "UNREACHABLE" | "UNSUPPORTED";
-  models: string[];
+export interface ProviderTestResult extends ProviderModelCatalogEntry {
   model: string;
   modelAvailable: boolean;
-  detail: string;
+  credential: ProviderCredentialObservation;
+  inference: ProviderInferenceObservation;
 }
 
 export interface FactorySettings {
@@ -832,6 +1743,166 @@ export interface ProviderAudit {
   actor: string;
   detail: string;
   createdAt: string;
+}
+
+export type ExecutionProfileCategory =
+  | "BUDGET"
+  | "BALANCED"
+  | "QUALITY"
+  | "CUSTOM";
+
+export type ExecutionProfileRole = "lead" | "implementer" | "semanticReviewer";
+
+export type ExecutionReasoningEffort = "low" | "medium" | "high";
+
+export type ExecutionRiskClass = "R0" | "R1" | "R2" | "R3";
+
+export interface ExecutionRoleRoute {
+  provider: string;
+  model: string;
+  reasoning?: ExecutionReasoningEffort;
+}
+
+export interface ExecutionProfileRoles {
+  lead: ExecutionRoleRoute;
+  implementer: ExecutionRoleRoute;
+  semanticReviewer: ExecutionRoleRoute;
+}
+
+/** Technical per-operation bounds. Not a Campaign productivity budget. */
+export interface ExecutionOperationLimits {
+  modelRequestTimeoutSecs: number;
+  toolCallTimeoutSecs: number;
+  maxRequestBytes: number;
+  maxResponseBytes: number;
+  maxGenerationTokens: number;
+  maxInFlightOperations: number;
+}
+
+/**
+ * Deterministic progress supervision. Thresholds trigger diagnosis or
+ * escalation; they do not stop a legitimate Campaign by themselves.
+ */
+export interface ExecutionAutonomyPolicy {
+  enabled: boolean;
+  repairPointBudgets: [number, number, number, number];
+  repairCycleBudgets: [number, number, number, number];
+}
+
+export interface ExecutionProgressPolicy {
+  diagnoseAfterStagnantCheckpoints: number;
+  escalateAfterUnsuccessfulReplans: number;
+  observationTimeoutSecs: number;
+  autonomy?: ExecutionAutonomyPolicy;
+}
+
+export interface ExecutionAutoStartPolicy {
+  enabled: boolean;
+  riskClasses: ExecutionRiskClass[];
+}
+
+export interface LegacyExecutionRoleRoute {
+  provider: string;
+  model: string;
+  reasoning?: ExecutionReasoningEffort;
+  maxInputTokens: number;
+  maxOutputTokens: number;
+  maxCostMicros: number;
+}
+
+export interface LegacyExecutionProfileBudgets {
+  maxAttempts: number;
+  maxSessions: number;
+  maxTurns: number;
+  maxInputTokens: number;
+  maxOutputTokens: number;
+  maxCostMicros: number;
+  deadlineSecs: number;
+}
+
+/** Historical V1 caps. Readable provenance only; never current authority. */
+export interface ExecutionProfileLegacyV1 {
+  budgets?: LegacyExecutionProfileBudgets;
+  roles?: {
+    lead: LegacyExecutionRoleRoute;
+    implementer: LegacyExecutionRoleRoute;
+    semanticReviewer: LegacyExecutionRoleRoute;
+  };
+  autoStart?: ExecutionAutoStartPolicy;
+  historical?: boolean;
+}
+
+export interface ExecutionProfile {
+  id: string;
+  name: string;
+  description: string;
+  category: ExecutionProfileCategory;
+  schemaVersion: 1 | 2;
+  revision: number;
+  revisionId: string;
+  contentHash: string;
+  globalDefault: boolean;
+  projectDefaults: string[];
+  roles: ExecutionProfileRoles;
+  /** V2 technical operation limits; null for a historical V1 revision. */
+  operations: ExecutionOperationLimits | null;
+  /** V2 progress supervision; null for a historical V1 revision. */
+  progress: ExecutionProgressPolicy | null;
+  autoStart: ExecutionAutoStartPolicy;
+  executable: boolean;
+  warnings: string[];
+  legacyV1?: ExecutionProfileLegacyV1 | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SupportedExecutionRoute {
+  provider: string;
+  model: string;
+}
+
+export interface ExecutionProfileList {
+  profiles: ExecutionProfile[];
+  supportedRoutes: SupportedExecutionRoute[];
+}
+
+export interface ExecutionProfileWrite {
+  name: string;
+  description: string;
+  category: ExecutionProfileCategory;
+  roles: ExecutionProfileRoles;
+  operations: ExecutionOperationLimits;
+  progress: ExecutionProgressPolicy;
+  auto_start: {
+    enabled: boolean;
+    risk_classes: ExecutionRiskClass[];
+  };
+}
+
+export interface UpdateExecutionProfileRequest extends ExecutionProfileWrite {
+  expected_revision: number;
+}
+
+export interface ExecutionProfileDefaultRequest {
+  scope: "global" | "project";
+  project_id?: string;
+}
+
+export interface ExecutionProfileDefaultBinding {
+  profileId: string;
+  scope: "global" | "project";
+  projectId: string | null;
+  revisionId: string;
+  revision: number;
+}
+
+export interface ResolvedExecutionProfile {
+  projectId: string;
+  profileId: string;
+  revisionId: string;
+  revision: number;
+  contentHash: string;
+  source: "PROJECT_DEFAULT" | "GLOBAL_DEFAULT";
 }
 
 export interface NewDelegationRequest {
@@ -864,18 +1935,89 @@ export interface NewDelegationRequest {
 }
 
 export interface DelegationDetail {
-  delegation: StandingDelegation;
-  usage: {
-    sessions: number;
-    attempts: number;
-    requests: number;
-  };
+  delegation: StandingDelegation | StandingDelegationV2;
+  usage: DelegationUsage;
+  schemaVersion: 1 | 2;
+  historical?: true;
 }
 
 export interface SetupStatus {
   required: boolean;
   version: string;
 }
+
+export interface DeviceSession {
+  id: string;
+  name: string;
+  createdAt: string | number;
+  lastActivityAt: string | number;
+  expiresAt: string | number;
+}
+
+export interface AuthSession {
+  authenticated: boolean;
+  status?: string;
+  bootstrapAvailable?: boolean;
+  csrfToken?: string;
+  device?: DeviceSession;
+}
+
+export interface AccessOverview {
+  local: { status: string };
+  tailscale: {
+    enabled: boolean;
+    status: string;
+    httpsEndpoint: string | null;
+    error: string | null;
+  };
+}
+
+export interface DeviceSessionView extends DeviceSession {
+  status: "PENDING" | "CONNECTED" | "CANCELLED" | string;
+  current?: boolean;
+  verificationCode?: string;
+}
+
+export interface DeviceChallenge {
+  challengeId: string;
+  verificationCode: string;
+  expiresAt: string | number;
+}
+
+export interface DeviceClaim {
+  deviceId: string;
+  verificationCode: string;
+  status:
+    | "PENDING"
+    | "APPROVED"
+    | "REJECTED"
+    | "CANCELLED"
+    | "EXPIRED"
+    | string;
+  expiresAt: string | number;
+  pollToken: string;
+}
+
+export interface DeviceClaimPoll {
+  status:
+    | "PENDING"
+    | "APPROVED"
+    | "REJECTED"
+    | "CANCELLED"
+    | "EXPIRED"
+    | string;
+  verificationCode?: string;
+  expiresAt?: string | number;
+}
+
+export interface SecurityAuditEntry {
+  action: string;
+  actor: string;
+  deviceName: string | null;
+  occurredAt: string | number;
+}
+
+let csrfToken: string | null = null;
 
 export async function setupStatus(): Promise<SetupStatus> {
   const response = await fetch(`${BASE}/setup/status`);
@@ -885,39 +2027,154 @@ export async function setupStatus(): Promise<SetupStatus> {
   return (await response.json()) as SetupStatus;
 }
 
-export async function enrollOwner(code: string): Promise<string> {
-  const response = await fetch(`${BASE}/setup/enroll`, {
+export async function bootstrapOwner(
+  code: string,
+  deviceName?: string,
+): Promise<AuthSession> {
+  const response = await fetch(`${BASE}/auth/bootstrap`, {
     method: "POST",
+    credentials: "same-origin",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ code }),
+    body: JSON.stringify({ code, ...(deviceName ? { deviceName } : {}) }),
   });
   if (!response.ok) {
     const text = await response.text();
+    let body: unknown = null;
+    if (text !== "") {
+      try {
+        body = JSON.parse(text);
+      } catch {
+        body = text;
+      }
+    }
     throw new CoreApiError(
       response.status,
       messageFromBody(response.status, text),
+      body,
     );
   }
-  const body = (await response.json()) as { token?: unknown };
-  if (typeof body.token !== "string" || body.token === "") {
-    throw new CoreApiError(500, "Core returned no owner credential.");
-  }
-  return body.token;
+  const body = (await response.json()) as AuthSession;
+  setAuthSession(body);
+  return body;
 }
 
 const BASE = "/core-api";
-const TOKEN_KEY = "factory-api-token";
 
-export function getToken(): string | null {
-  return sessionStorage.getItem(TOKEN_KEY);
+function setAuthSession(session: AuthSession): void {
+  csrfToken = session.csrfToken ?? readCsrfCookie();
 }
 
-export function setToken(token: string): void {
-  sessionStorage.setItem(TOKEN_KEY, token);
+function readCsrfCookie(): string | null {
+  if (typeof document === "undefined") return null;
+  const item = document.cookie
+    .split(";")
+    .map((part) => part.trim())
+    .find((part) => part.startsWith("factory_csrf="));
+  if (!item) return null;
+  try {
+    return decodeURIComponent(item.slice("factory_csrf=".length));
+  } catch {
+    return null;
+  }
 }
 
-export function clearToken(): void {
-  sessionStorage.removeItem(TOKEN_KEY);
+export async function getAuthSession(): Promise<AuthSession> {
+  const response = await fetch(`${BASE}/auth/session`, {
+    credentials: "same-origin",
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    let body: unknown = null;
+    if (text !== "") {
+      try {
+        body = JSON.parse(text);
+      } catch {
+        body = text;
+      }
+    }
+    throw new CoreApiError(
+      response.status,
+      messageFromBody(response.status, text),
+      body,
+    );
+  }
+  const session = (await response.json()) as AuthSession;
+  setAuthSession(session);
+  return session;
+}
+
+export async function logoutCurrentDevice(): Promise<void> {
+  await authPost("/auth/logout");
+  csrfToken = null;
+}
+
+export async function logoutAllDevices(): Promise<void> {
+  await authPost("/auth/logout-all");
+  csrfToken = null;
+}
+
+async function accessRequest<T>(
+  path: string,
+  init: RequestInit = {},
+): Promise<T> {
+  const headers = new Headers(init.headers);
+  if (init.body !== undefined) headers.set("content-type", "application/json");
+  const method = (init.method ?? "GET").toUpperCase();
+  if (method !== "GET" && method !== "HEAD") {
+    const token = csrfToken ?? readCsrfCookie();
+    if (token) headers.set("x-factory-csrf", token);
+  }
+  const response = await fetch(`${BASE}${path}`, {
+    ...init,
+    credentials: "same-origin",
+    headers,
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    let body: unknown = null;
+    if (text !== "") {
+      try {
+        body = JSON.parse(text);
+      } catch {
+        body = text;
+      }
+    }
+    throw new CoreApiError(
+      response.status,
+      messageFromBody(response.status, text),
+      body,
+    );
+  }
+  if (response.status === 204) return undefined as T;
+  return (await response.json()) as T;
+}
+
+async function authPost(path: string): Promise<void> {
+  const headers = new Headers({ "content-type": "application/json" });
+  const token = csrfToken ?? readCsrfCookie();
+  if (token) headers.set("x-factory-csrf", token);
+  const response = await fetch(`${BASE}${path}`, {
+    method: "POST",
+    credentials: "same-origin",
+    headers,
+    body: "{}",
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    let body: unknown = null;
+    if (text !== "") {
+      try {
+        body = JSON.parse(text);
+      } catch {
+        body = text;
+      }
+    }
+    throw new CoreApiError(
+      response.status,
+      messageFromBody(response.status, text),
+      body,
+    );
+  }
 }
 
 export function newIdempotencyKey(): string {
@@ -929,11 +2186,28 @@ export function newIdempotencyKey(): string {
 
 export class CoreApiError extends Error {
   readonly status: number;
+  readonly code: string | null;
+  readonly reason: string | null;
+  readonly body: unknown;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, body?: unknown) {
     super(message);
     this.name = "CoreApiError";
     this.status = status;
+    this.body = body ?? null;
+    const record =
+      typeof body === "object" && body !== null
+        ? (body as Record<string, unknown>)
+        : null;
+    this.code = record && typeof record.code === "string" ? record.code : null;
+    const authorization =
+      record && typeof record.authorization === "object"
+        ? (record.authorization as Record<string, unknown>)
+        : null;
+    this.reason =
+      authorization && typeof authorization.reason === "string"
+        ? authorization.reason
+        : this.code;
   }
 }
 
@@ -952,21 +2226,34 @@ function messageFromBody(status: number, text: string): string {
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const token = getToken();
-  if (!token) {
-    throw new CoreApiError(401, "Office is locked.");
-  }
   const headers = new Headers(init.headers);
-  headers.set("authorization", `Bearer ${token}`);
   if (init.body !== undefined) {
     headers.set("content-type", "application/json");
   }
-  const response = await fetch(`${BASE}${path}`, { ...init, headers });
+  const method = (init.method ?? "GET").toUpperCase();
+  if (method !== "GET" && method !== "HEAD") {
+    const token = csrfToken ?? readCsrfCookie();
+    if (token) headers.set("x-factory-csrf", token);
+  }
+  const response = await fetch(`${BASE}${path}`, {
+    ...init,
+    credentials: "same-origin",
+    headers,
+  });
   if (!response.ok) {
     const text = await response.text();
+    let body: unknown = null;
+    if (text !== "") {
+      try {
+        body = JSON.parse(text);
+      } catch {
+        body = text;
+      }
+    }
     throw new CoreApiError(
       response.status,
       messageFromBody(response.status, text),
+      body,
     );
   }
   if (response.status === 204) {
@@ -975,7 +2262,438 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return (await response.json()) as T;
 }
 
+export interface GitHubConnection {
+  configured: boolean;
+  enabled: boolean;
+  login: string | null;
+  scopes: string[];
+  scopes_reported: boolean;
+  credential_fingerprint: string;
+  revision: number;
+  verified_at: string | null;
+  revoked_at: string | null;
+  updated_at: string | null;
+  detail: string;
+}
+
+export interface GitHubConnectionAuditEntry {
+  audit_id: string;
+  revision: number;
+  action: string;
+  actor: string;
+  detail: string;
+  created_at: string;
+}
+
+export interface GitHubConnectionState {
+  connection: GitHubConnection;
+  audit: GitHubConnectionAuditEntry[];
+}
+
+export interface GitHubRepository {
+  id: number | null;
+  full_name: string;
+  private: boolean;
+  default_branch: string;
+  html_url: string;
+  pushed_at: string | null;
+  permissions?: GitHubRepositoryPermissions | null;
+}
+
+export interface GitHubRepositoryList {
+  repositories: GitHubRepository[];
+  fetched_at: string;
+  rate_limited: boolean;
+  next_allowed_at: string | null;
+  detail: string;
+}
+
+export interface ProjectGitHubBinding {
+  project_id: string;
+  owner: string;
+  repo: string;
+  repo_full_name: string;
+  default_branch: string;
+  repository_github_id: number | null;
+  bound_at: string;
+  updated_at: string;
+}
+
+export interface GitHubSyncState {
+  project_id: string;
+  repo_full_name: string;
+  status:
+    | "NEVER_SYNCED"
+    | "OK"
+    | "STALE"
+    | "RATE_LIMITED"
+    | "DENIED"
+    | "NOT_FOUND"
+    | "ERROR"
+    | "REVOKED";
+  detail: string;
+  etag: string | null;
+  last_synced_at: string | null;
+  last_attempt_at: string | null;
+  next_allowed_at: string | null;
+  last_status_code: number | null;
+  fetched: number;
+  created: number;
+  updated: number;
+  removed: number;
+  total_known: number;
+  truncated: boolean;
+  stale: boolean;
+  updated_at: string;
+}
+
+export interface GitHubLabel {
+  name: string;
+  color: string | null;
+}
+
+export interface GitHubIssueSummary {
+  number: number;
+  github_id: number;
+  title: string;
+  state: "open" | "closed";
+  state_reason: string | null;
+  labels: GitHubLabel[];
+  author: string | null;
+  author_id: number | null;
+  author_association: string | null;
+  html_url: string;
+  comments: number;
+  created_at: string;
+  updated_at: string;
+  closed_at: string | null;
+  synced_at: string;
+  content_hash: string;
+}
+
+export interface GitHubIssueDetail extends GitHubIssueSummary {
+  body: string;
+  body_truncated: boolean;
+}
+
+export interface GitHubIssueList {
+  items: GitHubIssueSummary[];
+  total: number;
+  limit: number;
+  offset: number;
+  synced_at: string | null;
+  stale: boolean;
+  sync_status: "UNBOUND" | GitHubSyncState["status"];
+  last_error: string | null;
+  next_allowed_at: string | null;
+  truncated: boolean;
+  binding: ProjectGitHubBinding | null;
+}
+
+export interface GitHubIssueFilters {
+  state?: "all" | "open" | "closed";
+  label?: string;
+  query?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface ProjectGitHubBindingResult {
+  binding: ProjectGitHubBinding;
+  sync_state: GitHubSyncState | null;
+}
+
+export interface IssueIntakePolicy {
+  id: string;
+  project_id: string;
+  revision: number;
+  enabled: boolean;
+  repository_full_name: string;
+  repository_github_id: number | null;
+  connection_revision: number;
+  required_labels: string[];
+  excluded_labels: string[];
+  author_ids: number[];
+  author_associations: string[];
+  profile_id: string;
+  profile_revision_id: string;
+  profile_revision: number;
+  profile_hash: string;
+  project_config_hash: string;
+  allowed_paths: string[];
+  capabilities: string[];
+  max_risk_class: "R0";
+  max_issues: number;
+  max_concurrent: number;
+  max_cost_micros_per_issue: number;
+  max_total_cost_micros: number;
+  max_attempts: number;
+  max_sessions: number;
+  max_turns: number;
+  max_wall_clock_secs: number;
+  expires_at: string;
+  acknowledged: boolean;
+  principal_id: string;
+  principal_label: string | null;
+  reason: string;
+  content_hash: string;
+  created_at: string;
+}
+
+export interface IssueIntakeEligibility {
+  eligible: boolean;
+  reasons: string[];
+}
+
+export interface IssueIntakeBatchItem {
+  id: string;
+  batch_id: string;
+  project_id: string;
+  repository_full_name: string;
+  repository_github_id: number;
+  issue_number: number;
+  github_issue_id: number;
+  content_hash: string;
+  issue_updated_at: string;
+  author_login: string | null;
+  author_id: number | null;
+  author_association: string | null;
+  labels: string[];
+  state: "PENDING" | "RECONCILED" | "INELIGIBLE" | "STALE" | "REVOKED";
+  eligibility_reasons: string[];
+  reserved_cost_micros: number;
+  intake_request_id: string | null;
+  queue_item_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface IssueIntakeBatch {
+  id: string;
+  project_id: string;
+  policy_id: string;
+  policy_revision: number;
+  policy_hash: string;
+  delegation_id: string;
+  repository_full_name: string;
+  repository_github_id: number;
+  connection_revision: number;
+  profile_id: string;
+  profile_revision_id: string;
+  profile_revision: number;
+  profile_hash: string;
+  project_config_hash: string;
+  max_issues: number;
+  max_concurrent: number;
+  max_cost_micros_per_issue: number;
+  max_total_cost_micros: number;
+  reserved_cost_micros: number;
+  reserved_issues: number;
+  status: "ACTIVE" | "REVOKED" | "EXPIRED" | "EXHAUSTED";
+  acknowledged: boolean;
+  principal_id: string;
+  principal_label: string | null;
+  reason: string;
+  idempotency_key: string;
+  batch_hash: string;
+  expires_at: string;
+  created_at: string;
+  updated_at: string;
+  revoked_at: string | null;
+}
+
+export interface IssueIntakeQueueItem {
+  id: string;
+  project_id: string;
+  batch_id: string;
+  batch_item_id: string;
+  repository_full_name: string;
+  repository_github_id: number;
+  issue_number: number;
+  github_issue_id: number;
+  content_hash: string;
+  connection_revision: number;
+  policy_revision: number;
+  status:
+    | "PENDING"
+    | "LEASED"
+    | "RECONCILED"
+    | "BLOCKED"
+    | "STALE"
+    | "INELIGIBLE"
+    | "REVOKED";
+  lease_token: string | null;
+  lease_expires_at: string | null;
+  attempts: number;
+  max_attempts: number;
+  next_attempt_at: string | null;
+  reason: string | null;
+  reasons: string[];
+  intake_request_id: string | null;
+  lead_request_id: string | null;
+  action_id: string | null;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+}
+
+export interface IssueIntakeBatchState {
+  batch: IssueIntakeBatch;
+  items: Array<{
+    item: IssueIntakeBatchItem;
+    current_eligibility: IssueIntakeEligibility | null;
+  }>;
+  remaining_issues: number;
+  remaining_cost_micros: number;
+}
+
+export interface IssueIntakeDispatchResult {
+  status:
+    | "RECONCILED"
+    | "STALE"
+    | "INELIGIBLE"
+    | "BLOCKED"
+    | "REVOKED"
+    | "EXPIRED"
+    | "IDLE";
+  reasons: string[];
+  queue: IssueIntakeQueueItem;
+  intake: {
+    id: string;
+    lead_request_id: string;
+    action_id: string;
+    objective: string;
+    mode: "REVIEW_PLAN" | "AUTONOMOUS";
+  } | null;
+  campaign_started: false;
+  provider_calls: 0;
+  detail?: string;
+}
+
+export interface IssueIntakeAuditEntry {
+  audit_id: string;
+  project_id: string;
+  policy_id: string | null;
+  batch_id: string | null;
+  queue_item_id: string | null;
+  action: string;
+  actor: string;
+  principal_id: string;
+  reason: string;
+  detail: string;
+  created_at: string;
+}
+
+export interface IssueIntakeState {
+  project_id: string;
+  enabled: boolean;
+  policy: IssueIntakePolicy | null;
+  policy_history: IssueIntakePolicy[];
+  batches: IssueIntakeBatchState[];
+  queue: IssueIntakeQueueItem[];
+  audit: IssueIntakeAuditEntry[];
+  binding: ProjectGitHubBinding | null;
+  connection_enabled: boolean;
+  connection_revision: number | null;
+  limits: {
+    max_batch_issues: number;
+    max_concurrent: number;
+    max_queue_attempts: number;
+    queue_lease_seconds: number;
+    autonomous_start: false;
+    campaign_start: false;
+    provider_calls: false;
+  };
+}
+
+export interface IssueIntakePolicyRequest {
+  repository_full_name: string;
+  repository_github_id: number;
+  required_labels: string[];
+  excluded_labels: string[];
+  author_ids: number[];
+  author_associations: string[];
+  execution_profile_id: string;
+  profile_revision_id: string;
+  profile_revision: number;
+  profile_hash: string;
+  project_config_hash: string;
+  allowed_paths: string[];
+  capabilities: string[];
+  max_issues: number;
+  max_concurrent: number;
+  max_cost_micros_per_issue: number;
+  max_total_cost_micros: number;
+  max_attempts: number;
+  max_sessions: number;
+  max_turns: number;
+  max_wall_clock_secs: number;
+  expires_at: string;
+  acknowledge: boolean;
+  reason: string;
+  idempotency_key: string;
+}
+
+export interface IssueIntakeBatchRequest {
+  policy_id: string;
+  expected_policy_revision: number;
+  expected_policy_hash: string;
+  items: Array<{
+    number: number;
+    github_issue_id: number;
+    content_hash: string;
+    updated_at: string;
+  }>;
+  max_total_cost_micros: number;
+  expires_at: string;
+  acknowledge: boolean;
+  reason: string;
+  idempotency_key: string;
+}
+
 export const coreApi = {
+  getAccessOverview: () => accessRequest<AccessOverview>("/auth/access"),
+  createDeviceChallenge: () =>
+    accessRequest<DeviceChallenge>("/auth/device-challenges", {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
+  cancelDeviceChallenge: (challengeId: string) =>
+    accessRequest<DeviceSessionView>(
+      `/auth/device-challenges/${encodeURIComponent(challengeId)}/cancel`,
+      { method: "POST", body: JSON.stringify({}) },
+    ),
+  listDeviceSessions: () =>
+    accessRequest<{ devices: DeviceSessionView[] }>("/auth/devices"),
+  getSecurityAudit: () =>
+    accessRequest<{ entries: SecurityAuditEntry[] }>("/auth/devices/audit"),
+  approveDevice: (deviceId: string, verificationCode: string) =>
+    accessRequest<DeviceSessionView>(
+      `/auth/devices/${encodeURIComponent(deviceId)}/approve`,
+      { method: "POST", body: JSON.stringify({ verificationCode }) },
+    ),
+  rejectDevice: (deviceId: string) =>
+    accessRequest<DeviceSessionView>(
+      `/auth/devices/${encodeURIComponent(deviceId)}/reject`,
+      { method: "POST", body: JSON.stringify({}) },
+    ),
+  revokeDevice: (deviceId: string) =>
+    accessRequest<void>(`/auth/devices/${encodeURIComponent(deviceId)}`, {
+      method: "DELETE",
+    }),
+  claimDevice: (challengeId: string, deviceName: string) =>
+    accessRequest<DeviceClaim>(
+      `/auth/device-claims/${encodeURIComponent(challengeId)}`,
+      {
+        method: "POST",
+        body: JSON.stringify({ deviceName }),
+      },
+    ),
+  pollDeviceClaim: (challengeId: string, pollToken: string) =>
+    accessRequest<DeviceClaimPoll>(
+      `/auth/device-claims/${encodeURIComponent(challengeId)}/poll`,
+      { method: "POST", body: JSON.stringify({ pollToken }) },
+    ),
   health: () => request<Health>("/health"),
   listProjects: () => request<Project[]>("/projects"),
   listProviders: () =>
@@ -996,6 +2714,10 @@ export const coreApi = {
       `/settings/providers/${encodeURIComponent(provider)}/test`,
       { method: "POST" },
     ),
+  listProviderModels: (provider: string) =>
+    request<ProviderModelDiscovery>(
+      `/settings/providers/${encodeURIComponent(provider)}/models`,
+    ),
   revokeProviderCredential: (provider: string) =>
     request<ProviderView>(
       `/settings/providers/${encodeURIComponent(provider)}/credential`,
@@ -1004,6 +2726,40 @@ export const coreApi = {
   providerAudit: (provider: string) =>
     request<{ audit: ProviderAudit[] }>(
       `/settings/providers/${encodeURIComponent(provider)}/audit`,
+    ),
+  listExecutionProfiles: () =>
+    request<ExecutionProfileList>("/execution-profiles"),
+  getExecutionProfile: (id: string) =>
+    request<ExecutionProfile>(`/execution-profiles/${encodeURIComponent(id)}`),
+  createExecutionProfile: (input: ExecutionProfileWrite) =>
+    request<ExecutionProfile>("/execution-profiles", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  updateExecutionProfile: (id: string, input: UpdateExecutionProfileRequest) =>
+    request<ExecutionProfile>(`/execution-profiles/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      body: JSON.stringify(input),
+    }),
+  setExecutionProfileDefault: (
+    id: string,
+    input: ExecutionProfileDefaultRequest,
+  ) =>
+    request<ExecutionProfileDefaultBinding>(
+      `/execution-profiles/${encodeURIComponent(id)}/default`,
+      { method: "POST", body: JSON.stringify(input) },
+    ),
+  clearExecutionProfileDefault: (
+    id: string,
+    input: ExecutionProfileDefaultRequest,
+  ) =>
+    request<void>(`/execution-profiles/${encodeURIComponent(id)}/default`, {
+      method: "DELETE",
+      body: JSON.stringify(input),
+    }),
+  getProjectExecutionProfile: (projectId: string) =>
+    request<ResolvedExecutionProfile>(
+      `/projects/${encodeURIComponent(projectId)}/execution-profile`,
     ),
   createDelegation: (input: NewDelegationRequest) =>
     request<StandingDelegation>("/delegations", {
@@ -1019,12 +2775,38 @@ export const coreApi = {
     }),
   getProjectConfig: (projectId: string) =>
     request<ProjectConfig>(`/projects/${encodeURIComponent(projectId)}/config`),
+  listProjectRefs: (projectId: string) =>
+    request<ProjectRefsProjection>(
+      `/projects/${encodeURIComponent(projectId)}/refs`,
+    ),
+  listProjectFiles: (
+    projectId: string,
+    options: { ref?: string; path?: string } = {},
+  ) => {
+    const params = new URLSearchParams();
+    if (options.ref) params.set("ref", options.ref);
+    if (options.path) params.set("path", options.path);
+    const query = params.toString();
+    return request<ProjectTreeProjection>(
+      `/projects/${encodeURIComponent(projectId)}/files${query ? `?${query}` : ""}`,
+    );
+  },
+  getProjectFile: (
+    projectId: string,
+    options: { ref?: string; path: string },
+  ) => {
+    const params = new URLSearchParams({ path: options.path });
+    if (options.ref) params.set("ref", options.ref);
+    return request<ProjectFileProjection>(
+      `/projects/${encodeURIComponent(projectId)}/file?${params.toString()}`,
+    );
+  },
   updateProjectConfig: (projectId: string, input: UpdateProjectConfig) =>
     request<ProjectConfig>(
       `/projects/${encodeURIComponent(projectId)}/config`,
       { method: "PUT", body: JSON.stringify(input) },
     ),
-  listDelegations: () => request<StandingDelegation[]>("/delegations"),
+  listDelegations: () => request<DelegationProjection[]>("/delegations"),
   listLeadRequests: () => request<LeadRequestRecord[]>("/lead/requests"),
   getLeadRequest: (id: string) =>
     request<LeadRequestProjection>(`/lead/requests/${encodeURIComponent(id)}`),
@@ -1043,21 +2825,110 @@ export const coreApi = {
       `/lead/requests/${encodeURIComponent(id)}/freeze`,
       { method: "POST" },
     ),
-  startLeadRequest: (id: string, authorization?: NewCampaignAuthorization) =>
+  approveLeadRequest: (id: string, input: ApproveLeadRequestInput) =>
     request<StartLeadCampaignResult>(
-      `/lead/requests/${encodeURIComponent(id)}/start`,
+      `/lead/requests/${encodeURIComponent(id)}/approve`,
       {
         method: "POST",
-        ...(authorization === undefined
-          ? {}
-          : { body: JSON.stringify(authorization) }),
+        body: JSON.stringify({
+          expected_request_hash: input.expected_request_hash,
+          expected_plan_hash: input.expected_plan_hash,
+          expected_spec_sha256: input.expected_spec_sha256,
+          expected_config_hash: input.expected_config_hash,
+          expected_delegation_hash: input.expected_delegation_hash,
+          ...(input.profile_revision_id === undefined
+            ? {}
+            : { profile_revision_id: input.profile_revision_id }),
+          ...(input.profile_hash === undefined
+            ? {}
+            : { profile_hash: input.profile_hash }),
+          rationale: input.rationale,
+          ...(input.provider_authorization === undefined
+            ? {}
+            : {
+                provider_authorization: campaignAuthorizationWire(
+                  input.provider_authorization,
+                ),
+              }),
+        }),
       },
+    ),
+  withdrawLeadRequest: (id: string, reason: string) =>
+    request<LeadWithdrawalRecord>(
+      `/lead/requests/${encodeURIComponent(id)}/withdraw`,
+      { method: "POST", body: JSON.stringify({ reason }) },
+    ),
+  listIntakeRequests: (filters: IntakeRequestFilters = {}) => {
+    const params = new URLSearchParams();
+    if (filters.state) params.set("state", filters.state);
+    if (filters.projectId) params.set("project_id", filters.projectId);
+    if (filters.limit !== undefined) params.set("limit", String(filters.limit));
+    if (filters.offset !== undefined)
+      params.set("offset", String(filters.offset));
+    const query = params.toString();
+    return request<IntakeRequestSummary[]>(
+      `/intake/requests${query ? `?${query}` : ""}`,
+    );
+  },
+  getIntakeRequest: (id: string) =>
+    request<IntakeRequestProjection>(
+      `/intake/requests/${encodeURIComponent(id)}`,
+    ),
+  createIntakeRequest: (input: NewIntakeRequest) =>
+    request<IntakeRequestProjection>("/intake/requests", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  assessIntakeRequest: (id: string) =>
+    request<IntakeRequestProjection>(
+      `/intake/requests/${encodeURIComponent(id)}/assess`,
+      { method: "POST" },
+    ),
+  approveIntakeRequest: (id: string, input: ApproveIntakeRequest) =>
+    request<IntakeRequestProjection>(
+      `/intake/requests/${encodeURIComponent(id)}/approve`,
+      { method: "POST", body: JSON.stringify(input) },
+    ),
+  messageIntakeRequest: (id: string, input: IntakeMessageRequest) =>
+    request<IntakeRequestProjection>(
+      `/intake/requests/${encodeURIComponent(id)}/message`,
+      { method: "POST", body: JSON.stringify(input) },
+    ),
+  cancelIntakeRequest: (id: string, reason: string) =>
+    request<IntakeRequestProjection>(
+      `/intake/requests/${encodeURIComponent(id)}/cancel`,
+      { method: "POST", body: JSON.stringify({ reason }) },
+    ),
+  enableExecutionPolicy: (projectId: string, input: ExecutionPolicyRequest) =>
+    request<ExecutionPolicyResult>(
+      `/projects/${encodeURIComponent(projectId)}/execution-policy`,
+      { method: "POST", body: JSON.stringify(input) },
     ),
   registerProject: (input: NewProjectRequest) =>
     request<Project>("/projects", {
       method: "POST",
       body: JSON.stringify(input),
     }),
+  getProjectImportOptions: () =>
+    request<ProjectImportOptions>("/projects/import/options"),
+  importGitHubProject: (input: GitHubProjectImportRequest) =>
+    request<GitHubProjectImportResult>("/projects/import/github", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  getProjectSummary: (projectId: string) =>
+    request<ProjectSummary>(
+      `/projects/${encodeURIComponent(projectId)}/summary`,
+    ),
+  getProjectDiscovery: (projectId: string) =>
+    request<ProjectDiscoveryView>(
+      `/projects/${encodeURIComponent(projectId)}/discovery`,
+    ),
+  scanProjectDiscovery: (projectId: string) =>
+    request<ProjectDiscoveryRecord>(
+      `/projects/${encodeURIComponent(projectId)}/discovery`,
+      { method: "POST" },
+    ),
   listActions: () => request<Action[]>("/actions"),
   createAction: (input: NewActionRequest) =>
     request<Action>("/actions", {
@@ -1071,6 +2942,85 @@ export const coreApi = {
     request<CandidateDiffSummary>(
       `/campaigns/${encodeURIComponent(campaignId)}/candidates/${encodeURIComponent(candidateId)}/diff`,
     ),
+  getProjectGitHub: (projectId: string) =>
+    request<CandidatePullRequestBindingResult>(
+      `/projects/${encodeURIComponent(projectId)}/github`,
+    ),
+  getCandidatePullRequest: (
+    campaignId: string,
+    candidateId: string,
+    number: number,
+  ) =>
+    request<CandidatePullRequestStatus>(
+      `/campaigns/${encodeURIComponent(campaignId)}/candidates/${encodeURIComponent(candidateId)}/pull-request?number=${encodeURIComponent(String(number))}`,
+    ),
+  getCandidatePullRequestDiff: (
+    campaignId: string,
+    candidateId: string,
+    number: number,
+  ) =>
+    request<CandidatePullRequestDiffResult>(
+      `/campaigns/${encodeURIComponent(campaignId)}/candidates/${encodeURIComponent(candidateId)}/pull-request/diff?number=${encodeURIComponent(String(number))}`,
+    ),
+  getCandidatePullRequestComments: (
+    campaignId: string,
+    candidateId: string,
+    number: number,
+  ) =>
+    request<CandidatePullRequestCommentsResult>(
+      `/campaigns/${encodeURIComponent(campaignId)}/candidates/${encodeURIComponent(candidateId)}/pull-request/comments?number=${encodeURIComponent(String(number))}`,
+    ),
+  openCandidatePullRequest: (
+    campaignId: string,
+    candidateId: string,
+    input: {
+      title: string;
+      body?: string;
+      head: string;
+      base?: string;
+      draft?: boolean;
+    },
+  ) =>
+    request<CandidatePullRequestOpenResult>(
+      `/campaigns/${encodeURIComponent(campaignId)}/candidates/${encodeURIComponent(candidateId)}/pull-request`,
+      { method: "POST", body: JSON.stringify(input) },
+    ),
+  commentOnCandidatePullRequest: (
+    campaignId: string,
+    candidateId: string,
+    number: number,
+    body: string,
+  ) =>
+    request<CandidatePullRequestCommentResult>(
+      `/campaigns/${encodeURIComponent(campaignId)}/candidates/${encodeURIComponent(candidateId)}/pull-request/comments`,
+      { method: "POST", body: JSON.stringify({ number, body }) },
+    ),
+  requestCandidatePullRequestReview: (
+    campaignId: string,
+    candidateId: string,
+    number: number,
+    reviewers: string[],
+  ) =>
+    request<CandidatePullRequestReviewResult>(
+      `/campaigns/${encodeURIComponent(campaignId)}/candidates/${encodeURIComponent(candidateId)}/pull-request/review`,
+      { method: "POST", body: JSON.stringify({ number, reviewers }) },
+    ),
+  mergeCandidatePullRequest: (
+    campaignId: string,
+    candidateId: string,
+    input: {
+      number: number;
+      expected_head_sha: string;
+      merge_method: "merge" | "squash" | "rebase";
+      confirmed: boolean;
+      commit_title?: string;
+      commit_message?: string;
+    },
+  ) =>
+    request<CandidatePullRequestMergeResult>(
+      `/campaigns/${encodeURIComponent(campaignId)}/candidates/${encodeURIComponent(candidateId)}/pull-request/merge`,
+      { method: "POST", body: JSON.stringify(input) },
+    ),
   createCampaign: (input: NewCampaignRequest) =>
     request<Campaign>("/campaigns", {
       method: "POST",
@@ -1081,22 +3031,30 @@ export const coreApi = {
       method: "POST",
       body: JSON.stringify({ reason }),
     }),
-  authorizeFixtureCampaign: (campaignId: string) =>
-    request<CampaignAuthorization>(
+  authorizeFixtureCampaign: (campaignId: string) => {
+    const authorization: NewCampaignAuthorization = {
+      authorizationId: `office-${campaignId}`,
+      riskClass: "R0",
+      executionMode: "FIXTURE",
+      actor: "office-operator",
+      rationale: "deterministic fixture journey from Office",
+      authorizedPaths: ["src"],
+      provider: "",
+      model: "",
+      providerMode: "",
+      delegationId: "",
+      allowedTools: [],
+      operations: { ...DEFAULT_OPERATION_LIMITS },
+      progress: { ...DEFAULT_PROGRESS_POLICY },
+    };
+    return request<CampaignAuthorization>(
       `/campaigns/${encodeURIComponent(campaignId)}/authorize`,
       {
         method: "POST",
-        body: JSON.stringify({
-          authorization_id: `office-${campaignId}`,
-          risk_class: "R0",
-          execution_mode: "FIXTURE",
-          actor: "office-operator",
-          rationale: "deterministic fixture journey from Office",
-          authorized_paths: ["src"],
-          max_attempts: 1,
-        }),
+        body: JSON.stringify(campaignAuthorizationWire(authorization)),
       },
-    ),
+    );
+  },
   createCampaignRun: (campaignId: string) =>
     request<Run>(`/campaigns/${encodeURIComponent(campaignId)}/runs`, {
       method: "POST",
@@ -1119,6 +3077,109 @@ export const coreApi = {
     request<ProviderTurnBudget>("/provider/turn_reservations/budget"),
   getObservability: () => request<ObservabilityStatus>("/observability"),
   getOverview: () => request<OfficeOverview>("/office/overview"),
+  getGitHubConnection: () =>
+    request<GitHubConnectionState>("/integrations/github"),
+  updateGitHubConnection: (token: string) =>
+    request<GitHubConnectionState>("/integrations/github", {
+      method: "PUT",
+      body: JSON.stringify({ token }),
+    }),
+  disconnectGitHub: () =>
+    request<GitHubConnectionState>("/integrations/github", {
+      method: "DELETE",
+    }),
+  listGitHubRepositories: (query = "") => {
+    const params = new URLSearchParams();
+    if (query) params.set("query", query);
+    const suffix = params.toString();
+    return request<GitHubRepositoryList>(
+      `/integrations/github/repositories${suffix ? `?${suffix}` : ""}`,
+    );
+  },
+  bindProjectGitHub: (
+    projectId: string,
+    input: {
+      owner: string;
+      repo: string;
+      default_branch: string;
+      repository_github_id?: number | null;
+    },
+  ) =>
+    request<ProjectGitHubBindingResult>(
+      `/projects/${encodeURIComponent(projectId)}/github`,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+      },
+    ),
+  syncProjectIssues: (projectId: string) =>
+    request<GitHubSyncState>(
+      `/projects/${encodeURIComponent(projectId)}/issues/sync`,
+      { method: "POST" },
+    ),
+  listProjectIssues: (projectId: string, filters: GitHubIssueFilters = {}) => {
+    const params = new URLSearchParams();
+    if (filters.state) params.set("state", filters.state);
+    if (filters.label) params.set("label", filters.label);
+    if (filters.query) params.set("query", filters.query);
+    if (filters.limit !== undefined) params.set("limit", String(filters.limit));
+    if (filters.offset !== undefined)
+      params.set("offset", String(filters.offset));
+    const suffix = params.toString();
+    return request<GitHubIssueList>(
+      `/projects/${encodeURIComponent(projectId)}/issues${suffix ? `?${suffix}` : ""}`,
+    );
+  },
+  getProjectIssue: (projectId: string, number: number) =>
+    request<GitHubIssueDetail>(
+      `/projects/${encodeURIComponent(projectId)}/issues/${number}`,
+    ),
+  getIssueIntake: (projectId: string) =>
+    request<IssueIntakeState>(
+      `/projects/${encodeURIComponent(projectId)}/issue-intake`,
+    ),
+  configureIssueIntakePolicy: (
+    projectId: string,
+    input: IssueIntakePolicyRequest,
+  ) =>
+    request<{ policy: IssueIntakePolicy; created: boolean }>(
+      `/projects/${encodeURIComponent(projectId)}/issue-intake/policy`,
+      { method: "PUT", body: JSON.stringify(input) },
+    ),
+  disableIssueIntakePolicy: (
+    projectId: string,
+    input: { reason: string; idempotency_key: string },
+  ) =>
+    request<{ policy: IssueIntakePolicy; created: boolean }>(
+      `/projects/${encodeURIComponent(projectId)}/issue-intake/policy/disable`,
+      { method: "POST", body: JSON.stringify(input) },
+    ),
+  createIssueIntakeBatch: (projectId: string, input: IssueIntakeBatchRequest) =>
+    request<{
+      batch: IssueIntakeBatch;
+      items: IssueIntakeBatchItem[];
+      created: boolean;
+    }>(`/projects/${encodeURIComponent(projectId)}/issue-intake/batches`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  revokeIssueIntakeBatch: (
+    projectId: string,
+    batchId: string,
+    input: { reason: string },
+  ) =>
+    request<{ batch: IssueIntakeBatch }>(
+      `/projects/${encodeURIComponent(projectId)}/issue-intake/batches/${encodeURIComponent(batchId)}/revoke`,
+      { method: "POST", body: JSON.stringify(input) },
+    ),
+  dispatchIssueIntake: (projectId: string, batchId?: string) =>
+    request<IssueIntakeDispatchResult>(
+      `/projects/${encodeURIComponent(projectId)}/issue-intake/queue/dispatch`,
+      {
+        method: "POST",
+        body: JSON.stringify(batchId ? { batch_id: batchId } : {}),
+      },
+    ),
   listParticipants: (filters: ParticipantFilters = {}) => {
     const params = new URLSearchParams();
     if (filters.role) params.set("role", filters.role);

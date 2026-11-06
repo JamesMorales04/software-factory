@@ -83,7 +83,10 @@ pub struct ThreadLoadedPage {
 pub struct ThreadStartParams {
     pub cwd: String,
     pub approval_policy: DenyApprovalPolicy,
-    pub sandbox: ReadOnlySandbox,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<ReadOnlySandbox>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -96,6 +99,8 @@ pub struct ThreadStartParams {
     pub base_instructions: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub developer_instructions: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allow_provider_model_fallback: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -200,13 +205,15 @@ impl Default for ThreadStartParams {
         Self {
             cwd: String::new(),
             approval_policy: DenyApprovalPolicy::Never,
-            sandbox: ReadOnlySandbox::ReadOnly,
+            sandbox: Some(ReadOnlySandbox::ReadOnly),
+            permissions: None,
             model: None,
             model_provider: None,
             ephemeral: None,
             dynamic_tools: None,
             base_instructions: None,
             developer_instructions: None,
+            allow_provider_model_fallback: Some(false),
         }
     }
 }
@@ -247,6 +254,33 @@ pub struct TurnStartResponse {
     pub turn: TurnSummary,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewStartParams {
+    pub thread_id: String,
+    pub target: ReviewTarget,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum ReviewTarget {
+    Commit {
+        sha: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+    },
+    Custom {
+        instructions: String,
+    },
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewStartResponse {
+    pub review_thread_id: String,
+    pub turn: TurnSummary,
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TurnCompletedParams {
@@ -259,6 +293,62 @@ pub struct TurnCompletedParams {
 pub struct TurnInterruptParams {
     pub thread_id: String,
     pub turn_id: String,
+}
+
+/// Read the native review verdict from an `ExitedReviewMode` item. Codex has
+/// used both snake_case `review_output` and camelCase `reviewOutput`; older
+/// fixtures used a prose `review` string. Accept a structured object or string
+/// and never treat an empty value as a verdict.
+pub fn review_item_text(item: &Value) -> Option<String> {
+    for key in ["review_output", "reviewOutput", "review"] {
+        if let Some(value) = item.get(key) {
+            match value {
+                Value::String(text) if !text.trim().is_empty() => return Some(text.clone()),
+                Value::String(_) | Value::Null => {}
+                other => return Some(other.to_string()),
+            }
+        }
+    }
+    None
+}
+
+/// Extract the final review text from a `thread/read` response. Current Codex
+/// emits `ExitedReviewMode.review_output` as a structured JSON object; older
+/// fixtures used a lowercase `exitedReviewMode.review` string. Prefer the
+/// structured verdict and fall back to the last agent message.
+pub fn review_text(thread: &Value) -> Option<String> {
+    let turns = thread.pointer("/thread/turns")?.as_array()?;
+    let mut review = None;
+    let mut message = None;
+    for turn in turns {
+        let Some(items) = turn.get("items").and_then(Value::as_array) else {
+            continue;
+        };
+        for item in items {
+            let kind = item.get("type").and_then(Value::as_str).unwrap_or_default();
+            if kind.eq_ignore_ascii_case("exitedReviewMode") {
+                if let Some(text) = review_item_text(item) {
+                    review = Some(text);
+                    continue;
+                }
+            } else if kind.eq_ignore_ascii_case("agentMessage") {
+                if let Some(text) = item.get("text").and_then(Value::as_str)
+                    && !text.trim().is_empty()
+                {
+                    message = Some(text.to_owned());
+                } else if let Some(content) = item.get("content").and_then(Value::as_array)
+                    && let Some(text) = content.iter().find_map(|part| {
+                        part.get("text")
+                            .and_then(Value::as_str)
+                            .filter(|text| !text.trim().is_empty())
+                    })
+                {
+                    message = Some(text.to_owned());
+                }
+            }
+        }
+    }
+    review.or(message)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -299,17 +389,39 @@ pub struct TokenUsageBreakdown {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ThreadTokenUsage {
-    pub last: TokenUsageBreakdown,
-    pub total: TokenUsageBreakdown,
+#[serde(untagged)]
+pub enum ThreadTokenUsage {
+    /// Codex App Server 0.165.0 sends the current turn usage as a flat object.
+    Flat(TokenUsageBreakdown),
+    /// Older fixture/protocol shape used nested last/total objects.
+    Nested {
+        last: TokenUsageBreakdown,
+        total: TokenUsageBreakdown,
+    },
+}
+
+impl ThreadTokenUsage {
+    pub fn last(&self) -> &TokenUsageBreakdown {
+        match self {
+            Self::Flat(usage) => usage,
+            Self::Nested { last, .. } => last,
+        }
+    }
+
+    pub fn total(&self) -> &TokenUsageBreakdown {
+        match self {
+            Self::Flat(usage) => usage,
+            Self::Nested { total, .. } => total,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadTokenUsageUpdatedParams {
     pub thread_id: String,
-    pub turn_id: String,
+    #[serde(default)]
+    pub turn_id: Option<String>,
     pub token_usage: ThreadTokenUsage,
 }
 
@@ -423,6 +535,42 @@ where
             ));
         }
         Ok(response)
+    }
+
+    pub async fn start_review(
+        &mut self,
+        params: ReviewStartParams,
+    ) -> Result<ReviewStartResponse, RpcError> {
+        let value = self
+            .request("review/start", serde_json::to_value(params)?)
+            .await?;
+        let response: ReviewStartResponse = serde_json::from_value(value)?;
+        if response.review_thread_id.trim().is_empty()
+            || response.turn.id.trim().is_empty()
+            || response.turn.status != TurnStatus::InProgress
+        {
+            return Err(RpcError::Protocol(
+                "review/start did not return a nonempty in-progress review turn".into(),
+            ));
+        }
+        Ok(response)
+    }
+
+    pub async fn read_thread_value(&mut self, thread_id: &str) -> Result<Value, RpcError> {
+        if thread_id.trim().is_empty() {
+            return Err(RpcError::Protocol(
+                "thread/read requires a nonempty threadId".into(),
+            ));
+        }
+        // The native review thread is persisted so Codex records measured
+        // usage. Request its turns so the `ExitedReviewMode.review_output`
+        // verdict is available even if the notification races the terminal
+        // event.
+        self.request(
+            "thread/read",
+            json!({"threadId": thread_id, "includeTurns": true}),
+        )
+        .await
     }
 
     pub async fn interrupt_turn(
@@ -746,6 +894,44 @@ mod tests {
             rpc.request("initialize", json!({})).await.unwrap(),
             json!({"ok":true})
         );
+    }
+
+    #[test]
+    fn named_permissions_replace_the_inline_sandbox() {
+        let params = ThreadStartParams {
+            permissions: Some("factory-review".into()),
+            sandbox: None,
+            ..Default::default()
+        };
+        let value = serde_json::to_value(params).unwrap();
+        assert_eq!(value["permissions"], "factory-review");
+        assert!(value.get("sandbox").is_none());
+        let default = serde_json::to_value(ThreadStartParams::default()).unwrap();
+        assert_eq!(default["sandbox"], "read-only");
+        assert!(default.get("permissions").is_none());
+    }
+
+    #[test]
+    fn review_text_prefers_exited_review_mode_and_falls_back_to_messages() {
+        let thread = json!({
+            "thread": {"turns": [
+                {"items": [
+                    {"type": "agentMessage", "text": "fallback"},
+                    {"type": "exitedReviewMode", "review": "canonical review"}
+                ]}
+            ]}
+        });
+        assert_eq!(review_text(&thread).as_deref(), Some("canonical review"));
+        let fallback = json!({
+            "thread": {"turns": [
+                {"items": [
+                    {"type": "agentMessage", "text": "first"},
+                    {"type": "agentMessage", "text": "last"}
+                ]}
+            ]}
+        });
+        assert_eq!(review_text(&fallback).as_deref(), Some("last"));
+        assert!(review_text(&json!({"thread": {"turns": []}})).is_none());
     }
 
     #[tokio::test]
@@ -1093,6 +1279,101 @@ mod tests {
         let mut rpc = JsonRpc::new(&input[..], Vec::new());
         let error = rpc.read_thread("thread-1", false).await.unwrap_err();
         assert!(error.to_string().contains("thread not loaded"));
+    }
+
+    #[test]
+    fn thread_token_usage_accepts_current_flat_and_legacy_nested_shapes() {
+        let flat: ThreadTokenUsageUpdatedParams = serde_json::from_value(json!({
+            "threadId": "thread-1",
+            "turnId": "turn-1",
+            "tokenUsage": {
+                "inputTokens": 120,
+                "cachedInputTokens": 10,
+                "cacheWriteInputTokens": 5,
+                "outputTokens": 80,
+                "reasoningOutputTokens": 7,
+                "totalTokens": 200
+            }
+        }))
+        .unwrap();
+        assert_eq!(flat.thread_id, "thread-1");
+        assert_eq!(flat.token_usage.last().input_tokens, 120);
+        assert_eq!(flat.token_usage.last().output_tokens, 80);
+        assert_eq!(flat.token_usage.last().total_tokens, 200);
+
+        let nested: ThreadTokenUsageUpdatedParams = serde_json::from_value(json!({
+            "threadId": "thread-1",
+            "turnId": "turn-1",
+            "tokenUsage": {
+                "last": {"inputTokens": 120, "outputTokens": 80, "totalTokens": 200},
+                "total": {"inputTokens": 120, "outputTokens": 80, "totalTokens": 200}
+            }
+        }))
+        .unwrap();
+        assert_eq!(nested.token_usage.last().input_tokens, 120);
+
+        let without_turn: ThreadTokenUsageUpdatedParams = serde_json::from_value(json!({
+            "threadId": "thread-1",
+            "tokenUsage": {"inputTokens": 1, "outputTokens": 2, "totalTokens": 3}
+        }))
+        .unwrap();
+        assert_eq!(without_turn.turn_id, None);
+    }
+
+    #[test]
+    fn review_text_reads_native_review_output() {
+        for item in [
+            json!({
+                "type": "ExitedReviewMode",
+                "review_output": {
+                    "findings": [],
+                    "overall_correctness": "patch is correct"
+                }
+            }),
+            json!({
+                "type": "exitedReviewMode",
+                "reviewOutput": {
+                    "findings": [],
+                    "overall_correctness": "patch is correct"
+                }
+            }),
+            json!({
+                "type": "ExitedReviewMode",
+                "review": {
+                    "findings": [],
+                    "overall_correctness": "patch is correct"
+                }
+            }),
+        ] {
+            let thread = json!({ "thread": { "turns": [{ "items": [item] }] } });
+            let text = review_text(&thread).expect("native review output");
+            assert!(text.contains("patch is correct"), "{text}");
+        }
+    }
+
+    #[tokio::test]
+    async fn persisted_review_thread_read_includes_turns() {
+        let (client, server) = tokio::io::duplex(4096);
+        let (client_read, client_write) = tokio::io::split(client);
+        let server = tokio::spawn(async move {
+            let mut reader = BufReader::new(server);
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            let request: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(request["method"], "thread/read");
+            assert_eq!(request["params"]["threadId"], "thread-1");
+            assert_eq!(request["params"]["includeTurns"], true);
+            let response = json!({"id":request["id"],"result":{"thread":{"id":"thread-1"}}});
+            reader
+                .get_mut()
+                .write_all(format!("{response}\n").as_bytes())
+                .await
+                .unwrap();
+        });
+        let mut rpc = JsonRpc::new(client_read, client_write);
+        let value = rpc.read_thread_value("thread-1").await.unwrap();
+        assert_eq!(value["thread"]["id"], "thread-1");
+        server.await.unwrap();
     }
 
     #[tokio::test]

@@ -24,7 +24,8 @@ import {
   type ProviderTurnBudget,
   type WorkerSummary,
 } from "../coreApi";
-import { formatCostMicros, formatTimestamp, shortId } from "../format";
+import { shortId } from "../format";
+import { useI18n } from "../i18n";
 
 const TABS = ["overview", "sessions", "model-calls", "diagnostics"] as const;
 type RuntimeTab = (typeof TABS)[number];
@@ -86,6 +87,7 @@ function callCounts(calls: ModelCallRecord[]): Record<string, number> {
 }
 
 export function Runtime() {
+  const { t, formatDate, formatNumber, formatMicros } = useI18n();
   const [searchParams, setSearchParams] = useSearchParams();
   const tab = resolveTab(searchParams.get("tab"));
   const [sessions, setSessions] = useState<ProviderSession[]>([]);
@@ -158,7 +160,7 @@ export function Runtime() {
           setError(
             cause instanceof CoreApiError
               ? cause.message
-              : "Failed to load runtime state.",
+              : t("runtime.error.load"),
           );
         }
       }
@@ -169,7 +171,7 @@ export function Runtime() {
       active = false;
       clearInterval(timer);
     };
-  }, [load]);
+  }, [load, t]);
 
   const allCalls = useMemo(() => {
     const byId = new Map<string, ModelCallRecord>();
@@ -230,60 +232,77 @@ export function Runtime() {
   if (error && !loaded) {
     return (
       <ErrorState
+        title={t("common.errorTitle")}
         message={error}
-        action={<Button onClick={() => window.location.reload()}>Retry</Button>}
+        action={
+          <Button onClick={() => window.location.reload()}>
+            {t("common.retry")}
+          </Button>
+        }
       />
     );
   }
-  if (!loaded) return <LoadingState label="Loading runtime state…" />;
+  if (!loaded) return <LoadingState label={t("runtime.loading")} />;
 
   const tabs: TabItem[] = [
-    { id: "overview", label: "Overview" },
+    { id: "overview", label: t("runtime.tabs.overview") },
     {
       id: "sessions",
-      label: "Sessions",
+      label: t("runtime.tabs.sessions"),
       count: sessions.length,
     },
     {
       id: "model-calls",
-      label: "Model calls",
+      label: t("runtime.tabs.modelCalls"),
       count: allCalls.length,
     },
-    { id: "diagnostics", label: "Diagnostics" },
+    { id: "diagnostics", label: t("runtime.tabs.diagnostics") },
   ];
 
   return (
     <div className="runtime-workspace">
       <PageHeader
-        title="Runtime"
-        description="Durable Core projections for provider sessions, model-call reservations, cleanup and telemetry. A missing record is not proof of successful cleanup."
+        title={t("runtime.title")}
+        description={t("runtime.description")}
         meta={
           <>
             <StatusBadge
               status={health?.healthy ? "HEALTHY" : "UNHEALTHY"}
-              label={health?.healthy ? "Core healthy" : "Core unavailable"}
+              label={
+                health?.healthy
+                  ? t("runtime.meta.coreHealthy")
+                  : t("runtime.meta.coreUnavailable")
+              }
             />
-            {health && <span>Core {health.version}</span>}
+            {health && (
+              <span>
+                {t("runtime.meta.coreVersion", { version: health.version })}
+              </span>
+            )}
             <span>
-              Fetched {lastLoadedAt ? formatTimestamp(lastLoadedAt) : "—"}
+              {t("runtime.meta.fetched", {
+                date: lastLoadedAt
+                  ? formatDate(lastLoadedAt)
+                  : t("common.dash"),
+              })}
             </span>
-            <span>{workers.length} registered Worker(s)</span>
+            <span>{t("runtime.meta.workers", { count: workers.length })}</span>
           </>
         }
         actions={
           <>
             <Link className={buttonClass("secondary", "sm")} to="/inbox">
-              Decision Inbox
+              {t("runtime.actions.inbox")}
             </Link>
             <Link className={buttonClass("quiet", "sm")} to="/settings">
-              Settings
+              {t("runtime.actions.settings")}
             </Link>
           </>
         }
       />
       {error && (
         <div className="ui-callout ui-callout--danger" role="alert">
-          {error} The displayed runtime snapshot may be stale.
+          {error} {t("runtime.staleSuffix")}
         </div>
       )}
 
@@ -291,7 +310,7 @@ export function Runtime() {
         items={tabs}
         value={tab}
         onChange={selectTab}
-        label="Runtime sections"
+        label={t("runtime.tabs.label")}
       />
 
       {tab === "overview" && (
@@ -301,40 +320,54 @@ export function Runtime() {
           aria-labelledby="tab-overview"
           className="campaign-tab-panel"
         >
-          <section className="overview-metrics" aria-label="Runtime summary">
+          <section
+            className="overview-metrics"
+            aria-label={t("runtime.metrics.summaryAria")}
+          >
             <Metric
-              label="Sampled measured spend"
-              value={formatCostMicros(measuredCost)}
-              detail={`Usage-known sessions plus latest 200 model calls; not a total (${measuredSessions.length} sessions, ${measuredCalls.length} calls)`}
+              label={t("runtime.metrics.spend.label")}
+              value={formatMicros(measuredCost)}
+              detail={t("runtime.metrics.spend.detail", {
+                sessions: formatNumber(measuredSessions.length),
+                calls: formatNumber(measuredCalls.length),
+              })}
             />
             <Metric
-              label="Reserved ceiling"
-              value={formatCostMicros(reservationCeiling)}
-              detail={`${unresolvedCalls.length} unresolved model call(s) + ${turnBudget?.reserved_turns ?? 0} open provider turn(s)`}
+              label={t("runtime.metrics.ceiling.label")}
+              value={formatMicros(reservationCeiling)}
+              detail={t("runtime.metrics.ceiling.detail", {
+                calls: formatNumber(unresolvedCalls.length),
+                turns: formatNumber(turnBudget?.reserved_turns ?? 0),
+              })}
               tone="attention"
             />
             <Metric
-              label="Unresolved calls"
-              value={unresolvedCalls.length}
-              detail="AMBIGUOUS or UNKNOWN Core reservations"
+              label={t("runtime.metrics.unresolved.label")}
+              value={formatNumber(unresolvedCalls.length)}
+              detail={t("runtime.metrics.unresolved.detail")}
               tone={unresolvedCalls.length > 0 ? "attention" : undefined}
             />
             <Metric
-              label="Open sessions"
-              value={unresolvedSessions.length}
-              detail={`${sessions.length} session(s) recorded; INTENT, ACTIVE, cancellation or orphaned`}
+              label={t("runtime.metrics.openSessions.label")}
+              value={formatNumber(unresolvedSessions.length)}
+              detail={t("runtime.metrics.openSessions.detail", {
+                total: formatNumber(sessions.length),
+              })}
               tone={unresolvedSessions.length > 0 ? "attention" : undefined}
             />
             <Metric
-              label="Unmeasured sessions"
-              value={unmeasuredSessions.length}
-              detail="Excluded from measured spend"
+              label={t("runtime.metrics.unmeasured.label")}
+              value={formatNumber(unmeasuredSessions.length)}
+              detail={t("runtime.metrics.unmeasured.detail")}
               tone={unmeasuredSessions.length > 0 ? "attention" : undefined}
             />
             <Metric
-              label="Telemetry"
+              label={t("runtime.metrics.telemetry.label")}
               value={observability?.enabled ? "ENABLED" : "DISABLED"}
-              detail={`cursor ${observability?.cursor ?? 0} · ${observability?.pending ?? 0} pending`}
+              detail={t("runtime.metrics.telemetry.detail", {
+                cursor: formatNumber(observability?.cursor ?? 0),
+                pending: formatNumber(observability?.pending ?? 0),
+              })}
               tone={observability?.enabled ? "success" : undefined}
             />
           </section>
@@ -342,12 +375,12 @@ export function Runtime() {
           <div className="overview-grid">
             <Panel className="overview-panel">
               <div className="section-heading">
-                <h2>Service availability</h2>
-                <span className="muted">Only Core-backed facts are shown</span>
+                <h2>{t("runtime.availability.title")}</h2>
+                <span className="muted">{t("runtime.availability.hint")}</span>
               </div>
               <dl className="overview-facts">
                 <div>
-                  <dt>Core</dt>
+                  <dt>{t("runtime.availability.core")}</dt>
                   <dd>
                     <StatusBadge
                       status={health?.healthy ? "HEALTHY" : "UNHEALTHY"}
@@ -355,38 +388,42 @@ export function Runtime() {
                   </dd>
                 </div>
                 <div>
-                  <dt>Registered Workers</dt>
-                  <dd>{workers.length}</dd>
+                  <dt>{t("runtime.availability.workers")}</dt>
+                  <dd>{formatNumber(workers.length)}</dd>
                 </div>
                 <div>
-                  <dt>Provider sessions</dt>
-                  <dd>{sessions.length}</dd>
+                  <dt>{t("runtime.availability.sessions")}</dt>
+                  <dd>{formatNumber(sessions.length)}</dd>
                 </div>
                 <div>
-                  <dt>Recent model calls</dt>
-                  <dd>{modelCalls.length} sampled</dd>
+                  <dt>{t("runtime.availability.modelCalls")}</dt>
+                  <dd>
+                    {t("runtime.availability.sampled", {
+                      count: formatNumber(modelCalls.length),
+                    })}
+                  </dd>
                 </div>
                 <div>
-                  <dt>Open provider turns</dt>
-                  <dd>{turnBudget?.reserved_turns ?? 0}</dd>
+                  <dt>{t("runtime.availability.openTurns")}</dt>
+                  <dd>{formatNumber(turnBudget?.reserved_turns ?? 0)}</dd>
                 </div>
               </dl>
               <div className="ui-callout ui-callout--info">
-                Supervisor and nested runtime state are not exposed by the
-                current Core API. Office does not infer their health from a
-                missing record, a disconnected view or Compose process state.
+                {t("runtime.availability.boundaryNote")}
               </div>
             </Panel>
 
             <Panel className="overview-panel">
               <div className="section-heading">
-                <h2>Session states</h2>
-                <Link to="/runtime?tab=sessions">Inspect sessions</Link>
+                <h2>{t("runtime.states.title")}</h2>
+                <Link to="/runtime?tab=sessions">
+                  {t("runtime.states.inspect")}
+                </Link>
               </div>
               {sessions.length === 0 ? (
                 <EmptyState
-                  title="No provider sessions"
-                  description="No provider session is recorded by Core."
+                  title={t("runtime.states.emptyTitle")}
+                  description={t("runtime.states.emptyDescription")}
                 />
               ) : (
                 <div className="overview-badges">
@@ -407,49 +444,59 @@ export function Runtime() {
           <div className="overview-grid">
             <Panel className="overview-panel">
               <div className="section-heading">
-                <h2>Registered Workers</h2>
-                <span className="muted">
-                  Registration is not a heartbeat or health certificate
-                </span>
+                <h2>{t("runtime.workers.title")}</h2>
+                <span className="muted">{t("runtime.workers.hint")}</span>
               </div>
               {workers.length === 0 ? (
                 <EmptyState
-                  title="No registered Workers"
-                  description="A Worker appears after registration; this does not prove it is online."
+                  title={t("runtime.workers.emptyTitle")}
+                  description={t("runtime.workers.emptyDescription")}
                 />
               ) : (
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Worker</th>
-                      <th>Last registration record</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {workers.map((worker) => (
-                      <tr key={worker.worker_id}>
-                        <td>
-                          <code>{worker.worker_id}</code>
-                        </td>
-                        <td className="muted">
-                          {formatTimestamp(worker.updated_at)}
-                        </td>
+                <section
+                  className="table-responsive"
+                  aria-label={t("runtime.workers.table.label")}
+                >
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>{t("runtime.workers.table.worker")}</th>
+                        <th>{t("runtime.workers.table.lastRegistration")}</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {workers.map((worker) => (
+                        <tr key={worker.worker_id}>
+                          <td data-label={t("runtime.workers.table.worker")}>
+                            <code>{worker.worker_id}</code>
+                          </td>
+                          <td
+                            className="muted"
+                            data-label={t(
+                              "runtime.workers.table.lastRegistration",
+                            )}
+                          >
+                            {formatDate(worker.updated_at)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </section>
               )}
             </Panel>
 
             <Panel className="overview-panel">
               <div className="section-heading">
-                <h2>Unresolved reservations</h2>
-                <Link to="/runtime?tab=model-calls">Open model calls</Link>
+                <h2>{t("runtime.unresolved.title")}</h2>
+                <Link to="/runtime?tab=model-calls">
+                  {t("runtime.unresolved.open")}
+                </Link>
               </div>
               {unresolvedCalls.length === 0 ? (
                 <EmptyState
-                  title="No unresolved model calls"
-                  description="No AMBIGUOUS or UNKNOWN Core reservation is recorded."
+                  title={t("runtime.unresolved.emptyTitle")}
+                  description={t("runtime.unresolved.emptyDescription")}
                 />
               ) : (
                 <ul className="overview-decisions">
@@ -461,8 +508,10 @@ export function Runtime() {
                       </span>
                       <StatusBadge status={call.state} />
                       <p className="muted">
-                        Ceiling {formatCostMicros(call.max_cost_micros)} ·{" "}
-                        {formatTimestamp(call.updated_at)}
+                        {t("runtime.unresolved.ceiling", {
+                          cost: formatMicros(call.max_cost_micros),
+                        })}{" "}
+                        · {formatDate(call.updated_at)}
                       </p>
                     </li>
                   ))}
@@ -482,52 +531,62 @@ export function Runtime() {
         >
           <Panel>
             <div className="section-heading">
-              <h2>Provider sessions ({filteredSessions.length} shown)</h2>
-              <span className="muted">
-                Cleanup receipts are recorded evidence, not isolation proof
-              </span>
+              <h2>
+                {t("runtime.sessions.title", {
+                  count: formatNumber(filteredSessions.length),
+                })}
+              </h2>
+              <span className="muted">{t("runtime.sessions.hint")}</span>
             </div>
             <div className="filters">
               <Select
-                label="State"
+                label={t("runtime.filters.state")}
                 value={sessionState}
                 onChange={(event) => setSessionState(event.target.value)}
               >
                 {sessionStates.map((state) => (
                   <option key={state} value={state}>
-                    {state === "all" ? "All states" : state}
+                    {state === "all" ? t("runtime.filters.allStates") : state}
                   </option>
                 ))}
               </Select>
               <Select
-                label="Usage"
+                label={t("runtime.filters.usage")}
                 value={sessionUsage}
                 onChange={(event) => setSessionUsage(event.target.value)}
               >
-                <option value="all">All usage</option>
-                <option value="measured">Measured</option>
-                <option value="unmeasured">Unmeasured</option>
+                <option value="all">{t("runtime.filters.allUsage")}</option>
+                <option value="measured">
+                  {t("runtime.filters.measured")}
+                </option>
+                <option value="unmeasured">
+                  {t("runtime.filters.unmeasured")}
+                </option>
               </Select>
               <Select
-                label="Cleanup"
+                label={t("runtime.filters.cleanup")}
                 value={sessionCleanup}
                 onChange={(event) => setSessionCleanup(event.target.value)}
               >
-                <option value="all">All cleanup states</option>
-                <option value="recorded">Receipt recorded</option>
-                <option value="missing">No receipt</option>
+                <option value="all">{t("runtime.filters.allCleanup")}</option>
+                <option value="recorded">
+                  {t("runtime.filters.receiptRecorded")}
+                </option>
+                <option value="missing">
+                  {t("runtime.filters.noReceipt")}
+                </option>
               </Select>
               <Input
-                label="Worker or route"
+                label={t("runtime.filters.workerOrRoute")}
                 value={sessionWorker}
                 onChange={(event) => setSessionWorker(event.target.value)}
-                placeholder="Filter by worker, provider or model"
+                placeholder={t("runtime.filters.workerOrRoutePlaceholder")}
               />
             </div>
             <ParticipantSessionList
               sessions={filteredSessions}
-              emptyTitle="No matching sessions"
-              emptyDescription="Adjust the filters; no state is inferred for hidden records."
+              emptyTitle={t("runtime.sessions.emptyTitle")}
+              emptyDescription={t("runtime.sessions.emptyDescription")}
             />
           </Panel>
         </div>
@@ -542,105 +601,132 @@ export function Runtime() {
         >
           <Panel>
             <div className="section-heading">
-              <h2>Core-owned model calls ({filteredCalls.length} shown)</h2>
-              <span className="muted">
-                Recent calls are sampled to 200; unresolved calls use the full
-                ledger
-              </span>
+              <h2>
+                {t("runtime.calls.title", {
+                  count: formatNumber(filteredCalls.length),
+                })}
+              </h2>
+              <span className="muted">{t("runtime.calls.hint")}</span>
             </div>
             <div className="filters">
               <Select
-                label="Role"
+                label={t("runtime.filters.role")}
                 value={callRole}
                 onChange={(event) => setCallRole(event.target.value)}
               >
-                <option value="all">All roles</option>
-                <option value="lead">Lead</option>
-                <option value="semantic_reviewer">Semantic reviewer</option>
-                <option value="evaluation">Evaluation</option>
+                <option value="all">{t("runtime.filters.allRoles")}</option>
+                <option value="lead">{t("runtime.filters.roleLead")}</option>
+                <option value="semantic_reviewer">
+                  {t("runtime.filters.roleSemanticReviewer")}
+                </option>
+                <option value="evaluation">
+                  {t("runtime.filters.roleEvaluation")}
+                </option>
               </Select>
               <Select
-                label="State"
+                label={t("runtime.filters.state")}
                 value={callState}
                 onChange={(event) => setCallState(event.target.value)}
               >
                 {callStates.map((state) => (
                   <option key={state} value={state}>
-                    {state === "all" ? "All states" : state}
+                    {state === "all" ? t("runtime.filters.allStates") : state}
                   </option>
                 ))}
               </Select>
               <Select
-                label="Usage"
+                label={t("runtime.filters.usage")}
                 value={callUsage}
                 onChange={(event) => setCallUsage(event.target.value)}
               >
-                <option value="all">All usage</option>
-                <option value="measured">Measured</option>
-                <option value="unmeasured">Unmeasured</option>
+                <option value="all">{t("runtime.filters.allUsage")}</option>
+                <option value="measured">
+                  {t("runtime.filters.measured")}
+                </option>
+                <option value="unmeasured">
+                  {t("runtime.filters.unmeasured")}
+                </option>
               </Select>
             </div>
             {filteredCalls.length === 0 ? (
               <EmptyState
-                title="No matching model calls"
-                description="Adjust the filters; unresolved reservations are never hidden by the recent-call sample."
+                title={t("runtime.calls.emptyTitle")}
+                description={t("runtime.calls.emptyDescription")}
               />
             ) : (
-              <table>
-                <thead>
-                  <tr>
-                    <th>Reservation</th>
-                    <th>Role / scope</th>
-                    <th>Route</th>
-                    <th>State</th>
-                    <th>Usage</th>
-                    <th>Ceiling</th>
-                    <th>Updated</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredCalls.map((call) => (
-                    <tr key={call.reservation_id}>
-                      <td>
-                        <code>{shortId(call.reservation_id)}</code>
-                      </td>
-                      <td>
-                        {call.role}
-                        <div className="muted">
-                          <code>{shortId(call.scope_id)}</code> · {call.purpose}
-                        </div>
-                      </td>
-                      <td>
-                        {call.provider}/{call.model}
-                      </td>
-                      <td>
-                        <StatusBadge status={call.state} />
-                        {call.error && (
-                          <div className="error">{call.error}</div>
-                        )}
-                      </td>
-                      <td>
-                        {call.usage_known
-                          ? `${call.total_tokens.toLocaleString()} tokens / ${formatCostMicros(call.cost_micros)}`
-                          : "UNMEASURED"}
-                      </td>
-                      <td>{formatCostMicros(call.max_cost_micros)}</td>
-                      <td className="muted">
-                        {formatTimestamp(call.updated_at)}
-                      </td>
+              <section
+                className="table-responsive"
+                aria-label={t("runtime.calls.table.label")}
+              >
+                <table>
+                  <thead>
+                    <tr>
+                      <th>{t("runtime.calls.table.reservation")}</th>
+                      <th>{t("runtime.calls.table.roleScope")}</th>
+                      <th>{t("runtime.calls.table.route")}</th>
+                      <th>{t("runtime.calls.table.state")}</th>
+                      <th>{t("runtime.calls.table.usage")}</th>
+                      <th>{t("runtime.calls.table.ceiling")}</th>
+                      <th>{t("runtime.calls.table.updated")}</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {filteredCalls.map((call) => (
+                      <tr key={call.reservation_id}>
+                        <td data-label={t("runtime.calls.table.reservation")}>
+                          <code>{shortId(call.reservation_id)}</code>
+                        </td>
+                        <td data-label={t("runtime.calls.table.roleScope")}>
+                          {call.role}
+                          <div className="muted">
+                            <code>{shortId(call.scope_id)}</code> ·{" "}
+                            {call.purpose}
+                          </div>
+                        </td>
+                        <td data-label={t("runtime.calls.table.route")}>
+                          {call.provider}/{call.model}
+                        </td>
+                        <td data-label={t("runtime.calls.table.state")}>
+                          <StatusBadge status={call.state} />
+                          {call.error && (
+                            <div className="error">{call.error}</div>
+                          )}
+                        </td>
+                        <td data-label={t("runtime.calls.table.usage")}>
+                          {call.usage_known
+                            ? t("runtime.calls.tokens", {
+                                tokens: formatNumber(call.total_tokens),
+                                cost: formatMicros(call.cost_micros),
+                              })
+                            : "UNMEASURED"}
+                        </td>
+                        <td data-label={t("runtime.calls.table.ceiling")}>
+                          {formatMicros(call.max_cost_micros)}
+                        </td>
+                        <td
+                          className="muted"
+                          data-label={t("runtime.calls.table.updated")}
+                        >
+                          {formatDate(call.updated_at)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </section>
             )}
           </Panel>
 
           {unresolvedCalls.length > 0 && (
             <Panel>
               <div className="section-heading">
-                <h2>Unresolved reservations ({unresolvedCalls.length})</h2>
+                <h2>
+                  {t("runtime.calls.unresolvedTitle", {
+                    count: formatNumber(unresolvedCalls.length),
+                  })}
+                </h2>
                 <span className="muted">
-                  Releasing is explicit and audited by Core; it is not automatic
+                  {t("runtime.calls.unresolvedHint")}
                 </span>
               </div>
               <div className="decision-list">
@@ -653,12 +739,14 @@ export function Runtime() {
                         {call.role}
                       </h3>
                       <span className="muted">
-                        ceiling {formatCostMicros(call.max_cost_micros)} ·{" "}
-                        {formatTimestamp(call.updated_at)}
+                        {t("runtime.unresolved.ceiling", {
+                          cost: formatMicros(call.max_cost_micros),
+                        })}{" "}
+                        · {formatDate(call.updated_at)}
                       </span>
                     </div>
                     <p>
-                      {call.provider}/{call.model} · scope{" "}
+                      {call.provider}/{call.model} · {t("runtime.calls.scope")}{" "}
                       <code>{shortId(call.scope_id)}</code> · {call.purpose}
                     </p>
                     {call.error && <p className="error">{call.error}</p>}
@@ -684,48 +772,45 @@ export function Runtime() {
         >
           <Panel>
             <div className="section-heading">
-              <h2>Telemetry export</h2>
+              <h2>{t("runtime.telemetry.title")}</h2>
               <StatusBadge
                 status={observability?.enabled ? "ENABLED" : "DISABLED"}
               />
             </div>
             {observability === null ? (
               <EmptyState
-                title="No observability status"
-                description="Core did not return telemetry status."
+                title={t("runtime.telemetry.emptyTitle")}
+                description={t("runtime.telemetry.emptyDescription")}
               />
             ) : (
               <>
                 <dl className="detail">
-                  <dt>Cursor</dt>
-                  <dd>{observability.cursor}</dd>
-                  <dt>Exported</dt>
-                  <dd>{observability.exported}</dd>
-                  <dt>Pending</dt>
-                  <dd>{observability.pending}</dd>
-                  <dt>Dropped hints</dt>
-                  <dd>{observability.dropped}</dd>
-                  <dt>Failed attempts</dt>
-                  <dd>{observability.failed_attempts}</dd>
+                  <dt>{t("runtime.telemetry.cursor")}</dt>
+                  <dd>{formatNumber(observability.cursor)}</dd>
+                  <dt>{t("runtime.telemetry.exported")}</dt>
+                  <dd>{formatNumber(observability.exported)}</dd>
+                  <dt>{t("runtime.telemetry.pending")}</dt>
+                  <dd>{formatNumber(observability.pending)}</dd>
+                  <dt>{t("runtime.telemetry.droppedHints")}</dt>
+                  <dd>{formatNumber(observability.dropped)}</dd>
+                  <dt>{t("runtime.telemetry.failedAttempts")}</dt>
+                  <dd>{formatNumber(observability.failed_attempts)}</dd>
                 </dl>
                 {observability.last_error && (
                   <p className="error">{observability.last_error}</p>
                 )}
-                <p className="muted">
-                  Exporter failure is telemetry degradation, not authoritative
-                  Factory state.
-                </p>
+                <p className="muted">{t("runtime.telemetry.note")}</p>
               </>
             )}
           </Panel>
           <Panel>
             <div className="section-heading">
-              <h2>Runtime policy</h2>
-              <Link to="/settings">Open Settings</Link>
+              <h2>{t("runtime.policy.title")}</h2>
+              <Link to="/settings">{t("runtime.policy.openSettings")}</Link>
             </div>
             {settings ? (
               <dl className="detail">
-                <dt>Semantic review</dt>
+                <dt>{t("runtime.policy.semanticReview")}</dt>
                 <dd>
                   <StatusBadge
                     status={
@@ -733,56 +818,48 @@ export function Runtime() {
                     }
                   />{" "}
                   {settings.semanticReviewEnabled
-                    ? "MODEL receipts authorized"
-                    : "DETERMINISTIC receipts only"}
+                    ? t("runtime.policy.modelReceipts")
+                    : t("runtime.policy.deterministicReceipts")}
                 </dd>
-                <dt>Max output tokens</dt>
-                <dd>
-                  {settings.semanticReviewMaxOutputTokens.toLocaleString()}
-                </dd>
-                <dt>Updated</dt>
-                <dd>{formatTimestamp(settings.updatedAt)}</dd>
+                <dt>{t("runtime.policy.maxOutputTokens")}</dt>
+                <dd>{formatNumber(settings.semanticReviewMaxOutputTokens)}</dd>
+                <dt>{t("runtime.policy.updated")}</dt>
+                <dd>{formatDate(settings.updatedAt)}</dd>
               </dl>
             ) : (
-              <p className="muted">No runtime settings returned.</p>
+              <p className="muted">{t("runtime.policy.empty")}</p>
             )}
-            <p className="muted">
-              Provider credentials are never rendered here. Configure them in
-              Settings.
-            </p>
+            <p className="muted">{t("runtime.policy.note")}</p>
           </Panel>
           <Panel>
             <div className="section-heading">
-              <h2>Service boundaries</h2>
-              <span className="muted">
-                Not all runtime components expose state
-              </span>
+              <h2>{t("runtime.boundaries.title")}</h2>
+              <span className="muted">{t("runtime.boundaries.hint")}</span>
             </div>
             <dl className="detail">
-              <dt>Core</dt>
+              <dt>{t("runtime.boundaries.core")}</dt>
               <dd>
                 <StatusBadge
                   status={health?.healthy ? "HEALTHY" : "UNHEALTHY"}
                 />{" "}
-                version {health?.version ?? "not returned"}
+                {t("runtime.boundaries.coreVersion", {
+                  version: health?.version ?? t("common.unknown"),
+                })}
               </dd>
-              <dt>Workers</dt>
+              <dt>{t("runtime.boundaries.workers")}</dt>
               <dd>
-                {workers.length} registered; registration record only, not a
-                heartbeat
+                {t("runtime.boundaries.workersDetail", {
+                  count: formatNumber(workers.length),
+                })}
               </dd>
-              <dt>Supervisor</dt>
-              <dd>Not exposed by the current Core API</dd>
-              <dt>Nested Podman runtime</dt>
-              <dd>Not exposed by the current Core API</dd>
-              <dt>Broker</dt>
-              <dd>Not exposed by the current Core API</dd>
+              <dt>{t("runtime.boundaries.supervisor")}</dt>
+              <dd>{t("runtime.boundaries.notExposed")}</dd>
+              <dt>{t("runtime.boundaries.nestedRuntime")}</dt>
+              <dd>{t("runtime.boundaries.notExposed")}</dd>
+              <dt>{t("runtime.boundaries.broker")}</dt>
+              <dd>{t("runtime.boundaries.notExposed")}</dd>
             </dl>
-            <p className="muted">
-              Compose logs remain the diagnostic source for components without a
-              Core projection. Office does not infer stopped, healthy or cleaned
-              from a missing browser record.
-            </p>
+            <p className="muted">{t("runtime.boundaries.note")}</p>
           </Panel>
         </div>
       )}

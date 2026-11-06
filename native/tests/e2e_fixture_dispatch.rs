@@ -49,8 +49,10 @@ impl CoreProcess {
         let child = Command::new(env!("CARGO_BIN_EXE_factory-core"))
             .env("FACTORY_DATABASE", database)
             .env("FACTORY_BIND", format!("127.0.0.1:{port}"))
+            .env("FACTORY_PROVIDER_KIND", "fixture")
             .env("FACTORY_OPERATOR_TOKEN", OPERATOR_TOKEN)
             .env("FACTORY_ATTEMPT_GRANT_KEY", ATTEMPT_GRANT_KEY)
+            .env("FACTORY_PROJECTS_ROOT", std::env::temp_dir())
             .env("FACTORY_WORKER_BOOTSTRAP_TOKEN", BOOTSTRAP_TOKEN)
             .env("FACTORY_VERIFIER_TOKEN", VERIFIER_TOKEN)
             .env("FACTORY_REVIEWER_TOKEN", REVIEWER_TOKEN)
@@ -58,6 +60,7 @@ impl CoreProcess {
             .env("FACTORY_ENABLE_AUTONOMOUS_START", "1")
             .env("FACTORY_LEAD_FIXTURE_UNITS", units.to_string())
             .env("FACTORY_LEAD_FIXTURE_MODE", mode)
+            .env("FACTORY_ALLOW_TEST_UPSTREAM", "1")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::from(file))
@@ -70,12 +73,34 @@ impl CoreProcess {
     }
 
     fn start_with_lead_model(database: &Path, port: u16, log: &Path, model_url: &str) -> Self {
+        Self::start_with_lead_model_config(database, port, log, model_url, false)
+    }
+
+    fn start_with_lead_model_and_codex(
+        database: &Path,
+        port: u16,
+        log: &Path,
+        model_url: &str,
+    ) -> Self {
+        Self::start_with_lead_model_config(database, port, log, model_url, true)
+    }
+
+    fn start_with_lead_model_config(
+        database: &Path,
+        port: u16,
+        log: &Path,
+        model_url: &str,
+        codex_review: bool,
+    ) -> Self {
         let file = File::create(log).expect("core log");
-        let child = Command::new(env!("CARGO_BIN_EXE_factory-core"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_factory-core"));
+        command
             .env("FACTORY_DATABASE", database)
             .env("FACTORY_BIND", format!("127.0.0.1:{port}"))
+            .env("FACTORY_PROVIDER_KIND", "fixture")
             .env("FACTORY_OPERATOR_TOKEN", OPERATOR_TOKEN)
             .env("FACTORY_ATTEMPT_GRANT_KEY", ATTEMPT_GRANT_KEY)
+            .env("FACTORY_PROJECTS_ROOT", std::env::temp_dir())
             .env("FACTORY_WORKER_BOOTSTRAP_TOKEN", BOOTSTRAP_TOKEN)
             .env("FACTORY_VERIFIER_TOKEN", VERIFIER_TOKEN)
             .env("FACTORY_REVIEWER_TOKEN", REVIEWER_TOKEN)
@@ -87,9 +112,11 @@ impl CoreProcess {
             .env("FACTORY_ALLOW_TEST_UPSTREAM", "1")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::from(file))
-            .spawn()
-            .expect("spawn factory-core");
+            .stderr(Stdio::from(file));
+        if codex_review {
+            command.env("FACTORY_ENABLE_CODEX_REVIEW", "1");
+        }
+        let child = command.spawn().expect("spawn factory-core");
         Self {
             child,
             log: log.to_path_buf(),
@@ -276,6 +303,29 @@ fn run_reviewer_with(
         .stderr(Stdio::from(log));
     if let Some(mechanism) = mechanism {
         command.env("FACTORY_REVIEW_MECHANISM", mechanism);
+        if mechanism == "CODEX_APP_SERVER" {
+            let codex_home = root.join("codex-home");
+            let review_work = root.join("codex-review-work");
+            std::fs::create_dir_all(&codex_home).unwrap();
+            std::fs::create_dir_all(&review_work).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&codex_home, std::fs::Permissions::from_mode(0o700))
+                    .unwrap();
+            }
+            command
+                .env("FACTORY_CODEX_HOME", &codex_home)
+                .env(
+                    "FACTORY_CODEX_BINARY",
+                    env!("CARGO_BIN_EXE_factory-fixture-codex"),
+                )
+                .env("FACTORY_CODEX_TEST_MODE", "1")
+                .env("FACTORY_FIXTURE_CODEX_PROVIDER", "openai")
+                .env("FACTORY_FIXTURE_CODEX_ACCOUNT", "chatgpt")
+                .env("FACTORY_REVIEW_WORKSPACE", &review_work)
+                .env("FACTORY_CODEX_REVIEW_TIMEOUT_SECS", "30");
+        }
     }
     let status = command.status().expect("reviewer");
     assert!(
@@ -303,6 +353,315 @@ async fn expire_fixture_lease(database: &Path, attempt_id: &str) {
             .expect("advance fixture lease expiry");
     assert_eq!(changed.rows_affected(), 1);
     pool.close().await;
+}
+
+fn v2_operations() -> factory_native::execution_policy::OperationLimits {
+    factory_native::execution_policy::OperationLimits {
+        model_request_timeout_secs: std::num::NonZeroU32::new(300).unwrap(),
+        tool_call_timeout_secs: std::num::NonZeroU32::new(300).unwrap(),
+        max_request_bytes: std::num::NonZeroU32::new(2 * 1024 * 1024).unwrap(),
+        max_response_bytes: std::num::NonZeroU32::new(2 * 1024 * 1024).unwrap(),
+        max_generation_tokens: std::num::NonZeroU32::new(8_192).unwrap(),
+        max_in_flight_operations: std::num::NonZeroU32::new(4).unwrap(),
+    }
+}
+
+fn v2_progress() -> factory_native::execution_policy::ProgressPolicy {
+    factory_native::execution_policy::ProgressPolicy {
+        diagnose_after_stagnant_checkpoints: std::num::NonZeroU32::new(2).unwrap(),
+        escalate_after_unsuccessful_replans: std::num::NonZeroU32::new(1).unwrap(),
+        observation_timeout_secs: std::num::NonZeroU32::new(300).unwrap(),
+        autonomy: Default::default(),
+    }
+}
+
+fn v2_operations_json() -> Value {
+    let operations = v2_operations();
+    json!({
+        "modelRequestTimeoutSecs": operations.model_request_timeout_secs.get(),
+        "toolCallTimeoutSecs": operations.tool_call_timeout_secs.get(),
+        "maxRequestBytes": operations.max_request_bytes.get(),
+        "maxResponseBytes": operations.max_response_bytes.get(),
+        "maxGenerationTokens": operations.max_generation_tokens.get(),
+        "maxInFlightOperations": operations.max_in_flight_operations.get(),
+    })
+}
+
+fn v2_progress_json() -> Value {
+    let progress = v2_progress();
+    json!({
+        "diagnoseAfterStagnantCheckpoints": progress.diagnose_after_stagnant_checkpoints.get(),
+        "escalateAfterUnsuccessfulReplans": progress.escalate_after_unsuccessful_replans.get(),
+        "observationTimeoutSecs": progress.observation_timeout_secs.get(),
+    })
+}
+
+fn v2_grant(
+    id: &str,
+    project_id: &str,
+    provider: &str,
+    model: &str,
+    autonomous_start: bool,
+    max_parallel: u32,
+) -> factory_native::lead::StandingDelegationV2 {
+    let mut grant = factory_native::lead::StandingDelegationV2 {
+        id: id.into(),
+        principal_id: "owner".into(),
+        audit_id: "audit".into(),
+        project_id: project_id.into(),
+        revision: 1,
+        content_hash: String::new(),
+        objective_classes: vec![factory_native::lead::ObjectiveClass::Feature],
+        allowed_paths: vec!["src".into()],
+        capabilities: vec![
+            factory_native::lead::Capability::RepositoryEdit,
+            factory_native::lead::Capability::GenericToolchain,
+        ],
+        risk_classes: vec![factory_native::lead::RiskClass::R0],
+        autonomous_start,
+        autonomous_risk_classes: if autonomous_start {
+            vec![factory_native::lead::RiskClass::R0]
+        } else {
+            Vec::new()
+        },
+        route: factory_native::lead::ProviderRoute {
+            provider: provider.into(),
+            model: model.into(),
+            mode: "build".into(),
+        },
+        max_timeout_secs: 300,
+        max_parallel,
+        operations: v2_operations(),
+        progress: v2_progress(),
+        expires_at: chrono::Utc::now() + chrono::Duration::days(1),
+        revoked_at: None,
+    };
+    grant.content_hash = grant.compute_content_hash();
+    grant
+}
+
+async fn seed_v2_grant(database: &Path, grant: &factory_native::lead::StandingDelegationV2) {
+    let db = factory_native::db::Database::open(database)
+        .await
+        .expect("open database to seed V2 delegation");
+    db.create_standing_delegation_v2(grant, &format!("{}-key", grant.id))
+        .await
+        .expect("seed V2 delegation");
+    db.close().await;
+}
+
+async fn seed_provider_settings(database: &Path, provider: &str, kind: &str, model: &str) {
+    let db = factory_native::db::Database::open(database)
+        .await
+        .expect("open database to seed provider settings");
+    db.save_provider_settings(
+        &factory_native::db::ProviderSettingsWrite {
+            provider: provider.into(),
+            kind: kind.into(),
+            model: model.into(),
+            // The admission route gate only needs a plain-HTTP fixture
+            // upstream; the Worker regression supplies its own egress URL.
+            base_url: "http://127.0.0.1:9/v1".into(),
+            auth_mode: "api_key".into(),
+            credential_ciphertext: "ciphertext".into(),
+            credential_nonce: "nonce".into(),
+            credential_fingerprint: "configured".into(),
+            enabled: true,
+            is_default: true,
+            max_turns: 4,
+            max_input_tokens: 100_000,
+            max_output_tokens: 12_000,
+            max_cost_micros: 500_000,
+            input_micros_per_million: 1_000,
+            output_micros_per_million: 2_000,
+        },
+        "e2e-operator",
+    )
+    .await
+    .expect("seed provider settings");
+    db.close().await;
+}
+
+fn v2_fixture_authorization(
+    authorization_id: &str,
+    delegation_id: &str,
+    actor: &str,
+    rationale: &str,
+) -> Value {
+    json!({
+        "authorization_id": authorization_id,
+        "risk_class": "R0",
+        "execution_mode": "FIXTURE",
+        "actor": actor,
+        "rationale": rationale,
+        "authorized_paths": ["src"],
+        "delegation_id": delegation_id,
+        "provider_mode": "build",
+        "operations": v2_operations_json(),
+        "progress": v2_progress_json(),
+    })
+}
+
+fn v2_provider_authorization(
+    authorization_id: &str,
+    delegation_id: &str,
+    actor: &str,
+    rationale: &str,
+    provider: &str,
+    model: &str,
+    authorized_micros: u64,
+) -> Value {
+    json!({
+        "authorization_id": authorization_id,
+        "risk_class": "R0",
+        "execution_mode": "TRUSTED_LOCAL_PROVIDER",
+        "actor": actor,
+        "rationale": rationale,
+        "authorized_paths": ["src"],
+        "provider": provider,
+        "model": model,
+        "provider_mode": "build",
+        "delegation_id": delegation_id,
+        "allowed_tools": ["write_file", "run_command"],
+        "operations": v2_operations_json(),
+        "progress": v2_progress_json(),
+        "authorized_micros": authorized_micros,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn start_request_scoped_provider_campaign(
+    client: &reqwest::Client,
+    base_url: &str,
+    database: &Path,
+    project_id: &str,
+    action_id: &str,
+    config_hash: &str,
+    delegation_id: &str,
+    provider: &str,
+    model: &str,
+    objective: &str,
+    suffix: &str,
+) -> Value {
+    let classified = operator(
+        client,
+        reqwest::Method::POST,
+        format!("{base_url}/actions/{action_id}/classify"),
+        Some(json!({
+            "risk_class": "R0",
+            "actor": "e2e-operator",
+            "rationale": "request-scoped provider lifecycle",
+            "idempotency_key": format!("{suffix}-classification")
+        })),
+    )
+    .await;
+    assert_eq!(
+        classified.status(),
+        StatusCode::OK,
+        "request-scoped provider action must be classified R0"
+    );
+    let lead: Value = operator(
+        client,
+        reqwest::Method::POST,
+        format!("{base_url}/lead/requests"),
+        Some(json!({
+            "project_id": project_id,
+            "action_id": action_id,
+            "delegation_id": delegation_id,
+            "objective": objective,
+            "project_config_hash": config_hash,
+            "idempotency_key": format!("{suffix}-lead-request"),
+            "authorized_micros": 5_000_000
+        })),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let request_id = lead["id"].as_str().unwrap().to_owned();
+    let db = factory_native::db::Database::open(database)
+        .await
+        .expect("open database for model assessment fixture");
+    db.begin_lead_assessment(&request_id)
+        .await
+        .expect("begin assessing request");
+    let request = db.lead_request(&request_id).await.expect("lead request");
+    let project_config = db.project_config(project_id).await.expect("project config");
+    let action = db.action(action_id).await.expect("action");
+    let grant = db
+        .standing_delegation_v2(delegation_id)
+        .await
+        .expect("V2 delegation");
+    let binding = factory_native::lead::ActionBinding {
+        id: action.id.clone(),
+        project_id: project_id.into(),
+        status: factory_native::lead::ActionStatus::Pending,
+    };
+    let (assessment, proposal) = factory_native::lead::fixture_lead_assessment(
+        &request.id,
+        &project_config,
+        &binding,
+        &action.spec,
+        &request.objective,
+        &grant,
+        chrono::Utc::now(),
+    )
+    .expect("deterministic MODEL assessment fixture");
+    let assessment_input = factory_native::lead::AssessmentInput {
+        project_id: project_id.into(),
+        action_id: action_id.into(),
+        request_id: request.id.clone(),
+        objective: request.objective.clone(),
+        allowed_evidence_refs: std::collections::BTreeSet::from(["repository-files".into()]),
+    };
+    db.record_lead_assessment(
+        &request.id,
+        "MODEL",
+        &assessment,
+        &assessment_input,
+        &format!("{suffix}-assessment"),
+    )
+    .await
+    .expect("record MODEL assessment");
+    db.record_lead_proposal(&request.id, &proposal, &format!("{suffix}-proposal"))
+        .await
+        .expect("record MODEL proposal");
+    db.close().await;
+    assert_eq!(
+        operator(
+            client,
+            reqwest::Method::POST,
+            format!("{base_url}/lead/requests/{request_id}/freeze"),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let started = operator(
+        client,
+        reqwest::Method::POST,
+        format!("{base_url}/lead/requests/{request_id}/start"),
+        Some(v2_provider_authorization(
+            &format!("{suffix}-provider-auth"),
+            delegation_id,
+            "e2e-operator",
+            "request-scoped provider lifecycle",
+            provider,
+            model,
+            5_000_000,
+        )),
+    )
+    .await;
+    let status = started.status();
+    let body = started.text().await.unwrap_or_default();
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let projection: Value = serde_json::from_str(&body).expect("started Campaign projection");
+    #[cfg(feature = "test-support")]
+    if let Some(campaign_id) = projection["campaign"]["id"].as_str() {
+        admit_test_campaign(database, campaign_id).await;
+    }
+    projection
 }
 
 #[tokio::test]
@@ -404,15 +763,12 @@ async fn fixture_campaign_dispatches_candidate_and_gate_without_provider() {
         &client,
         reqwest::Method::POST,
         format!("{base_url}/campaigns/{campaign_id}/authorize"),
-        Some(json!({
-            "authorization_id": "auth-e2e",
-            "risk_class": "R0",
-            "execution_mode": "FIXTURE",
-            "actor": "e2e-operator",
-            "rationale": "deterministic fixture E2E",
-            "authorized_paths": ["src"],
-            "max_attempts": 1
-        })),
+        Some(v2_fixture_authorization(
+            "auth-e2e",
+            "fixture-delegation",
+            "e2e-operator",
+            "deterministic fixture E2E",
+        )),
     )
     .await;
     assert_eq!(authorized.status(), StatusCode::CREATED);
@@ -426,38 +782,38 @@ async fn fixture_campaign_dispatches_candidate_and_gate_without_provider() {
     .json()
     .await
     .unwrap();
-    let exhausted = operator(
+    // Billable provider execution is request-scoped only. A direct Campaign has
+    // no request identity to own the inference envelope, so this boundary is
+    // documented and permanently fail-closed.
+    let direct_provider = operator(
         &client,
         reqwest::Method::POST,
         format!(
             "{base_url}/campaigns/{}/authorize",
             second_campaign["id"].as_str().unwrap()
         ),
-        Some(json!({
-            "authorization_id":"provider-auth-exhausted",
-            "risk_class":"R0",
-            "execution_mode":"TRUSTED_LOCAL_PROVIDER",
-            "actor":"e2e-operator",
-            "rationale":"delegation request budget exhaustion",
-            "authorized_paths":["src"],
-            "max_attempts":1,
-            "provider":"opencode",
-            "model":"deepseek-v4.1-flash",
-            "provider_mode":"build",
-            "delegation_id":"provider-grant",
-            "max_sessions":1,
-            "max_turns":1,
-            "max_input_tokens":1000,
-            "max_output_tokens":1000,
-            "max_cost_micros":10000,
-            "deadline_secs":30,
-            "allowed_tools":[]
-        })),
+        Some(v2_provider_authorization(
+            "provider-auth-direct",
+            "provider-grant",
+            "e2e-operator",
+            "direct provider authorization must fail closed",
+            "opencode",
+            "deepseek-v4.1-flash",
+            5_000_000,
+        )),
     )
     .await;
+    assert_eq!(
+        direct_provider.status(),
+        StatusCode::FORBIDDEN,
+        "direct TRUSTED_LOCAL_PROVIDER authorization must be forbidden"
+    );
+    let direct_error: Value = direct_provider.json().await.unwrap();
     assert!(
-        exhausted.status().is_client_error(),
-        "delegation request budget should reject a second provider authorization"
+        direct_error["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("request-scoped")),
+        "direct provider denial must explain the request-scoped path: {direct_error}"
     );
 
     let run: Value = operator(
@@ -673,6 +1029,7 @@ async fn fixture_campaign_dispatches_candidate_and_gate_without_provider() {
 }
 
 struct FixtureCandidate {
+    campaign_id: String,
     candidate_id: String,
     commit_sha: String,
     tree_sha: String,
@@ -742,15 +1099,12 @@ async fn drive_fixture_campaign_to_candidate(
         client,
         reqwest::Method::POST,
         format!("{base_url}/campaigns/{campaign_id}/authorize"),
-        Some(json!({
-            "authorization_id": format!("{suffix}-auth"),
-            "risk_class": "R0",
-            "execution_mode": "FIXTURE",
-            "actor": "semantic-review-e2e",
-            "rationale": "deterministic semantic review fixture",
-            "authorized_paths": ["src"],
-            "max_attempts": 1
-        })),
+        Some(v2_fixture_authorization(
+            &format!("{suffix}-auth"),
+            "semantic-review-delegation",
+            "semantic-review-e2e",
+            "deterministic semantic review fixture",
+        )),
     )
     .await;
     assert_eq!(authorized.status(), StatusCode::CREATED);
@@ -819,6 +1173,7 @@ async fn drive_fixture_campaign_to_candidate(
                 .find(|candidate| candidate["action_spec_sha256"] == action_spec_sha256)
         }) {
             return FixtureCandidate {
+                campaign_id,
                 candidate_id: candidate["id"].as_str().unwrap().to_owned(),
                 commit_sha: candidate["commit_sha"].as_str().unwrap().to_owned(),
                 tree_sha: candidate["tree_sha"].as_str().unwrap().to_owned(),
@@ -866,8 +1221,66 @@ async fn run_fixture_verifier(
     );
 }
 
+#[cfg(feature = "test-support")]
+async fn seed_test_provider(
+    database: &Path,
+    provider: &str,
+    kind: &str,
+    model: &str,
+    base_url: &str,
+) {
+    let db = factory_native::db::Database::open(database)
+        .await
+        .expect("open database to seed test provider");
+    db.enable_test_subscription_fixture_mode()
+        .await
+        .expect("enable fixture admission for this database");
+    db.save_provider_settings(
+        &factory_native::db::ProviderSettingsWrite {
+            provider: provider.into(),
+            kind: kind.into(),
+            model: model.into(),
+            base_url: base_url.into(),
+            auth_mode: "api_key".into(),
+            credential_ciphertext: "ciphertext".into(),
+            credential_nonce: "nonce".into(),
+            credential_fingerprint: "configured".into(),
+            enabled: true,
+            is_default: true,
+            max_turns: 4,
+            max_input_tokens: 100_000,
+            max_output_tokens: 12_000,
+            max_cost_micros: 5_000_000,
+            input_micros_per_million: 1_000,
+            output_micros_per_million: 2_000,
+        },
+        "e2e-operator",
+    )
+    .await
+    .expect("seed test provider settings");
+    db.close().await;
+}
+
+#[cfg(feature = "test-support")]
+async fn admit_test_campaign(database: &Path, campaign_id: &str) {
+    let database = factory_native::db::Database::open(database)
+        .await
+        .expect("open Core database for test admission");
+    database
+        .enable_test_subscription_fixture_mode()
+        .await
+        .expect("enable fixture admission for this database");
+    database
+        .admit_test_subscription_dispatch(campaign_id)
+        .await
+        .expect("test subscription admission");
+    database.close().await;
+}
+
+#[cfg(feature = "test-support")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn semantic_reviewer_model_mode_binds_findings_provenance_and_rejects_malformed_output() {
+async fn semantic_reviewer_model_and_codex_modes_bind_findings_provenance_and_reject_malformed_output()
+ {
     use axum::{Router, routing::post};
     use std::sync::{Arc, Mutex};
 
@@ -928,8 +1341,12 @@ async fn semantic_reviewer_model_mode_binds_findings_provenance_and_rejects_malf
     let database = root.join("factory.sqlite");
     let port = free_port();
     let base_url = format!("http://127.0.0.1:{port}");
-    let mut core =
-        CoreProcess::start_with_lead_model(&database, port, &root.join("core.log"), &model_url);
+    let mut core = CoreProcess::start_with_lead_model_and_codex(
+        &database,
+        port,
+        &root.join("core.log"),
+        &model_url,
+    );
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()
@@ -1005,6 +1422,15 @@ async fn semantic_reviewer_model_mode_binds_findings_provenance_and_rejects_malf
         "findings": []
     })
     .to_string();
+    seed_test_provider(
+        &database,
+        "opencode",
+        "opencode",
+        "deepseek-v4.1-flash",
+        &model_url,
+    )
+    .await;
+    admit_test_campaign(&database, &first.campaign_id).await;
     run_reviewer_with(
         &root,
         &base_url,
@@ -1096,6 +1522,7 @@ async fn semantic_reviewer_model_mode_binds_findings_provenance_and_rejects_malf
     )
     .await;
     *model_content.lock().unwrap() = r#"{"verdict":"approve"}"#.into();
+    admit_test_campaign(&database, &second.campaign_id).await;
     run_reviewer_with(
         &root,
         &base_url,
@@ -1144,19 +1571,98 @@ async fn semantic_reviewer_model_mode_binds_findings_provenance_and_rejects_malf
     );
     assert_eq!(*model_calls.lock().unwrap(), 2);
 
+    let third = drive_fixture_campaign_to_candidate(
+        &client,
+        &base_url,
+        &project_id,
+        &supervisor_url,
+        FIXTURE_IMAGE,
+        "third",
+        "Add a third bounded fixture content.",
+        "fixture candidate three
+",
+    )
+    .await;
+    run_fixture_verifier(
+        &root,
+        &base_url,
+        &third.candidate_id,
+        "semantic-verifier-third",
+        "third",
+        FIXTURE_IMAGE,
+    )
+    .await;
+    seed_test_provider(
+        &database,
+        "codex",
+        "codex",
+        "gpt-6-luna",
+        "https://api.openai.com/v1",
+    )
+    .await;
+    admit_test_campaign(&database, &third.campaign_id).await;
+    run_reviewer_with(
+        &root,
+        &base_url,
+        &third.candidate_id,
+        "semantic-reviewer-codex",
+        "reviewer-third.log",
+        Some("CODEX_APP_SERVER"),
+    );
+    let gate: Value = operator(
+        &client,
+        reqwest::Method::GET,
+        format!("{base_url}/quality/candidates/{}/gate", third.candidate_id),
+        None,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(gate["outcome"], "ACCEPTED", "{gate}");
+    let receipts: Value = operator(
+        &client,
+        reqwest::Method::GET,
+        format!(
+            "{base_url}/quality/candidates/{}/receipts",
+            third.candidate_id
+        ),
+        None,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let reviewer = receipts
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|receipt| receipt["role"] == "reviewer")
+        .unwrap()
+        .clone();
+    assert_eq!(reviewer["result"], "PASS");
+    assert_eq!(reviewer["mechanism"], "CODEX_APP_SERVER");
+    assert_eq!(reviewer["model_provider"], "codex");
+    assert_eq!(reviewer["model_name"], "gpt-6-luna");
+    assert_eq!(reviewer["model_reservation_id"], "");
+    assert_eq!(reviewer["usage_known"], true);
+    assert_eq!(reviewer["input_tokens"], 120);
+    assert_eq!(reviewer["output_tokens"], 80);
+    assert_eq!(reviewer["total_tokens"], 200);
+    assert_eq!(reviewer["cost_micros"], 0);
+    assert_eq!(*model_calls.lock().unwrap(), 2);
+
     supervisor.stop();
     model_server.abort();
     core.stop();
     let _ = std::fs::remove_dir_all(root);
 }
 
+#[cfg(feature = "test-support")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn model_lead_start_dispatches_through_supervisor_to_accepted_gate() {
     use axum::{Router, routing::post};
-    use factory_native::lead::{
-        ActionBinding, ActionStatus, Capability, ObjectiveClass, ProjectConfig, ProviderRoute,
-        RiskClass, StandingDelegation,
-    };
+    use factory_native::lead::{ActionBinding, ActionStatus, ProjectConfig};
     use std::sync::{Arc, Mutex};
 
     #[derive(Clone)]
@@ -1306,46 +1812,16 @@ async fn model_lead_start_dispatches_through_supervisor_to_accepted_gate() {
     let action_id = action["id"].as_str().unwrap().to_owned();
     let spec_sha = action["spec_sha256"].as_str().unwrap().to_owned();
 
-    let mut grant = StandingDelegation {
-        id: "lead-grant".into(),
-        principal_id: "owner".into(),
-        audit_id: "audit".into(),
-        project_id: project_id.clone(),
-        revision: 1,
-        content_hash: String::new(),
-        objective_classes: vec![ObjectiveClass::Feature],
-        allowed_paths: vec!["src".into()],
-        capabilities: vec![Capability::RepositoryEdit, Capability::GenericToolchain],
-        risk_classes: vec![RiskClass::R0, RiskClass::R1],
-        autonomous_start: true,
-        autonomous_risk_classes: vec![RiskClass::R0],
-        route: ProviderRoute {
-            provider: "opencode".into(),
-            model: "deepseek-v4.1-flash".into(),
-            mode: "build".into(),
-        },
-        max_attempts: 2,
-        max_timeout_secs: 300,
-        max_repair_cycles: 0,
-        max_wall_clock_secs: 1_800,
-        max_parallel: 1,
-        max_sessions: 4,
-        max_requests: 2,
-        max_cumulative_sessions: 8,
-        max_cumulative_attempts: 16,
-        expires_at: chrono::Utc::now() + chrono::Duration::days(1),
-        revoked_at: None,
-    };
-    grant.content_hash = grant.compute_content_hash();
-    let delegated = operator(
-        &client,
-        reqwest::Method::POST,
-        format!("{base_url}/delegations"),
-        Some(json!({"delegation": grant, "idempotency_key": "lead-grant-key"})),
-    )
-    .await;
-    assert_eq!(delegated.status(), StatusCode::CREATED);
-
+    let grant = v2_grant(
+        "lead-grant",
+        &project_id,
+        "opencode",
+        "deepseek-v4.1-flash",
+        true,
+        1,
+    );
+    seed_v2_grant(&database, &grant).await;
+    seed_provider_settings(&database, "opencode", "opencode", "deepseek-v4.1-flash").await;
     let classified = operator(
         &client,
         reqwest::Method::POST,
@@ -1370,7 +1846,8 @@ async fn model_lead_start_dispatches_through_supervisor_to_accepted_gate() {
             "delegation_id": "lead-grant",
             "objective": "Implement the fixture.",
             "project_config_hash": config_hash,
-            "idempotency_key": "lead-request"
+            "idempotency_key": "lead-request",
+            "authorized_micros": 5_000_000
         })),
     )
     .await
@@ -1378,6 +1855,8 @@ async fn model_lead_start_dispatches_through_supervisor_to_accepted_gate() {
     .await
     .unwrap();
     let request_id = lead["id"].as_str().unwrap().to_owned();
+    #[cfg(feature = "test-support")]
+    admit_test_campaign(&database, &request_id).await;
     let project_config: ProjectConfig = serde_json::from_value(config.clone()).unwrap();
     let action_spec: factory_native::db::ActionSpec =
         serde_json::from_value(action["spec"].clone()).unwrap();
@@ -1418,6 +1897,71 @@ async fn model_lead_start_dispatches_through_supervisor_to_accepted_gate() {
     assert!(calls[0].cost_micros > 0);
     let reservation_id = calls[0].reservation_id.clone();
     ledger.close().await;
+
+    // A Lead request without an operator amount must be refused before any
+    // billable assessment call is dispatched.
+    let no_amount_action: Value = operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/actions"),
+        Some(json!({
+            "project_id": project_id,
+            "objective": "No-amount Lead request.",
+            "provider": "opencode",
+            "model": "deepseek-v4.1-flash",
+            "idempotency_key": "lead-no-amount-action",
+            "allowed_paths": ["src"],
+            "checks": [
+                {"id":"build","kind":"build","description":"build","command":["true"],"expectExit":0,"timeoutSecs":30},
+                {"id":"test","kind":"test","description":"test","command":["true"],"expectExit":0,"timeoutSecs":30},
+                {"id":"functional","kind":"functional","description":"content","command":["true"],"expectExit":0,"timeoutSecs":30},
+                {"id":"negative","kind":"negative","description":"absent","command":["grep","-q","absent","seed.txt"],"expectExit":1,"timeoutSecs":30}
+            ]
+        })),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let no_amount_lead: Value = operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/lead/requests"),
+        Some(json!({
+            "project_id": project_id,
+            "action_id": no_amount_action["id"],
+            "delegation_id": "lead-grant",
+            "objective": "No-amount Lead request.",
+            "project_config_hash": config_hash,
+            "idempotency_key": "lead-no-amount-request"
+        })),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let no_amount_request_id = no_amount_lead["id"].as_str().unwrap().to_owned();
+    let refused = operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/lead/requests/{no_amount_request_id}/assess"),
+        None,
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+    let refused_body: Value = refused.json().await.unwrap();
+    assert_eq!(refused_body["code"], "INFERENCE_AUTHORIZATION_REQUIRED");
+    let ledger = factory_native::db::Database::open(&database).await.unwrap();
+    assert!(
+        ledger
+            .lead_model_calls(&no_amount_request_id)
+            .await
+            .unwrap()
+            .is_empty(),
+        "a refused assessment must not dispatch a paid model call"
+    );
+    ledger.close().await;
+
     let lead_projection: Value = operator(
         &client,
         reqwest::Method::GET,
@@ -1474,30 +2018,54 @@ async fn model_lead_start_dispatches_through_supervisor_to_accepted_gate() {
             .is_some_and(|items| items.is_empty()),
         "a rejected MODEL Lead start must not create a Campaign"
     );
+    let changed_amount = operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/lead/requests/{request_id}/start"),
+        Some(v2_provider_authorization(
+            "lead-live-start-authorization",
+            "lead-grant",
+            "lead-e2e-operator",
+            "changed provider authorization",
+            "opencode",
+            "deepseek-v4.1-flash",
+            6_000_000,
+        )),
+    )
+    .await;
+    assert_eq!(changed_amount.status(), StatusCode::CONFLICT);
+    let changed_body: Value = changed_amount.json().await.unwrap();
+    assert_eq!(changed_body["code"], "INFERENCE_AUTHORIZATION_CHANGED");
+    let campaigns_after_changed: Value = operator(
+        &client,
+        reqwest::Method::GET,
+        format!("{base_url}/campaigns"),
+        None,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    assert!(
+        campaigns_after_changed
+            .as_array()
+            .is_some_and(|items| items.is_empty()),
+        "a changed-amount Lead start must not create a Campaign"
+    );
+
     let started_response = operator(
         &client,
         reqwest::Method::POST,
         format!("{base_url}/lead/requests/{request_id}/start"),
-        Some(json!({
-            "authorization_id": "lead-live-start-authorization",
-            "risk_class": "R0",
-            "execution_mode": "TRUSTED_LOCAL_PROVIDER",
-            "actor": "lead-e2e-operator",
-            "rationale": "explicit provider authorization for the model Lead plan",
-            "authorized_paths": ["src"],
-            "max_attempts": 1,
-            "provider": "opencode",
-            "model": "deepseek-v4.1-flash",
-            "provider_mode": "build",
-            "delegation_id": "lead-grant",
-            "max_sessions": 1,
-            "max_turns": 4,
-            "max_input_tokens": 40000,
-            "max_output_tokens": 12000,
-            "max_cost_micros": 500000,
-            "deadline_secs": 300,
-            "allowed_tools": ["write_file", "run_command"]
-        })),
+        Some(v2_provider_authorization(
+            "lead-live-start-authorization",
+            "lead-grant",
+            "lead-e2e-operator",
+            "explicit provider authorization for the model Lead plan",
+            "opencode",
+            "deepseek-v4.1-flash",
+            5_000_000,
+        )),
     )
     .await;
     assert_eq!(started_response.status(), StatusCode::CREATED);
@@ -1505,6 +2073,8 @@ async fn model_lead_start_dispatches_through_supervisor_to_accepted_gate() {
     let attempt_id = started["attempt"]["id"].as_str().unwrap().to_owned();
     assert_eq!(started["campaign"]["status"], "AUTHORIZED");
     let campaign_id = started["campaign"]["id"].as_str().unwrap().to_owned();
+    #[cfg(feature = "test-support")]
+    admit_test_campaign(&database, &campaign_id).await;
     let authorization: Value = operator(
         &client,
         reqwest::Method::GET,
@@ -1515,12 +2085,22 @@ async fn model_lead_start_dispatches_through_supervisor_to_accepted_gate() {
     .json()
     .await
     .unwrap();
-    assert_eq!(authorization["execution_mode"], "TRUSTED_LOCAL_PROVIDER");
+    assert_eq!(authorization["executionMode"], "TRUSTED_LOCAL_PROVIDER");
     assert_eq!(authorization["provider"], "opencode");
     assert_eq!(authorization["model"], "deepseek-v4.1-flash");
-    assert_eq!(authorization["delegation_id"], "lead-grant");
-    assert_eq!(authorization["max_attempts"], 1);
-    assert_eq!(authorization["max_sessions"], 1);
+    assert_eq!(authorization["delegationId"], "lead-grant");
+    assert_eq!(authorization["schemaVersion"], 2);
+    assert!(authorization["legacy"].is_null());
+    assert_eq!(
+        authorization["policy"]["operations"]["maxGenerationTokens"],
+        8_192
+    );
+    assert!(
+        authorization["policy"]["monetaryEnvelopeId"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty()),
+        "provider authorization must bind one request envelope: {authorization}"
+    );
 
     let supervisor_port = free_port();
     let supervisor_url = format!("http://127.0.0.1:{supervisor_port}");
@@ -1760,49 +2340,15 @@ async fn parallel_workgraph_reaches_accepted_on_integrated_candidate() {
     .await;
     assert_eq!(classified.status(), StatusCode::OK);
 
-    let mut grant = factory_native::lead::StandingDelegation {
-        id: "integration-grant".into(),
-        principal_id: "owner".into(),
-        audit_id: "audit".into(),
-        project_id: project_id.clone(),
-        revision: 1,
-        content_hash: String::new(),
-        objective_classes: vec![factory_native::lead::ObjectiveClass::Feature],
-        allowed_paths: vec!["src".into()],
-        capabilities: vec![
-            factory_native::lead::Capability::RepositoryEdit,
-            factory_native::lead::Capability::GenericToolchain,
-        ],
-        risk_classes: vec![factory_native::lead::RiskClass::R0],
-        autonomous_start: true,
-        autonomous_risk_classes: vec![factory_native::lead::RiskClass::R0],
-        route: factory_native::lead::ProviderRoute {
-            provider: "opencode".into(),
-            model: "deepseek-v4.1-flash".into(),
-            mode: "build".into(),
-        },
-        max_attempts: 2,
-        max_timeout_secs: 300,
-        max_repair_cycles: 0,
-        max_wall_clock_secs: 1800,
-        max_parallel: 2,
-        max_sessions: 8,
-        max_requests: 2,
-        max_cumulative_sessions: 16,
-        max_cumulative_attempts: 32,
-        expires_at: chrono::Utc::now() + chrono::Duration::days(1),
-        revoked_at: None,
-    };
-    grant.content_hash = grant.compute_content_hash();
-    let delegated = operator(
-        &client,
-        reqwest::Method::POST,
-        format!("{base_url}/delegations"),
-        Some(json!({"delegation": grant, "idempotency_key": "integration-grant-key"})),
-    )
-    .await;
-    assert_eq!(delegated.status(), StatusCode::CREATED);
-
+    let grant = v2_grant(
+        "integration-grant",
+        &project_id,
+        "opencode",
+        "deepseek-v4.1-flash",
+        true,
+        2,
+    );
+    seed_v2_grant(&root.join("factory.sqlite"), &grant).await;
     let lead: Value = operator(
         &client,
         reqwest::Method::POST,
@@ -2112,51 +2658,15 @@ async fn restarted_fanin_workgraph_reaches_accepted_on_integrated_base() {
         .status(),
         StatusCode::OK
     );
-    let mut grant = factory_native::lead::StandingDelegation {
-        id: "fanin-grant".into(),
-        principal_id: "owner".into(),
-        audit_id: "audit".into(),
-        project_id: project_id.clone(),
-        revision: 1,
-        content_hash: String::new(),
-        objective_classes: vec![factory_native::lead::ObjectiveClass::Feature],
-        allowed_paths: vec!["src".into()],
-        capabilities: vec![
-            factory_native::lead::Capability::RepositoryEdit,
-            factory_native::lead::Capability::GenericToolchain,
-        ],
-        risk_classes: vec![factory_native::lead::RiskClass::R0],
-        autonomous_start: true,
-        autonomous_risk_classes: vec![factory_native::lead::RiskClass::R0],
-        route: factory_native::lead::ProviderRoute {
-            provider: "opencode".into(),
-            model: "deepseek-v4.1-flash".into(),
-            mode: "build".into(),
-        },
-        max_attempts: 2,
-        max_timeout_secs: 300,
-        max_repair_cycles: 0,
-        max_wall_clock_secs: 1800,
-        max_parallel: 2,
-        max_sessions: 8,
-        max_requests: 2,
-        max_cumulative_sessions: 16,
-        max_cumulative_attempts: 32,
-        expires_at: chrono::Utc::now() + chrono::Duration::days(1),
-        revoked_at: None,
-    };
-    grant.content_hash = grant.compute_content_hash();
-    assert_eq!(
-        operator(
-            &client,
-            reqwest::Method::POST,
-            format!("{base_url}/delegations"),
-            Some(json!({"delegation":grant,"idempotency_key":"fanin-grant-key"}))
-        )
-        .await
-        .status(),
-        StatusCode::CREATED
+    let grant = v2_grant(
+        "fanin-grant",
+        &project_id,
+        "opencode",
+        "deepseek-v4.1-flash",
+        true,
+        2,
     );
+    seed_v2_grant(&root.join("factory.sqlite"), &grant).await;
     let lead: Value = operator(
         &client,
         reqwest::Method::POST,
@@ -2590,51 +3100,15 @@ async fn failed_fanin_dependency_is_not_dispatched() {
         .status(),
         StatusCode::OK
     );
-    let mut grant = factory_native::lead::StandingDelegation {
-        id: "failed-dependency-grant".into(),
-        principal_id: "owner".into(),
-        audit_id: "audit".into(),
-        project_id: project_id.clone(),
-        revision: 1,
-        content_hash: String::new(),
-        objective_classes: vec![factory_native::lead::ObjectiveClass::Feature],
-        allowed_paths: vec!["src".into()],
-        capabilities: vec![
-            factory_native::lead::Capability::RepositoryEdit,
-            factory_native::lead::Capability::GenericToolchain,
-        ],
-        risk_classes: vec![factory_native::lead::RiskClass::R0],
-        autonomous_start: true,
-        autonomous_risk_classes: vec![factory_native::lead::RiskClass::R0],
-        route: factory_native::lead::ProviderRoute {
-            provider: "opencode".into(),
-            model: "deepseek-v4.1-flash".into(),
-            mode: "build".into(),
-        },
-        max_attempts: 2,
-        max_timeout_secs: 300,
-        max_repair_cycles: 0,
-        max_wall_clock_secs: 1800,
-        max_parallel: 2,
-        max_sessions: 8,
-        max_requests: 2,
-        max_cumulative_sessions: 16,
-        max_cumulative_attempts: 32,
-        expires_at: chrono::Utc::now() + chrono::Duration::days(1),
-        revoked_at: None,
-    };
-    grant.content_hash = grant.compute_content_hash();
-    assert_eq!(
-        operator(
-            &client,
-            reqwest::Method::POST,
-            format!("{base_url}/delegations"),
-            Some(json!({"delegation":grant,"idempotency_key":"failed-dependency-grant-key"}))
-        )
-        .await
-        .status(),
-        StatusCode::CREATED
+    let grant = v2_grant(
+        "failed-dependency-grant",
+        &project_id,
+        "opencode",
+        "deepseek-v4.1-flash",
+        true,
+        2,
     );
+    seed_v2_grant(&root.join("factory.sqlite"), &grant).await;
     let lead: Value = operator(
         &client,
         reqwest::Method::POST,
@@ -2928,51 +3402,15 @@ async fn failed_fanin_integration_propagates_without_dependent_dispatch() {
         .status(),
         StatusCode::OK
     );
-    let mut grant = factory_native::lead::StandingDelegation {
-        id: "integration-failure-grant".into(),
-        principal_id: "owner".into(),
-        audit_id: "audit".into(),
-        project_id: project_id.clone(),
-        revision: 1,
-        content_hash: String::new(),
-        objective_classes: vec![factory_native::lead::ObjectiveClass::Feature],
-        allowed_paths: vec!["src".into()],
-        capabilities: vec![
-            factory_native::lead::Capability::RepositoryEdit,
-            factory_native::lead::Capability::GenericToolchain,
-        ],
-        risk_classes: vec![factory_native::lead::RiskClass::R0],
-        autonomous_start: true,
-        autonomous_risk_classes: vec![factory_native::lead::RiskClass::R0],
-        route: factory_native::lead::ProviderRoute {
-            provider: "opencode".into(),
-            model: "deepseek-v4.1-flash".into(),
-            mode: "build".into(),
-        },
-        max_attempts: 2,
-        max_timeout_secs: 300,
-        max_repair_cycles: 0,
-        max_wall_clock_secs: 1800,
-        max_parallel: 2,
-        max_sessions: 8,
-        max_requests: 2,
-        max_cumulative_sessions: 16,
-        max_cumulative_attempts: 32,
-        expires_at: chrono::Utc::now() + chrono::Duration::days(1),
-        revoked_at: None,
-    };
-    grant.content_hash = grant.compute_content_hash();
-    assert_eq!(
-        operator(
-            &client,
-            reqwest::Method::POST,
-            format!("{base_url}/delegations"),
-            Some(json!({"delegation":grant,"idempotency_key":"integration-failure-grant-key"}))
-        )
-        .await
-        .status(),
-        StatusCode::CREATED
+    let grant = v2_grant(
+        "integration-failure-grant",
+        &project_id,
+        "opencode",
+        "deepseek-v4.1-flash",
+        true,
+        2,
     );
+    seed_v2_grant(&root.join("factory.sqlite"), &grant).await;
     let lead: Value = operator(
         &client,
         reqwest::Method::POST,
@@ -3328,15 +3766,12 @@ async fn campaign_cancellation_fences_a_leased_attempt_through_restart() {
             &client,
             reqwest::Method::POST,
             format!("{base_url}/campaigns/{campaign_id}/authorize"),
-            Some(json!({
-                "authorization_id": "cancel-auth",
-                "risk_class": "R0",
-                "execution_mode": "FIXTURE",
-                "actor": "e2e-operator",
-                "rationale": "cancellation fixture",
-                "authorized_paths": ["src"],
-                "max_attempts": 1
-            })),
+            Some(v2_fixture_authorization(
+                "cancel-auth",
+                "cancel-delegation",
+                "e2e-operator",
+                "cancellation fixture",
+            )),
         )
         .await
         .status(),
@@ -3504,6 +3939,7 @@ async fn campaign_cancellation_fences_a_leased_attempt_through_restart() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+#[cfg(feature = "test-support")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn provider_backed_campaign_reaches_accepted_gate_with_source_and_tools() {
     let root = std::env::temp_dir().join(format!(
@@ -3564,6 +4000,23 @@ async fn provider_backed_campaign_reaches_accepted_gate_with_source_and_tools() 
     .await
     .unwrap();
     let project_id = project["id"].as_str().unwrap().to_owned();
+    let config: Value = operator(
+        &client,
+        reqwest::Method::PUT,
+        format!("{base_url}/projects/{project_id}/config"),
+        Some(json!({
+            "expectedRevision": 1,
+            "allowedPaths": ["src"],
+            "capabilities": ["repository-edit", "generic-toolchain"],
+            "qualityProfile": "generic",
+            "active": true
+        })),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let config_hash = config["configHash"].as_str().unwrap().to_owned();
     let action: Value = operator(
         &client,
         reqwest::Method::POST,
@@ -3576,6 +4029,8 @@ async fn provider_backed_campaign_reaches_accepted_gate_with_source_and_tools() 
             "idempotency_key": "provider-action",
             "allowed_paths": ["src"],
             "checks": [
+                {"id":"build","kind":"build","description":"build","command":["true"],"expectExit":0,"timeoutSecs":30},
+                {"id":"test","kind":"test","description":"test","command":["true"],"expectExit":0,"timeoutSecs":30},
                 {"id":"content","kind":"functional","description":"provider content","command":["grep","-q","provider candidate","src/provider.txt"],"expectExit":0,"timeoutSecs":30},
                 {"id":"negative","kind":"negative","description":"absent content","command":["grep","-q","absent","src/provider.txt"],"expectExit":1,"timeoutSecs":30}
             ]
@@ -3586,141 +4041,40 @@ async fn provider_backed_campaign_reaches_accepted_gate_with_source_and_tools() 
     .await
     .unwrap();
     let action_id = action["id"].as_str().unwrap().to_owned();
-    let grant = json!({
-        "id":"provider-grant",
-        "principalId":"owner",
-        "auditId":"audit",
-        "projectId":project_id,
-        "revision":1,
-        "objectiveClasses":["feature"],
-        "allowedPaths":["src"],
-        "capabilities":["repository-edit","generic-toolchain"],
-        "riskClasses":["R0"],
-        "autonomousStart":false,
-        "autonomousRiskClasses":[],
-        "route":{"provider":"opencode","model":"deepseek-v4.1-flash","mode":"build"},
-        "maxAttempts":2,
-        "maxTimeoutSecs":300,
-        "maxRepairCycles":0,
-        "maxWallClockSecs":1800,
-        "maxParallel":1,
-        "maxSessions":2,
-        "maxRequests":1,
-        "maxCumulativeSessions":8,
-        "maxCumulativeAttempts":16,
-        "expiresAt": (chrono::Utc::now() + chrono::Duration::days(1)).to_rfc3339()
-    });
-    assert_eq!(
-        operator(
-            &client,
-            reqwest::Method::POST,
-            format!("{base_url}/delegations"),
-            Some(json!({"delegation":grant,"idempotency_key":"provider-grant-key"})),
-        )
-        .await
-        .status(),
-        StatusCode::CREATED
-    );
-    let campaign: Value = operator(
-        &client,
-        reqwest::Method::POST,
-        format!("{base_url}/campaigns"),
-        Some(json!({"action_id":action_id,"idempotency_key":"provider-campaign"})),
-    )
-    .await
-    .json()
-    .await
-    .unwrap();
-    let campaign_id = campaign["id"].as_str().unwrap().to_owned();
-    for (label, override_fields) in [
-        ("wrong model", json!({"model":"other-model"})),
-        ("provider tools", json!({"allowed_tools":["shell"]})),
-        ("missing delegation", json!({"delegation_id":""})),
-    ] {
-        let mut body = json!({
-            "authorization_id": format!("provider-auth-{label}"),
-            "risk_class":"R0",
-            "execution_mode":"TRUSTED_LOCAL_PROVIDER",
-            "actor":"e2e-operator",
-            "rationale":"negative provider authorization",
-            "authorized_paths":["src"],
-            "max_attempts":1,
-            "provider":"opencode",
-            "model":"deepseek-v4.1-flash",
-            "provider_mode":"build",
-            "delegation_id":"provider-grant",
-            "max_sessions":1,
-            "max_turns":1,
-            "max_input_tokens":1000,
-            "max_output_tokens":1000,
-            "max_cost_micros":10000,
-            "deadline_secs":30,
-            "allowed_tools":[]
-        });
-        for (key, value) in override_fields.as_object().unwrap() {
-            body[key] = value.clone();
-        }
-        let response = operator(
-            &client,
-            reqwest::Method::POST,
-            format!("{base_url}/campaigns/{campaign_id}/authorize"),
-            Some(body),
-        )
-        .await;
-        assert!(
-            response.status().is_client_error(),
-            "negative provider authorization {label} should fail, got {}",
-            response.status()
-        );
-    }
-    assert_eq!(
-        operator(
-            &client,
-            reqwest::Method::POST,
-            format!("{base_url}/campaigns/{campaign_id}/authorize"),
-            Some(json!({
-                "authorization_id":"provider-auth",
-                "risk_class":"R0",
-                "execution_mode":"TRUSTED_LOCAL_PROVIDER",
-                "actor":"e2e-operator",
-                "rationale":"deterministic fake-provider acceptance",
-                "authorized_paths":["src"],
-                "max_attempts":1,
-                "provider":"opencode",
-                "model":"deepseek-v4.1-flash",
-                "provider_mode":"build",
-                "delegation_id":"provider-grant",
-                "max_sessions":1,
-                "max_turns":4,
-                "max_input_tokens":1000,
-                "max_output_tokens":1000,
-                "max_cost_micros":10000,
-                "deadline_secs":30,
-                "allowed_tools":["write_file","run_command"]
-            })),
-        )
-        .await
-        .status(),
-        StatusCode::CREATED
-    );
-    let run: Value = operator(
-        &client,
-        reqwest::Method::POST,
-        format!("{base_url}/campaigns/{campaign_id}/runs"),
-        None,
-    )
-    .await
-    .json()
-    .await
-    .unwrap();
-    operator(
-        &client,
-        reqwest::Method::POST,
-        format!("{base_url}/runs/{}/attempts", run["id"].as_str().unwrap()),
-        None,
+    seed_v2_grant(
+        &root.join("factory.sqlite"),
+        &v2_grant(
+            "provider-grant",
+            &project_id,
+            "opencode",
+            "deepseek-v4.1-flash",
+            true,
+            1,
+        ),
     )
     .await;
-
+    seed_provider_settings(
+        &root.join("factory.sqlite"),
+        "opencode",
+        "opencode",
+        "deepseek-v4.1-flash",
+    )
+    .await;
+    let started = start_request_scoped_provider_campaign(
+        &client,
+        &base_url,
+        &root.join("factory.sqlite"),
+        &project_id,
+        &action_id,
+        &config_hash,
+        "provider-grant",
+        "opencode",
+        "deepseek-v4.1-flash",
+        "Create the provider candidate file.",
+        "provider",
+    )
+    .await;
+    let campaign_id = started["campaign"]["id"].as_str().unwrap().to_owned();
     use axum::{Router, routing::post};
     use std::sync::{Arc, Mutex};
 
@@ -4293,6 +4647,7 @@ async fn codex_mock_responses(
         .into_response()
 }
 
+#[cfg(feature = "test-support")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn codex_fixture_runs_a_mediated_tool_turn_and_records_core_accounting() {
     let root = std::env::temp_dir().join(format!(
@@ -4337,6 +4692,23 @@ async fn codex_fixture_runs_a_mediated_tool_turn_and_records_core_accounting() {
     .await
     .unwrap();
     let project_id = project["id"].as_str().unwrap().to_owned();
+    let config: Value = operator(
+        &client,
+        reqwest::Method::PUT,
+        format!("{base_url}/projects/{project_id}/config"),
+        Some(json!({
+            "expectedRevision": 1,
+            "allowedPaths": ["src"],
+            "capabilities": ["repository-edit", "generic-toolchain"],
+            "qualityProfile": "generic",
+            "active": true
+        })),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let config_hash = config["configHash"].as_str().unwrap().to_owned();
     let action: Value = operator(
         &client,
         reqwest::Method::POST,
@@ -4349,7 +4721,10 @@ async fn codex_fixture_runs_a_mediated_tool_turn_and_records_core_accounting() {
             "idempotency_key": "codex-action",
             "allowed_paths": ["src"],
             "checks": [
-                {"id":"content","kind":"functional","description":"provider content","command":["grep","-q","provider candidate","src/provider.txt"],"expectExit":0,"timeoutSecs":30}
+                {"id":"build","kind":"build","description":"build","command":["true"],"expectExit":0,"timeoutSecs":30},
+                {"id":"test","kind":"test","description":"test","command":["true"],"expectExit":0,"timeoutSecs":30},
+                {"id":"content","kind":"functional","description":"provider content","command":["grep","-q","provider candidate","src/provider.txt"],"expectExit":0,"timeoutSecs":30},
+                {"id":"negative","kind":"negative","description":"absent content","command":["grep","-q","absent","src/provider.txt"],"expectExit":1,"timeoutSecs":30}
             ]
         })),
     )
@@ -4358,100 +4733,26 @@ async fn codex_fixture_runs_a_mediated_tool_turn_and_records_core_accounting() {
     .await
     .unwrap();
     let action_id = action["id"].as_str().unwrap().to_owned();
-    let grant = json!({
-        "id":"codex-grant",
-        "principalId":"owner",
-        "auditId":"audit",
-        "projectId":project_id,
-        "revision":1,
-        "objectiveClasses":["feature"],
-        "allowedPaths":["src"],
-        "capabilities":["repository-edit","generic-toolchain"],
-        "riskClasses":["R0"],
-        "autonomousStart":false,
-        "autonomousRiskClasses":[],
-        "route":{"provider":"codex","model":"gpt-6-luna","mode":"build"},
-        "maxAttempts":2,
-        "maxTimeoutSecs":300,
-        "maxRepairCycles":0,
-        "maxWallClockSecs":1800,
-        "maxParallel":1,
-        "maxSessions":2,
-        "maxRequests":1,
-        "maxCumulativeSessions":8,
-        "maxCumulativeAttempts":16,
-        "expiresAt": (chrono::Utc::now() + chrono::Duration::days(1)).to_rfc3339()
-    });
-    assert_eq!(
-        operator(
-            &client,
-            reqwest::Method::POST,
-            format!("{base_url}/delegations"),
-            Some(json!({"delegation":grant,"idempotency_key":"codex-grant-key"})),
-        )
-        .await
-        .status(),
-        StatusCode::CREATED
-    );
-    let campaign: Value = operator(
-        &client,
-        reqwest::Method::POST,
-        format!("{base_url}/campaigns"),
-        Some(json!({"action_id":action_id,"idempotency_key":"codex-campaign"})),
-    )
-    .await
-    .json()
-    .await
-    .unwrap();
-    let campaign_id = campaign["id"].as_str().unwrap().to_owned();
-    assert_eq!(
-        operator(
-            &client,
-            reqwest::Method::POST,
-            format!("{base_url}/campaigns/{campaign_id}/authorize"),
-            Some(json!({
-                "authorization_id":"codex-auth",
-                "risk_class":"R0",
-                "execution_mode":"TRUSTED_LOCAL_PROVIDER",
-                "actor":"e2e-operator",
-                "rationale":"deterministic Codex fixture acceptance",
-                "authorized_paths":["src"],
-                "max_attempts":1,
-                "provider":"codex",
-                "model":"gpt-6-luna",
-                "provider_mode":"build",
-                "delegation_id":"codex-grant",
-                "max_sessions":1,
-                "max_turns":4,
-                "max_input_tokens":1000,
-                "max_output_tokens":1000,
-                "max_cost_micros":10000,
-                "deadline_secs":30,
-                "allowed_tools":["write_file","run_command"]
-            })),
-        )
-        .await
-        .status(),
-        StatusCode::CREATED
-    );
-    let run: Value = operator(
-        &client,
-        reqwest::Method::POST,
-        format!("{base_url}/campaigns/{campaign_id}/runs"),
-        None,
-    )
-    .await
-    .json()
-    .await
-    .unwrap();
-    operator(
-        &client,
-        reqwest::Method::POST,
-        format!("{base_url}/runs/{}/attempts", run["id"].as_str().unwrap()),
-        None,
+    seed_v2_grant(
+        &root.join("factory.sqlite"),
+        &v2_grant("codex-grant", &project_id, "codex", "gpt-6-luna", true, 1),
     )
     .await;
-
+    seed_provider_settings(&root.join("factory.sqlite"), "codex", "codex", "gpt-6-luna").await;
+    start_request_scoped_provider_campaign(
+        &client,
+        &base_url,
+        &root.join("factory.sqlite"),
+        &project_id,
+        &action_id,
+        &config_hash,
+        "codex-grant",
+        "codex",
+        "gpt-6-luna",
+        "Create the Codex provider candidate file.",
+        "codex",
+    )
+    .await;
     let supervisor_port = free_port();
     let supervisor_url = format!("http://127.0.0.1:{supervisor_port}");
     let mut supervisor = SupervisorProcess::start(SupervisorSpec {
@@ -4665,6 +4966,23 @@ async fn codex_real_executable_reaches_a_candidate_and_binds_upstream_requests()
     .await
     .unwrap();
     let project_id = project["id"].as_str().unwrap().to_owned();
+    let config: Value = operator(
+        &client,
+        reqwest::Method::PUT,
+        format!("{base_url}/projects/{project_id}/config"),
+        Some(json!({
+            "expectedRevision": 1,
+            "allowedPaths": ["src"],
+            "capabilities": ["repository-edit", "generic-toolchain"],
+            "qualityProfile": "generic",
+            "active": true
+        })),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let config_hash = config["configHash"].as_str().unwrap().to_owned();
     let action: Value = operator(
         &client,
         reqwest::Method::POST,
@@ -4677,7 +4995,10 @@ async fn codex_real_executable_reaches_a_candidate_and_binds_upstream_requests()
             "idempotency_key": "codex-action",
             "allowed_paths": ["src"],
             "checks": [
-                {"id":"content","kind":"functional","description":"provider content","command":["grep","-q","provider candidate","src/provider.txt"],"expectExit":0,"timeoutSecs":30}
+                {"id":"build","kind":"build","description":"build","command":["true"],"expectExit":0,"timeoutSecs":30},
+                {"id":"test","kind":"test","description":"test","command":["true"],"expectExit":0,"timeoutSecs":30},
+                {"id":"content","kind":"functional","description":"provider content","command":["grep","-q","provider candidate","src/provider.txt"],"expectExit":0,"timeoutSecs":30},
+                {"id":"negative","kind":"negative","description":"absent content","command":["grep","-q","absent","src/provider.txt"],"expectExit":1,"timeoutSecs":30}
             ]
         })),
     )
@@ -4686,100 +5007,26 @@ async fn codex_real_executable_reaches_a_candidate_and_binds_upstream_requests()
     .await
     .unwrap();
     let action_id = action["id"].as_str().unwrap().to_owned();
-    let grant = json!({
-        "id":"codex-grant",
-        "principalId":"owner",
-        "auditId":"audit",
-        "projectId":project_id,
-        "revision":1,
-        "objectiveClasses":["feature"],
-        "allowedPaths":["src"],
-        "capabilities":["repository-edit","generic-toolchain"],
-        "riskClasses":["R0"],
-        "autonomousStart":false,
-        "autonomousRiskClasses":[],
-        "route":{"provider":"codex","model":"gpt-6-luna","mode":"build"},
-        "maxAttempts":2,
-        "maxTimeoutSecs":300,
-        "maxRepairCycles":0,
-        "maxWallClockSecs":1800,
-        "maxParallel":1,
-        "maxSessions":2,
-        "maxRequests":1,
-        "maxCumulativeSessions":8,
-        "maxCumulativeAttempts":16,
-        "expiresAt": (chrono::Utc::now() + chrono::Duration::days(1)).to_rfc3339()
-    });
-    assert_eq!(
-        operator(
-            &client,
-            reqwest::Method::POST,
-            format!("{base_url}/delegations"),
-            Some(json!({"delegation":grant,"idempotency_key":"codex-grant-key"})),
-        )
-        .await
-        .status(),
-        StatusCode::CREATED
-    );
-    let campaign: Value = operator(
-        &client,
-        reqwest::Method::POST,
-        format!("{base_url}/campaigns"),
-        Some(json!({"action_id":action_id,"idempotency_key":"codex-campaign"})),
-    )
-    .await
-    .json()
-    .await
-    .unwrap();
-    let campaign_id = campaign["id"].as_str().unwrap().to_owned();
-    assert_eq!(
-        operator(
-            &client,
-            reqwest::Method::POST,
-            format!("{base_url}/campaigns/{campaign_id}/authorize"),
-            Some(json!({
-                "authorization_id":"codex-auth",
-                "risk_class":"R0",
-                "execution_mode":"TRUSTED_LOCAL_PROVIDER",
-                "actor":"e2e-operator",
-                "rationale":"deterministic Codex fixture acceptance",
-                "authorized_paths":["src"],
-                "max_attempts":1,
-                "provider":"codex",
-                "model":"gpt-6-luna",
-                "provider_mode":"build",
-                "delegation_id":"codex-grant",
-                "max_sessions":1,
-                "max_turns":4,
-                "max_input_tokens":200000,
-                "max_output_tokens":1000,
-                "max_cost_micros":10000,
-                "deadline_secs":30,
-                "allowed_tools":["write_file","run_command"]
-            })),
-        )
-        .await
-        .status(),
-        StatusCode::CREATED
-    );
-    let run: Value = operator(
-        &client,
-        reqwest::Method::POST,
-        format!("{base_url}/campaigns/{campaign_id}/runs"),
-        None,
-    )
-    .await
-    .json()
-    .await
-    .unwrap();
-    operator(
-        &client,
-        reqwest::Method::POST,
-        format!("{base_url}/runs/{}/attempts", run["id"].as_str().unwrap()),
-        None,
+    seed_v2_grant(
+        &root.join("factory.sqlite"),
+        &v2_grant("codex-grant", &project_id, "codex", "gpt-6-luna", true, 1),
     )
     .await;
-
+    seed_provider_settings(&root.join("factory.sqlite"), "codex", "codex", "gpt-6-luna").await;
+    start_request_scoped_provider_campaign(
+        &client,
+        &base_url,
+        &root.join("factory.sqlite"),
+        &project_id,
+        &action_id,
+        &config_hash,
+        "codex-grant",
+        "codex",
+        "gpt-6-luna",
+        "Create the Codex provider candidate file.",
+        "codex-real",
+    )
+    .await;
     let mock_state = CodexMockState {
         calls: Arc::new(AtomicUsize::new(0)),
         seen: Arc::new(Mutex::new(Vec::new())),
@@ -5076,6 +5323,23 @@ async fn recovery_worker_cleans_an_orphaned_provider_session_after_restart() {
     .await
     .unwrap();
     let project_id = project["id"].as_str().unwrap().to_owned();
+    let config: Value = operator(
+        &client,
+        reqwest::Method::PUT,
+        format!("{base_url}/projects/{project_id}/config"),
+        Some(json!({
+            "expectedRevision": 1,
+            "allowedPaths": ["src"],
+            "capabilities": ["repository-edit", "generic-toolchain"],
+            "qualityProfile": "generic",
+            "active": true
+        })),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let config_hash = config["configHash"].as_str().unwrap().to_owned();
     let action: Value = operator(
         &client,
         reqwest::Method::POST,
@@ -5087,7 +5351,12 @@ async fn recovery_worker_cleans_an_orphaned_provider_session_after_restart() {
             "model":"deepseek-v4.1-flash",
             "idempotency_key":"recovery-action",
             "allowed_paths":["src"],
-            "checks":[{"id":"content","kind":"functional","description":"content","command":["true"],"expectExit":0,"timeoutSecs":30}]
+            "checks":[
+                {"id":"build","kind":"build","description":"build","command":["true"],"expectExit":0,"timeoutSecs":30},
+                {"id":"test","kind":"test","description":"test","command":["true"],"expectExit":0,"timeoutSecs":30},
+                {"id":"content","kind":"functional","description":"content","command":["true"],"expectExit":0,"timeoutSecs":30},
+                {"id":"negative","kind":"negative","description":"absent content","command":["grep","-q","absent","seed.txt"],"expectExit":1,"timeoutSecs":30}
+            ]
         })),
     )
     .await
@@ -5095,82 +5364,34 @@ async fn recovery_worker_cleans_an_orphaned_provider_session_after_restart() {
     .await
     .unwrap();
     let action_id = action["id"].as_str().unwrap().to_owned();
-    assert_eq!(
-        operator(
-            &client,
-            reqwest::Method::POST,
-            format!("{base_url}/delegations"),
-            Some(json!({
-                "idempotency_key":"recovery-grant-key",
-                "delegation":{
-                    "id":"recovery-grant","principalId":"owner","auditId":"audit",
-                    "projectId":project_id,"revision":1,
-                    "objectiveClasses":["feature"],"allowedPaths":["src"],
-                    "capabilities":["repository-edit","generic-toolchain"],
-                    "riskClasses":["R0"],"autonomousStart":false,"autonomousRiskClasses":[],
-                    "route":{"provider":"opencode","model":"deepseek-v4.1-flash","mode":"build"},
-                    "maxAttempts":2,"maxTimeoutSecs":300,"maxRepairCycles":0,
-                    "maxWallClockSecs":1800,"maxParallel":1,"maxSessions":2,"maxRequests":2,
-                    "maxCumulativeSessions":8,"maxCumulativeAttempts":16,
-                    "expiresAt":(chrono::Utc::now()+chrono::Duration::days(1)).to_rfc3339()
-                }
-            })),
-        )
-        .await
-        .status(),
-        StatusCode::CREATED
-    );
-    let campaign: Value = operator(
-        &client,
-        reqwest::Method::POST,
-        format!("{base_url}/campaigns"),
-        Some(json!({"action_id":action_id,"idempotency_key":"recovery-campaign"})),
+    seed_v2_grant(
+        &database,
+        &v2_grant(
+            "recovery-grant",
+            &project_id,
+            "opencode",
+            "deepseek-v4.1-flash",
+            true,
+            1,
+        ),
     )
-    .await
-    .json()
-    .await
-    .unwrap();
-    let campaign_id = campaign["id"].as_str().unwrap().to_owned();
-    assert_eq!(
-        operator(
-            &client,
-            reqwest::Method::POST,
-            format!("{base_url}/campaigns/{campaign_id}/authorize"),
-            Some(json!({
-                "authorization_id":"recovery-auth","risk_class":"R0",
-                "execution_mode":"TRUSTED_LOCAL_PROVIDER","actor":"e2e",
-                "rationale":"recovery fixture","authorized_paths":["src"],"max_attempts":1,
-                "provider":"opencode","model":"deepseek-v4.1-flash","provider_mode":"build",
-                "delegation_id":"recovery-grant","max_sessions":1,"max_turns":1,
-                "max_input_tokens":1000,"max_output_tokens":1000,"max_cost_micros":10000,
-                "deadline_secs":30,"allowed_tools":[]
-            })),
-        )
-        .await
-        .status(),
-        StatusCode::CREATED
-    );
-    let run: Value = operator(
+    .await;
+    seed_provider_settings(&database, "opencode", "opencode", "deepseek-v4.1-flash").await;
+    let started = start_request_scoped_provider_campaign(
         &client,
-        reqwest::Method::POST,
-        format!("{base_url}/campaigns/{campaign_id}/runs"),
-        None,
+        &base_url,
+        &database,
+        &project_id,
+        &action_id,
+        &config_hash,
+        "recovery-grant",
+        "opencode",
+        "deepseek-v4.1-flash",
+        "Recovery provider action.",
+        "recovery",
     )
-    .await
-    .json()
-    .await
-    .unwrap();
-    let attempt: Value = operator(
-        &client,
-        reqwest::Method::POST,
-        format!("{base_url}/runs/{}/attempts", run["id"].as_str().unwrap()),
-        None,
-    )
-    .await
-    .json()
-    .await
-    .unwrap();
-    let attempt_id = attempt["id"].as_str().unwrap().to_owned();
+    .await;
+    let attempt_id = started["attempt"]["id"].as_str().unwrap().to_owned();
     core.stop();
 
     let pool = sqlx_sqlite::SqlitePoolOptions::new()

@@ -25,9 +25,23 @@ pub enum ReviewVerdict {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum FindingSeverity {
+    Critical,
     Blocking,
     Warning,
     Info,
+}
+
+impl FindingSeverity {
+    /// Canonical, non-discretionary repair weight. Core rejects any model or
+    /// caller value that differs from this mapping.
+    pub const fn canonical_points(self) -> u16 {
+        match self {
+            Self::Critical => 8,
+            Self::Blocking => 5,
+            Self::Warning => 2,
+            Self::Info => 1,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -50,6 +64,14 @@ pub struct ReviewFinding {
     pub category: FindingCategory,
     #[schemars(length(min = 1, max = 2000))]
     pub message: String,
+    /// Canonical severity points. Defaulted only so historical receipts still
+    /// decode; new receipts and model output are validated exactly.
+    #[serde(default)]
+    pub points: u16,
+    /// Concrete justification for the assigned severity. Historical receipts
+    /// decode empty and remain displayable but cannot authorize repair.
+    #[serde(default)]
+    pub rationale: String,
     #[schemars(length(min = 1, max = 16))]
     pub evidence_refs: Vec<String>,
 }
@@ -239,6 +261,8 @@ fn add_finding(
             severity,
             category,
             message: message.into(),
+            points: severity.canonical_points(),
+            rationale: message.into(),
             evidence_refs: evidence_refs.to_vec(),
         });
     }

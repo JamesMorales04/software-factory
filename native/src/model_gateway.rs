@@ -34,6 +34,13 @@ pub struct ModelGatewayConfig {
     pub evaluation_policy: ModelCallPolicy,
     pub global_policy: ModelCallPolicy,
     pub allow_loopback_http: bool,
+    /// A role-scoped gateway accepts only this role. The legacy default
+    /// gateway keeps `None`.
+    pub bound_role: Option<ModelCallRole>,
+    /// Explicit test-only plain-HTTP hosts from
+    /// `FACTORY_TEST_UPSTREAM_HOSTS`. Ignored unless
+    /// `allow_loopback_http`/`FACTORY_ALLOW_TEST_UPSTREAM=1` is set.
+    pub test_upstream_hosts: Vec<String>,
 }
 
 impl std::fmt::Debug for ModelGatewayConfig {
@@ -109,12 +116,34 @@ impl ModelGateway {
         &self.config.model
     }
 
+    pub fn bound_role(&self) -> Option<ModelCallRole> {
+        self.config.bound_role
+    }
+
+    /// The effective role policy after route, provider and Core intersection.
+    pub fn role_policy(&self, role: ModelCallRole) -> ModelCallPolicy {
+        match role {
+            ModelCallRole::Lead => self.config.lead_policy,
+            ModelCallRole::SemanticReviewer => self.config.reviewer_policy,
+            ModelCallRole::Evaluation => self.config.evaluation_policy,
+        }
+    }
+
     pub async fn call(
         &self,
         database: &Database,
         request: ModelCallRequest<'_>,
     ) -> Result<ModelCallResult, ModelGatewayError> {
         validate_request(&request)?;
+        if let Some(bound) = self.config.bound_role
+            && bound != request.role
+        {
+            return Err(ModelGatewayError::Invalid(format!(
+                "this gateway is bound to the {} role and cannot execute a {} request",
+                bound.as_str(),
+                request.role.as_str()
+            )));
+        }
         let request_sha256 = request_digest(&self.config, &request);
         let estimated_input_tokens = estimate_tokens(request.system_prompt, request.user_prompt);
         let estimated_cost_micros = estimate_cost(
@@ -122,11 +151,7 @@ impl ModelGateway {
             estimated_input_tokens,
             request.max_output_tokens,
         );
-        let policy = match request.role {
-            ModelCallRole::Lead => self.config.lead_policy,
-            ModelCallRole::SemanticReviewer => self.config.reviewer_policy,
-            ModelCallRole::Evaluation => self.config.evaluation_policy,
-        };
+        let policy = self.role_policy(request.role);
         let decision = database
             .authorize_model_call(&NewModelCallAuthorization {
                 role: request.role,
@@ -149,6 +174,18 @@ impl ModelGateway {
             ModelCallDecision::Replayed(result) => return Ok(result),
             ModelCallDecision::Reserved(grant) => grant,
         };
+        // Dispatch intent is durable and committed before the upstream send.
+        // A replayed intent must never authorize a second send, and every send
+        // attempt owns its own reservation.
+        let provider_request_id = format!("factory-model-{}", grant.reservation_id);
+        let dispatch = database
+            .acquire_model_call_dispatch(&grant.reservation_id, &provider_request_id)
+            .await?;
+        if !dispatch.acquired {
+            return Err(ModelGatewayError::Ambiguous(
+                "model call already has a dispatch intent; refusing a second send".into(),
+            ));
+        }
         let body = json!({
             "model": self.config.model,
             "temperature": 0,
@@ -176,27 +213,18 @@ impl ModelGateway {
         let response = match response {
             Ok(response) => response,
             Err(error) => {
-                if error.is_connect() {
-                    let _ = database
-                        .release_model_call(
-                            &grant.reservation_id,
-                            "model upstream connection failed before a request was sent",
-                            false,
-                        )
-                        .await;
-                    return Err(ModelGatewayError::Upstream(
-                        "connection failed before request".into(),
-                    ));
-                }
+                // The request may have reached the provider; keep the hold.
                 let _ = database
                     .release_model_call(
                         &grant.reservation_id,
-                        "model upstream transport outcome is ambiguous",
+                        &format!(
+                            "model upstream transport outcome is ambiguous after dispatch: {error}"
+                        ),
                         true,
                     )
                     .await;
                 return Err(ModelGatewayError::Ambiguous(
-                    "upstream transport outcome".into(),
+                    "upstream transport outcome after dispatch".into(),
                 ));
             }
         };
@@ -207,22 +235,12 @@ impl ModelGateway {
                 &crate::telemetry::redact(&String::from_utf8_lossy(&message)),
                 4096,
             );
-            if status.is_client_error() {
-                let _ = database
-                    .release_model_call(
-                        &grant.reservation_id,
-                        &format!("model upstream refused the request with {status}"),
-                        false,
-                    )
-                    .await;
-                return Err(ModelGatewayError::Upstream(format!(
-                    "HTTP {status}: {detail}"
-                )));
-            }
+            // A response proves the request reached the provider; it is not
+            // evidence that no charge was incurred. Retain the hold.
             let _ = database
                 .release_model_call(
                     &grant.reservation_id,
-                    &format!("model upstream returned ambiguous {status}"),
+                    &format!("model upstream returned ambiguous {status}: {detail}"),
                     true,
                 )
                 .await;
@@ -273,7 +291,41 @@ impl ModelGateway {
         let content = value
             .pointer("/choices/0/message/content")
             .and_then(serde_json::Value::as_str)
-            .unwrap_or_default();
+            .unwrap_or_default()
+            .trim();
+        let diagnostic = if content.is_empty() {
+            let finish_reason = value
+                .pointer("/choices/0/finish_reason")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown");
+            let message_keys = value
+                .pointer("/choices/0/message")
+                .and_then(serde_json::Value::as_object)
+                .map(|message| message.keys().cloned().collect::<Vec<_>>().join(","))
+                .unwrap_or_default();
+            let refusal = value
+                .pointer("/choices/0/message/refusal")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            let top_error = value
+                .get("error")
+                .map(ToString::to_string)
+                .unwrap_or_default();
+            tracing::warn!(
+                finish_reason,
+                message_keys = %message_keys,
+                refusal,
+                top_error = %top_error,
+                "model upstream returned empty assistant content"
+            );
+            format!(
+                "finish_reason={finish_reason}; message_keys={message_keys}; refusal={}; top_error={}",
+                refusal.chars().take(120).collect::<String>(),
+                top_error.chars().take(240).collect::<String>()
+            )
+        } else {
+            String::new()
+        };
         let (usage, usage_known) = parse_usage(&self.config, &value);
         let content = if content.is_empty() || content.len() > MAX_RESPONSE_BYTES {
             String::new()
@@ -281,15 +333,18 @@ impl ModelGateway {
             content.to_owned()
         };
         let settled = database
-            .settle_model_call(&ModelCallUsage {
-                reservation_id: grant.reservation_id.clone(),
-                input_tokens: usage.0,
-                output_tokens: usage.1,
-                total_tokens: usage.2,
-                cost_micros: usage.3,
-                usage_known,
-                content: content.clone(),
-            })
+            .settle_model_call_with_diagnostic(
+                &ModelCallUsage {
+                    reservation_id: grant.reservation_id.clone(),
+                    input_tokens: usage.0,
+                    output_tokens: usage.1,
+                    total_tokens: usage.2,
+                    cost_micros: usage.3,
+                    usage_known,
+                    content: content.clone(),
+                },
+                &diagnostic,
+            )
             .await?;
         if !usage_known {
             return Err(ModelGatewayError::Usage(
@@ -325,8 +380,13 @@ fn validate_config(config: &ModelGatewayConfig) -> Result<(), ModelGatewayError>
             "model upstream must be an origin with a bounded fixed base path".into(),
         ));
     }
-    let loopback = matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "::1"));
-    if url.scheme() != "https" && !(config.allow_loopback_http && loopback) {
+    if url.scheme() != "https"
+        && !crate::provider_catalog::test_upstream_host_allowed(
+            url.host_str(),
+            config.allow_loopback_http,
+            &config.test_upstream_hosts,
+        )
+    {
         return Err(ModelGatewayError::Invalid(
             "model upstream must use HTTPS outside loopback tests".into(),
         ));
@@ -337,7 +397,7 @@ fn validate_config(config: &ModelGatewayConfig) -> Result<(), ModelGatewayError>
         || config.input_micros_per_million == 0
         || config.output_micros_per_million == 0
         || config.timeout.is_zero()
-        || config.timeout > Duration::from_secs(90)
+        || config.timeout > Duration::from_secs(crate::model_routing::MAX_MODEL_TIMEOUT_SECS)
     {
         return Err(ModelGatewayError::Invalid(
             "provider, model, credential, rates or timeout".into(),
@@ -515,7 +575,25 @@ mod tests {
             evaluation_policy: policy(200_000, 8_192, 2_000_000),
             global_policy: policy(2_000_000, 100_000, 10_000_000),
             allow_loopback_http: true,
+            bound_role: None,
+            test_upstream_hosts: Vec::new(),
         }
+    }
+
+    #[test]
+    fn accepts_only_explicitly_allowed_test_upstream_hosts() {
+        let mut allowed = config("http://model-fixture:8080/v1");
+        allowed.test_upstream_hosts = vec!["model-fixture".into()];
+        assert!(ModelGateway::new(allowed).is_ok());
+
+        let mut other = config("http://other-service:8080/v1");
+        other.test_upstream_hosts = vec!["model-fixture".into()];
+        assert!(ModelGateway::new(other).is_err());
+
+        let mut disabled = config("http://model-fixture:8080/v1");
+        disabled.allow_loopback_http = false;
+        disabled.test_upstream_hosts = vec!["model-fixture".into()];
+        assert!(ModelGateway::new(disabled).is_err());
     }
 
     #[test]
@@ -536,6 +614,18 @@ mod tests {
         };
         assert!(validate_request(&request).is_err());
         assert!(!gateway.config.credential.is_empty());
+    }
+
+    #[test]
+    fn accepts_timeout_up_to_the_bounded_profile_ceiling() {
+        let mut ceiling = config("http://127.0.0.1:9000/v1");
+        ceiling.timeout = Duration::from_secs(crate::model_routing::MAX_MODEL_TIMEOUT_SECS);
+        assert!(ModelGateway::new(ceiling).is_ok());
+
+        let mut beyond = config("http://127.0.0.1:9000/v1");
+        beyond.timeout =
+            Duration::from_secs(crate::model_routing::MAX_MODEL_TIMEOUT_SECS.saturating_add(1));
+        assert!(ModelGateway::new(beyond).is_err());
     }
 
     #[test]
@@ -655,6 +745,8 @@ mod integration_tests {
                 max_cost_micros: 10_000_000,
             },
             allow_loopback_http: true,
+            bound_role: None,
+            test_upstream_hosts: Vec::new(),
         })
         .unwrap()
     }
@@ -686,6 +778,10 @@ mod integration_tests {
     #[tokio::test]
     async fn success_settles_and_replays_without_a_second_upstream_call() {
         let (path, database) = database().await;
+        database
+            .admit_test_subscription_dispatch("gateway-success")
+            .await
+            .unwrap();
         let (url, calls, server) = upstream(Behavior::Success).await;
         let gateway = gateway(&url, 5_000);
         let first = gateway
@@ -709,6 +805,10 @@ mod integration_tests {
     #[tokio::test]
     async fn missing_usage_marks_the_call_unknown_and_blocks_retry() {
         let (path, database) = database().await;
+        database
+            .admit_test_subscription_dispatch("gateway-unknown")
+            .await
+            .unwrap();
         let (url, calls, server) = upstream(Behavior::NoUsage).await;
         let gateway = gateway(&url, 5_000);
         assert!(
@@ -742,6 +842,10 @@ mod integration_tests {
             ("gateway-oversized", Behavior::Oversized),
         ] {
             let (path, database) = database().await;
+            database
+                .admit_test_subscription_dispatch(scope)
+                .await
+                .unwrap();
             let (url, _, server) = upstream(behavior).await;
             let gateway = gateway(&url, 5_000);
             assert!(
@@ -768,6 +872,10 @@ mod integration_tests {
     #[tokio::test]
     async fn timeout_is_ambiguous_and_never_retries_automatically() {
         let (path, database) = database().await;
+        database
+            .admit_test_subscription_dispatch("gateway-timeout")
+            .await
+            .unwrap();
         let (url, calls, server) = upstream(Behavior::Timeout).await;
         let gateway = gateway(&url, 100);
         assert!(matches!(
@@ -795,8 +903,12 @@ mod integration_tests {
     }
 
     #[tokio::test]
-    async fn client_error_releases_the_reservation() {
+    async fn client_error_after_dispatch_is_ambiguous_not_released() {
         let (path, database) = database().await;
+        database
+            .admit_test_subscription_dispatch("gateway-rejected")
+            .await
+            .unwrap();
         let (url, _, server) = upstream(Behavior::Reject).await;
         let gateway = gateway(&url, 5_000);
         assert!(
@@ -810,7 +922,7 @@ mod integration_tests {
             .await
             .unwrap();
         assert_eq!(records.len(), 1);
-        assert_eq!(records[0].state, "RELEASED");
+        assert_eq!(records[0].state, "AMBIGUOUS");
         database.close().await;
         let _ = std::fs::remove_file(path);
         server.abort();

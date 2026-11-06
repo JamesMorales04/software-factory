@@ -58,6 +58,15 @@ npm run dev
 The Vite dev server proxies `/core-api` to `http://127.0.0.1:8765` and strips
 the prefix. The operator token stays in `sessionStorage`.
 
+## Renderer fixture preview (development only)
+
+The Agent Office visual renderer has a test-only preview at
+`visual-harness.html`, served by the Vite dev server and excluded from the
+production build. It uses deterministic fixtures, carries a permanent
+`TEST FIXTURE — NOT LIVE CORE DATA` banner and is never a product route or a
+substitute for Core data. Example:
+`http://localhost:5173/visual-harness.html?count=5&mode=implementers&allActive=1`.
+
 ## Status
 
 The Rust-backed views typecheck, lint, pass component tests and build. `cargo xtask e2e office` runs

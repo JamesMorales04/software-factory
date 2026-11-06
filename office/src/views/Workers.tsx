@@ -1,26 +1,27 @@
 import { useEffect, useState } from "react";
 import { CoreApiError, coreApi, type WorkerSummary } from "../coreApi";
-import { formatTimestamp } from "../format";
+import { useI18n } from "../i18n";
 
 export function Workers() {
+  const { t, formatDate } = useI18n();
   const [workers, setWorkers] = useState<WorkerSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    let active = true;
+    let mounted = true;
     async function load() {
       try {
         const next = await coreApi.listWorkers();
-        if (active) {
+        if (mounted) {
           setWorkers(next);
           setError(null);
         }
       } catch (cause) {
-        if (active) {
+        if (mounted) {
           setError(
             cause instanceof CoreApiError
               ? cause.message
-              : "Failed to load Workers.",
+              : t("workers.error.load"),
           );
         }
       }
@@ -28,41 +29,48 @@ export function Workers() {
     void load();
     const timer = setInterval(() => void load(), 3000);
     return () => {
-      active = false;
+      mounted = false;
       clearInterval(timer);
     };
-  }, []);
+  }, [t]);
 
   return (
-    <div>
-      <h2>Workers</h2>
-      <p className="muted">
-        Registered Worker credentials only. This view does not fabricate
-        liveness, heartbeat, or execution state.
-      </p>
+    <div className="workers-workspace">
+      <h2>{t("workers.title")}</h2>
+      <p className="muted">{t("workers.description")}</p>
       {error && <p className="error">{error}</p>}
-      <h3>Registered Workers ({workers.length})</h3>
+      <h3>{t("workers.section.registered", { count: workers.length })}</h3>
       {workers.length === 0 ? (
-        <p className="muted">No Workers registered.</p>
+        <p className="muted">{t("workers.list.empty")}</p>
       ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>Worker</th>
-              <th>Credential updated</th>
-            </tr>
-          </thead>
-          <tbody>
-            {workers.map((worker) => (
-              <tr key={worker.worker_id}>
-                <td>
-                  <code>{worker.worker_id}</code>
-                </td>
-                <td className="muted">{formatTimestamp(worker.updated_at)}</td>
+        <section
+          className="table-responsive"
+          aria-label={t("workers.table.label")}
+        >
+          <table>
+            <thead>
+              <tr>
+                <th>{t("workers.table.worker")}</th>
+                <th>{t("workers.table.credentialUpdated")}</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {workers.map((worker) => (
+                <tr key={worker.worker_id}>
+                  <td data-label={t("workers.table.worker")}>
+                    <code>{worker.worker_id}</code>
+                  </td>
+                  <td
+                    className="muted"
+                    data-label={t("workers.table.credentialUpdated")}
+                  >
+                    {formatDate(worker.updated_at)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
       )}
     </div>
   );

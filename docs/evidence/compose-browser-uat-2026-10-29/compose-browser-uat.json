@@ -1,0 +1,257 @@
+{
+  "schema": "factory.compose-browser-uat.v1",
+  "result": "PASS_WITH_FINDINGS",
+  "started_at": "2026-10-29T14:15:55.485Z",
+  "finished_at": "2026-10-29T14:16:30.489Z",
+  "candidate_sha": "086a63f730f0a3db25c178b7dbcac2951d2db7b4",
+  "office_url": "http://127.0.0.1:8898",
+  "objective": "Add the deterministic Compose browser UAT candidate 1793283355485 and cover it with frozen checks.",
+  "runtime": {
+    "compose_project": "software-factory-uat60",
+    "compose_files": [
+      "compose.yaml",
+      "compose.e2e.yaml"
+    ],
+    "provider_kind": "fixture",
+    "paid_inference": false,
+    "deterministic_model_gateway": "http://model-fixture:8080/v1",
+    "core_api_interception": false
+  },
+  "ids": {
+    "project": "459ee709-8c56-448e-a350-41742bc8634c",
+    "intake_request": "9ddd7b88-e9a7-4b4f-bd16-e3a31e15952f",
+    "action": "be6bb2dc-fcfd-4d76-be5f-7127fbd5be9d",
+    "lead_request": "9f80ad6d-5c67-4b50-bbb6-be044ad85f31",
+    "execution_profile": "0b8510de-964e-4962-9c61-d33be2130458",
+    "campaign": "3f5f9abe-bcbe-4e0c-8ac9-6a0227e6ca3f",
+    "run": "692e45b5-c802-401f-b809-4b14fac2b7a7",
+    "attempt": "7a9c6699-5cb1-4db4-9734-4b96cefb60ca",
+    "candidate": "0ee276a1-0a65-46d6-ae10-a8fa4a311cc4",
+    "candidate_commit": "42c4b47aee07a37b48649334ff7eb15afe0ccec4",
+    "verifier_receipt": "2322b463-9c23-48aa-9c8f-8ee1df4242c4",
+    "reviewer_receipt": "def99d99-3c5a-415d-be0f-2c6cc0445129",
+    "gate": "ACCEPTED"
+  },
+  "assertions": {
+    "owner_enrollment": "PASS",
+    "project_import": "PASS",
+    "project_configuration": "PASS",
+    "provider_and_profile_setup": "PASS",
+    "home_request_creation": "PASS",
+    "assessment": "PASS",
+    "plan_approval_and_campaign_start": "PASS",
+    "fixture_worker_session": "PASS",
+    "worker_fixture_execution": "PASS",
+    "independent_receipts": "PASS",
+    "deterministic_quality_gate": "PASS",
+    "candidate_lineage": "PASS",
+    "candidate_diff_projection": "PASS",
+    "github_pr_projection_unbound": "PASS",
+    "agent_observability": "PASS",
+    "no_unexpected_browser_errors": true,
+    "campaign_budget_projection": "FAILED_UI_CONTRACT"
+  },
+  "screenshots": [
+    {
+      "name": "home-first-run-1440.png",
+      "path": "/home/james/Escritorio/Development/sf-wave3/compose-uat/docs/evidence/compose-browser-uat-2026-10-29/home-first-run-1440.png"
+    },
+    {
+      "name": "home-1440.png",
+      "path": "/home/james/Escritorio/Development/sf-wave3/compose-uat/docs/evidence/compose-browser-uat-2026-10-29/home-1440.png"
+    },
+    {
+      "name": "home-390.png",
+      "path": "/home/james/Escritorio/Development/sf-wave3/compose-uat/docs/evidence/compose-browser-uat-2026-10-29/home-390.png"
+    },
+    {
+      "name": "request-created-1440.png",
+      "path": "/home/james/Escritorio/Development/sf-wave3/compose-uat/docs/evidence/compose-browser-uat-2026-10-29/request-created-1440.png"
+    },
+    {
+      "name": "request-assessment-1440.png",
+      "path": "/home/james/Escritorio/Development/sf-wave3/compose-uat/docs/evidence/compose-browser-uat-2026-10-29/request-assessment-1440.png"
+    },
+    {
+      "name": "request-assessment-390.png",
+      "path": "/home/james/Escritorio/Development/sf-wave3/compose-uat/docs/evidence/compose-browser-uat-2026-10-29/request-assessment-390.png"
+    },
+    {
+      "name": "request-completed-1440.png",
+      "path": "/home/james/Escritorio/Development/sf-wave3/compose-uat/docs/evidence/compose-browser-uat-2026-10-29/request-completed-1440.png"
+    },
+    {
+      "name": "request-completed-390.png",
+      "path": "/home/james/Escritorio/Development/sf-wave3/compose-uat/docs/evidence/compose-browser-uat-2026-10-29/request-completed-390.png"
+    },
+    {
+      "name": "campaign-overview-1440.png",
+      "path": "/home/james/Escritorio/Development/sf-wave3/compose-uat/docs/evidence/compose-browser-uat-2026-10-29/campaign-overview-1440.png"
+    },
+    {
+      "name": "campaign-overview-390.png",
+      "path": "/home/james/Escritorio/Development/sf-wave3/compose-uat/docs/evidence/compose-browser-uat-2026-10-29/campaign-overview-390.png"
+    },
+    {
+      "name": "campaign-candidates-1440.png",
+      "path": "/home/james/Escritorio/Development/sf-wave3/compose-uat/docs/evidence/compose-browser-uat-2026-10-29/campaign-candidates-1440.png"
+    },
+    {
+      "name": "campaign-candidates-390.png",
+      "path": "/home/james/Escritorio/Development/sf-wave3/compose-uat/docs/evidence/compose-browser-uat-2026-10-29/campaign-candidates-390.png"
+    },
+    {
+      "name": "campaign-evidence-1440.png",
+      "path": "/home/james/Escritorio/Development/sf-wave3/compose-uat/docs/evidence/compose-browser-uat-2026-10-29/campaign-evidence-1440.png"
+    },
+    {
+      "name": "campaign-evidence-390.png",
+      "path": "/home/james/Escritorio/Development/sf-wave3/compose-uat/docs/evidence/compose-browser-uat-2026-10-29/campaign-evidence-390.png"
+    },
+    {
+      "name": "campaign-gate-1440.png",
+      "path": "/home/james/Escritorio/Development/sf-wave3/compose-uat/docs/evidence/compose-browser-uat-2026-10-29/campaign-gate-1440.png"
+    },
+    {
+      "name": "campaign-gate-390.png",
+      "path": "/home/james/Escritorio/Development/sf-wave3/compose-uat/docs/evidence/compose-browser-uat-2026-10-29/campaign-gate-390.png"
+    },
+    {
+      "name": "agent-office-1440.png",
+      "path": "/home/james/Escritorio/Development/sf-wave3/compose-uat/docs/evidence/compose-browser-uat-2026-10-29/agent-office-1440.png"
+    },
+    {
+      "name": "agent-office-390.png",
+      "path": "/home/james/Escritorio/Development/sf-wave3/compose-uat/docs/evidence/compose-browser-uat-2026-10-29/agent-office-390.png"
+    },
+    {
+      "name": "home-completed-1440.png",
+      "path": "/home/james/Escritorio/Development/sf-wave3/compose-uat/docs/evidence/compose-browser-uat-2026-10-29/home-completed-1440.png"
+    },
+    {
+      "name": "home-completed-390.png",
+      "path": "/home/james/Escritorio/Development/sf-wave3/compose-uat/docs/evidence/compose-browser-uat-2026-10-29/home-completed-390.png"
+    },
+    {
+      "name": "campaign-budget-1440.png",
+      "path": "/home/james/Escritorio/Development/sf-wave3/compose-uat/docs/evidence/compose-browser-uat-2026-10-29/campaign-budget-1440.png"
+    },
+    {
+      "name": "campaign-budget-390.png",
+      "path": "/home/james/Escritorio/Development/sf-wave3/compose-uat/docs/evidence/compose-browser-uat-2026-10-29/campaign-budget-390.png"
+    }
+  ],
+  "console": {
+    "errors": [
+      "Failed to load resource: the server responded with a status of 404 (Not Found)",
+      "Failed to load resource: the server responded with a status of 404 (Not Found)",
+      "Failed to load resource: the server responded with a status of 404 (Not Found)",
+      "Failed to load resource: the server responded with a status of 404 (Not Found)",
+      "Failed to load resource: the server responded with a status of 404 (Not Found)",
+      "Failed to load resource: the server responded with a status of 404 (Not Found)"
+    ],
+    "page_errors": [
+      "TypeError: Cannot read properties of undefined (reading 'join')"
+    ],
+    "failed_requests": [],
+    "http_404": [
+      "http://127.0.0.1:8898/core-api/quality/candidates/0ee276a1-0a65-46d6-ae10-a8fa4a311cc4/gate",
+      "http://127.0.0.1:8898/core-api/quality/candidates/0ee276a1-0a65-46d6-ae10-a8fa4a311cc4/gate",
+      "http://127.0.0.1:8898/core-api/quality/candidates/0ee276a1-0a65-46d6-ae10-a8fa4a311cc4/gate",
+      "http://127.0.0.1:8898/core-api/quality/candidates/0ee276a1-0a65-46d6-ae10-a8fa4a311cc4/gate",
+      "http://127.0.0.1:8898/core-api/quality/candidates/0ee276a1-0a65-46d6-ae10-a8fa4a311cc4/gate",
+      "http://127.0.0.1:8898/core-api/quality/candidates/0ee276a1-0a65-46d6-ae10-a8fa4a311cc4/gate"
+    ],
+    "expected_gate_polls": 6,
+    "unexpected_404": [],
+    "unexpected_console_errors": [],
+    "budget_probe_page_errors": [
+      "TypeError: Cannot read properties of undefined (reading 'join')"
+    ]
+  },
+  "findings": [
+    {
+      "kind": "ui-contract-mismatch",
+      "component": "RequestWorkspace Campaign panel",
+      "observed": "Authorization undefined \u00b7 undefined",
+      "expected": "the Core V2 authorization risk class and execution mode",
+      "cause": "office/src/coreApi.ts CampaignAuthorization declares snake_case legacy fields while Core serializes CampaignAuthorizationRecord as camelCase V2",
+      "impact": "an operator cannot read the authorization class/route from the completed request workspace",
+      "disposition": "REPORTED_NOT_FIXED: Wave 3 execution-policy/Office budget lane owns the V2 projection contract",
+      "evidence": "request-completed-390.png"
+    },
+    {
+      "kind": "ui-contract-mismatch",
+      "component": "CampaignDetail Budget & usage tab",
+      "observed": "TypeError: Cannot read properties of undefined (reading 'join')",
+      "expected": "V2 risk class, execution mode, provider route, delegation and bounded policy",
+      "cause": "CampaignDetail consumes the legacy snake_case CampaignAuthorization shape; Core V2 returns camelCase policy/operations fields",
+      "impact": "the operator budget/authorization view crashes or omits the authoritative V2 limits",
+      "disposition": "REPORTED_NOT_FIXED: Wave 3 execution-policy/Office budget lane owns the V2 projection contract",
+      "evidence": "campaign-budget-1440.png"
+    }
+  ],
+  "commands": [
+    "PODMAN_COMPOSE_PROVIDER=/usr/bin/podman-compose FACTORY_UAT_KEEP=1 CHROMIUM_EXE=<chromium> ./scripts/compose-browser-uat.sh",
+    "podman compose -p software-factory-uat60 -f compose.yaml -f compose.e2e.yaml up -d --build",
+    "podman exec software-factory-uat60_core_1 /usr/local/bin/factory-core issue-bootstrap-code",
+    "FACTORY_OFFICE_URL=http://127.0.0.1:8898 FACTORY_BOOTSTRAP_CODE=<one-time-code> CHROMIUM_EXE=<chromium> FACTORY_EVIDENCE_DIR=<evidence-dir> FACTORY_MODEL_CONTEXT=<run-root>/model/context.json node scripts/compose-product-browser-uat.mjs"
+  ],
+  "boundary": {
+    "real_core_http_api": true,
+    "real_chromium": true,
+    "intercepted_core_api": false,
+    "deterministic_fixture_provider": true,
+    "deterministic_model_fixture": true,
+    "live_provider_inference": "NOT_TESTED",
+    "github_pr_created_or_merged": false,
+    "github_pr_projection": "UNBOUND_NOT_TESTED",
+    "independent_acceptance": "NOT_TESTED",
+    "isolation": "NOT_CLAIMED"
+  },
+  "spend": {
+    "requested_usd": "5.00",
+    "authorized_micros": 5000000,
+    "billable_gateway": "deterministic model fixture only",
+    "paid_inference": false
+  },
+  "plan_hash": "2bc112b6ccc260d1f8550bcde8c043b0f583385fab86e4553585cdb3c552f937",
+  "campaign_authorization": {
+    "execution_mode": "TRUSTED_LOCAL_PROVIDER",
+    "risk_class": "R0",
+    "provider": "opencode-go",
+    "model": "deepseek-v4.1-flash",
+    "actor": "Wave 3 Compose Browser UAT"
+  },
+  "worker_execution": {
+    "worker_id": "compose-worker",
+    "attempt_generation": 1,
+    "provider_session_id": "ses_fixture",
+    "session_state": "COMPLETED",
+    "cleanup_receipt": "session_delete_verified_absent",
+    "usage": {
+      "input_tokens": 40,
+      "output_tokens": 80,
+      "cost_micros": 400
+    }
+  },
+  "candidate_diff": {
+    "changed_paths": [
+      "src/provider.txt"
+    ],
+    "base_commit": "5b1e23e193ea8652e9005c143626baf3dd2759f2",
+    "candidate_commit": "42c4b47aee07a37b48649334ff7eb15afe0ccec4"
+  },
+  "pr_projection": "UNBOUND_NO_GITHUB_WRITE",
+  "agent_office": {
+    "participant_count": 4,
+    "avatar_labels": [
+      "Inspect Lead lead:9f80ad6d-5c67-4b50-bbb6-be044ad85f31, status RUNNING, observation NOT EXPOSED",
+      "Inspect Implementer implementer:147ef036-b36f-4cfa-ab3e-33e4d0427e55, status COMPLETED, observation FINAL",
+      "Inspect Verifier verifier:2322b463-9c23-48aa-9c8f-8ee1df4242c4, status PASS, observation FINAL",
+      "Inspect Reviewer reviewer:def99d99-3c5a-415d-be0f-2c6cc0445129, status PASS, observation FINAL"
+    ],
+    "campaign_filter": "3f5f9abe-bcbe-4e0c-8ac9-6a0227e6ca3f"
+  },
+  "acceptance": "NOT_CLAIMED_FIXTURE_ONLY_UAT"
+}

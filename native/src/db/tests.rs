@@ -12,6 +12,26 @@ fn temp_path(prefix: &str) -> PathBuf {
     std::env::temp_dir().join(format!("{prefix}-{}.sqlite", Uuid::new_v4()))
 }
 
+fn fixture_operations() -> crate::execution_policy::OperationLimits {
+    crate::execution_policy::OperationLimits {
+        model_request_timeout_secs: std::num::NonZeroU32::new(300).unwrap(),
+        tool_call_timeout_secs: std::num::NonZeroU32::new(600).unwrap(),
+        max_request_bytes: std::num::NonZeroU32::new(2 * 1024 * 1024).unwrap(),
+        max_response_bytes: std::num::NonZeroU32::new(2 * 1024 * 1024).unwrap(),
+        max_generation_tokens: std::num::NonZeroU32::new(8_192).unwrap(),
+        max_in_flight_operations: std::num::NonZeroU32::new(4).unwrap(),
+    }
+}
+
+fn fixture_progress() -> crate::execution_policy::ProgressPolicy {
+    crate::execution_policy::ProgressPolicy {
+        diagnose_after_stagnant_checkpoints: std::num::NonZeroU32::new(2).unwrap(),
+        escalate_after_unsuccessful_replans: std::num::NonZeroU32::new(1).unwrap(),
+        observation_timeout_secs: std::num::NonZeroU32::new(300).unwrap(),
+        autonomy: Default::default(),
+    }
+}
+
 async fn temp_db(prefix: &str) -> (PathBuf, Database) {
     let path = temp_path(prefix);
     let db = Database::open(&path).await.unwrap();
@@ -568,8 +588,14 @@ async fn authorized_attempt(db: &Database) -> String {
             actor: "test".into(),
             rationale: "fixture setup".into(),
             authorized_paths: vec!["seed.txt".into()],
-            max_attempts: 1,
-            ..Default::default()
+            provider: String::new(),
+            model: String::new(),
+            provider_mode: String::new(),
+            delegation_id: String::new(),
+            allowed_tools: Vec::new(),
+            monetary_envelope_id: crate::db::authorization::NO_BILLABLE_ENVELOPE.into(),
+            progress: fixture_progress(),
+            operations: fixture_operations(),
         },
     )
     .await
@@ -577,6 +603,27 @@ async fn authorized_attempt(db: &Database) -> String {
     let run = db.create_run(&campaign.id, "run-key").await.unwrap();
     let attempt = db.create_attempt(&run.id, "attempt-key").await.unwrap();
     attempt.id
+}
+
+#[tokio::test]
+async fn fixture_assignment_claim_does_not_require_provider_route_identity() {
+    let (path, db) = temp_db("factory-fixture-assignment").await;
+    let attempt_id = authorized_attempt(&db).await;
+
+    let assignment = db
+        .claim_assignment("worker-fixture", 100, 60_000)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        assignment
+            .expect("authorized fixture attempt is claimable")
+            .lease
+            .attempt_id,
+        attempt_id
+    );
+    db.close().await;
+    let _ = std::fs::remove_file(path);
 }
 
 #[tokio::test]
@@ -749,8 +796,14 @@ async fn p6_concurrent_workers_claim_distinct_attempts() {
             actor: "test".into(),
             rationale: "fixture setup".into(),
             authorized_paths: vec!["seed.txt".into()],
-            max_attempts: 1,
-            ..Default::default()
+            provider: String::new(),
+            model: String::new(),
+            provider_mode: String::new(),
+            delegation_id: String::new(),
+            allowed_tools: Vec::new(),
+            monetary_envelope_id: crate::db::authorization::NO_BILLABLE_ENVELOPE.into(),
+            progress: fixture_progress(),
+            operations: fixture_operations(),
         },
     )
     .await
@@ -963,6 +1016,44 @@ fn git_fixture(root: &Path, arguments: &[&str]) -> String {
     String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
 
+async fn enable_semantic_review(
+    fixture: &CandidateFixture,
+    provider: &str,
+    kind: &str,
+    model: &str,
+    base_url: &str,
+) {
+    sqlx::query::query("UPDATE factory_settings SET semantic_review_enabled=1 WHERE id=1")
+        .execute(&fixture.db.pool)
+        .await
+        .unwrap();
+    fixture
+        .db
+        .save_provider_settings(
+            &ProviderSettingsWrite {
+                provider: provider.into(),
+                kind: kind.into(),
+                model: model.into(),
+                base_url: base_url.into(),
+                auth_mode: "api_key".into(),
+                credential_ciphertext: "ciphertext".into(),
+                credential_nonce: "nonce".into(),
+                credential_fingerprint: "fingerprint".into(),
+                enabled: true,
+                is_default: true,
+                max_turns: 4,
+                max_input_tokens: 60_000,
+                max_output_tokens: 12_000,
+                max_cost_micros: 500_000,
+                input_micros_per_million: 150_000,
+                output_micros_per_million: 600_000,
+            },
+            "test",
+        )
+        .await
+        .unwrap();
+}
+
 async fn candidate_fixture() -> CandidateFixture {
     let root = std::env::temp_dir().join(format!("factory-quality-{}", Uuid::new_v4()));
     std::fs::create_dir(&root).unwrap();
@@ -1004,8 +1095,14 @@ async fn candidate_fixture() -> CandidateFixture {
             actor: "test".into(),
             rationale: "quality fixture".into(),
             authorized_paths: vec!["seed.txt".into()],
-            max_attempts: 1,
-            ..Default::default()
+            provider: String::new(),
+            model: String::new(),
+            provider_mode: String::new(),
+            delegation_id: String::new(),
+            allowed_tools: Vec::new(),
+            monetary_envelope_id: crate::db::authorization::NO_BILLABLE_ENVELOPE.into(),
+            progress: fixture_progress(),
+            operations: fixture_operations(),
         },
     )
     .await
@@ -1147,6 +1244,8 @@ fn model_review_receipt(
             severity: crate::review::FindingSeverity::Blocking,
             category: crate::review::FindingCategory::Functional,
             message: "bounded semantic defect".into(),
+            points: 5,
+            rationale: "The diff contains a bounded semantic defect.".into(),
             evidence_refs: vec!["seed.txt".into()],
         }]
     };
@@ -1173,8 +1272,132 @@ fn model_review_receipt(
 }
 
 #[tokio::test]
+async fn codex_app_server_review_requires_exact_provenance_without_a_reservation() {
+    let fixture = candidate_fixture().await;
+    enable_semantic_review(
+        &fixture,
+        "codex",
+        "codex",
+        "gpt-6-luna",
+        "https://api.openai.com/v1",
+    )
+    .await;
+    let mut valid = quality_receipt(&fixture, "codex-review", "reviewer");
+    valid.mechanism = ReviewMechanism::CodexAppServer;
+    valid.model_provider = "codex".into();
+    valid.model_name = "gpt-6-luna".into();
+    valid.model_request_sha256 = sha256_hex(b"codex-review-request");
+    valid.usage_known = true;
+
+    let mut wrong_provider = valid.clone();
+    wrong_provider.receipt_id = "codex-review-wrong-provider".into();
+    wrong_provider.model_provider = "opencode".into();
+    assert!(matches!(
+        fixture
+            .db
+            .record_quality_receipt(
+                &fixture.candidate_id,
+                QualityRole::Reviewer,
+                &wrong_provider,
+            )
+            .await,
+        Err(Error::Forbidden(_))
+    ));
+
+    let mut reserved = valid.clone();
+    reserved.receipt_id = "codex-review-reserved".into();
+    reserved.model_reservation_id = "reservation".into();
+    assert!(matches!(
+        fixture
+            .db
+            .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &reserved,)
+            .await,
+        Err(Error::Forbidden(_))
+    ));
+
+    let verifier = quality_receipt(&fixture, "verifier-codex", "verifier");
+    fixture
+        .db
+        .record_quality_receipt(&fixture.candidate_id, QualityRole::Verifier, &verifier)
+        .await
+        .unwrap();
+    let ingested = fixture
+        .db
+        .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &valid)
+        .await
+        .unwrap();
+    assert_eq!(ingested.receipt.mechanism, ReviewMechanism::CodexAppServer);
+    assert!(ingested.receipt.model_reservation_id.is_empty());
+    assert_eq!(ingested.gate.unwrap().outcome, GateOutcome::Accepted);
+    let mut duplicate = valid;
+    duplicate.receipt_id = "codex-review-duplicate".into();
+    assert!(matches!(
+        fixture
+            .db
+            .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &duplicate)
+            .await,
+        Err(Error::Conflict(_))
+    ));
+    fixture.db.close().await;
+    let _ = std::fs::remove_file(fixture.root.join("factory.sqlite"));
+}
+
+#[tokio::test]
+async fn codex_app_server_failure_receipt_preserves_unknown_usage() {
+    let fixture = candidate_fixture().await;
+    enable_semantic_review(
+        &fixture,
+        "codex",
+        "codex",
+        "gpt-6-luna",
+        "https://api.openai.com/v1",
+    )
+    .await;
+    let verifier = quality_receipt(&fixture, "verifier-codex-failure", "verifier");
+    fixture
+        .db
+        .record_quality_receipt(&fixture.candidate_id, QualityRole::Verifier, &verifier)
+        .await
+        .unwrap();
+    let mut failed = quality_receipt(&fixture, "codex-review-failure", "reviewer");
+    failed.mechanism = ReviewMechanism::CodexAppServer;
+    failed.model_provider = "codex".into();
+    failed.model_name = "gpt-6-luna".into();
+    failed.model_request_sha256 = sha256_hex(b"codex-review-failure-request");
+    failed.result = ReceiptResult::NotTested;
+    failed.evidence = EvidenceKind::Unknown;
+    failed.findings = vec![crate::review::ReviewFinding {
+        id: "codex-review-unavailable".into(),
+        severity: crate::review::FindingSeverity::Blocking,
+        category: crate::review::FindingCategory::Other,
+        message: "Codex authentication is unavailable".into(),
+        points: 5,
+        rationale: "The reviewer could not authenticate to the native adapter.".into(),
+        evidence_refs: vec![fixture.candidate_id.clone()],
+    }];
+    assert!(!failed.usage_known);
+    let ingested = fixture
+        .db
+        .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &failed)
+        .await
+        .unwrap();
+    assert!(!ingested.receipt.usage_known);
+    assert_eq!(ingested.gate.unwrap().outcome, GateOutcome::NotTested);
+    fixture.db.close().await;
+    let _ = std::fs::remove_file(fixture.root.join("factory.sqlite"));
+}
+
+#[tokio::test]
 async fn model_review_approval_requires_matching_settled_reservation() {
     let fixture = candidate_fixture().await;
+    enable_semantic_review(
+        &fixture,
+        "opencode",
+        "opencode",
+        "deepseek-v4.1-flash",
+        "https://gateway.example/v1",
+    )
+    .await;
     fixture
         .db
         .record_quality_receipt(
@@ -1337,6 +1560,59 @@ async fn accepted_gate_projects_run_status_and_survives_restart() {
 }
 
 #[tokio::test]
+async fn critical_review_finding_is_a_human_stop() {
+    let fixture = candidate_fixture().await;
+    fixture
+        .db
+        .record_quality_receipt(
+            &fixture.candidate_id,
+            QualityRole::Verifier,
+            &quality_receipt(&fixture, "verifier-critical", "verifier-1"),
+        )
+        .await
+        .unwrap();
+    let critical = crate::review::ReviewFinding {
+        id: "critical-1".into(),
+        severity: crate::review::FindingSeverity::Critical,
+        category: crate::review::FindingCategory::Security,
+        message: "credential boundary is broken".into(),
+        points: 8,
+        rationale: "the diff exposes a credential boundary".into(),
+        evidence_refs: vec!["seed.txt".into()],
+    };
+    let mut reviewer = quality_receipt(&fixture, "reviewer-critical", "reviewer-1");
+    reviewer.result = ReceiptResult::ChangesRequested;
+    reviewer.findings = vec![critical.clone()];
+    let result = fixture
+        .db
+        .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &reviewer)
+        .await
+        .unwrap();
+    assert_eq!(result.gate.unwrap().outcome, GateOutcome::HumanRequired);
+    let repair = fixture
+        .db
+        .repair_authorization_for_candidate(&fixture.candidate_id)
+        .await
+        .unwrap()
+        .expect("critical repair decision");
+    assert_eq!(repair.decision, "HUMAN_REQUIRED");
+    assert_eq!(repair.reason_code, "critical_zero");
+    assert_eq!(repair.critical_count, 1);
+
+    let mut contradictory = quality_receipt(&fixture, "reviewer-critical-pass", "reviewer-1");
+    contradictory.result = ReceiptResult::Pass;
+    contradictory.findings = vec![critical];
+    assert!(matches!(
+        fixture
+            .db
+            .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &contradictory)
+            .await,
+        Err(Error::Invalid(_))
+    ));
+    fixture.db.close().await;
+}
+
+#[tokio::test]
 async fn repair_required_gate_projects_run_status() {
     let fixture = candidate_fixture().await;
     let run_id = run_id_for_candidate(&fixture.db, &fixture.candidate_id).await;
@@ -1351,6 +1627,15 @@ async fn repair_required_gate_projects_run_status() {
         .unwrap();
     let mut reviewer = quality_receipt(&fixture, "reviewer-run-repair", "reviewer-1");
     reviewer.result = ReceiptResult::ChangesRequested;
+    reviewer.findings = vec![crate::review::ReviewFinding {
+        id: "repair-1".into(),
+        severity: crate::review::FindingSeverity::Blocking,
+        category: crate::review::FindingCategory::Functional,
+        message: "the candidate needs a bounded repair".into(),
+        points: 5,
+        rationale: "the deterministic evidence shows a functional defect".into(),
+        evidence_refs: vec!["seed.txt".into()],
+    }];
     let result = fixture
         .db
         .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &reviewer)
@@ -1358,6 +1643,16 @@ async fn repair_required_gate_projects_run_status() {
         .unwrap();
     assert_eq!(result.gate.unwrap().outcome, GateOutcome::RepairRequired);
     assert_eq!(run_status(&fixture.db, &run_id).await, "REPAIR_REQUIRED");
+    let repair = fixture
+        .db
+        .repair_authorization_for_candidate(&fixture.candidate_id)
+        .await
+        .unwrap()
+        .expect("repair decision is recorded");
+    assert_eq!(repair.decision, "DENIED");
+    assert_eq!(repair.reason_code, "autonomy_disabled");
+    assert_eq!(repair.total_points, 5);
+    assert_eq!(repair.blocking_count, 1);
     fixture.db.close().await;
 }
 
@@ -1440,7 +1735,7 @@ async fn enabled_semantic_review_blocks_a_late_deterministic_reviewer_pass() {
     assert!(
         gate.reasons
             .iter()
-            .any(|reason| reason.contains("MODEL reviewer evidence"))
+            .any(|reason| reason.contains("MODEL") || reason.contains("frozen"))
     );
     fixture.db.close().await;
 }
@@ -1574,6 +1869,14 @@ async fn gate_does_not_overwrite_a_terminal_run() {
 #[tokio::test]
 async fn model_review_findings_and_provenance_survive_restart() {
     let fixture = candidate_fixture().await;
+    enable_semantic_review(
+        &fixture,
+        "opencode",
+        "opencode",
+        "deepseek-v4.1-flash",
+        "https://gateway.example/v1",
+    )
+    .await;
     fixture
         .db
         .record_quality_receipt(
@@ -1894,6 +2197,103 @@ async fn project_retry_keeps_first_base_after_repository_advances() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+#[tokio::test]
+async fn project_source_identity_is_explicit_and_duplicates_are_rejected() {
+    let root = std::env::temp_dir().join(format!("factory-project-source-{}", Uuid::new_v4()));
+    std::fs::create_dir(&root).unwrap();
+    let git = |arguments: &[&str]| {
+        assert!(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(arguments)
+                .status()
+                .unwrap()
+                .success()
+        );
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.name", "Fixture"]);
+    git(&["config", "user.email", "fixture@example.invalid"]);
+    std::fs::write(root.join("content"), "one").unwrap();
+    git(&["add", "content"]);
+    git(&["commit", "-qm", "first"]);
+    let db = Database::open(&root.join("factory.sqlite")).await.unwrap();
+    let source = RegisterProjectSource {
+        name: "Widgets".into(),
+        source_kind: "local".into(),
+        source_url: String::new(),
+        source_key: "local:widgets".into(),
+        source_visibility: String::new(),
+        default_branch: "main".into(),
+    };
+    let project = db
+        .register_project_with_source(&root, &source, "source-key")
+        .await
+        .unwrap();
+    assert_eq!(project.name, "Widgets");
+    assert_eq!(project.source_kind, "local");
+    assert_eq!(project.source_key, "local:widgets");
+    assert_eq!(project.default_branch, "main");
+    let replay = db
+        .register_project_with_source(&root, &source, "source-key")
+        .await
+        .unwrap();
+    assert_eq!(project.id, replay.id);
+    assert!(matches!(
+        db.register_project_with_source(&root, &source, "another-key")
+            .await,
+        Err(Error::Conflict(_))
+    ));
+    assert_eq!(
+        db.project_by_source_key("local:widgets")
+            .await
+            .unwrap()
+            .map(|project| project.id),
+        Some(project.id.clone())
+    );
+    assert!(
+        db.project_by_source_key("local:missing")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    db.close().await;
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn project_discovery_is_persisted_against_its_scanned_commit() {
+    let (path, db) = temp_db("factory-project-discovery").await;
+    insert_project(&db, "project", "/fixture", &"a".repeat(40)).await;
+    let base_commit = "a".repeat(40);
+    let discovery = crate::project_import::ProjectDiscovery {
+        base_commit: base_commit.clone(),
+        toolchains: Vec::new(),
+        suggested_capabilities: vec![crate::lead::Capability::RepositoryEdit],
+        suggested_checks: Vec::new(),
+        scanned_manifests: vec!["Cargo.toml".into()],
+        truncated: false,
+        skipped_entries: 0,
+        provenance: "test".into(),
+        scanned_at: chrono::Utc::now().to_rfc3339(),
+    };
+    let saved = db
+        .save_project_discovery("project", &discovery)
+        .await
+        .unwrap();
+    assert_eq!(saved.base_commit, base_commit);
+    let loaded = db.project_discovery("project").await.unwrap().unwrap();
+    assert_eq!(
+        loaded.discovery.suggested_capabilities,
+        discovery.suggested_capabilities
+    );
+    assert_eq!(loaded.discovery.scanned_manifests, vec!["Cargo.toml"]);
+    assert!(db.project_discovery("missing").await.is_err());
+    db.close().await;
+    let _ = std::fs::remove_file(path);
+}
+
 #[test]
 fn p9_database_is_send_sync_and_not_connection_mutexed() {
     fn assert_send_sync<T: Send + Sync>() {}
@@ -1933,8 +2333,14 @@ async fn authorization_rejects_unratified_risk_and_execution_modes() {
                     actor: "test".into(),
                     rationale: "negative authorization".into(),
                     authorized_paths: vec!["src".into()],
-                    max_attempts: 1,
-                    ..Default::default()
+                    provider: String::new(),
+                    model: String::new(),
+                    provider_mode: String::new(),
+                    delegation_id: String::new(),
+                    allowed_tools: Vec::new(),
+                    monetary_envelope_id: crate::db::authorization::NO_BILLABLE_ENVELOPE.into(),
+                    progress: fixture_progress(),
+                    operations: fixture_operations(),
                 },
             )
             .await;
@@ -1990,8 +2396,14 @@ async fn candidate_outside_scope_and_symlink_are_rejected() {
             actor: "test".into(),
             rationale: "scope negative".into(),
             authorized_paths: vec!["src".into()],
-            max_attempts: 1,
-            ..Default::default()
+            provider: String::new(),
+            model: String::new(),
+            provider_mode: String::new(),
+            delegation_id: String::new(),
+            allowed_tools: Vec::new(),
+            monetary_envelope_id: crate::db::authorization::NO_BILLABLE_ENVELOPE.into(),
+            progress: fixture_progress(),
+            operations: fixture_operations(),
         },
     )
     .await
@@ -2116,8 +2528,49 @@ fn model_call_policy(input: u64, output: u64, cost: u64) -> ModelCallPolicy {
 }
 
 #[tokio::test]
+async fn test_subscription_dispatch_admission_is_scoped_to_opted_in_scopes() {
+    let (path, db) = temp_db("factory-model-call-admission-scope").await;
+    db.admit_test_subscription_dispatch("admitted-scope")
+        .await
+        .unwrap();
+    let policy = model_call_policy(1_000, 500, 10_000);
+    let admitted = model_call_input(&"3".repeat(64), "admitted-scope", 100, 50, 100, policy);
+    assert!(matches!(
+        db.authorize_model_call(&admitted).await.unwrap(),
+        ModelCallDecision::Reserved(_)
+    ));
+    let other = model_call_input(&"4".repeat(64), "unadmitted-scope", 100, 50, 100, policy);
+    assert!(
+        matches!(
+            db.authorize_model_call(&other).await,
+            Err(Error::SubscriptionFunding(
+                crate::execution_policy::SubscriptionFundingRefusal::BindingRequired
+            ))
+        ),
+        "opting one scope in must not admit an unrelated scope"
+    );
+    db.close().await;
+
+    // A separate database that never opts in stays fully fail-closed.
+    let (second_path, second) = temp_db("factory-model-call-admission-absent").await;
+    let refused = model_call_input(&"5".repeat(64), "admitted-scope", 100, 50, 100, policy);
+    assert!(matches!(
+        second.authorize_model_call(&refused).await,
+        Err(Error::SubscriptionFunding(
+            crate::execution_policy::SubscriptionFundingRefusal::BindingRequired
+        ))
+    ));
+    second.close().await;
+    let _ = std::fs::remove_file(path);
+    let _ = std::fs::remove_file(second_path);
+}
+
+#[tokio::test]
 async fn model_call_reservations_settle_replay_and_fence_duplicates() {
     let (path, db) = temp_db("factory-model-calls").await;
+    db.admit_test_subscription_dispatch("evaluation-1")
+        .await
+        .unwrap();
     let policy = model_call_policy(1_000, 500, 10_000);
     let input = model_call_input(&"a".repeat(64), "evaluation-1", 120, 300, 200, policy);
     let ModelCallDecision::Reserved(grant) = db.authorize_model_call(&input).await.unwrap() else {
@@ -2164,6 +2617,9 @@ async fn model_call_reservations_settle_replay_and_fence_duplicates() {
 #[tokio::test]
 async fn model_call_budget_unknown_usage_and_ambiguity_fail_closed() {
     let (path, db) = temp_db("factory-model-call-safety").await;
+    for scope in ["evaluation-2", "evaluation-3", "evaluation-4"] {
+        db.admit_test_subscription_dispatch(scope).await.unwrap();
+    }
     let policy = model_call_policy(1_000, 500, 10_000);
     let first = model_call_input(&"b".repeat(64), "evaluation-2", 120, 300, 200, policy);
     let ModelCallDecision::Reserved(grant) = db.authorize_model_call(&first).await.unwrap() else {
@@ -2245,6 +2701,13 @@ async fn model_call_budget_unknown_usage_and_ambiguity_fail_closed() {
 #[tokio::test]
 async fn model_call_scope_and_global_budgets_are_enforced() {
     let (path, db) = temp_db("factory-model-call-budget").await;
+    for scope in [
+        "evaluation-budget",
+        "evaluation-global-a",
+        "evaluation-global-b",
+    ] {
+        db.admit_test_subscription_dispatch(scope).await.unwrap();
+    }
     let policy = model_call_policy(100, 50, 1_000);
     let first = model_call_input(&"e".repeat(64), "evaluation-budget", 40, 10, 20, policy);
     let ModelCallDecision::Reserved(grant) = db.authorize_model_call(&first).await.unwrap() else {
@@ -2304,6 +2767,192 @@ async fn model_call_scope_and_global_budgets_are_enforced() {
         db.authorize_model_call(&global_second).await,
         Err(Error::Forbidden(_))
     ));
+    db.close().await;
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn test_subscription_admission_supports_exact_and_e2e_wildcard_scopes() {
+    let path = std::env::temp_dir().join(format!(
+        "factory-test-admissions-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let db = Database::open(&path).await.unwrap();
+    let mut connection = db.pool.acquire().await.unwrap();
+    assert!(
+        !test_subscription_dispatch_admitted_in_tx(&mut connection, "campaign-exact")
+            .await
+            .unwrap()
+    );
+    db.admit_test_subscription_dispatch("campaign-exact")
+        .await
+        .unwrap();
+    assert!(
+        test_subscription_dispatch_admitted_in_tx(&mut connection, "campaign-exact")
+            .await
+            .unwrap()
+    );
+    assert!(
+        !test_subscription_dispatch_admitted_in_tx(&mut connection, "campaign-other")
+            .await
+            .unwrap()
+    );
+    db.admit_test_subscription_dispatch("*").await.unwrap();
+    sqlx::query::query("UPDATE test_subscription_fixture_mode SET enabled=0")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    assert!(
+        !test_subscription_dispatch_admitted_in_tx(&mut connection, "campaign-other")
+            .await
+            .unwrap()
+    );
+    sqlx::query::query("UPDATE test_subscription_fixture_mode SET enabled=1")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    assert!(
+        test_subscription_dispatch_admitted_in_tx(&mut connection, "campaign-other")
+            .await
+            .unwrap()
+    );
+    drop(connection);
+    db.close().await;
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn owner_confirmed_campaign_admission_enables_subscription_mode() {
+    use crate::execution_policy::{OwnerBillingAssumption, OwnerControlledExtraUsage};
+    use crate::subscription_admission::{TestModelRole, TestRouteBinding, WAVE3_TEST_PROFILE_ID};
+
+    let path = std::env::temp_dir().join(format!(
+        "factory-subscription-admission-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let db = Database::open(&path).await.unwrap();
+    let now = Utc::now().to_rfc3339();
+    sqlx::query::query(
+        "INSERT INTO projects(id,repository,base_commit,created_at,identity)
+         VALUES ('project-admission','/fixture',?1,?2,'')",
+    )
+    .bind("a".repeat(40))
+    .bind(&now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query::query(
+        "INSERT INTO actions(id,project_id,objective,provider,model,risk,status,objective_sha256,created_at)
+         VALUES ('action-admission','project-admission','objective','opencode-go','deepseek-v4.1-flash','R0','PENDING','hash',?1)",
+    )
+    .bind(&now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query::query(
+        "INSERT INTO campaigns(id,action_id,status,created_at)
+         VALUES ('campaign-admission','action-admission','BLOCKED_AUTHORIZATION',?1)",
+    )
+    .bind(&now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let assumption = OwnerBillingAssumption {
+        assumption_id: "owner-extra-usage".into(),
+        confirmed_by: "Product Owner".into(),
+        confirmed_at_ms: Utc::now().timestamp_millis() - 1_000,
+        valid_until_ms: Utc::now().timestamp_millis() + 3_600_000,
+        extra_usage: OwnerControlledExtraUsage::Disabled,
+        statement: "Owner confirms OpenCode Go Extra Usage is disabled in the Console".into(),
+    };
+    let admission = ScopeAdmissionRecord {
+        admission_id: "admission-1".into(),
+        intake_request_id: "intake-1".into(),
+        lead_request_id: "lead-1".into(),
+        test_profile_id: WAVE3_TEST_PROFILE_ID.into(),
+        execution_profile_id: "profile-admission".into(),
+        provider: "opencode-go".into(),
+        model: "deepseek-v4.1-flash".into(),
+        settings_revision: "1".into(),
+        profile_revision_id: "revision-1".into(),
+        profile_hash: "b".repeat(64),
+        assumption,
+        routes: vec![TestRouteBinding {
+            role: TestModelRole::Implementer,
+            provider: "opencode-go".into(),
+            model: "deepseek-v4.1-flash".into(),
+            settings_revision: "1".into(),
+            transport: "OPENCODE_GO_SUBSCRIPTION".into(),
+        }],
+        state: "ACTIVE".into(),
+        campaign_id: None,
+        created_at_ms: Utc::now().timestamp_millis(),
+        expires_at_ms: Utc::now().timestamp_millis() + 3_600_000,
+        receipt_sha256: "c".repeat(64),
+    };
+    sqlx::query::query(
+        "INSERT INTO provider_settings
+         (provider,kind,model,base_url,auth_mode,credential_ciphertext,credential_nonce,
+          credential_fingerprint,enabled,is_default,max_turns,max_input_tokens,
+          max_output_tokens,max_cost_micros,input_micros_per_million,
+          output_micros_per_million,revision,updated_at)
+         VALUES ('opencode-go','opencode','deepseek-v4.1-flash','https://example.invalid/v1',
+                 'api_key','ciphertext','nonce','fingerprint',1,0,4,100000,12000,500000,
+                 1000,2000,1,?1)",
+    )
+    .bind(&now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let mut connection = db.pool.acquire().await.unwrap();
+    super::subscription_admissions::insert_enabled_campaign_admission_in_tx(
+        &mut connection,
+        "campaign-admission",
+        "auth-admission",
+        &admission,
+        "opencode-go",
+        "deepseek-v4.1-flash",
+        "1",
+        &"d".repeat(64),
+    )
+    .await
+    .unwrap();
+    let (state, mode): (String, String) = sqlx::query_as::query_as(
+        "SELECT sfp.state,icm.mode
+         FROM subscription_funding_policies sfp
+         JOIN inference_campaign_modes icm ON icm.campaign_id=sfp.campaign_id
+         WHERE sfp.campaign_id='campaign-admission'",
+    )
+    .fetch_one(&mut *connection)
+    .await
+    .unwrap();
+    assert_eq!(state, "ENABLED");
+    assert_eq!(mode, "SUBSCRIPTION");
+    let observed_at_ms: i64 = sqlx::query_scalar::query_scalar(
+        "SELECT observed_at_ms FROM subscription_funding_policies
+         WHERE campaign_id='campaign-admission'",
+    )
+    .fetch_one(&mut *connection)
+    .await
+    .unwrap();
+    let now_ms = observed_at_ms + 1;
+    db.pause_subscription_funding_for_quota(
+        "campaign-admission",
+        "auth-admission",
+        now_ms,
+        None,
+        "provider quota exhausted",
+    )
+    .await
+    .unwrap();
+    let paused: String = sqlx::query_scalar::query_scalar(
+        "SELECT state FROM subscription_funding_policies WHERE campaign_id='campaign-admission'",
+    )
+    .fetch_one(&mut *connection)
+    .await
+    .unwrap();
+    assert_eq!(paused, "PAUSED_QUOTA");
+    drop(connection);
     db.close().await;
     let _ = std::fs::remove_file(path);
 }

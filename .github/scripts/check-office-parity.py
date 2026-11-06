@@ -27,14 +27,25 @@ def office_routes(root: Path) -> set[str]:
     path = root / "office/src/App.tsx"
     if not path.is_file():
         return set()
-    return set(re.findall(r'path="([^"]+)"', path.read_text(encoding="utf-8")))
+    content = path.read_text(encoding="utf-8")
+    routes = set(re.findall(r'path="([^"]+)"', content))
+    routes.update(re.findall(r'location\.pathname === "([^"]+)"', content))
+    return routes
 
 
 def core_api_paths(root: Path) -> set[str]:
-    path = root / "native/src/bin/core.rs"
-    if not path.is_file():
-        return set()
-    return set(re.findall(r'\.route\(\s*"([^"]+)"', path.read_text(encoding="utf-8"), re.DOTALL))
+    paths: set[str] = set()
+    for relative in ("native/src/bin/core.rs", "native/src/device_pairing.rs"):
+        path = root / relative
+        if path.is_file():
+            paths.update(
+                re.findall(
+                    r'\.route\(\s*"([^"]+)"',
+                    path.read_text(encoding="utf-8"),
+                    re.DOTALL,
+                )
+            )
+    return paths
 
 
 def acceptance_has_browser_provenance(root: Path, items: list[str]) -> bool:

@@ -1,0 +1,44 @@
+{
+  "schema": "factory.compose-browser-uat.stack-health.v1",
+  "core": {
+    "healthy": true,
+    "version": "0.1.0"
+  },
+  "workers": [
+    {
+      "worker_id": "compose-worker",
+      "updated_at": "2026-10-29T14:15:54.581592602+00:00"
+    }
+  ],
+  "runtime_broker": {
+    "engine_exposed": false,
+    "healthy": true,
+    "isolation_certified": false,
+    "network": "none"
+  },
+  "supervisor": {
+    "healthy": true,
+    "host_workspace_mounted": false,
+    "isolation_certified": false,
+    "mount": "named-volume"
+  },
+  "core_api_health": {
+    "healthy": true,
+    "version": "0.1.0"
+  },
+  "services": [
+    "software-factory-uat60_init_1 Exited (0) About a minute ago",
+    "software-factory-uat60_provider-bundle_1 Exited (0) About a minute ago",
+    "software-factory-uat60_runtime_1 Up About a minute (healthy)",
+    "software-factory-uat60_core_1 Up About a minute (healthy)",
+    "software-factory-uat60_supervisor_1 Up About a minute (healthy)",
+    "software-factory-uat60_worker_1 Up About a minute",
+    "software-factory-uat60_verifier_1 Up About a minute",
+    "software-factory-uat60_reviewer_1 Up About a minute",
+    "software-factory-uat60_git-fixture_1 Up About a minute",
+    "software-factory-uat60_model-fixture_1 Up About a minute (healthy)"
+  ],
+  "provider_kind": "fixture",
+  "runtime_engine_exposed": false,
+  "isolation_certified": false
+}

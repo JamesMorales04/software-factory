@@ -50,6 +50,12 @@ pub struct TurnPolicy {
     pub max_requests: usize,
     pub strict_request_digest: bool,
     pub binding: bool,
+    /// The first upstream response for this exact turn. Retries must not start
+    /// a second inference; surfacing the first outcome lets the Worker classify
+    /// a retryable upstream failure instead of reporting a synthetic budget
+    /// error.
+    pub last_upstream_status: Option<u16>,
+    pub last_upstream_error: String,
 }
 
 pub type SharedTurnPolicy = Arc<Mutex<Option<TurnPolicy>>>;
@@ -391,35 +397,55 @@ async fn handle(
         if path == "/v1/models" && method == "GET" {
             // Catalog reads do not consume model spend.
         } else {
-            let decision: Result<Vec<u8>, (u16, &str)> = {
+            let decision: Result<Vec<u8>, (u16, String)> = {
                 let mut guard = policy
                     .lock()
                     .map_err(|_| EgressError::Invalid("turn policy lock".into()))?;
                 if guard.is_none() {
-                    Err((403, "no provider turn is authorized"))
+                    Err((403, "no provider turn is authorized".to_string()))
                 } else {
                     let turn = guard.as_mut().expect("checked");
                     if chrono::Utc::now().timestamp_millis() >= turn.expires_at_ms
                         || turn.requests >= turn.max_requests
                         || turn.requests as u64 >= turn.max_output_tokens
-                        || turn.binding
                     {
-                        Err((429, "provider turn budget is exhausted"))
+                        Err((429, "request budget exhausted".to_string()))
+                    } else if turn.binding {
+                        // A second request for the same bound turn is a
+                        // conflict, never a new inference and never a
+                        // transient rate limit. Returning a non-retryable
+                        // status stops the client retry loop and preserves the
+                        // first upstream outcome in the error message.
+                        Err((
+                            409,
+                            if let Some(status) = turn.last_upstream_status {
+                                format!(
+                                    "provider turn already has a bound request; first upstream status {status}: {}",
+                                    turn.last_upstream_error
+                                )
+                            } else {
+                                "provider turn already has a bound request; first upstream outcome is not yet known"
+                                    .to_string()
+                            },
+                        ))
                     } else {
                         match serde_json::from_slice::<serde_json::Value>(&body) {
-                            Err(_) => Err((400, "request body is not JSON")),
+                            Err(_) => Err((400, "request body is not JSON".to_string())),
                             Ok(mut value) => {
                                 if value.get("model").and_then(serde_json::Value::as_str)
                                     != Some(turn.model.as_str())
                                 {
-                                    Err((403, "model is not authorized"))
+                                    Err((403, "model is not authorized".to_string()))
                                 } else {
                                     let digest = crate::attempt_grant::request_digest(&value)
                                         .map_err(|_| {
                                             EgressError::Invalid("request digest".into())
                                         })?;
                                     if turn.strict_request_digest && digest != turn.request_sha256 {
-                                        Err((403, "provider turn request does not match"))
+                                        Err((
+                                            403,
+                                            "provider turn request does not match".to_string(),
+                                        ))
                                     } else {
                                         let max_output = turn
                                             .max_output_tokens
@@ -484,7 +510,9 @@ async fn handle(
                                                 ));
                                                 Ok(encoded)
                                             }
-                                            Err(_) => Err((500, "request encoding failed")),
+                                            Err(_) => {
+                                                Err((500, "request encoding failed".to_string()))
+                                            }
                                         }
                                     }
                                 }
@@ -496,27 +524,16 @@ async fn handle(
             match decision {
                 Ok(encoded) => body = encoded,
                 Err((status, message)) => {
-                    write_status(&mut stream, status, message).await?;
+                    write_status(&mut stream, status, &message).await?;
                     return Ok(());
                 }
             }
-            if let Some(binder) = &config.turn_binder {
-                let Some((reservation_id, model, max_input_tokens, sequence)) = bound_turn else {
-                    write_status(&mut stream, 403, "provider turn was not authorized").await?;
-                    return Ok(());
-                };
-                let max_body_bytes = max_input_tokens
-                    .saturating_mul(4)
-                    .saturating_div(
-                        config
-                            .turn_policy
-                            .as_ref()
-                            .and_then(|policy| policy.lock().ok())
-                            .and_then(|policy| policy.as_ref().map(|turn| turn.max_requests))
-                            .unwrap_or(1)
-                            .max(1) as u64,
-                    )
-                    .min(MAX_REQUEST_BODY as u64);
+            // UTF-8 bytes are a conservative upper bound on tokens for
+            // OpenAI-compatible tokenizers. Do not multiply by four: that is
+            // both non-conservative and not a per-request bound. This check is
+            // the external-effect boundary and runs before any binder or send.
+            if let Some((_, _, max_input_tokens, _)) = &bound_turn {
+                let max_body_bytes = (*max_input_tokens).min(MAX_REQUEST_BODY as u64);
                 if body.len() as u64 > max_body_bytes {
                     if let Some(policy) = &config.turn_policy
                         && let Ok(mut guard) = policy.lock()
@@ -527,9 +544,16 @@ async fn handle(
                     write_status(&mut stream, 413, "request exceeds input budget").await?;
                     return Ok(());
                 }
+            }
+            if let Some(binder) = &config.turn_binder {
+                let Some((ref reservation_id, ref model, _max_input_tokens, sequence)) = bound_turn
+                else {
+                    write_status(&mut stream, 403, "provider turn was not authorized").await?;
+                    return Ok(());
+                };
                 let digest = sha256_hex(&body);
                 if let Err(error) = binder
-                    .bind(&reservation_id, &digest, &model, path, body.len(), sequence)
+                    .bind(reservation_id, &digest, model, path, body.len(), sequence)
                     .await
                 {
                     if let Some(policy) = &config.turn_policy
@@ -595,6 +619,14 @@ async fn handle(
         .await
         .map_err(|error| EgressError::Upstream(error.to_string()))?;
     let status = response.status();
+    if let Some((reservation_id, _, _, _)) = &bound_turn
+        && let Some(policy) = &config.turn_policy
+        && let Ok(mut guard) = policy.lock()
+        && let Some(turn) = guard.as_mut()
+        && turn.reservation_id == *reservation_id
+    {
+        turn.last_upstream_status = Some(status.as_u16());
+    }
     if status.is_redirection() {
         write_status(&mut stream, 502, "upstream redirect refused").await?;
         return Ok(());
@@ -616,12 +648,24 @@ async fn handle(
         .await?;
     let mut response = response;
     let mut total = 0usize;
+    let mut captured_error = false;
     while let Some(chunk) = response
         .chunk()
         .await
         .map_err(|error| EgressError::Upstream(error.to_string()))?
     {
         total = total.saturating_add(chunk.len());
+        if !captured_error
+            && (status.is_client_error() || status.is_server_error())
+            && let Some((reservation_id, _, _, _)) = &bound_turn
+            && let Some(policy) = &config.turn_policy
+            && let Ok(mut guard) = policy.lock()
+            && let Some(turn) = guard.as_mut()
+            && turn.reservation_id == *reservation_id
+        {
+            turn.last_upstream_error = String::from_utf8_lossy(&chunk).chars().take(500).collect();
+            captured_error = true;
+        }
         if total > MAX_RESPONSE_BODY {
             return Ok(());
         }

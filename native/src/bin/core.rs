@@ -1,7 +1,8 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     env,
-    net::SocketAddr,
+    future::IntoFuture,
+    net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
@@ -9,22 +10,24 @@ use std::{
 use axum::{
     Json, Router,
     body::Bytes,
-    extract::{Path as AxumPath, Query, State},
-    http::{HeaderMap, StatusCode},
+    extract::{Extension, Path as AxumPath, Query, Request, State},
+    http::{HeaderMap, Method, StatusCode, header},
+    middleware::{Next, from_fn_with_state},
     response::{IntoResponse, Response},
-    routing::{delete, get, post},
+    routing::{any, delete, get, post},
 };
-use factory_native::lead::{LeadRequestState, StandingDelegation};
+use factory_native::lead::{LeadPlanProposal, LeadRequestState, StandingDelegation};
 use factory_native::quality::{EvidenceKind, GateOutcome, ReceiptResult};
 use factory_native::{
     attempt_grant::AttemptGrantClaims,
     db::{
-        Database, Error, NewCampaignAuthorization, NewCandidate, NewIntegratedCandidate,
-        NewProjectConfig, QualityReceiptInput, QualityRole, WorkerAssignment, WorkerReport,
+        Action, Campaign, Database, Error, NewCampaignAuthorization, NewCandidate,
+        NewIntegratedCandidate, NewProjectConfig, Project, QualityReceiptInput, QualityRole,
+        WorkerAssignment, WorkerReport,
     },
 };
-use serde::Deserialize;
-use serde_json::json;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 
 struct SetupState {
     failures: u32,
@@ -45,15 +48,59 @@ struct App {
     lead_autonomous_start: bool,
     model_gateway: Option<factory_native::model_gateway::ModelGateway>,
     master_key: Option<factory_native::provider_secrets::ProviderSecretKey>,
+    github: factory_native::github::GitHubClient,
+    github_sync: tokio::sync::Mutex<()>,
     attempt_grant_key: Vec<u8>,
     observability: factory_native::observability::ExporterHandle,
 }
+
+const SESSION_COOKIE: &str = "factory_session";
+const CSRF_COOKIE: &str = "factory_csrf";
+const CSRF_HEADER: &str = "x-factory-csrf";
+
+/// Operation grants must outlive the longest bounded workspace command. The
+/// Supervisor fence still revalidates the grant against Core (and therefore
+/// against the durable attempt/lease authorization) every 500 ms, so this is
+/// not a revocation bypass.
+const WORKSPACE_OPERATION_GRANT_MILLIS: i64 = 31 * 60 * 1000;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NewProject {
     repository: String,
     idempotency_key: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    default_branch: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GitHubProjectImportInput {
+    owner: String,
+    repo: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    default_branch: Option<String>,
+    idempotency_key: String,
+}
+
+struct ResolvedProjectInput {
+    repository: PathBuf,
+    source_kind: &'static str,
+    source_url: String,
+    source_key: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProjectBrowseQuery {
+    #[serde(default, rename = "ref")]
+    reference: Option<String>,
+    #[serde(default)]
+    path: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -219,6 +266,11 @@ struct NewDelegation {
     idempotency_key: String,
 }
 
+/// Operator-supplied Campaign authorization payload. It carries no
+/// productivity caps: technical operation limits and the deterministic progress
+/// policy are validated by Core against the frozen profile and delegation. The
+/// monetary envelope amount is an explicit operator authorization; Core never
+/// derives or invents a price from it.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AuthorizeCampaign {
@@ -228,7 +280,6 @@ struct AuthorizeCampaign {
     actor: String,
     rationale: String,
     authorized_paths: Vec<String>,
-    max_attempts: u32,
     #[serde(default)]
     provider: String,
     #[serde(default)]
@@ -238,23 +289,22 @@ struct AuthorizeCampaign {
     #[serde(default)]
     delegation_id: String,
     #[serde(default)]
-    max_sessions: u32,
-    #[serde(default)]
-    max_turns: u32,
-    #[serde(default)]
-    max_input_tokens: u64,
-    #[serde(default)]
-    max_output_tokens: u64,
-    #[serde(default)]
-    max_cost_micros: u64,
-    #[serde(default)]
-    deadline_secs: u64,
-    #[serde(default)]
     allowed_tools: Vec<String>,
+    operations: factory_native::execution_policy::OperationLimits,
+    progress: factory_native::execution_policy::ProgressPolicy,
+    /// Explicit operator monetary authorization in integer USD micros. Required
+    /// for billable provider execution and never inferred from a model.
+    #[serde(default)]
+    authorized_micros: Option<u64>,
+    /// Only a direct Campaign may reference an already-created request
+    /// envelope. Request-scoped Lead approval always creates the envelope from
+    /// the operator's explicit amount.
+    #[serde(default)]
+    monetary_envelope_id: Option<String>,
 }
 
 impl AuthorizeCampaign {
-    fn into_new(self) -> NewCampaignAuthorization {
+    fn into_new(self, monetary_envelope_id: String) -> NewCampaignAuthorization {
         NewCampaignAuthorization {
             authorization_id: self.authorization_id,
             risk_class: self.risk_class,
@@ -262,18 +312,14 @@ impl AuthorizeCampaign {
             actor: self.actor,
             rationale: self.rationale,
             authorized_paths: self.authorized_paths,
-            max_attempts: self.max_attempts,
             provider: self.provider,
             model: self.model,
             provider_mode: self.provider_mode,
             delegation_id: self.delegation_id,
-            max_sessions: self.max_sessions,
-            max_turns: self.max_turns,
-            max_input_tokens: self.max_input_tokens,
-            max_output_tokens: self.max_output_tokens,
-            max_cost_micros: self.max_cost_micros,
-            deadline_secs: self.deadline_secs,
             allowed_tools: self.allowed_tools,
+            monetary_envelope_id,
+            progress: self.progress,
+            operations: self.operations,
         }
     }
 }
@@ -287,6 +333,210 @@ struct NewLeadRequest {
     objective: String,
     project_config_hash: String,
     idempotency_key: String,
+    /// Explicit operator monetary authorization for the whole request. It is
+    /// reserved before the first billable Lead assessment.
+    #[serde(default)]
+    authorized_micros: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApproveLeadRequest {
+    expected_request_hash: String,
+    expected_plan_hash: String,
+    expected_spec_sha256: String,
+    expected_config_hash: String,
+    expected_delegation_hash: String,
+    #[serde(default)]
+    profile_revision_id: Option<String>,
+    #[serde(default)]
+    profile_hash: Option<String>,
+    #[serde(default)]
+    principal_label: Option<String>,
+    rationale: String,
+    #[serde(default)]
+    idempotency_key: Option<String>,
+    #[serde(default)]
+    provider_authorization: Option<AuthorizeCampaign>,
+    /// Explicit operator monetary authorization for a billable MODEL start.
+    /// This is independent of the provider authorization payload and is never
+    /// accepted from a model.
+    #[serde(default)]
+    authorized_micros: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WithdrawLeadRequest {
+    reason: String,
+    #[serde(default)]
+    principal_label: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NewIntakeRequest {
+    project_id: String,
+    objective: String,
+    #[serde(default)]
+    execution_profile_id: Option<String>,
+    mode: factory_native::intake::IntakeMode,
+    idempotency_key: String,
+    /// Explicit operator monetary authorization for the whole request. It is
+    /// reserved before the first billable Lead assessment.
+    #[serde(default)]
+    authorized_micros: Option<u64>,
+}
+
+#[cfg(feature = "test-support")]
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TestSubscriptionDispatchAdmission {
+    scope: String,
+}
+
+#[derive(Deserialize, Default)]
+struct IntakeListQuery {
+    state: Option<String>,
+    project_id: Option<String>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApproveIntakeRequest {
+    expected_plan_hash: String,
+    /// Optional optimistic-concurrency guard for the exact frozen profile
+    /// revision. The plan hash already binds the frozen context; when supplied,
+    /// Core rejects a stale revision instead of starting from an older view.
+    #[serde(default)]
+    expected_profile_revision_id: Option<String>,
+    #[serde(default)]
+    expected_profile_hash: Option<String>,
+    rationale: String,
+    #[serde(default)]
+    principal_label: Option<String>,
+    #[serde(default)]
+    idempotency_key: Option<String>,
+    /// Explicit operator monetary authorization in integer USD micros for a
+    /// billable MODEL request. Core never derives, rounds or invents it.
+    #[serde(default)]
+    authorized_micros: Option<u64>,
+    /// Exact request-scoped Owner-confirmed subscription admission. The
+    /// approval consumes it into the Campaign policy in the same transaction.
+    #[serde(default)]
+    subscription_admission_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IntakeSubscriptionAdmissionRequest {
+    assumption_id: String,
+    confirmed_by: String,
+    confirmed_at_ms: i64,
+    valid_until_ms: i64,
+    extra_usage_disabled: bool,
+    statement: String,
+    test_profile_id: String,
+    idempotency_key: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IntakeMessageRequest {
+    body: String,
+    idempotency_key: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CancelIntakeRequest {
+    reason: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExecutionPolicyRequest {
+    execution_profile_id: String,
+    expected_revision: u32,
+    expected_revision_hash: String,
+    project_config_hash: String,
+    acknowledge: bool,
+    idempotency_key: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IssueIntakePolicyRequest {
+    repository_full_name: String,
+    repository_github_id: i64,
+    required_labels: Vec<String>,
+    excluded_labels: Vec<String>,
+    author_ids: Vec<i64>,
+    author_associations: Vec<String>,
+    execution_profile_id: String,
+    profile_revision_id: String,
+    profile_revision: u32,
+    profile_hash: String,
+    project_config_hash: String,
+    allowed_paths: Vec<String>,
+    capabilities: Vec<factory_native::lead::Capability>,
+    max_issues: u32,
+    max_concurrent: u32,
+    max_cost_micros_per_issue: u64,
+    max_total_cost_micros: u64,
+    max_attempts: u32,
+    max_sessions: u32,
+    max_turns: u32,
+    max_wall_clock_secs: u64,
+    expires_at: String,
+    acknowledge: bool,
+    reason: String,
+    idempotency_key: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IssueIntakeDisableRequest {
+    reason: String,
+    idempotency_key: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IssueIntakeBatchItemRequest {
+    number: u64,
+    github_issue_id: i64,
+    content_hash: String,
+    updated_at: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IssueIntakeBatchRequest {
+    policy_id: String,
+    expected_policy_revision: u32,
+    expected_policy_hash: String,
+    items: Vec<IssueIntakeBatchItemRequest>,
+    max_total_cost_micros: u64,
+    expires_at: String,
+    acknowledge: bool,
+    reason: String,
+    idempotency_key: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IssueIntakeBatchRevokeRequest {
+    reason: String,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct IssueIntakeDispatchRequest {
+    #[serde(default)]
+    batch_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -355,6 +605,12 @@ struct QualityReceiptRequest {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    match env::args().nth(1).as_deref() {
+        Some("issue-bootstrap-code") => return issue_bootstrap_code(false).await,
+        Some("issue-recovery-code") => return issue_bootstrap_code(true).await,
+        Some(_) => return Err("unknown factory-core command".into()),
+        None => {}
+    }
     tracing_subscriber::fmt()
         .with_env_filter("factory_native=info")
         .with_writer(factory_native::telemetry::RedactingMakeWriter)
@@ -392,7 +648,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     factory_native::telemetry::register_secret(&attempt_grant_key);
     let container_mode = env::var("FACTORY_CONTAINER_MODE").as_deref() == Ok("1");
-    let addr: SocketAddr = validate_bind(&bind, container_mode)?;
+    let control_addrs = resolve_binds(&bind, container_mode).await?;
     let db = Database::open(Path::new(&database)).await?;
     let observability = match factory_native::observability::Config::from_env() {
         Ok(Some(config)) => match factory_native::observability::start(db.clone(), config) {
@@ -446,17 +702,118 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             == Some("1"),
         model_gateway: model_gateway_from_env()?,
         master_key,
+        github: factory_native::github::GitHubClient::from_env()?,
+        github_sync: tokio::sync::Mutex::new(()),
         attempt_grant_key: attempt_grant_key.into_bytes(),
         observability,
     });
     let router = build_router(Arc::clone(&app));
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    tracing::info!(%addr, "native Factory Core listening");
-    axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    let mut listeners = Vec::new();
+    for addr in &control_addrs {
+        listeners.push(tokio::net::TcpListener::bind(addr).await?);
+        tracing::info!(%addr, "native Factory Core control listener listening");
+    }
+    let mut servers: Vec<
+        std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<()>> + Send>>,
+    > = Vec::new();
+    for listener in listeners {
+        servers.push(Box::pin(
+            axum::serve(listener, router.clone())
+                .with_graceful_shutdown(shutdown_signal())
+                .into_future(),
+        ));
+    }
+    if let Ok(raw) = env::var("FACTORY_OFFICE_ACCESS_SOCKET") {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let path = validate_office_socket_path(&raw)?;
+            match std::fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+            let listener = tokio::net::UnixListener::bind(&path)?;
+            // The socket volume is dedicated to Core and the Tailscale
+            // container. Rootless Podman maps the Tailscale container's root
+            // to the host user rather than Core's UID, so the socket must be
+            // connectable across that namespace boundary.
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666))?;
+            let office_router = build_office_access_router(
+                Arc::clone(&app),
+                env::var("FACTORY_OFFICE_DIR").ok().map(PathBuf::from),
+            );
+            tracing::info!(socket = %path.display(), "native Factory Office socket listener listening");
+            servers.push(Box::pin(
+                axum::serve(listener, office_router)
+                    .with_graceful_shutdown(shutdown_signal())
+                    .into_future(),
+            ));
+        }
+        #[cfg(not(unix))]
+        {
+            return Err("FACTORY_OFFICE_ACCESS_SOCKET requires a Unix host".into());
+        }
+    }
+    futures_util::future::try_join_all(servers).await?;
     app.observability.shutdown().await;
     app.db.close().await;
+    Ok(())
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BootstrapCodeRecord {
+    code_sha256: String,
+    expires_at_ms: i64,
+}
+
+async fn issue_bootstrap_code(recovery: bool) -> Result<(), Box<dyn std::error::Error>> {
+    use std::{fs::OpenOptions, io::Write, os::unix::fs::OpenOptionsExt};
+
+    let database = env::var("FACTORY_DATABASE").unwrap_or_else(|_| "factory-native.sqlite".into());
+    let db = Database::open(Path::new(&database)).await?;
+    let owner_available = db.owner_bootstrap_available().await?;
+    if !owner_available && !recovery {
+        println!("OWNER_ALREADY_ENROLLED");
+        db.close().await;
+        return Ok(());
+    }
+    let path = PathBuf::from(
+        env::var("FACTORY_ENROLLMENT_CODE_FILE").unwrap_or_else(|_| "/data/enrollment-code".into()),
+    );
+    let code = uuid::Uuid::new_v4().simple().to_string();
+    let expires_at_ms = chrono::Utc::now().timestamp_millis() + 5 * 60 * 1000;
+    let record = BootstrapCodeRecord {
+        code_sha256: factory_native::device_session::sha256_hex(&code),
+        expires_at_ms,
+    };
+    let serialized = serde_json::to_vec(&record)?;
+    let temporary = path.with_extension(format!(
+        "bootstrap-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&temporary)?;
+    file.write_all(&serialized)?;
+    file.sync_all()?;
+    drop(file);
+    std::fs::rename(&temporary, &path)?;
+    let used_marker = path.with_file_name("enrollment-used");
+    if used_marker.exists() {
+        std::fs::remove_file(used_marker)?;
+    }
+    if recovery {
+        db.reset_owner_bootstrap("local-recovery", chrono::Utc::now().timestamp_millis())
+            .await?;
+    }
+    println!("{code}");
+    db.close().await;
     Ok(())
 }
 
@@ -482,7 +839,8 @@ async fn shutdown_signal() {
 }
 
 fn build_router(app: Arc<App>) -> Router {
-    let api = api_router(app);
+    let api =
+        api_router(Arc::clone(&app)).merge(factory_native::device_pairing::routes(app.db.clone()));
     let nested = api.clone();
     let mut router = Router::new().merge(api).nest("/core-api", nested);
     if let Ok(directory) = env::var("FACTORY_OFFICE_DIR") {
@@ -495,24 +853,42 @@ fn build_router(app: Arc<App>) -> Router {
             );
         }
     }
-    router
+    router.layer(from_fn_with_state(app, browser_auth))
 }
 
-fn api_router(app: Arc<App>) -> Router {
-    Router::new()
+fn build_office_access_router(app: Arc<App>, office_directory: Option<PathBuf>) -> Router {
+    let api = office_api_router(Arc::clone(&app));
+    let nested = api.clone();
+    let mut router = Router::new().merge(api).nest("/core-api", nested);
+    if let Some(directory) = office_directory.filter(|directory| directory.is_dir()) {
+        let index = directory.join("index.html");
+        router = router.fallback_service(
+            tower_http::services::ServeDir::new(directory)
+                .not_found_service(tower_http::services::ServeFile::new(index)),
+        );
+    } else {
+        router = router.fallback(office_api_route_not_found);
+    }
+    router.layer(from_fn_with_state(app, browser_auth))
+}
+
+fn office_api_router(app: Arc<App>) -> Router {
+    let api = Router::new()
         .route(
             "/health",
             get(|| async { Json(json!({"healthy":true,"version":"0.1.0"})) }),
         )
+        .route("/auth/bootstrap", post(auth_bootstrap))
+        .route("/auth/session", get(auth_session))
+        .route("/auth/logout", post(auth_logout))
+        .route("/auth/logout-all", post(auth_logout_all))
+        .route("/auth/rotate", post(auth_rotate))
         .route("/setup/status", get(setup_status))
-        .route("/setup/enroll", post(setup_enroll))
-        .route("/quality/pending", get(pending_quality))
         .route("/settings/providers", get(provider_settings_list))
         .route(
             "/settings/runtime",
             get(runtime_settings).put(update_runtime_settings),
         )
-        .route("/review/config", get(review_config))
         .route(
             "/settings/providers/{provider}",
             axum::routing::put(update_provider_settings),
@@ -525,12 +901,207 @@ fn api_router(app: Arc<App>) -> Router {
             "/settings/providers/{provider}/test",
             post(test_provider_connection),
         )
+        .route(
+            "/settings/providers/{provider}/models",
+            get(provider_models),
+        )
+        .route("/settings/providers/{provider}/audit", get(provider_audit))
+        .route("/projects", get(projects).post(register_project))
+        .route(
+            "/projects/{id}/config",
+            get(project_config).put(update_project_config),
+        )
+        .route("/projects/{id}/files", get(project_files))
+        .route("/projects/{id}/file", get(project_file))
+        .route("/projects/{id}/refs", get(project_refs))
+        .route(
+            "/execution-profiles",
+            get(execution_profiles_list).post(create_execution_profile),
+        )
+        .route(
+            "/execution-profiles/{id}",
+            get(execution_profile_detail).put(update_execution_profile),
+        )
+        .route(
+            "/execution-profiles/{id}/default",
+            post(set_execution_profile_default).delete(clear_execution_profile_default),
+        )
+        .route(
+            "/projects/{id}/execution-profile",
+            get(project_execution_profile),
+        )
+        .route("/actions", get(actions).post(create_action))
+        .route("/office/overview", get(office_overview))
+        .route("/office/decisions", get(office_decisions))
+        .route("/office/participants", get(office_participants))
+        .route(
+            "/provider/sessions/{session_record_id}/tool_events",
+            get(provider_session_tool_events),
+        )
+        .route("/campaigns", get(campaigns).post(create_campaign))
+        .route("/campaigns/{id}", get(campaign_detail))
+        .route(
+            "/campaigns/{id}/candidates/{candidate_id}/diff",
+            get(candidate_diff),
+        )
+        .route("/campaigns/{id}/cancel", post(cancel_campaign))
+        .route("/campaigns/{id}/authorization", get(campaign_authorization))
+        .route("/campaigns/{id}/authorize", post(authorize_campaign))
+        .route("/campaigns/{id}/runs", post(create_campaign_run))
+        .route("/runs", get(runs))
+        .route("/runs/{id}/attempts", post(create_run_attempt))
+        .route("/attempts", get(attempts))
+        .route("/events", get(events))
+        .route("/observability", get(observability_status))
+        .route(
+            "/provider/turn_reservations/budget",
+            get(provider_turn_reservation_budget),
+        )
+        .route("/provider/sessions", get(provider_sessions))
+        .route("/model/calls/unresolved", get(unresolved_model_calls))
+        .route("/model/calls", get(model_calls))
+        .route("/model/calls/{id}/resolve", post(resolve_model_call))
+        .route("/quality/candidates/{id}/receipts", get(quality_receipts))
+        .route("/quality/candidates/{id}/gate", get(quality_gate))
+        .route("/delegations", get(delegations).post(create_delegation))
+        .route(
+            "/delegations/{id}",
+            get(get_delegation).post(revoke_delegation),
+        )
+        .route(
+            "/lead/requests",
+            get(lead_requests).post(create_lead_request),
+        )
+        .route("/lead/requests/{id}", get(get_lead_request))
+        .route("/lead/requests/{id}/assess", post(assess_lead_request))
+        .route("/lead/requests/{id}/freeze", post(freeze_lead_request))
+        .route("/lead/requests/{id}/start", post(start_lead_request))
+        .route("/lead/requests/{id}/approve", post(approve_lead_request))
+        .route("/lead/requests/{id}/withdraw", post(withdraw_lead_request))
+        .route(
+            "/intake/requests",
+            get(intake_requests).post(create_intake_request),
+        )
+        .route("/intake/requests/{id}", get(get_intake_request))
+        .route(
+            "/intake/requests/{id}/subscription-admission",
+            post(create_intake_subscription_admission),
+        )
+        .route("/intake/requests/{id}/assess", post(assess_intake_request))
+        .route(
+            "/intake/requests/{id}/approve",
+            post(approve_intake_request),
+        )
+        .route(
+            "/intake/requests/{id}/message",
+            post(message_intake_request),
+        )
+        .route("/intake/requests/{id}/cancel", post(cancel_intake_request))
+        .route(
+            "/projects/{id}/execution-policy",
+            post(create_execution_policy),
+        )
+        .route("/candidates", get(candidates))
+        .route("/workers", get(workers))
+        .merge(github_integration_routes())
+        .merge(issue_intake_routes());
+
+    #[cfg(feature = "test-support")]
+    let api = api.route(
+        "/test-support/subscription-dispatch-admissions",
+        post(admit_test_subscription_dispatch),
+    );
+
+    let api = api
+        .with_state(Arc::clone(&app))
+        .merge(factory_native::device_pairing::routes(app.db.clone()));
+
+    api.route("/worker", any(office_route_not_found))
+        .route("/worker/{*path}", any(office_route_not_found))
+        .route("/review", any(office_route_not_found))
+        .route("/review/{*path}", any(office_route_not_found))
+        .route("/supervisor", any(office_route_not_found))
+        .route("/supervisor/{*path}", any(office_route_not_found))
+        .route("/quality/receipts", any(office_route_not_found))
+}
+
+async fn office_route_not_found() -> StatusCode {
+    StatusCode::NOT_FOUND
+}
+
+async fn office_api_route_not_found() -> Response {
+    let mut response = StatusCode::NOT_FOUND.into_response();
+    response.headers_mut().insert(
+        "x-factory-office-route-miss",
+        axum::http::HeaderValue::from_static("true"),
+    );
+    response
+}
+
+fn api_router(app: Arc<App>) -> Router {
+    let api = Router::new()
+        .route(
+            "/health",
+            get(|| async { Json(json!({"healthy":true,"version":"0.1.0"})) }),
+        )
+        .route("/auth/bootstrap", post(auth_bootstrap))
+        .route("/auth/session", get(auth_session))
+        .route("/auth/logout", post(auth_logout))
+        .route("/auth/logout-all", post(auth_logout_all))
+        .route("/auth/rotate", post(auth_rotate))
+        .route("/setup/status", get(setup_status))
+        .route("/quality/pending", get(pending_quality))
+        .route(
+            "/funding/subscription/{provider}",
+            get(subscription_funding_readiness),
+        )
+        .route("/settings/providers", get(provider_settings_list))
+        .route(
+            "/settings/runtime",
+            get(runtime_settings).put(update_runtime_settings),
+        )
+        .route("/quality/candidates/{id}/review-config", get(review_config))
+        .route(
+            "/settings/providers/{provider}",
+            axum::routing::put(update_provider_settings),
+        )
+        .route(
+            "/settings/providers/{provider}/credential",
+            delete(revoke_provider_credential),
+        )
+        .route(
+            "/settings/providers/{provider}/test",
+            post(test_provider_connection),
+        )
+        .route(
+            "/settings/providers/{provider}/models",
+            get(provider_models),
+        )
         .route("/settings/providers/{provider}/audit", get(provider_audit))
         .route("/worker/provider_profile", get(worker_provider_profile))
         .route("/projects", get(projects).post(register_project))
         .route(
             "/projects/{id}/config",
             get(project_config).put(update_project_config),
+        )
+        .route("/projects/{id}/files", get(project_files))
+        .route("/projects/{id}/file", get(project_file))
+        .route("/projects/{id}/refs", get(project_refs))
+        .route(
+            "/execution-profiles",
+            get(execution_profiles_list).post(create_execution_profile),
+        )
+        .route(
+            "/execution-profiles/{id}",
+            get(execution_profile_detail).put(update_execution_profile),
+        )
+        .route(
+            "/execution-profiles/{id}/default",
+            post(set_execution_profile_default).delete(clear_execution_profile_default),
+        )
+        .route(
+            "/projects/{id}/execution-profile",
+            get(project_execution_profile),
         )
         .route("/actions", get(actions).post(create_action))
         .route("/actions/{id}/classify", post(classify_action))
@@ -554,6 +1125,10 @@ fn api_router(app: Arc<App>) -> Router {
         .route("/observability", get(observability_status))
         .route("/worker/register", post(register_worker))
         .route("/worker/claim", post(worker_claim))
+        .route(
+            "/worker/progress_checkpoint",
+            post(worker_progress_checkpoint),
+        )
         .route("/worker/heartbeat", post(worker_heartbeat))
         .route("/worker/report", post(worker_report))
         .route(
@@ -635,13 +1210,47 @@ fn api_router(app: Arc<App>) -> Router {
         .route("/lead/requests/{id}/assess", post(assess_lead_request))
         .route("/lead/requests/{id}/freeze", post(freeze_lead_request))
         .route("/lead/requests/{id}/start", post(start_lead_request))
+        .route("/lead/requests/{id}/approve", post(approve_lead_request))
+        .route("/lead/requests/{id}/withdraw", post(withdraw_lead_request))
+        .route(
+            "/intake/requests",
+            get(intake_requests).post(create_intake_request),
+        )
+        .route("/intake/requests/{id}", get(get_intake_request))
+        .route(
+            "/intake/requests/{id}/subscription-admission",
+            post(create_intake_subscription_admission),
+        )
+        .route("/intake/requests/{id}/assess", post(assess_intake_request))
+        .route(
+            "/intake/requests/{id}/approve",
+            post(approve_intake_request),
+        )
+        .route(
+            "/intake/requests/{id}/message",
+            post(message_intake_request),
+        )
+        .route("/intake/requests/{id}/cancel", post(cancel_intake_request))
+        .route(
+            "/projects/{id}/execution-policy",
+            post(create_execution_policy),
+        )
         .route("/campaigns/{id}/authorize", post(authorize_campaign))
         .route("/campaigns/{id}/authorization", get(campaign_authorization))
         .route("/campaigns/{id}/runs", post(create_campaign_run))
         .route("/runs/{id}/attempts", post(create_run_attempt))
         .route("/candidates", get(candidates))
         .route("/workers", get(workers))
-        .with_state(app)
+        .merge(github_integration_routes())
+        .merge(issue_intake_routes());
+
+    #[cfg(feature = "test-support")]
+    let api = api.route(
+        "/test-support/subscription-dispatch-admissions",
+        post(admit_test_subscription_dispatch),
+    );
+
+    api.with_state(app)
 }
 
 impl App {
@@ -658,7 +1267,8 @@ impl App {
                 return None;
             }
         };
-        if !settings.enabled || settings.kind != "opencode" {
+        let adapter = factory_native::provider_adapter::ProviderAdapter::from_kind(&settings.kind)?;
+        if !settings.enabled || !adapter.supports_chat_completions() {
             return None;
         }
         let credential =
@@ -672,6 +1282,7 @@ impl App {
         factory_native::telemetry::register_secret(&credential);
         let allow_loopback_http =
             env::var("FACTORY_ALLOW_TEST_UPSTREAM").ok().as_deref() == Some("1");
+        let test_upstream_hosts = test_upstream_hosts();
         let mut lead_policy =
             policy_from_env("FACTORY_LEAD_MODEL", 128_000, 8_192, 300_000).ok()?;
         let mut reviewer_policy =
@@ -705,6 +1316,8 @@ impl App {
             evaluation_policy,
             global_policy,
             allow_loopback_http,
+            bound_role: None,
+            test_upstream_hosts,
         };
         match factory_native::model_gateway::ModelGateway::new(config) {
             Ok(gateway) => Some(gateway),
@@ -712,6 +1325,122 @@ impl App {
                 tracing::warn!(%error, "provider settings did not produce a valid model gateway");
                 None
             }
+        }
+    }
+
+    fn core_model_caps() -> Result<factory_native::model_routing::CoreModelCaps, String> {
+        factory_native::model_routing::CoreModelCaps::from_env()
+    }
+
+    /// Build the exact bounded gateway for a declared profile role. A missing
+    /// master key, provider, credential, adapter or model is a typed error; it
+    /// is never a silent fallback to the legacy default gateway.
+    async fn gateway_for_role(
+        &self,
+        role: factory_native::execution_profile::ExecutionRole,
+        route: &factory_native::execution_profile::ExecutionRoleRoute,
+        operations: &factory_native::execution_policy::OperationLimits,
+    ) -> Result<
+        factory_native::model_gateway::ModelGateway,
+        factory_native::model_routing::RouteError,
+    > {
+        use factory_native::model_routing::{RoleGatewayFactory, RouteError};
+        let caps = Self::core_model_caps().map_err(|detail| RouteError::Invalid {
+            provider: route.provider.clone(),
+            model: route.model.clone(),
+            detail,
+        })?;
+        let timeout = std::time::Duration::from_secs(
+            env_u64(
+                "FACTORY_MODEL_TIMEOUT_SECS",
+                factory_native::model_routing::DEFAULT_MODEL_TIMEOUT_SECS,
+            )
+            .map_err(|detail| RouteError::Invalid {
+                provider: route.provider.clone(),
+                model: route.model.clone(),
+                detail: detail.to_string(),
+            })?,
+        );
+        let allow_loopback_http =
+            env::var("FACTORY_ALLOW_TEST_UPSTREAM").ok().as_deref() == Some("1");
+        RoleGatewayFactory::new(
+            &self.db,
+            self.master_key.as_ref(),
+            caps,
+            timeout,
+            allow_loopback_http,
+            test_upstream_hosts(),
+        )
+        .for_role(role, route, operations)
+        .await
+    }
+
+    /// Exact Lead gateway for a frozen intake request. Legacy, non-intake Lead
+    /// assessment keeps the deployment default gateway.
+    async fn intake_assess_gateway(
+        &self,
+        profile: &factory_native::db::ExecutionProfileRecord,
+    ) -> Result<
+        factory_native::model_gateway::ModelGateway,
+        factory_native::model_routing::RouteError,
+    > {
+        use factory_native::model_routing::RouteError;
+        let content = profile.content.v2().ok_or_else(|| RouteError::Invalid {
+            provider: String::new(),
+            model: String::new(),
+            detail:
+                "legacy V1 execution profile is historical evidence and cannot start new execution"
+                    .into(),
+        })?;
+        self.gateway_for_role(
+            factory_native::execution_profile::ExecutionRole::Lead,
+            &content.roles.lead,
+            &content.operations,
+        )
+        .await
+    }
+
+    /// Resolve the semantic reviewer route from the exact Campaign that
+    /// produced the candidate. A Campaign without a frozen Execution Profile is
+    /// a legacy Campaign and keeps the deployment default gateway; a Campaign
+    /// with a frozen profile never falls back to a different model.
+    async fn semantic_reviewer_gateway(
+        &self,
+        candidate_id: &str,
+    ) -> Result<
+        factory_native::model_gateway::ModelGateway,
+        factory_native::model_routing::RouteError,
+    > {
+        use factory_native::model_routing::RouteError;
+        let frozen = self
+            .db
+            .frozen_profile_for_candidate(candidate_id)
+            .await
+            .map_err(|error| RouteError::Database(error.to_string()))?;
+        match frozen {
+            Some(profile) => {
+                let content = profile.content.v2().ok_or_else(|| RouteError::Invalid {
+                    provider: String::new(),
+                    model: String::new(),
+                    detail:
+                        "legacy V1 execution profile is historical evidence and cannot dispatch a new review"
+                            .into(),
+                })?;
+                self.gateway_for_role(
+                    factory_native::execution_profile::ExecutionRole::SemanticReviewer,
+                    &content.roles.semantic_reviewer,
+                    &content.operations,
+                )
+                .await
+            }
+            None => self
+                .current_model_gateway()
+                .await
+                .ok_or(RouteError::Invalid {
+                    provider: String::new(),
+                    model: String::new(),
+                    detail: "the deployment default model gateway is not configured".into(),
+                }),
         }
     }
 }
@@ -743,6 +1472,7 @@ fn model_gateway_from_env()
     let evaluation_policy = policy_from_env("FACTORY_EVALUATION_MODEL", 400_000, 8_192, 2_000_000)?;
     let global_policy = policy_from_env("FACTORY_MODEL_GLOBAL", 2_000_000, 100_000, 10_000_000)?;
     let allow_loopback_http = env::var("FACTORY_ALLOW_TEST_UPSTREAM").ok().as_deref() == Some("1");
+    let test_upstream_hosts = test_upstream_hosts();
     Ok(Some(factory_native::model_gateway::ModelGateway::new(
         factory_native::model_gateway::ModelGatewayConfig {
             base_url: url,
@@ -757,8 +1487,19 @@ fn model_gateway_from_env()
             evaluation_policy,
             global_policy,
             allow_loopback_http,
+            bound_role: None,
+            test_upstream_hosts,
         },
     )?))
+}
+
+fn test_upstream_hosts() -> Vec<String> {
+    if env::var("FACTORY_ALLOW_TEST_UPSTREAM").ok().as_deref() != Some("1") {
+        return Vec::new();
+    }
+    factory_native::provider_catalog::parse_test_upstream_hosts(
+        env::var("FACTORY_TEST_UPSTREAM_HOSTS").ok().as_deref(),
+    )
 }
 
 fn env_u64(name: &str, default: u64) -> Result<u64, Box<dyn std::error::Error>> {
@@ -784,11 +1525,31 @@ fn policy_from_env(
     })
 }
 
+fn validate_office_socket_path(raw: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let path = PathBuf::from(raw);
+    if !path.is_absolute() {
+        return Err("FACTORY_OFFICE_ACCESS_SOCKET must be absolute".into());
+    }
+    let parent = path
+        .parent()
+        .ok_or("FACTORY_OFFICE_ACCESS_SOCKET must have a parent directory")?;
+    if !parent.is_dir() {
+        return Err("FACTORY_OFFICE_ACCESS_SOCKET parent directory must exist".into());
+    }
+    Ok(path)
+}
+
 fn validate_bind(
     raw: &str,
     container_mode: bool,
 ) -> Result<SocketAddr, Box<dyn std::error::Error>> {
-    let addr: SocketAddr = raw.parse()?;
+    validate_address(raw.parse()?, container_mode)
+}
+
+fn validate_address(
+    addr: SocketAddr,
+    container_mode: bool,
+) -> Result<SocketAddr, Box<dyn std::error::Error>> {
     if addr.ip().is_loopback() {
         return Ok(addr);
     }
@@ -799,7 +1560,91 @@ fn validate_bind(
         );
         return Ok(addr);
     }
-    Err("remote binding requires FACTORY_CONTAINER_MODE=1 with an IPv4 unspecified container bind; publish only host loopback".into())
+    if container_mode && is_private_ipv4(addr.ip()) {
+        return Ok(addr);
+    }
+    Err("remote binding requires FACTORY_CONTAINER_MODE=1 with an IPv4 unspecified or private container bind; publish only host loopback".into())
+}
+
+/// Resolve a bind specification to one or more concrete addresses.
+///
+/// A raw socket address keeps the historical rules. A hostname (a Compose
+/// network alias) must resolve to exactly one private IPv4 address and is only
+/// accepted in container mode, so the full control listener can be confined to
+/// the control interfaces while the Office listener is confined to its own
+/// network. Ambiguous or public resolutions fail closed.
+async fn resolve_binds(
+    raw: &str,
+    container_mode: bool,
+) -> Result<Vec<SocketAddr>, Box<dyn std::error::Error>> {
+    let mut resolved = Vec::new();
+    for entry in raw
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+    {
+        resolved.extend(resolve_bind(entry, container_mode).await?);
+    }
+    let mut unique = BTreeSet::new();
+    for addr in resolved {
+        if !unique.insert(addr) {
+            return Err(format!("duplicate bind address {addr}").into());
+        }
+    }
+    if unique.is_empty() {
+        return Err("at least one bind address is required".into());
+    }
+    Ok(unique.into_iter().collect())
+}
+
+async fn resolve_bind(
+    raw: &str,
+    container_mode: bool,
+) -> Result<Vec<SocketAddr>, Box<dyn std::error::Error>> {
+    if raw.parse::<SocketAddr>().is_ok() {
+        return Ok(vec![validate_bind(raw, container_mode)?]);
+    }
+    let (host, port) = raw
+        .rsplit_once(':')
+        .ok_or_else(|| format!("bind {raw:?} must be HOST:PORT"))?;
+    if host.is_empty() || host.contains(['/', '[', ']']) {
+        return Err(format!("bind host {host:?} is not a service name").into());
+    }
+    let port: u16 = port
+        .parse()
+        .map_err(|_| format!("bind {raw:?} has an invalid port"))?;
+    if !container_mode {
+        return Err(format!("bind host {host:?} requires FACTORY_CONTAINER_MODE=1").into());
+    }
+    let addresses: BTreeSet<IpAddr> = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|_| format!("bind host {host:?} could not be resolved"))?
+        .map(|address| address.ip())
+        .filter(IpAddr::is_ipv4)
+        .collect();
+    let mut addresses = addresses.into_iter();
+    let address = match (addresses.next(), addresses.next()) {
+        (Some(address), None) => address,
+        (None, _) => {
+            return Err(format!("bind host {host:?} has no IPv4 address").into());
+        }
+        _ => {
+            return Err(
+                format!("bind host {host:?} must resolve to exactly one IPv4 address").into(),
+            );
+        }
+    };
+    if !address.is_loopback() && !is_private_ipv4(address) {
+        return Err(format!("bind host {host:?} resolved to a non-private address").into());
+    }
+    Ok(vec![validate_address(
+        SocketAddr::new(address, port),
+        container_mode,
+    )?])
+}
+
+fn is_private_ipv4(address: IpAddr) -> bool {
+    matches!(address, IpAddr::V4(address) if address.is_private())
 }
 
 fn authorized(headers: &HeaderMap, token: &str) -> bool {
@@ -810,22 +1655,317 @@ fn authorized(headers: &HeaderMap, token: &str) -> bool {
         .is_some_and(|value| constant_time_eq(value.as_bytes(), expected.as_bytes()))
 }
 
+/// Core-owned identity for an authenticated operator request. A browser device
+/// session is a distinct principal; the shared bearer token is a single local
+/// operator principal. A display label is audit metadata only.
+fn authenticated_operator(
+    session: Option<&factory_native::db::DeviceSessionRecord>,
+) -> (String, Option<String>) {
+    match session {
+        Some(device) => (format!("device:{}", device.id), Some(device.name.clone())),
+        None => ("operator-token".into(), None),
+    }
+}
+
+async fn browser_auth(State(app): State<Arc<App>>, mut request: Request, next: Next) -> Response {
+    let path = request.uri().path();
+    let session_token = match cookie_value(request.headers(), SESSION_COOKIE) {
+        Ok(token) => token,
+        Err(()) => return StatusCode::BAD_REQUEST.into_response(),
+    };
+    let has_origin = request.headers().contains_key(header::ORIGIN);
+    let auth_route = path == "/auth"
+        || path.starts_with("/auth/")
+        || path == "/core-api/auth"
+        || path.starts_with("/core-api/auth/");
+    let trusted = trusted_origins();
+    let secure_cookie =
+        factory_native::device_session::secure_cookie_context(request.headers(), &trusted);
+    {
+        let test_host_absent = cfg!(test) && !request.headers().contains_key(header::HOST);
+        if !test_host_absent && !request_host_allowed(request.headers(), &trusted) {
+            return StatusCode::BAD_REQUEST.into_response();
+        }
+        if let Some(origin) = request.headers().get(header::ORIGIN) {
+            let Ok(origin) = origin.to_str() else {
+                return StatusCode::BAD_REQUEST.into_response();
+            };
+            if !origin_allowed(origin, request.headers(), &trusted) {
+                return StatusCode::FORBIDDEN.into_response();
+            }
+        } else if !matches!(
+            *request.method(),
+            Method::GET | Method::HEAD | Method::OPTIONS
+        ) && (auth_route || session_token.is_some())
+        {
+            return StatusCode::FORBIDDEN.into_response();
+        }
+    }
+    let had_session = session_token.is_some();
+    let mut discard_invalid_session_cookie = false;
+    if let Some(token) = session_token {
+        if request.headers().contains_key(header::AUTHORIZATION) {
+            return StatusCode::BAD_REQUEST.into_response();
+        }
+        let session = match app
+            .db
+            .device_session_by_token_hash(
+                &factory_native::device_session::sha256_hex(&token),
+                chrono::Utc::now().timestamp_millis(),
+            )
+            .await
+        {
+            Ok(Some(session)) => Some(session),
+            Ok(None)
+                if matches!(
+                    *request.method(),
+                    Method::GET | Method::HEAD | Method::OPTIONS
+                ) =>
+            {
+                // A stale or revoked cookie must not block the Office shell or
+                // public reads. Protected handlers still reject without an
+                // injected operator credential, and the browser is told to
+                // discard the invalid cookie so the app can show its gate.
+                discard_invalid_session_cookie = true;
+                None
+            }
+            Ok(None)
+                if *request.method() == Method::POST
+                    && matches!(path, "/auth/bootstrap" | "/core-api/auth/bootstrap") =>
+            {
+                None
+            }
+            Ok(None) => return StatusCode::UNAUTHORIZED.into_response(),
+            Err(error) => return api_error(error),
+        };
+        if let Some(session) = session {
+            if !matches!(
+                *request.method(),
+                Method::GET | Method::HEAD | Method::OPTIONS
+            ) {
+                let csrf_cookie = match cookie_value(request.headers(), CSRF_COOKIE) {
+                    Ok(Some(value)) => value,
+                    _ => return StatusCode::FORBIDDEN.into_response(),
+                };
+                let csrf_header = request
+                    .headers()
+                    .get(CSRF_HEADER)
+                    .and_then(|value| value.to_str().ok());
+                if csrf_header != Some(csrf_cookie.as_str()) {
+                    return StatusCode::FORBIDDEN.into_response();
+                }
+                let matches = app
+                    .db
+                    .device_session_csrf_matches(
+                        &session.id,
+                        &factory_native::device_session::sha256_hex(&csrf_cookie),
+                        chrono::Utc::now().timestamp_millis(),
+                    )
+                    .await;
+                match matches {
+                    Ok(true) => {}
+                    Ok(false) => return StatusCode::FORBIDDEN.into_response(),
+                    Err(error) => return api_error(error),
+                }
+            }
+            if let Err(error) = app
+                .db
+                .touch_device_session(&session.id, chrono::Utc::now().timestamp_millis())
+                .await
+            {
+                return api_error(error);
+            }
+            let authorization = match axum::http::HeaderValue::from_str(&format!(
+                "Bearer {}",
+                app.operator_token
+            )) {
+                Ok(value) => value,
+                Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+            };
+            request
+                .headers_mut()
+                .insert(header::AUTHORIZATION, authorization);
+            request.extensions_mut().insert(session);
+        }
+    }
+    let mut response = next.run(request).await;
+    if discard_invalid_session_cookie {
+        factory_native::device_session::clear_cookies(&mut response, secure_cookie);
+    }
+    if auth_route || has_origin || had_session {
+        response.headers_mut().insert(
+            header::CACHE_CONTROL,
+            axum::http::HeaderValue::from_static("no-store"),
+        );
+        response.headers_mut().insert(
+            header::REFERRER_POLICY,
+            axum::http::HeaderValue::from_static("no-referrer"),
+        );
+    }
+    response
+}
+
+fn cookie_value(headers: &HeaderMap, name: &str) -> Result<Option<String>, ()> {
+    let mut found = None;
+    for header_value in headers.get_all(header::COOKIE) {
+        let Ok(raw) = header_value.to_str() else {
+            return Err(());
+        };
+        for part in raw.split(';') {
+            let Some((key, value)) = part.trim().split_once('=') else {
+                continue;
+            };
+            if key == name {
+                if found.is_some()
+                    || value.is_empty()
+                    || !value.bytes().all(|byte| byte.is_ascii_hexdigit())
+                {
+                    return Err(());
+                }
+                found = Some(value.to_owned());
+            }
+        }
+    }
+    Ok(found)
+}
+
+fn trusted_origins() -> Vec<String> {
+    env::var("FACTORY_TRUSTED_ORIGINS")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|origin| !origin.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "[::1]"
+}
+
+fn request_host_allowed(headers: &HeaderMap, trusted: &[String]) -> bool {
+    let Some(host) = headers
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+    else {
+        return false;
+    };
+    let Ok(authority) = host.parse::<axum::http::uri::Authority>() else {
+        return false;
+    };
+    if loopback_host(authority.host()) {
+        return true;
+    }
+    if authority.host() == "core" && authority.port_u16() == Some(8765) {
+        return true;
+    }
+    trusted.iter().any(|origin| {
+        origin.parse::<axum::http::Uri>().ok().is_some_and(|uri| {
+            uri.scheme_str() == Some("https")
+                && uri
+                    .authority()
+                    .is_some_and(|allowed| authority_matches(allowed, &authority, "https"))
+        })
+    })
+}
+
+fn origin_allowed(origin: &str, headers: &HeaderMap, trusted: &[String]) -> bool {
+    let Ok(uri) = origin.parse::<axum::http::Uri>() else {
+        return false;
+    };
+    if uri.path() != "" && uri.path() != "/" || uri.query().is_some() {
+        return false;
+    }
+    let Some(scheme) = uri.scheme_str() else {
+        return false;
+    };
+    let Some(authority) = uri.authority() else {
+        return false;
+    };
+    let request_host = headers
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<axum::http::uri::Authority>().ok());
+    let same_authority =
+        request_host.is_some_and(|host| authority_matches(&host, authority, scheme));
+    if !same_authority {
+        return false;
+    }
+    if scheme == "http" && loopback_host(authority.host()) {
+        return true;
+    }
+    scheme == "https" && trusted.iter().any(|allowed| allowed == origin)
+}
+
+fn authority_matches(
+    left: &axum::http::uri::Authority,
+    right: &axum::http::uri::Authority,
+    scheme: &str,
+) -> bool {
+    if !left.host().eq_ignore_ascii_case(right.host()) {
+        return false;
+    }
+    let default_port = match scheme {
+        "https" => 443,
+        "http" => 80,
+        _ => return false,
+    };
+    left.port_u16().unwrap_or(default_port) == right.port_u16().unwrap_or(default_port)
+}
+
 fn api_error(error: Error) -> Response {
     let status = match error {
-        Error::Invalid(_) | Error::Repository(_) | Error::Delegation(_) => StatusCode::BAD_REQUEST,
-        Error::Conflict(_) | Error::Constraint(_) => StatusCode::CONFLICT,
+        Error::Invalid(_) | Error::Validation(_) | Error::Repository(_) | Error::Delegation(_) => {
+            StatusCode::BAD_REQUEST
+        }
+        Error::Conflict(_) | Error::Constraint(_) | Error::Withdrawn => StatusCode::CONFLICT,
+        Error::AlreadyStarted { .. } => StatusCode::CONFLICT,
+        Error::IntakeConflict { .. } => StatusCode::CONFLICT,
         Error::Forbidden(_) => StatusCode::FORBIDDEN,
         Error::NotFound => StatusCode::NOT_FOUND,
-        Error::Busy => StatusCode::SERVICE_UNAVAILABLE,
+        Error::RateLimited(_) => StatusCode::TOO_MANY_REQUESTS,
+        Error::Busy | Error::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+        Error::SubscriptionFunding(
+            factory_native::execution_policy::SubscriptionFundingRefusal::InvalidEvidence,
+        ) => StatusCode::FORBIDDEN,
+        Error::SubscriptionFunding(_) => StatusCode::SERVICE_UNAVAILABLE,
         Error::Sqlx(_) | Error::Migrate(_) | Error::File(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
+    if let Error::SubscriptionFunding(refusal) = &error {
+        return (
+            status,
+            Json(json!({"error": refusal.to_string(), "code": refusal.code()})),
+        )
+            .into_response();
+    }
+    if let Error::IntakeConflict { code, message } = &error {
+        return (status, Json(json!({"error": message, "code": code}))).into_response();
+    }
+    if let Error::AlreadyStarted {
+        campaign_id,
+        campaign_status,
+    } = &error
+    {
+        return (
+            status,
+            Json(json!({
+                "error": error.to_string(),
+                "code": "LEAD_ALREADY_STARTED",
+                "campaign_id": campaign_id,
+                "campaign_status": campaign_status,
+            })),
+        )
+            .into_response();
+    }
     (status, Json(json!({"error":error.to_string()}))).into_response()
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct EnrollmentRequest {
     code: String,
+    #[serde(default)]
+    device_name: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -925,7 +2065,11 @@ async fn update_runtime_settings(
     }
 }
 
-async fn review_config(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+async fn review_config(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
     let token = headers
         .get("authorization")
         .and_then(|value| value.to_str().ok())
@@ -939,22 +2083,47 @@ async fn review_config(State(app): State<Arc<App>>, headers: HeaderMap) -> Respo
         Ok(settings) => settings,
         Err(error) => return api_error(error),
     };
-    let gateway = app.current_model_gateway().await;
-    let mechanism = if settings.semantic_review_enabled && gateway.is_some() {
-        "MODEL"
-    } else {
-        "DETERMINISTIC"
+    let selection = match app.db.reviewer_selection(&id).await {
+        Ok(selection) => selection,
+        Err(factory_native::db::Error::Unavailable(reason)) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": reason})),
+            )
+                .into_response();
+        }
+        Err(error) => return api_error(error),
+    };
+    let (mechanism, transport, provider, model, reason) = match selection {
+        factory_native::semantic_review::ReviewerSelection::Deterministic => (
+            "DETERMINISTIC",
+            "DETERMINISTIC",
+            String::new(),
+            String::new(),
+            "semantic review is disabled by operator policy",
+        ),
+        factory_native::semantic_review::ReviewerSelection::Chat { provider, model } => (
+            "MODEL",
+            "CHAT_COMPLETIONS",
+            provider,
+            model,
+            "the frozen execution profile selected the chat-completions review transport",
+        ),
+        factory_native::semantic_review::ReviewerSelection::Native { provider, model } => (
+            "CODEX_APP_SERVER",
+            "NATIVE_ADAPTER",
+            provider,
+            model,
+            "the frozen execution profile selected the native review adapter",
+        ),
     };
     Json(json!({
         "mechanism": mechanism,
+        "transport": transport,
+        "provider": provider,
+        "model": model,
         "maxOutputTokens": settings.semantic_review_max_output_tokens,
-        "reason": if mechanism == "MODEL" {
-            "operator enabled semantic review and a default provider is configured"
-        } else if settings.semantic_review_enabled {
-            "semantic review is enabled but no model gateway is configured"
-        } else {
-            "semantic review is disabled"
-        }
+        "reason": reason,
     }))
     .into_response()
 }
@@ -987,10 +2156,7 @@ async fn pending_quality(
 }
 
 async fn setup_status(State(app): State<Arc<App>>) -> Response {
-    let required = app
-        .enrollment_code_file
-        .as_ref()
-        .is_some_and(|path| path.is_file());
+    let required = bootstrap_available(&app).await;
     Json(json!({
         "required": required,
         "version": "0.1.0"
@@ -998,8 +2164,41 @@ async fn setup_status(State(app): State<Arc<App>>) -> Response {
     .into_response()
 }
 
-async fn setup_enroll(
+async fn auth_session(
     State(app): State<Arc<App>>,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+) -> Response {
+    if let Some(Extension(device)) = session {
+        return Json(json!({
+            "authenticated": true,
+            "device": device,
+        }))
+        .into_response();
+    }
+    let bootstrap_available = bootstrap_available(&app).await;
+    Json(json!({
+        "authenticated": false,
+        "bootstrapAvailable": bootstrap_available,
+    }))
+    .into_response()
+}
+
+async fn bootstrap_available(app: &App) -> bool {
+    let Some(path) = app.enrollment_code_file.as_ref() else {
+        return false;
+    };
+    if !matches!(app.db.owner_bootstrap_available().await, Ok(true)) {
+        return false;
+    }
+    std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<BootstrapCodeRecord>(&bytes).ok())
+        .is_some_and(|record| record.expires_at_ms > chrono::Utc::now().timestamp_millis())
+}
+
+async fn auth_bootstrap(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
     Json(input): Json<EnrollmentRequest>,
 ) -> Response {
     let Some(path) = app.enrollment_code_file.as_ref() else {
@@ -1016,6 +2215,9 @@ async fn setup_enroll(
         )
             .into_response();
     }
+    if !matches!(app.db.owner_bootstrap_available().await, Ok(true)) {
+        return StatusCode::CONFLICT.into_response();
+    }
     let now = chrono::Utc::now().timestamp_millis();
     {
         let Ok(state) = app.setup.lock() else {
@@ -1029,9 +2231,19 @@ async fn setup_enroll(
                 .into_response();
         }
     }
-    let expected = match std::fs::read_to_string(path) {
-        Ok(value) => value.trim().to_owned(),
-        Err(_) => {
+    let expected = match std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<BootstrapCodeRecord>(&bytes).ok())
+    {
+        Some(record) if record.expires_at_ms > now => record.code_sha256,
+        Some(_) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error":"enrollment code has expired"})),
+            )
+                .into_response();
+        }
+        None => {
             return (
                 StatusCode::NOT_FOUND,
                 Json(json!({"error":"enrollment is not available"})),
@@ -1040,7 +2252,12 @@ async fn setup_enroll(
         }
     };
     let submitted = input.code.trim();
-    if expected.is_empty() || !constant_time_eq(submitted.as_bytes(), expected.as_bytes()) {
+    if expected.is_empty()
+        || !constant_time_eq(
+            factory_native::device_session::sha256_hex(submitted).as_bytes(),
+            expected.as_bytes(),
+        )
+    {
         if let Ok(mut state) = app.setup.lock() {
             state.failures = state.failures.saturating_add(1);
             if state.failures >= 8 {
@@ -1054,8 +2271,21 @@ async fn setup_enroll(
         )
             .into_response();
     }
+    let device_name = input.device_name.as_deref().unwrap_or("This device").trim();
+    if device_name.is_empty() || device_name.len() > 120 {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let issued = match factory_native::device_session::issue_owner(&app.db, device_name, now).await
+    {
+        Ok(issued) => issued,
+        Err(error) => return api_error(error),
+    };
     if let Err(error) = std::fs::remove_file(path) {
         tracing::error!(%error, "enrollment code could not be invalidated");
+        let _ = app
+            .db
+            .revoke_device_session(&issued.session_id, "bootstrap-failed", now)
+            .await;
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error":"enrollment could not be completed"})),
@@ -1065,6 +2295,10 @@ async fn setup_enroll(
     let used = path.with_file_name("enrollment-used");
     if let Err(error) = std::fs::write(&used, b"used\n") {
         tracing::error!(%error, "enrollment completion marker could not be written");
+        let _ = app
+            .db
+            .revoke_device_session(&issued.session_id, "bootstrap-failed", now)
+            .await;
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error":"enrollment could not be completed"})),
@@ -1075,15 +2309,102 @@ async fn setup_enroll(
         state.failures = 0;
         state.blocked_until_ms = 0;
     }
-    factory_native::telemetry::register_secret(&app.operator_token);
-    Json(json!({"token": app.operator_token})).into_response()
+    factory_native::telemetry::register_secret(&issued.session_token);
+    factory_native::telemetry::register_secret(&issued.csrf_token);
+    let secure =
+        factory_native::device_session::secure_cookie_context(&headers, &trusted_origins());
+    let mut response = Json(json!({
+        "authenticated": true,
+        "device": issued.device,
+    }))
+    .into_response();
+    factory_native::device_session::set_cookies(&mut response, &issued, secure);
+    response
+}
+
+async fn auth_logout(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Extension(session): Extension<factory_native::db::DeviceSessionRecord>,
+) -> Response {
+    match app
+        .db
+        .revoke_device_session(
+            &session.id,
+            &session.id,
+            chrono::Utc::now().timestamp_millis(),
+        )
+        .await
+    {
+        Ok(_) => {
+            let mut response = StatusCode::NO_CONTENT.into_response();
+            factory_native::device_session::clear_cookies(
+                &mut response,
+                factory_native::device_session::secure_cookie_context(&headers, &trusted_origins()),
+            );
+            response
+        }
+        Err(error) => api_error(error),
+    }
+}
+
+async fn auth_logout_all(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Extension(session): Extension<factory_native::db::DeviceSessionRecord>,
+) -> Response {
+    match app
+        .db
+        .revoke_all_device_sessions(&session.id, chrono::Utc::now().timestamp_millis())
+        .await
+    {
+        Ok(_) => {
+            let mut response = StatusCode::NO_CONTENT.into_response();
+            factory_native::device_session::clear_cookies(
+                &mut response,
+                factory_native::device_session::secure_cookie_context(&headers, &trusted_origins()),
+            );
+            response
+        }
+        Err(error) => api_error(error),
+    }
+}
+
+async fn auth_rotate(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Extension(session): Extension<factory_native::db::DeviceSessionRecord>,
+) -> Response {
+    let issued = match factory_native::device_session::rotate(
+        &app.db,
+        &session,
+        &session.id,
+        chrono::Utc::now().timestamp_millis(),
+    )
+    .await
+    {
+        Ok(Some(issued)) => issued,
+        Ok(None) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(error) => return api_error(error),
+    };
+    factory_native::telemetry::register_secret(&issued.session_token);
+    factory_native::telemetry::register_secret(&issued.csrf_token);
+    let mut response = Json(json!({"authenticated":true,"device":issued.device})).into_response();
+    factory_native::device_session::set_cookies(
+        &mut response,
+        &issued,
+        factory_native::device_session::secure_cookie_context(&headers, &trusted_origins()),
+    );
+    response
 }
 
 fn provider_view(
     settings: Option<&factory_native::db::ProviderSettingsRecord>,
     catalog: &factory_native::provider_catalog::ProviderCatalogEntry,
+    discovery: Option<&factory_native::provider_catalog::ProviderModelCatalogEntry>,
 ) -> serde_json::Value {
     json!({
+        "modelDiscovery": discovery,
         "provider": catalog.provider,
         "kind": catalog.kind,
         "displayName": catalog.display_name,
@@ -1110,6 +2431,39 @@ fn provider_view(
     })
 }
 
+async fn subscription_funding_readiness(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(provider): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let settings = match app.db.provider_settings(&provider).await {
+        Ok(settings) => Some(settings),
+        Err(Error::NotFound) => None,
+        Err(error) => return api_error(error),
+    };
+    let facts =
+        settings.as_ref().map(
+            |settings| factory_native::funding_status::ProviderFundingFacts {
+                kind: settings.kind.clone(),
+                configured: !settings.credential_ciphertext.is_empty(),
+                enabled: settings.enabled,
+                model: settings.model.clone(),
+                settings_revision: settings.revision,
+            },
+        );
+    match factory_native::funding_status::project(&provider, facts.as_ref()) {
+        Some(status) => Json(status).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error":"provider is not a subscription funding route"})),
+        )
+            .into_response(),
+    }
+}
+
 async fn provider_settings_list(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
@@ -1118,6 +2472,7 @@ async fn provider_settings_list(State(app): State<Arc<App>>, headers: HeaderMap)
         Ok(stored) => stored,
         Err(error) => return api_error(error),
     };
+    let cache = app.db.provider_model_cache();
     let providers: Vec<serde_json::Value> = factory_native::provider_catalog::CATALOG
         .iter()
         .map(|catalog| {
@@ -1126,6 +2481,7 @@ async fn provider_settings_list(State(app): State<Arc<App>>, headers: HeaderMap)
                     .iter()
                     .find(|settings| settings.provider == catalog.provider),
                 catalog,
+                cache.entry(catalog.provider),
             )
         })
         .collect();
@@ -1149,11 +2505,23 @@ async fn update_provider_settings(
             .into_response();
     };
     let allow_loopback_http = env::var("FACTORY_ALLOW_TEST_UPSTREAM").ok().as_deref() == Some("1");
+    let test_upstream_hosts = test_upstream_hosts();
+    if provider == "opencode-go"
+        && !factory_native::provider_catalog::is_canonical_opencode_go_base_url(&input.base_url)
+        && !factory_native::provider_catalog::is_test_upstream_url(&input.base_url)
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"OpenCode Go must use the canonical subscription endpoint"})),
+        )
+            .into_response();
+    }
     if let Err(error) = factory_native::provider_catalog::validate_model(&input.model)
         .and_then(|()| {
             factory_native::provider_catalog::validate_base_url(
                 &input.base_url,
                 allow_loopback_http,
+                &test_upstream_hosts,
             )
         })
         .and_then(|()| {
@@ -1244,12 +2612,18 @@ async fn update_provider_settings(
         input_micros_per_million: input.input_micros_per_million,
         output_micros_per_million: input.output_micros_per_million,
     };
+    let cache = app.db.provider_model_cache();
     match app
         .db
         .save_provider_settings(&write, "office-operator")
         .await
     {
-        Ok(settings) => Json(provider_view(Some(&settings), catalog)).into_response(),
+        Ok(settings) => Json(provider_view(
+            Some(&settings),
+            catalog,
+            cache.entry(&provider),
+        ))
+        .into_response(),
         Err(error) => api_error(error),
     }
 }
@@ -1269,14 +2643,113 @@ async fn revoke_provider_credential(
         )
             .into_response();
     };
+    let cache = app.db.provider_model_cache();
     match app
         .db
         .clear_provider_credential(&provider, "office-operator")
         .await
     {
-        Ok(settings) => Json(provider_view(Some(&settings), catalog)).into_response(),
+        Ok(settings) => Json(provider_view(
+            Some(&settings),
+            catalog,
+            cache.entry(&provider),
+        ))
+        .into_response(),
         Err(error) => api_error(error),
     }
+}
+
+fn provider_credential_view(
+    settings: &factory_native::db::ProviderSettingsRecord,
+    discovery: &factory_native::provider_catalog::ProviderModelCatalogEntry,
+) -> serde_json::Value {
+    use factory_native::provider_catalog::ProviderCredentialSignal;
+
+    let configured = !settings.credential_ciphertext.is_empty();
+    let (validation, detail) = match discovery.credential_signal {
+        ProviderCredentialSignal::Rejected => (
+            "REJECTED",
+            "The catalog endpoint rejected the stored credential. This is a credential or permission signal for that endpoint, not proof about inference access.",
+        ),
+        ProviderCredentialSignal::NotProvided => (
+            "NOT_PROVIDED",
+            "This catalog requires a credential and Core has none available. No catalog request was made.",
+        ),
+        ProviderCredentialSignal::NotObserved if configured => (
+            "NOT_OBSERVED",
+            "A credential is stored. Presence is configuration; a catalog response does not validate inference access.",
+        ),
+        ProviderCredentialSignal::NotObserved => (
+            "NOT_OBSERVED",
+            "No credential is stored. Catalog access does not imply inference access.",
+        ),
+    };
+    json!({
+        "presence": if configured { "CONFIGURED" } else { "NOT_CONFIGURED" },
+        "validation": validation,
+        "detail": detail,
+    })
+}
+
+fn provider_inference_view() -> serde_json::Value {
+    json!({
+        "status": "NOT_TESTED",
+        "detail": "Core did not run a model call. Catalog discovery and credential observations are not inference.",
+    })
+}
+
+/// Read one provider catalog without conflating it with credential validity or
+/// inference. The public OpenCode Go catalog is read without decrypting or
+/// sending the inference credential; a generic `{base}/models` request needs it.
+async fn discover_provider_catalog(
+    app: &Arc<App>,
+    provider: &str,
+    settings: &factory_native::db::ProviderSettingsRecord,
+) -> Result<factory_native::provider_catalog::ProviderModelCatalogEntry, Response> {
+    let requires_credential =
+        factory_native::provider_catalog::catalog_endpoint(provider, &settings.base_url)
+            .map(|endpoint| endpoint.requires_credential)
+            .unwrap_or(false);
+    let mut credential = String::new();
+    if requires_credential && !settings.credential_ciphertext.is_empty() {
+        let Some(master_key) = app.master_key.as_ref() else {
+            return Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "error":"provider credential protection is not configured",
+                    "code":"CREDENTIAL_PROTECTION_UNAVAILABLE",
+                })),
+            )
+                .into_response());
+        };
+        let plaintext = master_key
+            .decrypt(&settings.credential_ciphertext, &settings.credential_nonce)
+            .map_err(|error| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": error})),
+                )
+                    .into_response()
+            })?;
+        credential = String::from_utf8(plaintext).map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error":"stored credential is not valid text"})),
+            )
+                .into_response()
+        })?;
+        factory_native::telemetry::register_secret(&credential);
+    }
+    let allow_loopback_http = env::var("FACTORY_ALLOW_TEST_UPSTREAM").ok().as_deref() == Some("1");
+    Ok(factory_native::provider_catalog::discover_models(
+        provider,
+        &settings.base_url,
+        &credential,
+        allow_loopback_http,
+        test_upstream_hosts(),
+        chrono::Utc::now().to_rfc3339(),
+    )
+    .await)
 }
 
 async fn test_provider_connection(
@@ -1287,13 +2760,13 @@ async fn test_provider_connection(
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let Some(_catalog) = factory_native::provider_catalog::entry(&provider) else {
+    if factory_native::provider_catalog::entry(&provider).is_none() {
         return (
             StatusCode::NOT_FOUND,
             Json(json!({"error":"unknown provider"})),
         )
             .into_response();
-    };
+    }
     let settings = match app.db.provider_settings(&provider).await {
         Ok(settings) => settings,
         Err(factory_native::db::Error::NotFound) => {
@@ -1305,95 +2778,109 @@ async fn test_provider_connection(
         }
         Err(error) => return api_error(error),
     };
-    let Some(master_key) = app.master_key.as_ref() else {
+    let entry = match discover_provider_catalog(&app, &provider, &settings).await {
+        Ok(entry) => entry,
+        Err(response) => return response,
+    };
+    app.db.record_provider_model_discovery(entry.clone());
+    let entry = app
+        .db
+        .provider_model_cache()
+        .entry(&provider)
+        .cloned()
+        .unwrap_or(entry);
+    let _ = app
+        .db
+        .record_provider_test(
+            &provider,
+            "office-operator",
+            &format!("catalog check: {:?} - {}", entry.status, entry.detail),
+        )
+        .await;
+    let credential = provider_credential_view(&settings, &entry);
+    let inference = provider_inference_view();
+    let model_available = entry.models.iter().any(|model| model == &settings.model);
+    Json(json!({
+        "provider": entry.provider,
+        "status": entry.status,
+        "source": entry.source,
+        "catalogUrl": entry.catalog_url,
+        "models": entry.models,
+        "detail": entry.detail,
+        "discoveredAt": entry.discovered_at,
+        "lastKnown": entry.last_known,
+        "credentialSignal": entry.credential_signal,
+        "model": settings.model,
+        "modelAvailable": model_available,
+        "credential": credential,
+        "inference": inference,
+    }))
+    .into_response()
+}
+
+async fn provider_models(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(provider): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if factory_native::provider_catalog::entry(&provider).is_none() {
         return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({"error":"provider credential protection is not configured"})),
+            StatusCode::NOT_FOUND,
+            Json(json!({"error":"unknown provider"})),
         )
             .into_response();
-    };
-    let credential =
-        match master_key.decrypt(&settings.credential_ciphertext, &settings.credential_nonce) {
-            Ok(credential) => match String::from_utf8(credential) {
-                Ok(credential) => credential,
-                Err(_) => {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({"error":"stored credential is not valid text"})),
-                    )
-                        .into_response();
-                }
-            },
-            Err(error) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": error})),
-                )
-                    .into_response();
-            }
-        };
-    factory_native::telemetry::register_secret(&credential);
-    let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-    {
-        Ok(client) => client,
-        Err(error) => {
+    }
+    let settings = match app.db.provider_settings(&provider).await {
+        Ok(settings) => settings,
+        Err(factory_native::db::Error::NotFound) => {
             return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": error.to_string()})),
+                StatusCode::NOT_FOUND,
+                Json(json!({
+                    "error":"provider is not configured",
+                    "code":"PROVIDER_NOT_CONFIGURED",
+                })),
             )
                 .into_response();
         }
+        Err(error) => return api_error(error),
     };
-    let url = format!("{}/models", settings.base_url.trim_end_matches('/'));
-    let response = client.get(&url).bearer_auth(&credential).send().await;
-    let (status, models, detail) = match response {
-        Ok(response) => {
-            let status = response.status();
-            if status == reqwest::StatusCode::UNAUTHORIZED
-                || status == reqwest::StatusCode::FORBIDDEN
-            {
-                ("DENIED", Vec::new(), format!("HTTP {status}"))
-            } else if status == reqwest::StatusCode::NOT_FOUND
-                || status == reqwest::StatusCode::METHOD_NOT_ALLOWED
-            {
-                ("UNSUPPORTED", Vec::new(), format!("HTTP {status}"))
-            } else if status.is_success() {
-                let body: serde_json::Value = response.json().await.unwrap_or_default();
-                let models: Vec<String> = body
-                    .get("data")
-                    .and_then(serde_json::Value::as_array)
-                    .map(|items| {
-                        items
-                            .iter()
-                            .filter_map(|item| item.get("id").and_then(serde_json::Value::as_str))
-                            .take(100)
-                            .map(str::to_owned)
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                ("AUTHENTICATED", models, "model list retrieved".into())
-            } else {
-                ("UNREACHABLE", Vec::new(), format!("HTTP {status}"))
-            }
-        }
-        Err(error) => ("UNREACHABLE", Vec::new(), error.to_string()),
+    let entry = match discover_provider_catalog(&app, &provider, &settings).await {
+        Ok(entry) => entry,
+        Err(response) => return response,
     };
-    let model_available = models.iter().any(|model| model == &settings.model);
+    app.db.record_provider_model_discovery(entry.clone());
+    let entry = app
+        .db
+        .provider_model_cache()
+        .entry(&provider)
+        .cloned()
+        .unwrap_or(entry);
     let _ = app
         .db
-        .record_provider_test(&provider, "office-operator", &detail)
+        .record_provider_test(
+            &provider,
+            "office-operator",
+            &format!("model discovery: {:?} - {}", entry.status, entry.detail),
+        )
         .await;
+    let credential = provider_credential_view(&settings, &entry);
+    let inference = provider_inference_view();
     Json(json!({
-        "provider": provider,
-        "status": status,
-        "models": models,
-        "model": settings.model,
-        "modelAvailable": model_available,
-        "detail": detail
+        "provider": entry.provider,
+        "status": entry.status,
+        "source": entry.source,
+        "catalogUrl": entry.catalog_url,
+        "models": entry.models,
+        "detail": entry.detail,
+        "discoveredAt": entry.discovered_at,
+        "lastKnown": entry.last_known,
+        "credentialSignal": entry.credential_signal,
+        "adapter": settings.kind,
+        "credential": credential,
+        "inference": inference,
     }))
     .into_response()
 }
@@ -1451,8 +2938,13 @@ async fn worker_provider_profile(
         }
         Err(error) => return api_error(error),
     };
+    let substantiated = factory_native::execution_profile::substantiated_models(
+        &settings.provider,
+        &settings.model,
+        &app.db.provider_model_cache(),
+    );
     if !settings.enabled
-        || settings.model != query.model
+        || !substantiated.iter().any(|model| model == &query.model)
         || settings.credential_ciphertext.is_empty()
     {
         return (
@@ -1483,7 +2975,9 @@ async fn worker_provider_profile(
     Json(json!({
         "provider": settings.provider,
         "kind": settings.kind,
-        "model": settings.model,
+        // Return the exact authorized assignment model, not merely the
+        // connection default; both must be substantiated by the connection.
+        "model": query.model,
         "baseUrl": settings.base_url,
         "credential": credential,
         "maxTurns": settings.max_turns,
@@ -1505,15 +2999,23 @@ async fn register_project(
     if input.idempotency_key.is_empty() {
         return api_error(Error::Invalid("idempotency key"));
     }
-    let repository = match resolve_project_input(&app, &input.repository).await {
-        Ok(path) => path,
+    let resolved = match resolve_project_input(&app, &input.repository).await {
+        Ok(resolved) => resolved,
         Err(message) => {
             return (StatusCode::BAD_REQUEST, Json(json!({"error": message}))).into_response();
         }
     };
+    let source = factory_native::db::RegisterProjectSource {
+        name: input.name.unwrap_or_default(),
+        source_kind: resolved.source_kind.into(),
+        source_url: resolved.source_url,
+        source_key: resolved.source_key,
+        source_visibility: String::new(),
+        default_branch: input.default_branch.unwrap_or_default(),
+    };
     match app
         .db
-        .register_project(&repository, &input.idempotency_key)
+        .register_project_with_source(&resolved.repository, &source, &input.idempotency_key)
         .await
     {
         Ok(project) => (StatusCode::CREATED, Json(project)).into_response(),
@@ -1521,41 +3023,65 @@ async fn register_project(
     }
 }
 
-async fn resolve_project_input(app: &App, requested: &str) -> Result<PathBuf, String> {
-    let Some(root) = app.projects_root.as_ref() else {
-        return Ok(PathBuf::from(requested));
-    };
+async fn resolve_project_input(app: &App, requested: &str) -> Result<ResolvedProjectInput, String> {
+    let root = app.projects_root.as_ref().ok_or_else(|| {
+        "managed project registration requires an operator-approved FACTORY_PROJECTS_ROOT"
+            .to_owned()
+    })?;
     if factory_native::project_import::is_remote_repository(requested) {
-        return factory_native::project_import::import(requested, root, app.allow_insecure_git)
-            .await
-            .map_err(|error| error.to_string());
+        let repository =
+            factory_native::project_import::import(requested, root, app.allow_insecure_git)
+                .await
+                .map_err(|error| error.to_string())?;
+        return Ok(ResolvedProjectInput {
+            repository,
+            source_kind: "git",
+            source_url: requested.to_owned(),
+            source_key: format!("git:{requested}"),
+        });
     }
-    let path = PathBuf::from(requested);
-    if !path.is_absolute() {
-        return Err(
-            "managed project registration requires an HTTPS Git URL or an absolute path inside the managed projects root"
-                .into(),
-        );
-    }
-    let canonical_root = root
-        .canonicalize()
-        .map_err(|error| format!("managed projects root is unavailable: {error}"))?;
-    let canonical = path
-        .canonicalize()
-        .map_err(|error| format!("managed project path is unavailable: {error}"))?;
-    if !canonical.starts_with(&canonical_root) {
-        return Err("project path is outside the managed projects root".into());
-    }
-    Ok(canonical)
+    let canonical =
+        factory_native::project_import::approved_local_repository(Some(root), requested)
+            .map_err(|error| error.to_string())?;
+    Ok(ResolvedProjectInput {
+        repository: canonical.clone(),
+        source_kind: "local",
+        source_url: String::new(),
+        source_key: format!("local:{}", canonical.to_string_lossy()),
+    })
 }
 async fn delegations(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    match app.db.standing_delegations().await {
-        Ok(grants) => Json(grants).into_response(),
-        Err(error) => api_error(error),
+    let versions = match app.db.standing_delegation_versions().await {
+        Ok(versions) => versions,
+        Err(error) => return api_error(error),
+    };
+    let mut projections = Vec::with_capacity(versions.len());
+    for (id, version) in versions {
+        let projection = match version {
+            2 => match app.db.standing_delegation_v2(&id).await {
+                Ok(delegation) => json!({
+                    "schemaVersion": 2,
+                    "delegation": delegation,
+                    "usage": app.db.delegation_usage(&id).await.ok(),
+                }),
+                Err(error) => return api_error(error),
+            },
+            _ => match app.db.standing_delegation(&id).await {
+                Ok(delegation) => json!({
+                    "schemaVersion": 1,
+                    "historical": true,
+                    "delegation": delegation,
+                    "usage": app.db.delegation_usage(&id).await.ok(),
+                }),
+                Err(error) => return api_error(error),
+            },
+        };
+        projections.push(projection);
     }
+    Json(projections).into_response()
 }
 
 async fn lead_requests(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
@@ -1600,6 +3126,2371 @@ async fn update_project_config(
     match app.db.update_project_config(&id, &input).await {
         Ok(config) => (StatusCode::OK, Json(config)).into_response(),
         Err(error) => api_error(error),
+    }
+}
+
+async fn project_files(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Query(query): Query<ProjectBrowseQuery>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let project = match app.db.project(&id).await {
+        Ok(project) => project,
+        Err(error) => return api_error(error),
+    };
+    let ProjectBrowseQuery { reference, path } = query;
+    let project_id = project.id;
+    let repository = PathBuf::from(project.repository);
+    let identity = project.identity;
+    let base_commit = project.base_commit;
+    let path = path.unwrap_or_default();
+    project_browse_projection(move || {
+        factory_native::project_files::list_project_files(
+            &project_id,
+            &repository,
+            &identity,
+            &base_commit,
+            reference.as_deref(),
+            &path,
+        )
+    })
+    .await
+}
+
+async fn project_file(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Query(query): Query<ProjectBrowseQuery>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let project = match app.db.project(&id).await {
+        Ok(project) => project,
+        Err(error) => return api_error(error),
+    };
+    let ProjectBrowseQuery { reference, path } = query;
+    let project_id = project.id;
+    let repository = PathBuf::from(project.repository);
+    let identity = project.identity;
+    let base_commit = project.base_commit;
+    let path = path.unwrap_or_default();
+    project_browse_projection(move || {
+        factory_native::project_files::read_project_file(
+            &project_id,
+            &repository,
+            &identity,
+            &base_commit,
+            reference.as_deref(),
+            &path,
+        )
+    })
+    .await
+}
+
+async fn project_refs(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let project = match app.db.project(&id).await {
+        Ok(project) => project,
+        Err(error) => return api_error(error),
+    };
+    let project_id = project.id;
+    let repository = PathBuf::from(project.repository);
+    let identity = project.identity;
+    let base_commit = project.base_commit;
+    project_browse_projection(move || {
+        factory_native::project_files::list_project_refs(
+            &project_id,
+            &repository,
+            &identity,
+            &base_commit,
+        )
+    })
+    .await
+}
+
+async fn project_browse_projection<T>(
+    task: impl FnOnce() -> Result<T, factory_native::project_files::ProjectFilesError> + Send + 'static,
+) -> Response
+where
+    T: serde::Serialize + Send + 'static,
+{
+    match tokio::task::spawn_blocking(task).await {
+        Ok(Ok(projection)) => (StatusCode::OK, Json(projection)).into_response(),
+        Ok(Err(error)) => project_files_error(error),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("repository projection task failed: {error}")})),
+        )
+            .into_response(),
+    }
+}
+
+fn project_files_error(error: factory_native::project_files::ProjectFilesError) -> Response {
+    use factory_native::project_files::ProjectFilesError;
+    let status = match &error {
+        ProjectFilesError::Invalid(_) => StatusCode::BAD_REQUEST,
+        ProjectFilesError::NotFound => StatusCode::NOT_FOUND,
+        ProjectFilesError::Stale => StatusCode::CONFLICT,
+        ProjectFilesError::Git { .. } | ProjectFilesError::Io(_) => StatusCode::SERVICE_UNAVAILABLE,
+    };
+    let message = match &error {
+        ProjectFilesError::Git { .. } | ProjectFilesError::Io(_) => {
+            "repository projection is unavailable".to_owned()
+        }
+        _ => error.to_string(),
+    };
+    (status, Json(json!({"error": message}))).into_response()
+}
+
+fn github_integration_routes() -> Router<Arc<App>> {
+    Router::new()
+        .route(
+            "/integrations/github",
+            get(get_github_connection)
+                .put(put_github_connection)
+                .delete(delete_github_connection),
+        )
+        .route(
+            "/integrations/github/repositories",
+            get(github_repositories),
+        )
+        .route(
+            "/projects/{id}/github",
+            get(get_project_github).post(bind_project_github),
+        )
+        .route("/projects/{id}/issues/sync", post(sync_project_issues))
+        .route("/projects/{id}/issues", get(project_issues))
+        .route("/projects/{id}/issues/{number}", get(project_issue))
+        .route(
+            "/campaigns/{id}/candidates/{candidate_id}/pull-request",
+            get(candidate_pull_request).post(open_candidate_pull_request),
+        )
+        .route(
+            "/campaigns/{id}/candidates/{candidate_id}/pull-request/diff",
+            get(candidate_pull_request_diff),
+        )
+        .route(
+            "/campaigns/{id}/candidates/{candidate_id}/pull-request/comments",
+            get(candidate_pull_request_comments).post(comment_on_candidate_pull_request),
+        )
+        .route(
+            "/campaigns/{id}/candidates/{candidate_id}/pull-request/review",
+            post(request_candidate_pull_request_review),
+        )
+        .route(
+            "/campaigns/{id}/candidates/{candidate_id}/pull-request/merge",
+            post(merge_candidate_pull_request),
+        )
+        .route("/projects/import/options", get(project_import_options))
+        .route("/projects/import/github", post(import_github_project))
+        .route("/projects/{id}/summary", get(project_summary))
+        .route(
+            "/projects/{id}/discovery",
+            get(project_discovery_view).post(scan_project_discovery),
+        )
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GitHubConnectionInput {
+    token: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GitHubRepositoriesQuery {
+    #[serde(default)]
+    query: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProjectGitHubInput {
+    owner: String,
+    repo: String,
+    default_branch: String,
+    #[serde(default)]
+    repository_github_id: Option<i64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GitHubIssuesQuery {
+    #[serde(default)]
+    state: Option<String>,
+    #[serde(default)]
+    label: Option<String>,
+    #[serde(default)]
+    query: Option<String>,
+    #[serde(default)]
+    limit: Option<u32>,
+    #[serde(default)]
+    offset: Option<u32>,
+}
+
+fn github_connection_view(
+    record: Option<&factory_native::db::GitHubConnectionRecord>,
+) -> serde_json::Value {
+    match record {
+        Some(record) => {
+            let configured = record.enabled && !record.credential_ciphertext.is_empty();
+            json!({
+                "configured": configured,
+                "enabled": record.enabled,
+                "login": record.login,
+                "scopes": record.scopes,
+                "scopes_reported": record.scopes_reported,
+                "credential_fingerprint": record.credential_fingerprint,
+                "revision": record.revision,
+                "verified_at": record.verified_at,
+                "revoked_at": record.revoked_at,
+                "updated_at": record.updated_at,
+                "detail": if configured {
+                    "credential verified; repository access and inference are not implied"
+                } else {
+                    "connection revoked; synchronization is disabled"
+                },
+            })
+        }
+        None => json!({
+            "configured": false,
+            "enabled": false,
+            "login": null,
+            "scopes": [],
+            "scopes_reported": false,
+            "credential_fingerprint": "",
+            "revision": 0,
+            "verified_at": null,
+            "revoked_at": null,
+            "updated_at": null,
+            "detail": "GitHub is not connected",
+        }),
+    }
+}
+
+async fn github_connection_state(app: &App) -> Result<serde_json::Value, Response> {
+    let record = match app.db.github_connection().await {
+        Ok(record) => Some(record),
+        Err(Error::NotFound) => None,
+        Err(error) => return Err(api_error(error)),
+    };
+    let audit = app
+        .db
+        .github_connection_audit(10)
+        .await
+        .map_err(api_error)?;
+    Ok(json!({
+        "connection": github_connection_view(record.as_ref()),
+        "audit": audit,
+    }))
+}
+
+fn github_upstream_error(error: factory_native::github::GitHubError) -> Response {
+    let status = match &error {
+        factory_native::github::GitHubError::Invalid(_) => StatusCode::BAD_REQUEST,
+        factory_native::github::GitHubError::Unauthorized => StatusCode::UNAUTHORIZED,
+        factory_native::github::GitHubError::Forbidden(_) => StatusCode::FORBIDDEN,
+        factory_native::github::GitHubError::NotFound => StatusCode::NOT_FOUND,
+        factory_native::github::GitHubError::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
+        factory_native::github::GitHubError::Rejected { status_code, .. } => {
+            StatusCode::from_u16(*status_code).unwrap_or(StatusCode::BAD_REQUEST)
+        }
+        factory_native::github::GitHubError::MergeBlocked { .. } => StatusCode::CONFLICT,
+        _ => StatusCode::BAD_GATEWAY,
+    };
+    let mut body = json!({"error": error.detail(), "kind": error.kind()});
+    if let Some(next) = error.next_allowed_at() {
+        body["next_allowed_at"] = json!(next);
+    }
+    (status, Json(body)).into_response()
+}
+
+/// Decrypt the stored GitHub token for one request. The plaintext is owned by
+/// a zeroizing `SecretValue` and registered in the scoped redaction registry
+/// for exactly this credential's lifetime. It is never returned to Office,
+/// persisted or logged.
+async fn load_github_credential(
+    app: &App,
+) -> Result<factory_native::github_sync::GitHubCredential, Response> {
+    let record = match app.db.github_connection().await {
+        Ok(record) => record,
+        Err(Error::NotFound) => {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(json!({"error": "GitHub is not connected"})),
+            )
+                .into_response());
+        }
+        Err(error) => return Err(api_error(error)),
+    };
+    if !record.enabled || record.credential_ciphertext.is_empty() {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "GitHub connection is revoked; reconnect before synchronizing"
+            })),
+        )
+            .into_response());
+    }
+    let Some(master_key) = app.master_key.as_ref() else {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": "GitHub credential protection is not configured"})),
+        )
+            .into_response());
+    };
+    let credential =
+        match master_key.decrypt(&record.credential_ciphertext, &record.credential_nonce) {
+            Ok(credential) => credential,
+            Err(_) => {
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": "stored GitHub credential could not be decrypted"})),
+                )
+                    .into_response());
+            }
+        };
+    let token = match factory_native::telemetry::SecretValue::from_utf8(credential) {
+        Ok(token) => token,
+        Err(_) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "stored GitHub credential is not valid text"})),
+            )
+                .into_response());
+        }
+    };
+    match factory_native::github_sync::GitHubCredential::new(record.revision, token) {
+        Ok(credential) => Ok(credential),
+        Err(error) => Err(api_error(error)),
+    }
+}
+
+async fn get_github_connection(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match github_connection_state(&app).await {
+        Ok(state) => Json(state).into_response(),
+        Err(response) => response,
+    }
+}
+
+async fn put_github_connection(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(input): Json<GitHubConnectionInput>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let token = factory_native::telemetry::SecretValue::from_string(input.token);
+    if let Err(error) = factory_native::github::validate_token(token.expose()) {
+        return github_upstream_error(error);
+    }
+    let Some(master_key) = app.master_key.as_ref() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": "GitHub credential protection is not configured"})),
+        )
+            .into_response();
+    };
+    let user = match app.github.authenticated_user(token.expose()).await {
+        Ok(user) => user,
+        Err(error) => return github_upstream_error(error),
+    };
+    let _redaction = match factory_native::telemetry::ScopedSecret::register(token.expose()) {
+        Some(redaction) => redaction,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": "GitHub credential redaction capacity is exhausted"})),
+            )
+                .into_response();
+        }
+    };
+    let encrypted = match master_key.encrypt(token.expose().as_bytes()) {
+        Ok(encrypted) => encrypted,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "GitHub credential could not be encrypted"})),
+            )
+                .into_response();
+        }
+    };
+    let saved = app
+        .db
+        .save_github_connection(
+            &encrypted,
+            &user.login,
+            &user.scopes,
+            user.scopes_reported,
+            "office-operator",
+        )
+        .await;
+    match saved {
+        Ok(_) => match github_connection_state(&app).await {
+            Ok(state) => Json(state).into_response(),
+            Err(response) => response,
+        },
+        Err(error) => api_error(error),
+    }
+}
+
+async fn delete_github_connection(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.revoke_github_connection("office-operator").await {
+        Ok(_) | Err(Error::NotFound) => match github_connection_state(&app).await {
+            Ok(state) => Json(state).into_response(),
+            Err(response) => response,
+        },
+        Err(error) => api_error(error),
+    }
+}
+
+async fn github_repositories(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Query(query): Query<GitHubRepositoriesQuery>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let query = query.query.unwrap_or_default();
+    if query.len() > 100 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "repository query is too long"})),
+        )
+            .into_response();
+    }
+    let credential = match load_github_credential(&app).await {
+        Ok(credential) => credential,
+        Err(response) => return response,
+    };
+    let fetched_at = chrono::Utc::now().to_rfc3339();
+    let listing = match factory_native::github_sync::list_repositories(
+        &app.db,
+        &app.github,
+        &credential,
+        &query,
+    )
+    .await
+    {
+        Ok(listing) => listing,
+        Err(factory_native::github_sync::RepositoryListError::Database(error)) => {
+            return api_error(error);
+        }
+        Err(factory_native::github_sync::RepositoryListError::Upstream(error)) => {
+            return github_upstream_error(error);
+        }
+    };
+    Json(json!({
+        "repositories": listing.repositories,
+        "fetched_at": fetched_at,
+        "rate_limited": listing.rate_limited,
+        "next_allowed_at": listing.next_allowed_at,
+        "detail": listing.detail,
+    }))
+    .into_response()
+}
+
+async fn project_import_options(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.github_connection().await {
+        Ok(record) => Some(record),
+        Err(Error::NotFound) => None,
+        Err(error) => return api_error(error),
+    };
+    let connection = github_connection_view(record.as_ref());
+    let connected = connection["configured"].as_bool().unwrap_or(false);
+    let local_enabled = app.projects_root.is_some();
+    Json(json!({
+        "github": {
+            "connected": connected,
+            "enabled": connection["enabled"],
+            "login": connection["login"],
+            "scopes": connection["scopes"],
+            "scopes_reported": connection["scopes_reported"],
+            "revision": connection["revision"],
+            "verified_at": connection["verified_at"],
+            "revoked_at": connection["revoked_at"],
+            "detail": if connected {
+                "The encrypted GitHub token is verified for this Core. Repository access is limited to the repositories and permissions granted to that token."
+            } else {
+                "GitHub is not connected. Configure an encrypted token in the GitHub integration before importing a repository."
+            },
+            "fine_grained_detail": "Fine-grained tokens do not report OAuth scopes. GitHub App and OAuth onboarding are not implemented; Core cannot imply installation-wide access.",
+            "app_oauth_available": false,
+        },
+        "local": {
+            "enabled": local_enabled,
+            "managed_root": app.projects_root.as_ref().map(|root| root.to_string_lossy().to_string()),
+            "detail": if local_enabled {
+                "Local import accepts only a Git repository whose canonical path is inside the operator-approved projects root. Symlink escapes are rejected."
+            } else {
+                "Local import is disabled because FACTORY_PROJECTS_ROOT is not configured."
+            },
+        },
+        "managed_storage_required": true,
+    }))
+    .into_response()
+}
+
+async fn import_github_project(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(input): Json<GitHubProjectImportInput>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if input.idempotency_key.trim().is_empty() || input.idempotency_key.len() > 256 {
+        return api_error(Error::Invalid("idempotency key"));
+    }
+    if let Err(error) = factory_native::github::validate_repo_coordinates(&input.owner, &input.repo)
+    {
+        return github_upstream_error(error);
+    }
+    let Some(root) = app.projects_root.as_ref() else {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "managed project storage is not configured; GitHub import requires FACTORY_PROJECTS_ROOT"
+            })),
+        )
+            .into_response();
+    };
+    let credential = match load_github_credential(&app).await {
+        Ok(credential) => credential,
+        Err(response) => return response,
+    };
+    match app.db.github_backoff_until().await {
+        Ok(Some(until)) => {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(json!({
+                    "error": format!("GitHub rate limit backoff is active until {until}"),
+                    "next_allowed_at": until,
+                })),
+            )
+                .into_response();
+        }
+        Ok(None) => {}
+        Err(error) => return api_error(error),
+    }
+    let repository = match app
+        .github
+        .repository(credential.token(), &input.owner, &input.repo)
+        .await
+    {
+        Ok(repository) => repository,
+        Err(error) => return github_upstream_error(error),
+    };
+    if let Some(requested_branch) = input
+        .default_branch
+        .as_deref()
+        .map(str::trim)
+        .filter(|branch| !branch.is_empty())
+        && requested_branch != repository.default_branch
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": format!(
+                    "default branch {requested_branch:?} does not match the repository's recorded default branch {:?}",
+                    repository.default_branch
+                )
+            })),
+        )
+            .into_response();
+    }
+    let source_key = format!(
+        "github:{}/{}",
+        input.owner.to_ascii_lowercase(),
+        input.repo.to_ascii_lowercase()
+    );
+    match app.db.project_by_source_key(&source_key).await {
+        Ok(Some(existing)) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": "this GitHub repository is already registered",
+                    "project_id": existing.id,
+                })),
+            )
+                .into_response();
+        }
+        Ok(None) => {}
+        Err(error) => return api_error(error),
+    }
+    let repository_path = match factory_native::project_import::import_github(
+        &input.owner,
+        &input.repo,
+        credential.token(),
+        root,
+    )
+    .await
+    {
+        Ok(path) => path,
+        Err(error) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"error": format!("GitHub repository import failed: {error}")})),
+            )
+                .into_response();
+        }
+    };
+    if let Err(error) = app
+        .db
+        .require_github_connection_revision(credential.revision())
+        .await
+    {
+        return api_error(error);
+    }
+    let source = factory_native::db::RegisterProjectSource {
+        name: input.name.unwrap_or_default(),
+        source_kind: "github".into(),
+        source_url: format!("https://github.com/{}/{}", input.owner, input.repo),
+        source_key,
+        source_visibility: if repository.private {
+            "private".into()
+        } else {
+            "public".into()
+        },
+        default_branch: repository.default_branch.clone(),
+    };
+    let project = match app
+        .db
+        .register_project_with_source(&repository_path, &source, &input.idempotency_key)
+        .await
+    {
+        Ok(project) => project,
+        Err(error) => return api_error(error),
+    };
+    let (binding, binding_error) = match app
+        .db
+        .bind_project_github(
+            &project.id,
+            factory_native::db::NewProjectGitHubBinding {
+                owner: &input.owner,
+                repo: &input.repo,
+                default_branch: &repository.default_branch,
+                // The detail response used for import does not expose the
+                // immutable repository ID. Issue intake fails closed until the
+                // binding is refreshed through repository discovery.
+                repository_github_id: None,
+            },
+            "office-operator",
+        )
+        .await
+    {
+        Ok(binding) => (Some(binding), None),
+        Err(error) => {
+            tracing::warn!(%error, project_id = %project.id, "project GitHub binding failed after import");
+            (None, Some(error.to_string()))
+        }
+    };
+    let sync_state = match app.db.github_sync_state(&project.id).await {
+        Ok(state) => Some(state),
+        Err(Error::NotFound) => None,
+        Err(error) => return api_error(error),
+    };
+    (
+        StatusCode::CREATED,
+        Json(json!({
+            "project": project,
+            "repository": repository,
+            "binding": binding,
+            "binding_error": binding_error,
+            "sync_state": sync_state,
+            "connection": github_connection_view(app.db.github_connection().await.ok().as_ref()),
+        })),
+    )
+        .into_response()
+}
+
+async fn project_summary(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let project = match app.db.project(&id).await {
+        Ok(project) => project,
+        Err(error) => return api_error(error),
+    };
+    let config = match app.db.project_config(&id).await {
+        Ok(config) => config,
+        Err(error) => return api_error(error),
+    };
+    let binding = match app.db.project_github_binding(&id).await {
+        Ok(binding) => Some(binding),
+        Err(Error::NotFound) => None,
+        Err(error) => return api_error(error),
+    };
+    let sync_state = match app.db.github_sync_state(&id).await {
+        Ok(state) => Some(state),
+        Err(Error::NotFound) => None,
+        Err(error) => return api_error(error),
+    };
+    let connection_record = match app.db.github_connection().await {
+        Ok(record) => Some(record),
+        Err(Error::NotFound) => None,
+        Err(error) => return api_error(error),
+    };
+    let connection = github_connection_view(connection_record.as_ref());
+    let connected = connection["configured"].as_bool().unwrap_or(false);
+    let enabled = connection["enabled"].as_bool().unwrap_or(false);
+    let connection_health = if binding.is_none() && project.source_kind != "github" {
+        "NOT_APPLICABLE"
+    } else if !connected {
+        "NOT_CONNECTED"
+    } else if !enabled {
+        "REVOKED"
+    } else {
+        "CONNECTED"
+    };
+    let campaigns = match app.db.project_campaigns(&id).await {
+        Ok(campaigns) => campaigns,
+        Err(error) => return api_error(error),
+    };
+    let active_campaigns: Vec<_> = campaigns
+        .iter()
+        .filter(|campaign| {
+            !matches!(
+                campaign.status.as_str(),
+                "CANCELLED" | "FAILED" | "COMPLETED" | "ACCEPTED" | "REJECTED"
+            )
+        })
+        .cloned()
+        .collect();
+    let decisions = match build_decisions(&app).await {
+        Ok(decisions) => decisions,
+        Err(error) => return api_error(error),
+    };
+    let pending_decisions: Vec<_> = decisions
+        .into_iter()
+        .filter(|item| {
+            // Decision items carry an enriched `project` object; older/plain
+            // projections carry only `project_id`. Accept either exact match.
+            item["project_id"].as_str() == Some(id.as_str())
+                || item["project"]["id"].as_str() == Some(id.as_str())
+        })
+        .collect();
+    let pending_decision_count = pending_decisions.len();
+    let active_campaign_count = active_campaigns.len();
+    let last_activity = match app.db.project_last_activity(&id).await {
+        Ok(value) => value,
+        Err(error) => return api_error(error),
+    };
+    let discovery = match app.db.project_discovery(&id).await {
+        Ok(value) => value,
+        Err(error) => return api_error(error),
+    };
+    let display_name = if project.name.trim().is_empty() {
+        project
+            .source_url
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .or_else(|| project.repository.trim_end_matches('/').rsplit('/').next())
+            .unwrap_or("Project")
+            .trim_end_matches(".git")
+            .to_owned()
+    } else {
+        project.name.clone()
+    };
+    let tooling = discovery.as_ref().map(|record| {
+        json!({
+            "base_commit": record.base_commit,
+            "scanned_at": record.scanned_at,
+            "stale": record.base_commit != project.base_commit,
+            "toolchains": record.discovery.toolchains.iter().map(|toolchain| json!({
+                "id": toolchain.id,
+                "label": toolchain.label,
+                "manifests": toolchain.manifests,
+                "evidence": toolchain.evidence,
+            })).collect::<Vec<_>>(),
+            "suggested_capabilities": record.discovery.suggested_capabilities,
+            "suggested_checks": record.discovery.suggested_checks,
+            "truncated": record.discovery.truncated,
+            "provenance": record.discovery.provenance,
+        })
+    });
+    Json(json!({
+        "as_of": chrono::Utc::now().to_rfc3339(),
+        "project": {
+            "id": project.id,
+            "name": display_name,
+            "source_kind": project.source_kind,
+            "source_url": project.source_url,
+            "source_visibility": project.source_visibility,
+            "default_branch": if project.default_branch.is_empty() {
+                binding.as_ref().map(|binding| binding.default_branch.clone()).unwrap_or_default()
+            } else {
+                project.default_branch.clone()
+            },
+            "base_commit": project.base_commit,
+            "created_at": project.created_at,
+            "last_activity_at": last_activity,
+            "remote_origin": project.remote_origin,
+            "technical": {
+                "id": project.id,
+                "repository_path": project.repository,
+                "identity": project.identity,
+                "source_key": project.source_key,
+                "remote_origin": project.remote_origin,
+            },
+        },
+        "github": {
+            "health": connection_health,
+            "connection": connection,
+            "binding": binding,
+            "sync_state": sync_state,
+        },
+        "config": {
+            "revision": config.revision,
+            "config_hash": config.config_hash,
+            "allowed_paths": config.allowed_paths,
+            "capabilities": config.capabilities,
+            "quality_profile": config.quality_profile,
+            "active": config.active,
+            "updated_at": config.updated_at,
+        },
+        "campaigns": {
+            "active": active_campaigns,
+            "active_count": active_campaign_count,
+            "recent": campaigns.iter().take(10).cloned().collect::<Vec<_>>(),
+            "total": campaigns.len(),
+        },
+        "pending_decisions": pending_decisions,
+        "pending_decision_count": pending_decision_count,
+        "tooling": tooling,
+    }))
+    .into_response()
+}
+
+async fn project_discovery_view(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let project = match app.db.project(&id).await {
+        Ok(project) => project,
+        Err(error) => return api_error(error),
+    };
+    match app.db.project_discovery(&id).await {
+        Ok(discovery) => Json(json!({
+            "discovery": discovery,
+            "current_base_commit": project.base_commit,
+            "stale": discovery
+                .as_ref()
+                .is_some_and(|record| record.base_commit != project.base_commit),
+        }))
+        .into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn scan_project_discovery(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let project = match app.db.project(&id).await {
+        Ok(project) => project,
+        Err(error) => return api_error(error),
+    };
+    let repository = PathBuf::from(&project.repository);
+    let base_commit = project.base_commit.clone();
+    let discovery = match tokio::task::spawn_blocking(move || {
+        factory_native::project_import::discover(&repository, &base_commit)
+    })
+    .await
+    {
+        Ok(Ok(discovery)) => discovery,
+        Ok(Err(error)) => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(json!({"error": format!("toolchain discovery failed: {error}")})),
+            )
+                .into_response();
+        }
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("toolchain discovery task failed: {error}")})),
+            )
+                .into_response();
+        }
+    };
+    match app.db.save_project_discovery(&id, &discovery).await {
+        Ok(record) => Json(record).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn bind_project_github(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<ProjectGitHubInput>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let binding = match app
+        .db
+        .bind_project_github(
+            &id,
+            factory_native::db::NewProjectGitHubBinding {
+                owner: &input.owner,
+                repo: &input.repo,
+                default_branch: &input.default_branch,
+                repository_github_id: input.repository_github_id,
+            },
+            "office-operator",
+        )
+        .await
+    {
+        Ok(binding) => binding,
+        Err(error) => return api_error(error),
+    };
+    let sync_state = match app.db.github_sync_state(&id).await {
+        Ok(state) => Some(state),
+        Err(Error::NotFound) => None,
+        Err(error) => return api_error(error),
+    };
+    Json(json!({"binding": binding, "sync_state": sync_state})).into_response()
+}
+
+async fn get_project_github(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.project_exists(&id).await {
+        Ok(true) => {}
+        Ok(false) => return api_error(Error::NotFound),
+        Err(error) => return api_error(error),
+    }
+    let binding = match app.db.project_github_binding(&id).await {
+        Ok(binding) => Some(binding),
+        Err(Error::NotFound) => None,
+        Err(error) => return api_error(error),
+    };
+    let sync_state = match app.db.github_sync_state(&id).await {
+        Ok(state) => Some(state),
+        Err(Error::NotFound) => None,
+        Err(error) => return api_error(error),
+    };
+    Json(json!({"binding": binding, "sync_state": sync_state})).into_response()
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CandidatePullRequestQuery {
+    #[serde(default)]
+    number: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OpenCandidatePullRequestInput {
+    title: String,
+    #[serde(default)]
+    body: Option<String>,
+    head: String,
+    #[serde(default)]
+    base: Option<String>,
+    #[serde(default)]
+    draft: Option<bool>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CandidatePullRequestCommentInput {
+    number: u64,
+    body: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CandidatePullRequestReviewInput {
+    number: u64,
+    reviewers: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CandidatePullRequestMergeInput {
+    number: u64,
+    expected_head_sha: String,
+    merge_method: String,
+    confirmed: bool,
+    #[serde(default)]
+    commit_title: Option<String>,
+    #[serde(default)]
+    commit_message: Option<String>,
+}
+
+struct CandidatePullRequestContext {
+    campaign: factory_native::db::Campaign,
+    candidate: factory_native::db::CandidateRecord,
+    project: factory_native::db::Project,
+    binding: factory_native::db::ProjectGitHubBinding,
+}
+
+async fn candidate_pull_request_context(
+    app: &App,
+    campaign_id: &str,
+    candidate_id: &str,
+) -> Result<CandidatePullRequestContext, Response> {
+    let campaign = app.db.campaign(campaign_id).await.map_err(api_error)?;
+    let candidate = app
+        .db
+        .candidate(candidate_id)
+        .await
+        .map_err(|error| match error {
+            Error::NotFound => StatusCode::NOT_FOUND.into_response(),
+            error => api_error(error),
+        })?;
+    let attempts = app.db.attempts().await.map_err(api_error)?;
+    let attempt = attempts
+        .into_iter()
+        .find(|attempt| attempt.id == candidate.attempt_id)
+        .ok_or_else(|| StatusCode::NOT_FOUND.into_response())?;
+    let runs = app.db.runs().await.map_err(api_error)?;
+    let run = runs
+        .into_iter()
+        .find(|run| run.id == attempt.run_id)
+        .ok_or_else(|| StatusCode::NOT_FOUND.into_response())?;
+    if run.campaign_id != campaign.id {
+        return Err(StatusCode::NOT_FOUND.into_response());
+    }
+    let actions = app.db.actions().await.map_err(api_error)?;
+    let action = actions
+        .into_iter()
+        .find(|action| action.id == campaign.action_id)
+        .ok_or_else(|| StatusCode::NOT_FOUND.into_response())?;
+    let root_spec_matches = candidate
+        .action_spec_sha256
+        .eq_ignore_ascii_case(&action.spec_sha256);
+    if !root_spec_matches {
+        // A Lead WorkUnit candidate is bound to its exact Attempt spec; the
+        // Campaign also has a root ActionSpec. Accept either the legacy root
+        // match or the exact attempt spec, and revalidate Lead lineage.
+        let (attempt_action_id, attempt_spec_sha) =
+            match app.db.attempt_spec_identity(&candidate.attempt_id).await {
+                Ok(value) => value,
+                Err(error) => return Err(api_error(error)),
+            };
+        if attempt_action_id != action.id
+            || !candidate
+                .action_spec_sha256
+                .eq_ignore_ascii_case(&attempt_spec_sha)
+        {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": "candidate ActionSpec hash does not match the exact execution spec",
+                    "kind": "SPEC_MISMATCH",
+                    "candidate_id": candidate.id,
+                })),
+            )
+                .into_response());
+        }
+        if let Err(error) = app.db.validate_attempt_lineage(&candidate.attempt_id).await {
+            return Err(api_error(error));
+        }
+    }
+    let project = app
+        .db
+        .project(&action.project_id)
+        .await
+        .map_err(api_error)?;
+    let binding = match app.db.project_github_binding(&project.id).await {
+        Ok(binding) => binding,
+        Err(Error::NotFound) => {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": "Project is not bound to a GitHub repository",
+                    "kind": "NOT_BOUND",
+                    "project_id": project.id,
+                })),
+            )
+                .into_response());
+        }
+        Err(error) => return Err(api_error(error)),
+    };
+    Ok(CandidatePullRequestContext {
+        campaign,
+        candidate,
+        project,
+        binding,
+    })
+}
+
+fn pull_request_number(query: CandidatePullRequestQuery) -> Option<u64> {
+    query
+        .number
+        .filter(|number| (1..=i64::MAX as u64).contains(number))
+}
+
+fn invalid_pull_request_number() -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({
+            "error": "a positive pull request number is required",
+            "kind": "INVALID_REQUEST",
+        })),
+    )
+        .into_response()
+}
+
+async fn candidate_gate_identity(
+    app: &App,
+    candidate_id: &str,
+) -> Result<Option<serde_json::Value>, Response> {
+    match app.db.gate_for_candidate(candidate_id).await {
+        Ok(Some(gate)) => Ok(Some(json!({
+            "candidate_id": gate.candidate_id,
+            "outcome": gate.outcome,
+            "reasons": gate.reasons,
+            "decided_at": gate.decided_at,
+        }))),
+        Ok(None) => Ok(None),
+        Err(error) => Err(api_error(error)),
+    }
+}
+
+fn pull_request_blockers(
+    pull_request: &factory_native::github::GitHubPullRequest,
+    checks: &factory_native::github::GitHubPullRequestChecks,
+    candidate_commit_sha: &str,
+) -> Vec<String> {
+    let mut blockers = Vec::new();
+    if pull_request.state != "open" {
+        blockers.push(format!(
+            "pull request is {} rather than open",
+            pull_request.state
+        ));
+    }
+    if pull_request.merged {
+        blockers.push("pull request is already merged".into());
+    }
+    if !pull_request
+        .head_sha
+        .eq_ignore_ascii_case(candidate_commit_sha)
+    {
+        blockers.push(format!(
+            "pull request head {} does not match candidate commit {candidate_commit_sha}",
+            pull_request.head_sha
+        ));
+    }
+    if pull_request.mergeable != Some(true) {
+        blockers.push(match pull_request.mergeable {
+            Some(false) => "GitHub reports the pull request as not mergeable".into(),
+            None => "GitHub has not computed mergeability yet; read again".into(),
+            Some(true) => unreachable!(),
+        });
+    }
+    if pull_request.mergeable_state != "clean" {
+        blockers.push(format!(
+            "GitHub merge state is {} (branch protection or required checks are not satisfied)",
+            pull_request.mergeable_state
+        ));
+    }
+    if !checks.ready {
+        blockers.push(format!("checks are {}: {}", checks.state, checks.detail));
+    }
+    if !checks.head_sha.eq_ignore_ascii_case(&pull_request.head_sha) {
+        blockers.push("check status is not bound to the pull request head".into());
+    }
+    blockers
+}
+
+async fn candidate_pull_request(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath((campaign_id, candidate_id)): AxumPath<(String, String)>,
+    Query(query): Query<CandidatePullRequestQuery>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Some(number) = pull_request_number(query) else {
+        return invalid_pull_request_number();
+    };
+    let context = match candidate_pull_request_context(&app, &campaign_id, &candidate_id).await {
+        Ok(context) => context,
+        Err(response) => return response,
+    };
+    let credential = match load_github_credential(&app).await {
+        Ok(credential) => credential,
+        Err(response) => return response,
+    };
+    let pull_request = match app
+        .github
+        .pull_request(
+            credential.token(),
+            &context.binding.owner,
+            &context.binding.repo,
+            number,
+        )
+        .await
+    {
+        Ok(pull_request) => pull_request,
+        Err(error) => return github_upstream_error(error),
+    };
+    let checks = match app
+        .github
+        .pull_request_checks(
+            credential.token(),
+            &context.binding.owner,
+            &context.binding.repo,
+            &pull_request.head_sha,
+        )
+        .await
+    {
+        Ok(checks) => checks,
+        Err(error) => return github_upstream_error(error),
+    };
+    let gate = match candidate_gate_identity(&app, &context.candidate.id).await {
+        Ok(gate) => gate,
+        Err(response) => return response,
+    };
+    let mut blockers = pull_request_blockers(&pull_request, &checks, &context.candidate.commit_sha);
+    let gate_accepted = gate
+        .as_ref()
+        .and_then(|value| value["outcome"].as_str())
+        .is_some_and(|outcome| outcome == "ACCEPTED");
+    if !gate_accepted {
+        blockers.push("candidate Quality Gate is not ACCEPTED".into());
+    }
+    Json(json!({
+        "campaign_id": context.campaign.id,
+        "candidate_id": context.candidate.id,
+        "candidate_commit_sha": context.candidate.commit_sha,
+        "candidate_tree_sha": context.candidate.tree_sha,
+        "project_id": context.project.id,
+        "gate": gate,
+        "gate_accepted": gate_accepted,
+        "binding": context.binding,
+        "pull_request": pull_request,
+        "checks": checks,
+        "head_matches_candidate": pull_request
+            .head_sha
+            .eq_ignore_ascii_case(&context.candidate.commit_sha),
+        "merge_ready": blockers.is_empty(),
+        "merge_blocked_reasons": blockers,
+        "checked_at": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "source": "GitHub REST read through Core; branch protection and required checks remain GitHub-authoritative",
+    }))
+    .into_response()
+}
+
+async fn candidate_pull_request_diff(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath((campaign_id, candidate_id)): AxumPath<(String, String)>,
+    Query(query): Query<CandidatePullRequestQuery>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Some(number) = pull_request_number(query) else {
+        return invalid_pull_request_number();
+    };
+    let context = match candidate_pull_request_context(&app, &campaign_id, &candidate_id).await {
+        Ok(context) => context,
+        Err(response) => return response,
+    };
+    let credential = match load_github_credential(&app).await {
+        Ok(credential) => credential,
+        Err(response) => return response,
+    };
+    let pull_request = match app
+        .github
+        .pull_request(
+            credential.token(),
+            &context.binding.owner,
+            &context.binding.repo,
+            number,
+        )
+        .await
+    {
+        Ok(pull_request) => pull_request,
+        Err(error) => return github_upstream_error(error),
+    };
+    let diff = match app
+        .github
+        .pull_request_diff(
+            credential.token(),
+            &context.binding.owner,
+            &context.binding.repo,
+            number,
+        )
+        .await
+    {
+        Ok(diff) => diff,
+        Err(error) => return github_upstream_error(error),
+    };
+    Json(json!({
+        "campaign_id": context.campaign.id,
+        "candidate_id": context.candidate.id,
+        "candidate_commit_sha": context.candidate.commit_sha,
+        "project_id": context.project.id,
+        "binding": context.binding,
+        "pull_request": pull_request,
+        "diff": diff,
+        "head_matches_candidate": pull_request
+            .head_sha
+            .eq_ignore_ascii_case(&context.candidate.commit_sha),
+        "source": "GitHub pull request diff read through Core with a bounded body",
+    }))
+    .into_response()
+}
+
+async fn candidate_pull_request_comments(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath((campaign_id, candidate_id)): AxumPath<(String, String)>,
+    Query(query): Query<CandidatePullRequestQuery>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Some(number) = pull_request_number(query) else {
+        return invalid_pull_request_number();
+    };
+    let context = match candidate_pull_request_context(&app, &campaign_id, &candidate_id).await {
+        Ok(context) => context,
+        Err(response) => return response,
+    };
+    let credential = match load_github_credential(&app).await {
+        Ok(credential) => credential,
+        Err(response) => return response,
+    };
+    let pull_request = match app
+        .github
+        .pull_request(
+            credential.token(),
+            &context.binding.owner,
+            &context.binding.repo,
+            number,
+        )
+        .await
+    {
+        Ok(pull_request) => pull_request,
+        Err(error) => return github_upstream_error(error),
+    };
+    let comments = match app
+        .github
+        .pull_request_comments(
+            credential.token(),
+            &context.binding.owner,
+            &context.binding.repo,
+            number,
+        )
+        .await
+    {
+        Ok(comments) => comments,
+        Err(error) => return github_upstream_error(error),
+    };
+    Json(json!({
+        "campaign_id": context.campaign.id,
+        "candidate_id": context.candidate.id,
+        "project_id": context.project.id,
+        "binding": context.binding,
+        "pull_request_number": number,
+        "pull_request": pull_request,
+        "head_matches_candidate": pull_request
+            .head_sha
+            .eq_ignore_ascii_case(&context.candidate.commit_sha),
+        "comments": comments,
+        "source": "GitHub pull request comments read through Core; bodies are untrusted text",
+    }))
+    .into_response()
+}
+
+async fn require_candidate_pull_request_head(
+    app: &App,
+    credential: &factory_native::github_sync::GitHubCredential,
+    context: &CandidatePullRequestContext,
+    number: u64,
+) -> Result<factory_native::github::GitHubPullRequest, Response> {
+    let pull_request = app
+        .github
+        .pull_request(
+            credential.token(),
+            &context.binding.owner,
+            &context.binding.repo,
+            number,
+        )
+        .await
+        .map_err(github_upstream_error)?;
+    if !pull_request
+        .head_sha
+        .eq_ignore_ascii_case(&context.candidate.commit_sha)
+    {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "pull request head does not match the recorded candidate commit",
+                "kind": "HEAD_MISMATCH",
+                "candidate_id": context.candidate.id,
+                "candidate_commit_sha": context.candidate.commit_sha,
+                "observed_head_sha": pull_request.head_sha,
+                "number": number,
+            })),
+        )
+            .into_response());
+    }
+    Ok(pull_request)
+}
+
+async fn open_candidate_pull_request(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath((campaign_id, candidate_id)): AxumPath<(String, String)>,
+    Json(input): Json<OpenCandidatePullRequestInput>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let context = match candidate_pull_request_context(&app, &campaign_id, &candidate_id).await {
+        Ok(context) => context,
+        Err(response) => return response,
+    };
+    let credential = match load_github_credential(&app).await {
+        Ok(credential) => credential,
+        Err(response) => return response,
+    };
+    let branch = match app
+        .github
+        .branch_commit(
+            credential.token(),
+            &context.binding.owner,
+            &context.binding.repo,
+            &input.head,
+        )
+        .await
+    {
+        Ok(branch) => branch,
+        Err(factory_native::github::GitHubError::NotFound) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": "GitHub does not expose the requested head branch",
+                    "kind": "HEAD_NOT_FOUND",
+                    "candidate_id": context.candidate.id,
+                    "head": input.head,
+                })),
+            )
+                .into_response();
+        }
+        Err(error) => return github_upstream_error(error),
+    };
+    if !branch
+        .commit_sha
+        .eq_ignore_ascii_case(&context.candidate.commit_sha)
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "GitHub head branch does not resolve to the exact candidate commit",
+                "kind": "HEAD_MISMATCH",
+                "candidate_id": context.candidate.id,
+                "candidate_commit_sha": context.candidate.commit_sha,
+                "observed_head_sha": branch.commit_sha,
+                "head": branch.name,
+            })),
+        )
+            .into_response();
+    }
+    let open = match app
+        .github
+        .open_pull_requests_for_head(
+            credential.token(),
+            &context.binding.owner,
+            &context.binding.repo,
+            &input.head,
+        )
+        .await
+    {
+        Ok(open) => open,
+        Err(error) => return github_upstream_error(error),
+    };
+    if let Some(existing) = open.first() {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "an open pull request already uses this head branch",
+                "kind": "PR_ALREADY_OPEN",
+                "candidate_id": context.candidate.id,
+                "number": existing.number,
+                "html_url": existing.html_url,
+            })),
+        )
+            .into_response();
+    }
+    let base = input
+        .base
+        .unwrap_or_else(|| context.binding.default_branch.clone());
+    let pull_request = match app
+        .github
+        .create_pull_request(
+            credential.token(),
+            &context.binding.owner,
+            &context.binding.repo,
+            factory_native::github::NewPullRequest {
+                title: &input.title,
+                body: input.body.as_deref().unwrap_or(""),
+                head: &input.head,
+                base: &base,
+                draft: input.draft.unwrap_or(false),
+            },
+        )
+        .await
+    {
+        Ok(pull_request) => pull_request,
+        Err(error) => return github_upstream_error(error),
+    };
+    let gate = match candidate_gate_identity(&app, &context.candidate.id).await {
+        Ok(gate) => gate,
+        Err(response) => return response,
+    };
+    Json(json!({
+        "campaign_id": context.campaign.id,
+        "candidate_id": context.candidate.id,
+        "candidate_commit_sha": context.candidate.commit_sha,
+        "project_id": context.project.id,
+        "gate": gate,
+        "binding": context.binding,
+        "pull_request": pull_request,
+        "head_sha": branch.commit_sha,
+        "base": base,
+        "opened_at": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "source": "pull request opened through the encrypted Core GitHub connection after exact branch identity verification",
+    }))
+    .into_response()
+}
+
+async fn comment_on_candidate_pull_request(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath((campaign_id, candidate_id)): AxumPath<(String, String)>,
+    Json(input): Json<CandidatePullRequestCommentInput>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let context = match candidate_pull_request_context(&app, &campaign_id, &candidate_id).await {
+        Ok(context) => context,
+        Err(response) => return response,
+    };
+    let credential = match load_github_credential(&app).await {
+        Ok(credential) => credential,
+        Err(response) => return response,
+    };
+    if let Err(response) =
+        require_candidate_pull_request_head(&app, &credential, &context, input.number).await
+    {
+        return response;
+    }
+    let comment = match app
+        .github
+        .create_pull_request_comment(
+            credential.token(),
+            &context.binding.owner,
+            &context.binding.repo,
+            input.number,
+            &input.body,
+        )
+        .await
+    {
+        Ok(comment) => comment,
+        Err(error) => return github_upstream_error(error),
+    };
+    Json(json!({
+        "campaign_id": context.campaign.id,
+        "candidate_id": context.candidate.id,
+        "project_id": context.project.id,
+        "pull_request_number": input.number,
+        "comment": comment,
+        "recorded_at": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "source": "comment posted through the encrypted Core GitHub connection",
+    }))
+    .into_response()
+}
+
+async fn request_candidate_pull_request_review(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath((campaign_id, candidate_id)): AxumPath<(String, String)>,
+    Json(input): Json<CandidatePullRequestReviewInput>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let context = match candidate_pull_request_context(&app, &campaign_id, &candidate_id).await {
+        Ok(context) => context,
+        Err(response) => return response,
+    };
+    let credential = match load_github_credential(&app).await {
+        Ok(credential) => credential,
+        Err(response) => return response,
+    };
+    if let Err(response) =
+        require_candidate_pull_request_head(&app, &credential, &context, input.number).await
+    {
+        return response;
+    }
+    let reviewers = match app
+        .github
+        .request_pull_request_reviewers(
+            credential.token(),
+            &context.binding.owner,
+            &context.binding.repo,
+            input.number,
+            &input.reviewers,
+        )
+        .await
+    {
+        Ok(reviewers) => reviewers,
+        Err(error) => return github_upstream_error(error),
+    };
+    Json(json!({
+        "campaign_id": context.campaign.id,
+        "candidate_id": context.candidate.id,
+        "project_id": context.project.id,
+        "pull_request_number": input.number,
+        "reviewers": reviewers,
+        "requested_at": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "source": "review request sent through the encrypted Core GitHub connection; no approval is inferred",
+    }))
+    .into_response()
+}
+
+fn merge_gate_denial(
+    gate: Option<&factory_native::db::GateRecord>,
+) -> Option<(StatusCode, serde_json::Value)> {
+    match gate {
+        Some(gate) if gate.outcome == GateOutcome::Accepted => None,
+        Some(gate) => Some((
+            StatusCode::CONFLICT,
+            json!({
+                "error": "candidate Quality Gate is not ACCEPTED",
+                "kind": "GATE_NOT_ACCEPTED",
+                "candidate_id": gate.candidate_id,
+                "outcome": gate.outcome,
+                "reasons": gate.reasons,
+            }),
+        )),
+        None => Some((
+            StatusCode::CONFLICT,
+            json!({
+                "error": "candidate has no Quality Gate decision",
+                "kind": "GATE_NOT_ACCEPTED",
+            }),
+        )),
+    }
+}
+
+async fn merge_candidate_pull_request(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath((campaign_id, candidate_id)): AxumPath<(String, String)>,
+    Json(input): Json<CandidatePullRequestMergeInput>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if !input.confirmed {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "explicit operator confirmation is required for merge",
+                "kind": "CONFIRMATION_REQUIRED",
+            })),
+        )
+            .into_response();
+    }
+    let merge_method = match input.merge_method.as_str() {
+        "merge" => factory_native::github::GitHubMergeMethod::Merge,
+        "squash" => factory_native::github::GitHubMergeMethod::Squash,
+        "rebase" => factory_native::github::GitHubMergeMethod::Rebase,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "merge method must be merge, squash or rebase",
+                    "kind": "INVALID_REQUEST",
+                })),
+            )
+                .into_response();
+        }
+    };
+    let context = match candidate_pull_request_context(&app, &campaign_id, &candidate_id).await {
+        Ok(context) => context,
+        Err(response) => return response,
+    };
+    if !input
+        .expected_head_sha
+        .eq_ignore_ascii_case(&context.candidate.commit_sha)
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "expected head SHA does not match the recorded candidate commit",
+                "kind": "CANDIDATE_MISMATCH",
+                "candidate_id": context.candidate.id,
+                "candidate_commit_sha": context.candidate.commit_sha,
+                "expected_head_sha": input.expected_head_sha,
+            })),
+        )
+            .into_response();
+    }
+    // GitHub checks are not the Core Quality Gate. Delivery must never merge a
+    // candidate that the authoritative Gate has not accepted.
+    let gate = match app.db.gate_for_candidate(&context.candidate.id).await {
+        Ok(gate) => gate,
+        Err(error) => return api_error(error),
+    };
+    if let Some((status, body)) = merge_gate_denial(gate.as_ref()) {
+        return (status, Json(body)).into_response();
+    }
+    let credential = match load_github_credential(&app).await {
+        Ok(credential) => credential,
+        Err(response) => return response,
+    };
+    let pull_request = match app
+        .github
+        .pull_request(
+            credential.token(),
+            &context.binding.owner,
+            &context.binding.repo,
+            input.number,
+        )
+        .await
+    {
+        Ok(pull_request) => pull_request,
+        Err(error) => return github_upstream_error(error),
+    };
+    let checks = match app
+        .github
+        .pull_request_checks(
+            credential.token(),
+            &context.binding.owner,
+            &context.binding.repo,
+            &pull_request.head_sha,
+        )
+        .await
+    {
+        Ok(checks) => checks,
+        Err(error) => return github_upstream_error(error),
+    };
+    let blockers = pull_request_blockers(&pull_request, &checks, &context.candidate.commit_sha);
+    if !blockers.is_empty() {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "merge is blocked by a fresh pull request and check read",
+                "kind": "MERGE_BLOCKED",
+                "candidate_id": context.candidate.id,
+                "candidate_commit_sha": context.candidate.commit_sha,
+                "pull_request": pull_request,
+                "checks": checks,
+                "blockers": blockers,
+                "checked_at": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            })),
+        )
+            .into_response();
+    }
+    let outcome = match app
+        .github
+        .merge_pull_request(
+            credential.token(),
+            &context.binding.owner,
+            &context.binding.repo,
+            factory_native::github::MergePullRequest {
+                number: input.number,
+                expected_head_sha: &context.candidate.commit_sha,
+                merge_method,
+                commit_title: input.commit_title.as_deref(),
+                commit_message: input.commit_message.as_deref(),
+            },
+        )
+        .await
+    {
+        Ok(outcome) => outcome,
+        Err(error @ factory_native::github::GitHubError::MergeBlocked { .. }) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": error.detail(),
+                    "kind": "MERGE_BLOCKED",
+                    "candidate_id": context.candidate.id,
+                    "candidate_commit_sha": context.candidate.commit_sha,
+                    "pull_request_number": input.number,
+                })),
+            )
+                .into_response();
+        }
+        Err(error) => return github_upstream_error(error),
+    };
+    Json(json!({
+        "campaign_id": context.campaign.id,
+        "candidate_id": context.candidate.id,
+        "project_id": context.project.id,
+        "pull_request_number": input.number,
+        "expected_head_sha": context.candidate.commit_sha,
+        "merged": outcome.merged,
+        "merge_commit_sha": outcome.merge_commit_sha,
+        "message": outcome.message,
+        "merged_at": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "source": "merge performed through the encrypted Core GitHub connection only after a fresh pull request and check read with the exact expected head pinned",
+    }))
+    .into_response()
+}
+
+async fn sync_project_issues(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.project_exists(&id).await {
+        Ok(true) => {}
+        Ok(false) => return api_error(Error::NotFound),
+        Err(error) => return api_error(error),
+    }
+    match app.db.project_github_binding(&id).await {
+        Ok(_) => {}
+        Err(Error::NotFound) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({"error": "project is not bound to a GitHub repository"})),
+            )
+                .into_response();
+        }
+        Err(error) => return api_error(error),
+    }
+    let credential = match load_github_credential(&app).await {
+        Ok(credential) => credential,
+        Err(response) => return response,
+    };
+    let _guard = match app.github_sync.try_lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({"error": "a GitHub issue sync is already running"})),
+            )
+                .into_response();
+        }
+    };
+    match factory_native::github_sync::sync_project_issues(&app.db, &app.github, &credential, &id)
+        .await
+    {
+        Ok(state) => Json(state).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn project_issues(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Query(query): Query<GitHubIssuesQuery>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.project_exists(&id).await {
+        Ok(true) => {}
+        Ok(false) => return api_error(Error::NotFound),
+        Err(error) => return api_error(error),
+    }
+    let state = query
+        .state
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "all".into());
+    let filters = factory_native::db::GitHubIssueFilters {
+        state,
+        label: query
+            .label
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty()),
+        query: query
+            .query
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty()),
+        limit: query.limit.unwrap_or(50),
+        offset: query.offset.unwrap_or(0),
+    };
+    match app.db.github_issues(&id, &filters).await {
+        Ok(issues) => Json(issues).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn project_issue(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath((id, number)): AxumPath<(String, u64)>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.github_issue(&id, number).await {
+        Ok(issue) => Json(issue).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+fn issue_intake_routes() -> Router<Arc<App>> {
+    Router::new()
+        .route(
+            "/projects/{id}/issue-intake",
+            get(project_issue_intake_state),
+        )
+        .route(
+            "/projects/{id}/issue-intake/policy",
+            axum::routing::put(configure_project_issue_intake),
+        )
+        .route(
+            "/projects/{id}/issue-intake/policy/disable",
+            post(disable_project_issue_intake),
+        )
+        .route(
+            "/projects/{id}/issue-intake/batches",
+            post(create_project_issue_intake_batch),
+        )
+        .route(
+            "/projects/{id}/issue-intake/batches/{batch_id}/revoke",
+            post(revoke_project_issue_intake_batch),
+        )
+        .route(
+            "/projects/{id}/issue-intake/queue/dispatch",
+            post(dispatch_issue_intake_queue),
+        )
+}
+
+async fn project_issue_intake_state(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.issue_intake_state(&id).await {
+        Ok(state) => Json(state).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn configure_project_issue_intake(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    Json(input): Json<IssueIntakePolicyRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let (principal_id, device_label) =
+        authenticated_operator(session.as_ref().map(|Extension(device)| device));
+    match app
+        .db
+        .create_issue_intake_policy(factory_native::db::NewIssueIntakePolicy {
+            project_id: &id,
+            repository_full_name: &input.repository_full_name,
+            repository_github_id: input.repository_github_id,
+            required_labels: &input.required_labels,
+            excluded_labels: &input.excluded_labels,
+            author_ids: &input.author_ids,
+            author_associations: &input.author_associations,
+            profile_id: &input.execution_profile_id,
+            profile_revision_id: &input.profile_revision_id,
+            profile_revision: input.profile_revision,
+            profile_hash: &input.profile_hash,
+            project_config_hash: &input.project_config_hash,
+            allowed_paths: &input.allowed_paths,
+            capabilities: &input.capabilities,
+            max_issues: input.max_issues,
+            max_concurrent: input.max_concurrent,
+            max_cost_micros_per_issue: input.max_cost_micros_per_issue,
+            max_total_cost_micros: input.max_total_cost_micros,
+            max_attempts: input.max_attempts,
+            max_sessions: input.max_sessions,
+            max_turns: input.max_turns,
+            max_wall_clock_secs: input.max_wall_clock_secs,
+            expires_at: &input.expires_at,
+            acknowledge: input.acknowledge,
+            reason: &input.reason,
+            idempotency_key: &input.idempotency_key,
+            principal_id: &principal_id,
+            principal_label: device_label.as_deref(),
+        })
+        .await
+    {
+        Ok(result) => (
+            if result.created {
+                StatusCode::CREATED
+            } else {
+                StatusCode::OK
+            },
+            Json(json!({"policy": result.policy, "created": result.created})),
+        )
+            .into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn disable_project_issue_intake(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    Json(input): Json<IssueIntakeDisableRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let (principal_id, device_label) =
+        authenticated_operator(session.as_ref().map(|Extension(device)| device));
+    match app
+        .db
+        .disable_issue_intake_policy(
+            &id,
+            &input.reason,
+            &input.idempotency_key,
+            &principal_id,
+            device_label.as_deref(),
+        )
+        .await
+    {
+        Ok(result) => (
+            if result.created {
+                StatusCode::CREATED
+            } else {
+                StatusCode::OK
+            },
+            Json(json!({"policy": result.policy, "created": result.created})),
+        )
+            .into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn create_project_issue_intake_batch(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    Json(input): Json<IssueIntakeBatchRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let (principal_id, device_label) =
+        authenticated_operator(session.as_ref().map(|Extension(device)| device));
+    let items = input
+        .items
+        .iter()
+        .map(|item| factory_native::db::NewIssueIntakeBatchItem {
+            number: item.number,
+            github_issue_id: item.github_issue_id,
+            content_hash: &item.content_hash,
+            updated_at: &item.updated_at,
+        })
+        .collect::<Vec<_>>();
+    match app
+        .db
+        .create_issue_intake_batch(factory_native::db::NewIssueIntakeBatch {
+            project_id: &id,
+            policy_id: &input.policy_id,
+            expected_policy_revision: input.expected_policy_revision,
+            expected_policy_hash: &input.expected_policy_hash,
+            items: &items,
+            max_total_cost_micros: input.max_total_cost_micros,
+            expires_at: &input.expires_at,
+            acknowledge: input.acknowledge,
+            reason: &input.reason,
+            idempotency_key: &input.idempotency_key,
+            principal_id: &principal_id,
+            principal_label: device_label.as_deref(),
+        })
+        .await
+    {
+        Ok(result) => (
+            if result.created {
+                StatusCode::CREATED
+            } else {
+                StatusCode::OK
+            },
+            Json(json!({
+                "batch": result.batch,
+                "items": result.items,
+                "created": result.created,
+            })),
+        )
+            .into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn revoke_project_issue_intake_batch(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath((id, batch_id)): AxumPath<(String, String)>,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    Json(input): Json<IssueIntakeBatchRevokeRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let (principal_id, device_label) =
+        authenticated_operator(session.as_ref().map(|Extension(device)| device));
+    match app
+        .db
+        .revoke_issue_intake_batch(
+            &id,
+            &batch_id,
+            &input.reason,
+            &principal_id,
+            device_label.as_deref(),
+        )
+        .await
+    {
+        Ok(batch) => Json(json!({"batch": batch})).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+fn github_read_failure_kind(
+    error: &factory_native::github::GitHubError,
+) -> factory_native::db::IssueIntakeQueueFailure {
+    use factory_native::github::GitHubError;
+    match error {
+        GitHubError::Unauthorized
+        | GitHubError::Forbidden(_)
+        | GitHubError::NotFound
+        | GitHubError::Redirected
+        | GitHubError::Rejected { .. }
+        | GitHubError::MergeBlocked { .. }
+        | GitHubError::Invalid(_) => factory_native::db::IssueIntakeQueueFailure::Terminal,
+        GitHubError::RateLimited { .. }
+        | GitHubError::Upstream(_)
+        | GitHubError::InvalidResponse(_) => factory_native::db::IssueIntakeQueueFailure::Transient,
+    }
+}
+
+async fn dispatch_issue_intake_queue(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    input: Option<Json<IssueIntakeDispatchRequest>>,
+) -> Response {
+    let input = input.map(|Json(value)| value).unwrap_or_default();
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let _guard = match app.github_sync.try_lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": "a GitHub read is already running",
+                    "code": "GITHUB_READ_BUSY"
+                })),
+            )
+                .into_response();
+        }
+    };
+    let credential = match load_github_credential(&app).await {
+        Ok(credential) => credential,
+        Err(response) => return response,
+    };
+    match app.db.github_backoff_until().await {
+        Ok(Some(until)) => {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(json!({
+                    "error": format!("GitHub rate-limit backoff is active until {until}"),
+                    "kind": "RATE_LIMITED",
+                    "next_allowed_at": until,
+                    "code": "GITHUB_RATE_LIMITED"
+                })),
+            )
+                .into_response();
+        }
+        Ok(None) => {}
+        Err(error) => return api_error(error),
+    }
+    let claim = match app
+        .db
+        .claim_issue_intake_queue_item(
+            &id,
+            input.batch_id.as_deref(),
+            factory_native::issue_intake::QUEUE_LEASE_SECONDS,
+        )
+        .await
+    {
+        Ok(Some(claim)) => claim,
+        Ok(None) => {
+            return Json(json!({
+                "status": "IDLE",
+                "detail": "no due issue-intake queue item",
+                "campaign_started": false,
+                "provider_calls": 0,
+            }))
+            .into_response();
+        }
+        Err(error) => return api_error(error),
+    };
+    let issue = match app
+        .github
+        .get_issue(
+            credential.token(),
+            &claim.binding.owner,
+            &claim.binding.repo,
+            claim.queue.issue_number,
+        )
+        .await
+    {
+        Ok(issue) => issue,
+        Err(error) => {
+            if let factory_native::github::GitHubError::RateLimited {
+                next_allowed_at: Some(until),
+                ..
+            } = &error
+            {
+                let _ = app
+                    .db
+                    .set_github_rate_limit(credential.revision(), until)
+                    .await;
+            }
+            if matches!(
+                error,
+                factory_native::github::GitHubError::Unauthorized
+                    | factory_native::github::GitHubError::Forbidden(_)
+            ) {
+                let _ = app
+                    .db
+                    .revoke_issue_intake_batch(
+                        &id,
+                        &claim.batch.id,
+                        "GitHub denied the credential or repository scope",
+                        "core",
+                        None,
+                    )
+                    .await;
+            }
+            let _ = app
+                .db
+                .fail_issue_intake_queue_item(
+                    &id,
+                    &claim.queue.id,
+                    &claim.lease_token,
+                    github_read_failure_kind(&error),
+                    &error.detail(),
+                )
+                .await;
+            return github_upstream_error(error);
+        }
+    };
+    let observation = factory_native::issue_intake::IssueSnapshot::from_github_issue(
+        &id,
+        &claim.batch.repository_full_name,
+        Some(claim.batch.repository_github_id),
+        &issue,
+    );
+    match app
+        .db
+        .reconcile_issue_intake_queue_item(
+            &id,
+            &claim.queue.id,
+            &claim.lease_token,
+            &observation,
+            credential.revision(),
+        )
+        .await
+    {
+        Ok(result) => {
+            let status = if result.status == "RECONCILED" {
+                StatusCode::OK
+            } else {
+                StatusCode::CONFLICT
+            };
+            let mut body = json!({
+                "status": result.status,
+                "reasons": result.reasons,
+                "queue": result.queue,
+                "intake": result.intake,
+                "campaign_started": false,
+                "provider_calls": 0,
+            });
+            if status != StatusCode::OK {
+                body["error"] = json!(format!(
+                    "issue-intake reconciliation is {}: {}",
+                    result.status,
+                    result.reasons.join(", ")
+                ));
+                body["code"] = json!(result.status);
+            }
+            (status, Json(body)).into_response()
+        }
+        Err(error) => {
+            let _ = app
+                .db
+                .fail_issue_intake_queue_item(
+                    &id,
+                    &claim.queue.id,
+                    &claim.lease_token,
+                    factory_native::db::IssueIntakeQueueFailure::Transient,
+                    &error.to_string(),
+                )
+                .await;
+            api_error(error)
+        }
     }
 }
 
@@ -1728,6 +5619,1050 @@ fn decision_rank(severity: &str) -> u8 {
     }
 }
 
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum DecisionAction {
+    ResolveModelCall {
+        label: String,
+        model_call_id: String,
+    },
+    ApproveIntakePlan {
+        label: String,
+        intake_id: String,
+        expected_plan_hash: String,
+        expected_profile_revision_id: String,
+        expected_profile_hash: String,
+    },
+    CancelIntake {
+        label: String,
+        intake_id: String,
+    },
+    WithdrawLead {
+        label: String,
+        lead_request_id: String,
+    },
+    CancelCampaign {
+        label: String,
+        campaign_id: String,
+    },
+}
+
+fn decision_revision(parts: &[&str]) -> String {
+    factory_native::device_session::sha256_hex(&parts.join("\u{1f}"))
+}
+
+fn decision_evidence(label: &str, value: impl Into<String>) -> Value {
+    json!({"label": label, "value": value.into()})
+}
+
+fn decision_project(project_id: Option<&str>, projects: &BTreeMap<&str, &Project>) -> Value {
+    match project_id.and_then(|project_id| projects.get(project_id).copied()) {
+        Some(project) => json!({
+            "id": project.id,
+            "repository": project.repository,
+            "identity": project.identity,
+        }),
+        None => Value::Null,
+    }
+}
+
+fn decision_campaign(campaign: Option<&Campaign>) -> Value {
+    match campaign {
+        Some(campaign) => json!({
+            "id": campaign.id,
+            "status": campaign.status,
+            "target": format!("/campaigns/{}", campaign.id),
+        }),
+        None => Value::Null,
+    }
+}
+
+fn decision_scope_from_intake(context: &factory_native::db::IntakeApprovalContext) -> Value {
+    json!({
+        "operations": context.scope.operations,
+        "progress": context.scope.progress,
+        "max_parallel": context.scope.max_parallel,
+        "timeout_secs": context.scope.max_timeout_secs,
+    })
+}
+
+fn decision_scope_from_proposal(proposal: &LeadPlanProposal) -> Value {
+    json!({
+        "max_parallel": proposal.max_parallel,
+        "timeout_secs": proposal.budget.timeout_secs,
+        "work_units": proposal.work_units.len(),
+    })
+}
+
+fn decision_change_from_proposal(proposal: &LeadPlanProposal) -> Value {
+    let paths: BTreeSet<&str> = proposal
+        .work_units
+        .iter()
+        .flat_map(|unit| unit.allowed_paths.iter().map(String::as_str))
+        .collect();
+    json!({
+        "summary": proposal.objective,
+        "work_units": proposal.work_units.len(),
+        "paths": paths,
+        "acceptance_criteria": proposal.acceptance_criteria.len(),
+        "negative_cases": proposal.negative_cases.len(),
+    })
+}
+
+fn decision_permissions_from_proposal(proposal: &LeadPlanProposal) -> Value {
+    let paths: BTreeSet<&str> = proposal
+        .work_units
+        .iter()
+        .flat_map(|unit| unit.allowed_paths.iter().map(String::as_str))
+        .collect();
+    json!({
+        "execution_mode": Value::Null,
+        "allowed_paths": paths,
+        "allowed_tools": Vec::<String>::new(),
+        "delegation_id": Value::Null,
+        "route": {
+            "provider": proposal.route.provider,
+            "model": proposal.route.model,
+            "mode": proposal.route.mode,
+        },
+    })
+}
+
+fn intake_execution_mode(mechanism: &str) -> &'static str {
+    if mechanism == "MODEL" {
+        "TRUSTED_LOCAL_PROVIDER"
+    } else {
+        "FIXTURE"
+    }
+}
+
+fn intake_allowed_tools(mechanism: &str) -> Vec<String> {
+    if mechanism == "MODEL" {
+        vec!["run_command".into(), "write_file".into()]
+    } else {
+        Vec::new()
+    }
+}
+
+fn inference_intake_conflict(code: &'static str, error: impl std::fmt::Display) -> Error {
+    Error::IntakeConflict {
+        code,
+        message: error.to_string(),
+    }
+}
+
+/// Freeze one Core-derived pricing quote for the exact provider/model. The
+/// bound, coverage and snapshot come from Core provider settings and the
+/// adapter's declared billing coverage; a missing setting, model mismatch,
+/// disabled connection or unsupported adapter is a typed fail-closed error.
+async fn ensure_inference_pricing_quote(
+    app: &App,
+    provider: &str,
+    model: &str,
+    actor: &str,
+) -> Result<(), Error> {
+    let settings = app.db.provider_settings(provider).await?;
+    if !settings.enabled || settings.model != model {
+        return Err(Error::Unavailable(format!(
+            "Core provider settings do not price {provider}/{model}"
+        )));
+    }
+    let revision = i64::from(settings.revision);
+    let evidence = factory_native::device_session::sha256_hex(&format!(
+        "provider-settings:{provider}:{model}:revision:{revision}:rates:{}:{}",
+        settings.input_micros_per_million, settings.output_micros_per_million
+    ));
+    app.db
+        .create_inference_pricing_quote(
+            &factory_native::inference_ledger::NewInferencePricingQuote {
+                provider: provider.into(),
+                model: model.into(),
+                revision,
+                evidence_sha256: evidence,
+                actor: actor.into(),
+            },
+        )
+        .await
+        .map(|_| ())
+        .map_err(|error| {
+            inference_intake_conflict(
+                "INFERENCE_PRICING_UNAVAILABLE",
+                format!("billable pricing is not enforceable for {provider}/{model}: {error}"),
+            )
+        })
+}
+
+/// Every frozen profile role is part of the Campaign's required execution, so a
+/// billable start must be able to price every distinct route before any
+/// upstream call.
+async fn ensure_profile_pricing_quotes(
+    app: &App,
+    content: &factory_native::execution_profile::ExecutionProfileContent,
+    actor: &str,
+) -> Result<(), Error> {
+    let mut seen = BTreeSet::new();
+    for (_, route) in content.roles.entries() {
+        if !seen.insert((route.provider.clone(), route.model.clone())) {
+            continue;
+        }
+        ensure_inference_pricing_quote(app, &route.provider, &route.model, actor).await?;
+    }
+    Ok(())
+}
+
+/// Create the single operator-request envelope. The amount is the explicit
+/// operator authorization; the scope and evidence digests are Core-derived
+/// frozen identities. Replaying the same request agreement returns the durable
+/// envelope.
+async fn create_request_inference_envelope(
+    app: &App,
+    request_id: &str,
+    project_id: &str,
+    authorized_micros: Option<u64>,
+    actor: &str,
+    scope_sha256: &str,
+    evidence_sha256: &str,
+) -> Result<Option<factory_native::inference_ledger::InferenceEnvelopeRecord>, Error> {
+    let Some(authorized_micros) = authorized_micros else {
+        return Ok(None);
+    };
+    if authorized_micros == 0 {
+        return Err(Error::Conflict(
+            "the operator authorized a zero inference envelope",
+        ));
+    }
+    let authorized = factory_native::execution_policy::UsdMicros::new(authorized_micros)
+        .map_err(|_| Error::Invalid("operator inference authorization"))?;
+    let envelope = app
+        .db
+        .create_inference_envelope(&factory_native::inference_ledger::NewInferenceEnvelope {
+            request_id: request_id.into(),
+            project_id: project_id.into(),
+            authorized_micros: authorized,
+            actor: actor.into(),
+            scope_sha256: scope_sha256.into(),
+            evidence_sha256: evidence_sha256.into(),
+            idempotency_key: format!("request-envelope:{request_id}"),
+        })
+        .await
+        .map_err(|error| {
+            inference_intake_conflict(
+                "INFERENCE_AUTHORIZATION_UNAVAILABLE",
+                format!("the inference envelope could not be recorded: {error}"),
+            )
+        })?;
+    Ok(Some(envelope))
+}
+
+/// Create the request envelope once, or reuse it only for the same operator
+/// amount. A later approval/start that changes the amount conflicts; it never
+/// creates a second allowance.
+async fn ensure_request_inference_envelope(
+    app: &App,
+    request_id: &str,
+    project_id: &str,
+    authorized_micros: Option<u64>,
+    actor: &str,
+    scope_sha256: &str,
+    evidence_sha256: &str,
+) -> Result<Option<factory_native::inference_ledger::InferenceEnvelopeRecord>, Error> {
+    let Some(authorized_micros) = authorized_micros else {
+        return Ok(None);
+    };
+    if authorized_micros == 0 {
+        return Err(Error::Conflict(
+            "the operator authorized a zero inference envelope",
+        ));
+    }
+    if let Some(existing) = app.db.inference_envelope_for_request(request_id).await? {
+        if existing.project_id != project_id
+            || existing.authorized_micros.get() != authorized_micros
+        {
+            return Err(Error::IntakeConflict {
+                code: "INFERENCE_AUTHORIZATION_CHANGED",
+                message: "the operator inference authorization changed for this request".into(),
+            });
+        }
+        return Ok(Some(existing));
+    }
+    create_request_inference_envelope(
+        app,
+        request_id,
+        project_id,
+        Some(authorized_micros),
+        actor,
+        scope_sha256,
+        evidence_sha256,
+    )
+    .await
+}
+
+fn request_scope_digest(parts: &[&str]) -> String {
+    factory_native::device_session::sha256_hex(&parts.join("\u{1f}"))
+}
+
+/// Read-only ledger projection attached to request and Campaign JSON. Absence of
+/// an envelope is `null`: Core never claims measured spending without a ledger.
+async fn inference_spending_value(app: &App, request_id: &str) -> Result<Value, Error> {
+    let Some(envelope) = app.db.inference_envelope_for_request(request_id).await? else {
+        return Ok(Value::Null);
+    };
+    let spending = app
+        .db
+        .inference_spending_status(&envelope.envelope_id)
+        .await?;
+    Ok(json!({
+        "envelope": envelope,
+        "status": spending,
+        // Legacy model-call and provider-session rows remain evidence and are
+        // never added to the ledger totals.
+        "legacyEvidenceExcluded": true,
+    }))
+}
+
+fn decision_permissions_from_intake(context: &factory_native::db::IntakeApprovalContext) -> Value {
+    json!({
+        "execution_mode": intake_execution_mode(&context.mechanism),
+        "allowed_paths": context.action_spec.allowed_paths,
+        "allowed_tools": intake_allowed_tools(&context.mechanism),
+        "delegation_id": context.grant.id,
+        "route": {
+            "provider": context.profile.roles.implementer.provider,
+            "model": context.profile.roles.implementer.model,
+            "mode": "build",
+        },
+    })
+}
+
+fn decision_proposal(proposal_json: Option<&str>) -> Option<LeadPlanProposal> {
+    proposal_json.and_then(|proposal_json| serde_json::from_str(proposal_json).ok())
+}
+
+struct DecisionProjection<'a> {
+    app: &'a App,
+    campaign_by_id: BTreeMap<&'a str, &'a Campaign>,
+    action_by_id: BTreeMap<&'a str, &'a Action>,
+    project_by_id: BTreeMap<&'a str, &'a Project>,
+    run_campaign: BTreeMap<String, String>,
+    attempt_campaign: BTreeMap<String, String>,
+}
+
+impl<'a> DecisionProjection<'a> {
+    async fn intake_items(
+        &self,
+        intake_requests: &[factory_native::db::IntakeRequestRecord],
+    ) -> Result<Vec<Value>, Error> {
+        let mut items = Vec::new();
+        for record in intake_requests {
+            let projection = match self
+                .app
+                .db
+                .lead_request_projection(&record.lead_request_id)
+                .await
+            {
+                Ok(projection) => projection,
+                Err(Error::NotFound) => continue,
+                Err(error) => return Err(error),
+            };
+            if projection != factory_native::lead::LeadRequestProjectionState::AwaitingApproval {
+                continue;
+            }
+            let lead = match self.app.db.lead_request(&record.lead_request_id).await {
+                Ok(lead) => lead,
+                Err(Error::NotFound) => continue,
+                Err(error) => return Err(error),
+            };
+            let plan = match self.app.db.frozen_lead_plan(&lead.id).await {
+                Ok(plan) => plan,
+                Err(Error::NotFound) => continue,
+                Err(error) => return Err(error),
+            };
+            let proposal_record = self.app.db.lead_proposal(&lead.id).await.ok();
+            let proposal = decision_proposal(
+                proposal_record
+                    .as_ref()
+                    .map(|record| record.proposal_json.as_str()),
+            );
+            let action = self.action_by_id.get(record.action_id.as_str()).copied();
+            let authorization = self
+                .app
+                .db
+                .intake_authorization_state(
+                    &record.id,
+                    factory_native::intake::IntakeState::AwaitingApproval,
+                )
+                .await;
+            let mut blocked_reason = authorization.reason.clone();
+            let context = if authorization.available {
+                match self.app.db.intake_approval_context(&record.id).await {
+                    Ok(context) => Some(context),
+                    Err(Error::IntakeConflict { code, .. }) => {
+                        blocked_reason = Some(code.to_owned());
+                        None
+                    }
+                    Err(error) => return Err(error),
+                }
+            } else {
+                None
+            };
+            let plan_hash = context
+                .as_ref()
+                .map(|context| context.plan.plan_hash.clone())
+                .unwrap_or_else(|| plan.plan_hash.clone());
+            let profile_revision_id = context
+                .as_ref()
+                .map(|context| context.context.profile_revision_id.clone())
+                .unwrap_or_else(|| record.profile_revision_id.clone());
+            let profile_hash = context
+                .as_ref()
+                .map(|context| context.context.profile_hash.clone())
+                .unwrap_or_else(|| record.profile_hash.clone());
+            let profile_revision = context
+                .as_ref()
+                .map(|context| context.context.profile_revision)
+                .unwrap_or(record.profile_revision);
+            let profile_name = context
+                .as_ref()
+                .map(|context| context.context.profile_name.clone())
+                .unwrap_or_else(|| record.profile_name.clone());
+            let config_hash = context
+                .as_ref()
+                .map(|context| context.lead.project_config_hash.clone())
+                .unwrap_or_else(|| lead.project_config_hash.clone());
+            let delegation_hash = context
+                .as_ref()
+                .map(|context| context.grant.content_hash.clone())
+                .unwrap_or_else(|| plan.delegation_hash.clone());
+            let action_spec_sha256 = context
+                .as_ref()
+                .map(|context| context.spec_sha256.clone())
+                .or_else(|| action.map(|action| action.spec_sha256.clone()));
+            let budget = context
+                .as_ref()
+                .map(decision_scope_from_intake)
+                .or_else(|| proposal.as_ref().map(decision_scope_from_proposal))
+                .unwrap_or(Value::Null);
+            let permissions = context
+                .as_ref()
+                .map(decision_permissions_from_intake)
+                .or_else(|| proposal.as_ref().map(decision_permissions_from_proposal))
+                .unwrap_or(Value::Null);
+            let change = proposal
+                .as_ref()
+                .map(decision_change_from_proposal)
+                .unwrap_or_else(|| json!({"summary": record.objective}));
+            let risk = match &proposal {
+                Some(proposal) => json!({
+                    "class": format!("{:?}", proposal.risk_class),
+                    "summary": if proposal.risks.is_empty() {
+                        format!("Frozen plan risk class {:?}.", proposal.risk_class)
+                    } else {
+                        proposal.risks.join("; ")
+                    },
+                }),
+                None => json!({
+                    "class": Value::Null,
+                    "summary": "The frozen risk classification is not recorded.",
+                }),
+            };
+            let mut evidence = vec![
+                decision_evidence("Frozen plan", plan_hash.clone()),
+                decision_evidence(
+                    "Profile revision",
+                    format!("r{profile_revision} · {profile_name} · {profile_revision_id}"),
+                ),
+                decision_evidence("Profile hash", profile_hash.clone()),
+                decision_evidence("Project config", config_hash.clone()),
+                decision_evidence("Delegation", record.delegation_id.clone()),
+                decision_evidence("Delegation hash", delegation_hash),
+                decision_evidence(
+                    "Assessment",
+                    lead.assessment_mechanism
+                        .clone()
+                        .unwrap_or_else(|| "not recorded".into()),
+                ),
+            ];
+            if let Some(action_spec_sha256) = action_spec_sha256 {
+                evidence.push(decision_evidence("Action spec", action_spec_sha256));
+            }
+            let mut decision_actions = Vec::new();
+            if context.is_some() {
+                decision_actions.push(DecisionAction::ApproveIntakePlan {
+                    label: "Approve frozen plan".into(),
+                    intake_id: record.id.clone(),
+                    expected_plan_hash: plan_hash.clone(),
+                    expected_profile_revision_id: profile_revision_id.clone(),
+                    expected_profile_hash: profile_hash.clone(),
+                });
+            }
+            decision_actions.push(DecisionAction::CancelIntake {
+                label: "Cancel request".into(),
+                intake_id: record.id.clone(),
+            });
+            items.push(json!({
+                "id": format!("intake-approval:{}", record.id),
+                "kind": "intake.plan-approval",
+                "severity": "attention",
+                "actionable": true,
+                "title": "Frozen plan awaiting approval",
+                "detail": if context.is_some() {
+                    "The frozen plan is ready for exact operator approval. Core revalidates the plan hash, profile revision, scope, route, budget and policy before starting."
+                } else {
+                    "The frozen plan is recorded, but Core cannot derive an authorization for this exact revision. Resolve the reported authority conflict before approval."
+                },
+                "target": format!("/requests/{}", record.id),
+                "subject_id": record.id,
+                "updated_at": lead.updated_at,
+                "revision": decision_revision(&[
+                    "intake.plan-approval",
+                    &record.id,
+                    &plan_hash,
+                    &profile_revision_id,
+                    &profile_hash,
+                    if context.is_some() { "available" } else { "blocked" },
+                ]),
+                "project": decision_project(Some(record.project_id.as_str()), &self.project_by_id),
+                "campaign": Value::Null,
+                "change": change,
+                "risk": risk,
+                "impact": {
+                    "budget": budget,
+                    "permissions": permissions,
+                    "note": "Approval starts a Campaign under the exact frozen plan and budget; the Inbox cannot widen either.",
+                },
+                "evidence": evidence,
+                "blocked_reason": blocked_reason,
+                "actions": decision_actions,
+            }));
+        }
+        Ok(items)
+    }
+
+    fn campaign_items(&self, campaigns: &[Campaign]) -> Vec<Value> {
+        let mut items = Vec::new();
+        for campaign in campaigns
+            .iter()
+            .filter(|campaign| campaign.status == "BLOCKED_AUTHORIZATION")
+        {
+            let action = self.action_by_id.get(campaign.action_id.as_str()).copied();
+            let change = action
+                .map(|action| {
+                    json!({
+                        "summary": action.objective,
+                        "paths": action.spec.allowed_paths,
+                        "acceptance_criteria": action.spec.checks.len(),
+                    })
+                })
+                .unwrap_or_else(|| json!({"summary": "Action specification unavailable"}));
+            let risk = action
+                .map(|action| {
+                    json!({
+                        "class": action.risk,
+                        "summary": "Action risk classification. Review the complete authorization scope before authorizing.",
+                    })
+                })
+                .unwrap_or_else(|| {
+                    json!({
+                        "class": Value::Null,
+                        "summary": "Risk classification is not recorded.",
+                    })
+                });
+            let mut evidence = vec![
+                decision_evidence("Campaign status", campaign.status.clone()),
+                decision_evidence("Recorded", campaign.created_at.clone()),
+            ];
+            if let Some(action) = action {
+                evidence.push(decision_evidence("Action spec", action.spec_sha256.clone()));
+                evidence.push(decision_evidence("Action risk", action.risk.clone()));
+            }
+            items.push(json!({
+                "id": format!("campaign-authorization:{}", campaign.id),
+                "kind": "campaign.authorization",
+                "severity": "attention",
+                "actionable": true,
+                "title": "Campaign awaiting authorization",
+                "detail": format!("Campaign {} is blocked pending a full-scope authorization decision. The Inbox does not post a partial scope; review the exact Campaign and authorize through its complete scope.", campaign.id),
+                "target": format!("/campaigns/{}", campaign.id),
+                "subject_id": campaign.id,
+                "updated_at": campaign.created_at,
+                "revision": decision_revision(&[
+                    "campaign.authorization",
+                    &campaign.id,
+                    &campaign.status,
+                    &campaign.created_at,
+                ]),
+                "project": decision_project(
+                    action.map(|action| action.project_id.as_str()),
+                    &self.project_by_id,
+                ),
+                "campaign": decision_campaign(Some(campaign)),
+                "change": change,
+                "risk": risk,
+                "impact": {
+                    "budget": Value::Null,
+                    "permissions": Value::Null,
+                    "note": "No Campaign authorization is recorded, so no budget or execution permission is reserved. Full scope and delegation must be reviewed before authorizing.",
+                },
+                "evidence": evidence,
+                "blocked_reason": "FULL_SCOPE_AUTHORIZATION_REQUIRED",
+                "actions": vec![DecisionAction::CancelCampaign {
+                    label: "Cancel Campaign".into(),
+                    campaign_id: campaign.id.clone(),
+                }],
+            }));
+        }
+        items
+    }
+
+    async fn lead_items(
+        &self,
+        lead_requests: &[factory_native::db::LeadRequestRecord],
+        intake_lead_ids: &BTreeSet<&str>,
+    ) -> Result<Vec<Value>, Error> {
+        let mut items = Vec::new();
+        for request in lead_requests
+            .iter()
+            .filter(|request| request.state == LeadRequestState::Ready)
+        {
+            if intake_lead_ids.contains(request.id.as_str()) {
+                continue;
+            }
+            let plan = self.app.db.frozen_lead_plan(&request.id).await.ok();
+            let proposal_record = self.app.db.lead_proposal(&request.id).await.ok();
+            let proposal = decision_proposal(
+                proposal_record
+                    .as_ref()
+                    .map(|record| record.proposal_json.as_str()),
+            );
+            let action = self.action_by_id.get(request.action_id.as_str()).copied();
+            let change = proposal
+                .as_ref()
+                .map(decision_change_from_proposal)
+                .unwrap_or_else(|| json!({"summary": request.objective}));
+            let risk = match &proposal {
+                Some(proposal) => json!({
+                    "class": format!("{:?}", proposal.risk_class),
+                    "summary": if proposal.risks.is_empty() {
+                        format!("Frozen plan risk class {:?}.", proposal.risk_class)
+                    } else {
+                        proposal.risks.join("; ")
+                    },
+                }),
+                None => json!({
+                    "class": Value::Null,
+                    "summary": "The frozen risk classification is not recorded.",
+                }),
+            };
+            let budget = proposal
+                .as_ref()
+                .map(decision_scope_from_proposal)
+                .unwrap_or(Value::Null);
+            let permissions = proposal
+                .as_ref()
+                .map(decision_permissions_from_proposal)
+                .unwrap_or(Value::Null);
+            let mut evidence = vec![
+                decision_evidence("Request", request.request_hash.clone()),
+                decision_evidence("Project config", request.project_config_hash.clone()),
+                decision_evidence("Delegation", request.delegation_id.clone()),
+                decision_evidence(
+                    "Assessment",
+                    request
+                        .assessment_mechanism
+                        .clone()
+                        .unwrap_or_else(|| "not recorded".into()),
+                ),
+            ];
+            if let Some(plan) = &plan {
+                evidence.push(decision_evidence("Frozen plan", plan.plan_hash.clone()));
+                evidence.push(decision_evidence(
+                    "Delegation hash",
+                    plan.delegation_hash.clone(),
+                ));
+            }
+            if let Some(action) = action {
+                evidence.push(decision_evidence("Action spec", action.spec_sha256.clone()));
+            }
+            let blocked_reason = if plan.is_none() {
+                Some("FROZEN_PLAN_MISSING")
+            } else if proposal.is_none() {
+                Some("PROPOSAL_MISSING")
+            } else {
+                None
+            };
+            items.push(json!({
+                "id": format!("lead-ready:{}", request.id),
+                "kind": "lead.ready",
+                "severity": "attention",
+                "actionable": true,
+                "title": "Frozen Lead plan ready",
+                "detail": "The frozen Lead plan is ready. Start requires the complete frozen binding and explicit authority in the Lead workspace; the Inbox does not post a partial approval.",
+                "target": "/lead",
+                "subject_id": request.id,
+                "updated_at": request.updated_at,
+                "revision": decision_revision(&[
+                    "lead.ready",
+                    &request.id,
+                    &request.request_hash,
+                    plan.as_ref().map(|plan| plan.plan_hash.as_str()).unwrap_or(""),
+                    &request.updated_at,
+                ]),
+                "project": decision_project(Some(request.project_id.as_str()), &self.project_by_id),
+                "campaign": decision_campaign(
+                    request
+                        .campaign_id
+                        .as_deref()
+                        .and_then(|campaign_id| self.campaign_by_id.get(campaign_id).copied()),
+                ),
+                "change": change,
+                "risk": risk,
+                "impact": {
+                    "budget": budget,
+                    "permissions": permissions,
+                    "note": "Starting the frozen plan creates a Campaign and consumes the recorded plan budget. Review the exact binding in Lead.",
+                },
+                "evidence": evidence,
+                "blocked_reason": blocked_reason,
+                "actions": vec![DecisionAction::WithdrawLead {
+                    label: "Withdraw request".into(),
+                    lead_request_id: request.id.clone(),
+                }],
+            }));
+        }
+        Ok(items)
+    }
+
+    async fn gate_items(
+        &self,
+        candidates: &[factory_native::db::CandidateRecord],
+    ) -> Result<Vec<Value>, Error> {
+        let mut items = Vec::new();
+        for candidate in candidates {
+            let Some(gate) = self.app.db.gate_for_candidate(&candidate.id).await? else {
+                continue;
+            };
+            let needs_attention = matches!(
+                gate.outcome,
+                GateOutcome::RepairRequired
+                    | GateOutcome::Blocked
+                    | GateOutcome::HumanRequired
+                    | GateOutcome::NotTested
+            );
+            if !needs_attention {
+                continue;
+            }
+            let campaign_id = self
+                .attempt_campaign
+                .get(&candidate.attempt_id)
+                .cloned()
+                .unwrap_or_default();
+            let campaign_record = self.campaign_by_id.get(campaign_id.as_str()).copied();
+            let action = campaign_record
+                .and_then(|campaign| self.action_by_id.get(campaign.action_id.as_str()).copied());
+            let target = if campaign_id.is_empty() {
+                "/campaigns".to_owned()
+            } else {
+                format!("/campaigns/{campaign_id}?tab=gate")
+            };
+            let outcome = match gate.outcome {
+                GateOutcome::Accepted => "ACCEPTED",
+                GateOutcome::RepairRequired => "REPAIR_REQUIRED",
+                GateOutcome::Blocked => "BLOCKED",
+                GateOutcome::HumanRequired => "HUMAN_REQUIRED",
+                GateOutcome::NotTested => "NOT_TESTED",
+            };
+            let risk = action
+                .map(|action| {
+                    json!({
+                        "class": action.risk,
+                        "summary": "The gate outcome is bound to the exact candidate and does not grant delivery authority.",
+                    })
+                })
+                .unwrap_or_else(|| {
+                    json!({
+                        "class": Value::Null,
+                        "summary": "Action risk is not recorded.",
+                    })
+                });
+            let mut evidence = vec![
+                decision_evidence("Gate outcome", outcome),
+                decision_evidence(
+                    "Reasons",
+                    if gate.reasons.is_empty() {
+                        "No reason recorded".to_owned()
+                    } else {
+                        gate.reasons.join("; ")
+                    },
+                ),
+                decision_evidence("Candidate commit", candidate.commit_sha.clone()),
+                decision_evidence("Candidate tree", candidate.tree_sha.clone()),
+                decision_evidence("Decided", gate.decided_at.clone()),
+            ];
+            if let Some(action) = action {
+                evidence.push(decision_evidence("Action spec", action.spec_sha256.clone()));
+            }
+            items.push(json!({
+                "id": format!("candidate-gate:{}", candidate.id),
+                "kind": "quality.gate",
+                "severity": if matches!(gate.outcome, GateOutcome::HumanRequired | GateOutcome::Blocked) { "critical" } else { "attention" },
+                "actionable": true,
+                "title": format!("Quality Gate: {outcome}"),
+                "detail": format!("Candidate {} for Campaign {} needs operator attention. {}", candidate.id, if campaign_id.is_empty() { "unknown" } else { &campaign_id }, gate.reasons.join("; ")),
+                "target": target,
+                "subject_id": candidate.id,
+                "updated_at": gate.decided_at,
+                "revision": decision_revision(&[
+                    "quality.gate",
+                    &candidate.id,
+                    outcome,
+                    &gate.decided_at,
+                    &candidate.commit_sha,
+                ]),
+                "project": decision_project(
+                    action.map(|action| action.project_id.as_str()),
+                    &self.project_by_id,
+                ),
+                "campaign": decision_campaign(campaign_record),
+                "change": {
+                    "summary": format!("Candidate {} at commit {}.", candidate.id, candidate.commit_sha),
+                    "paths": [],
+                },
+                "risk": risk,
+                "impact": {
+                    "budget": Value::Null,
+                    "permissions": Value::Null,
+                    "note": "A gate outcome does not reserve budget. Repair requires a new authorized attempt or Campaign cancellation; no Inbox mutation is exposed.",
+                },
+                "evidence": evidence,
+                "blocked_reason": "GATE_REVIEW_REQUIRED",
+                "actions": Vec::<DecisionAction>::new(),
+            }));
+        }
+        Ok(items)
+    }
+
+    fn model_call_items(&self, model_calls: &[factory_native::db::ModelCallRecord]) -> Vec<Value> {
+        let mut items = Vec::new();
+        for call in model_calls {
+            items.push(json!({
+                "id": format!("model-call:{}", call.reservation_id),
+                "kind": "model.usage-unresolved",
+                "severity": "critical",
+                "actionable": true,
+                "title": "Unresolved model reservation",
+                "detail": format!("{} model call {} is {}. The reservation remains unavailable for reuse until an operator releases it; it is not measured spend.", call.provider, call.reservation_id, call.state),
+                "target": "/runtime",
+                "subject_id": call.reservation_id,
+                "updated_at": call.updated_at,
+                "revision": decision_revision(&[
+                    "model.usage-unresolved",
+                    &call.reservation_id,
+                    &call.state,
+                    &call.updated_at,
+                    if call.usage_known { "measured" } else { "unmeasured" },
+                ]),
+                "project": decision_project(Some(call.project_id.as_str()), &self.project_by_id),
+                "campaign": Value::Null,
+                "change": {
+                    "summary": format!("Reservation {} for {}.", call.reservation_id, call.purpose),
+                },
+                "risk": {
+                    "class": Value::Null,
+                    "summary": "The reservation is unresolved and is not measured spend.",
+                },
+                "impact": {
+                    "budget": {
+                        "max_cost_micros": call.max_cost_micros,
+                        "cost_micros": call.cost_micros,
+                        "usage_known": call.usage_known,
+                    },
+                    "permissions": Value::Null,
+                    "note": "Releasing the reservation does not measure usage or spend; it only returns the reserved capacity.",
+                },
+                "evidence": [
+                    decision_evidence("Provider", format!("{}/{}", call.provider, call.model)),
+                    decision_evidence("State", call.state.clone()),
+                    decision_evidence("Request", call.request_sha256.clone()),
+                    decision_evidence("Created", call.created_at.clone()),
+                ],
+                "blocked_reason": Value::Null,
+                "actions": vec![DecisionAction::ResolveModelCall {
+                    label: "Release reservation".into(),
+                    model_call_id: call.reservation_id.clone(),
+                }],
+            }));
+        }
+        items
+    }
+
+    fn session_items(&self, sessions: &[factory_native::db::ProviderSessionRecord]) -> Vec<Value> {
+        let mut items = Vec::new();
+        for session in sessions.iter().filter(|session| {
+            matches!(
+                session.state.as_str(),
+                "INTENT" | "ACTIVE" | "CANCEL_REQUESTED" | "ORPHANED"
+            )
+        }) {
+            let campaign_id = self
+                .attempt_campaign
+                .get(&session.attempt_id)
+                .cloned()
+                .unwrap_or_default();
+            let campaign_record = self.campaign_by_id.get(campaign_id.as_str()).copied();
+            let action = campaign_record
+                .and_then(|campaign| self.action_by_id.get(campaign.action_id.as_str()).copied());
+            items.push(json!({
+                "id": format!("provider-session:{}", session.session_record_id),
+                "kind": "provider.unresolved-session",
+                "severity": "attention",
+                "actionable": false,
+                "title": "Provider session requires monitoring",
+                "detail": format!("Provider session {} for Attempt {} is {}. External termination may be unconfirmed.", session.session_record_id, session.attempt_id, session.state),
+                "target": "/runtime",
+                "subject_id": session.session_record_id,
+                "updated_at": session.updated_at,
+                "revision": decision_revision(&[
+                    "provider.unresolved-session",
+                    &session.session_record_id,
+                    &session.state,
+                    &session.updated_at,
+                ]),
+                "project": decision_project(
+                    action.map(|action| action.project_id.as_str()),
+                    &self.project_by_id,
+                ),
+                "campaign": decision_campaign(campaign_record),
+                "change": {
+                    "summary": format!("Provider session {} is {}.", session.session_record_id, session.state),
+                },
+                "risk": {
+                    "class": Value::Null,
+                    "summary": "External termination may be unconfirmed; Core state is authoritative.",
+                },
+                "impact": {
+                    "budget": {
+                        "cost_micros": session.cost_micros,
+                        "usage_known": session.usage_known,
+                    },
+                    "permissions": Value::Null,
+                    "note": "Monitoring only. No Inbox mutation is exposed.",
+                },
+                "evidence": [
+                    decision_evidence("Attempt", session.attempt_id.clone()),
+                    decision_evidence("State", session.state.clone()),
+                    decision_evidence("Provider", format!("{}/{}", session.provider, session.model)),
+                    decision_evidence("Updated", session.updated_at.clone()),
+                ],
+                "blocked_reason": Value::Null,
+                "actions": Vec::<DecisionAction>::new(),
+            }));
+        }
+        items
+    }
+
+    fn run_items(&self, runs: &[factory_native::db::Run]) -> Vec<Value> {
+        let mut items = Vec::new();
+        for run in runs
+            .iter()
+            .filter(|run| matches!(run.status.as_str(), "FAILED" | "REJECTED"))
+        {
+            let campaign_id = self.run_campaign.get(&run.id).cloned().unwrap_or_default();
+            let campaign_record = self.campaign_by_id.get(campaign_id.as_str()).copied();
+            let action = campaign_record
+                .and_then(|campaign| self.action_by_id.get(campaign.action_id.as_str()).copied());
+            items.push(json!({
+                "id": format!("run:{}", run.id),
+                "kind": "run.failed",
+                "severity": "attention",
+                "actionable": false,
+                "title": "Run failed",
+                "detail": format!("Run {} for Campaign {} is {}.", run.id, if campaign_id.is_empty() { "unknown" } else { &campaign_id }, run.status),
+                "target": if campaign_id.is_empty() { "/campaigns".to_owned() } else { format!("/campaigns/{campaign_id}") },
+                "subject_id": run.id,
+                "updated_at": run.created_at,
+                "revision": decision_revision(&[
+                    "run.failed",
+                    &run.id,
+                    &run.status,
+                    &run.created_at,
+                ]),
+                "project": decision_project(
+                    action.map(|action| action.project_id.as_str()),
+                    &self.project_by_id,
+                ),
+                "campaign": decision_campaign(campaign_record),
+                "change": {
+                    "summary": format!("Run {} is {}.", run.id, run.status),
+                },
+                "risk": {
+                    "class": Value::Null,
+                    "summary": "A failed Run does not change the Campaign authorization or budget by itself.",
+                },
+                "impact": {
+                    "budget": Value::Null,
+                    "permissions": Value::Null,
+                    "note": "Monitoring only. Inspect the Campaign for the recorded failure.",
+                },
+                "evidence": [
+                    decision_evidence("Run", run.id.clone()),
+                    decision_evidence("State", run.status.clone()),
+                    decision_evidence("Created", run.created_at.clone()),
+                ],
+                "blocked_reason": Value::Null,
+                "actions": Vec::<DecisionAction>::new(),
+            }));
+        }
+        items
+    }
+
+    fn action_items(&self, actions: &[Action]) -> Vec<Value> {
+        let mut items = Vec::new();
+        for action in actions
+            .iter()
+            .filter(|action| action.status == "HUMAN_REQUIRED")
+        {
+            items.push(json!({
+                "id": format!("action:{}", action.id),
+                "kind": "action.human-required",
+                "severity": "attention",
+                "actionable": false,
+                "title": "Action is HUMAN_REQUIRED",
+                "detail": format!("Action {} needs review outside the Inbox; no Inbox mutation is exposed.", action.id),
+                "target": format!("/actions/{}", action.id),
+                "subject_id": action.id,
+                "updated_at": action.created_at,
+                "revision": decision_revision(&[
+                    "action.human-required",
+                    &action.id,
+                    &action.status,
+                    &action.created_at,
+                ]),
+                "project": decision_project(Some(action.project_id.as_str()), &self.project_by_id),
+                "campaign": Value::Null,
+                "change": {
+                    "summary": action.objective.clone(),
+                },
+                "risk": {
+                    "class": action.risk.clone(),
+                    "summary": "The Action requires a human decision; Core does not expose an Inbox mutation.",
+                },
+                "impact": {
+                    "budget": Value::Null,
+                    "permissions": Value::Null,
+                    "note": "No Inbox mutation is exposed. Inspect the Action workspace.",
+                },
+                "evidence": [
+                    decision_evidence("Action status", action.status.clone()),
+                    decision_evidence("Action spec", action.spec_sha256.clone()),
+                ],
+                "blocked_reason": Value::Null,
+                "actions": Vec::<DecisionAction>::new(),
+            }));
+        }
+        items
+    }
+}
+
 async fn build_decisions(app: &App) -> Result<Vec<serde_json::Value>, Error> {
     let campaigns = app.db.campaigns().await?;
     let runs = app.db.runs().await?;
@@ -1737,157 +6672,43 @@ async fn build_decisions(app: &App) -> Result<Vec<serde_json::Value>, Error> {
     let sessions = app.db.provider_sessions().await?;
     let model_calls = app.db.unresolved_model_calls().await?;
     let actions = app.db.actions().await?;
+    let projects = app.db.projects().await?;
+    let intake_requests = app.db.intake_requests().await?;
     let (run_campaign, attempt_campaign) = campaign_map(&runs, &attempts);
+    let projection = DecisionProjection {
+        app,
+        campaign_by_id: campaigns
+            .iter()
+            .map(|campaign| (campaign.id.as_str(), campaign))
+            .collect(),
+        action_by_id: actions
+            .iter()
+            .map(|action| (action.id.as_str(), action))
+            .collect(),
+        project_by_id: projects
+            .iter()
+            .map(|project| (project.id.as_str(), project))
+            .collect(),
+        run_campaign,
+        attempt_campaign,
+    };
+    let intake_lead_ids: BTreeSet<&str> = intake_requests
+        .iter()
+        .map(|request| request.lead_request_id.as_str())
+        .collect();
     let mut items = Vec::new();
-
-    for campaign in campaigns
-        .iter()
-        .filter(|campaign| campaign.status == "BLOCKED_AUTHORIZATION")
-    {
-        items.push(json!({
-            "id": format!("campaign-authorization:{}", campaign.id),
-            "kind": "campaign.authorization",
-            "severity": "attention",
-            "actionable": true,
-            "title": "Campaign awaiting authorization",
-            "detail": format!("Campaign {} is blocked pending an explicit authorization decision.", campaign.id),
-            "target": "/campaigns",
-            "subject_id": campaign.id,
-            "updated_at": campaign.created_at,
-        }));
-    }
-
-    for request in lead_requests
-        .iter()
-        .filter(|request| request.state == LeadRequestState::Ready)
-    {
-        items.push(json!({
-            "id": format!("lead-ready:{}", request.id),
-            "kind": "lead.ready",
-            "severity": "attention",
-            "actionable": true,
-            "title": "Frozen Lead plan ready",
-            "detail": format!("Lead request {} has a frozen plan and needs an explicit start decision.", request.id),
-            "target": "/lead",
-            "subject_id": request.id,
-            "updated_at": request.updated_at,
-        }));
-    }
-
-    for candidate in &candidates {
-        let Some(gate) = app.db.gate_for_candidate(&candidate.id).await? else {
-            continue;
-        };
-        let needs_attention = matches!(
-            gate.outcome,
-            GateOutcome::RepairRequired
-                | GateOutcome::Blocked
-                | GateOutcome::HumanRequired
-                | GateOutcome::NotTested
-        );
-        if !needs_attention {
-            continue;
-        }
-        let campaign = attempt_campaign
-            .get(&candidate.attempt_id)
-            .cloned()
-            .unwrap_or_default();
-        let target = if campaign.is_empty() {
-            "/campaigns".to_owned()
-        } else {
-            format!("/campaigns/{campaign}")
-        };
-        items.push(json!({
-            "id": format!("candidate-gate:{}", candidate.id),
-            "kind": "quality.gate",
-            "severity": if matches!(gate.outcome, GateOutcome::HumanRequired | GateOutcome::Blocked) { "critical" } else { "attention" },
-            "actionable": true,
-            "title": format!("Quality Gate: {}", match gate.outcome {
-                GateOutcome::Accepted => "ACCEPTED",
-                GateOutcome::RepairRequired => "REPAIR_REQUIRED",
-                GateOutcome::Blocked => "BLOCKED",
-                GateOutcome::HumanRequired => "HUMAN_REQUIRED",
-                GateOutcome::NotTested => "NOT_TESTED",
-            }),
-            "detail": format!("Candidate {} for Campaign {} needs operator attention. {}", candidate.id, if campaign.is_empty() { "unknown" } else { &campaign }, gate.reasons.join("; ")),
-            "target": target,
-            "subject_id": candidate.id,
-            "updated_at": gate.decided_at,
-        }));
-    }
-
-    for call in &model_calls {
-        items.push(json!({
-            "id": format!("model-call:{}", call.reservation_id),
-            "kind": "model.usage-unresolved",
-            "severity": "critical",
-            "actionable": true,
-            "title": "Unresolved model reservation",
-            "detail": format!("{} model call {} is {}. The reservation remains unavailable for reuse until an operator releases it; it is not measured spend.", call.provider, call.reservation_id, call.state),
-            "target": "/runtime",
-            "subject_id": call.reservation_id,
-            "updated_at": call.updated_at,
-            "action": {
-                "kind": "resolve_model_call",
-                "model_call_id": call.reservation_id,
-                "label": "Release reservation"
-            }
-        }));
-    }
-
-    for session in sessions.iter().filter(|session| {
-        matches!(
-            session.state.as_str(),
-            "INTENT" | "ACTIVE" | "CANCEL_REQUESTED" | "ORPHANED"
-        )
-    }) {
-        items.push(json!({
-            "id": format!("provider-session:{}", session.session_record_id),
-            "kind": "provider.unresolved-session",
-            "severity": "attention",
-            "actionable": false,
-            "title": "Provider session requires monitoring",
-            "detail": format!("Provider session {} for Attempt {} is {}. External termination may be unconfirmed.", session.session_record_id, session.attempt_id, session.state),
-            "target": "/runtime",
-            "subject_id": session.session_record_id,
-            "updated_at": session.updated_at,
-        }));
-    }
-
-    for run in runs
-        .iter()
-        .filter(|run| matches!(run.status.as_str(), "FAILED" | "REJECTED"))
-    {
-        let campaign = run_campaign.get(&run.id).cloned().unwrap_or_default();
-        items.push(json!({
-            "id": format!("run:{}", run.id),
-            "kind": "run.failed",
-            "severity": "attention",
-            "actionable": false,
-            "title": "Run failed",
-            "detail": format!("Run {} for Campaign {} is {}.", run.id, if campaign.is_empty() { "unknown" } else { &campaign }, run.status),
-            "target": if campaign.is_empty() { "/campaigns".to_owned() } else { format!("/campaigns/{campaign}") },
-            "subject_id": run.id,
-            "updated_at": run.created_at,
-        }));
-    }
-
-    for action in actions
-        .iter()
-        .filter(|action| action.status == "HUMAN_REQUIRED")
-    {
-        items.push(json!({
-            "id": format!("action:{}", action.id),
-            "kind": "action.human-required",
-            "severity": "attention",
-            "actionable": false,
-            "title": "Action is HUMAN_REQUIRED",
-            "detail": format!("Action {} needs review outside the Inbox; no Inbox mutation is exposed.", action.id),
-            "target": format!("/actions/{}", action.id),
-            "subject_id": action.id,
-            "updated_at": action.created_at,
-        }));
-    }
+    items.extend(projection.intake_items(&intake_requests).await?);
+    items.extend(projection.campaign_items(&campaigns));
+    items.extend(
+        projection
+            .lead_items(&lead_requests, &intake_lead_ids)
+            .await?,
+    );
+    items.extend(projection.gate_items(&candidates).await?);
+    items.extend(projection.model_call_items(&model_calls));
+    items.extend(projection.session_items(&sessions));
+    items.extend(projection.run_items(&runs));
+    items.extend(projection.action_items(&actions));
 
     let mut seen = BTreeSet::new();
     items.retain(|item| {
@@ -2250,57 +7071,54 @@ async fn campaign_detail(
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let campaign = match app.db.campaign(&id).await {
-        Ok(campaign) => campaign,
-        Err(error) => return api_error(error),
-    };
-    let authorization = app.db.campaign_authorization(&id).await.ok();
-    let tasks = match app.db.campaign_tasks(&id).await {
-        Ok(tasks) => tasks,
-        Err(error) => return api_error(error),
-    };
-    let runs = match app.db.runs().await {
-        Ok(runs) => runs
-            .into_iter()
-            .filter(|run| run.campaign_id == id)
-            .collect::<Vec<_>>(),
-        Err(error) => return api_error(error),
-    };
+    match campaign_detail_projection(&app, &id).await {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+/// Shared Campaign detail projection used by the Campaign route and the
+/// unified-intake projection. It never infers a status beyond recorded rows.
+async fn campaign_detail_projection(app: &App, id: &str) -> Result<serde_json::Value, Error> {
+    let campaign = app.db.campaign(id).await?;
+    let authorization = app.db.campaign_authorization(id).await.ok();
+    let tasks = app.db.campaign_tasks(id).await?;
+    let runs = app
+        .db
+        .runs()
+        .await?
+        .into_iter()
+        .filter(|run| run.campaign_id == id)
+        .collect::<Vec<_>>();
     let run_ids: std::collections::BTreeSet<String> =
         runs.iter().map(|run| run.id.clone()).collect();
-    let attempts = match app.db.attempts().await {
-        Ok(attempts) => attempts
-            .into_iter()
-            .filter(|attempt| run_ids.contains(&attempt.run_id))
-            .collect::<Vec<_>>(),
-        Err(error) => return api_error(error),
-    };
+    let attempts = app
+        .db
+        .attempts()
+        .await?
+        .into_iter()
+        .filter(|attempt| run_ids.contains(&attempt.run_id))
+        .collect::<Vec<_>>();
     let attempt_ids: std::collections::BTreeSet<String> =
         attempts.iter().map(|attempt| attempt.id.clone()).collect();
-    let candidates = match app.db.candidates().await {
-        Ok(candidates) => candidates
-            .into_iter()
-            .filter(|candidate| attempt_ids.contains(&candidate.attempt_id))
-            .collect::<Vec<_>>(),
-        Err(error) => return api_error(error),
-    };
-    let lead_requests = match app.db.lead_requests().await {
-        Ok(requests) => requests,
-        Err(error) => return api_error(error),
-    };
+    let candidates = app
+        .db
+        .candidates()
+        .await?
+        .into_iter()
+        .filter(|candidate| attempt_ids.contains(&candidate.attempt_id))
+        .collect::<Vec<_>>();
+    let lead_requests = app.db.lead_requests().await?;
     let related_requests = lead_requests
         .iter()
         .filter(|request| {
-            request.campaign_id.as_deref() == Some(id.as_str())
+            request.campaign_id.as_deref() == Some(id)
                 || tasks.iter().any(|task| task.request_id == request.id)
         })
         .collect::<Vec<_>>();
-    let events = match app.db.events().await {
-        Ok(events) => events,
-        Err(error) => return api_error(error),
-    };
+    let events = app.db.events().await?;
     let mut related_subjects: std::collections::BTreeSet<String> =
-        std::collections::BTreeSet::from([id.clone()]);
+        std::collections::BTreeSet::from([id.to_owned()]);
     for request in &related_requests {
         related_subjects.insert(request.id.clone());
         related_subjects.insert(request.delegation_id.clone());
@@ -2327,16 +7145,30 @@ async fn campaign_detail(
         .into_iter()
         .filter(|event| related_subjects.contains(&event.subject_id))
         .collect::<Vec<_>>();
-    Json(json!({
+    let inference = match app.db.inference_envelope_for_campaign(id).await? {
+        Some(envelope) => {
+            let status = app
+                .db
+                .inference_spending_status(&envelope.envelope_id)
+                .await?;
+            json!({
+                "envelope": envelope,
+                "status": status,
+                "legacyEvidenceExcluded": true,
+            })
+        }
+        None => Value::Null,
+    };
+    Ok(json!({
         "campaign": campaign,
         "authorization": authorization,
+        "inference": inference,
         "tasks": tasks,
         "runs": runs,
         "attempts": attempts,
         "candidates": candidates,
         "events": events
     }))
-    .into_response()
 }
 
 async fn candidate_diff(
@@ -2388,6 +7220,46 @@ async fn candidate_diff(
     let Some(action) = action else {
         return StatusCode::NOT_FOUND.into_response();
     };
+    // A Lead WorkUnit candidate is bound to its exact Attempt spec; the
+    // Campaign also has a root ActionSpec. Accept either the legacy root match
+    // or the exact attempt spec, but never an unrelated spec. For Lead
+    // Campaigns the frozen WorkGraph lineage is revalidated.
+    let root_spec_matches = candidate
+        .action_spec_sha256
+        .eq_ignore_ascii_case(&action.spec_sha256);
+    if !root_spec_matches {
+        let (attempt_action_id, attempt_spec_sha) =
+            match app.db.attempt_spec_identity(&candidate.attempt_id).await {
+                Ok(value) => value,
+                Err(error) => return api_error(error),
+            };
+        if attempt_action_id != action.id
+            || !candidate
+                .action_spec_sha256
+                .eq_ignore_ascii_case(&attempt_spec_sha)
+        {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": "candidate ActionSpec hash does not match the exact execution spec",
+                    "candidate_id": candidate.id,
+                    "kind": "SPEC_MISMATCH",
+                })),
+            )
+                .into_response();
+        }
+        if let Err(error) = app.db.validate_attempt_lineage(&candidate.attempt_id).await {
+            return api_error(error);
+        }
+    }
+    let project = match app.db.project(&action.project_id).await {
+        Ok(project) => project,
+        Err(error) => return api_error(error),
+    };
+    let gate = match app.db.gate_for_candidate(&candidate.id).await {
+        Ok(gate) => gate,
+        Err(error) => return api_error(error),
+    };
     let tasks = match app.db.campaign_tasks(&campaign.id).await {
         Ok(tasks) => tasks,
         Err(error) => return api_error(error),
@@ -2397,40 +7269,98 @@ async fn candidate_diff(
         .find(|task| task.candidate_id.as_deref() == Some(candidate.id.as_str()))
         .map(|task| task.base_commit.clone())
         .unwrap_or_else(|| action.spec.base_commit.clone());
-    let repository = Path::new(&action.spec.repository);
-    let changed_paths = match factory_native::workspace::changed_paths(
+    let repository = Path::new(&project.repository);
+    let projection = match factory_native::candidate_diff::project_candidate_diff(
+        &project.id,
         repository,
+        &project.identity,
         &base_commit,
         &candidate.commit_sha,
+        &candidate.tree_sha,
     ) {
-        Ok(paths) => paths,
-        Err(_) => {
-            return (
-                StatusCode::CONFLICT,
-                Json(json!({
-                    "error": "candidate diff summary is unavailable for the recorded revision",
-                    "candidate_id": candidate.id,
-                })),
-            )
-                .into_response();
-        }
+        Ok(projection) => projection,
+        Err(error) => return candidate_diff_error(error, &candidate.id),
     };
     let diff_stat =
         factory_native::workspace::diff_stat(repository, &base_commit, &candidate.commit_sha)
             .unwrap_or_else(|_| "diff stat unavailable".to_owned());
-    let changed_paths_truncated = changed_paths.len() > 200;
-    let changed_paths = changed_paths.into_iter().take(200).collect::<Vec<_>>();
+    let changed_paths = projection
+        .files
+        .iter()
+        .map(|file| file.path.clone())
+        .collect::<Vec<_>>();
     Json(json!({
         "candidate_id": candidate.id,
+        "candidate": {
+            "id": candidate.id,
+            "attempt_id": candidate.attempt_id,
+            "action_spec_sha256": candidate.action_spec_sha256,
+            "commit_sha": candidate.commit_sha,
+            "tree_sha": candidate.tree_sha,
+            "implementer_id": candidate.implementer_id,
+            "created_at": candidate.created_at,
+            "integration": candidate.integration,
+            "lineage": candidate.lineage,
+        },
+        "gate": gate.map(|gate| json!({
+            "candidate_id": gate.candidate_id,
+            "outcome": gate.outcome,
+            "reasons": gate.reasons,
+            "decided_at": gate.decided_at,
+        })),
+        "project_id": project.id,
+        "campaign_id": campaign.id,
         "commit_sha": candidate.commit_sha,
         "tree_sha": candidate.tree_sha,
-        "base_commit": base_commit,
+        "base_commit": projection.base.commit,
+        "base_tree_sha": projection.base.tree,
         "changed_paths": changed_paths,
-        "changed_paths_truncated": changed_paths_truncated,
+        "changed_paths_truncated": projection.files_truncated,
         "diff_stat": diff_stat,
-        "source": "Core read-only Git diff summary; file bodies are not exposed",
+        "files": projection.files,
+        "returned_files": projection.returned_files,
+        "files_truncated": projection.files_truncated,
+        "total_additions": projection.total_additions,
+        "total_deletions": projection.total_deletions,
+        "patch_bytes": projection.patch_bytes,
+        "patch_truncated": projection.patch_truncated,
+        "source": projection.provenance,
     }))
     .into_response()
+}
+
+fn candidate_diff_error(
+    error: factory_native::candidate_diff::CandidateDiffError,
+    candidate_id: &str,
+) -> Response {
+    use factory_native::candidate_diff::CandidateDiffError;
+    let (status, kind, detail) = match &error {
+        CandidateDiffError::Invalid(message) => (
+            StatusCode::BAD_REQUEST,
+            "INVALID_REQUEST",
+            Some(message.clone()),
+        ),
+        CandidateDiffError::NotFound => (StatusCode::CONFLICT, "REVISION_UNAVAILABLE", None),
+        CandidateDiffError::Stale => (StatusCode::CONFLICT, "STALE_IDENTITY", None),
+        CandidateDiffError::IdentityMismatch(message) => (
+            StatusCode::CONFLICT,
+            "IDENTITY_MISMATCH",
+            Some(message.clone()),
+        ),
+        CandidateDiffError::Git { .. } | CandidateDiffError::Io(_) => {
+            (StatusCode::SERVICE_UNAVAILABLE, "UNAVAILABLE", None)
+        }
+    };
+    (
+        status,
+        Json(json!({
+            "error": "candidate diff projection is unavailable for the recorded revision",
+            "kind": kind,
+            "detail": detail,
+            "candidate_id": candidate_id,
+        })),
+    )
+        .into_response()
 }
 
 async fn cancel_campaign(
@@ -2692,7 +7622,18 @@ async fn worker_workspace_operation(
     {
         Ok(authorization) => {
             let now_ms = chrono::Utc::now().timestamp_millis();
-            let expires_at_ms = now_ms.saturating_add(5_000);
+            // Long-running execute/run/integrate grants are revalidated against
+            // Core every 500 ms by the Supervisor fence. A short signature
+            // lifetime made that fence cancel commands that legitimately
+            // outlived it. Write/apply/finalize are quick, unfenced mutations
+            // and keep a short admission lifetime so revocation remains fresh.
+            let lifetime_ms = if matches!(input.operation.as_str(), "execute" | "run" | "integrate")
+            {
+                WORKSPACE_OPERATION_GRANT_MILLIS
+            } else {
+                5_000
+            };
+            let expires_at_ms = now_ms.saturating_add(lifetime_ms);
             let claims = factory_native::attempt_grant::OperationGrantClaims {
                 attempt_id: authorization.attempt_id,
                 worker_id: authorization.worker_id,
@@ -3098,12 +8039,35 @@ async fn model_call(
         )
             .into_response();
     }
-    let Some(gateway) = app.current_model_gateway().await else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({"error":"model gateway is not configured"})),
-        )
-            .into_response();
+    let gateway = match role {
+        factory_native::db::ModelCallRole::SemanticReviewer => {
+            app.semantic_reviewer_gateway(&input.objective_id).await
+        }
+        factory_native::db::ModelCallRole::Evaluation => app
+            .current_model_gateway()
+            .await
+            .ok_or_else(|| factory_native::model_routing::RouteError::Invalid {
+                provider: String::new(),
+                model: String::new(),
+                detail: "the deployment default model gateway is not configured".into(),
+            }),
+        factory_native::db::ModelCallRole::Lead => {
+            return StatusCode::UNAUTHORIZED.into_response();
+        }
+    };
+    let gateway = match gateway {
+        Ok(gateway) => gateway,
+        Err(route_error) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "error": route_error.to_string(),
+                    "code": "MODEL_ROUTE_UNAVAILABLE",
+                    "routeCode": route_error.code(),
+                })),
+            )
+                .into_response();
+        }
     };
     match gateway
         .call(
@@ -3147,26 +8111,6 @@ async fn model_call(
     }
 }
 
-fn reviewer_receipt_mechanism_allowed(
-    semantic_review_enabled: bool,
-    gateway_configured: bool,
-    mechanism: factory_native::db::ReviewMechanism,
-) -> Result<(), &'static str> {
-    if mechanism == factory_native::db::ReviewMechanism::Model {
-        if !semantic_review_enabled {
-            return Err("semantic review is disabled by the operator");
-        }
-        if !gateway_configured {
-            return Err("semantic review requires a configured default model gateway");
-        }
-        return Ok(());
-    }
-    if semantic_review_enabled && gateway_configured {
-        return Err("semantic review is enabled; reviewer must submit MODEL evidence");
-    }
-    Ok(())
-}
-
 async fn quality_receipt(State(app): State<Arc<App>>, headers: HeaderMap, body: Bytes) -> Response {
     let Some(role) = quality_role(&app, &headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
@@ -3181,26 +8125,6 @@ async fn quality_receipt(State(app): State<Arc<App>>, headers: HeaderMap, body: 
                 .into_response();
         }
     };
-    if role == QualityRole::Reviewer {
-        let settings = match app.db.factory_settings().await {
-            Ok(settings) => settings,
-            Err(error) => return api_error(error),
-        };
-        let gateway_configured = app.current_model_gateway().await.is_some();
-        if let Err(message) = reviewer_receipt_mechanism_allowed(
-            settings.semantic_review_enabled,
-            gateway_configured,
-            input.mechanism,
-        ) {
-            let status = if message == "semantic review requires a configured default model gateway"
-            {
-                StatusCode::SERVICE_UNAVAILABLE
-            } else {
-                StatusCode::FORBIDDEN
-            };
-            return (status, Json(json!({"error": message}))).into_response();
-        }
-    }
     let receipt = QualityReceiptInput {
         receipt_id: input.receipt_id,
         principal_id: input.principal_id,
@@ -3276,11 +8200,29 @@ async fn get_delegation(
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    match app.db.standing_delegation(&id).await {
-        Ok(delegation) => match app.db.delegation_usage(&id).await {
-            Ok(usage) => Json(json!({"delegation":delegation,"usage":usage})).into_response(),
-            Err(error) => api_error(error),
-        },
+    let usage = match app.db.delegation_usage(&id).await {
+        Ok(usage) => usage,
+        Err(error) => return api_error(error),
+    };
+    match app.db.standing_delegation_v2(&id).await {
+        Ok(delegation) => Json(json!({
+            "delegation": delegation,
+            "usage": usage,
+            "schemaVersion": 2,
+        }))
+        .into_response(),
+        Err(Error::NotFound) | Err(Error::Forbidden(_)) => {
+            match app.db.standing_delegation(&id).await {
+                Ok(delegation) => Json(json!({
+                    "delegation": delegation,
+                    "usage": usage,
+                    "schemaVersion": 1,
+                    "historical": true,
+                }))
+                .into_response(),
+                Err(error) => api_error(error),
+            }
+        }
         Err(error) => api_error(error),
     }
 }
@@ -3306,11 +8248,14 @@ async fn revoke_delegation(
 async fn create_lead_request(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
     Json(input): Json<NewLeadRequest>,
 ) -> Response {
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
+    let (principal_id, _) =
+        authenticated_operator(session.as_ref().map(|Extension(device)| device));
     match app
         .db
         .create_lead_request(
@@ -3323,15 +8268,56 @@ async fn create_lead_request(
         )
         .await
     {
-        Ok((request, created)) => (
-            if created {
-                StatusCode::CREATED
-            } else {
-                StatusCode::OK
-            },
-            Json(request),
-        )
-            .into_response(),
+        Ok((request, created)) => {
+            if let Some(authorized_micros) = input.authorized_micros {
+                let action = match app.db.action(&request.action_id).await {
+                    Ok(action) => action,
+                    Err(error) => return api_error(error),
+                };
+                let grant = match app.db.standing_delegation_v2(&request.delegation_id).await {
+                    Ok(grant) => grant,
+                    Err(error) => return api_error(error),
+                };
+                if let Err(error) = ensure_inference_pricing_quote(
+                    &app,
+                    &grant.route.provider,
+                    &grant.route.model,
+                    &principal_id,
+                )
+                .await
+                {
+                    return api_error(error);
+                }
+                if let Err(error) = ensure_request_inference_envelope(
+                    &app,
+                    &request.id,
+                    &request.project_id,
+                    Some(authorized_micros),
+                    &principal_id,
+                    &request_scope_digest(&[
+                        "lead-request-scope",
+                        &request.project_id,
+                        &request.action_id,
+                        &grant.id,
+                        &action.spec_sha256,
+                    ]),
+                    &request.request_hash,
+                )
+                .await
+                {
+                    return api_error(error);
+                }
+            }
+            (
+                if created {
+                    StatusCode::CREATED
+                } else {
+                    StatusCode::OK
+                },
+                Json(request),
+            )
+                .into_response()
+        }
         Err(error) => api_error(error),
     }
 }
@@ -3348,6 +8334,11 @@ async fn assess_lead_request(
         Ok(request) => request,
         Err(error) => return api_error(error),
     };
+    match app.db.lead_withdrawal(&id).await {
+        Ok(Some(_)) => return api_error(Error::Withdrawn),
+        Ok(None) => {}
+        Err(error) => return api_error(error),
+    }
     let config = match app.db.project_config(&request.project_id).await {
         Ok(config) => config,
         Err(error) => return api_error(error),
@@ -3356,7 +8347,7 @@ async fn assess_lead_request(
         Ok(action) => action,
         Err(error) => return api_error(error),
     };
-    let grant = match app.db.standing_delegation(&request.delegation_id).await {
+    let grant = match app.db.standing_delegation_v2(&request.delegation_id).await {
         Ok(grant) => grant,
         Err(error) => return api_error(error),
     };
@@ -3367,6 +8358,33 @@ async fn assess_lead_request(
             Json(json!({"error":"no model gateway is authorized; configure FACTORY_MODEL_URL or set FACTORY_LEAD_FIXTURE_ASSESSOR=1 only for deterministic tests"})),
         )
             .into_response();
+    }
+    if let Some(gateway) = &current_gateway {
+        // The assessment is billable. It must be charged to the one request
+        // envelope created from the operator's explicit amount; never dispatch
+        // a paid call without one.
+        match app.db.inference_envelope_for_request(&id).await {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                return api_error(Error::IntakeConflict {
+                    code: "INFERENCE_AUTHORIZATION_REQUIRED",
+                    message:
+                        "billable Lead assessment requires an explicit operator-authorized monetary amount at request creation"
+                            .into(),
+                });
+            }
+            Err(error) => return api_error(error),
+        }
+        if let Err(error) = ensure_inference_pricing_quote(
+            &app,
+            gateway.provider(),
+            gateway.model(),
+            "lead-assessment",
+        )
+        .await
+        {
+            return api_error(error);
+        }
     }
     if request.state == factory_native::lead::LeadRequestState::Submitted
         && let Err(error) = app.db.begin_lead_assessment(&id).await
@@ -3510,12 +8528,12 @@ async fn freeze_lead_request(
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let plan = match app.db.freeze_lead_plan(&id, &format!("freeze:{id}")).await {
-        Ok(plan) => plan,
-        Err(error) => return api_error(error),
-    };
-    let request = match app.db.mark_lead_ready(&id).await {
-        Ok(request) => request,
+    let (plan, request) = match app
+        .db
+        .freeze_lead_plan_to_ready(&id, &format!("freeze:{id}"))
+        .await
+    {
+        Ok(result) => result,
         Err(error) => return api_error(error),
     };
     (
@@ -3534,18 +8552,17 @@ async fn start_lead_request(
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    if !app.lead_autonomous_start {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({"error":"autonomous start policy is not activated"})),
-        )
-            .into_response();
-    }
+    let autonomy = match factory_native::db::ValidatedAutonomyContext::from_deployment_policy(
+        app.lead_autonomous_start,
+    ) {
+        Ok(context) => context,
+        Err(error) => return api_error(error),
+    };
     let authorization = if body.is_empty() {
         None
     } else {
-        match serde_json::from_slice::<AuthorizeCampaign>(&body) {
-            Ok(input) => Some(input.into_new()),
+        let input = match serde_json::from_slice::<AuthorizeCampaign>(&body) {
+            Ok(input) => input,
             Err(_) => {
                 return (
                     StatusCode::BAD_REQUEST,
@@ -3553,18 +8570,215 @@ async fn start_lead_request(
                 )
                     .into_response();
             }
+        };
+        if input.monetary_envelope_id.is_some() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error":"Core creates the request-scoped inference envelope from the operator amount"
+                })),
+            )
+                .into_response();
         }
+        let envelope_id = if input.execution_mode == "TRUSTED_LOCAL_PROVIDER" {
+            let envelope = match app.db.inference_envelope_for_request(&id).await {
+                Ok(Some(envelope)) => envelope,
+                Ok(None) => {
+                    return api_error(Error::IntakeConflict {
+                        code: "INFERENCE_AUTHORIZATION_REQUIRED",
+                        message:
+                            "billable execution requires an operator-authorized monetary amount at request creation"
+                                .into(),
+                    });
+                }
+                Err(error) => return api_error(error),
+            };
+            if let Some(authorized_micros) = input.authorized_micros
+                && authorized_micros != envelope.authorized_micros.get()
+            {
+                return api_error(Error::IntakeConflict {
+                    code: "INFERENCE_AUTHORIZATION_CHANGED",
+                    message: "start changed the operator inference authorization".into(),
+                });
+            }
+            envelope.envelope_id
+        } else {
+            if input.authorized_micros.is_some() {
+                return api_error(Error::IntakeConflict {
+                    code: "INFERENCE_AUTHORIZATION_NOT_APPLICABLE",
+                    message: "fixture execution has no billable inference envelope".into(),
+                });
+            }
+            factory_native::db::NO_BILLABLE_ENVELOPE.to_owned()
+        };
+        Some(input.into_new(envelope_id))
     };
     match app
         .db
-        .start_lead_campaign(&id, &format!("start:{id}"), authorization.as_ref())
+        .start_lead_campaign(
+            &id,
+            &format!("start:{id}"),
+            factory_native::db::StartAuthority::Autonomous(autonomy),
+            None,
+            authorization.as_ref(),
+        )
         .await
     {
-        Ok((campaign, run, attempt)) => (
+        Ok(result) => (
             StatusCode::CREATED,
-            Json(json!({"campaign":campaign,"run":run,"attempt":attempt})),
+            Json(json!({
+                "campaign":result.campaign,
+                "run":result.run,
+                "attempt":result.attempt,
+                "replayed":result.replayed
+            })),
         )
             .into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn approve_lead_request(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    Json(input): Json<ApproveLeadRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let (principal_id, device_label) =
+        authenticated_operator(session.as_ref().map(|Extension(device)| device));
+    let principal_label = input.principal_label.as_deref().or(device_label.as_deref());
+    let approval = match factory_native::db::AuthenticatedOperatorApproval::new(
+        &principal_id,
+        principal_label,
+        &input.rationale,
+    ) {
+        Ok(approval) => approval,
+        Err(error) => return api_error(error),
+    };
+    let expected = match factory_native::db::ExpectedStartBinding::new(
+        &input.expected_request_hash,
+        &input.expected_plan_hash,
+        &input.expected_spec_sha256,
+        &input.expected_config_hash,
+        &input.expected_delegation_hash,
+        input.profile_revision_id.as_deref(),
+        input.profile_hash.as_deref(),
+    ) {
+        Ok(binding) => binding,
+        Err(error) => return api_error(error),
+    };
+    let idempotency_key = input
+        .idempotency_key
+        .clone()
+        .unwrap_or_else(|| format!("lead-approve:{id}:{}", input.expected_plan_hash));
+    let provider_authorization = match input.provider_authorization {
+        Some(authorization) => {
+            let nested_amount = authorization.authorized_micros;
+            if input.authorized_micros.is_some()
+                && nested_amount.is_some()
+                && input.authorized_micros != nested_amount
+            {
+                return api_error(Error::Invalid(
+                    "conflicting operator inference authorization amounts",
+                ));
+            }
+            let amount = input.authorized_micros.or(nested_amount);
+            if authorization.monetary_envelope_id.is_some() {
+                return api_error(Error::Invalid(
+                    "Core creates the request-scoped inference envelope from the operator amount",
+                ));
+            }
+            let envelope_id = if authorization.execution_mode == "TRUSTED_LOCAL_PROVIDER" {
+                let envelope = match app.db.inference_envelope_for_request(&id).await {
+                    Ok(Some(envelope)) => envelope,
+                    Ok(None) => {
+                        return api_error(Error::IntakeConflict {
+                            code: "INFERENCE_AUTHORIZATION_REQUIRED",
+                            message:
+                                "billable execution requires an operator-authorized monetary amount at request creation"
+                                    .into(),
+                        });
+                    }
+                    Err(error) => return api_error(error),
+                };
+                if let Some(amount) = amount
+                    && amount != envelope.authorized_micros.get()
+                {
+                    return api_error(Error::IntakeConflict {
+                        code: "INFERENCE_AUTHORIZATION_CHANGED",
+                        message: "approval changed the operator inference authorization".into(),
+                    });
+                }
+                envelope.envelope_id
+            } else {
+                if amount.is_some() {
+                    return api_error(Error::IntakeConflict {
+                        code: "INFERENCE_AUTHORIZATION_NOT_APPLICABLE",
+                        message: "fixture execution has no billable inference envelope".into(),
+                    });
+                }
+                factory_native::db::NO_BILLABLE_ENVELOPE.to_owned()
+            };
+            Some(authorization.into_new(envelope_id))
+        }
+        None => None,
+    };
+    let result = app
+        .db
+        .start_lead_campaign(
+            &id,
+            &idempotency_key,
+            factory_native::db::StartAuthority::Operator(approval),
+            Some(&expected),
+            provider_authorization.as_ref(),
+        )
+        .await;
+    match result {
+        Ok(result) => {
+            let evidence = app.db.lead_start_evidence(&id).await.ok().flatten();
+            (
+                if result.replayed {
+                    StatusCode::OK
+                } else {
+                    StatusCode::CREATED
+                },
+                Json(json!({
+                    "campaign":result.campaign,
+                    "run":result.run,
+                    "attempt":result.attempt,
+                    "replayed":result.replayed,
+                    "evidence":evidence,
+                })),
+            )
+                .into_response()
+        }
+        Err(error) => api_error(error),
+    }
+}
+
+async fn withdraw_lead_request(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    Json(input): Json<WithdrawLeadRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let (principal_id, device_label) =
+        authenticated_operator(session.as_ref().map(|Extension(device)| device));
+    let principal_label = input.principal_label.as_deref().or(device_label.as_deref());
+    match app
+        .db
+        .withdraw_lead_request(&id, &principal_id, principal_label, &input.reason)
+        .await
+    {
+        Ok(record) => Json(record).into_response(),
         Err(error) => api_error(error),
     }
 }
@@ -3584,8 +8798,32 @@ async fn get_lead_request(
     let assessment = app.db.lead_assessment(&id).await.ok();
     let proposal = app.db.lead_proposal(&id).await.ok();
     let plan = app.db.frozen_lead_plan(&id).await.ok();
+    let start_binding = if plan.is_some() {
+        match app.db.lead_expected_start_binding(&id).await {
+            Ok(binding) => Some(binding),
+            Err(error) => return api_error(error),
+        }
+    } else {
+        None
+    };
+    let withdrawal = app.db.lead_withdrawal(&id).await.ok().flatten();
+    let evidence = app.db.lead_start_evidence(&id).await.ok().flatten();
+    let execution_binding = match &request.campaign_id {
+        Some(campaign_id) => app
+            .db
+            .campaign_execution_binding(campaign_id)
+            .await
+            .ok()
+            .flatten(),
+        None => None,
+    };
+    let projection = app.db.lead_request_projection(&id).await.ok();
     let model_calls = match app.db.lead_model_calls(&id).await {
         Ok(calls) => calls,
+        Err(error) => return api_error(error),
+    };
+    let spending = match inference_spending_value(&app, &id).await {
+        Ok(spending) => spending,
         Err(error) => return api_error(error),
     };
     Json(json!({
@@ -3593,9 +8831,1314 @@ async fn get_lead_request(
         "assessment": assessment,
         "proposal": proposal,
         "plan": plan,
-        "model_calls": model_calls
+        "start_binding": start_binding,
+        "withdrawal": withdrawal,
+        "start_evidence": evidence,
+        "execution_binding": execution_binding,
+        "projection": projection,
+        "model_calls": model_calls,
+        "spending": spending
     }))
     .into_response()
+}
+
+fn intake_state_from_lead(
+    state: factory_native::lead::LeadRequestProjectionState,
+) -> factory_native::intake::IntakeState {
+    use factory_native::intake::IntakeState;
+    use factory_native::lead::LeadRequestProjectionState;
+    match state {
+        LeadRequestProjectionState::Submitted => IntakeState::Submitted,
+        LeadRequestProjectionState::Assessing => IntakeState::Assessing,
+        LeadRequestProjectionState::PlanReady => IntakeState::PlanReady,
+        LeadRequestProjectionState::AwaitingApproval => IntakeState::AwaitingApproval,
+        LeadRequestProjectionState::Executing => IntakeState::Executing,
+        LeadRequestProjectionState::Completed => IntakeState::Completed,
+        LeadRequestProjectionState::Blocked => IntakeState::Blocked,
+        LeadRequestProjectionState::Failed => IntakeState::Failed,
+        LeadRequestProjectionState::Withdrawn | LeadRequestProjectionState::Cancelled => {
+            IntakeState::Cancelled
+        }
+    }
+}
+
+fn intake_state_detail(
+    state: factory_native::intake::IntakeState,
+    lead: &factory_native::db::LeadRequestRecord,
+    withdrawal: Option<&factory_native::db::LeadWithdrawalRecord>,
+    campaign_status: Option<&str>,
+    gate_outcome: Option<&str>,
+) -> String {
+    use factory_native::intake::IntakeState;
+    match state {
+        IntakeState::Submitted => {
+            "Request recorded. Run the bounded assessment with the frozen profile Lead route."
+                .into()
+        }
+        IntakeState::Assessing => "Core is assessing the request with the frozen profile.".into(),
+        IntakeState::PlanReady => {
+            "A proposal is recorded. Complete the assessment to freeze the executable plan.".into()
+        }
+        IntakeState::AwaitingApproval => "Frozen plan ready for explicit operator approval.".into(),
+        IntakeState::Executing => {
+            "Campaign authorized. Campaign, Run and Quality Gate state remain authoritative.".into()
+        }
+        IntakeState::Completed => match gate_outcome {
+            Some(outcome) => format!("Quality Gate recorded {outcome} for the exact candidate."),
+            None => "Core reports the request as completed.".into(),
+        },
+        IntakeState::Blocked => withdrawal
+            .map(|withdrawal| format!("Withdrawn by operator: {}", withdrawal.reason))
+            .or_else(|| lead.failure_reason.clone())
+            .unwrap_or_else(|| "Core blocked the request.".into()),
+        IntakeState::Failed => lead
+            .failure_reason
+            .clone()
+            .unwrap_or_else(|| "Core recorded a failure.".into()),
+        IntakeState::Cancelled => withdrawal
+            .map(|withdrawal| format!("Withdrawn by operator: {}", withdrawal.reason))
+            .or_else(|| {
+                (campaign_status == Some("CANCELLED"))
+                    .then(|| "The Campaign was cancelled; Campaign state is authoritative.".into())
+            })
+            .unwrap_or_else(|| "The request was cancelled.".into()),
+    }
+}
+
+async fn intake_request_value(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+    detail: bool,
+) -> Result<serde_json::Value, Error> {
+    let lead = app.db.lead_request(&record.lead_request_id).await?;
+    let projection = app.db.lead_request_projection(&lead.id).await?;
+    let state = intake_state_from_lead(projection);
+    let campaign_id = lead
+        .campaign_id
+        .clone()
+        .or_else(|| record.campaign_id.clone());
+    let (campaign_status, gate_outcome) = match &campaign_id {
+        Some(campaign_id) => match app.db.campaign_status_and_gate(campaign_id).await {
+            Ok((status, gate)) => (Some(status), gate),
+            Err(Error::NotFound) => (None, None),
+            Err(error) => return Err(error),
+        },
+        None => (None, None),
+    };
+    let withdrawal = app.db.lead_withdrawal(&lead.id).await?;
+    let authorization = app.db.intake_authorization_state(&record.id, state).await;
+    let spending = inference_spending_value(app, &record.id).await?;
+    let state_detail = intake_state_detail(
+        state,
+        &lead,
+        withdrawal.as_ref(),
+        campaign_status.as_deref(),
+        gate_outcome.as_deref(),
+    );
+    let mut value = json!({
+        "id": record.id,
+        "projectId": record.project_id,
+        "objective": record.objective,
+        "mode": record.mode,
+        "state": state,
+        "stateDetail": state_detail,
+        "profile": {
+            "id": record.profile_id,
+            "revisionId": record.profile_revision_id,
+            "revision": record.profile_revision,
+            "name": record.profile_name,
+            "contentHash": record.profile_hash,
+        },
+        "actionId": record.action_id,
+        "delegationId": record.delegation_id,
+        "leadRequestId": record.lead_request_id,
+        "campaignId": campaign_id,
+        "authorization": authorization,
+        "spending": spending,
+        "createdAt": record.created_at,
+        "updatedAt": record.updated_at,
+    });
+    if detail {
+        let assessment = match app.db.lead_assessment(&lead.id).await {
+            Ok(record) => Some(
+                serde_json::from_str::<serde_json::Value>(&record.assessment_json)
+                    .map_err(|_| Error::Invalid("stored lead assessment encoding"))?,
+            ),
+            Err(Error::NotFound) => None,
+            Err(error) => return Err(error),
+        };
+        let proposal = match app.db.lead_proposal(&lead.id).await {
+            Ok(record) => Some(
+                serde_json::from_str::<serde_json::Value>(&record.proposal_json)
+                    .map_err(|_| Error::Invalid("stored lead proposal encoding"))?,
+            ),
+            Err(Error::NotFound) => None,
+            Err(error) => return Err(error),
+        };
+        let plan = match app.db.frozen_lead_plan(&lead.id).await {
+            Ok(plan) => Some(plan),
+            Err(Error::NotFound) => None,
+            Err(error) => return Err(error),
+        };
+        let campaign = match &campaign_id {
+            Some(campaign_id) => Some(campaign_detail_projection(app, campaign_id).await?),
+            None => None,
+        };
+        let messages = app.db.intake_messages(&record.id).await?;
+        value["assessment"] = json!(assessment);
+        value["proposal"] = json!(proposal);
+        value["plan"] = json!(plan);
+        value["campaign"] = json!(campaign);
+        value["messages"] = json!(
+            messages
+                .into_iter()
+                .map(|message| json!({
+                    "id": message.id,
+                    "role": message.role,
+                    "body": message.body,
+                    "createdAt": message.created_at,
+                }))
+                .collect::<Vec<_>>()
+        );
+    }
+    // The Campaign status and latest Gate outcome are separate authoritative
+    // facts. Both the list and detail projections expose them so Office never
+    // has to infer a Gate badge from unrelated candidate state.
+    if let Some(campaign_status) = campaign_status {
+        value["campaignStatus"] = json!(campaign_status);
+    }
+    if let Some(gate_outcome) = gate_outcome {
+        value["gateOutcome"] = json!(gate_outcome);
+    }
+    Ok(value)
+}
+
+async fn intake_policy_scope(
+    app: &App,
+    project_id: &str,
+    execution_profile_id: Option<&str>,
+) -> serde_json::Value {
+    let project = app.db.project_config(project_id).await.ok().map(|config| {
+        json!({
+            "id": config.project_id,
+            "configHash": config.config_hash,
+            "repository": config.repository,
+            "baseCommit": config.base_commit,
+            "allowedPaths": config.allowed_paths,
+            "capabilities": config.capabilities,
+            "qualityProfile": config.quality_profile,
+        })
+    });
+    let profile = match execution_profile_id {
+        Some(id) => app.db.execution_profile(id).await.ok(),
+        None => match app.db.resolve_project_execution_profile(project_id).await {
+            Ok(resolved) => app.db.execution_profile(&resolved.profile_id).await.ok(),
+            Err(_) => None,
+        },
+    }
+    .map(|profile| {
+        let version = profile.content.schema_version();
+        let content = profile.content.v2();
+        let terms = content.map(factory_native::intake::execution_policy_terms);
+        json!({
+            "id": profile.id,
+            "revisionId": profile.revision_id,
+            "revision": profile.revision,
+            "schemaVersion": version,
+            "name": content.map(|content| content.name.as_str()),
+            "contentHash": profile.content_hash,
+            "executable": profile.executable,
+            "warnings": profile.warnings,
+            "operations": content.map(|content| content.operations),
+            "progress": content.map(|content| content.progress),
+            "autoStart": content.map(|content| content.auto_start.clone()),
+            "implementer": content.map(|content| content.roles.implementer.clone()),
+            "grantTerms": terms,
+            // V1 cap evidence remains readable as historical provenance and is
+            // never projected as current execution authority.
+            "legacyV1": match &profile.content {
+                factory_native::execution_profile::ExecutionProfileRevisionContent::V1(legacy) => {
+                    Some(json!({
+                        "budgets": legacy.budgets,
+                        "roles": legacy.roles,
+                        "autoStart": legacy.auto_start,
+                    }))
+                }
+                factory_native::execution_profile::ExecutionProfileRevisionContent::V2(_) => None,
+            },
+        })
+    });
+    json!({"project": project, "profile": profile})
+}
+
+async fn validate_intake_assess_authority(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+    lead: &factory_native::db::LeadRequestRecord,
+) -> Result<factory_native::db::ExecutionProfileRecord, Error> {
+    // Resolve the exact revision frozen at submission. A newer profile head
+    // (even a name-only edit) must not invalidate already-submitted evidence.
+    let profile = app
+        .db
+        .execution_profile_revision(&record.profile_id, &record.profile_revision_id)
+        .await
+        .map_err(|error| match error {
+            Error::NotFound => Error::IntakeConflict {
+                code: "EXECUTION_PROFILE_STALE",
+                message: "the frozen execution profile revision no longer exists".into(),
+            },
+            other => other,
+        })?;
+    if profile.revision != record.profile_revision || profile.content_hash != record.profile_hash {
+        return Err(Error::IntakeConflict {
+            code: "EXECUTION_PROFILE_STALE",
+            message: "the frozen execution profile revision no longer matches the request".into(),
+        });
+    }
+    if !profile.executable {
+        return Err(Error::IntakeConflict {
+            code: "EXECUTION_PROFILE_NOT_EXECUTABLE",
+            message: format!(
+                "the frozen execution profile is not executable: {}",
+                profile.warnings.join("; ")
+            ),
+        });
+    }
+    let config = app
+        .db
+        .project_config(&record.project_id)
+        .await
+        .map_err(|error| match error {
+            Error::NotFound => Error::IntakeConflict {
+                code: "PROJECT_CONFIG_CHANGED",
+                message: "the Project configuration no longer exists".into(),
+            },
+            other => other,
+        })?;
+    if !config.active || config.config_hash != lead.project_config_hash {
+        return Err(Error::IntakeConflict {
+            code: "PROJECT_CONFIG_CHANGED",
+            message: "the Project configuration or base changed after the request".into(),
+        });
+    }
+    let grant = app
+        .db
+        .standing_delegation_v2(&record.delegation_id)
+        .await
+        .map_err(|error| match error {
+            Error::NotFound => Error::IntakeConflict {
+                code: "EXECUTION_POLICY_REQUIRED",
+                message: "the execution policy delegation no longer exists".into(),
+            },
+            other => other,
+        })?;
+    if grant.revoked_at.is_some() {
+        return Err(Error::IntakeConflict {
+            code: "DELEGATION_REVOKED",
+            message: "the execution policy delegation is revoked".into(),
+        });
+    }
+    if grant.expires_at <= chrono::Utc::now() {
+        return Err(Error::IntakeConflict {
+            code: "DELEGATION_EXPIRED",
+            message: "the execution policy delegation is expired".into(),
+        });
+    }
+    grant.validate(chrono::Utc::now())?;
+    if grant.autonomous_start
+        || !grant.autonomous_risk_classes.is_empty()
+        || grant.risk_classes != vec![factory_native::lead::RiskClass::R0]
+    {
+        return Err(Error::IntakeConflict {
+            code: "EXECUTION_POLICY_REQUIRED",
+            message: "the request is not bound to a non-autonomous R0 execution policy".into(),
+        });
+    }
+    let content = profile.content.v2().ok_or_else(|| Error::IntakeConflict {
+        code: "EXECUTION_PROFILE_NOT_EXECUTABLE",
+        message:
+            "a legacy V1 execution profile is historical evidence and cannot start new execution"
+                .into(),
+    })?;
+    let implementer = &content.roles.implementer;
+    if grant.route.provider != implementer.provider
+        || grant.route.model != implementer.model
+        || grant.route.mode != "build"
+    {
+        return Err(Error::IntakeConflict {
+            code: "EXECUTION_POLICY_SCOPE_CHANGED",
+            message: "the execution policy route differs from the frozen profile implementer route"
+                .into(),
+        });
+    }
+    if grant.allowed_paths != config.allowed_paths || grant.capabilities != config.capabilities {
+        return Err(Error::IntakeConflict {
+            code: "EXECUTION_POLICY_SCOPE_CHANGED",
+            message: "the Project scope changed after the execution policy grant".into(),
+        });
+    }
+    let policy = app.db.execution_policy_grant(&record.delegation_id).await?;
+    if policy.project_id != record.project_id
+        || policy.profile_revision_id != record.profile_revision_id
+        || policy.profile_hash != record.profile_hash
+        || policy.project_config_hash != config.config_hash
+        || !policy.acknowledged
+    {
+        return Err(Error::IntakeConflict {
+            code: "EXECUTION_POLICY_REQUIRED",
+            message: "the delegation has no matching explicit execution policy grant".into(),
+        });
+    }
+    Ok(profile)
+}
+
+fn build_intake_authorization(
+    context: &factory_native::db::IntakeApprovalContext,
+    principal_label: Option<&str>,
+    principal_id: &str,
+    rationale: &str,
+    monetary_envelope_id: &str,
+) -> NewCampaignAuthorization {
+    let route = &context.profile.roles.implementer;
+    let execution_mode = intake_execution_mode(&context.mechanism);
+    let allowed_tools = intake_allowed_tools(&context.mechanism);
+    NewCampaignAuthorization {
+        authorization_id: format!("intake-{}", context.intake.id),
+        risk_class: "R0".into(),
+        execution_mode: execution_mode.into(),
+        actor: principal_label.unwrap_or(principal_id).to_owned(),
+        rationale: rationale.into(),
+        authorized_paths: context.action_spec.allowed_paths.clone(),
+        provider: route.provider.clone(),
+        model: route.model.clone(),
+        provider_mode: "build".into(),
+        delegation_id: context.grant.id.clone(),
+        allowed_tools,
+        monetary_envelope_id: monetary_envelope_id.to_owned(),
+        progress: context.scope.progress,
+        operations: context.scope.operations,
+    }
+}
+
+async fn intake_requests(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Query(query): Query<IntakeListQuery>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let requested_state = match query.state.as_deref() {
+        None => None,
+        Some(value) => match value {
+            "SUBMITTED" => Some(factory_native::intake::IntakeState::Submitted),
+            "ASSESSING" => Some(factory_native::intake::IntakeState::Assessing),
+            "PLAN_READY" => Some(factory_native::intake::IntakeState::PlanReady),
+            "AWAITING_APPROVAL" => Some(factory_native::intake::IntakeState::AwaitingApproval),
+            "EXECUTING" => Some(factory_native::intake::IntakeState::Executing),
+            "BLOCKED" => Some(factory_native::intake::IntakeState::Blocked),
+            "FAILED" => Some(factory_native::intake::IntakeState::Failed),
+            "COMPLETED" => Some(factory_native::intake::IntakeState::Completed),
+            "CANCELLED" => Some(factory_native::intake::IntakeState::Cancelled),
+            _ => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error":"invalid intake state filter"})),
+                )
+                    .into_response();
+            }
+        },
+    };
+    let limit = query.limit.unwrap_or(20).clamp(1, 100);
+    let offset = query.offset.unwrap_or(0).min(10_000);
+    let records = match app.db.intake_requests().await {
+        Ok(records) => records,
+        Err(error) => return api_error(error),
+    };
+    let mut summaries = Vec::new();
+    for record in records {
+        if query
+            .project_id
+            .as_deref()
+            .is_some_and(|project_id| project_id != record.project_id)
+        {
+            continue;
+        }
+        let value = match intake_request_value(&app, &record, false).await {
+            Ok(value) => value,
+            Err(error) => return api_error(error),
+        };
+        if requested_state.is_some_and(|state| value["state"] != json!(state)) {
+            continue;
+        }
+        summaries.push(value);
+    }
+    let page: Vec<serde_json::Value> = summaries.into_iter().skip(offset).take(limit).collect();
+    Json(page).into_response()
+}
+
+async fn get_intake_request(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    match intake_request_value(&app, &record, true).await {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn create_intake_request(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    Json(input): Json<NewIntakeRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let (principal_id, _) =
+        authenticated_operator(session.as_ref().map(|Extension(device)| device));
+    match app
+        .db
+        .create_intake_request(
+            &input.project_id,
+            &input.objective,
+            input.execution_profile_id.as_deref(),
+            input.mode,
+            &input.idempotency_key,
+            &principal_id,
+        )
+        .await
+    {
+        Ok((record, created)) => {
+            if let Some(authorized_micros) = input.authorized_micros {
+                let profile = match app
+                    .db
+                    .execution_profile_revision(&record.profile_id, &record.profile_revision_id)
+                    .await
+                {
+                    Ok(profile) => profile,
+                    Err(error) => return api_error(error),
+                };
+                let Some(content) = profile.content.v2() else {
+                    return api_error(Error::IntakeConflict {
+                        code: "EXECUTION_PROFILE_NOT_EXECUTABLE",
+                        message: "a legacy V1 execution profile cannot request billable inference"
+                            .into(),
+                    });
+                };
+                if let Err(error) =
+                    ensure_profile_pricing_quotes(&app, content, &principal_id).await
+                {
+                    return api_error(error);
+                }
+                if let Err(error) = ensure_request_inference_envelope(
+                    &app,
+                    &record.id,
+                    &record.project_id,
+                    Some(authorized_micros),
+                    &principal_id,
+                    &request_scope_digest(&[
+                        "intake-request-scope",
+                        &record.project_id,
+                        &record.profile_id,
+                        &record.profile_revision_id,
+                        &record.profile_hash,
+                    ]),
+                    &record.submission_hash,
+                )
+                .await
+                {
+                    return api_error(error);
+                }
+            }
+            let value = match intake_request_value(&app, &record, true).await {
+                Ok(value) => value,
+                Err(error) => return api_error(error),
+            };
+            (
+                if created {
+                    StatusCode::CREATED
+                } else {
+                    StatusCode::OK
+                },
+                Json(value),
+            )
+                .into_response()
+        }
+        Err(Error::IntakeConflict {
+            code: "EXECUTION_POLICY_REQUIRED",
+            message,
+        }) => {
+            let scope = intake_policy_scope(
+                &app,
+                &input.project_id,
+                input.execution_profile_id.as_deref(),
+            )
+            .await;
+            (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": message,
+                    "code": "EXECUTION_POLICY_REQUIRED",
+                    "authorization": {
+                        "required": true,
+                        "available": false,
+                        "reason": "EXECUTION_POLICY_REQUIRED",
+                    },
+                    "scope": scope,
+                })),
+            )
+                .into_response()
+        }
+        Err(error) => api_error(error),
+    }
+}
+
+#[cfg(feature = "test-support")]
+async fn admit_test_subscription_dispatch(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(input): Json<TestSubscriptionDispatchAdmission>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.admit_test_subscription_dispatch(&input.scope).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn assess_intake_request(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    let lead = match app.db.lead_request(&record.lead_request_id).await {
+        Ok(lead) => lead,
+        Err(error) => return api_error(error),
+    };
+    if let Some(campaign_id) = &lead.campaign_id {
+        let status = match app.db.campaign_status_and_gate(campaign_id).await {
+            Ok((status, _)) => status,
+            Err(error) => return api_error(error),
+        };
+        return api_error(Error::AlreadyStarted {
+            campaign_id: campaign_id.clone(),
+            campaign_status: status,
+        });
+    }
+    if app
+        .db
+        .lead_withdrawal(&lead.id)
+        .await
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        return api_error(Error::IntakeConflict {
+            code: "INTAKE_WITHDRAWN",
+            message: "the request was withdrawn; assessment and start are fenced".into(),
+        });
+    }
+    match lead.state {
+        LeadRequestState::Ready | LeadRequestState::Frozen => {
+            return match intake_request_value(&app, &record, true).await {
+                Ok(value) => Json(value).into_response(),
+                Err(error) => api_error(error),
+            };
+        }
+        LeadRequestState::Planned => {
+            if let Err(error) = validate_intake_assess_authority(&app, &record, &lead).await {
+                return api_error(error);
+            }
+            match app.db.lead_proposal(&lead.id).await {
+                Ok(_) => {}
+                Err(Error::NotFound) => {
+                    return api_error(Error::IntakeConflict {
+                        code: "ASSESSMENT_INCOMPLETE",
+                        message:
+                            "the assessment was recorded without a proposal; submit a new request"
+                                .into(),
+                    });
+                }
+                Err(error) => return api_error(error),
+            }
+            let (plan, _) = match app
+                .db
+                .freeze_lead_plan_to_ready(&lead.id, &format!("intake-assess:{id}:freeze"))
+                .await
+            {
+                Ok(result) => result,
+                Err(error) => return api_error(error),
+            };
+            let context = match app.db.intake_approval_context(&id).await {
+                Ok(context) => context,
+                Err(error) => return api_error(error),
+            };
+            if factory_native::intake::validate_execution_scope(
+                &context.profile,
+                &context.proposal,
+                &context.grant,
+                &context.intake.mode,
+            )
+            .is_err()
+            {
+                return api_error(Error::IntakeConflict {
+                    code: "AUTHORIZATION_UNAVAILABLE_SCOPE",
+                    message: "the frozen plan cannot be bound to the execution scope".into(),
+                });
+            }
+            let _ = plan;
+            return match intake_request_value(&app, &record, true).await {
+                Ok(value) => Json(value).into_response(),
+                Err(error) => api_error(error),
+            };
+        }
+        LeadRequestState::Submitted => {}
+        LeadRequestState::Assessing => {
+            return api_error(Error::IntakeConflict {
+                code: "ASSESSMENT_OUTCOME_UNKNOWN",
+                message: "an assessment is in progress or its upstream outcome is unknown; do not retry silently"
+                    .into(),
+            });
+        }
+        LeadRequestState::Running | LeadRequestState::Blocked | LeadRequestState::Failed => {
+            return api_error(Error::IntakeConflict {
+                code: "ASSESSMENT_NOT_AVAILABLE",
+                message: "the request is not in an assessable state".into(),
+            });
+        }
+    }
+    let profile = match validate_intake_assess_authority(&app, &record, &lead).await {
+        Ok(profile) => profile,
+        Err(error) => return api_error(error),
+    };
+    let Some(profile_content) = profile.content.v2() else {
+        return api_error(Error::IntakeConflict {
+            code: "EXECUTION_PROFILE_NOT_EXECUTABLE",
+            message: "a legacy V1 execution profile cannot start billable assessment".into(),
+        });
+    };
+    let gateway = match app.intake_assess_gateway(&profile).await {
+        Ok(gateway) => gateway,
+        Err(route_error) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "error": route_error.to_string(),
+                    "code": "ASSESSMENT_UNAVAILABLE",
+                    "routeCode": route_error.code(),
+                })),
+            )
+                .into_response();
+        }
+    };
+    let subscription_assessment = match app
+        .db
+        .subscription_scope_admitted(&record.id, gateway.provider(), gateway.model())
+        .await
+    {
+        Ok(admitted) => admitted,
+        Err(error) => return api_error(error),
+    } || match app
+        .db
+        .subscription_scope_admitted(&record.lead_request_id, gateway.provider(), gateway.model())
+        .await
+    {
+        Ok(admitted) => admitted,
+        Err(error) => return api_error(error),
+    };
+    if !subscription_assessment {
+        match app.db.inference_envelope_for_request(&id).await {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                return api_error(Error::IntakeConflict {
+                    code: "INFERENCE_AUTHORIZATION_REQUIRED",
+                    message:
+                        "billable intake assessment requires an explicit operator-authorized monetary amount at request creation, or an exact Owner-confirmed subscription admission"
+                            .into(),
+                });
+            }
+            Err(error) => return api_error(error),
+        }
+        if let Err(error) =
+            ensure_profile_pricing_quotes(&app, profile_content, "intake-assessment").await
+        {
+            return api_error(error);
+        }
+    }
+    let action_spec = match app.db.intake_assessment_spec(&id).await {
+        Ok(spec) => spec,
+        Err(error) => return api_error(error),
+    };
+    let config = match app.db.project_config(&record.project_id).await {
+        Ok(config) => config,
+        Err(error) => return api_error(error),
+    };
+    let grant = match app.db.standing_delegation_v2(&record.delegation_id).await {
+        Ok(grant) => grant,
+        Err(error) => return api_error(error),
+    };
+    let action_binding = factory_native::lead::ActionBinding {
+        id: record.action_id.clone(),
+        project_id: record.project_id.clone(),
+        status: factory_native::lead::ActionStatus::Pending,
+    };
+    if let Err(error) = app.db.begin_lead_assessment(&lead.id).await {
+        return api_error(error);
+    }
+    let (assessment, proposal) = match factory_native::lead_model::assess(
+        &gateway,
+        &app.db,
+        factory_native::lead_model::AssessmentRequest {
+            request_id: &lead.id,
+            project: &config,
+            action: &action_binding,
+            action_spec: &action_spec,
+            objective: &lead.objective,
+            grant: &grant,
+            now: chrono::Utc::now(),
+        },
+    )
+    .await
+    {
+        Ok(value) => value,
+        Err(factory_native::lead::LeadError::TransientAssessment(message)) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "error": message,
+                    "code": "ASSESSMENT_TRANSIENT",
+                })),
+            )
+                .into_response();
+        }
+        Err(error) => {
+            let _ = app
+                .db
+                .block_lead_request(&lead.id, &error.to_string())
+                .await;
+            return api_error(error.into());
+        }
+    };
+    let input = factory_native::lead::AssessmentInput {
+        project_id: record.project_id.clone(),
+        action_id: record.action_id.clone(),
+        request_id: lead.id.clone(),
+        objective: lead.objective.clone(),
+        allowed_evidence_refs: std::collections::BTreeSet::from(["repository-files".to_string()]),
+    };
+    if let Err(error) = app
+        .db
+        .record_lead_assessment(
+            &lead.id,
+            "MODEL",
+            &assessment,
+            &input,
+            &format!("intake-assess:{id}:assessment"),
+        )
+        .await
+    {
+        return api_error(error);
+    }
+    if let Err(error) = app
+        .db
+        .record_lead_proposal(&lead.id, &proposal, &format!("intake-assess:{id}:proposal"))
+        .await
+    {
+        return api_error(error);
+    }
+    if let Err(error) = validate_intake_assess_authority(&app, &record, &lead).await {
+        let _ = app
+            .db
+            .block_lead_request(&lead.id, &error.to_string())
+            .await;
+        return api_error(error);
+    }
+    if let Err(error) = app
+        .db
+        .freeze_lead_plan_to_ready(&lead.id, &format!("intake-assess:{id}:freeze"))
+        .await
+    {
+        return api_error(error);
+    }
+    match intake_request_value(&app, &record, true).await {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+fn test_transport_for_provider(provider: &str) -> Option<&'static str> {
+    match provider {
+        // Codex is not admitted until Core can verify the ChatGPT credential
+        // class and the native App Server transport owns the egress route.
+        "opencode-go" => Some("OPENCODE_GO_SUBSCRIPTION"),
+        _ => None,
+    }
+}
+
+async fn create_intake_subscription_admission(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    Json(input): Json<IntakeSubscriptionAdmissionRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if !input.extra_usage_disabled {
+        return api_error(Error::Forbidden(
+            "Owner must confirm Extra Usage is disabled".into(),
+        ));
+    }
+    if input.test_profile_id != factory_native::subscription_admission::WAVE3_TEST_PROFILE_ID {
+        return api_error(Error::Forbidden(
+            "subscription acceptance requires the Wave 3 test profile".into(),
+        ));
+    }
+    let (principal_id, _) =
+        authenticated_operator(session.as_ref().map(|Extension(device)| device));
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    if record.campaign_id.is_some() {
+        return api_error(Error::Conflict("intake request already has a Campaign"));
+    }
+    let profile = match app
+        .db
+        .execution_profile_revision(&record.profile_id, &record.profile_revision_id)
+        .await
+    {
+        Ok(profile) => profile,
+        Err(error) => return api_error(error),
+    };
+    let Some(content) = profile.content.v2() else {
+        return api_error(Error::Forbidden(
+            "subscription acceptance requires a V2 execution profile".into(),
+        ));
+    };
+    let gateway = match app.current_model_gateway().await {
+        Some(gateway) => gateway,
+        None => {
+            return api_error(Error::Conflict(
+                "subscription acceptance requires a configured model gateway",
+            ));
+        }
+    };
+    let assessment_provider = gateway.provider().to_owned();
+    let assessment_model = gateway.model().to_owned();
+    let Some(assessment_transport) = test_transport_for_provider(&assessment_provider) else {
+        return api_error(Error::Forbidden(
+            "assessment provider is outside the automated acceptance allowlist".into(),
+        ));
+    };
+    let implementer = &content.roles.implementer;
+    let Some(implementer_transport) = test_transport_for_provider(&implementer.provider) else {
+        return api_error(Error::Forbidden(
+            "implementer provider is outside the automated acceptance allowlist".into(),
+        ));
+    };
+    let implementer_settings = match app.db.provider_settings(&implementer.provider).await {
+        Ok(settings) if settings.enabled && !settings.credential_ciphertext.is_empty() => settings,
+        Ok(_) => {
+            return api_error(Error::Forbidden(
+                "implementer provider is not configured and enabled".into(),
+            ));
+        }
+        Err(error) => return api_error(error),
+    };
+    let assessment_settings = match app.db.provider_settings(&assessment_provider).await {
+        Ok(settings) if settings.enabled && !settings.credential_ciphertext.is_empty() => settings,
+        Ok(_) => {
+            return api_error(Error::Forbidden(
+                "assessment provider is not configured and enabled".into(),
+            ));
+        }
+        Err(error) => return api_error(error),
+    };
+    if assessment_provider == "opencode-go"
+        && !factory_native::provider_catalog::is_canonical_opencode_go_base_url(
+            &assessment_settings.base_url,
+        )
+        && !factory_native::provider_catalog::is_test_upstream_url(&assessment_settings.base_url)
+    {
+        return api_error(Error::Forbidden(
+            "OpenCode Go assessment must use the canonical subscription endpoint".into(),
+        ));
+    }
+    let mut routes = vec![
+        factory_native::subscription_admission::TestRouteBinding {
+            role: factory_native::subscription_admission::TestModelRole::Lead,
+            provider: assessment_provider.clone(),
+            model: assessment_model.clone(),
+            settings_revision: assessment_settings.revision.to_string(),
+            transport: assessment_transport.to_owned(),
+        },
+        factory_native::subscription_admission::TestRouteBinding {
+            role: factory_native::subscription_admission::TestModelRole::Implementer,
+            provider: implementer.provider.clone(),
+            model: implementer.model.clone(),
+            settings_revision: implementer_settings.revision.to_string(),
+            transport: implementer_transport.to_owned(),
+        },
+    ];
+    if let Some(reviewer_transport) = test_transport_for_provider(&assessment_provider)
+        && assessment_provider == "opencode-go"
+    {
+        routes.push(factory_native::subscription_admission::TestRouteBinding {
+            role: factory_native::subscription_admission::TestModelRole::SemanticReviewer,
+            provider: assessment_provider.clone(),
+            model: assessment_model.clone(),
+            settings_revision: format!("model-gateway:{assessment_provider}:{assessment_model}"),
+            transport: reviewer_transport.to_owned(),
+        });
+    }
+    let assumption = factory_native::execution_policy::OwnerBillingAssumption {
+        assumption_id: input.assumption_id,
+        confirmed_by: format!("{principal_id}:{}", input.confirmed_by),
+        confirmed_at_ms: input.confirmed_at_ms,
+        valid_until_ms: input.valid_until_ms,
+        extra_usage: factory_native::execution_policy::OwnerControlledExtraUsage::Disabled,
+        statement: input.statement,
+    };
+    if assumption
+        .validate_at(chrono::Utc::now().timestamp_millis())
+        .is_err()
+    {
+        return api_error(Error::Invalid(
+            "Owner billing assumption is invalid or expired",
+        ));
+    }
+    let write = factory_native::db::ScopeAdmissionWrite {
+        intake_request_id: record.id.clone(),
+        lead_request_id: record.lead_request_id.clone(),
+        test_profile_id: input.test_profile_id,
+        execution_profile_id: record.profile_id.clone(),
+        provider: assessment_provider,
+        model: assessment_model,
+        settings_revision: format!("model-gateway:{}:{}", gateway.provider(), gateway.model()),
+        profile_revision_id: record.profile_revision_id.clone(),
+        profile_hash: record.profile_hash.clone(),
+        assumption,
+        routes,
+        idempotency_key: input.idempotency_key,
+    };
+    match app.db.create_subscription_scope_admission(&write).await {
+        Ok(record) => Json(record).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn approve_intake_request(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    Json(input): Json<ApproveIntakeRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let (principal_id, device_label) =
+        authenticated_operator(session.as_ref().map(|Extension(device)| device));
+    let principal_label = input.principal_label.as_deref().or(device_label.as_deref());
+    if input.expected_plan_hash.len() != 64
+        || !input
+            .expected_plan_hash
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"expected_plan_hash must be a SHA-256 hex digest"})),
+        )
+            .into_response();
+    }
+    let approval = match factory_native::db::AuthenticatedOperatorApproval::new(
+        &principal_id,
+        principal_label,
+        &input.rationale,
+    ) {
+        Ok(approval) => approval,
+        Err(error) => return api_error(error),
+    };
+    let context = match app.db.intake_start_context(&id).await {
+        Ok(context) => context,
+        Err(error) => return api_error(error),
+    };
+    if context.plan.plan_hash != input.expected_plan_hash {
+        return api_error(Error::IntakeConflict {
+            code: "PLAN_HASH_MISMATCH",
+            message: "the expected plan hash does not identify the frozen plan".into(),
+        });
+    }
+    if let Some(expected_profile_revision_id) = &input.expected_profile_revision_id
+        && expected_profile_revision_id != &context.context.profile_revision_id
+    {
+        return api_error(Error::IntakeConflict {
+            code: "PROFILE_REVISION_MISMATCH",
+            message: "the expected profile revision does not identify the frozen execution context"
+                .into(),
+        });
+    }
+    if let Some(expected_profile_hash) = &input.expected_profile_hash
+        && expected_profile_hash != &context.context.profile_hash
+    {
+        return api_error(Error::IntakeConflict {
+            code: "PROFILE_HASH_MISMATCH",
+            message: "the expected profile hash does not identify the frozen execution context"
+                .into(),
+        });
+    }
+    let expected = match factory_native::db::ExpectedStartBinding::new(
+        &context.lead.request_hash,
+        &context.plan.plan_hash,
+        &context.spec_sha256,
+        &context.lead.project_config_hash,
+        &context.grant.content_hash,
+        Some(&context.context.profile_revision_id),
+        Some(&context.context.profile_hash),
+    ) {
+        Ok(binding) => binding,
+        Err(error) => return api_error(error),
+    };
+    let billable = context.mechanism == "MODEL";
+    let production = !cfg!(any(test, feature = "test-support"));
+    let monetary_envelope_id = if billable
+        && (production || input.subscription_admission_id.is_some())
+    {
+        // Subscription-only policy: MODEL approval requires an exact
+        // Owner-confirmed admission created before assessment. The legacy
+        // billable envelope path is not accepted in production.
+        if input.subscription_admission_id.is_none() {
+            return api_error(Error::IntakeConflict {
+                code: "SUBSCRIPTION_ADMISSION_REQUIRED",
+                message:
+                    "MODEL execution requires an Owner-confirmed subscription admission created before assessment"
+                        .into(),
+            });
+        }
+        if input.authorized_micros.is_some() {
+            return api_error(Error::IntakeConflict {
+                code: "MONETARY_AUTHORIZATION_NOT_APPLICABLE",
+                message: "subscription execution has no monetary envelope".into(),
+            });
+        }
+        factory_native::db::NO_BILLABLE_ENVELOPE.to_owned()
+    } else if billable {
+        // Debug/test-support fixture path retained for deterministic E2E only.
+        let envelope = match app
+            .db
+            .inference_envelope_for_request(&context.intake.id)
+            .await
+        {
+            Ok(Some(envelope)) => envelope,
+            Ok(None) => {
+                return api_error(Error::IntakeConflict {
+                    code: "INFERENCE_AUTHORIZATION_REQUIRED",
+                    message:
+                        "billable execution requires an operator-authorized monetary amount at request creation"
+                            .into(),
+                });
+            }
+            Err(error) => return api_error(error),
+        };
+        if let Some(authorized_micros) = input.authorized_micros
+            && authorized_micros != envelope.authorized_micros.get()
+        {
+            return api_error(Error::IntakeConflict {
+                code: "INFERENCE_AUTHORIZATION_CHANGED",
+                message: "approval changed the operator inference authorization".into(),
+            });
+        }
+        envelope.envelope_id
+    } else {
+        if input.authorized_micros.is_some() {
+            return api_error(Error::IntakeConflict {
+                code: "INFERENCE_AUTHORIZATION_NOT_APPLICABLE",
+                message: "fixture execution has no billable inference envelope".into(),
+            });
+        }
+        factory_native::db::NO_BILLABLE_ENVELOPE.to_owned()
+    };
+    let authorization = build_intake_authorization(
+        &context,
+        principal_label,
+        &principal_id,
+        &input.rationale,
+        &monetary_envelope_id,
+    );
+    let idempotency_key = input
+        .idempotency_key
+        .clone()
+        .unwrap_or_else(|| format!("intake-approve:{id}:{}", context.plan.plan_hash));
+    match app
+        .db
+        .start_lead_campaign_with_admission(
+            &context.lead.id,
+            &idempotency_key,
+            factory_native::db::StartAuthority::Operator(approval),
+            Some(&expected),
+            Some(&authorization),
+            input.subscription_admission_id.as_deref(),
+        )
+        .await
+    {
+        Ok(result) => {
+            let record = match app.db.intake_request(&id).await {
+                Ok(record) => record,
+                Err(error) => return api_error(error),
+            };
+            let value = match intake_request_value(&app, &record, true).await {
+                Ok(value) => value,
+                Err(error) => return api_error(error),
+            };
+            (
+                if result.replayed {
+                    StatusCode::OK
+                } else {
+                    StatusCode::CREATED
+                },
+                Json(value),
+            )
+                .into_response()
+        }
+        Err(error) => api_error(error),
+    }
+}
+
+async fn message_intake_request(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<IntakeMessageRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let (message, created) = match app
+        .db
+        .append_intake_message(&id, &input.body, &input.idempotency_key)
+        .await
+    {
+        Ok(result) => result,
+        Err(error) => return api_error(error),
+    };
+    let _ = message;
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    match intake_request_value(&app, &record, true).await {
+        Ok(value) => (
+            if created {
+                StatusCode::CREATED
+            } else {
+                StatusCode::OK
+            },
+            Json(value),
+        )
+            .into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn cancel_intake_request(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    Json(input): Json<CancelIntakeRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let (principal_id, device_label) =
+        authenticated_operator(session.as_ref().map(|Extension(device)| device));
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    if let Err(error) = app
+        .db
+        .withdraw_lead_request(
+            &record.lead_request_id,
+            &principal_id,
+            device_label.as_deref(),
+            &input.reason,
+        )
+        .await
+    {
+        return api_error(error);
+    }
+    match intake_request_value(&app, &record, true).await {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn create_execution_policy(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    Json(input): Json<ExecutionPolicyRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let (principal_id, device_label) =
+        authenticated_operator(session.as_ref().map(|Extension(device)| device));
+    match app
+        .db
+        .create_execution_policy_grant(factory_native::db::NewExecutionPolicyGrant {
+            project_id: &id,
+            profile_id: &input.execution_profile_id,
+            expected_revision: input.expected_revision,
+            expected_revision_hash: &input.expected_revision_hash,
+            project_config_hash: &input.project_config_hash,
+            acknowledge: input.acknowledge,
+            idempotency_key: &input.idempotency_key,
+            principal_id: &principal_id,
+            principal_label: device_label.as_deref(),
+        })
+        .await
+    {
+        Ok(result) => (
+            if result.created {
+                StatusCode::CREATED
+            } else {
+                StatusCode::OK
+            },
+            Json(json!({
+                "grant": result.grant,
+                "delegation": result.delegation,
+                "usage": result.usage,
+                "replayed": !result.created,
+            })),
+        )
+            .into_response(),
+        Err(error) => api_error(error),
+    }
 }
 
 async fn authorize_campaign(
@@ -3607,7 +10150,31 @@ async fn authorize_campaign(
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let authorization = input.into_new();
+    let authorization = match input.execution_mode.as_str() {
+        "FIXTURE" => {
+            if input.monetary_envelope_id.is_some() || input.authorized_micros.is_some() {
+                return api_error(Error::Conflict(
+                    "fixture authorization has no billable inference envelope",
+                ));
+            }
+            input.into_new(factory_native::db::NO_BILLABLE_ENVELOPE.to_owned())
+        }
+        // A provider Campaign needs the one operator-request envelope and its
+        // atomic Campaign binding. Direct-route authorization has no request
+        // identity to own that envelope, so it fails closed instead of
+        // authorizing unbindable spending.
+        "TRUSTED_LOCAL_PROVIDER" => {
+            return api_error(Error::Forbidden(
+                "provider execution requires a request-scoped Lead/intake approval; submit a new request instead of a direct Campaign authorization"
+                    .into(),
+            ));
+        }
+        _ => {
+            return api_error(Error::Forbidden(
+                "only FIXTURE and TRUSTED_LOCAL_PROVIDER execution are enabled".into(),
+            ));
+        }
+    };
     match app.db.authorize_campaign(&id, &authorization).await {
         Ok((record, created)) => (
             if created {
@@ -3728,7 +10295,23 @@ async fn quality_gate(
         return StatusCode::UNAUTHORIZED.into_response();
     }
     match app.db.gate_for_candidate(&id).await {
-        Ok(Some(gate)) => Json(gate).into_response(),
+        Ok(Some(gate)) => {
+            let mut body = serde_json::to_value(&gate).unwrap_or_else(|_| serde_json::json!({}));
+            if let Some(repair) = app
+                .db
+                .repair_authorization_for_candidate(&id)
+                .await
+                .ok()
+                .flatten()
+                && let Some(object) = body.as_object_mut()
+            {
+                object.insert(
+                    "repair_authorization".into(),
+                    serde_json::to_value(repair).unwrap_or(serde_json::Value::Null),
+                );
+            }
+            Json(body).into_response()
+        }
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(error) => api_error(error),
     }
@@ -3758,6 +10341,49 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
         == 0
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkerProgressCheckpoint {
+    attempt_id: String,
+    worker_id: String,
+    generation: i64,
+    campaign_id: String,
+    work_item_id: String,
+    checkpoint: factory_native::execution_policy::ProgressCheckpoint,
+    evidence: Vec<factory_native::execution_policy::ProgressEvidence>,
+    #[serde(default)]
+    gate: Option<factory_native::progress::GateRecord>,
+}
+
+async fn worker_progress_checkpoint(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(input): Json<WorkerProgressCheckpoint>,
+) -> Response {
+    if !worker_session_authorized(&app, &headers, &input.worker_id).await {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app
+        .db
+        .record_worker_progress_checkpoint(
+            &input.worker_id,
+            &input.attempt_id,
+            input.generation,
+            &factory_native::progress::ProgressCheckpointRequest {
+                campaign_id: input.campaign_id,
+                work_item_id: input.work_item_id,
+                checkpoint: input.checkpoint,
+                evidence: input.evidence,
+                gate: input.gate,
+            },
+        )
+        .await
+    {
+        Ok(response) => Json(response).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
 async fn worker_session_authorized(app: &App, headers: &HeaderMap, worker_id: &str) -> bool {
     let token = headers
         .get("authorization")
@@ -3779,19 +10405,579 @@ fn result_list<T: serde::Serialize>(result: Result<Vec<T>, Error>) -> Response {
     }
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExecutionProfileAutoStartRequest {
+    enabled: bool,
+    #[serde(default)]
+    risk_classes: Vec<factory_native::lead::RiskClass>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExecutionProfileRequest {
+    name: String,
+    #[serde(default)]
+    description: String,
+    category: factory_native::execution_profile::ExecutionProfileCategory,
+    roles: factory_native::execution_profile::ExecutionProfileRoles,
+    operations: factory_native::execution_policy::OperationLimits,
+    progress: factory_native::execution_policy::ProgressPolicy,
+    #[serde(rename = "auto_start")]
+    auto_start: ExecutionProfileAutoStartRequest,
+    #[serde(default)]
+    expected_revision: Option<u32>,
+}
+
+impl ExecutionProfileRequest {
+    fn into_content(
+        self,
+    ) -> Result<factory_native::execution_profile::ExecutionProfileContent, String> {
+        let content = factory_native::execution_profile::ExecutionProfileContent {
+            name: self.name,
+            description: self.description,
+            category: self.category,
+            roles: self.roles,
+            operations: self.operations,
+            progress: self.progress,
+            auto_start: factory_native::execution_profile::AutoStartPolicy {
+                enabled: self.auto_start.enabled,
+                risk_classes: self.auto_start.risk_classes,
+            },
+        };
+        content.validate().map_err(|error| error.to_string())?;
+        Ok(content)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExecutionProfileDefaultRequest {
+    scope: String,
+    #[serde(default)]
+    project_id: Option<String>,
+}
+
+impl ExecutionProfileDefaultRequest {
+    fn into_project_id(self) -> Result<Option<String>, String> {
+        match (self.scope.as_str(), self.project_id) {
+            ("global", None) => Ok(None),
+            ("global", Some(_)) => Err("global scope must not include project_id".into()),
+            ("project", Some(project_id)) if !project_id.is_empty() => Ok(Some(project_id)),
+            ("project", _) => Err("project scope requires project_id".into()),
+            _ => Err("scope must be global or project".into()),
+        }
+    }
+}
+
+fn execution_profile_value(profile: &factory_native::db::ExecutionProfileRecord) -> Value {
+    let mut value = json!({
+        "id": profile.id,
+        "revision": profile.revision,
+        "revisionId": profile.revision_id,
+        "schemaVersion": profile.content.schema_version(),
+        "contentHash": profile.content_hash,
+        "globalDefault": profile.global_default,
+        "projectDefaults": profile.project_defaults,
+        "executable": profile.executable,
+        "warnings": profile.warnings,
+        "createdAt": profile.created_at,
+        "updatedAt": profile.updated_at,
+    });
+    match &profile.content {
+        factory_native::execution_profile::ExecutionProfileRevisionContent::V2(content) => {
+            value["name"] = json!(content.name);
+            value["description"] = json!(content.description);
+            value["category"] = json!(content.category);
+            value["roles"] = json!(content.roles);
+            value["operations"] = json!(content.operations);
+            value["progress"] = json!(content.progress);
+            value["autoStart"] = json!(content.auto_start);
+            value["implementer"] = json!(content.roles.implementer);
+            value["legacyV1"] = Value::Null;
+        }
+        factory_native::execution_profile::ExecutionProfileRevisionContent::V1(legacy) => {
+            value["name"] = json!(legacy.name);
+            value["description"] = json!(legacy.description);
+            value["category"] = json!(legacy.category);
+            value["roles"] = json!(legacy.roles);
+            value["operations"] = Value::Null;
+            value["progress"] = Value::Null;
+            value["autoStart"] = json!(legacy.auto_start);
+            value["implementer"] = json!(legacy.roles.implementer);
+            value["legacyV1"] = json!({
+                "budgets": legacy.budgets,
+                "historical": true,
+            });
+        }
+    }
+    value
+}
+
+async fn execution_profiles_list(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.execution_profiles().await {
+        Ok(profiles) => Json(json!({
+            "profiles": profiles.iter().map(execution_profile_value).collect::<Vec<_>>(),
+            "supportedRoutes": factory_native::execution_profile::SUPPORTED_ROUTES,
+        }))
+        .into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn execution_profile_detail(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.execution_profile(&id).await {
+        Ok(profile) => Json(execution_profile_value(&profile)).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn create_execution_profile(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(input): Json<ExecutionProfileRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if input.expected_revision.is_some() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"expected_revision is only valid for updates"})),
+        )
+            .into_response();
+    }
+    let content = match input.into_content() {
+        Ok(content) => content,
+        Err(error) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();
+        }
+    };
+    match app
+        .db
+        .create_execution_profile(&content, "office-operator")
+        .await
+    {
+        Ok(profile) => {
+            (StatusCode::CREATED, Json(execution_profile_value(&profile))).into_response()
+        }
+        Err(error) => api_error(error),
+    }
+}
+
+async fn update_execution_profile(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<ExecutionProfileRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Some(expected_revision) = input.expected_revision else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"expected_revision is required for updates"})),
+        )
+            .into_response();
+    };
+    let content = match input.into_content() {
+        Ok(content) => content,
+        Err(error) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();
+        }
+    };
+    match app
+        .db
+        .update_execution_profile(&id, expected_revision, &content, "office-operator")
+        .await
+    {
+        Ok(profile) => Json(execution_profile_value(&profile)).into_response(),
+        Err(Error::Conflict("execution profile revision is stale")) => (
+            StatusCode::CONFLICT,
+            Json(json!({"error":"execution profile revision is stale"})),
+        )
+            .into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn set_execution_profile_default(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<ExecutionProfileDefaultRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let project_id = match input.into_project_id() {
+        Ok(project_id) => project_id,
+        Err(error) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();
+        }
+    };
+    match app
+        .db
+        .set_execution_profile_default(&id, project_id.as_deref(), "office-operator")
+        .await
+    {
+        Ok(binding) => Json(binding).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn clear_execution_profile_default(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<ExecutionProfileDefaultRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let project_id = match input.into_project_id() {
+        Ok(project_id) => project_id,
+        Err(error) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();
+        }
+    };
+    match app
+        .db
+        .clear_execution_profile_default(&id, project_id.as_deref(), "office-operator")
+        .await
+    {
+        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn project_execution_profile(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.resolve_project_execution_profile(&id).await {
+        Ok(profile) => Json(profile).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use axum::http::HeaderValue;
     use serde_json::Value;
 
+    #[tokio::test]
+    async fn subscription_funding_readiness_is_authenticated_and_never_claims_verification() {
+        use tower::ServiceExt;
+
+        let path = std::env::temp_dir().join(format!(
+            "factory-core-funding-status-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let app = test_app(&path).await;
+        let unauthenticated = api_router(app.clone())
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/funding/subscription/opencode-go")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+
+        let response = api_router(app.clone())
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/funding/subscription/opencode-go")
+                    .header("authorization", "Bearer operator-token")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["provider"], "opencode-go");
+        assert_eq!(body["route"], "GO_SUBSCRIPTION_INCLUDED");
+        assert_eq!(body["configured"], false);
+        assert_eq!(body["coreVerifiable"], false);
+        assert_eq!(body["admissible"], false);
+        assert_eq!(body["authenticationClass"], "UNKNOWN");
+        assert_eq!(body["quota"]["state"], "UNKNOWN");
+        assert!(
+            body["missingEvidence"]
+                .as_array()
+                .is_some_and(|values| values.iter().any(|value| value == "PROVIDER_CONNECTION"))
+        );
+        assert!(body["missingEvidence"].as_array().is_some_and(|values| {
+            values
+                .iter()
+                .any(|value| value == "OWNER_CONFIRMED_EXTRA_USAGE_ASSUMPTION")
+        }));
+
+        let unknown = api_router(app.clone())
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/funding/subscription/opencode")
+                    .header("authorization", "Bearer operator-token")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+
+        app.db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn subscription_funding_refusals_have_stable_codes_without_authority() {
+        use factory_native::execution_policy::SubscriptionFundingRefusal;
+        for (refusal, status, code) in [
+            (
+                SubscriptionFundingRefusal::BindingRequired,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "SUBSCRIPTION_FUNDING_BINDING_REQUIRED",
+            ),
+            (
+                SubscriptionFundingRefusal::VerificationRequired,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "SUBSCRIPTION_FUNDING_VERIFICATION_REQUIRED",
+            ),
+            (
+                SubscriptionFundingRefusal::QuotaPaused {
+                    observed_at_ms: 10,
+                    resets_at_ms: None,
+                },
+                StatusCode::SERVICE_UNAVAILABLE,
+                "SUBSCRIPTION_FUNDING_QUOTA_PAUSED",
+            ),
+            (
+                SubscriptionFundingRefusal::InvalidEvidence,
+                StatusCode::FORBIDDEN,
+                "SUBSCRIPTION_FUNDING_EVIDENCE_INVALID",
+            ),
+        ] {
+            let response = api_error(refusal.into());
+            assert_eq!(response.status(), status);
+            let bytes = axum::body::to_bytes(response.into_body(), 4096)
+                .await
+                .unwrap();
+            let body: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(body["code"], code);
+            assert!(
+                body["error"]
+                    .as_str()
+                    .is_some_and(|message| !message.is_empty())
+            );
+            assert_eq!(body.as_object().unwrap().len(), 2);
+        }
+    }
+
+    #[test]
+    fn github_connection_projection_never_contains_credential_material() {
+        let record = factory_native::db::GitHubConnectionRecord {
+            login: "octo".into(),
+            scopes: vec!["repo".into()],
+            scopes_reported: true,
+            credential_ciphertext: "ciphertext-only-value".into(),
+            credential_nonce: "nonce-only-value".into(),
+            credential_fingerprint: "0123456789abcdef".into(),
+            enabled: true,
+            revision: 2,
+            verified_at: "2026-10-28T10:00:00Z".into(),
+            revoked_at: None,
+            created_at: "2026-10-28T09:00:00Z".into(),
+            updated_at: "2026-10-28T10:00:00Z".into(),
+        };
+        let view = github_connection_view(Some(&record));
+        let serialized = serde_json::to_string(&view).unwrap();
+        assert!(serialized.contains("\"configured\":true"));
+        assert!(!serialized.contains("ciphertext-only-value"));
+        assert!(!serialized.contains("nonce-only-value"));
+        assert!(!serialized.contains("credential_ciphertext"));
+        assert!(!serialized.contains("credential_nonce"));
+        let revoked = factory_native::db::GitHubConnectionRecord {
+            credential_ciphertext: String::new(),
+            credential_nonce: String::new(),
+            enabled: false,
+            revoked_at: Some("2026-10-28T11:00:00Z".into()),
+            ..record
+        };
+        assert_eq!(
+            github_connection_view(Some(&revoked))["configured"],
+            serde_json::Value::Bool(false)
+        );
+    }
+
+    #[test]
+    fn github_rate_limit_and_redaction_capacity_map_to_retryable_statuses() {
+        assert_eq!(
+            api_error(Error::RateLimited("until 2026-10-28T12:00:00Z".into())).status(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        assert_eq!(
+            api_error(Error::Unavailable("redaction capacity".into())).status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+
     #[test]
     fn bind_mode_requires_explicit_container_opt_in() {
         assert!(validate_bind("127.0.0.1:8765", false).is_ok());
         assert!(validate_bind("0.0.0.0:8765", false).is_err());
         assert!(validate_bind("0.0.0.0:8765", true).is_ok());
+        assert!(validate_bind("10.89.0.2:8765", true).is_ok());
+        assert!(validate_bind("10.89.0.2:8765", false).is_err());
         assert!(validate_bind("[::]:8765", true).is_err());
         assert!(validate_bind("203.0.113.4:8765", true).is_err());
+        assert!(!is_private_ipv4("203.0.113.4".parse().unwrap()));
+        assert!(is_private_ipv4("10.89.0.2".parse().unwrap()));
+    }
+
+    #[test]
+    fn office_socket_path_must_be_absolute_in_an_existing_directory() {
+        assert!(validate_office_socket_path("office.sock").is_err());
+        assert!(validate_office_socket_path("/nonexistent-factory-dir/office.sock").is_err());
+        let directory = std::env::temp_dir();
+        assert!(
+            validate_office_socket_path(
+                directory.join("factory-office-test.sock").to_str().unwrap()
+            )
+            .is_ok()
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn office_access_router_serves_over_a_unix_socket_only() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let database_path = std::env::temp_dir().join(format!(
+            "factory-core-office-socket-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let app = test_app(&database_path).await;
+        let directory =
+            std::env::temp_dir().join(format!("factory-office-socket-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let socket = directory.join("office.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let router = build_office_access_router(Arc::clone(&app), None);
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+
+        async fn request(socket: &std::path::Path, path: &str) -> String {
+            let mut stream = tokio::net::UnixStream::connect(socket).await.unwrap();
+            stream
+                .write_all(
+                    format!(
+                        "GET {path} HTTP/1.1\r\nHost: localhost:8768\r\nConnection: close\r\n\r\n"
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+            let mut response = Vec::new();
+            stream.read_to_end(&mut response).await.unwrap();
+            String::from_utf8_lossy(&response).to_string()
+        }
+        assert!(
+            request(&socket, "/core-api/health")
+                .await
+                .starts_with("HTTP/1.1 200")
+        );
+        let control = request(&socket, "/core-api/quality/pending").await;
+        assert!(
+            control.starts_with("HTTP/1.1 404"),
+            "control routes must not exist on the Office socket: {control}"
+        );
+
+        server.abort();
+        let _ = std::fs::remove_dir_all(directory);
+        let _ = std::fs::remove_file(database_path);
+    }
+
+    #[tokio::test]
+    async fn hostname_binds_are_single_private_container_interfaces() {
+        assert!(resolve_binds("core-control:8765", false).await.is_err());
+        assert!(resolve_binds("localhost:8765", true).await.is_ok());
+        let both = resolve_binds("0.0.0.0:8765,127.0.0.1:8766", true)
+            .await
+            .expect("explicit binds resolve");
+        assert_eq!(both.len(), 2);
+        assert!(
+            resolve_binds("127.0.0.1:8765,127.0.0.1:8765", false)
+                .await
+                .is_err(),
+            "duplicate binds must fail closed"
+        );
+        assert!(resolve_binds("", true).await.is_err());
+    }
+
+    #[test]
+    fn browser_host_and_origin_policy_rejects_forgeries() {
+        let trusted = vec!["https://factory-office.example.ts.net".to_string()];
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::HOST,
+            HeaderValue::from_static("factory-office.example.ts.net"),
+        );
+        assert!(request_host_allowed(&headers, &trusted));
+        assert!(origin_allowed(
+            "https://factory-office.example.ts.net",
+            &headers,
+            &trusted
+        ));
+        assert!(!origin_allowed(
+            "https://factory-office.example.ts.net/evil",
+            &headers,
+            &trusted
+        ));
+        assert!(!origin_allowed(
+            "https://factory-office.example.ts.net?x=1",
+            &headers,
+            &trusted
+        ));
+        assert!(!origin_allowed("https://evil.example", &headers, &trusted));
+        assert!(!origin_allowed(
+            "http://factory-office.example.ts.net",
+            &headers,
+            &trusted
+        ));
+
+        headers.insert(header::HOST, HeaderValue::from_static("attacker.example"));
+        assert!(!request_host_allowed(&headers, &trusted));
+
+        headers.insert(header::HOST, HeaderValue::from_static("127.0.0.1:8893"));
+        assert!(request_host_allowed(&headers, &trusted));
+        assert!(origin_allowed("http://127.0.0.1:8893", &headers, &trusted));
+        assert!(!origin_allowed("http://127.0.0.1:9999", &headers, &trusted));
     }
 
     #[tokio::test]
@@ -3817,6 +11003,8 @@ mod tests {
             lead_autonomous_start: false,
             model_gateway: None,
             master_key: None,
+            github: factory_native::github::GitHubClient::production().unwrap(),
+            github_sync: tokio::sync::Mutex::new(()),
             enrollment_code_file: None,
             projects_root: None,
             allow_insecure_git: false,
@@ -3911,6 +11099,8 @@ mod tests {
             lead_autonomous_start: false,
             model_gateway: None,
             master_key: None,
+            github: factory_native::github::GitHubClient::production().unwrap(),
+            github_sync: tokio::sync::Mutex::new(()),
             enrollment_code_file: None,
             projects_root: None,
             allow_insecure_git: false,
@@ -3926,8 +11116,16 @@ mod tests {
             "/office/overview",
             "/office/decisions",
             "/campaigns/missing/candidates/missing/diff",
+            "/campaigns/missing/candidates/missing/pull-request?number=1",
+            "/campaigns/missing/candidates/missing/pull-request/diff?number=1",
+            "/campaigns/missing/candidates/missing/pull-request/comments?number=1",
             "/model/calls/unresolved",
             "/provider/turn_reservations/budget",
+            "/integrations/github",
+            "/integrations/github/repositories",
+            "/projects/missing/issues",
+            "/projects/missing/issues/1",
+            "/projects/missing/github",
         ] {
             let request = axum::http::Request::builder()
                 .uri(uri)
@@ -3938,6 +11136,54 @@ mod tests {
                 StatusCode::UNAUTHORIZED
             );
         }
+        let request = axum::http::Request::builder()
+            .method("PUT")
+            .uri("/integrations/github")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                r#"{"token":"ghp_must_not_be_accepted_without_auth_1234"}"#,
+            ))
+            .unwrap();
+        assert_eq!(
+            router.clone().oneshot(request).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/projects/missing/issues/sync")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert_eq!(
+            router.clone().oneshot(request).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+        let request = axum::http::Request::builder()
+            .uri("/integrations/github")
+            .header("authorization", "Bearer operator-token")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let connection: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(connection["connection"]["configured"], false);
+        assert_eq!(connection["connection"]["enabled"], false);
+        assert_eq!(connection["audit"].as_array().map(Vec::len), Some(0));
+        let serialized = String::from_utf8_lossy(&body);
+        assert!(!serialized.contains("credential_ciphertext"));
+        assert!(!serialized.contains("credential_nonce"));
+        assert!(!serialized.contains("ghp_must_not_be_accepted"));
+        let request = axum::http::Request::builder()
+            .uri("/projects/missing/issues")
+            .header("authorization", "Bearer operator-token")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert_eq!(
+            router.clone().oneshot(request).await.unwrap().status(),
+            StatusCode::NOT_FOUND
+        );
         let request = axum::http::Request::builder()
             .uri("/office/overview")
             .header("authorization", "Bearer operator-token")
@@ -4003,6 +11249,219 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn project_onboarding_summary_and_discovery_are_core_governed() {
+        use tower::ServiceExt;
+        let root = std::env::temp_dir().join(format!(
+            "factory-core-project-onboarding-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let repository = root.join("checkout");
+        std::fs::create_dir_all(repository.join("src")).unwrap();
+        std::fs::write(
+            repository.join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(repository.join("src/lib.rs"), "pub fn fixture() {}\n").unwrap();
+        let git = |arguments: &[&str]| {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(&repository)
+                    .args(arguments)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.name", "Fixture"]);
+        git(&["config", "user.email", "fixture@example.invalid"]);
+        git(&["add", "."]);
+        git(&["commit", "-qm", "fixture"]);
+        let path = root.join("factory.sqlite");
+        let db = Database::open(&path).await.unwrap();
+        let project = db
+            .register_project_with_source(
+                &repository,
+                &factory_native::db::RegisterProjectSource {
+                    name: "Widgets".into(),
+                    source_kind: "local".into(),
+                    source_url: String::new(),
+                    source_key: "local:widgets".into(),
+                    source_visibility: String::new(),
+                    default_branch: "main".into(),
+                },
+                "project-key",
+            )
+            .await
+            .unwrap();
+        let master_key_path = root.join("master.key");
+        std::fs::write(&master_key_path, "ab".repeat(32)).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&master_key_path, std::fs::Permissions::from_mode(0o600))
+                .unwrap();
+        }
+        let master_key =
+            factory_native::provider_secrets::ProviderSecretKey::from_file(&master_key_path)
+                .unwrap();
+        let encrypted = master_key
+            .encrypt(b"revoked-token-value-0123456789")
+            .unwrap();
+        db.save_github_connection(&encrypted, "acme-bot", &[], false, "test")
+            .await
+            .unwrap();
+        db.revoke_github_connection("test").await.unwrap();
+        let app = Arc::new(App {
+            db,
+            operator_token: "operator-token".into(),
+            worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
+            verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            lead_fixture_assessor: false,
+            lead_autonomous_start: false,
+            model_gateway: None,
+            master_key: Some(master_key),
+            github: factory_native::github::GitHubClient::production().unwrap(),
+            github_sync: tokio::sync::Mutex::new(()),
+            enrollment_code_file: None,
+            projects_root: Some(root.clone()),
+            allow_insecure_git: false,
+            setup: Mutex::new(SetupState {
+                failures: 0,
+                blocked_until_ms: 0,
+            }),
+            attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
+            observability: factory_native::observability::ExporterHandle::disabled(),
+        });
+        let router = build_router(app);
+
+        let request = axum::http::Request::builder()
+            .uri("/projects/import/options")
+            .header("authorization", "Bearer operator-token")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let options: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(options["github"]["connected"], false);
+        assert_eq!(options["github"]["app_oauth_available"], false);
+        assert_eq!(options["local"]["enabled"], true);
+        assert_eq!(
+            options["local"]["managed_root"].as_str(),
+            Some(root.to_string_lossy().as_ref())
+        );
+
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/projects/import/github")
+            .header("authorization", "Bearer operator-token")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                r#"{"owner":"acme","repo":"private-widgets","idempotency_key":"github-import-key"}"#,
+            ))
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let error: Value = serde_json::from_slice(&body).unwrap();
+        assert!(
+            error["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("GitHub connection is revoked")
+        );
+
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/projects")
+            .header("authorization", "Bearer operator-token")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                r#"{"repository":"/etc","idempotency_key":"local-escape"}"#,
+            ))
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let request = axum::http::Request::builder()
+            .uri(format!("/projects/{}/summary", project.id))
+            .header("authorization", "Bearer operator-token")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let summary: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(summary["project"]["name"], "Widgets");
+        assert_eq!(summary["project"]["source_kind"], "local");
+        assert_eq!(summary["github"]["health"], "NOT_APPLICABLE");
+        assert_eq!(summary["pending_decision_count"], 0);
+        assert_eq!(summary["campaigns"]["active_count"], 0);
+        assert_eq!(
+            summary["project"]["technical"]["repository_path"].as_str(),
+            Some(repository.to_string_lossy().as_ref())
+        );
+        assert_eq!(summary["tooling"], Value::Null);
+
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri(format!("/projects/{}/discovery", project.id))
+            .header("authorization", "Bearer operator-token")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let discovery: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            discovery["baseCommit"].as_str(),
+            Some(project.base_commit.as_str())
+        );
+        assert_eq!(
+            discovery["discovery"]["suggestedCapabilities"],
+            serde_json::json!(["repository-edit", "generic-toolchain"])
+        );
+        assert!(
+            discovery["discovery"]["suggestedChecks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|check| check["id"] == "rust-test")
+        );
+
+        let request = axum::http::Request::builder()
+            .uri(format!("/projects/{}/summary", project.id))
+            .header("authorization", "Bearer operator-token")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let summary: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            summary["tooling"]["suggested_capabilities"],
+            serde_json::json!(["repository-edit", "generic-toolchain"])
+        );
+        assert_eq!(summary["tooling"]["stale"], false);
+        drop(router);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
     async fn delegation_api_requires_operator_and_rejects_autonomy() {
         use tower::ServiceExt;
         let path = std::env::temp_dir().join(format!(
@@ -4057,6 +11516,8 @@ mod tests {
             lead_autonomous_start: false,
             model_gateway: None,
             master_key: None,
+            github: factory_native::github::GitHubClient::production().unwrap(),
+            github_sync: tokio::sync::Mutex::new(()),
             enrollment_code_file: None,
             projects_root: None,
             allow_insecure_git: false,
@@ -4067,7 +11528,40 @@ mod tests {
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
             observability: factory_native::observability::ExporterHandle::disabled(),
         });
-        let router = build_router(app);
+        let router = build_router(Arc::clone(&app));
+        let mut execution_grant = factory_native::lead::StandingDelegationV2 {
+            id: "grant-api-v2".into(),
+            principal_id: "owner".into(),
+            audit_id: "audit".into(),
+            project_id: project.id.clone(),
+            revision: 1,
+            content_hash: String::new(),
+            objective_classes: vec![factory_native::lead::ObjectiveClass::Feature],
+            allowed_paths: vec!["src".into()],
+            capabilities: vec![
+                factory_native::lead::Capability::RepositoryEdit,
+                factory_native::lead::Capability::GenericToolchain,
+            ],
+            risk_classes: vec![factory_native::lead::RiskClass::R0],
+            autonomous_start: false,
+            autonomous_risk_classes: Vec::new(),
+            route: factory_native::lead::ProviderRoute {
+                provider: "opencode".into(),
+                model: "deepseek-v4.1-flash".into(),
+                mode: "build".into(),
+            },
+            max_timeout_secs: 300,
+            max_parallel: 1,
+            operations: approval_operations(),
+            progress: approval_progress(),
+            expires_at: chrono::Utc::now() + chrono::Duration::days(1),
+            revoked_at: None,
+        };
+        execution_grant.content_hash = execution_grant.compute_content_hash();
+        app.db
+            .create_standing_delegation_v2(&execution_grant, "grant-api-v2-key")
+            .await
+            .unwrap();
         let request = axum::http::Request::builder()
             .method("POST")
             .uri("/delegations")
@@ -4142,7 +11636,7 @@ mod tests {
                 serde_json::to_vec(&json!({
                     "project_id": project.id,
                     "action_id": action["id"],
-                    "delegation_id": "grant-api",
+                    "delegation_id": "grant-api-v2",
                     "objective": "Implement the API slice.",
                     "project_config_hash": config_hash,
                     "idempotency_key": "lead-api-key"
@@ -4197,6 +11691,8 @@ mod tests {
             lead_autonomous_start: false,
             model_gateway: None,
             master_key: None,
+            github: factory_native::github::GitHubClient::production().unwrap(),
+            github_sync: tokio::sync::Mutex::new(()),
             enrollment_code_file: None,
             projects_root: None,
             allow_insecure_git: false,
@@ -4245,6 +11741,13 @@ mod tests {
     }
 
     async fn test_app(path: &Path) -> Arc<App> {
+        test_app_with_master_key(path, None).await
+    }
+
+    async fn test_app_with_master_key(
+        path: &Path,
+        master_key: Option<factory_native::provider_secrets::ProviderSecretKey>,
+    ) -> Arc<App> {
         Arc::new(App {
             db: Database::open(path).await.unwrap(),
             operator_token: "operator-token".into(),
@@ -4254,7 +11757,9 @@ mod tests {
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
-            master_key: None,
+            master_key,
+            github: factory_native::github::GitHubClient::production().unwrap(),
+            github_sync: tokio::sync::Mutex::new(()),
             enrollment_code_file: None,
             projects_root: None,
             allow_insecure_git: false,
@@ -4265,6 +11770,1023 @@ mod tests {
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
             observability: factory_native::observability::ExporterHandle::disabled(),
         })
+    }
+
+    #[tokio::test]
+    async fn browser_bootstrap_issues_cookie_session_and_enforces_csrf_and_revocation() {
+        use tower::ServiceExt;
+
+        let database_path = std::env::temp_dir().join(format!(
+            "factory-core-browser-session-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let code_path = std::env::temp_dir().join(format!(
+            "factory-core-bootstrap-code-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let code = "one-time-owner-confirmation";
+        std::fs::write(
+            &code_path,
+            serde_json::to_vec(&BootstrapCodeRecord {
+                code_sha256: factory_native::device_session::sha256_hex(code),
+                expires_at_ms: chrono::Utc::now().timestamp_millis() + 60_000,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let app = Arc::new(App {
+            db: Database::open(&database_path).await.unwrap(),
+            operator_token: "operator-token".into(),
+            worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
+            verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            lead_fixture_assessor: false,
+            lead_autonomous_start: false,
+            model_gateway: None,
+            master_key: None,
+            github: factory_native::github::GitHubClient::production().unwrap(),
+            github_sync: tokio::sync::Mutex::new(()),
+            enrollment_code_file: Some(code_path.clone()),
+            projects_root: None,
+            allow_insecure_git: false,
+            setup: Mutex::new(SetupState {
+                failures: 0,
+                blocked_until_ms: 0,
+            }),
+            attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
+            observability: factory_native::observability::ExporterHandle::disabled(),
+        });
+        let router = build_router(app.clone());
+        let wrong_code = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/auth/bootstrap")
+                    .header("host", "localhost:8765")
+                    .header("origin", "http://localhost:8765")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        serde_json::json!({"code":"wrong-code","deviceName":"Desktop"}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(wrong_code.status(), StatusCode::UNAUTHORIZED);
+        let missing_origin = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/auth/bootstrap")
+                    .header("host", "localhost:8765")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        serde_json::json!({"code":code,"deviceName":"Desktop"}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing_origin.status(), StatusCode::FORBIDDEN);
+        let response = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/auth/bootstrap")
+                    .header("host", "localhost:8765")
+                    .header("origin", "http://localhost:8765")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        serde_json::json!({"code":code,"deviceName":"Desktop"}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let cookies: Vec<String> = response
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .map(|value| value.to_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(cookies.len(), 2);
+        assert!(cookies.iter().any(|value| value.contains("HttpOnly")));
+        let session_cookie = cookies
+            .iter()
+            .find(|value| value.starts_with("factory_session="))
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned();
+        let csrf_cookie = cookies
+            .iter()
+            .find(|value| value.starts_with("factory_csrf="))
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned();
+        let status = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/projects")
+                    .header("host", "localhost:8765")
+                    .header("cookie", &session_cookie)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(status.status(), StatusCode::OK);
+
+        let unauthenticated = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/projects")
+                    .header("host", "localhost:8765")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+        let reviewer_route = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/quality/candidates/candidate-1/review-config")
+                    .header("host", "localhost:8765")
+                    .header("cookie", &session_cookie)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(reviewer_route.status(), StatusCode::UNAUTHORIZED);
+        let bad_origin = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/projects")
+                    .header("host", "localhost:8765")
+                    .header("origin", "http://attacker.example")
+                    .header("cookie", &session_cookie)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(bad_origin.status(), StatusCode::FORBIDDEN);
+        let bad_host = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/projects")
+                    .header("host", "attacker.example")
+                    .header("cookie", &session_cookie)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(bad_host.status(), StatusCode::BAD_REQUEST);
+        let ambiguous_auth = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/projects")
+                    .header("host", "localhost:8765")
+                    .header("cookie", &session_cookie)
+                    .header(
+                        "authorization",
+                        "Bearer reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb",
+                    )
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ambiguous_auth.status(), StatusCode::BAD_REQUEST);
+
+        let denied = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/auth/logout")
+                    .header("host", "localhost:8765")
+                    .header("origin", "http://localhost:8765")
+                    .header("cookie", format!("{session_cookie}; {csrf_cookie}"))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+        let csrf = csrf_cookie.split_once('=').unwrap().1;
+        let logout = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/auth/logout")
+                    .header("host", "localhost:8765")
+                    .header("origin", "http://localhost:8765")
+                    .header("cookie", format!("{session_cookie}; {csrf_cookie}"))
+                    .header(CSRF_HEADER, csrf)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(logout.status(), StatusCode::NO_CONTENT);
+        let revoked = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/projects")
+                    .header("host", "localhost:8765")
+                    .header("cookie", &session_cookie)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(revoked.status(), StatusCode::UNAUTHORIZED);
+        let recovered = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/auth/session")
+                    .header("host", "localhost:8765")
+                    .header("cookie", format!("{session_cookie}; {csrf_cookie}"))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(recovered.status(), StatusCode::OK);
+        assert_eq!(
+            recovered
+                .headers()
+                .get_all(header::SET_COOKIE)
+                .iter()
+                .count(),
+            2
+        );
+        let body = axum::body::to_bytes(recovered.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let session: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(session["authenticated"], false);
+        app.db
+            .reset_owner_bootstrap("local-recovery", chrono::Utc::now().timestamp_millis())
+            .await
+            .unwrap();
+        let recovery_code = "one-time-recovery-confirmation";
+        std::fs::write(
+            &code_path,
+            serde_json::to_vec(&BootstrapCodeRecord {
+                code_sha256: factory_native::device_session::sha256_hex(recovery_code),
+                expires_at_ms: chrono::Utc::now().timestamp_millis() + 60_000,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let reenrolled = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/auth/bootstrap")
+                    .header("host", "localhost:8765")
+                    .header("origin", "http://localhost:8765")
+                    .header("content-type", "application/json")
+                    .header("cookie", format!("{session_cookie}; {csrf_cookie}"))
+                    .body(axum::body::Body::from(
+                        serde_json::json!({
+                            "code": recovery_code,
+                            "deviceName": "Recovered workstation"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(reenrolled.status(), StatusCode::OK);
+        let issued_cookies = reenrolled
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .map(|value| value.to_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(issued_cookies.len(), 2);
+        assert!(issued_cookies.iter().any(|value| {
+            value.starts_with("factory_session=") && !value.contains("Max-Age=0")
+        }));
+        assert!(
+            issued_cookies.iter().any(|value| {
+                value.starts_with("factory_csrf=") && !value.contains("Max-Age=0")
+            })
+        );
+        let cookie_header = issued_cookies
+            .iter()
+            .map(|value| value.split(';').next().unwrap())
+            .collect::<Vec<_>>()
+            .join("; ");
+        let body = axum::body::to_bytes(reenrolled.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let session: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(session["authenticated"], true);
+        let persisted = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/auth/session")
+                    .header("host", "localhost:8765")
+                    .header("cookie", cookie_header)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(persisted.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(persisted.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let session: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(session["authenticated"], true);
+        let replay = router
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/auth/bootstrap")
+                    .header("host", "localhost:8765")
+                    .header("origin", "http://localhost:8765")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        serde_json::json!({
+                            "code": recovery_code,
+                            "deviceName": "Replay"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(replay.status(), StatusCode::CONFLICT);
+        let _ = std::fs::remove_file(database_path);
+        let _ = std::fs::remove_file(code_path);
+    }
+
+    #[tokio::test]
+    async fn office_access_listener_serves_office_and_denies_control_routes() {
+        use tower::ServiceExt;
+
+        let database_path = std::env::temp_dir().join(format!(
+            "factory-core-office-access-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let office_directory = std::env::temp_dir().join(format!(
+            "factory-core-office-assets-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(office_directory.join("assets")).unwrap();
+        std::fs::write(office_directory.join("index.html"), "office-shell").unwrap();
+        std::fs::write(office_directory.join("assets/app.js"), "office-asset").unwrap();
+        let app = test_app(&database_path).await;
+        let office_router =
+            build_office_access_router(Arc::clone(&app), Some(office_directory.clone()));
+        let api_only_router = build_office_access_router(Arc::clone(&app), None);
+
+        for (uri, expected) in [("/", "office-shell"), ("/assets/app.js", "office-asset")] {
+            let response = office_router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri(uri)
+                        .header("host", "localhost:8768")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            assert_eq!(body, expected);
+        }
+
+        let office_projection = office_router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/core-api/office/overview")
+                    .header("host", "localhost:8768")
+                    .header("authorization", "Bearer operator-token")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(office_projection.status(), StatusCode::OK);
+
+        let office_get_routes = [
+            "/core-api/health",
+            "/core-api/auth/session",
+            "/core-api/auth/access",
+            "/core-api/auth/devices",
+            "/core-api/auth/devices/audit",
+            "/core-api/setup/status",
+            "/core-api/settings/providers",
+            "/core-api/settings/runtime",
+            "/core-api/settings/providers/opencode/audit",
+            "/core-api/settings/providers/opencode/models",
+            "/core-api/projects",
+            "/core-api/projects/missing/config",
+            "/core-api/execution-profiles",
+            "/core-api/execution-profiles/missing",
+            "/core-api/projects/missing/execution-profile",
+            "/core-api/actions",
+            "/core-api/office/overview",
+            "/core-api/office/decisions",
+            "/core-api/office/participants",
+            "/core-api/provider/sessions/missing/tool_events",
+            "/core-api/campaigns",
+            "/core-api/campaigns/missing",
+            "/core-api/campaigns/missing/candidates/missing/diff",
+            "/core-api/campaigns/missing/authorization",
+            "/core-api/runs",
+            "/core-api/attempts",
+            "/core-api/events",
+            "/core-api/observability",
+            "/core-api/provider/turn_reservations/budget",
+            "/core-api/provider/sessions",
+            "/core-api/model/calls",
+            "/core-api/model/calls/unresolved",
+            "/core-api/quality/candidates/missing/receipts",
+            "/core-api/quality/candidates/missing/gate",
+            "/core-api/delegations",
+            "/core-api/lead/requests",
+            "/core-api/lead/requests/missing",
+            "/core-api/intake/requests",
+            "/core-api/intake/requests/missing",
+            "/core-api/candidates",
+            "/core-api/workers",
+        ];
+        for uri in office_get_routes {
+            let response = api_only_router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri(uri)
+                        .header("host", "localhost:8768")
+                        .header("authorization", "Bearer operator-token")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert!(
+                response
+                    .headers()
+                    .get("x-factory-office-route-miss")
+                    .is_none(),
+                "Office route was not registered: {uri}"
+            );
+        }
+        let office_write_routes = [
+            ("PUT", "/core-api/settings/runtime"),
+            ("PUT", "/core-api/settings/providers/opencode"),
+            ("POST", "/core-api/settings/providers/unknown/test"),
+            ("DELETE", "/core-api/settings/providers/unknown/credential"),
+            ("POST", "/core-api/projects"),
+            ("PUT", "/core-api/projects/missing/config"),
+            ("POST", "/core-api/execution-profiles"),
+            ("PUT", "/core-api/execution-profiles/missing"),
+            ("POST", "/core-api/execution-profiles/missing/default"),
+            ("DELETE", "/core-api/execution-profiles/missing/default"),
+            ("POST", "/core-api/actions"),
+            ("POST", "/core-api/campaigns"),
+            ("POST", "/core-api/campaigns/missing/cancel"),
+            ("POST", "/core-api/campaigns/missing/authorize"),
+            ("POST", "/core-api/campaigns/missing/runs"),
+            ("POST", "/core-api/runs/missing/attempts"),
+            ("POST", "/core-api/delegations"),
+            ("POST", "/core-api/delegations/missing"),
+            ("POST", "/core-api/lead/requests"),
+            ("POST", "/core-api/lead/requests/missing/assess"),
+            ("POST", "/core-api/lead/requests/missing/freeze"),
+            ("POST", "/core-api/lead/requests/missing/start"),
+            ("POST", "/core-api/lead/requests/missing/approve"),
+            ("POST", "/core-api/lead/requests/missing/withdraw"),
+            ("POST", "/core-api/intake/requests"),
+            ("POST", "/core-api/intake/requests/missing/assess"),
+            ("POST", "/core-api/intake/requests/missing/approve"),
+            ("POST", "/core-api/intake/requests/missing/message"),
+            ("POST", "/core-api/intake/requests/missing/cancel"),
+            ("POST", "/core-api/projects/missing/execution-policy"),
+            ("POST", "/core-api/model/calls/missing/resolve"),
+            ("POST", "/core-api/auth/bootstrap"),
+            ("POST", "/core-api/auth/device-challenges"),
+            ("POST", "/core-api/auth/device-challenges/missing/cancel"),
+            ("POST", "/core-api/auth/device-claims/missing"),
+            ("POST", "/core-api/auth/device-claims/missing/poll"),
+            ("POST", "/core-api/auth/devices/missing/approve"),
+            ("POST", "/core-api/auth/devices/missing/reject"),
+            ("DELETE", "/core-api/auth/devices/missing"),
+            ("POST", "/core-api/auth/logout"),
+            ("POST", "/core-api/auth/logout-all"),
+            ("POST", "/core-api/auth/rotate"),
+        ];
+        for (method, uri) in office_write_routes {
+            let response = api_only_router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method(method)
+                        .uri(uri)
+                        .header("host", "localhost:8768")
+                        .header("authorization", "Bearer operator-token")
+                        .header("content-type", "application/json")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert!(
+                response
+                    .headers()
+                    .get("x-factory-office-route-miss")
+                    .is_none(),
+                "Office route was not registered: {method} {uri}"
+            );
+        }
+
+        let denied = [
+            (
+                "/worker/register",
+                "Bearer bootstrap-bootstrap-bootstrap-1234",
+            ),
+            (
+                "/core-api/worker/register",
+                "Bearer bootstrap-bootstrap-bootstrap-1234",
+            ),
+            (
+                "/quality/receipts",
+                "Bearer verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa",
+            ),
+            (
+                "/core-api/quality/receipts",
+                "Bearer verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa",
+            ),
+            (
+                "/quality/candidates/candidate-1/review-config",
+                "Bearer reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb",
+            ),
+            (
+                "/core-api/quality/candidates/candidate-1/review-config",
+                "Bearer reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb",
+            ),
+            (
+                "/supervisor/workspace_operation_valid",
+                "Bearer operator-token",
+            ),
+            (
+                "/core-api/supervisor/workspace_operation_valid",
+                "Bearer operator-token",
+            ),
+        ];
+        for (uri, credential) in denied {
+            let mut request = axum::http::Request::builder()
+                .method(if uri.ends_with("/review-config") {
+                    "GET"
+                } else {
+                    "POST"
+                })
+                .uri(uri)
+                .header("host", "localhost:8768")
+                .header("authorization", credential);
+            let body = if uri.ends_with("/review-config") {
+                axum::body::Body::empty()
+            } else {
+                request = request.header("content-type", "application/json");
+                axum::body::Body::from("{}")
+            };
+            let response = office_router
+                .clone()
+                .oneshot(request.body(body).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{uri}");
+        }
+
+        let local_router = build_router(app);
+        let local_worker_route = local_router
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/worker/register")
+                    .header("host", "localhost:8765")
+                    .header("authorization", "Bearer bootstrap-bootstrap-bootstrap-1234")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(local_worker_route.status(), StatusCode::NOT_FOUND);
+
+        drop(office_router);
+        let _ = std::fs::remove_file(database_path);
+        let _ = std::fs::remove_dir_all(office_directory);
+    }
+
+    #[tokio::test]
+    async fn office_access_listener_pairs_and_revokes_devices_with_operator_sessions() {
+        use tower::ServiceExt;
+        let path = std::env::temp_dir().join(format!(
+            "factory-core-office-pairing-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let app = test_app(&path).await;
+        let owner = factory_native::device_session::issue_owner(
+            &app.db,
+            "Desktop",
+            chrono::Utc::now().timestamp_millis(),
+        )
+        .await
+        .unwrap();
+        let session_cookie = format!("factory_session={}", owner.session_token);
+        let csrf_cookie = format!("factory_csrf={}", owner.csrf_token);
+        let both_cookies = format!("{session_cookie}; {csrf_cookie}");
+        let router = build_office_access_router(Arc::clone(&app), None);
+
+        let empty = || axum::body::Body::empty();
+        let unauthenticated = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/core-api/auth/access")
+                    .header("host", "localhost:8768")
+                    .body(empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+
+        let access = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/core-api/auth/access")
+                    .header("host", "localhost:8768")
+                    .header("cookie", &session_cookie)
+                    .body(empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(access.status(), StatusCode::OK);
+
+        let devices = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/core-api/auth/devices")
+                    .header("host", "localhost:8768")
+                    .header("cookie", &session_cookie)
+                    .body(empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(devices.status(), StatusCode::OK);
+        let devices = axum::body::to_bytes(devices.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let devices: Value = serde_json::from_slice(&devices).unwrap();
+        assert_eq!(devices["devices"][0]["current"], true);
+
+        let challenge = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/core-api/auth/device-challenges")
+                    .header("host", "localhost:8768")
+                    .header("origin", "http://localhost:8768")
+                    .header("cookie", &both_cookies)
+                    .header(CSRF_HEADER, &owner.csrf_token)
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(challenge.status(), StatusCode::OK);
+        let challenge = axum::body::to_bytes(challenge.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let challenge: Value = serde_json::from_slice(&challenge).unwrap();
+        let challenge_id = challenge["challengeId"].as_str().unwrap().to_owned();
+        let verification_code = challenge["verificationCode"].as_str().unwrap().to_owned();
+
+        let claim = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri(format!("/core-api/auth/device-claims/{challenge_id}"))
+                    .header("host", "localhost:8768")
+                    .header("origin", "http://localhost:8768")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        serde_json::json!({"deviceName":"Phone"}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(claim.status(), StatusCode::OK);
+        let claim = axum::body::to_bytes(claim.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let claim: Value = serde_json::from_slice(&claim).unwrap();
+        assert_eq!(claim["status"], "PENDING");
+        let poll_token = claim["pollToken"].as_str().unwrap().to_owned();
+
+        let approve = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri(format!("/core-api/auth/devices/{challenge_id}/approve"))
+                    .header("host", "localhost:8768")
+                    .header("origin", "http://localhost:8768")
+                    .header("cookie", &both_cookies)
+                    .header(CSRF_HEADER, &owner.csrf_token)
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        serde_json::json!({"verificationCode": verification_code}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(approve.status(), StatusCode::OK);
+
+        let poll = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri(format!("/core-api/auth/device-claims/{challenge_id}/poll"))
+                    .header("host", "localhost:8768")
+                    .header("origin", "http://localhost:8768")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        serde_json::json!({"pollToken": poll_token}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(poll.status(), StatusCode::OK);
+        let phone_cookie = poll
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .find(|value| value.starts_with("factory_session="))
+            .and_then(|value| value.split(';').next())
+            .unwrap()
+            .to_owned();
+        let poll_body = axum::body::to_bytes(poll.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let poll_body: Value = serde_json::from_slice(&poll_body).unwrap();
+        assert_eq!(poll_body["status"], "APPROVED");
+
+        let devices = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/core-api/auth/devices")
+                    .header("host", "localhost:8768")
+                    .header("cookie", &session_cookie)
+                    .body(empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let devices = axum::body::to_bytes(devices.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let devices: Value = serde_json::from_slice(&devices).unwrap();
+        let phone = devices["devices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|device| device["name"] == "Phone")
+            .expect("phone session is listed");
+        assert_eq!(phone["current"], false);
+        let phone_id = phone["id"].as_str().unwrap().to_owned();
+
+        let revoke = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/core-api/auth/devices/{phone_id}"))
+                    .header("host", "localhost:8768")
+                    .header("origin", "http://localhost:8768")
+                    .header("cookie", &both_cookies)
+                    .header(CSRF_HEADER, &owner.csrf_token)
+                    .body(empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(revoke.status(), StatusCode::NO_CONTENT);
+
+        let revoked = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/core-api/auth/devices")
+                    .header("host", "localhost:8768")
+                    .header("cookie", &phone_cookie)
+                    .body(empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(revoked.status(), StatusCode::UNAUTHORIZED);
+
+        let audit = router
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/core-api/auth/devices/audit")
+                    .header("host", "localhost:8768")
+                    .header("cookie", &session_cookie)
+                    .body(empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(audit.status(), StatusCode::OK);
+        let audit = axum::body::to_bytes(audit.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let audit = String::from_utf8(audit.to_vec()).unwrap();
+        assert!(audit.contains("approved"));
+        assert!(audit.contains("revoked"));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn global_revocation_invalidates_delayed_pairing_polls() {
+        use tower::ServiceExt;
+        for operation in ["logout-all", "revoke-all", "recovery"] {
+            let path = std::env::temp_dir().join(format!(
+                "factory-core-pairing-revocation-{}-{}.sqlite",
+                operation,
+                uuid::Uuid::new_v4()
+            ));
+            let app = test_app(&path).await;
+            let now = chrono::Utc::now().timestamp_millis();
+            let owner = factory_native::device_session::issue_owner(&app.db, "Desktop", now)
+                .await
+                .unwrap();
+            let session_cookie = format!("factory_session={}", owner.session_token);
+            let csrf_cookie = format!("factory_csrf={}", owner.csrf_token);
+            let both_cookies = format!("{session_cookie}; {csrf_cookie}");
+            let challenge_id = uuid::Uuid::new_v4().to_string();
+            let poll_token = format!(
+                "{}{}",
+                uuid::Uuid::new_v4().simple(),
+                uuid::Uuid::new_v4().simple()
+            );
+            app.db
+                .create_device_pairing(
+                    &challenge_id,
+                    "204817",
+                    &owner.session_id,
+                    now,
+                    now.saturating_add(180_000),
+                )
+                .await
+                .unwrap();
+            app.db
+                .claim_device_pairing(
+                    &challenge_id,
+                    &factory_native::device_session::sha256_hex(&poll_token),
+                    "Phone",
+                    now + 1,
+                )
+                .await
+                .unwrap();
+            app.db
+                .decide_device_pairing(
+                    &challenge_id,
+                    true,
+                    Some("204817"),
+                    &owner.session_id,
+                    now + 2,
+                )
+                .await
+                .unwrap();
+            let router = build_office_access_router(Arc::clone(&app), None);
+            let mutation = match operation {
+                "recovery" => app
+                    .db
+                    .reset_owner_bootstrap("local-recovery", now + 3)
+                    .await
+                    .map(|_| ()),
+                route => {
+                    let uri = if route == "logout-all" {
+                        "/core-api/auth/logout-all"
+                    } else {
+                        "/core-api/auth/devices/revoke-all"
+                    };
+                    let response = router
+                        .clone()
+                        .oneshot(
+                            axum::http::Request::builder()
+                                .method("POST")
+                                .uri(uri)
+                                .header("host", "localhost:8768")
+                                .header("origin", "http://localhost:8768")
+                                .header("cookie", &both_cookies)
+                                .header(CSRF_HEADER, &owner.csrf_token)
+                                .header("content-type", "application/json")
+                                .body(axum::body::Body::from("{}"))
+                                .unwrap(),
+                        )
+                        .await
+                        .unwrap();
+                    assert_eq!(response.status(), StatusCode::NO_CONTENT, "{operation}");
+                    Ok(())
+                }
+            };
+            mutation.expect("global revocation operation succeeds");
+
+            let poll = router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri(format!("/core-api/auth/device-claims/{challenge_id}/poll"))
+                        .header("host", "localhost:8768")
+                        .header("origin", "http://localhost:8768")
+                        .header("content-type", "application/json")
+                        .body(axum::body::Body::from(
+                            serde_json::json!({"pollToken": poll_token}).to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(poll.status(), StatusCode::OK, "{operation}");
+            assert_eq!(
+                poll.headers().get_all(header::SET_COOKIE).iter().count(),
+                0,
+                "{operation} must not issue a device session"
+            );
+            let body = axum::body::to_bytes(poll.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["status"], "CANCELLED", "{operation}");
+
+            let access = router
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri("/core-api/auth/access")
+                        .header("host", "localhost:8768")
+                        .header("cookie", &session_cookie)
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(access.status(), StatusCode::UNAUTHORIZED, "{operation}");
+            let _ = std::fs::remove_file(path);
+        }
     }
 
     #[tokio::test]
@@ -4373,6 +12895,8 @@ mod tests {
             lead_autonomous_start: false,
             model_gateway: None,
             master_key: None,
+            github: factory_native::github::GitHubClient::production().unwrap(),
+            github_sync: tokio::sync::Mutex::new(()),
             enrollment_code_file: None,
             projects_root: None,
             allow_insecure_git: false,
@@ -4406,7 +12930,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn semantic_review_toggle_is_authoritative_for_receipts() {
+    async fn semantic_review_toggle_controls_model_gateway_routes() {
         use tower::ServiceExt;
         let path = std::env::temp_dir().join(format!(
             "factory-core-semantic-toggle-{}.sqlite",
@@ -4422,6 +12946,8 @@ mod tests {
             lead_autonomous_start: false,
             model_gateway: None,
             master_key: None,
+            github: factory_native::github::GitHubClient::production().unwrap(),
+            github_sync: tokio::sync::Mutex::new(()),
             enrollment_code_file: None,
             projects_root: None,
             allow_insecure_git: false,
@@ -4467,7 +12993,7 @@ mod tests {
         );
 
         let config = axum::http::Request::builder()
-            .uri("/review/config")
+            .uri("/quality/candidates/candidate-1/review-config")
             .header(
                 "authorization",
                 "Bearer reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb",
@@ -4527,99 +13053,3343 @@ mod tests {
             StatusCode::SERVICE_UNAVAILABLE
         );
 
-        let receipt = axum::http::Request::builder()
-            .method("POST")
-            .uri("/quality/receipts")
-            .header(
-                "authorization",
-                "Bearer reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb",
-            )
-            .header("content-type", "application/json")
-            .body(axum::body::Body::from(
-                serde_json::json!({
-                    "candidate_id": "candidate-1",
-                    "receipt_id": "receipt-1",
-                    "principal_id": "reviewer",
-                    "actionSpecSha256": "a".repeat(64),
-                    "commitSha": "b".repeat(40),
-                    "treeSha": "c".repeat(40),
-                    "result": "PASS",
-                    "evidence": "EXECUTED",
-                    "findings": [],
-                    "mechanism": "MODEL"
-                })
-                .to_string(),
-            ))
-            .unwrap();
-        let response = router.clone().oneshot(receipt).await.unwrap();
-        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-
-        let disable = axum::http::Request::builder()
-            .method("PUT")
-            .uri("/settings/runtime")
-            .header("authorization", "Bearer operator-token")
-            .header("content-type", "application/json")
-            .body(axum::body::Body::from(
-                r#"{"semanticReviewEnabled":false,"semanticReviewMaxOutputTokens":2048}"#,
-            ))
-            .unwrap();
-        assert_eq!(
-            router.clone().oneshot(disable).await.unwrap().status(),
-            StatusCode::OK
-        );
-        let disabled_receipt = axum::http::Request::builder()
-            .method("POST")
-            .uri("/quality/receipts")
-            .header(
-                "authorization",
-                "Bearer reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb",
-            )
-            .header("content-type", "application/json")
-            .body(axum::body::Body::from(
-                serde_json::json!({
-                    "candidate_id": "candidate-1",
-                    "receipt_id": "receipt-2",
-                    "principal_id": "reviewer",
-                    "actionSpecSha256": "a".repeat(64),
-                    "commitSha": "b".repeat(40),
-                    "treeSha": "c".repeat(40),
-                    "result": "PASS",
-                    "evidence": "EXECUTED",
-                    "findings": [],
-                    "mechanism": "MODEL"
-                })
-                .to_string(),
-            ))
-            .unwrap();
-        assert_eq!(
-            router.oneshot(disabled_receipt).await.unwrap().status(),
-            StatusCode::FORBIDDEN
-        );
         drop(app);
         let _ = std::fs::remove_file(path);
     }
 
-    #[test]
-    fn enabled_semantic_review_requires_model_reviewer_evidence() {
-        use factory_native::db::ReviewMechanism::{Deterministic, Model};
-        assert!(reviewer_receipt_mechanism_allowed(true, true, Model).is_ok());
+    #[tokio::test]
+    async fn project_files_api_browses_registered_repository_with_bounds() {
+        use tower::ServiceExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "factory-core-project-files-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let repository = root.join("repo");
+        std::fs::create_dir_all(repository.join("src")).unwrap();
+        std::fs::write(repository.join("README.md"), "# Project\n").unwrap();
+        std::fs::write(repository.join("src/main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(repository.join("asset.bin"), b"binary\0payload").unwrap();
+        let git = |arguments: &[&str]| {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repository)
+                .args(arguments)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {arguments:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8_lossy(&output.stdout).trim().to_owned()
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.name", "Fixture"]);
+        git(&["config", "user.email", "fixture@example.invalid"]);
+        git(&["add", "--all"]);
+        git(&["commit", "-qm", "fixture"]);
+        let base_commit = git(&["rev-parse", "HEAD"]);
+
+        let path = root.join("factory.sqlite");
+        let db = Database::open(&path).await.unwrap();
+        let project = db
+            .register_project(&repository, "project-key")
+            .await
+            .unwrap();
+        let app = Arc::new(App {
+            db,
+            operator_token: "operator-token".into(),
+            worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
+            verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            lead_fixture_assessor: false,
+            lead_autonomous_start: false,
+            model_gateway: None,
+            master_key: None,
+            github: factory_native::github::GitHubClient::production().unwrap(),
+            github_sync: tokio::sync::Mutex::new(()),
+            enrollment_code_file: None,
+            projects_root: None,
+            allow_insecure_git: false,
+            setup: Mutex::new(SetupState {
+                failures: 0,
+                blocked_until_ms: 0,
+            }),
+            attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
+            observability: factory_native::observability::ExporterHandle::disabled(),
+        });
+        let router = build_router(app);
+
+        let request = |uri: String| {
+            axum::http::Request::builder()
+                .uri(uri)
+                .header("authorization", "Bearer operator-token")
+                .body(axum::body::Body::empty())
+                .unwrap()
+        };
+        let response = router
+            .clone()
+            .oneshot(request(format!("/projects/{}/files", project.id)))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let tree: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(tree["revision"]["commit"], base_commit);
+        assert_eq!(tree["path"], "");
         assert!(
-            reviewer_receipt_mechanism_allowed(true, true, Deterministic)
-                .unwrap_err()
-                .contains("must submit MODEL evidence")
-        );
-        assert!(reviewer_receipt_mechanism_allowed(true, false, Deterministic).is_ok());
-        assert!(reviewer_receipt_mechanism_allowed(false, true, Deterministic).is_ok());
-        assert!(reviewer_receipt_mechanism_allowed(false, false, Deterministic).is_ok());
-        assert!(
-            reviewer_receipt_mechanism_allowed(false, true, Model)
-                .unwrap_err()
-                .contains("disabled")
+            tree["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["path"] == "src" && entry["kind"] == "DIRECTORY")
         );
         assert!(
-            reviewer_receipt_mechanism_allowed(true, false, Model)
-                .unwrap_err()
-                .contains("configured default model gateway")
+            tree["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["path"] == "README.md" && entry["kind"] == "FILE")
         );
+
+        let response = router
+            .clone()
+            .oneshot(request(format!(
+                "/projects/{}/file?path=src/main.rs&ref={base_commit}",
+                project.id
+            )))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let file: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(file["content"], "fn main() {}\n");
+        assert_eq!(file["lineCount"], 1);
+        assert_eq!(file["omitted"], Value::Null);
+
+        let response = router
+            .clone()
+            .oneshot(request(format!(
+                "/projects/{}/file?path=asset.bin",
+                project.id
+            )))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let binary: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(binary["omitted"], "BINARY");
+        assert_eq!(binary["content"], Value::Null);
+
+        let response = router
+            .clone()
+            .oneshot(request(format!(
+                "/projects/{}/file?path=../etc/passwd",
+                project.id
+            )))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let response = router
+            .clone()
+            .oneshot(request(format!(
+                "/projects/{}/file?path=src/main.rs&ref=main",
+                project.id
+            )))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let response = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(format!("/projects/{}/refs", project.id))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        let response = router
+            .oneshot(request(format!("/projects/{}/refs", project.id)))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let refs: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(refs["baseCommit"], base_commit);
+        assert_eq!(refs["head"], "main");
+        assert_eq!(refs["refs"][0]["commit"], base_commit);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn campaign_diff_and_pr_routes_bind_exact_candidate_and_project_binding() {
+        use sqlx::connection::Connection as SqlxConnection;
+        use sqlx_sqlite::{SqliteConnectOptions, SqliteConnection};
+        use tower::ServiceExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "factory-core-campaign-diff-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let repository = root.join("repo");
+        std::fs::create_dir_all(repository.join("src")).unwrap();
+        std::fs::write(repository.join("src/main.rs"), "fn main() {}\n").unwrap();
+        let git = |arguments: &[&str]| {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repository)
+                .args(arguments)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {arguments:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8_lossy(&output.stdout).trim().to_owned()
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.name", "Fixture"]);
+        git(&["config", "user.email", "fixture@example.invalid"]);
+        git(&["add", "--all"]);
+        git(&["commit", "-qm", "base"]);
+        let base_commit = git(&["rev-parse", "HEAD"]);
+
+        let path = root.join("factory.sqlite");
+        let db = Database::open(&path).await.unwrap();
+        let project = db
+            .register_project(&repository, "project-key")
+            .await
+            .unwrap();
+        let action = db
+            .create_action_with_spec(
+                &project.id,
+                "Inspect the candidate.",
+                "opencode",
+                "deepseek-v4.1-flash",
+                "campaign-diff-action",
+                factory_native::db::ActionSpecInput {
+                    allowed_paths: &[],
+                    checks: &[],
+                },
+            )
+            .await
+            .unwrap();
+        std::fs::write(
+            repository.join("src/main.rs"),
+            "fn main() {\n    println!(\"changed\");\n}\n",
+        )
+        .unwrap();
+        git(&["add", "--all"]);
+        git(&["commit", "-qm", "candidate"]);
+        let candidate_commit = git(&["rev-parse", "HEAD"]);
+        let candidate_tree = git(&["rev-parse", &format!("{candidate_commit}^{{tree}}")]);
+        db.bind_project_github(
+            &project.id,
+            factory_native::db::NewProjectGitHubBinding {
+                owner: "acme",
+                repo: "widgets",
+                default_branch: "main",
+                repository_github_id: Some(42),
+            },
+            "tester",
+        )
+        .await
+        .unwrap();
+        let options = SqliteConnectOptions::new().filename(&path);
+        let mut connection = SqliteConnection::connect_with(&options).await.unwrap();
+        for statement in [
+            "INSERT INTO campaigns(id,action_id,status,created_at) VALUES ('campaign-diff','<action>','AUTHORIZED','2026-10-28T10:00:00Z')",
+            "INSERT INTO runs(id,campaign_id,status,created_at) VALUES ('run-diff','campaign-diff','SUCCEEDED','2026-10-28T10:00:00Z')",
+            "INSERT INTO attempts(id,run_id,status,created_at,sandbox_ready) VALUES ('attempt-diff','run-diff','SUCCEEDED','2026-10-28T10:00:00Z',1)",
+            "INSERT INTO candidates(id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at) VALUES ('candidate-diff','attempt-diff','<spec>','<commit>','<tree>','worker-1','2026-10-28T10:01:00Z')",
+        ] {
+            let statement = statement
+                .replace("<action>", &action.id)
+                .replace("<spec>", &action.spec_sha256)
+                .replace("<commit>", &candidate_commit)
+                .replace("<tree>", &candidate_tree);
+            sqlx::query::query(&statement)
+                .execute(&mut connection)
+                .await
+                .unwrap();
+        }
+        drop(connection);
+
+        let app = Arc::new(App {
+            db,
+            operator_token: "operator-token".into(),
+            worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
+            verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            lead_fixture_assessor: false,
+            lead_autonomous_start: false,
+            model_gateway: None,
+            master_key: None,
+            github: factory_native::github::GitHubClient::production().unwrap(),
+            github_sync: tokio::sync::Mutex::new(()),
+            enrollment_code_file: None,
+            projects_root: None,
+            allow_insecure_git: false,
+            setup: Mutex::new(SetupState {
+                failures: 0,
+                blocked_until_ms: 0,
+            }),
+            attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
+            observability: factory_native::observability::ExporterHandle::disabled(),
+        });
+        let router = build_router(app);
+        let authorized = |method: &str, uri: &str, body: Option<Value>| {
+            let builder = axum::http::Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("authorization", "Bearer operator-token")
+                .header("content-type", "application/json");
+            builder
+                .body(match body {
+                    Some(body) => axum::body::Body::from(body.to_string()),
+                    None => axum::body::Body::empty(),
+                })
+                .unwrap()
+        };
+
+        let response = router
+            .clone()
+            .oneshot(authorized(
+                "GET",
+                "/campaigns/campaign-diff/candidates/candidate-diff/diff",
+                None,
+            ))
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+        let diff: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(diff["base_commit"], base_commit);
+        assert_eq!(diff["commit_sha"], candidate_commit);
+        assert_eq!(diff["candidate"]["commit_sha"], candidate_commit);
+        assert_eq!(diff["gate"], Value::Null);
+        assert_eq!(diff["files"][0]["path"], "src/main.rs");
+        assert_eq!(diff["files"][0]["status"], "MODIFIED");
+        assert_eq!(diff["files"][0]["additions"], 3);
+        assert_eq!(diff["files"][0]["deletions"], 1);
+        assert!(
+            diff["files"][0]["patch"]
+                .as_str()
+                .unwrap()
+                .contains("+    println!(\"changed\");")
+        );
+        assert_eq!(diff["returned_files"], 1);
+        assert_eq!(diff["files_truncated"], false);
+
+        let response = router
+            .clone()
+            .oneshot(authorized(
+                "GET",
+                &format!("/projects/{}/github", project.id),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let binding: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(binding["binding"]["repo_full_name"], "acme/widgets");
+        assert_eq!(binding["binding"]["default_branch"], "main");
+
+        let response = router
+            .clone()
+            .oneshot(authorized(
+                "GET",
+                "/campaigns/campaign-diff/candidates/candidate-diff/pull-request",
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let response = router
+            .clone()
+            .oneshot(authorized(
+                "GET",
+                "/campaigns/campaign-diff/candidates/candidate-diff/pull-request?number=42",
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let missing: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(missing["error"], "GitHub is not connected");
+
+        let response = router
+            .clone()
+            .oneshot(authorized(
+                "POST",
+                "/campaigns/campaign-diff/candidates/candidate-diff/pull-request/merge",
+                Some(json!({
+                    "number": 42,
+                    "expected_head_sha": candidate_commit,
+                    "merge_method": "squash",
+                    "confirmed": false,
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let unconfirmed: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(unconfirmed["kind"], "CONFIRMATION_REQUIRED");
+
+        let response = router
+            .oneshot(authorized(
+                "POST",
+                "/campaigns/campaign-diff/candidates/candidate-diff/pull-request/merge",
+                Some(json!({
+                    "number": 42,
+                    "expected_head_sha": "c".repeat(40),
+                    "merge_method": "squash",
+                    "confirmed": true,
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let mismatch: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(mismatch["kind"], "CANDIDATE_MISMATCH");
+        assert_eq!(mismatch["candidate_commit_sha"], candidate_commit);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn execution_profile_api_is_versioned_defaultable_and_typed() {
+        use factory_native::db::ProviderSettingsWrite;
+        use tower::ServiceExt;
+
+        async fn send(
+            router: &Router,
+            method: &str,
+            uri: &str,
+            token: Option<&str>,
+            body: Option<Value>,
+        ) -> (StatusCode, Value) {
+            let mut builder = axum::http::Request::builder().method(method).uri(uri);
+            if let Some(token) = token {
+                builder = builder.header("authorization", format!("Bearer {token}"));
+            }
+            let body = if let Some(body) = body {
+                builder = builder.header("content-type", "application/json");
+                axum::body::Body::from(body.to_string())
+            } else {
+                axum::body::Body::empty()
+            };
+            let response = router
+                .clone()
+                .oneshot(builder.body(body).unwrap())
+                .await
+                .unwrap();
+            let status = response.status();
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let value = if bytes.is_empty() {
+                Value::Null
+            } else {
+                serde_json::from_slice(&bytes).unwrap()
+            };
+            (status, value)
+        }
+
+        fn role(provider: &str, model: &str) -> Value {
+            json!({
+                "provider": provider,
+                "model": model,
+                "reasoning": "medium"
+            })
+        }
+
+        fn profile_body(name: &str) -> Value {
+            json!({
+                "name": name,
+                "description": "Default supported routes",
+                "category": "BALANCED",
+                "roles": {
+                    "lead": role("opencode-go", "deepseek-v4.1-flash"),
+                    "implementer": role("opencode-go", "deepseek-v4.1-flash"),
+                    "semanticReviewer": role("opencode-go", "deepseek-v4.1-flash")
+                },
+                "operations": {
+                    "modelRequestTimeoutSecs": 300,
+                    "toolCallTimeoutSecs": 600,
+                    "maxRequestBytes": 2097152,
+                    "maxResponseBytes": 2097152,
+                    "maxGenerationTokens": 8192,
+                    "maxInFlightOperations": 4
+                },
+                "progress": {
+                    "diagnoseAfterStagnantCheckpoints": 2,
+                    "escalateAfterUnsuccessfulReplans": 1,
+                    "observationTimeoutSecs": 300
+                },
+                "auto_start": {"enabled": false, "risk_classes": []}
+            })
+        }
+
+        let path = std::env::temp_dir().join(format!(
+            "factory-core-execution-profiles-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let repository = std::env::temp_dir().join(format!(
+            "factory-core-execution-profiles-repo-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&repository).unwrap();
+        for arguments in [
+            vec!["init", "-q"],
+            vec!["config", "user.name", "Fixture"],
+            vec!["config", "user.email", "fixture@example.invalid"],
+        ] {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(&repository)
+                    .args(arguments)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        std::fs::write(repository.join("seed.txt"), "seed\n").unwrap();
+        for arguments in [vec!["add", "seed.txt"], vec!["commit", "-qm", "seed"]] {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(&repository)
+                    .args(arguments)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+
+        let app = test_app(&path).await;
+        for (provider, kind, model, is_default) in [
+            ("opencode-go", "opencode", "deepseek-v4.1-flash", true),
+            ("codex", "codex", "gpt-6-luna", false),
+        ] {
+            app.db
+                .save_provider_settings(
+                    &ProviderSettingsWrite {
+                        provider: provider.into(),
+                        kind: kind.into(),
+                        model: model.into(),
+                        base_url: "https://provider.example/v1".into(),
+                        auth_mode: "api_key".into(),
+                        credential_ciphertext: "ciphertext".into(),
+                        credential_nonce: "nonce".into(),
+                        credential_fingerprint: "fingerprint".into(),
+                        enabled: true,
+                        is_default,
+                        max_turns: 4,
+                        max_input_tokens: 100_000,
+                        max_output_tokens: 12_000,
+                        max_cost_micros: 500_000,
+                        input_micros_per_million: 1000,
+                        output_micros_per_million: 2000,
+                    },
+                    "test-operator",
+                )
+                .await
+                .unwrap();
+        }
+        let project = app
+            .db
+            .register_project(&repository, "execution-profile-project")
+            .await
+            .unwrap();
+        let router = build_router(app);
+
+        let (status, _) = send(&router, "GET", "/execution-profiles", None, None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let (status, _) = send(
+            &router,
+            "POST",
+            "/execution-profiles",
+            None,
+            Some(profile_body("Denied")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        let (status, list) = send(
+            &router,
+            "GET",
+            "/execution-profiles",
+            Some("operator-token"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(list["profiles"].as_array().map(Vec::len), Some(0));
+        assert_eq!(list["supportedRoutes"].as_array().map(Vec::len), Some(3));
+
+        let (status, created) = send(
+            &router,
+            "POST",
+            "/execution-profiles",
+            Some("operator-token"),
+            Some(profile_body("Balanced")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+        assert_eq!(created["revision"], 1);
+        assert_eq!(created["executable"], true, "{created}");
+        assert_eq!(created["warnings"].as_array().map(Vec::len), Some(0));
+        assert_eq!(created["contentHash"].as_str().map(str::len), Some(64));
+        assert_eq!(created["autoStart"]["enabled"], false);
+        assert_eq!(
+            created["roles"]["semanticReviewer"]["provider"],
+            "opencode-go"
+        );
+        let profile_id = created["id"].as_str().unwrap().to_owned();
+
+        let (status, detail) = send(
+            &router,
+            "GET",
+            &format!("/execution-profiles/{profile_id}"),
+            Some("operator-token"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(detail["name"], "Balanced");
+        assert_eq!(detail["revisionId"], created["revisionId"]);
+
+        let (status, binding) = send(
+            &router,
+            "POST",
+            &format!("/execution-profiles/{profile_id}/default"),
+            Some("operator-token"),
+            Some(json!({"scope": "global"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{binding}");
+        assert_eq!(binding["scope"], "global");
+        assert_eq!(binding["profileId"], profile_id);
+
+        let (status, resolved) = send(
+            &router,
+            "GET",
+            &format!("/projects/{}/execution-profile", project.id),
+            Some("operator-token"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{resolved}");
+        assert_eq!(resolved["source"], "GLOBAL_DEFAULT");
+        assert_eq!(resolved["revision"], 1);
+        assert_eq!(resolved["profileId"], profile_id);
+        assert!(resolved.get("name").is_none());
+
+        let mut update = profile_body("Balanced v2");
+        update["expected_revision"] = json!(1);
+        let (status, updated) = send(
+            &router,
+            "PUT",
+            &format!("/execution-profiles/{profile_id}"),
+            Some("operator-token"),
+            Some(update),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{updated}");
+        assert_eq!(updated["revision"], 2);
+        assert_ne!(updated["contentHash"], created["contentHash"]);
+
+        let mut stale = profile_body("Stale edit");
+        stale["expected_revision"] = json!(1);
+        let (status, conflict) = send(
+            &router,
+            "PUT",
+            &format!("/execution-profiles/{profile_id}"),
+            Some("operator-token"),
+            Some(stale),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(conflict["error"], "execution profile revision is stale");
+
+        let (status, second) = send(
+            &router,
+            "POST",
+            "/execution-profiles",
+            Some("operator-token"),
+            Some(profile_body("Conservative")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let second_id = second["id"].as_str().unwrap().to_owned();
+        let (status, _) = send(
+            &router,
+            "POST",
+            &format!("/execution-profiles/{second_id}/default"),
+            Some("operator-token"),
+            Some(json!({"scope": "project", "project_id": project.id})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, resolved) = send(
+            &router,
+            "GET",
+            &format!("/projects/{}/execution-profile", project.id),
+            Some("operator-token"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(resolved["source"], "PROJECT_DEFAULT");
+        assert_eq!(resolved["profileId"], second_id);
+        let (_, first_after) = send(
+            &router,
+            "GET",
+            &format!("/execution-profiles/{profile_id}"),
+            Some("operator-token"),
+            None,
+        )
+        .await;
+        assert_eq!(first_after["globalDefault"], true);
+
+        let (status, _) = send(
+            &router,
+            "DELETE",
+            &format!("/execution-profiles/{second_id}/default"),
+            Some("operator-token"),
+            Some(json!({"scope": "project", "project_id": project.id})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (status, resolved) = send(
+            &router,
+            "GET",
+            &format!("/projects/{}/execution-profile", project.id),
+            Some("operator-token"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(resolved["source"], "GLOBAL_DEFAULT");
+
+        let (status, _) = send(
+            &router,
+            "DELETE",
+            &format!("/execution-profiles/{profile_id}/default"),
+            Some("operator-token"),
+            Some(json!({"scope": "global"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (status, _) = send(
+            &router,
+            "GET",
+            &format!("/projects/{}/execution-profile", project.id),
+            Some("operator-token"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        let mut unsupported = profile_body("Unsupported");
+        unsupported["roles"]["lead"] = role("other-provider", "deepseek-v4.1-flash");
+        let (status, error) = send(
+            &router,
+            "POST",
+            "/execution-profiles",
+            Some("operator-token"),
+            Some(unsupported),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            error["error"]
+                .as_str()
+                .is_some_and(|message| message.contains("unsupported"))
+        );
+
+        let mut draft = profile_body("Draft");
+        draft["roles"]["lead"] = role("opencode", "deepseek-v4.1-flash");
+        draft["roles"]["implementer"] = role("opencode", "deepseek-v4.1-flash");
+        let (status, draft) = send(
+            &router,
+            "POST",
+            "/execution-profiles",
+            Some("operator-token"),
+            Some(draft),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{draft}");
+        assert_eq!(draft["executable"], false);
+        assert!(
+            draft["warnings"]
+                .as_array()
+                .is_some_and(|warnings| warnings.len() >= 2)
+        );
+        assert!(
+            draft["warnings"]
+                .as_array()
+                .is_some_and(|warnings| warnings.iter().any(|warning| warning
+                    .as_str()
+                    .is_some_and(|warning| warning.contains("not configured"))))
+        );
+        let draft_id = draft["id"].as_str().unwrap().to_owned();
+        let (status, _) = send(
+            &router,
+            "POST",
+            &format!("/execution-profiles/{draft_id}/default"),
+            Some("operator-token"),
+            Some(json!({"scope": "global"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+
+        let mut cross = profile_body("Cross provider");
+        cross["roles"]["semanticReviewer"] = role("codex", "gpt-6-luna");
+        let (status, cross) = send(
+            &router,
+            "POST",
+            "/execution-profiles",
+            Some("operator-token"),
+            Some(cross),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{cross}");
+        assert_eq!(cross["executable"], true);
+        assert!(
+            cross["warnings"]
+                .as_array()
+                .is_some_and(|warnings| warnings.iter().all(|warning| warning
+                    .as_str()
+                    .is_some_and(|warning| !warning.contains("cannot execute"))))
+        );
+        let cross_id = cross["id"].as_str().unwrap().to_owned();
+        let (status, _) = send(
+            &router,
+            "POST",
+            &format!("/execution-profiles/{cross_id}/default"),
+            Some("operator-token"),
+            Some(json!({"scope": "global"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_dir_all(repository);
+    }
+
+    fn approval_checks() -> Vec<factory_native::lead::SpecCheck> {
+        use factory_native::lead::{CheckKind, SpecCheck};
+        vec![
+            SpecCheck {
+                id: "format".into(),
+                kind: CheckKind::Format,
+                description: "format".into(),
+                command: vec!["cargo".into(), "fmt".into(), "--check".into()],
+                expect_exit: 0,
+                timeout_secs: 60,
+            },
+            SpecCheck {
+                id: "build".into(),
+                kind: CheckKind::Build,
+                description: "build".into(),
+                command: vec!["cargo".into(), "build".into()],
+                expect_exit: 0,
+                timeout_secs: 120,
+            },
+            SpecCheck {
+                id: "test".into(),
+                kind: CheckKind::Test,
+                description: "test".into(),
+                command: vec!["cargo".into(), "test".into()],
+                expect_exit: 0,
+                timeout_secs: 120,
+            },
+            SpecCheck {
+                id: "functional".into(),
+                kind: CheckKind::Functional,
+                description: "functional".into(),
+                command: vec!["cargo".into(), "run".into()],
+                expect_exit: 0,
+                timeout_secs: 120,
+            },
+            SpecCheck {
+                id: "negative".into(),
+                kind: CheckKind::Negative,
+                description: "negative".into(),
+                command: vec!["cargo".into(), "run".into(), "--bad".into()],
+                expect_exit: 1,
+                timeout_secs: 60,
+            },
+        ]
+    }
+
+    fn approval_operations() -> factory_native::execution_policy::OperationLimits {
+        factory_native::execution_policy::OperationLimits {
+            model_request_timeout_secs: std::num::NonZeroU32::new(300).unwrap(),
+            tool_call_timeout_secs: std::num::NonZeroU32::new(300).unwrap(),
+            max_request_bytes: std::num::NonZeroU32::new(2 * 1024 * 1024).unwrap(),
+            max_response_bytes: std::num::NonZeroU32::new(2 * 1024 * 1024).unwrap(),
+            max_generation_tokens: std::num::NonZeroU32::new(8_192).unwrap(),
+            max_in_flight_operations: std::num::NonZeroU32::new(4).unwrap(),
+        }
+    }
+
+    fn approval_progress() -> factory_native::execution_policy::ProgressPolicy {
+        factory_native::execution_policy::ProgressPolicy {
+            diagnose_after_stagnant_checkpoints: std::num::NonZeroU32::new(2).unwrap(),
+            escalate_after_unsuccessful_replans: std::num::NonZeroU32::new(1).unwrap(),
+            observation_timeout_secs: std::num::NonZeroU32::new(300).unwrap(),
+            autonomy: Default::default(),
+        }
+    }
+
+    async fn create_ready_approval_lead(
+        db: &Database,
+        project_id: &str,
+        config_hash: &str,
+        grant: &factory_native::lead::StandingDelegationV2,
+        label: &str,
+    ) -> (String, Value) {
+        let checks = approval_checks();
+        let allowed = vec!["src".to_string()];
+        let action = db
+            .create_action_with_spec(
+                project_id,
+                "Implement the approval endpoint.",
+                "opencode",
+                "deepseek-v4.1-flash",
+                &format!("approval-action-{label}"),
+                factory_native::db::ActionSpecInput {
+                    allowed_paths: &allowed,
+                    checks: &checks,
+                },
+            )
+            .await
+            .unwrap();
+        let (request, _) = db
+            .create_lead_request(
+                project_id,
+                &action.id,
+                &grant.id,
+                "Implement the approval endpoint.",
+                config_hash,
+                &format!("approval-request-{label}"),
+            )
+            .await
+            .unwrap();
+        db.begin_lead_assessment(&request.id).await.unwrap();
+        let config = db.project_config(project_id).await.unwrap();
+        let binding = factory_native::lead::ActionBinding {
+            id: action.id.clone(),
+            project_id: project_id.into(),
+            status: factory_native::lead::ActionStatus::Pending,
+        };
+        let (assessment, proposal) = factory_native::lead::fixture_lead_assessment(
+            &request.id,
+            &config,
+            &binding,
+            &action.spec,
+            &request.objective,
+            grant,
+            chrono::Utc::now(),
+        )
+        .unwrap();
+        let input = factory_native::lead::AssessmentInput {
+            project_id: project_id.into(),
+            action_id: action.id.clone(),
+            request_id: request.id.clone(),
+            objective: request.objective.clone(),
+            allowed_evidence_refs: std::collections::BTreeSet::from(["repository-files".into()]),
+        };
+        db.record_lead_assessment(
+            &request.id,
+            "FIXTURE",
+            &assessment,
+            &input,
+            &format!("approval-assessment-{label}"),
+        )
+        .await
+        .unwrap();
+        db.record_lead_proposal(
+            &request.id,
+            &proposal,
+            &format!("approval-proposal-{label}"),
+        )
+        .await
+        .unwrap();
+        let (plan, _) = db
+            .freeze_lead_plan_to_ready(&request.id, &format!("approval-freeze-{label}"))
+            .await
+            .unwrap();
+        (
+            request.id,
+            json!({
+                "expected_request_hash": request.request_hash,
+                "expected_plan_hash": plan.plan_hash,
+                "expected_spec_sha256": action.spec_sha256,
+                "expected_config_hash": config_hash,
+                "expected_delegation_hash": grant.content_hash,
+                "principal_label": "Alice",
+                "rationale": "Reviewed the frozen plan.",
+            }),
+        )
+    }
+
+    #[tokio::test]
+    async fn operator_approval_endpoint_is_authenticated_and_replay_safe() {
+        use tower::ServiceExt;
+
+        let path = std::env::temp_dir().join(format!(
+            "factory-core-approval-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let repository = std::env::temp_dir().join(format!(
+            "factory-core-approval-repo-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&repository).unwrap();
+        for arguments in [
+            vec!["init", "-q"],
+            vec!["config", "user.name", "Fixture"],
+            vec!["config", "user.email", "fixture@example.invalid"],
+        ] {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(&repository)
+                    .args(arguments)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        std::fs::write(repository.join("seed.txt"), "seed\n").unwrap();
+        for arguments in [vec!["add", "seed.txt"], vec!["commit", "-qm", "seed"]] {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(&repository)
+                    .args(arguments)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        let db = Database::open(&path).await.unwrap();
+        let project = db
+            .register_project(&repository, "approval-project")
+            .await
+            .unwrap();
+        let config = db
+            .update_project_config(
+                &project.id,
+                &factory_native::db::NewProjectConfig {
+                    expected_revision: 1,
+                    allowed_paths: vec!["src".into()],
+                    capabilities: vec![
+                        factory_native::lead::Capability::RepositoryEdit,
+                        factory_native::lead::Capability::GenericToolchain,
+                    ],
+                    quality_profile: factory_native::lead::QualityProfile::Generic,
+                    active: true,
+                },
+            )
+            .await
+            .unwrap();
+        let mut grant = factory_native::lead::StandingDelegationV2 {
+            id: "approval-grant".into(),
+            principal_id: "owner".into(),
+            audit_id: "audit".into(),
+            project_id: project.id.clone(),
+            revision: 1,
+            content_hash: String::new(),
+            objective_classes: vec![factory_native::lead::ObjectiveClass::Feature],
+            allowed_paths: vec!["src".into()],
+            capabilities: vec![
+                factory_native::lead::Capability::RepositoryEdit,
+                factory_native::lead::Capability::GenericToolchain,
+            ],
+            risk_classes: vec![factory_native::lead::RiskClass::R0],
+            autonomous_start: false,
+            autonomous_risk_classes: Vec::new(),
+            route: factory_native::lead::ProviderRoute {
+                provider: "opencode".into(),
+                model: "deepseek-v4.1-flash".into(),
+                mode: "build".into(),
+            },
+            max_timeout_secs: 300,
+            max_parallel: 1,
+            operations: approval_operations(),
+            progress: approval_progress(),
+            expires_at: chrono::Utc::now() + chrono::Duration::days(1),
+            revoked_at: None,
+        };
+        grant.content_hash = grant.compute_content_hash();
+        db.create_standing_delegation_v2(&grant, "approval-grant-key")
+            .await
+            .unwrap();
+        let (request_id, expected) =
+            create_ready_approval_lead(&db, &project.id, &config.config_hash, &grant, "first")
+                .await;
+        let (withdrawn_request, _) =
+            create_ready_approval_lead(&db, &project.id, &config.config_hash, &grant, "second")
+                .await;
+        let app = Arc::new(App {
+            db,
+            operator_token: "operator-token".into(),
+            worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
+            verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            lead_fixture_assessor: false,
+            lead_autonomous_start: false,
+            model_gateway: None,
+            master_key: None,
+            github: factory_native::github::GitHubClient::production().unwrap(),
+            github_sync: tokio::sync::Mutex::new(()),
+            enrollment_code_file: None,
+            projects_root: None,
+            allow_insecure_git: false,
+            setup: Mutex::new(SetupState {
+                failures: 0,
+                blocked_until_ms: 0,
+            }),
+            attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
+            observability: factory_native::observability::ExporterHandle::disabled(),
+        });
+        let router = build_router(app.clone());
+        let approve_uri = format!("/lead/requests/{request_id}/approve");
+        let mut body = expected.clone();
+        body["idempotency_key"] = json!("api-approval");
+        let request_body = serde_json::to_vec(&body).unwrap();
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri(&approve_uri)
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(request_body.clone()))
+            .unwrap();
+        assert_eq!(
+            router.clone().oneshot(request).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri(&approve_uri)
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer bootstrap-bootstrap-bootstrap-1234")
+            .body(axum::body::Body::from(request_body.clone()))
+            .unwrap();
+        assert_eq!(
+            router.clone().oneshot(request).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+        let mut forged = body.clone();
+        forged["actor"] = json!("forged-operator");
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri(&approve_uri)
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer operator-token")
+            .body(axum::body::Body::from(serde_json::to_vec(&forged).unwrap()))
+            .unwrap();
+        assert!(
+            router
+                .clone()
+                .oneshot(request)
+                .await
+                .unwrap()
+                .status()
+                .is_client_error()
+        );
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri(&approve_uri)
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer operator-token")
+            .body(axum::body::Body::from(request_body.clone()))
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let approved: Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let campaign_id = approved["campaign"]["id"].as_str().unwrap().to_string();
+        let run_id = approved["run"]["id"].as_str().unwrap().to_string();
+        assert_eq!(approved["evidence"]["principal_id"], "operator-token");
+        assert_eq!(approved["evidence"]["mode"], "OPERATOR");
+        let runs_before = app
+            .db
+            .runs()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|run| run.campaign_id == campaign_id)
+            .count();
+        let attempts_before = app
+            .db
+            .attempts()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|attempt| attempt.run_id == run_id)
+            .count();
+        for (uri, label) in [
+            (format!("/campaigns/{campaign_id}/runs"), "generic run"),
+            (format!("/runs/{run_id}/attempts"), "generic attempt"),
+        ] {
+            let request = axum::http::Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("authorization", "Bearer operator-token")
+                .body(axum::body::Body::empty())
+                .unwrap();
+            let response = router.clone().oneshot(request).await.unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::FORBIDDEN,
+                "{label} route must be fenced for a Lead Campaign"
+            );
+        }
+        assert_eq!(
+            app.db
+                .runs()
+                .await
+                .unwrap()
+                .into_iter()
+                .filter(|run| run.campaign_id == campaign_id)
+                .count(),
+            runs_before
+        );
+        assert_eq!(
+            app.db
+                .attempts()
+                .await
+                .unwrap()
+                .into_iter()
+                .filter(|attempt| attempt.run_id == run_id)
+                .count(),
+            attempts_before
+        );
+
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri(&approve_uri)
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer operator-token")
+            .body(axum::body::Body::from(request_body))
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let mut second_key = body.clone();
+        second_key["idempotency_key"] = json!("api-approval-second");
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri(&approve_uri)
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer operator-token")
+            .body(axum::body::Body::from(
+                serde_json::to_vec(&second_key).unwrap(),
+            ))
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let conflict: Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(conflict["campaign_id"], campaign_id);
+
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri(format!("/lead/requests/{request_id}/withdraw"))
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer operator-token")
+            .body(axum::body::Body::from(
+                serde_json::to_vec(&json!({"reason":"stop"})).unwrap(),
+            ))
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let conflict: Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(conflict["campaign_id"], campaign_id);
+
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri(format!("/lead/requests/{withdrawn_request}/withdraw"))
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer operator-token")
+            .body(axum::body::Body::from(
+                serde_json::to_vec(&json!({"reason":"stop","principal_label":"Alice"})).unwrap(),
+            ))
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let withdrawal: Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(withdrawal["principal_id"], "operator-token");
+        let request = axum::http::Request::builder()
+            .uri(format!("/lead/requests/{withdrawn_request}"))
+            .header("authorization", "Bearer operator-token")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let projection: Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(projection["projection"], "WITHDRAWN");
+        app.db.close().await;
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_dir_all(repository);
+    }
+
+    #[tokio::test]
+    async fn provider_model_discovery_is_authenticated_typed_and_real() {
+        use factory_native::db::ProviderSettingsWrite;
+        use std::io::Write;
+        use tower::ServiceExt;
+
+        unsafe { std::env::set_var("FACTORY_ALLOW_TEST_UPSTREAM", "1") };
+        let key_path = std::env::temp_dir().join(format!(
+            "factory-core-discovery-key-{}.txt",
+            uuid::Uuid::new_v4()
+        ));
+        let mut key_file = std::fs::File::create(&key_path).unwrap();
+        key_file.write_all("44".repeat(32).as_bytes()).unwrap();
+        drop(key_file);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let key =
+            factory_native::provider_secrets::ProviderSecretKey::from_file(&key_path).unwrap();
+        let _ = std::fs::remove_file(key_path);
+
+        let models = axum::Router::new().route(
+            "/inference/go/v1/models",
+            axum::routing::get(|| async {
+                axum::Json(json!({
+                    "object": "list",
+                    "data": [
+                        {"id": "deepseek-v4.1-flash"},
+                        {"id": "discovered-model"}
+                    ]
+                }))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!(
+            "http://{}/inference/go/openai/v1",
+            listener.local_addr().unwrap()
+        );
+        tokio::spawn(async move { axum::serve(listener, models).await.unwrap() });
+
+        let path = std::env::temp_dir().join(format!(
+            "factory-core-discovery-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let app = test_app_with_master_key(&path, Some(key.clone())).await;
+        let encrypted = key.encrypt(b"discovery-credential-123456").unwrap();
+        app.db
+            .save_provider_settings(
+                &ProviderSettingsWrite {
+                    provider: "opencode-go".into(),
+                    kind: "opencode".into(),
+                    model: "deepseek-v4.1-flash".into(),
+                    base_url: base_url.clone(),
+                    auth_mode: "api_key".into(),
+                    credential_ciphertext: encrypted.ciphertext,
+                    credential_nonce: encrypted.nonce,
+                    credential_fingerprint: encrypted.fingerprint,
+                    enabled: true,
+                    is_default: true,
+                    max_turns: 4,
+                    max_input_tokens: 100_000,
+                    max_output_tokens: 12_000,
+                    max_cost_micros: 500_000,
+                    input_micros_per_million: 1_000,
+                    output_micros_per_million: 2_000,
+                },
+                "test-operator",
+            )
+            .await
+            .unwrap();
+        app.db
+            .save_provider_settings(
+                &ProviderSettingsWrite {
+                    provider: "codex".into(),
+                    kind: "codex".into(),
+                    model: "gpt-6-luna".into(),
+                    base_url: "https://api.openai.com/v1".into(),
+                    auth_mode: "api_key".into(),
+                    credential_ciphertext: "ciphertext".into(),
+                    credential_nonce: "nonce".into(),
+                    credential_fingerprint: "fingerprint".into(),
+                    enabled: false,
+                    is_default: false,
+                    max_turns: 4,
+                    max_input_tokens: 100_000,
+                    max_output_tokens: 12_000,
+                    max_cost_micros: 500_000,
+                    input_micros_per_million: 1_000,
+                    output_micros_per_million: 2_000,
+                },
+                "test-operator",
+            )
+            .await
+            .unwrap();
+        let router = build_router(Arc::clone(&app));
+
+        let unauthorized = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/settings/providers/opencode-go/models")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+        let response = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/settings/providers/opencode-go/models")
+                    .header("authorization", "Bearer operator-token")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let discovery: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(discovery["status"], "AVAILABLE");
+        assert_eq!(
+            discovery["models"],
+            json!(["deepseek-v4.1-flash", "discovered-model"])
+        );
+        assert_eq!(discovery["source"], "OPENCODE_GO_CATALOG_URL");
+        assert_eq!(
+            discovery["catalogUrl"],
+            format!("{}/v1/models", base_url.trim_end_matches("/openai/v1")).as_str()
+        );
+        assert_eq!(discovery["credentialSignal"], "NOT_OBSERVED");
+        assert_eq!(discovery["credential"]["presence"], "CONFIGURED");
+        assert_eq!(discovery["credential"]["validation"], "NOT_OBSERVED");
+        assert_eq!(discovery["inference"]["status"], "NOT_TESTED");
+        assert!(!String::from_utf8_lossy(&body).contains("discovery-credential"));
+        let cached = app.db.provider_model_cache();
+        assert_eq!(
+            cached.models("opencode-go"),
+            ["deepseek-v4.1-flash", "discovered-model"]
+        );
+
+        let codex = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/settings/providers/codex/models")
+                    .header("authorization", "Bearer operator-token")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(codex.status(), StatusCode::OK);
+        let codex_body = axum::body::to_bytes(codex.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let codex_discovery: Value = serde_json::from_slice(&codex_body).unwrap();
+        assert_eq!(codex_discovery["status"], "UNSUPPORTED");
+        assert_eq!(codex_discovery["source"], "UNSUPPORTED");
+        assert_eq!(codex_discovery["models"], json!([]));
+        assert!(
+            codex_discovery["detail"]
+                .as_str()
+                .is_some_and(|detail| detail.contains("no model catalog"))
+        );
+        let unknown = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/settings/providers/unknown/models")
+                    .header("authorization", "Bearer operator-token")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+
+        app.db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    mod intake_api {
+        use super::*;
+        use factory_native::db::{NewProjectConfig, ProviderSettingsWrite};
+        use factory_native::execution_policy::{OperationLimits, ProgressPolicy};
+        use factory_native::execution_profile::{
+            AutoStartPolicy, ExecutionProfileCategory, ExecutionProfileRoles, ExecutionRoleRoute,
+            ReasoningEffort,
+        };
+        use factory_native::lead::{
+            ActionBinding, AssessmentInput, Capability, CheckKind, QualityProfile, SpecCheck,
+        };
+        use tower::ServiceExt;
+
+        fn operations() -> OperationLimits {
+            OperationLimits {
+                model_request_timeout_secs: std::num::NonZeroU32::new(300).unwrap(),
+                tool_call_timeout_secs: std::num::NonZeroU32::new(600).unwrap(),
+                max_request_bytes: std::num::NonZeroU32::new(2 * 1024 * 1024).unwrap(),
+                max_response_bytes: std::num::NonZeroU32::new(2 * 1024 * 1024).unwrap(),
+                max_generation_tokens: std::num::NonZeroU32::new(8_192).unwrap(),
+                max_in_flight_operations: std::num::NonZeroU32::new(4).unwrap(),
+            }
+        }
+
+        fn progress() -> ProgressPolicy {
+            ProgressPolicy {
+                diagnose_after_stagnant_checkpoints: std::num::NonZeroU32::new(2).unwrap(),
+                escalate_after_unsuccessful_replans: std::num::NonZeroU32::new(1).unwrap(),
+                observation_timeout_secs: std::num::NonZeroU32::new(300).unwrap(),
+                autonomy: Default::default(),
+            }
+        }
+
+        fn route() -> ExecutionRoleRoute {
+            ExecutionRoleRoute {
+                provider: "opencode-go".into(),
+                model: "deepseek-v4.1-flash".into(),
+                reasoning: Some(ReasoningEffort::Medium),
+            }
+        }
+
+        fn profile_content() -> factory_native::execution_profile::ExecutionProfileContent {
+            factory_native::execution_profile::ExecutionProfileContent {
+                name: "Balanced".into(),
+                description: "test profile".into(),
+                category: ExecutionProfileCategory::Balanced,
+                roles: ExecutionProfileRoles {
+                    lead: route(),
+                    implementer: route(),
+                    semantic_reviewer: route(),
+                },
+                operations: operations(),
+                progress: progress(),
+                auto_start: AutoStartPolicy {
+                    enabled: false,
+                    risk_classes: Vec::new(),
+                },
+            }
+        }
+
+        fn checks() -> Vec<SpecCheck> {
+            vec![
+                SpecCheck {
+                    id: "build".into(),
+                    kind: CheckKind::Build,
+                    description: "build".into(),
+                    command: vec!["cargo".into(), "build".into()],
+                    expect_exit: 0,
+                    timeout_secs: 120,
+                },
+                SpecCheck {
+                    id: "test".into(),
+                    kind: CheckKind::Test,
+                    description: "test".into(),
+                    command: vec!["cargo".into(), "test".into()],
+                    expect_exit: 0,
+                    timeout_secs: 120,
+                },
+                SpecCheck {
+                    id: "functional".into(),
+                    kind: CheckKind::Functional,
+                    description: "functional".into(),
+                    command: vec!["cargo".into(), "test".into(), "intake".into()],
+                    expect_exit: 0,
+                    timeout_secs: 120,
+                },
+                SpecCheck {
+                    id: "negative".into(),
+                    kind: CheckKind::Negative,
+                    description: "negative".into(),
+                    command: vec!["cargo".into(), "test".into(), "--bad".into()],
+                    expect_exit: 1,
+                    timeout_secs: 60,
+                },
+            ]
+        }
+
+        fn git_repository() -> PathBuf {
+            let repository = std::env::temp_dir()
+                .join(format!("factory-core-intake-repo-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir(&repository).unwrap();
+            for arguments in [
+                vec!["init", "-q"],
+                vec!["config", "user.name", "Fixture"],
+                vec!["config", "user.email", "fixture@example.invalid"],
+            ] {
+                assert!(
+                    std::process::Command::new("git")
+                        .arg("-C")
+                        .arg(&repository)
+                        .args(arguments)
+                        .status()
+                        .unwrap()
+                        .success()
+                );
+            }
+            std::fs::write(repository.join("seed.txt"), "seed\n").unwrap();
+            for arguments in [vec!["add", "seed.txt"], vec!["commit", "-qm", "seed"]] {
+                assert!(
+                    std::process::Command::new("git")
+                        .arg("-C")
+                        .arg(&repository)
+                        .args(arguments)
+                        .status()
+                        .unwrap()
+                        .success()
+                );
+            }
+            repository
+        }
+
+        struct Fixture {
+            path: PathBuf,
+            repository: PathBuf,
+            app: Arc<App>,
+            project_id: String,
+            config: factory_native::lead::ProjectConfig,
+            profile: factory_native::db::ExecutionProfileRecord,
+            router: Router,
+        }
+
+        async fn setup() -> Fixture {
+            setup_with(
+                None,
+                "https://provider.example/v1",
+                "https://provider.example/v1",
+                profile_content(),
+            )
+            .await
+        }
+
+        async fn setup_with(
+            master_key: Option<&factory_native::provider_secrets::ProviderSecretKey>,
+            opencode_go_base_url: &str,
+            opencode_base_url: &str,
+            profile_content: factory_native::execution_profile::ExecutionProfileContent,
+        ) -> Fixture {
+            let path = std::env::temp_dir().join(format!(
+                "factory-core-intake-{}.sqlite",
+                uuid::Uuid::new_v4()
+            ));
+            let repository = git_repository();
+            let app = test_app_with_master_key(&path, master_key.cloned()).await;
+            let project = app
+                .db
+                .register_project(&repository, "intake-project-key")
+                .await
+                .unwrap();
+            let config = app
+                .db
+                .update_project_config(
+                    &project.id,
+                    &NewProjectConfig {
+                        expected_revision: 1,
+                        allowed_paths: vec!["src".into()],
+                        capabilities: vec![Capability::RepositoryEdit],
+                        quality_profile: QualityProfile::Generic,
+                        active: true,
+                    },
+                )
+                .await
+                .unwrap();
+            for (provider, kind, model, base_url, is_default) in [
+                (
+                    "opencode-go",
+                    "opencode",
+                    "deepseek-v4.1-flash",
+                    opencode_go_base_url,
+                    true,
+                ),
+                (
+                    "codex",
+                    "codex",
+                    "gpt-6-luna",
+                    "https://provider.example/v1",
+                    false,
+                ),
+                (
+                    "opencode",
+                    "opencode",
+                    "deepseek-v4.1-flash",
+                    opencode_base_url,
+                    false,
+                ),
+            ] {
+                let encrypted = match master_key {
+                    Some(key) => {
+                        let value = format!("{provider}-credential-1234567890");
+                        let encrypted = key.encrypt(value.as_bytes()).unwrap();
+                        factory_native::provider_secrets::EncryptedCredential {
+                            ciphertext: encrypted.ciphertext,
+                            nonce: encrypted.nonce,
+                            fingerprint: encrypted.fingerprint,
+                        }
+                    }
+                    None => factory_native::provider_secrets::EncryptedCredential {
+                        ciphertext: "ciphertext".into(),
+                        nonce: "nonce".into(),
+                        fingerprint: "fingerprint".into(),
+                    },
+                };
+                app.db
+                    .save_provider_settings(
+                        &ProviderSettingsWrite {
+                            provider: provider.into(),
+                            kind: kind.into(),
+                            model: model.into(),
+                            base_url: base_url.into(),
+                            auth_mode: "api_key".into(),
+                            credential_ciphertext: encrypted.ciphertext,
+                            credential_nonce: encrypted.nonce,
+                            credential_fingerprint: encrypted.fingerprint,
+                            enabled: true,
+                            is_default,
+                            max_turns: 4,
+                            max_input_tokens: 100_000,
+                            max_output_tokens: 12_000,
+                            max_cost_micros: 500_000,
+                            input_micros_per_million: 1_000,
+                            output_micros_per_million: 2_000,
+                        },
+                        "test-operator",
+                    )
+                    .await
+                    .unwrap();
+            }
+            let profile = app
+                .db
+                .create_execution_profile(&profile_content, "owner")
+                .await
+                .unwrap();
+            let router = build_router(Arc::clone(&app));
+            Fixture {
+                path,
+                repository,
+                app,
+                project_id: project.id,
+                config,
+                profile,
+                router,
+            }
+        }
+
+        async fn send(
+            router: &Router,
+            method: &str,
+            uri: &str,
+            body: Option<Value>,
+        ) -> (StatusCode, Value) {
+            send_as(router, method, uri, "operator-token", body).await
+        }
+
+        async fn send_as(
+            router: &Router,
+            method: &str,
+            uri: &str,
+            token: &str,
+            body: Option<Value>,
+        ) -> (StatusCode, Value) {
+            let mut builder = axum::http::Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("authorization", format!("Bearer {token}"));
+            let body = if let Some(body) = body {
+                builder = builder.header("content-type", "application/json");
+                axum::body::Body::from(body.to_string())
+            } else {
+                axum::body::Body::empty()
+            };
+            let response = router
+                .clone()
+                .oneshot(builder.body(body).unwrap())
+                .await
+                .unwrap();
+            let status = response.status();
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let value = if bytes.is_empty() {
+                Value::Null
+            } else {
+                serde_json::from_slice(&bytes).unwrap()
+            };
+            (status, value)
+        }
+
+        async fn enable_policy(fixture: &Fixture) -> (StatusCode, Value) {
+            send(
+                &fixture.router,
+                "POST",
+                &format!("/projects/{}/execution-policy", fixture.project_id),
+                Some(json!({
+                    "execution_profile_id": fixture.profile.id,
+                    "expected_revision": fixture.profile.revision,
+                    "expected_revision_hash": fixture.profile.content_hash,
+                    "project_config_hash": fixture.config.config_hash,
+                    "acknowledge": true,
+                    "idempotency_key": "policy-api-key",
+                })),
+            )
+            .await
+        }
+
+        async fn create_intake(fixture: &Fixture, key: &str) -> (StatusCode, Value) {
+            create_intake_with_amount(fixture, key, None).await
+        }
+
+        async fn create_intake_with_amount(
+            fixture: &Fixture,
+            key: &str,
+            authorized_micros: Option<u64>,
+        ) -> (StatusCode, Value) {
+            let mut body = json!({
+                "project_id": fixture.project_id,
+                "objective": "Implement a bounded intake endpoint.",
+                "execution_profile_id": fixture.profile.id,
+                "mode": "REVIEW_PLAN",
+                "idempotency_key": key,
+            });
+            if let Some(authorized_micros) = authorized_micros {
+                body["authorized_micros"] = json!(authorized_micros);
+            }
+            send(&fixture.router, "POST", "/intake/requests", Some(body)).await
+        }
+
+        async fn fixture_plan(
+            fixture: &Fixture,
+            intake_id: &str,
+            mechanism: &str,
+        ) -> factory_native::db::IntakeApprovalContext {
+            let request = fixture.app.db.intake_request(intake_id).await.unwrap();
+            let lead = fixture
+                .app
+                .db
+                .lead_request(&request.lead_request_id)
+                .await
+                .unwrap();
+            let config = fixture
+                .app
+                .db
+                .project_config(&request.project_id)
+                .await
+                .unwrap();
+            let grant = fixture
+                .app
+                .db
+                .standing_delegation_v2(&request.delegation_id)
+                .await
+                .unwrap();
+            fixture
+                .app
+                .db
+                .begin_lead_assessment(&lead.id)
+                .await
+                .unwrap();
+            let binding = ActionBinding {
+                id: lead.action_id.clone(),
+                project_id: lead.project_id.clone(),
+                status: factory_native::lead::ActionStatus::Pending,
+            };
+            let spec = factory_native::db::ActionSpec {
+                schema_version: 1,
+                project_id: lead.project_id.clone(),
+                repository: config.repository.clone(),
+                base_commit: config.base_commit.clone(),
+                objective: lead.objective.clone(),
+                objective_sha256: factory_native::device_session::sha256_hex(&lead.objective),
+                provider: grant.route.provider.clone(),
+                model: grant.route.model.clone(),
+                allowed_paths: config.allowed_paths.clone(),
+                checks: checks(),
+            };
+            let (assessment, proposal) = factory_native::lead::fixture_lead_assessment(
+                &lead.id,
+                &config,
+                &binding,
+                &spec,
+                &lead.objective,
+                &grant,
+                chrono::Utc::now(),
+            )
+            .unwrap();
+            let input = AssessmentInput {
+                project_id: lead.project_id.clone(),
+                action_id: lead.action_id.clone(),
+                request_id: lead.id.clone(),
+                objective: lead.objective.clone(),
+                allowed_evidence_refs: std::collections::BTreeSet::from(
+                    ["repository-files".into()],
+                ),
+            };
+            fixture
+                .app
+                .db
+                .record_lead_assessment(&lead.id, mechanism, &assessment, &input, "api-fixture-a")
+                .await
+                .unwrap();
+            fixture
+                .app
+                .db
+                .record_lead_proposal(&lead.id, &proposal, "api-fixture-p")
+                .await
+                .unwrap();
+            fixture
+                .app
+                .db
+                .freeze_lead_plan_to_ready(&lead.id, "api-fixture-f")
+                .await
+                .unwrap();
+            fixture
+                .app
+                .db
+                .intake_approval_context(intake_id)
+                .await
+                .unwrap()
+        }
+
+        fn master_key() -> factory_native::provider_secrets::ProviderSecretKey {
+            use std::io::Write;
+            let path = std::env::temp_dir().join(format!(
+                "factory-core-intake-master-key-{}.txt",
+                uuid::Uuid::new_v4()
+            ));
+            let mut file = std::fs::File::create(&path).unwrap();
+            file.write_all("33".repeat(32).as_bytes()).unwrap();
+            drop(file);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            }
+            let key =
+                factory_native::provider_secrets::ProviderSecretKey::from_file(&path).unwrap();
+            let _ = std::fs::remove_file(path);
+            key
+        }
+
+        async fn chat_upstream() -> (String, Arc<Mutex<usize>>) {
+            use axum::{Router, routing::post};
+            let hits = Arc::new(Mutex::new(0));
+            let state = hits.clone();
+            async fn chat(
+                axum::extract::State(hits): axum::extract::State<Arc<Mutex<usize>>>,
+            ) -> axum::Json<Value> {
+                *hits.lock().unwrap() += 1;
+                axum::Json(json!({
+                    "choices": [{"message": {"content": "{\"verdict\":\"approve\"}"}}],
+                    "usage": {"prompt_tokens": 12, "completion_tokens": 7, "total_tokens": 19}
+                }))
+            }
+            let app = Router::new()
+                .route("/chat/completions", post(chat))
+                .with_state(state);
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            (url, hits)
+        }
+
+        async fn chat_upstream_with_content(
+            content: Arc<Mutex<String>>,
+        ) -> (String, Arc<Mutex<usize>>) {
+            use axum::{Router, routing::post};
+
+            #[derive(Clone)]
+            struct ChatState {
+                hits: Arc<Mutex<usize>>,
+                content: Arc<Mutex<String>>,
+            }
+
+            let hits = Arc::new(Mutex::new(0));
+            async fn chat(
+                axum::extract::State(state): axum::extract::State<ChatState>,
+            ) -> axum::Json<Value> {
+                *state.hits.lock().unwrap() += 1;
+                let content = state.content.lock().unwrap().clone();
+                axum::Json(json!({
+                    "choices": [{"message": {"content": content}}],
+                    "usage": {"prompt_tokens": 12, "completion_tokens": 7, "total_tokens": 19}
+                }))
+            }
+            let app = Router::new()
+                .route("/chat/completions", post(chat))
+                .with_state(ChatState {
+                    hits: hits.clone(),
+                    content,
+                });
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            (url, hits)
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn semantic_review_uses_the_frozen_reviewer_route() {
+            // Only relaxes the HTTPS rule for loopback test upstreams; every
+            // payload and credential assertion below still runs.
+            unsafe { std::env::set_var("FACTORY_ALLOW_TEST_UPSTREAM", "1") };
+            let key = master_key();
+            let (lead_url, lead_hits) = chat_upstream().await;
+            let (review_url, review_hits) = chat_upstream().await;
+            let mut content = profile_content();
+            content.roles.semantic_reviewer = ExecutionRoleRoute {
+                provider: "opencode".into(),
+                model: "reviewer-model".into(),
+                reasoning: Some(ReasoningEffort::Medium),
+            };
+            let fixture = setup_with(Some(&key), &lead_url, &review_url, content).await;
+            fixture
+                .app
+                .db
+                .enable_test_subscription_fixture_mode()
+                .await
+                .unwrap();
+            let opencode_settings = fixture.app.db.provider_settings("opencode").await.unwrap();
+            fixture
+                .app
+                .db
+                .save_provider_settings(
+                    &ProviderSettingsWrite {
+                        provider: "opencode".into(),
+                        kind: "opencode".into(),
+                        model: "reviewer-model".into(),
+                        base_url: review_url.clone(),
+                        auth_mode: opencode_settings.auth_mode,
+                        credential_ciphertext: opencode_settings.credential_ciphertext,
+                        credential_nonce: opencode_settings.credential_nonce,
+                        credential_fingerprint: opencode_settings.credential_fingerprint,
+                        enabled: true,
+                        is_default: false,
+                        max_turns: opencode_settings.max_turns,
+                        max_input_tokens: opencode_settings.max_input_tokens,
+                        max_output_tokens: opencode_settings.max_output_tokens,
+                        max_cost_micros: opencode_settings.max_cost_micros,
+                        input_micros_per_million: opencode_settings.input_micros_per_million,
+                        output_micros_per_million: opencode_settings.output_micros_per_million,
+                    },
+                    "test-operator",
+                )
+                .await
+                .unwrap();
+            fixture.app.db.record_provider_model_discovery(
+                factory_native::provider_catalog::ProviderModelCatalogEntry {
+                    provider: "opencode".into(),
+                    status: factory_native::provider_catalog::ProviderDiscoveryStatus::Available,
+                    source: factory_native::provider_catalog::ProviderCatalogSource::OpenAiModelsEndpoint,
+                    catalog_url: Some(format!("{review_url}/models")),
+                    models: vec!["reviewer-model".into()],
+                    detail: "test discovery".into(),
+                    discovered_at: chrono::Utc::now().to_rfc3339(),
+                    credential_signal: factory_native::provider_catalog::ProviderCredentialSignal::NotObserved,
+                    last_known: None,
+                },
+            );
+
+            let enable = send(
+                &fixture.router,
+                "PUT",
+                "/settings/runtime",
+                Some(json!({
+                    "semanticReviewEnabled": true,
+                    "semanticReviewMaxOutputTokens": 8192,
+                })),
+            )
+            .await;
+            assert_eq!(enable.0, StatusCode::OK, "{}", enable.1);
+
+            let (status, _) = enable_policy(&fixture).await;
+            assert_eq!(status, StatusCode::CREATED);
+            let (status, created) =
+                create_intake_with_amount(&fixture, "reviewer-route-request", Some(5_000_000))
+                    .await;
+            assert_eq!(status, StatusCode::CREATED, "{created}");
+            let intake_id = created["id"].as_str().unwrap().to_owned();
+            let intake_request = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            for scope in [&intake_id, &intake_request.lead_request_id] {
+                fixture
+                    .app
+                    .db
+                    .admit_test_subscription_dispatch(scope)
+                    .await
+                    .unwrap();
+            }
+            let context = fixture_plan(&fixture, &intake_id, "MODEL").await;
+            let (status, approved) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/approve"),
+                Some(json!({
+                    "expected_plan_hash": context.plan.plan_hash,
+                    "rationale": "route test",
+                    "idempotency_key": "reviewer-route-approve",
+                    "authorized_micros": 5_000_000,
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{approved}");
+            let campaign_id = approved["campaignId"].as_str().unwrap().to_owned();
+            fixture
+                .app
+                .db
+                .admit_test_subscription_dispatch(&campaign_id)
+                .await
+                .unwrap();
+            assert_eq!(
+                approved["spending"]["envelope"]["envelopeId"],
+                approved["spending"]["status"]["envelopeId"],
+                "the request projection exposes one ledger envelope"
+            );
+            let bound = fixture
+                .app
+                .db
+                .inference_envelope_for_campaign(&campaign_id)
+                .await
+                .unwrap()
+                .expect("V2 campaign envelope binding");
+            assert_eq!(bound.request_id, intake_id);
+            assert_eq!(bound.authorized_micros.get(), 5_000_000);
+
+            let runs = fixture.app.db.runs().await.unwrap();
+            let run = runs
+                .iter()
+                .find(|run| run.campaign_id == campaign_id)
+                .unwrap();
+            let attempts = fixture.app.db.attempts().await.unwrap();
+            let attempt = attempts
+                .iter()
+                .find(|attempt| attempt.run_id == run.id)
+                .unwrap();
+            let pool = sqlx_sqlite::SqlitePool::connect_with(
+                sqlx_sqlite::SqliteConnectOptions::new()
+                    .filename(&fixture.path)
+                    .create_if_missing(false),
+            )
+            .await
+            .unwrap();
+            let now = chrono::Utc::now().to_rfc3339();
+            sqlx::query::query(
+                "INSERT INTO candidates
+                 (id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at,
+                  integration,lineage_json)
+                 VALUES ('candidate-route',?1,?2,?3,?4,'worker-1',?5,0,'[]')",
+            )
+            .bind(attempt.id.clone())
+            .bind("a".repeat(64))
+            .bind("b".repeat(40))
+            .bind("c".repeat(40))
+            .bind(&now)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            let (status, call) = send_as(
+                &fixture.router,
+                "POST",
+                "/model/calls",
+                "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb",
+                Some(json!({
+                    "role": "semantic_reviewer",
+                    "principalId": "reviewer-1",
+                    "projectId": fixture.project_id,
+                    "objectiveId": "candidate-route",
+                    "scopeId": "candidate-route",
+                    "purpose": "semantic_review",
+                    "systemPrompt": "Return strict JSON only.",
+                    "userPrompt": "Review the candidate.",
+                    "maxOutputTokens": 2_000,
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{call}");
+            assert_eq!(call["provider"], "opencode");
+            assert_eq!(call["model"], "reviewer-model");
+            assert_eq!(*review_hits.lock().unwrap(), 1);
+            assert_eq!(*lead_hits.lock().unwrap(), 0);
+            let spending = fixture
+                .app
+                .db
+                .inference_spending_status(&bound.envelope_id)
+                .await
+                .unwrap();
+            assert_eq!(spending.unresolved_count, 0);
+            assert_eq!(spending.envelope_id, bound.envelope_id);
+            assert!(spending.settled_micros.get() <= spending.authorized_micros.get());
+            let review_reservations = fixture
+                .app
+                .db
+                .inference_reservations(&bound.envelope_id)
+                .await
+                .unwrap();
+            assert!(
+                review_reservations
+                    .iter()
+                    .any(|reservation| reservation.model == "reviewer-model"
+                        && reservation.state
+                            == factory_native::execution_policy::ReservationState::Settled),
+                "the reviewer call is the one charged operation: {review_reservations:?}"
+            );
+
+            let frozen = fixture
+                .app
+                .db
+                .frozen_profile_for_campaign(&campaign_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                frozen
+                    .content
+                    .v2()
+                    .expect("V2 frozen profile")
+                    .roles
+                    .semantic_reviewer
+                    .model,
+                "reviewer-model"
+            );
+
+            pool.close().await;
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn billable_assessment_requires_creation_amount_and_shares_request_envelope() {
+            unsafe { std::env::set_var("FACTORY_ALLOW_TEST_UPSTREAM", "1") };
+            let key = master_key();
+            let model_content = Arc::new(Mutex::new(String::new()));
+            let (model_url, model_hits) = chat_upstream_with_content(model_content.clone()).await;
+            let fixture = setup_with(Some(&key), &model_url, &model_url, profile_content()).await;
+            fixture
+                .app
+                .db
+                .enable_test_subscription_fixture_mode()
+                .await
+                .unwrap();
+            let (status, enabled) = send(
+                &fixture.router,
+                "PUT",
+                "/settings/runtime",
+                Some(json!({
+                    "semanticReviewEnabled": true,
+                    "semanticReviewMaxOutputTokens": 8192,
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{enabled}");
+            let (status, _) = enable_policy(&fixture).await;
+            assert_eq!(status, StatusCode::CREATED);
+
+            // No operator amount: the request is accepted for fixture use, but
+            // a billable assessment must fail closed before any upstream call.
+            let (status, created) = create_intake(&fixture, "assessment-without-amount").await;
+            assert_eq!(status, StatusCode::CREATED, "{created}");
+            let refused_id = created["id"].as_str().unwrap().to_owned();
+            let refused_request = fixture.app.db.intake_request(&refused_id).await.unwrap();
+            for scope in [&refused_id, &refused_request.lead_request_id] {
+                fixture
+                    .app
+                    .db
+                    .admit_test_subscription_dispatch(scope)
+                    .await
+                    .unwrap();
+            }
+            let (status, refused) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{refused_id}/assess"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+            assert_eq!(refused["code"], "INFERENCE_AUTHORIZATION_REQUIRED");
+            assert_eq!(*model_hits.lock().unwrap(), 0);
+
+            // Explicit amount at request creation: one envelope exists before
+            // the assessment.
+            let (status, created) =
+                create_intake_with_amount(&fixture, "assessment-with-amount", Some(5_000_000))
+                    .await;
+            assert_eq!(status, StatusCode::CREATED, "{created}");
+            let intake_id = created["id"].as_str().unwrap().to_owned();
+            let intake_request = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            for scope in [&intake_id, &intake_request.lead_request_id] {
+                fixture
+                    .app
+                    .db
+                    .admit_test_subscription_dispatch(scope)
+                    .await
+                    .unwrap();
+            }
+            let envelope = fixture
+                .app
+                .db
+                .inference_envelope_for_request(&intake_id)
+                .await
+                .unwrap()
+                .expect("creation envelope");
+            assert_eq!(envelope.authorized_micros.get(), 5_000_000);
+
+            let request = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            let lead = fixture
+                .app
+                .db
+                .lead_request(&request.lead_request_id)
+                .await
+                .unwrap();
+            let config = fixture
+                .app
+                .db
+                .project_config(&request.project_id)
+                .await
+                .unwrap();
+            let grant = fixture
+                .app
+                .db
+                .standing_delegation_v2(&request.delegation_id)
+                .await
+                .unwrap();
+            let binding = ActionBinding {
+                id: lead.action_id.clone(),
+                project_id: lead.project_id.clone(),
+                status: factory_native::lead::ActionStatus::Pending,
+            };
+            let spec = factory_native::db::ActionSpec {
+                schema_version: 1,
+                project_id: lead.project_id.clone(),
+                repository: config.repository.clone(),
+                base_commit: config.base_commit.clone(),
+                objective: lead.objective.clone(),
+                objective_sha256: factory_native::device_session::sha256_hex(&lead.objective),
+                provider: grant.route.provider.clone(),
+                model: grant.route.model.clone(),
+                allowed_paths: config.allowed_paths.clone(),
+                checks: checks(),
+            };
+            let (assessment, _) = factory_native::lead::fixture_lead_assessment(
+                &lead.id,
+                &config,
+                &binding,
+                &spec,
+                &lead.objective,
+                &grant,
+                chrono::Utc::now(),
+            )
+            .unwrap();
+            *model_content.lock().unwrap() = serde_json::to_string(&assessment).unwrap();
+
+            let (status, assessed) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/assess"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{assessed}");
+            assert_eq!(assessed["state"], "AWAITING_APPROVAL");
+            assert_eq!(*model_hits.lock().unwrap(), 1);
+            let reservations = fixture
+                .app
+                .db
+                .inference_reservations(&envelope.envelope_id)
+                .await
+                .unwrap();
+            assert!(
+                reservations.iter().any(|reservation| {
+                    reservation.role == factory_native::execution_policy::InferenceRole::Lead
+                        && reservation.state
+                            == factory_native::execution_policy::ReservationState::Settled
+                }),
+                "the Lead assessment must settle under the request envelope: {reservations:?}"
+            );
+
+            let plan_hash = assessed["plan"]["plan_hash"].as_str().unwrap().to_owned();
+            let (status, changed) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/approve"),
+                Some(json!({
+                    "expected_plan_hash": plan_hash,
+                    "rationale": "changed amount",
+                    "idempotency_key": "assessment-changed-amount",
+                    "authorized_micros": 6_000_000,
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{changed}");
+            assert_eq!(changed["code"], "INFERENCE_AUTHORIZATION_CHANGED");
+
+            let (status, approved) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/approve"),
+                Some(json!({
+                    "expected_plan_hash": plan_hash,
+                    "rationale": "same amount",
+                    "idempotency_key": "assessment-same-amount",
+                    "authorized_micros": 5_000_000,
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{approved}");
+            let campaign_id = approved["campaignId"].as_str().unwrap().to_owned();
+            fixture
+                .app
+                .db
+                .admit_test_subscription_dispatch(&campaign_id)
+                .await
+                .unwrap();
+            let bound = fixture
+                .app
+                .db
+                .inference_envelope_for_campaign(&campaign_id)
+                .await
+                .unwrap()
+                .expect("campaign envelope binding");
+            assert_eq!(bound.envelope_id, envelope.envelope_id);
+
+            // A required reviewer call after start settles under the same
+            // envelope, not a second allowance.
+            let tasks = fixture.app.db.campaign_tasks(&campaign_id).await.unwrap();
+            let attempt_id = tasks[0].attempt_id.clone().expect("Lead Attempt");
+            let pool = sqlx_sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx_sqlite::SqliteConnectOptions::new()
+                        .filename(&fixture.path)
+                        .create_if_missing(false),
+                )
+                .await
+                .unwrap();
+            let now = chrono::Utc::now().to_rfc3339();
+            sqlx::query::query(
+                "INSERT INTO candidates
+                 (id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at)
+                 VALUES ('candidate-assessment-envelope',?1,?2,?3,?4,'worker-1',?5)",
+            )
+            .bind(&attempt_id)
+            .bind("a".repeat(64))
+            .bind("b".repeat(40))
+            .bind("c".repeat(40))
+            .bind(&now)
+            .execute(&pool)
+            .await
+            .unwrap();
+            pool.close().await;
+            *model_content.lock().unwrap() = "{\"findings\":[],\"verdict\":\"approve\"}".into();
+            let (status, call) = send_as(
+                &fixture.router,
+                "POST",
+                "/model/calls",
+                "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb",
+                Some(json!({
+                    "role": "semantic_reviewer",
+                    "principalId": "reviewer-1",
+                    "projectId": fixture.project_id,
+                    "objectiveId": "candidate-assessment-envelope",
+                    "scopeId": "candidate-assessment-envelope",
+                    "purpose": "semantic_review",
+                    "systemPrompt": "Return strict JSON only.",
+                    "userPrompt": "Review the candidate.",
+                    "maxOutputTokens": 2_000,
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{call}");
+            let spending = fixture
+                .app
+                .db
+                .inference_spending_status(&envelope.envelope_id)
+                .await
+                .unwrap();
+            assert_eq!(spending.unresolved_count, 0);
+            let reservations = fixture
+                .app
+                .db
+                .inference_reservations(&envelope.envelope_id)
+                .await
+                .unwrap();
+            for role in [
+                factory_native::execution_policy::InferenceRole::Lead,
+                factory_native::execution_policy::InferenceRole::SemanticReviewer,
+            ] {
+                assert!(
+                    reservations.iter().any(|reservation| {
+                        reservation.role == role
+                            && reservation.state
+                                == factory_native::execution_policy::ReservationState::Settled
+                    }),
+                    "missing settled {role:?} under one envelope: {reservations:?}"
+                );
+            }
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn test_support_subscription_admission_is_authenticated_and_exact() {
+            let fixture = setup().await;
+            let path = "/test-support/subscription-dispatch-admissions";
+
+            let (status, _) = send_as(
+                &fixture.router,
+                "POST",
+                path,
+                "wrong-token",
+                Some(json!({"scope": "scope-a"})),
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+            let (status, _) = send(
+                &fixture.router,
+                "POST",
+                path,
+                Some(json!({"scope": "scope-a"})),
+            )
+            .await;
+            assert_eq!(status, StatusCode::NO_CONTENT);
+
+            let (status, _) = send(&fixture.router, "POST", path, Some(json!({"scope": ""}))).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+        }
+
+        #[tokio::test]
+        async fn intake_api_requires_policy_and_reports_truthful_states() {
+            let fixture = setup().await;
+            let (status, body) = create_intake(&fixture, "request-api-1").await;
+            assert_eq!(status, StatusCode::CONFLICT);
+            assert_eq!(body["code"], "EXECUTION_POLICY_REQUIRED");
+            assert_eq!(
+                body["scope"]["profile"]["revisionId"],
+                fixture.profile.revision_id
+            );
+            assert_eq!(
+                body["scope"]["project"]["configHash"],
+                fixture.config.config_hash
+            );
+            assert_eq!(body["scope"]["profile"]["grantTerms"]["maxParallel"], 1);
+            assert_eq!(
+                body["scope"]["profile"]["grantTerms"]["objectiveClasses"],
+                json!(["feature", "maintenance", "refactor"])
+            );
+            assert_eq!(
+                body["scope"]["profile"]["grantTerms"]["riskClasses"],
+                json!(["R0"])
+            );
+            assert_eq!(
+                body["scope"]["profile"]["grantTerms"]["autonomousStart"],
+                false
+            );
+            assert_eq!(body["scope"]["profile"]["grantTerms"]["validityDays"], 30);
+            assert_eq!(
+                body["scope"]["profile"]["grantTerms"]["maxTimeoutSecs"],
+                fixture
+                    .profile
+                    .content
+                    .v2()
+                    .unwrap()
+                    .operations
+                    .tool_call_timeout_secs
+                    .get()
+            );
+            assert_eq!(
+                body["scope"]["profile"]["operations"]["maxGenerationTokens"],
+                fixture
+                    .profile
+                    .content
+                    .v2()
+                    .unwrap()
+                    .operations
+                    .max_generation_tokens
+                    .get()
+            );
+            assert_eq!(
+                body["scope"]["profile"]["progress"]["diagnoseAfterStagnantCheckpoints"],
+                fixture
+                    .profile
+                    .content
+                    .v2()
+                    .unwrap()
+                    .progress
+                    .diagnose_after_stagnant_checkpoints
+                    .get()
+            );
+
+            let (status, policy) = enable_policy(&fixture).await;
+            assert_eq!(status, StatusCode::CREATED, "{policy}");
+            assert_eq!(policy["delegation"]["autonomousStart"], false);
+            assert_eq!(
+                policy["grant"]["profile_revision"],
+                fixture.profile.revision
+            );
+            let (status, replay) = enable_policy(&fixture).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(replay["delegation"]["id"], policy["delegation"]["id"]);
+
+            let (status, created) =
+                create_intake_with_amount(&fixture, "request-api-1", Some(5_000_000)).await;
+            assert_eq!(status, StatusCode::CREATED, "{created}");
+            assert_eq!(created["state"], "SUBMITTED");
+            assert_eq!(
+                created["profile"]["revisionId"],
+                fixture.profile.revision_id
+            );
+            assert_eq!(created["authorization"]["reason"], "FROZEN_PLAN_REQUIRED");
+            assert!(created["assessment"].is_null());
+            assert!(created["plan"].is_null());
+            let intake_id = created["id"].as_str().unwrap().to_owned();
+
+            let (status, list) = send(&fixture.router, "GET", "/intake/requests", None).await;
+            assert_eq!(status, StatusCode::OK);
+            let list = list.as_array().unwrap();
+            assert_eq!(list.len(), 1);
+            assert!(list[0].get("messages").is_none());
+            assert_eq!(list[0]["id"], intake_id);
+
+            let (status, detail) = send(
+                &fixture.router,
+                "GET",
+                &format!("/intake/requests/{intake_id}"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(detail["objective"], "Implement a bounded intake endpoint.");
+            assert_eq!(detail["profile"]["revision"], fixture.profile.revision);
+            assert_eq!(detail["messages"].as_array().unwrap().len(), 0);
+
+            let (status, with_message) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/message"),
+                Some(json!({
+                    "body": "Keep the API backward compatible.",
+                    "idempotency_key": "message-api-1",
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{with_message}");
+            assert_eq!(with_message["messages"].as_array().unwrap().len(), 1);
+            assert_eq!(with_message["messages"][0]["role"], "operator");
+
+            let (status, unavailable) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/assess"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(unavailable["code"], "ASSESSMENT_UNAVAILABLE");
+            let after_assess = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            let lead = fixture
+                .app
+                .db
+                .lead_request(&after_assess.lead_request_id)
+                .await
+                .unwrap();
+            assert_eq!(
+                lead.state,
+                factory_native::lead::LeadRequestState::Submitted
+            );
+
+            let (status, cancelled) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/cancel"),
+                Some(json!({"reason": "stop"})),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{cancelled}");
+            assert_eq!(cancelled["state"], "CANCELLED");
+            assert_eq!(cancelled["authorization"]["reason"], "INTAKE_WITHDRAWN");
+            let (status, replayed) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/cancel"),
+                Some(json!({"reason": "stop"})),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(replayed["state"], "CANCELLED");
+            let (status, fenced) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/assess"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT);
+            assert_eq!(fenced["code"], "INTAKE_WITHDRAWN");
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
+        async fn intake_assessment_uses_the_frozen_profile_revision_after_a_newer_head() {
+            let fixture = setup().await;
+            let (status, _) = enable_policy(&fixture).await;
+            assert_eq!(status, StatusCode::CREATED);
+            let (status, created) =
+                create_intake_with_amount(&fixture, "request-api-stale", Some(5_000_000)).await;
+            assert_eq!(status, StatusCode::CREATED, "{created}");
+            let intake_id = created["id"].as_str().unwrap().to_owned();
+            let mut changed = profile_content();
+            changed.name = "Changed after request".into();
+            let updated = fixture
+                .app
+                .db
+                .update_execution_profile(
+                    &fixture.profile.id,
+                    fixture.profile.revision,
+                    &changed,
+                    "owner",
+                )
+                .await
+                .unwrap();
+            assert_ne!(updated.revision_id, fixture.profile.revision_id);
+            let (status, assessed) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/assess"),
+                None,
+            )
+            .await;
+            // This fixture has no stored provider credential, so the call fails
+            // after authority is accepted. It must not fail as a stale profile.
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{assessed}");
+            assert_eq!(assessed["routeCode"], "MODEL_CREDENTIAL_UNAVAILABLE");
+            let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            assert_eq!(record.profile_revision_id, fixture.profile.revision_id);
+            assert_eq!(record.profile_hash, fixture.profile.content_hash);
+            let frozen = fixture
+                .app
+                .db
+                .execution_profile_revision(&record.profile_id, &record.profile_revision_id)
+                .await
+                .unwrap();
+            assert_eq!(frozen.content_hash, fixture.profile.content_hash);
+            assert_eq!(frozen.revision, fixture.profile.revision);
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
+        async fn intake_approval_is_exact_replayable_and_fenced_after_start() {
+            let fixture = setup().await;
+            let (status, _) = enable_policy(&fixture).await;
+            assert_eq!(status, StatusCode::CREATED);
+            let (status, created) = create_intake(&fixture, "request-api-approve").await;
+            assert_eq!(status, StatusCode::CREATED, "{created}");
+            let intake_id = created["id"].as_str().unwrap().to_owned();
+            let context = fixture_plan(&fixture, &intake_id, "FIXTURE").await;
+            let plan_hash = context.plan.plan_hash.clone();
+            let profile_revision = context.context.profile_revision;
+            let profile_hash = context.context.profile_hash.clone();
+
+            let approve_body = json!({
+                "expected_plan_hash": plan_hash,
+                "rationale": "Reviewed the frozen plan and budget.",
+                "idempotency_key": "approve-api-key",
+            });
+            let (status, approved) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/approve"),
+                Some(approve_body.clone()),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{approved}");
+            assert_eq!(approved["state"], "EXECUTING");
+            assert!(approved["campaignId"].is_string());
+            assert_eq!(approved["plan"]["plan_hash"], plan_hash);
+            assert_eq!(approved["profile"]["revision"], profile_revision);
+            assert_eq!(approved["profile"]["contentHash"], profile_hash);
+            assert_eq!(
+                approved["campaignStatus"], "AUTHORIZED",
+                "detail must project the authoritative Campaign status"
+            );
+            assert!(
+                approved.get("gateOutcome").is_none(),
+                "no Gate outcome may be invented before a Gate exists"
+            );
+            let campaign_id = approved["campaignId"].as_str().unwrap().to_owned();
+            let evidence = fixture
+                .app
+                .db
+                .lead_start_evidence(&context.lead.id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                evidence.profile_revision_id.as_deref(),
+                Some(context.context.profile_revision_id.as_str())
+            );
+            assert_eq!(
+                evidence.profile_hash.as_deref(),
+                Some(profile_hash.as_str())
+            );
+
+            let (status, replay) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/approve"),
+                Some(approve_body.clone()),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{replay}");
+            assert_eq!(replay["campaignId"], campaign_id);
+
+            let request = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            fixture
+                .app
+                .db
+                .revoke_standing_delegation(&request.delegation_id, chrono::Utc::now())
+                .await
+                .unwrap();
+            let (status, observational_replay) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/approve"),
+                Some(approve_body),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{observational_replay}");
+            assert_eq!(observational_replay["campaignId"], campaign_id);
+            assert_eq!(observational_replay["state"], "CANCELLED");
+
+            let (status, wrong_plan) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/approve"),
+                Some(json!({
+                    "expected_plan_hash": "0".repeat(64),
+                    "rationale": "wrong",
+                    "idempotency_key": "approve-wrong",
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT);
+            assert_eq!(wrong_plan["code"], "PLAN_HASH_MISMATCH");
+
+            let (status, second_key) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/approve"),
+                Some(json!({
+                    "expected_plan_hash": plan_hash,
+                    "rationale": "second",
+                    "idempotency_key": "approve-second",
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT);
+            assert_eq!(second_key["code"], "LEAD_ALREADY_STARTED");
+            assert_eq!(second_key["campaign_id"], campaign_id);
+
+            let (status, cancel) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/cancel"),
+                Some(json!({"reason": "stop"})),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT);
+            assert_eq!(cancel["code"], "LEAD_ALREADY_STARTED");
+            assert_eq!(cancel["campaign_id"], campaign_id);
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
+        async fn intake_detail_projects_campaign_status_and_latest_gate_outcome() {
+            let fixture = setup().await;
+            let (status, _) = enable_policy(&fixture).await;
+            assert_eq!(status, StatusCode::CREATED);
+            let (status, created) = create_intake(&fixture, "request-api-gate").await;
+            assert_eq!(status, StatusCode::CREATED, "{created}");
+            let intake_id = created["id"].as_str().unwrap().to_owned();
+            let context = fixture_plan(&fixture, &intake_id, "FIXTURE").await;
+            let (status, approved) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/approve"),
+                Some(json!({
+                    "expected_plan_hash": context.plan.plan_hash,
+                    "rationale": "Reviewed the frozen plan and budget.",
+                    "idempotency_key": "approve-gate-projection",
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{approved}");
+            let campaign_id = approved["campaignId"].as_str().unwrap().to_owned();
+            let tasks = fixture.app.db.campaign_tasks(&campaign_id).await.unwrap();
+            let attempt_id = tasks[0].attempt_id.clone().expect("Lead Attempt");
+            let candidate_id = "candidate-gate-projection".to_owned();
+            let commit_sha = "a".repeat(40);
+            let tree_sha = "b".repeat(40);
+            let pool = sqlx_sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx_sqlite::SqliteConnectOptions::new()
+                        .filename(&fixture.path)
+                        .create_if_missing(false),
+                )
+                .await
+                .unwrap();
+            let (spec_sha256,): (String,) = sqlx::query_as::query_as(
+                "SELECT spec_sha256 FROM attempt_specs WHERE attempt_id=?1",
+            )
+            .bind(&attempt_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            let now = chrono::Utc::now().to_rfc3339();
+            sqlx::query::query(
+                "INSERT INTO candidates
+                 (id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at)
+                 VALUES (?1,?2,?3,?4,?5,'worker-gate-projection',?6)",
+            )
+            .bind(&candidate_id)
+            .bind(&attempt_id)
+            .bind(&spec_sha256)
+            .bind(&commit_sha)
+            .bind(&tree_sha)
+            .bind(&now)
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query::query("INSERT INTO gate_decisions VALUES (?1,'ACCEPTED','[]',?2)")
+                .bind(&candidate_id)
+                .bind(&now)
+                .execute(&pool)
+                .await
+                .unwrap();
+            pool.close().await;
+
+            let (status, detail) = send(
+                &fixture.router,
+                "GET",
+                &format!("/intake/requests/{intake_id}"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{detail}");
+            assert_eq!(detail["state"], "COMPLETED");
+            assert_eq!(detail["campaignStatus"], "AUTHORIZED");
+            assert_eq!(detail["gateOutcome"], "ACCEPTED");
+            assert_eq!(detail["campaignId"], campaign_id);
+            assert_eq!(
+                detail["campaign"]["candidates"][0]["id"], candidate_id,
+                "the detail campaign projection must expose the exact candidate"
+            );
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
+        async fn decisions_project_an_exact_intake_action_and_reject_a_stale_profile_guard() {
+            let fixture = setup().await;
+            let (status, _) = enable_policy(&fixture).await;
+            assert_eq!(status, StatusCode::CREATED);
+            let (status, created) = create_intake(&fixture, "request-api-decisions").await;
+            assert_eq!(status, StatusCode::CREATED, "{created}");
+            let intake_id = created["id"].as_str().unwrap().to_owned();
+            let context = fixture_plan(&fixture, &intake_id, "FIXTURE").await;
+            let plan_hash = context.plan.plan_hash.clone();
+            let profile_revision_id = context.context.profile_revision_id.clone();
+            let profile_hash = context.context.profile_hash.clone();
+
+            let (status, decisions) = send(&fixture.router, "GET", "/office/decisions", None).await;
+            assert_eq!(status, StatusCode::OK, "{decisions}");
+            let item = decisions["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|item| item["kind"] == "intake.plan-approval")
+                .expect("intake approval item");
+            assert_eq!(item["actionable"], true);
+            assert_eq!(item["subject_id"], intake_id);
+            assert_eq!(item["target"], format!("/requests/{intake_id}"));
+            assert!(item["revision"].is_string());
+            assert_eq!(item["project"]["id"], fixture.project_id);
+            assert_eq!(
+                item["impact"]["budget"]["operations"]["maxGenerationTokens"],
+                context.scope.operations.max_generation_tokens.get()
+            );
+            assert_eq!(
+                item["impact"]["budget"]["progress"]["diagnoseAfterStagnantCheckpoints"],
+                context
+                    .scope
+                    .progress
+                    .diagnose_after_stagnant_checkpoints
+                    .get()
+            );
+            let approve = item["actions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|action| action["kind"] == "approve_intake_plan")
+                .expect("approve action");
+            assert_eq!(
+                approve["expected_plan_hash"].as_str(),
+                Some(plan_hash.as_str())
+            );
+            assert_eq!(
+                approve["expected_profile_revision_id"].as_str(),
+                Some(profile_revision_id.as_str())
+            );
+            assert_eq!(
+                approve["expected_profile_hash"].as_str(),
+                Some(profile_hash.as_str())
+            );
+
+            let (status, stale) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/approve"),
+                Some(json!({
+                    "expected_plan_hash": plan_hash,
+                    "expected_profile_revision_id": "stale-revision",
+                    "expected_profile_hash": profile_hash,
+                    "rationale": "stale guard",
+                    "idempotency_key": "approve-stale-guard",
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{stale}");
+            assert_eq!(stale["code"], "PROFILE_REVISION_MISMATCH");
+            assert_eq!(
+                fixture
+                    .app
+                    .db
+                    .intake_request(&intake_id)
+                    .await
+                    .unwrap()
+                    .campaign_id,
+                None
+            );
+
+            let (status, approved) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/approve"),
+                Some(json!({
+                    "expected_plan_hash": plan_hash,
+                    "expected_profile_revision_id": profile_revision_id,
+                    "expected_profile_hash": profile_hash,
+                    "rationale": "exact guard approved",
+                    "idempotency_key": "approve-exact-guard",
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{approved}");
+            assert_eq!(approved["state"], "EXECUTING");
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
+        async fn issue_intake_api_is_authenticated_default_off_and_acknowledges_exact_snapshot() {
+            use factory_native::github::{GitHubIssue, GitHubLabel};
+
+            let fixture = setup().await;
+            let path = format!("/projects/{}/issue-intake", fixture.project_id);
+            let response = fixture
+                .router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("GET")
+                        .uri(&path)
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            let (status, state) = send(&fixture.router, "GET", &path, None).await;
+            assert_eq!(status, StatusCode::OK, "{state}");
+            assert_eq!(state["enabled"], false);
+            assert!(state["policy"].is_null());
+            assert_eq!(state["limits"]["autonomous_start"], false);
+            assert_eq!(state["limits"]["campaign_start"], false);
+
+            fixture
+                .app
+                .db
+                .bind_project_github(
+                    &fixture.project_id,
+                    factory_native::db::NewProjectGitHubBinding {
+                        owner: "acme",
+                        repo: "widgets",
+                        default_branch: "main",
+                        repository_github_id: Some(42),
+                    },
+                    "test-operator",
+                )
+                .await
+                .unwrap();
+            fixture
+                .app
+                .db
+                .save_github_connection(
+                    &factory_native::provider_secrets::EncryptedCredential {
+                        ciphertext: "ciphertext".into(),
+                        nonce: "nonce".into(),
+                        fingerprint: "fingerprint".into(),
+                    },
+                    "octo",
+                    &[],
+                    false,
+                    "test-operator",
+                )
+                .await
+                .unwrap();
+            let issue = GitHubIssue {
+                number: 5,
+                github_id: 55,
+                title: "Bounded issue".into(),
+                body: "Do a bounded task.".into(),
+                body_truncated: false,
+                state: "open".into(),
+                state_reason: None,
+                labels: vec![GitHubLabel {
+                    name: "factory:r0".into(),
+                    color: None,
+                }],
+                author: Some("octo".into()),
+                author_id: Some(7),
+                author_association: Some("MEMBER".into()),
+                html_url: "https://github.com/acme/widgets/issues/5".into(),
+                comments: 0,
+                created_at: "2026-10-01T00:00:00Z".into(),
+                updated_at: "2026-10-02T00:00:00Z".into(),
+                closed_at: None,
+            };
+            fixture
+                .app
+                .db
+                .record_github_sync_result(factory_native::db::GitHubSyncResultWrite {
+                    project_id: &fixture.project_id,
+                    repo_full_name: "acme/widgets",
+                    issues: std::slice::from_ref(&issue),
+                    page_etags: &[],
+                    etag: None,
+                    truncated: false,
+                    connection_revision: 1,
+                })
+                .await
+                .unwrap();
+            let policy_body = json!({
+                "repository_full_name": "acme/widgets",
+                "repository_github_id": 42,
+                "required_labels": ["factory:r0"],
+                "excluded_labels": ["factory:blocked"],
+                "author_ids": [7],
+                "author_associations": ["MEMBER"],
+                "execution_profile_id": fixture.profile.id,
+                "profile_revision_id": fixture.profile.revision_id,
+                "profile_revision": fixture.profile.revision,
+                "profile_hash": fixture.profile.content_hash,
+                "project_config_hash": fixture.config.config_hash,
+                "allowed_paths": ["src"],
+                "capabilities": ["repository-edit"],
+                "max_issues": 3,
+                "max_concurrent": 1,
+                "max_cost_micros_per_issue": 100000,
+                "max_total_cost_micros": 300000,
+                "max_attempts": 2,
+                "max_sessions": 3,
+                "max_turns": 4,
+                "max_wall_clock_secs": 600,
+                "expires_at": (chrono::Utc::now() + chrono::Duration::days(7)).to_rfc3339(),
+                "acknowledge": true,
+                "reason": "API acknowledgement",
+                "idempotency_key": "issue-policy-api",
+            });
+            let (status, configured) = send(
+                &fixture.router,
+                "PUT",
+                &format!("/projects/{}/issue-intake/policy", fixture.project_id),
+                Some(policy_body),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{configured}");
+            assert_eq!(configured["policy"]["enabled"], true);
+            let batch_body = json!({
+                "policy_id": configured["policy"]["id"],
+                "expected_policy_revision": configured["policy"]["revision"],
+                "expected_policy_hash": configured["policy"]["content_hash"],
+                "items": [{
+                    "number": 5,
+                    "github_issue_id": 55,
+                    "content_hash": issue.content_hash(),
+                    "updated_at": issue.updated_at,
+                }],
+                "max_total_cost_micros": 100000,
+                "expires_at": (chrono::Utc::now() + chrono::Duration::days(1)).to_rfc3339(),
+                "acknowledge": true,
+                "reason": "API exact batch",
+                "idempotency_key": "issue-batch-api",
+            });
+            let (status, batch) = send(
+                &fixture.router,
+                "POST",
+                &format!("/projects/{}/issue-intake/batches", fixture.project_id),
+                Some(batch_body),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{batch}");
+            assert_eq!(batch["batch"]["max_issues"], 1);
+            let (status, state) = send(&fixture.router, "GET", &path, None).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(state["queue"].as_array().unwrap().len(), 1);
+            assert_eq!(state["queue"][0]["status"], "PENDING");
+            assert_eq!(
+                fixture
+                    .app
+                    .db
+                    .issue_intake_state(&fixture.project_id)
+                    .await
+                    .unwrap()
+                    .queue
+                    .len(),
+                1
+            );
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[test]
+        fn operation_grants_outlive_the_maximum_bounded_execution() {
+            let maximum_execution_ms =
+                factory_native::execution::MAX_EXECUTION_RUNTIME.as_millis() as i64;
+            assert!(
+                WORKSPACE_OPERATION_GRANT_MILLIS >= maximum_execution_ms + 60_000,
+                "a valid command must never outlive its operation grant"
+            );
+        }
+
+        #[test]
+        fn pull_request_merge_requires_an_accepted_core_gate() {
+            use factory_native::db::GateRecord;
+            use factory_native::quality::GateOutcome;
+
+            let accepted = GateRecord {
+                candidate_id: "candidate-1".into(),
+                outcome: GateOutcome::Accepted,
+                reasons: vec![],
+                decided_at: "2026-10-28T00:00:00Z".into(),
+            };
+            assert!(merge_gate_denial(Some(&accepted)).is_none());
+
+            let repair = GateRecord {
+                candidate_id: "candidate-1".into(),
+                outcome: GateOutcome::RepairRequired,
+                reasons: vec!["repair".into()],
+                decided_at: "2026-10-28T00:00:00Z".into(),
+            };
+            let (status, body) = merge_gate_denial(Some(&repair)).expect("repair must be denied");
+            assert_eq!(status, StatusCode::CONFLICT);
+            assert_eq!(body["kind"], "GATE_NOT_ACCEPTED");
+
+            let (status, body) = merge_gate_denial(None).expect("missing gate must be denied");
+            assert_eq!(status, StatusCode::CONFLICT);
+            assert_eq!(body["kind"], "GATE_NOT_ACCEPTED");
+        }
     }
 }

@@ -14,19 +14,30 @@ if [[ -z "$PROJECT" || "$PROJECT" == "software-factory" || "$PROJECT" != *e2e* ]
   exit 2
 fi
 GIT_DIR="$(mktemp -d /tmp/factory-compose-e2e-git.XXXXXXXX)"
-COMPOSE=(podman compose -f compose.yaml -f compose.e2e.yaml)
+MODEL_DIR="$(mktemp -d /tmp/factory-compose-e2e-model.XXXXXXXX)"
+COOKIE_JAR="$(mktemp /tmp/factory-compose-e2e-cookie.XXXXXXXX)"
+chmod 600 "$COOKIE_JAR"
+# The model fixture runs as an unprivileged user and reads only this context.
+chmod 755 "$MODEL_DIR"
+# compose.yaml declares `name: software-factory`; COMPOSE_PROJECT_NAME alone is
+# not enough to isolate this disposable acceptance run. Force the project name
+# on every invocation so test volumes/containers can never collide with the
+# owner's installed stack.
+COMPOSE=(podman compose -p "$PROJECT" -f compose.yaml -f compose.e2e.yaml)
 export COMPOSE_PROJECT_NAME="$PROJECT"
 export FACTORY_PORT="$PORT"
 export FACTORY_E2E_GIT_DIR="$GIT_DIR/server"
+export FACTORY_E2E_MODEL_DIR="$MODEL_DIR"
 export PODMAN_COMPOSE_PROVIDER="$PROVIDER"
 export FACTORY_PROVIDER_KIND=fixture
 
 cleanup() {
   "${COMPOSE[@]}" down -v >/dev/null 2>&1 || true
-  rm -rf "$GIT_DIR"
+  rm -rf "$GIT_DIR" "$MODEL_DIR"
+  rm -f "$COOKIE_JAR"
 }
 if [[ "${FACTORY_E2E_KEEP:-0}" == "1" ]]; then
-  trap 'rm -rf "$GIT_DIR"' EXIT
+  trap 'rm -rf "$GIT_DIR" "$MODEL_DIR"; rm -f "$COOKIE_JAR"' EXIT
 else
   trap cleanup EXIT
 fi
@@ -64,15 +75,18 @@ core_container() {
 }
 
 api() {
-  local method="$1" path="$2" body="${3:-}" response status payload
-  if [[ -n "$body" ]]; then
-    response=$(curl -sS -X "$method" "$BASE$path" \
-      -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
-      -d "$body" -w $'\n%{http_code}')
-  else
-    response=$(curl -sS -X "$method" "$BASE$path" \
-      -H "authorization: Bearer $TOKEN" -w $'\n%{http_code}')
+  local method="$1" path="$2" body="${3:-}" response status payload csrf
+  csrf="$(awk -F '\t' '$6 == "factory_csrf" {print $7}' "$COOKIE_JAR" | tail -1)"
+  local args=(curl -sS -X "$method" "$BASE$path" -b "$COOKIE_JAR" -c "$COOKIE_JAR" -H "Origin: $BASE")
+  if [[ "$method" != "GET" && "$method" != "HEAD" && "$method" != "OPTIONS" ]]; then
+    args+=(-H "x-factory-csrf: $csrf")
   fi
+  if [[ -n "$body" ]]; then
+    args+=(-H 'content-type: application/json' -d "$body")
+  else
+    args+=(-H 'content-type: application/json')
+  fi
+  response=$("${args[@]}" -w $'\n%{http_code}')
   status="${response##*$'\n'}"
   payload="${response%$'\n'*}"
   if [[ "$status" -ge 400 ]]; then
@@ -83,6 +97,14 @@ api() {
 }
 
 json() { python3 -c "$1"; }
+
+# The Compose acceptance Core is the debug/test-support image. Admit the exact
+# request and Lead scopes; the disposable E2E database also admits '*' so the
+# Campaign id created inside approval cannot race the Worker. Production images
+# do not contain this endpoint or the feature.
+admit_scope() {
+  api POST /test-support/subscription-dispatch-admissions "{\"scope\":\"$1\"}" >/dev/null
+}
 
 log "== preparing disposable Git fixture"
 mkdir -p "$GIT_DIR/source/src"
@@ -101,7 +123,14 @@ compose down -v >/dev/null 2>&1 || true
 compose up -d --build
 
 CORE="$(core_container)"
-[[ -n "$CORE" ]] || { log "Core container was not created"; exit 1; }
+if [[ -z "$CORE" ]]; then
+  log "Core container was not created"
+  podman ps -a \
+    --filter "label=com.docker.compose.project=$PROJECT" \
+    --format '{{.Names}} {{.Status}}' >&2 || true
+  podman ps -a --format '{{.Names}} {{.Status}}' | head -20 >&2 || true
+  exit 1
+fi
 wait_for "$BASE/health" 300
 wait_for "http://127.0.0.1:${PORT}/core-api/health" 60
 log "== waiting for Supervisor, runtime engine and Worker readiness"
@@ -116,12 +145,17 @@ for _ in $(seq 1 60); do
   sleep 1
 done
 [[ "$GIT_READY" -eq 1 ]] || { log "Git fixture did not become reachable"; exit 1; }
+wait_core http://model-fixture:8080/health 120
 
 log "== first-run enrollment"
-CODE="$(podman exec "$CORE" cat /data/enrollment-code)"
-TOKEN="$(curl -fsS -X POST "$BASE/setup/enroll" -H 'content-type: application/json' \
-  -d "$(python3 -c 'import json,sys; print(json.dumps({"code":sys.argv[1]}))' "$CODE")" \
-  | json 'import json,sys; print(json.load(sys.stdin)["token"])')"
+CODE="$(podman exec "$CORE" /usr/local/bin/factory-core issue-bootstrap-code)"
+[[ "$CODE" != "OWNER_ALREADY_ENROLLED" ]] || { log "fresh stack was already enrolled"; exit 1; }
+curl -fsS -X POST "$BASE/auth/bootstrap" \
+  -H "Origin: $BASE" -H 'content-type: application/json' \
+  -c "$COOKIE_JAR" -b "$COOKIE_JAR" \
+  -d "$(python3 -c 'import json,sys; print(json.dumps({"code":sys.argv[1],"deviceName":"Compose E2E"}))' "$CODE")" \
+  >/dev/null
+unset CODE
 STATUS="$(curl -fsS "$BASE/setup/status")"
 [[ "$STATUS" == *'"required":false'* ]] || { log "enrollment was not invalidated"; exit 1; }
 for _ in $(seq 1 60); do
@@ -137,8 +171,10 @@ PROJECT_ID="$(api POST /projects \
   '{"repository":"http://git-fixture:8080/repo.git","idempotency_key":"e2e-project"}' \
   | json 'import json,sys; print(json.load(sys.stdin)["id"])')"
 CONFIG_REV="$(api GET "/projects/$PROJECT_ID/config" | json 'import json,sys; print(json.load(sys.stdin)["revision"])')"
-api PUT "/projects/$PROJECT_ID/config" \
-  "{\"expectedRevision\":$CONFIG_REV,\"allowedPaths\":[\"src\"],\"capabilities\":[\"repository-edit\",\"generic-toolchain\"],\"qualityProfile\":\"generic\",\"active\":true}" >/dev/null
+CONFIG_JSON="$(api PUT "/projects/$PROJECT_ID/config" \
+  "{\"expectedRevision\":$CONFIG_REV,\"allowedPaths\":[\"src\"],\"capabilities\":[\"repository-edit\",\"generic-toolchain\"],\"qualityProfile\":\"generic\",\"active\":true}")"
+PROJECT_CONFIG_HASH="$(printf '%s' "$CONFIG_JSON" | json 'import json,sys; print(json.load(sys.stdin)["configHash"])')"
+PROJECT_BASE_COMMIT="$(printf '%s' "$CONFIG_JSON" | json 'import json,sys; print(json.load(sys.stdin)["baseCommit"])')"
 
 log "== freezing an Action with functional and negative checks"
 ACTION_ID="$(api POST /actions \
@@ -150,35 +186,151 @@ EXPIRES="$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.ti
 api POST /delegations \
   "{\"delegation\":{\"id\":\"e2e-grant\",\"principalId\":\"owner\",\"auditId\":\"e2e\",\"projectId\":\"$PROJECT_ID\",\"revision\":1,\"contentHash\":\"\",\"objectiveClasses\":[\"feature\"],\"allowedPaths\":[\"src\"],\"capabilities\":[\"repository-edit\",\"generic-toolchain\"],\"riskClasses\":[\"R0\",\"R1\"],\"autonomousStart\":false,\"autonomousRiskClasses\":[],\"route\":{\"provider\":\"opencode\",\"model\":\"deepseek-v4.1-flash\",\"mode\":\"build\"},\"maxAttempts\":2,\"maxTimeoutSecs\":300,\"maxRepairCycles\":0,\"maxWallClockSecs\":1800,\"maxParallel\":1,\"maxSessions\":16,\"maxRequests\":4,\"maxCumulativeSessions\":32,\"maxCumulativeAttempts\":32,\"expiresAt\":\"$EXPIRES\"},\"idempotency_key\":\"e2e-delegation\"}" >/dev/null
 
-log "== authorizing and dispatching a Campaign"
-CAMPAIGN_ID="$(api POST /campaigns \
-  "{\"action_id\":\"$ACTION_ID\",\"idempotency_key\":\"e2e-campaign\"}" \
-  | json 'import json,sys; print(json.load(sys.stdin)["id"])')"
-api POST "/campaigns/$CAMPAIGN_ID/authorize" \
-  "{\"authorization_id\":\"e2e-auth\",\"risk_class\":\"R0\",\"execution_mode\":\"TRUSTED_LOCAL_PROVIDER\",\"actor\":\"e2e-operator\",\"rationale\":\"deterministic Compose acceptance\",\"authorized_paths\":[\"src\"],\"max_attempts\":1,\"provider\":\"opencode\",\"model\":\"deepseek-v4.1-flash\",\"provider_mode\":\"build\",\"delegation_id\":\"e2e-grant\",\"max_sessions\":1,\"max_turns\":2,\"max_input_tokens\":20000,\"max_output_tokens\":8000,\"max_cost_micros\":500000,\"deadline_secs\":120,\"allowed_tools\":[\"write_file\"]}" >/dev/null
-RUN_ID="$(api POST "/campaigns/$CAMPAIGN_ID/runs" | json 'import json,sys; print(json.load(sys.stdin)["id"])')"
-ATTEMPT_ID="$(api POST "/runs/$RUN_ID/attempts" | json 'import json,sys; print(json.load(sys.stdin)["id"])')"
+log "== configuring the fixture implementer connection"
+# Campaign authorization validates that the declared implementer route exists as
+# an enabled provider connection. The deterministic Worker never calls it.
+api PUT /settings/providers/opencode \
+  '{"model":"deepseek-v4.1-flash","baseUrl":"https://opencode.ai/inference/go/openai/v1","credential":"compose-fixture-credential-0123456789","enabled":true,"isDefault":false,"maxTurns":4,"maxInputTokens":20000,"maxOutputTokens":8000,"maxCostMicros":500000,"inputMicrosPerMillion":1000,"outputMicrosPerMillion":2000}' >/dev/null
 
-log "== waiting for the candidate, verifier, reviewer and gate"
-CANDIDATE_ID=""
-GATE=""
-for _ in $(seq 1 300); do
-  CANDIDATE_ID="$(api GET /candidates \
-    | python3 -c 'import json,sys; target=sys.argv[1]; print(next((c["id"] for c in json.load(sys.stdin) if c["attempt_id"]==target), ""))' "$ATTEMPT_ID")"
-  if [[ -n "$CANDIDATE_ID" ]]; then
-    GATE="$(api GET "/quality/candidates/$CANDIDATE_ID/gate" 2>/dev/null || true)"
-    if [[ "$GATE" == *'"outcome":"ACCEPTED"'* ]]; then
+log "== configuring the deterministic model gateway and executable profile"
+api PUT /settings/providers/opencode-go \
+  '{"model":"deepseek-v4.1-flash","baseUrl":"http://model-fixture:8080/v1","credential":"compose-fixture-credential-0123456789","enabled":true,"isDefault":true,"maxTurns":4,"maxInputTokens":100000,"maxOutputTokens":12000,"maxCostMicros":500000,"inputMicrosPerMillion":1000,"outputMicrosPerMillion":2000}' >/dev/null
+api PUT /settings/runtime \
+  '{"semanticReviewEnabled":true,"semanticReviewMaxOutputTokens":8192}' >/dev/null
+ROLE='{"provider":"opencode-go","model":"deepseek-v4.1-flash","reasoning":"medium"}'
+PROFILE_JSON="$(api POST /execution-profiles \
+  "{\"name\":\"Compose Intake Balanced\",\"description\":\"Deterministic Compose intake profile\",\"category\":\"BALANCED\",\"roles\":{\"lead\":$ROLE,\"implementer\":$ROLE,\"semanticReviewer\":$ROLE},\"operations\":{\"modelRequestTimeoutSecs\":300,\"toolCallTimeoutSecs\":600,\"maxRequestBytes\":2097152,\"maxResponseBytes\":2097152,\"maxGenerationTokens\":8192,\"maxInFlightOperations\":2},\"progress\":{\"diagnoseAfterStagnantCheckpoints\":2,\"escalateAfterUnsuccessfulReplans\":1,\"observationTimeoutSecs\":300},\"auto_start\":{\"enabled\":false,\"risk_classes\":[]}}")"
+PROFILE_ID="$(printf '%s' "$PROFILE_JSON" | json 'import json,sys; print(json.load(sys.stdin)["id"])')"
+PROFILE_REVISION="$(printf '%s' "$PROFILE_JSON" | json 'import json,sys; print(json.load(sys.stdin)["revision"])')"
+PROFILE_REVISION_ID="$(printf '%s' "$PROFILE_JSON" | json 'import json,sys; print(json.load(sys.stdin)["revisionId"])')"
+PROFILE_HASH="$(printf '%s' "$PROFILE_JSON" | json 'import json,sys; print(json.load(sys.stdin)["contentHash"])')"
+[[ "$(printf '%s' "$PROFILE_JSON" | json 'import json,sys; print(str(json.load(sys.stdin)["executable"]).lower())')" == "true" ]] || {
+  log "execution profile is not executable"; exit 1;
+}
+api POST "/execution-profiles/$PROFILE_ID/default" '{"scope":"global"}' >/dev/null
+api POST "/projects/$PROJECT_ID/execution-policy" \
+  "{\"execution_profile_id\":\"$PROFILE_ID\",\"expected_revision\":$PROFILE_REVISION,\"expected_revision_hash\":\"$PROFILE_HASH\",\"project_config_hash\":\"$PROJECT_CONFIG_HASH\",\"acknowledge\":true,\"idempotency_key\":\"e2e-intake-policy\"}" >/dev/null
+
+log "== creating and assessing the unified intake request"
+INTAKE_OBJECTIVE='Add the deterministic Compose fixture candidate and cover it with frozen checks.'
+INTAKE_CREATED="$(api POST /intake/requests \
+  "{\"project_id\":\"$PROJECT_ID\",\"objective\":\"$INTAKE_OBJECTIVE\",\"execution_profile_id\":\"$PROFILE_ID\",\"mode\":\"REVIEW_PLAN\",\"idempotency_key\":\"e2e-intake-request\",\"authorized_micros\":5000000}")"
+INTAKE_ID="$(printf '%s' "$INTAKE_CREATED" | json 'import json,sys; print(json.load(sys.stdin)["id"])')"
+INTAKE_ACTION_ID="$(printf '%s' "$INTAKE_CREATED" | json 'import json,sys; print(json.load(sys.stdin)["actionId"])')"
+INTAKE_LEAD_REQUEST_ID="$(printf '%s' "$INTAKE_CREATED" | json 'import json,sys; print(json.load(sys.stdin)["leadRequestId"])')"
+admit_scope "$INTAKE_ID"
+admit_scope "$INTAKE_LEAD_REQUEST_ID"
+# Approval creates the Campaign id inside Core, so admit the disposable E2E
+# database once. Persisted funding policies still take precedence.
+admit_scope "*"
+cat > "$MODEL_DIR/context.json" <<JSON
+{
+  "schema": "factory-compose-model-fixture-v1",
+  "projectId": "$PROJECT_ID",
+  "intakeRequestId": "$INTAKE_ID",
+  "requestId": "$INTAKE_LEAD_REQUEST_ID",
+  "actionId": "$INTAKE_ACTION_ID",
+  "objective": "$INTAKE_OBJECTIVE",
+  "baseRevision": "$PROJECT_BASE_COMMIT",
+  "projectConfigHash": "$PROJECT_CONFIG_HASH",
+  "qualityProfile": "generic",
+  "allowedPaths": ["src"],
+  "capabilities": ["repository-edit", "generic-toolchain"],
+  "provider": "opencode-go",
+  "model": "deepseek-v4.1-flash",
+  "checks": [
+    {"id":"build","kind":"build","description":"deterministic build","command":["true"],"expectExit":0,"timeoutSecs":30},
+    {"id":"test","kind":"test","description":"deterministic test","command":["true"],"expectExit":0,"timeoutSecs":30},
+    {"id":"functional","kind":"functional","description":"provider candidate content exists","command":["grep","-q","provider candidate","src/provider.txt"],"expectExit":0,"timeoutSecs":30},
+    {"id":"negative","kind":"negative","description":"absent content is rejected","command":["grep","-q","absent","src/provider.txt"],"expectExit":1,"timeoutSecs":30}
+  ]
+}
+JSON
+chmod 644 "$MODEL_DIR/context.json"
+
+INTAKE_ASSESSED="$(api POST "/intake/requests/$INTAKE_ID/assess")"
+[[ "$(printf '%s' "$INTAKE_ASSESSED" | json 'import json,sys; print(json.load(sys.stdin)["state"])')" == "AWAITING_APPROVAL" ]] || {
+  log "intake assessment did not reach AWAITING_APPROVAL"; exit 1;
+}
+PLAN_HASH="$(printf '%s' "$INTAKE_ASSESSED" | json 'import json,sys; print(json.load(sys.stdin)["plan"]["plan_hash"])')"
+[[ -n "$PLAN_HASH" ]] || { log "intake assessment produced no frozen plan"; exit 1; }
+
+log "== approving the exact frozen plan through the operator boundary"
+INTAKE_APPROVED="$(api POST "/intake/requests/$INTAKE_ID/approve" \
+  "{\"expected_plan_hash\":\"$PLAN_HASH\",\"rationale\":\"Reviewed the exact frozen Compose intake plan.\",\"idempotency_key\":\"e2e-intake-approve\",\"authorized_micros\":5000000}")"
+INTAKE_CAMPAIGN_ID="$(printf '%s' "$INTAKE_APPROVED" | json 'import json,sys; print(json.load(sys.stdin)["campaignId"])')"
+INTAKE_ATTEMPT_ID="$(printf '%s' "$INTAKE_APPROVED" | json 'import json,sys; print(json.load(sys.stdin)["campaign"]["tasks"][0]["attempt_id"])')"
+[[ -n "$INTAKE_CAMPAIGN_ID" && "$INTAKE_CAMPAIGN_ID" != "None" ]] || {
+  log "intake approval returned no Campaign"; exit 1;
+}
+admit_scope "$INTAKE_CAMPAIGN_ID"
+[[ "$(printf '%s' "$INTAKE_APPROVED" | json 'import json,sys; print(json.load(sys.stdin)["profile"]["revisionId"])')" == "$PROFILE_REVISION_ID" ]] || {
+  log "intake Campaign did not bind the frozen profile revision"; exit 1;
+}
+
+log "== waiting for the intake candidate, receipts and deterministic gate"
+INTAKE_CANDIDATE_ID=""
+INTAKE_GATE=""
+# Under loaded CI runners the reviewer can take several minutes; keep the
+# bounded wait comfortably above observed completion while still failing closed.
+for _ in $(seq 1 600); do
+  INTAKE_CANDIDATE_ID="$(api GET /candidates \
+    | python3 -c 'import json,sys; target=sys.argv[1]; print(next((c["id"] for c in json.load(sys.stdin) if c["attempt_id"]==target), ""))' "$INTAKE_ATTEMPT_ID")"
+  if [[ -n "$INTAKE_CANDIDATE_ID" ]]; then
+    INTAKE_GATE="$(api GET "/quality/candidates/$INTAKE_CANDIDATE_ID/gate" 2>/dev/null || true)"
+    if [[ "$INTAKE_GATE" == *'"outcome":"ACCEPTED"'* ]]; then
       break
     fi
   fi
   sleep 1
 done
-[[ "$GATE" == *'"outcome":"ACCEPTED"'* ]] || { log "gate did not accept: ${GATE:-none}"; exit 1; }
-RECEIPTS="$(api GET "/quality/candidates/$CANDIDATE_ID/receipts")"
-[[ "$RECEIPTS" == *'"role":"verifier"'* && "$RECEIPTS" == *'"role":"reviewer"'* ]] || {
-  log "missing independent receipts"; exit 1;
+if [[ "$INTAKE_GATE" != *'"outcome":"ACCEPTED"'* ]]; then
+  log "intake gate did not accept: ${INTAKE_GATE:-none}"
+  log "intake request projection: $(api GET "/intake/requests/$INTAKE_ID" 2>/dev/null | head -c 3000 || true)"
+  log "intake campaign projection: $(api GET "/campaigns/$INTAKE_CAMPAIGN_ID" 2>/dev/null | head -c 3000 || true)"
+  if [[ -n "$INTAKE_CANDIDATE_ID" ]]; then
+    log "intake receipts: $(api GET "/quality/candidates/$INTAKE_CANDIDATE_ID/receipts" 2>/dev/null | head -c 3000 || true)"
+  fi
+  log "== containers"
+  podman ps -a --filter "label=com.docker.compose.project=$PROJECT" \
+    --format '{{.Names}} {{.Status}}' >&2 || true
+  for service in core supervisor worker runtime; do
+    name="$(podman ps -a --filter "label=com.docker.compose.project=$PROJECT" \
+      --format '{{.Names}}' | grep "_${service}_" | head -1 || true)"
+    if [[ -n "$name" ]]; then
+      log "== ${service} log tail"
+      podman logs --tail 160 "$name" >&2 || true
+    fi
+  done
+  exit 1
+fi
+INTAKE_RECEIPTS="$(api GET "/quality/candidates/$INTAKE_CANDIDATE_ID/receipts")"
+[[ "$INTAKE_RECEIPTS" == *'"role":"verifier"'* && "$INTAKE_RECEIPTS" == *'"role":"reviewer"'* ]] || {
+  log "intake independent receipts are missing"; exit 1;
 }
-[[ "$RECEIPTS" != *'"result":"FAIL"'* ]] || { log "receipt failed"; exit 1; }
+[[ "$INTAKE_RECEIPTS" == *'"role":"reviewer"'*'"mechanism":"MODEL"'* || "$INTAKE_RECEIPTS" == *'"mechanism":"MODEL"'*'"role":"reviewer"'* ]] || {
+  log "intake reviewer did not record MODEL provenance"; exit 1;
+}
+INTAKE_REVIEWER_RECEIPT_ID="$(printf '%s' "$INTAKE_RECEIPTS" | python3 -c 'import json,sys; print(next(r["receipt_id"] for r in json.load(sys.stdin) if r["role"]=="reviewer"))')"
+INTAKE_VERIFIER_RECEIPT_ID="$(printf '%s' "$INTAKE_RECEIPTS" | python3 -c 'import json,sys; print(next(r["receipt_id"] for r in json.load(sys.stdin) if r["role"]=="verifier"))')"
+INTAKE_CANDIDATE_COMMIT="$(api GET /candidates \
+  | python3 -c 'import json,sys; target=sys.argv[1]; print(next(c["commit_sha"] for c in json.load(sys.stdin) if c["id"]==target))' "$INTAKE_CANDIDATE_ID")"
+INTAKE_DIFF="$(api GET "/campaigns/$INTAKE_CAMPAIGN_ID/candidates/$INTAKE_CANDIDATE_ID/diff")"
+[[ "$INTAKE_DIFF" == *'"changed_paths":["src/provider.txt"]'* ]] || {
+  log "intake candidate changed-file projection is not the exact fixture path: $INTAKE_DIFF"; exit 1;
+}
+INTAKE_TASK="$(api GET "/campaigns/$INTAKE_CAMPAIGN_ID" \
+  | python3 -c 'import json,sys; t=json.load(sys.stdin)["tasks"][0]; print(t["status"], t["candidate_id"], t["candidate_commit"])')"
+[[ "$INTAKE_TASK" == "SUCCEEDED $INTAKE_CANDIDATE_ID $INTAKE_CANDIDATE_COMMIT" ]] || {
+  log "intake WorkGraph task lost the exact candidate lineage: $INTAKE_TASK"; exit 1;
+}
+INTAKE_PROJECTION="$(api GET "/intake/requests/$INTAKE_ID")"
+[[ "$INTAKE_PROJECTION" == *'"state":"COMPLETED"'* && "$INTAKE_PROJECTION" == *'"gateOutcome":"ACCEPTED"'* ]] || {
+  log "intake request projection is not completed with the accepted gate: $INTAKE_PROJECTION"; exit 1;
+}
+[[ "$INTAKE_PROJECTION" == *"$INTAKE_CAMPAIGN_ID"* && "$INTAKE_PROJECTION" == *"$PLAN_HASH"* ]] || {
+  log "intake request projection lost its Campaign or plan identity"; exit 1;
+}
 
 log "== verifying durable restart"
 compose down >/dev/null
@@ -198,17 +350,43 @@ done
 api GET /workers | grep -q 'compose-worker' || { log "Worker did not re-register"; exit 1; }
 PROJECTS="$(api GET /projects)"
 [[ "$PROJECTS" == *"$PROJECT_ID"* ]] || { log "project was not preserved"; exit 1; }
-GATE_AFTER="$(api GET "/quality/candidates/$CANDIDATE_ID/gate")"
+GATE_AFTER="$(api GET "/quality/candidates/$INTAKE_CANDIDATE_ID/gate")"
 [[ "$GATE_AFTER" == *'"outcome":"ACCEPTED"'* ]] || { log "gate was not preserved"; exit 1; }
+
+INTAKE_PROJECTION_AFTER="$(api GET "/intake/requests/$INTAKE_ID")"
+[[ "$INTAKE_PROJECTION_AFTER" == *'"state":"COMPLETED"'* && "$INTAKE_PROJECTION_AFTER" == *'"gateOutcome":"ACCEPTED"'* ]] || {
+  log "intake request projection was not preserved"; exit 1;
+}
+[[ "$INTAKE_PROJECTION_AFTER" == *"$INTAKE_CAMPAIGN_ID"* && "$INTAKE_PROJECTION_AFTER" == *"$INTAKE_CANDIDATE_ID"* ]] || {
+  log "intake request lost its Campaign or candidate identity"; exit 1;
+}
+INTAKE_CAMPAIGN_AFTER="$(api GET "/campaigns/$INTAKE_CAMPAIGN_ID")"
+[[ "$INTAKE_CAMPAIGN_AFTER" == *"$INTAKE_CANDIDATE_ID"* && "$INTAKE_CAMPAIGN_AFTER" == *"$INTAKE_CANDIDATE_COMMIT"* ]] || {
+  log "intake Campaign candidate identity was not preserved"; exit 1;
+}
+INTAKE_GATE_AFTER="$(api GET "/quality/candidates/$INTAKE_CANDIDATE_ID/gate")"
+[[ "$INTAKE_GATE_AFTER" == *'"outcome":"ACCEPTED"'* ]] || { log "intake gate was not preserved"; exit 1; }
+INTAKE_RECEIPTS_AFTER="$(api GET "/quality/candidates/$INTAKE_CANDIDATE_ID/receipts")"
+[[ "$INTAKE_RECEIPTS_AFTER" == *"$INTAKE_VERIFIER_RECEIPT_ID"* && "$INTAKE_RECEIPTS_AFTER" == *"$INTAKE_REVIEWER_RECEIPT_ID"* ]] || {
+  log "intake receipts were not preserved"; exit 1;
+}
 
 SUMMARY="$(python3 -c '
 import json,sys
 print(json.dumps({
   "status":"PASS",
-  "candidate_id":sys.argv[1],
-  "attempt_id":sys.argv[2],
+  "intake_request_id":sys.argv[1],
+  "intake_campaign_id":sys.argv[2],
+  "intake_attempt_id":sys.argv[3],
+  "intake_candidate_id":sys.argv[4],
+  "intake_candidate_commit":sys.argv[5],
+  "intake_plan_hash":sys.argv[6],
+  "intake_profile_revision_id":sys.argv[7],
+  "intake_verifier_receipt_id":sys.argv[8],
+  "intake_reviewer_receipt_id":sys.argv[9],
   "gate":"ACCEPTED",
+  "model_mechanism":"DETERMINISTIC_FIXTURE",
   "restart_persistence":True,
   "paid_inference":False
-}))' "$CANDIDATE_ID" "$ATTEMPT_ID")"
+}))' "$INTAKE_ID" "$INTAKE_CAMPAIGN_ID" "$INTAKE_ATTEMPT_ID" "$INTAKE_CANDIDATE_ID" "$INTAKE_CANDIDATE_COMMIT" "$PLAN_HASH" "$PROFILE_REVISION_ID" "$INTAKE_VERIFIER_RECEIPT_ID" "$INTAKE_REVIEWER_RECEIPT_ID")"
 log "$SUMMARY"

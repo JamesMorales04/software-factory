@@ -1,0 +1,23 @@
+{
+  "journey": "rust-office",
+  "candidate": "e709473d2f8285f12be58b989a8061a5e5c436bf",
+  "gate": "ACCEPTED",
+  "captured_at": "2026-11-03T19:58:51.432Z",
+  "captures": [
+    {
+      "name": "agent-office-1440",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "name": "agent-office-834",
+      "width": 834,
+      "height": 900
+    },
+    {
+      "name": "agent-office-390",
+      "width": 390,
+      "height": 844
+    }
+  ]
+}

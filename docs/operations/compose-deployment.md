@@ -50,6 +50,13 @@ Supervisor, Worker, verifier, reviewer and the runtime broker, and waits for
 the Core, Supervisor, Worker and runtime health checks. The verifier and reviewer
 are started after the runtime is healthy but have no Compose healthcheck.
 
+Codex ChatGPT authentication and native review are opt-in. The reviewer image
+contains the pinned Codex App Server, and the dedicated `factory-codex-home`
+volume is mounted only into the reviewer and the one-shot `codex-auth` /
+`codex-status` services. See
+[Codex ChatGPT authentication and native review](codex-review-auth.md) for the
+device-code login and `FACTORY_ENABLE_CODEX_REVIEW=1` activation steps.
+
 Office is published only on loopback:
 
 ```text
@@ -68,25 +75,34 @@ executables and Node, so its bundle is large (about 1.5 GiB on the tested host).
 
 ## First-run enrollment
 
-The stack starts unconfigured and safe: no provider inference is started. Core
-generates a one-time 160-bit enrollment code in the private data volume.
-
-Read it locally without editing a container file:
+Start and open Office with the host launcher:
 
 ```sh
-podman compose exec core cat /data/enrollment-code
+./factory open
 ```
 
-Open Office. The setup wizard asks for the code and returns the operator
-credential to that browser tab only. The code is rate-limited and removed on
-success; a completion marker prevents re-generation after restart. The
-long-lived operator token may be read later with:
+The launcher selects the installed `podman-compose` provider when the Podman
+Compose wrapper would otherwise choose an unavailable Docker-socket provider,
+waits for Core health, and only then issues a random, single-use confirmation
+code that expires after five minutes. Enter it once in Office to enroll this
+browser. It is never put in a URL, request log or browser history. Core stores
+only the code digest and expiry, consumes the code on success, and issues a
+persistent HttpOnly device session. The session and CSRF cookies are
+SameSite=Strict; session tokens are stored only as SHA-256 digests. Browser
+mutations require exact Origin validation and a CSRF header. HTTPS origins
+receive Secure cookies. Local HTTP is accepted only on loopback.
+
+To recover after losing every enrolled device, run:
 
 ```sh
-podman compose exec core cat /config/operator.token
+./factory recover
 ```
 
-Provider secrets are never stored in browser storage, logs or telemetry.
+This protected local operation revokes all device sessions and issues a new
+five-minute confirmation code. The permanent operator credential remains an
+internal recovery/API mechanism and is not part of browser onboarding. Existing
+Projects, Campaigns, credentials and evidence are retained by the additive
+session migration.
 
 ## Configure providers and models
 
@@ -170,23 +186,34 @@ FACTORY_E2E_KEEP=1 PODMAN_COMPOSE_PROVIDER=/usr/bin/podman-compose \
   bash scripts/compose-e2e.sh
 ```
 
-`FACTORY_E2E_KEEP=1` leaves the dedicated `software-factory-e2e` stack running
-so the real-browser Agent Office and Campaign WorkGraph smoke can attach:
+`FACTORY_E2E_KEEP=1` leaves the dedicated `software-factory-e2e` stack running.
+For this developer-only browser smoke, issue a short-lived local recovery code
+and pass it through the environment. The code is captured by the shell variable
+and is not printed by these commands:
 
 ```sh
-TOKEN="$(podman exec software-factory-e2e_core_1 cat /config/operator.token)"
+CODE="$(podman exec software-factory-e2e_core_1 /usr/local/bin/factory-core issue-recovery-code)"
 FACTORY_OFFICE_URL=http://127.0.0.1:8894 \
-FACTORY_API_TOKEN="$TOKEN" \
+FACTORY_BOOTSTRAP_CODE="$CODE" \
 CHROMIUM_EXE=/absolute/path/to/chrome \
 FACTORY_BROWSER_NO_SANDBOX=1 \
   node scripts/compose-agent-office-smoke.mjs
+unset CODE
 ```
 
-The smoke unlocks Office, inspects real Implementer/Verifier/Reviewer/Worker
-participants, reads the recorded tool-event projection, preserves participant
-context across reload, opens the Campaign WorkGraph (empty or populated), and
-checks document overflow at 1440/834/390 px. It writes evidence under
+The smoke enrolls its isolated browser context through the one-time confirmation
+flow, then inspects real Implementer/Verifier/Reviewer/Worker participants,
+reads the recorded tool-event projection, preserves participant context across
+reload, opens the Campaign WorkGraph (empty or populated), and checks document
+overflow at 1440/834/390 px. It writes evidence under
 `/tmp/factory-agent-office-smoke` unless `S4A_BROWSER_EVIDENCE_DIR` is set.
+The managed-session harness and the existing `cargo xtask e2e office` journey passed against implementation `f2d1be5` together with session
+persistence across Core restart, logout revocation, local recovery and a safe
+migration copy from schema 23 to 24; see
+[personal-access-auth-2026-10-28.json](../evidence/personal-access-auth-2026-10-28.json).
+Tailscale remote HTTPS, mobile-data access, paid inference, independent review
+and isolation remain **NOT_TESTED**. The short-lived confirmation is for this
+local test harness and is not part of normal onboarding.
 Tear down the kept stack with:
 
 ```sh
@@ -244,3 +271,80 @@ multi-arch builds are **NOT_TESTED**. Do not claim Windows support.
 - Native ChatGPT-authenticated Codex.
 - Containerized Codex stdio transport.
 - SELinux/AppArmor, Windows, remote deployment and independent security review.
+
+## Optional private Tailscale access
+
+The base Compose command stays loopback-only and does not start Tailscale. To
+serve Office over private HTTPS from another tailnet device, first identify the
+exact MagicDNS HTTPS origin for the chosen tailnet. The default node name is
+`factory-office`; `FACTORY_TAILSCALE_HOSTNAME` can change it. The `FACTORY_TRUSTED_ORIGINS` value must be
+an exact origin such as `https://factory-office.<tailnet>.ts.net`.
+
+Create or update a local `.env` file (do not commit it) with the exact origin:
+
+```dotenv
+FACTORY_TRUSTED_ORIGINS=https://factory-office.<tailnet>.ts.net
+FACTORY_TAILSCALE_HOSTNAME=factory-office
+```
+
+Then start the optional overlay:
+
+```sh
+podman compose -f compose.yaml -f compose.tailscale.yaml up -d --build
+```
+
+On first start, inspect only the Tailscale service logs for its account approval
+URL and complete the one-time browser approval:
+
+```sh
+podman compose -f compose.yaml -f compose.tailscale.yaml logs -f tailscale
+```
+
+Before HTTPS Serve can issue a certificate, enable MagicDNS and HTTPS
+certificates on the tailnet's **DNS** page in the Tailscale administration
+console and accept its disclosure. Certificate Transparency makes the selected
+machine name and tailnet DNS name publicly visible; choose a non-sensitive
+machine name before enabling it. Once the node is authenticated and Serve is
+active, open the exact HTTPS origin from a phone with the Tailscale app
+connected to the same tailnet. Core still requires a separately enrolled
+Factory device session; tailnet membership alone grants no Factory access.
+
+The overlay uses the pinned official Tailscale image, userspace networking,
+a persistent `factory-tailscale-state` volume, and private Tailscale Serve on
+HTTPS 443. Tailscale joins only its outbound `factory-tailscale-uplink`
+network; it shares no network with Core and cannot reach any Core TCP listener.
+Every bridge network sets `isolate=true`; the control network is non-internal
+with `no_default_route=true` because Netavark does not isolate `internal`
+bridges, preserving egress denial for control-only roles.
+It does not mount a host runtime socket, join the Factory control/egress
+networks, publish its own host port, configure Funnel, or pass
+Factory/provider credentials to Tailscale. Core keeps its existing `127.0.0.1`
+publication for local access and recovery.
+Core's full control listener binds only the `core-control` (factory-control)
+and `core-egress` (factory-egress) network aliases. Tailscale Serve forwards
+only to Core's restricted Office listener through the dedicated
+`factory-office-socket` Unix domain socket volume, mounted read-only in
+Tailscale. The listener omits Worker, Supervisor, verifier, reviewer, and
+Quality Gate role/control routes; the socket is not published on the host.
+Because Core has no network path to Tailscale, Access & Devices reports the
+private endpoint as `CONFIGURED` rather than claiming live Serve connectivity;
+open the exact HTTPS origin to confirm it. Tailscale's sanitized `/healthz`
+endpoint is not probed by Core and has no host publication. Metrics are
+disabled.
+
+To disable the overlay, stop it with the same two Compose files. This keeps the
+node identity volume:
+
+```sh
+podman compose -f compose.yaml -f compose.tailscale.yaml down
+```
+
+The node can be removed from the tailnet in the Tailscale admin console; remove
+`factory-tailscale-state` only after revoking that node. Author-run evidence at
+candidate `e17eb80` covers authenticated HTTPS Serve through the real tailnet
+userspace path, Secure session cookies, denial of the control routes under both
+URL forms and path variants, and node identity persistence across restart; see
+[personal-access-tailscale-2026-10-28.json](../evidence/personal-access-tailscale-2026-10-28.json).
+Mobile-data access from a phone remains **USER_PENDING**; independent review
+and deployment remain **NOT_TESTED**. Do not infer them from Compose rendering
+or a browser mock.

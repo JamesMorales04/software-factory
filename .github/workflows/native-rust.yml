@@ -23,6 +23,8 @@ jobs:
         run: |
           git rev-parse HEAD
           test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
+      - name: Subscription-only real-provider UAT harness contract tests
+        run: node --test scripts/real-provider-uat.test.mjs
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.90.0 --profile minimal --component clippy,rustfmt
       - name: Install pinned cargo-audit
@@ -44,7 +46,7 @@ jobs:
       - name: Clippy
         run: cargo +1.90.0 clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: Tests
-        run: cargo +1.90.0 test --workspace --locked
+        run: cargo +1.90.0 test --workspace --locked --features test-support
       - name: Build
         run: cargo +1.90.0 build --bins --locked
       - name: Documentation
@@ -79,6 +81,10 @@ jobs:
           docker compose -f compose.yaml config --format json > /tmp/compose.json
           python3 .github/scripts/check-compose-policy.py /tmp/compose.json
           COMPOSE_CONFIG_JSON=/tmp/compose.json python3 .github/scripts/test_check_compose_policy.py
+          FACTORY_TRUSTED_ORIGINS=https://factory-office.example.ts.net \
+            docker compose -f compose.yaml -f compose.tailscale.yaml config --format json > /tmp/compose-tailscale.json
+          python3 .github/scripts/check-compose-policy.py /tmp/compose-tailscale.json
+          COMPOSE_CONFIG_JSON=/tmp/compose-tailscale.json python3 .github/scripts/test_check_compose_policy.py
 
   container-dev:
     runs-on: ubuntu-latest
@@ -119,11 +125,11 @@ jobs:
           podman compose -f compose.yaml -f compose.dev.yaml run --rm --no-deps \
             -e FACTORY_PLAYWRIGHT_CORE=/workspaces/software-factory/office/e2e-browser/node_modules/playwright-core \
             dev sh -c 'npm --prefix office/e2e-browser ci && cargo test --locked -p factory-native --test browser'
-      - name: Containerized Chromium Office journey
+      - name: Containerized Chromium Office and unified-intake journeys
         env:
           PODMAN_COMPOSE_PROVIDER: /usr/bin/podman-compose
           FACTORY_BROWSER_NO_SANDBOX: "1"
         run: |
           podman compose -f compose.yaml -f compose.dev.yaml run --rm --no-deps \
             -e FACTORY_BROWSER_NO_SANDBOX=1 dev \
-            sh -c 'npm --prefix office ci && npm --prefix office/e2e-browser ci && cargo xtask e2e office'
+            sh -c 'npm --prefix office ci && npm --prefix office/e2e-browser ci && cargo xtask e2e office && cargo xtask e2e intake'

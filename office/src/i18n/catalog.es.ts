@@ -1,0 +1,3190 @@
+import type { Catalog } from "./catalog.en";
+
+export const es: Catalog = {
+  "common.retry": "Reintentar",
+  "common.errorTitle": "Algo salió mal",
+  "common.unknown": "Desconocido",
+  "common.notRecorded": "sin registrar",
+  "common.notSet": "sin definir",
+  "common.dash": "—",
+  "common.actions": "Acciones",
+
+  "nav.group.overview": "Resumen",
+  "nav.group.work": "Trabajo",
+  "nav.group.operations": "Operaciones",
+  "nav.group.workspace": "Espacio de trabajo",
+  "nav.group.advanced": "Avanzado",
+  "nav.home": "Inicio",
+  "nav.overview": "Resumen",
+  "nav.decisionInbox": "Bandeja de decisiones",
+  "nav.decisions": "Decisiones",
+  "nav.projects": "Proyectos",
+  "nav.actions": "Acciones",
+  "nav.lead": "Lead",
+  "nav.delegations": "Delegaciones",
+  "nav.campaigns": "Campañas",
+  "nav.issues": "Incidencias",
+  "nav.agents": "Agentes",
+  "nav.agentOffice": "Oficina de agentes",
+  "nav.runs": "Ejecuciones",
+  "nav.workers": "Trabajadores",
+  "nav.runtime": "Entorno de ejecución",
+  "nav.settings": "Configuración",
+  "nav.accessDevices": "Acceso y dispositivos",
+  "nav.request": "Solicitud",
+  "nav.projectFiles": "Archivos del proyecto",
+  "nav.projectDetail": "Detalle del proyecto",
+  "nav.campaignDetail": "Detalle de la campaña",
+  "nav.actionDetail": "Detalle de la acción",
+  "nav.agentParticipant": "Participante de la oficina de agentes",
+  "nav.factoryOffice": "Factory Office",
+
+  "shell.skipToMain": "Saltar al contenido principal",
+  "shell.preferences": "Preferencias de visualización",
+  "shell.primaryNavigation": "Navegación principal",
+  "shell.navigation": "Principal",
+  "shell.closeDrawer": "Cerrar el panel de navegación",
+  "shell.closeNavigation": "Cerrar la navegación",
+  "shell.expandNavigation": "Expandir la navegación",
+  "shell.collapseNavigation": "Contraer la navegación",
+  "shell.toggleNavigation": "Mostrar u ocultar la navegación",
+  "shell.openCommandNavigation": "Abrir la navegación por comandos",
+  "shell.search": "Buscar",
+  "shell.mainHeading": "Centro de mando de Factory Office",
+  "shell.unknownRoute": "Ruta desconocida.",
+  "shell.language.label": "Idioma de visualización",
+  "shell.theme.system": "Tema del sistema",
+  "shell.theme.light": "Tema claro",
+  "shell.theme.dark": "Tema oscuro",
+  "shell.theme.switch": "{theme} — cambiar",
+  "shell.theme.switchAria": "{theme}; cambiar de tema",
+  "shell.density.comfortable": "cómoda",
+  "shell.density.compact": "compacta",
+  "shell.density.switch": "Densidad {density} — cambiar",
+  "shell.density.switchAria": "Densidad {density}; cambiar de densidad",
+  "shell.lock": "Bloquear Office",
+  "shell.health.healthy": "Core disponible",
+  "shell.health.unreachable": "Core inaccesible",
+  "shell.health.checking": "Comprobando Core",
+  "shell.command.title": "Navegación por comandos",
+  "shell.command.description":
+    "Busca páginas de Office implementadas y abre una.",
+  "shell.command.placeholder": "Buscar páginas implementadas…",
+  "shell.command.searchLabel": "Buscar páginas implementadas",
+  "shell.command.pages": "Páginas",
+  "shell.command.empty": "Ninguna página implementada coincide.",
+  "shell.command.hint":
+    "Solo navegación. Las acciones de Office permanecen en su página autenticada.",
+
+  "app.connecting": "Contactando con Factory Core…",
+  "app.coreUnavailable": "Factory Core no está disponible.",
+  "app.setup.title": "Configura esta Factory",
+  "app.recover.title": "Recuperar el acceso local",
+  "app.setup.description":
+    "Ejecuta ./factory open en esta estación de trabajo. Introduce la confirmación única del propietario que proporciona. Se envía una sola vez por esta conexión local y nunca se coloca en la URL de la página.",
+  "app.recover.description":
+    "Introduce la confirmación única del propietario que proporciona ./factory recover. Este navegador no puede recuperar la propiedad por sí solo.",
+  "app.recover.unavailable":
+    "Este navegador no tiene una sesión de dispositivo activa. Ejecuta ./factory recover en la estación de trabajo para emitir una nueva confirmación única y vuelve a cargar esta página.",
+  "app.ownerCode.label": "Confirmación única del propietario",
+  "app.ownerCode.placeholder": "Código de confirmación",
+  "app.deviceName.label": "Nombre de este dispositivo",
+  "app.deviceName.placeholder": "Mi estación de trabajo",
+  "app.enroll": "Inscribir este dispositivo",
+  "app.enrolling": "Creando una sesión segura…",
+  "app.enroll.error": "No se pudo inscribir al propietario.",
+  "app.lock.error": "No se pudo finalizar esta sesión de dispositivo.",
+
+  "home.title": "Inicio",
+  "home.projects.error": "No se pudieron cargar los Proyectos desde Core.",
+  "home.projects.retry": "Reintentar Proyectos",
+  "home.lead.kicker": "Conversación con tu Lead",
+  "home.composer.title": "¿Qué quieres construir hoy?",
+  "home.composer.description":
+    "Cuéntale al Lead el resultado que quieres. Apruebas el plan antes de que empiece el trabajo.",
+  "home.projects.loading": "Cargando Proyectos…",
+  "home.projects.emptyTitle": "Registra primero un Proyecto",
+  "home.projects.emptyDescription":
+    "Una solicitud está vinculada a un Proyecto activo de Core. El registro congela un commit base y no concede autoridad de ejecución.",
+  "home.projects.open": "Abrir Proyectos",
+  "home.projectFallback": "Proyecto {id}",
+  "home.project.label": "Proyecto",
+  "home.project.select": "Selecciona un Proyecto",
+  "home.objective.label": "Tu instrucción al Lead",
+  "home.objective.placeholder":
+    "Describe qué quieres construir, corregir o mejorar…",
+  "home.profile.label": "Perfil de ejecución",
+  "home.profile.routes": "Detalle de rutas",
+  "home.profile.routesHint":
+    "Estas rutas forman parte de la revisión del perfil que Core congela para esta solicitud.",
+  "home.profile.coreDefaultUnavailable":
+    "Perfil predeterminado (lista no disponible)",
+  "home.profile.loading": "Cargando perfiles…",
+  "home.profile.coreDefault": "Perfil predeterminado",
+  "home.profile.unavailableSuffix": " — no disponible",
+  "home.profile.globalDefault": "Predeterminado global",
+  "home.profile.projectDefault": "Predeterminado del Proyecto",
+  "home.profiles.unavailable":
+    "Los perfiles de ejecución no están disponibles en esta compilación de Core. Si envías sin un perfil explícito, Core resuelve su predeterminado del Proyecto o global; si no existe, Core rechaza la solicitud.",
+  "home.profiles.retry": "Reintentar perfiles",
+  "home.profiles.error": "No se pudieron cargar los perfiles de ejecución.",
+  "home.profiles.empty":
+    "No hay perfiles de ejecución configurados. Core resuelve un predeterminado cuando existe; de lo contrario, rechaza la solicitud.",
+  "home.profile.warnings": "Core informa advertencias para {name}:",
+  "home.profile.notExecutable":
+    "Este perfil está declarado pero no es ejecutable. Elige un perfil ejecutable o el predeterminado de Core.",
+  "home.profile.notExecutableError":
+    "El perfil de ejecución seleccionado no es ejecutable en esta compilación de Core. Elige otro perfil.",
+  "home.approval.title": "Aprobación explícita obligatoria.",
+  "home.approval.body":
+    "El Lead planifica; tú apruebas antes de que empiece el trabajo.",
+  "home.policy.title": "Habilitar ejecución gobernada",
+  "home.policy.description":
+    "Core exige una política de ejecución explícita y acotada para este Proyecto y la revisión exacta del perfil antes de crear la solicitud de Lead. Esta concesión no es autónoma y se limita a trabajo R0; no habilita el inicio automático.",
+  "home.policy.profile": "Perfil",
+  "home.policy.project": "Proyecto",
+  "home.policy.allowedPaths": "Rutas permitidas",
+  "home.policy.capabilities": "Capacidades",
+  "home.policy.implementerRoute": "Ruta del Implementador",
+  "home.policy.objectiveScope": "Alcance del objetivo",
+  "home.policy.none": "Ninguna",
+  "home.policy.risk": "riesgo {classes}",
+  "home.policy.autonomous": "inicio autónomo habilitado",
+  "home.policy.nonAutonomous": "no autónomo; requiere aprobación explícita",
+  "home.policy.grantLifetime": "Vigencia de la concesión",
+  "home.policy.grantLifetimeValue":
+    "Válida {days} días · {parallel} operación de implementación concurrente",
+  "home.policy.inferenceEnvelope": "Envolvente de inferencia",
+  "home.policy.inferenceEnvelopeValue":
+    "{amount} USD para evaluación, implementación y revisión",
+  "home.policy.technical":
+    "Core también aplica tiempos máximos por operación, límites de solicitud y respuesta, límites de generación y supervisión determinista del progreso. Son límites técnicos de seguridad, no turnos, intentos, sesiones ni fechas límite de Campaña.",
+  "home.policy.scopeMissing":
+    "Core exigió una política de ejecución pero no devolvió el perfil y el alcance exactos del Proyecto. Actualiza la página e inténtalo de nuevo.",
+  "home.policy.acknowledge":
+    "Autorizo esta política de ejecución R0 no autónoma y acotada para la configuración exacta del Proyecto y la revisión del perfil mostradas.",
+  "home.policy.error": "No se pudo habilitar la política de ejecución.",
+  "home.policy.enable": "Habilitar ejecución gobernada",
+  "home.policy.enabling": "Habilitando ejecución gobernada…",
+  "home.validation.project": "Selecciona un Proyecto.",
+  "home.spend.label": "Autorización de inferencia (USD)",
+  "home.spend.help":
+    "Core la exige para llamadas facturables. Se detiene cuando se agota.",
+  "home.validation.authorization":
+    "Introduce un importe positivo en USD para la envolvente de inferencia.",
+  "home.validation.objective":
+    "Describe el resultado de ingeniería que quieres.",
+  "home.request.error": "No se pudo enviar la solicitud.",
+  "home.request.endpointUnavailable":
+    "La entrada unificada de solicitudes no está disponible en esta compilación de Core. El cliente tipado de Office está listo, pero Core no expone /intake/requests.",
+  "home.submit": "Enviar al Lead",
+  "home.submitting": "Enviando…",
+  "home.keyboardHint": "Ctrl/⌘ + Intro para enviar",
+  "home.suggestions.label": "Sugerencias",
+  "home.suggestions.issue": "Corregir una incidencia de GitHub",
+  "home.suggestions.issueSeed": "Corrige la incidencia de GitHub: ",
+  "home.suggestions.performance": "Mejorar el rendimiento",
+  "home.suggestions.performanceSeed": "Mejora el rendimiento de ",
+  "home.suggestions.integration": "Añadir una integración",
+  "home.suggestions.integrationSeed": "Añade una integración para ",
+  "home.suggestions.refactor": "Refactorizar un módulo",
+  "home.suggestions.refactorSeed": "Refactoriza el módulo ",
+  "home.suggestions.tests": "Añadir pruebas",
+  "home.suggestions.testsSeed": "Añade pruebas para ",
+  "home.recent.title": "Trabajo reciente",
+  "home.recent.loading": "Cargando solicitudes…",
+  "home.recent.unavailable":
+    "El historial unificado de solicitudes no está disponible en esta compilación de Core. El compositor y las vistas operativas existentes siguen disponibles.",
+  "home.recent.error": "No se pudieron cargar las solicitudes recientes.",
+  "home.recent.retry": "Reintentar solicitudes",
+  "home.recent.emptyTitle": "Aún no hay solicitudes",
+  "home.recent.emptyDescription":
+    "Envía la primera instrucción arriba. Su estado y conversación aparecerán aquí.",
+  "home.thread.kicker": "Conversación",
+  "home.thread.title": "Tu Lead",
+  "home.thread.you": "Tú",
+  "home.thread.lead": "Lead",
+  "home.thread.next": "Siguiente: {action}",
+  "home.thread.loading": "Cargando conversación…",
+  "home.thread.error": "No se pudo cargar la vista previa de la conversación.",
+  "home.thread.continue": "Continuar conversación",
+  "home.thread.state.SUBMITTED":
+    "Esperando a que el Lead evalúe esta solicitud.",
+  "home.thread.state.ASSESSING": "El Lead está evaluando esta solicitud.",
+  "home.thread.state.PLAN_READY": "El Lead ha preparado un plan para revisar.",
+  "home.thread.state.AWAITING_APPROVAL":
+    "El plan está listo para tu aprobación.",
+  "home.thread.state.EXECUTING": "El Lead está coordinando el trabajo.",
+  "home.thread.state.BLOCKED":
+    "El trabajo está bloqueado y requiere tu atención.",
+  "home.thread.state.FAILED": "El último paso falló.",
+  "home.thread.state.COMPLETED": "Esta conversación ha terminado.",
+  "home.thread.state.CANCELLED": "Esta conversación se canceló.",
+  "home.side.aria": "Conversación, decisiones y estado de la Factory",
+  "home.status.title": "Estado de la Factory",
+  "home.status.healthy": "Correcto",
+  "home.status.unhealthy": "Con problemas",
+  "home.status.loading": "Comprobando el estado de la Factory…",
+  "home.status.error": "No se pudo actualizar el estado de la Factory.",
+  "home.status.unavailable":
+    "El estado de la Factory no está disponible: {error}",
+  "home.status.retry": "Reintentar estado",
+  "home.status.refreshFailed":
+    "Falló la última actualización: {error}. Se muestra la última instantánea autoritativa.",
+  "home.status.retryNow": "Reintentar ahora",
+  "home.status.workers": "Trabajadores",
+  "home.status.activeAgents": "Agentes activos",
+  "home.status.needsReview": "Requieren revisión: {count}",
+  "home.status.updated": "Actualizado {date}",
+  "home.status.openRuntime": "Abrir Entorno",
+  "home.status.openOverview": "Abrir Resumen",
+  "home.active.unavailable":
+    "No disponible hasta que cargue el estado de Core.",
+  "home.decisions.title": "Requiere tu atención",
+  "home.decisions.open": "Abrir Decisiones",
+  "home.decisions.noneTitle": "Nada requiere una decisión",
+  "home.decisions.noneDescription":
+    "Las aprobaciones, reparaciones de la Puerta y el uso sin resolver aparecen cuando Core los registra.",
+
+  "request.state.SUBMITTED": "Enviada",
+  "request.state.ASSESSING": "Evaluando",
+  "request.state.PLAN_READY": "Plan listo",
+  "request.state.AWAITING_APPROVAL": "Pendiente de aprobación",
+  "request.state.EXECUTING": "En ejecución",
+  "request.state.BLOCKED": "Bloqueada",
+  "request.state.FAILED": "Fallida",
+  "request.state.COMPLETED": "Completada",
+  "request.state.CANCELLED": "Cancelada",
+  "request.mode.REVIEW_PLAN": "Revisar plan",
+  "request.mode.AUTONOMOUS": "Autónoma",
+
+  "request.workspace.description":
+    "Solicitud del operador, evaluación derivada de Core y el plan exacto y el estado de autoridad que hay detrás de la ejecución.",
+  "request.meta.request": "Solicitud",
+  "request.meta.project": "Proyecto",
+  "request.meta.profile": "Perfil",
+  "request.meta.profileValue": "{name} r{revision}",
+  "request.meta.updated": "Actualizada {date}",
+  "request.openCampaign": "Abrir Campaña",
+  "request.openCampaignWithId": "Abrir Campaña {id}",
+  "request.backHome": "Volver a Inicio",
+  "request.load.error": "No se pudo cargar la solicitud.",
+  "request.notFound": "Solicitud no encontrada",
+  "request.load.title": "No se pudo cargar la solicitud",
+  "request.loading": "Cargando la solicitud…",
+  "request.retryNow": "Reintentar ahora",
+  "request.offline":
+    "No se pudo actualizar Core: {error}. Se muestra la última respuesta cargada {loadedAt}. La solicitud se actualizó por última vez {updatedAt}. Las acciones están en pausa hasta la próxima actualización correcta.",
+  "request.authorization.requiredTitle": "Autorización requerida.",
+  "request.authorization.requiredBody":
+    "Core mantiene el plan congelado. La ejecución solo comienza tras una aprobación explícita del operador; la aprobación no puede ampliar el plan, el presupuesto, la ruta ni las rutas permitidas.",
+  "request.authorization.unavailableTitle": "Autorización no disponible.",
+  "request.authorization.unavailableFallback":
+    "Core no proporcionó un motivo para este estado.",
+  "request.authorization.unavailableBody":
+    "La solicitud no puede iniciarse hasta que Core pueda derivar la autorización.",
+  "request.authorization.notRequired":
+    "Core informa de que esta solicitud no requiere autorización adicional. El estado del ciclo de vida de la Campaña sigue siendo autoritativo.",
+  "request.action.error": "No se pudo completar la operación de Core.",
+  "request.fenced.withId":
+    "Ya se inició una Campaña ({id}). Usa el espacio de trabajo de Campañas para cancelarla.",
+  "request.fenced.withoutId":
+    "Ya se inició una Campaña. Usa el espacio de trabajo de Campañas para cancelarla.",
+  "request.notice.assessed":
+    "Core registró la evaluación. Revisa la propuesta y el plan congelado antes de autorizar.",
+  "request.notice.frozen":
+    "Core congeló el plan. La aprobación ahora exige el hash exacto del plan que se muestra abajo.",
+  "request.notice.approved":
+    "Core registró la aprobación. El estado de ejecución se muestra desde la proyección actualizada.",
+  "request.notice.message": "Mensaje registrado por Core.",
+  "request.notice.cancelled":
+    "Core registró la cancelación de la solicitud. Esto no cancela una Campaña autorizada.",
+  "request.next.title": "Siguiente paso",
+  "request.next.hint": "Operación propiedad de Core",
+  "request.next.assessDescription":
+    "Ejecuta la evaluación acotada con la ruta de Lead del perfil congelado. Si Core no tiene un modelo enrutable, devuelve un error explícito de no disponibilidad en lugar de usar una alternativa.",
+  "request.next.assess": "Ejecutar evaluación",
+  "request.next.assessing": "Evaluando…",
+  "request.next.assessingDescription":
+    "Core informa de que hay una evaluación en curso. Esta vista no transmite el progreso; se actualiza desde Core.",
+  "request.next.refresh": "Actualizar solicitud",
+  "request.next.freezeDescription":
+    "Core propuso un plan pero no ha congelado su identidad ejecutable. Completa la evaluación para que Core derive y congele el primer ActionSpec antes de la aprobación.",
+  "request.next.freeze": "Completar la evaluación y congelar el plan",
+  "request.next.freezing": "Congelando…",
+  "request.next.readyNoProposal":
+    "Core informa de un plan listo sin una propuesta registrada. Actualiza la solicitud o inspecciona el registro de Lead.",
+  "request.next.awaitingNoPlan":
+    "Core informa de que espera aprobación sin un plan congelado. La aprobación no está disponible; actualiza o inspecciona el registro de Lead.",
+  "request.approval.description":
+    "Aprobar compone las operaciones existentes de inicio de Lead y autorización de Campaña. Core deriva la ruta del implementador y la autoridad acotada de la revisión exacta del perfil congelado.",
+  "request.approval.planHash": "Hash del plan",
+  "request.approval.profileRevision": "Revisión del perfil",
+  "request.approval.reasonFallback":
+    "Core no puede derivar una autorización para este plan.",
+  "request.approval.rationale": "Justificación de la aprobación",
+  "request.approval.rationaleHelp":
+    "Se registra con la autorización. No altera el plan congelado.",
+  "request.approval.reviewed":
+    "He revisado el alcance congelado, la ruta, el presupuesto y el plan de aceptación.",
+  "request.approval.record": "Registrando la aprobación…",
+  "request.approval.approve": "Aprobar el plan congelado e iniciar",
+  "request.approval.disabled":
+    "La aprobación está deshabilitada hasta que Core pueda derivar la autorización.",
+  "request.execution.title": "Ejecución",
+  "request.execution.description":
+    "Core informa de una Campaña autorizada. Los estados de Campaña, Ejecución, candidato y Quality Gate siguen siendo hechos separados y se muestran en el espacio de trabajo de Campañas.",
+  "request.execution.missing":
+    "Core informa de ejecución sin un id de Campaña en esta proyección. Actualiza o inspecciona Campañas.",
+  "request.blocked.title": "Solicitud bloqueada",
+  "request.blocked.description":
+    "Core bloqueó esta solicitud. Se requiere una nueva solicitud si la causa está fuera del plan congelado; los mensajes pueden conservar el contexto del operador.",
+  "request.failed.title": "Solicitud fallida",
+  "request.failed.description":
+    "Core registró un fallo. Revisa el detalle del estado arriba; Office no reintenta en silencio trabajo de pago o con efectos externos.",
+  "request.completed.title": "Completada",
+  "request.completed.description":
+    "Core informa de que esta solicitud está completada. La aceptación de Quality Gate solo se muestra cuando el candidato exacto tiene una decisión ACCEPTED.",
+  "request.cancelled.title": "Solicitud cancelada",
+  "request.cancelled.description":
+    "Core registró un retiro autoritativo en el límite de Lead. Una Campaña autorizada, si existe, tiene su propio estado de cancelación y sigue siendo autoritativa.",
+  "request.newRequest": "Iniciar una nueva solicitud",
+  "request.campaign.title": "Campaña",
+  "request.campaign.gate": "Gate {outcome}",
+  "request.campaign.campaign": "Campaña",
+  "request.campaign.status": "Estado",
+  "request.campaign.authorization": "Autorización",
+  "request.campaign.runsCandidates": "Ejecuciones / candidatos",
+  "request.campaign.counts": "{runs} / {candidates}",
+  "request.notExposed": "No expuesto",
+  "request.conversation.title": "Conversación",
+  "request.conversation.count": "{count} mensaje(s)",
+  "request.conversation.description":
+    "Contexto duradero del operador. Los mensajes nunca modifican un plan congelado; una enmienda material requiere una nueva solicitud.",
+  "request.conversation.emptyTitle": "Aún no hay mensajes",
+  "request.conversation.emptyDescription":
+    "Usa el compositor para añadir contexto duradero a esta solicitud.",
+  "request.conversation.roleOperator": "Operador",
+  "request.conversation.roleSystem": "Sistema",
+  "request.conversation.messageLabel": "Enviar un mensaje a la Factory",
+  "request.conversation.messagePlaceholder":
+    "Añade contexto del operador o una pregunta",
+  "request.conversation.send": "Enviar mensaje",
+  "request.conversation.sending": "Enviando…",
+  "request.conversation.frozen":
+    "El plan ejecutable está congelado. Core no acepta enmiendas aquí; inicia una nueva solicitud para cambiar el objetivo o el plan.",
+  "request.conversation.terminal":
+    "Core informa de que esta solicitud es terminal, por lo que aquí no se ofrecen mensajes nuevos.",
+  "request.details.title": "Detalles de la solicitud",
+  "request.details.request": "Solicitud",
+  "request.details.project": "Proyecto",
+  "request.details.profile": "Perfil",
+  "request.details.action": "Acción",
+  "request.details.delegation": "Delegación",
+  "request.details.leadRequest": "Solicitud de Lead",
+  "request.details.created": "Creada",
+  "request.details.updated": "Actualizada",
+  "request.cancel.title": "Cancelar solicitud",
+  "request.cancel.description":
+    "Registra un retiro autoritativo en el límite de Lead. No cancela una Campaña autorizada.",
+  "request.cancel.open": "Cancelar esta solicitud…",
+  "request.cancel.close": "Cerrar la cancelación",
+  "request.cancel.reason": "Motivo de la cancelación",
+  "request.cancel.confirm": "Confirmar cancelación",
+  "request.cancel.cancelling": "Cancelando…",
+  "request.details.aria": "Detalles de la solicitud",
+  "request.assessment.title": "Evaluación",
+  "request.assessment.hint": "Evaluación semántica registrada por Core",
+  "request.assessment.emptyTitle": "No hay evaluación registrada",
+  "request.assessment.emptyDescription":
+    "Core registra una evaluación después de ejecutar la ruta de Lead. Es orientativa y no autoriza una Campaña.",
+  "request.assessment.intent": "Intención",
+  "request.assessment.complexity": "Complejidad",
+  "request.assessment.effort": "Esfuerzo",
+  "request.assessment.suggestedNextAction": "Siguiente acción sugerida",
+  "request.assessment.changeImpact": "Impacto del cambio",
+  "request.assessment.validationNeeds": "Necesidades de validación",
+  "request.assessment.knowledgeGaps": "Lagunas de conocimiento",
+  "request.assessment.assumptions": "Supuestos",
+  "request.assessment.uncertainty": "Incertidumbre",
+  "request.assessment.evidenceRefs": "Referencias de evidencia",
+  "request.assessment.footnote":
+    "La evaluación es un juicio asistido por modelo. La política de Core, el plan congelado y la autorización siguen siendo autoritativos.",
+  "request.values.noneRecorded": "Ninguno registrado",
+  "request.plan.title": "Plan",
+  "request.plan.frozen": "Congelado",
+  "request.plan.notFrozen": "Sin congelar",
+  "request.plan.none": "No hay plan registrado",
+  "request.plan.description":
+    "Core congeló esta identidad exacta del plan. La aprobación y la autorización de Campaña deben coincidir con ella.",
+  "request.plan.planHash": "Hash del plan",
+  "request.plan.configHash": "Hash de configuración",
+  "request.plan.delegationHash": "Hash de delegación",
+  "request.plan.proposal": "Propuesta",
+  "request.plan.frozenAt": "Congelado",
+  "request.plan.notFrozenDescription":
+    "Core registró una propuesta pero no un plan congelado. La aprobación no está disponible hasta que Core congele el plan y exponga su hash.",
+  "request.plan.emptyTitle": "No se propuso ningún plan",
+  "request.plan.emptyDescription":
+    "Un plan congelado aparece aquí después de que Core evalúe la solicitud. La propuesta del modelo nunca concede autoridad por sí sola.",
+  "request.plan.frozenContent": "Contenido del plan congelado",
+  "request.plan.proposedPlan": "Plan propuesto",
+  "request.plan.workUnitOne": "{count} unidad de trabajo",
+  "request.plan.workUnitOther": "{count} unidades de trabajo",
+  "request.plan.objective": "Objetivo",
+  "request.plan.classRisk": "Clase / riesgo",
+  "request.plan.qualityProfile": "Perfil de calidad",
+  "request.plan.route": "Ruta",
+  "request.plan.budget": "Presupuesto",
+  "request.plan.bounds": "Límites de ejecución",
+  "request.plan.checks": "Comprobaciones",
+  "request.plan.assumptions": "Supuestos",
+  "request.plan.risks": "Riesgos",
+  "request.plan.workUnits": "Unidades de trabajo",
+  "request.plan.dependsOn": "Depende de",
+  "request.plan.allowedPaths": "Rutas permitidas",
+  "request.plan.capabilities": "Capacidades",
+  "request.plan.budgetValue":
+    "{attempts} intentos · {timeout}s de tiempo límite",
+  "request.plan.boundsValue":
+    "{sessions} sesiones · {parallel} en paralelo · {wallClock}s de tiempo real · {repairCycles} ciclos de reparación",
+  "request.plan.checksValue":
+    "{acceptance} de aceptación · {negative} negativas",
+  "request.plan.noWorkUnits": "No hay unidades de trabajo registradas.",
+
+  "actions.title": "Acciones",
+  "actions.description":
+    "Una Acción congela el objetivo, la ruta del proveedor, las rutas permitidas y las comprobaciones exactas a las que se vinculan las Ejecuciones posteriores y la verificación independiente. La ruta del proveedor debe configurarse en Configuración para la ejecución real.",
+  "actions.error.load": "No se pudieron cargar las Acciones.",
+  "actions.error.emptyCommand":
+    "Cada comprobación necesita un comando no vacío.",
+  "actions.error.checkRequired":
+    "Se requiere al menos una comprobación congelada para la verificación independiente.",
+  "actions.error.create": "No se pudo crear la Acción.",
+  "actions.notice.created": "Acción {id} creada con especificación {spec}.",
+  "actions.needProject": "Registra un Proyecto antes de crear una Acción.",
+  "actions.openProjects": "Abrir Proyectos",
+  "actions.new.title": "Nueva Acción",
+  "actions.project": "Proyecto",
+  "actions.objective": "Objetivo",
+  "actions.objective.placeholder": "¿Qué debe hacer la Factory?",
+  "actions.provider": "Proveedor",
+  "actions.model": "Modelo",
+  "actions.paths": "Rutas permitidas del repositorio (separadas por comas)",
+  "actions.paths.placeholder": "src, tests",
+  "actions.defaultCheck.functional": "el contenido del candidato está presente",
+  "actions.defaultCheck.negative": "el contenido ausente se rechaza",
+  "actions.checks.title": "Comprobaciones congeladas",
+  "actions.checks.help":
+    "Los comandos se ejecutan con un entorno limpio en un contenedor hijo sin red. Entrecomilla los argumentos que contengan espacios. La verificación requiere al menos una comprobación ejecutable.",
+  "actions.check.legend": "Comprobación {index}",
+  "actions.check.id": "ID",
+  "actions.check.kind": "Tipo",
+  "actions.check.description": "Descripción",
+  "actions.check.command": "Comando",
+  "actions.check.expectExit": "Código de salida esperado",
+  "actions.check.timeout": "Tiempo límite (segundos)",
+  "actions.check.preview": "Vista previa:",
+  "actions.removeCheck": "Quitar comprobación",
+  "actions.addCheck": "Añadir comprobación",
+  "actions.create": "Crear Acción",
+  "actions.creating": "Creando…",
+  "actions.all": "Todas las Acciones ({count})",
+  "actions.empty": "Aún no hay Acciones.",
+  "actions.table.label": "Acciones",
+  "actions.table.id": "ID",
+  "actions.table.project": "Proyecto",
+  "actions.table.objective": "Objetivo",
+  "actions.table.route": "Ruta",
+  "actions.table.risk": "Riesgo",
+  "actions.table.status": "Estado",
+  "actions.table.checks": "Comprobaciones",
+  "actions.table.spec": "Especificación",
+  "actions.table.created": "Creada",
+  "actions.table.paths": "rutas {paths}",
+
+  "actionDetail.error.load": "No se pudo cargar la Acción.",
+  "actionDetail.notFoundTitle": "Acción no encontrada",
+  "actionDetail.notFoundDescription":
+    "No hay ninguna Acción {id} registrada en Core.",
+  "actionDetail.back": "Volver a Acciones",
+  "actionDetail.loading": "Cargando la Acción…",
+  "actionDetail.title": "Acción {id}",
+  "actionDetail.risk": "Riesgo {risk}",
+  "actionDetail.specTitle": "Especificación congelada",
+  "actionDetail.specHash": "espec. {id}",
+  "actionDetail.project": "Proyecto",
+  "actionDetail.route": "Ruta",
+  "actionDetail.baseCommit": "Commit base",
+  "actionDetail.riskClass": "Clase de riesgo",
+  "actionDetail.allowedPaths": "Rutas permitidas",
+  "actionDetail.relationships": "Relaciones",
+  "actionDetail.relationshipsHint": "Proyecciones de Core de solo lectura",
+  "actionDetail.campaigns": "Campañas",
+  "actionDetail.leadRequests": "Solicitudes de Lead",
+  "actionDetail.delegations": "Delegaciones del proyecto",
+  "actionDetail.campaignLinked": "Campaña {id}",
+  "actionDetail.noCampaign": "No hay Campaña vinculada",
+  "actionDetail.delegationsList": "Delegaciones del proyecto:",
+  "actionDetail.checks": "Comprobaciones congeladas ({count})",
+  "actionDetail.checksHint": "Vinculadas a cada candidato",
+  "actionDetail.noChecksTitle": "No hay comprobaciones",
+  "actionDetail.noChecksDescription":
+    "Esta Acción no puede producir un candidato aceptado sin comprobaciones independientes.",
+  "actionDetail.table.label": "Comprobaciones congeladas",
+  "actionDetail.table.id": "ID",
+  "actionDetail.table.kind": "Tipo",
+  "actionDetail.table.command": "Comando",
+  "actionDetail.table.expect": "Esperado",
+  "actionDetail.table.timeout": "Tiempo límite",
+  "actionDetail.timeoutValue": "{seconds}s",
+
+  "campaigns.title": "Campañas",
+  "campaigns.description":
+    "Una Campaña comienza bloqueada, requiere autorización explícita del fixture R0 y después admite una Ejecución y un Intento.",
+  "campaigns.error.load": "No se pudieron cargar las Campañas.",
+  "campaigns.error.create": "No se pudo crear la Campaña.",
+  "campaigns.error.authorize": "No se pudo autorizar el fixture.",
+  "campaigns.error.queueRun": "No se pudo encolar la Ejecución.",
+  "campaigns.error.refresh":
+    "No se pudieron actualizar las Campañas tras la cancelación.",
+  "campaigns.notice.created": "Campaña {id} creada ({status}).",
+  "campaigns.notice.authorized": "Campaña {id} autorizada como {risk} {mode}.",
+  "campaigns.notice.queued":
+    "Ejecución {id} encolada. Abre Ejecuciones para encolar su Intento.",
+  "campaigns.notice.cancelled":
+    "La Campaña {id} está {status}. Core registra la cancelación; la terminación del proveedor puede quedar sin confirmar.",
+  "campaigns.needAction": "Crea una Acción antes de iniciar una Campaña.",
+  "campaigns.openActions": "Abrir Acciones",
+  "campaigns.create.title": "Crear una Campaña",
+  "campaigns.action": "Acción",
+  "campaigns.create": "Crear Campaña",
+  "campaigns.creating": "Creando…",
+  "campaigns.all": "Todas las Campañas ({count})",
+  "campaigns.empty": "Aún no hay Campañas.",
+  "campaigns.table.label": "Campañas",
+  "campaigns.table.campaign": "Campaña",
+  "campaigns.table.action": "Acción",
+  "campaigns.table.status": "Estado",
+  "campaigns.table.run": "Ejecución",
+  "campaigns.table.created": "Creada",
+  "campaigns.table.control": "Control",
+  "campaigns.authorize": "Autorizar fixture R0",
+  "campaigns.queueRun": "Encolar Ejecución",
+  "campaigns.runStatus": "ejecución {status}",
+  "campaigns.candidates.title": "Candidatos y puertas de calidad ({count})",
+  "campaigns.candidates.description":
+    "Las decisiones de Gate son propiedad de Core y solo aparecen cuando existen recibos del verificador y del revisor. Sin Gate significa que el candidato sigue pendiente.",
+  "campaigns.candidates.empty": "No hay candidatos registrados.",
+  "campaigns.table.candidate": "Candidato",
+  "campaigns.table.commit": "Commit",
+  "campaigns.table.attempt": "Intento",
+  "campaigns.table.implementer": "Implementador",
+  "campaigns.table.gate": "Gate",
+  "campaigns.table.reasons": "Motivos",
+  "campaigns.table.recorded": "Registrado",
+
+  "cancelCampaign.button": "Cancelar Campaña",
+  "cancelCampaign.aria": "Confirmar la cancelación de la Campaña {id}",
+  "cancelCampaign.confirm":
+    "¿Cancelar {id}? Core solicitará la cancelación, marcará el trabajo en cola como cancelado y señalará las sesiones de proveedor activas. La terminación del proveedor externo puede quedar sin confirmar.",
+  "cancelCampaign.reason": "Motivo (opcional)",
+  "cancelCampaign.error": "No se pudo cancelar la Campaña.",
+  "cancelCampaign.confirmButton": "Confirmar cancelación",
+  "cancelCampaign.cancelling": "Cancelando…",
+  "cancelCampaign.keep": "Mantener Campaña",
+
+  "common.none": "ninguno",
+  "lead.title": "Lead",
+  "lead.description.start":
+    "Lead es una proyección del estado propiedad de Core. La evaluación es MODEL cuando Core tiene una pasarela de modelo autorizada; el evaluador FIXTURE determinista solo está disponible cuando Core lo habilita explícitamente sin pasarela. Un plan FIXTURE se inicia con su autorización determinista. Un plan MODEL requiere una autorización explícita",
+  "lead.description.end": "aquí antes de que Core cree una Campaña.",
+  "lead.error.load": "No se pudieron cargar los datos de Lead.",
+  "lead.error.selectProject": "Selecciona un Proyecto.",
+  "lead.error.submit": "No se pudo enviar la solicitud de Lead.",
+  "lead.error.assess": "No se pudo evaluar.",
+  "lead.error.freeze": "No se pudo congelar.",
+  "lead.error.view": "No se pudo cargar la solicitud de Lead.",
+  "lead.error.start": "No se pudo iniciar el Lead.",
+  "lead.error.proposalUnavailable":
+    "La propuesta congelada no está disponible.",
+  "lead.error.pathsEmpty": "Las rutas autorizadas no deben estar vacías.",
+  "lead.error.authorizationIncomplete":
+    "La autorización explícita está incompleta.",
+  "lead.notice.submitted": "Solicitud de Lead {id} enviada.",
+  "lead.notice.assessed": "Evaluación determinista del fixture registrada.",
+  "lead.notice.frozen":
+    "Plan congelado y marcado como listo. El inicio sigue siendo una acción explícita.",
+  "lead.notice.started": "Campaña {id} iniciada ({status}).",
+  "lead.form.title": "Enviar una solicitud de Lead",
+  "lead.form.project": "Proyecto",
+  "lead.form.selectProject": "Selecciona un Proyecto",
+  "lead.form.action": "Acción congelada",
+  "lead.form.selectAction": "Selecciona una Acción",
+  "lead.form.delegation": "Delegación activa",
+  "lead.form.selectDelegation": "Selecciona una delegación",
+  "lead.form.objective": "Objetivo",
+  "lead.form.objectivePlaceholder": "Describe el resultado previsto",
+  "lead.form.submit": "Enviar solicitud de Lead",
+  "lead.form.submitting": "Enviando…",
+  "lead.list.title": "Solicitudes de Lead ({count})",
+  "lead.list.empty": "No hay solicitudes de Lead.",
+  "lead.table.id": "ID",
+  "lead.table.state": "Estado",
+  "lead.table.assessment": "Evaluación",
+  "lead.table.objective": "Objetivo",
+  "lead.table.campaign": "Campaña",
+  "lead.table.updated": "Actualizada",
+  "lead.table.actions": "Acciones",
+  "lead.view": "Ver",
+  "lead.assess": "Evaluar",
+  "lead.assessHint":
+    "Core selecciona MODEL cuando hay una pasarela de modelo configurada; de lo contrario solo se usa un evaluador FIXTURE determinista habilitado explícitamente.",
+  "lead.freezePlan": "Congelar plan",
+  "lead.startCampaign": "Iniciar Campaña",
+  "lead.authorizeStart": "Autorizar inicio…",
+  "lead.selected.title": "Solicitud seleccionada",
+  "lead.selected.stateLabel": "Estado:",
+  "lead.selected.meta": "Creada {created} · Actualizada {updated}",
+  "lead.openCampaign": "Abrir Campaña {id}",
+  "lead.fact.request": "Solicitud",
+  "lead.fact.project": "Proyecto",
+  "lead.fact.action": "Acción",
+  "lead.fact.delegation": "Delegación",
+  "lead.fact.configHash": "Hash de configuración",
+  "lead.assessment.title": "Evaluación",
+  "lead.assessment.meta": "Mecanismo {mechanism} · registrada {date} · esquema",
+  "lead.assessment.modelWarning":
+    "Evaluación MODEL. El inicio requiere una autorización explícita",
+  "lead.assessment.modelWarningEnd":
+    "que coincida con la ruta, la delegación, las rutas permitidas y los presupuestos congelados.",
+  "lead.assessment.fixtureNote":
+    "Evaluación determinista del fixture. No es evidencia de calidad del modelo ni semántica.",
+  "lead.assessment.effort": "Esfuerzo",
+  "lead.assessment.evidenceRefs": "Referencias de evidencia",
+  "lead.assessment.changeImpact": "Impacto del cambio",
+  "lead.assessment.validationNeeds": "Necesidades de validación",
+  "lead.assessment.knowledgeGaps": "Lagunas de conocimiento",
+  "lead.assessment.assumptions": "Supuestos",
+  "lead.assessment.uncertainty": "Incertidumbre",
+  "lead.assessment.suggestedNextAction": "Siguiente acción sugerida",
+  "lead.assessment.decodeError":
+    "No se pudo decodificar el JSON de evaluación registrado.",
+  "lead.assessment.none": "No hay evaluación registrada.",
+  "lead.modelCalls.title": "Procedencia de las llamadas de modelo de Lead",
+  "lead.modelCalls.none":
+    "No hay ninguna llamada de modelo de Lead registrada.",
+  "lead.modelCalls.providerModel": "Proveedor / modelo",
+  "lead.modelCalls.reservation": "Reserva",
+  "lead.modelCalls.state": "Estado",
+  "lead.modelCalls.usage": "Uso",
+  "lead.modelCalls.purpose": "Propósito",
+  "lead.modelCalls.recorded": "Registrada",
+  "lead.proposal.title": "Propuesta",
+  "lead.proposal.metaLabel": "Propuesta",
+  "lead.proposal.metaHash": "hash",
+  "lead.proposal.metaRecorded": "registrada {date}",
+  "lead.proposal.classRisk": "Clase / riesgo",
+  "lead.proposal.qualityProfile": "Perfil de calidad",
+  "lead.proposal.route": "Ruta",
+  "lead.proposal.baseRevision": "Revisión base",
+  "lead.proposal.budget": "Presupuesto",
+  "lead.proposal.budgetValue":
+    "{attempts} intentos · {timeout}s de tiempo límite · {repairCycles} ciclos de reparación · {sessions} sesiones",
+  "lead.proposal.parallel": "Paralelismo / tiempo real",
+  "lead.proposal.parallelValue":
+    "{parallel} en paralelo · {wallClock}s de tiempo real",
+  "lead.proposal.assumptions": "Supuestos",
+  "lead.proposal.risks": "Riesgos",
+  "lead.proposal.workUnits": "Unidades de trabajo ({count})",
+  "lead.proposal.table.index": "#",
+  "lead.proposal.table.unit": "Unidad",
+  "lead.proposal.table.kind": "Tipo",
+  "lead.proposal.table.dependsOn": "Depende de",
+  "lead.proposal.table.paths": "Rutas",
+  "lead.proposal.table.checks": "Comprobaciones",
+  "lead.proposal.capabilities": "capacidades",
+  "lead.proposal.decodeError":
+    "No se pudo decodificar el JSON de propuesta registrado.",
+  "lead.proposal.none": "No hay propuesta registrada.",
+  "lead.plan.title": "Plan congelado",
+  "lead.plan.plan": "Plan",
+  "lead.plan.planHash": "Hash del plan",
+  "lead.plan.configHash": "Hash de configuración",
+  "lead.plan.delegationHash": "Hash de delegación",
+  "lead.plan.proposal": "Propuesta",
+  "lead.plan.frozen": "Congelado",
+  "lead.plan.none": "No hay plan congelado registrado.",
+  "lead.start.title": "Iniciar Campaña",
+  "lead.start.policyNote":
+    "Core también debe tener activada su política de inicio autónomo; de lo contrario se rechaza el inicio sin crear filas de Campaña.",
+  "lead.start.fixtureNote":
+    "El plan congelado tiene una evaluación FIXTURE determinista. Core registra la autorización FIXTURE predeterminada; no se usa ninguna ruta de proveedor ni llamada de modelo.",
+  "lead.start.starting": "Iniciando…",
+  "lead.start.modelWarning":
+    "Se requiere una autorización explícita TRUSTED_LOCAL_PROVIDER. Core rechaza una autorización ausente, no coincidente o más amplia antes de crear cualquier fila de Campaña.",
+  "lead.start.authorizationId": "ID de autorización",
+  "lead.start.actor": "Actor",
+  "lead.start.rationale": "Justificación",
+  "lead.start.paths": "Rutas autorizadas (separadas por comas)",
+  "lead.start.routeNote": "Ruta {route} · Delegación {delegation} · Riesgo R0",
+  "lead.start.risk": "Riesgo",
+  "lead.start.technicalLimits":
+    "Core aplica límites técnicos de operación V2 y supervisión determinista del progreso. No son topes de turnos, intentos, sesiones, tokens, coste ni fecha límite de Campaña; la envolvente de la solicitud sigue siendo autoritativa para el gasto.",
+  "lead.start.tools": "Herramientas permitidas (separadas por comas)",
+  "lead.start.authorize": "Autorizar e iniciar Campaña",
+  "lead.start.authorizing": "Autorizando…",
+  "lead.start.loading": "Cargando los campos de autorización…",
+  "lead.start.mechanismUnavailable":
+    "El mecanismo de evaluación no está disponible; el inicio está bloqueado.",
+  "lead.rawAssessment": "JSON de evaluación sin procesar",
+  "lead.rawProposal": "JSON de propuesta sin procesar",
+  "lead.footnote":
+    "El inicio es una operación explícita de Core. Un plan MODEL requiere la autorización proporcionada por el operador arriba; el modelo nunca se inicia ni se autoriza a sí mismo. La ampliación de presupuesto, la entrega y las decisiones de calidad quedan fuera de esta vista.",
+
+  "agentOffice.title": "Oficina de agentes",
+  "agentOffice.description":
+    "Participantes de ingeniería registrados, proyectados desde sesiones de Core, solicitudes de Lead, recibos independientes y registros de Trabajadores. Sin movimiento, razonamiento ni actividad de herramientas simulados.",
+  "agentOffice.meta.participantsOne": "{count} participante en esta proyección",
+  "agentOffice.meta.participantsOther":
+    "{count} participantes en esta proyección",
+  "agentOffice.meta.currentOne": "{count} observación actual",
+  "agentOffice.meta.currentOther": "{count} observaciones actuales",
+  "agentOffice.meta.stale": "{count} sin resolver y obsoletas",
+  "agentOffice.meta.snapshot": "Instantánea {date}",
+  "agentOffice.error.load":
+    "No se pudo cargar la proyección de la Oficina de agentes.",
+  "agentOffice.error.refresh": "Falló la actualización de Core.",
+  "agentOffice.loading": "Cargando la Oficina de agentes…",
+
+  "agentOffice.error.refreshBody":
+    "Se muestra la última instantánea autoritativa{from}. Una vista desconectada no significa que un participante se haya detenido.",
+  "agentOffice.error.from": " de {date}",
+  "agentOffice.page.more":
+    "Se muestran los primeros {count} participantes. La proyección está acotada; refina los filtros de Campaña, rol, proveedor o estado para inspeccionar más. No se ocultó ningún registro en silencio.",
+  "agentOffice.stale.one":
+    "{count} observación de participante sin resolver está obsoleta.",
+  "agentOffice.stale.other":
+    "{count} observaciones de participantes sin resolver están obsoletas.",
+  "agentOffice.stale.body":
+    "La sesión registrada no tiene un lease activo coincidente. Revisa la limpieza; esto no prueba que la sesión externa se haya detenido.",
+  "agentOffice.filters.role": "Rol",
+  "agentOffice.filters.allRoles": "Todos los roles",
+  "agentOffice.filters.status": "Estado registrado",
+  "agentOffice.filters.allStatuses": "Todos los estados",
+  "agentOffice.filters.provider": "Proveedor",
+  "agentOffice.filters.allProviders": "Todos los proveedores",
+  "agentOffice.filters.campaign": "Campaña",
+  "agentOffice.filters.allCampaigns": "Todas las Campañas",
+  "agentOffice.filters.project": "Proyecto",
+  "agentOffice.filters.allProjects": "Todos los Proyectos",
+  "agentOffice.filters.projectHelp":
+    "Solo alcance de la proyección. La autorización del operador sigue siendo global para la Factory.",
+  "agentOffice.filters.clear": "Limpiar filtros",
+  "agentOffice.filters.note":
+    "Core aplica los filtros a la proyección de participantes. No conceden ni restringen la autoridad del operador.",
+  "agentOffice.participants.title": "Participantes",
+  "agentOffice.participants.meta":
+    "{count} mostrados · ordenados por la última observación registrada",
+  "agentOffice.views.label": "Vistas de la Oficina de agentes",
+  "agentOffice.views.floor": "Oficina visual",
+  "agentOffice.views.table": "Tabla",
+  "agentOffice.views.timeline": "Cronología",
+  "agentOffice.emptyFilteredTitle": "No hay participantes coincidentes",
+  "agentOffice.emptyFilteredDescription":
+    "Ningún registro autoritativo de participante coincide con los filtros actuales. Limpia un filtro o inspecciona otra Campaña.",
+  "agentOffice.emptyTitle": "No hay participantes registrados",
+  "agentOffice.emptyDescription":
+    "Core aún no tiene ningún participante registrado de Lead, Implementador, Verificador, Revisor o Trabajador. Inicia una Campaña autorizada para poblar la Oficina.",
+  "agentOffice.openCampaigns": "Abrir Campañas",
+  "agentOffice.sources.summary":
+    "Fuentes de la proyección y niveles de evidencia",
+  "agentOffice.sources.note":
+    "Los eventos de herramientas del proveedor se leen del libro",
+  "agentOffice.sources.noteEnd":
+    "existente mediante una proyección acotada y redactada de Core. El sondeo de Office no es un flujo de eventos.",
+  "agentOffice.participantMissingTitle": "Participante no encontrado",
+  "agentOffice.participantMissingDescription":
+    "La identidad del participante solicitado no está en la proyección actual de Core. Puede estar filtrada por el alcance de la Campaña o ya no estar registrada.",
+  "agentOffice.legend.title": "Estado veraz",
+  "agentOffice.legend.current":
+    "Core tiene una generación de lease activa coincidente.",
+  "agentOffice.legend.stale":
+    "La sesión no está resuelta, pero ningún lease activo coincide con ella.",
+  "agentOffice.legend.final": "El ciclo de vida registrado es terminal.",
+  "agentOffice.legend.notExposed": "Core no registra el hecho solicitado.",
+  "agentOffice.role.IMPLEMENTER": "Implementador",
+  "agentOffice.role.LEAD": "Lead",
+  "agentOffice.role.VERIFIER": "Verificador",
+  "agentOffice.role.REVIEWER": "Revisor",
+  "agentOffice.role.WORKER": "Trabajador",
+  "agentOffice.statusGroup.providerSession": "Sesión de proveedor",
+  "agentOffice.statusGroup.leadRequest": "Solicitud de Lead",
+  "agentOffice.statusGroup.qualityReceipt": "Recibo de calidad",
+  "agentOffice.statusGroup.worker": "Trabajador",
+  "agentOffice.zone.planning": "Planificación",
+  "agentOffice.zone.planningDescription":
+    "Operaciones de planificación y evaluación registradas por Core. Una llamada de modelo no es un agente en ejecución continua.",
+  "agentOffice.zone.implementation": "Implementación",
+  "agentOffice.zone.implementationDescription":
+    "Sesiones de proveedor observadas, vinculadas a un Intento y a una generación de lease.",
+  "agentOffice.zone.verification": "Verificación",
+  "agentOffice.zone.verificationDescription":
+    "Recibos de verificación independiente registrados por Core.",
+  "agentOffice.zone.review": "Revisión",
+  "agentOffice.zone.reviewDescription":
+    "Recibos de revisión independiente registrados por Core, incluidos el mecanismo y la procedencia.",
+  "agentOffice.zone.operations": "Operaciones",
+  "agentOffice.zone.operationsDescription":
+    "Identidad de registro del Trabajador. Core no expone la actividad del heartbeat en esta proyección.",
+  "agentOffice.zone.recorded": "{count} registrados",
+  "agentOffice.scene.label": "Planta isométrica de la Oficina",
+  "agentOffice.scene.emptyStations": "Puestos sin un participante registrado:",
+  "agentOffice.scene.hint":
+    "Estudio isométrico determinista de la misma proyección de participantes de Core. Arrastra para desplazar; usa la rueda o los controles para ampliar. Pasa el cursor o selecciona un avatar para ver su identidad y observación registradas; al seleccionarlo se abre el inspector. La posición del puesto es determinista para este conjunto observado; no se simula movimiento ni actividad.",
+  "agentOffice.scene.pan": "Desplazar la planta de la Oficina",
+  "agentOffice.scene.panLeft": "Desplazar a la izquierda",
+  "agentOffice.scene.panRight": "Desplazar a la derecha",
+  "agentOffice.scene.panUp": "Desplazar hacia arriba",
+  "agentOffice.scene.panDown": "Desplazar hacia abajo",
+  "agentOffice.scene.zoom": "Ampliar la planta de la Oficina",
+  "agentOffice.scene.zoomIn": "Ampliar",
+  "agentOffice.scene.zoomOut": "Reducir",
+  "agentOffice.scene.zoomValue": "Zoom {percent}%",
+  "agentOffice.scene.fit": "Ajustar escena",
+  "agentOffice.inspector.hide": "Ocultar inspector",
+  "agentOffice.inspector.show": "Mostrar inspector",
+  "agentOffice.scene.duplicatesOne":
+    "Se ignoró una identidad de participante duplicada; la planta muestra un avatar por identidad registrada.",
+  "agentOffice.scene.duplicatesOther":
+    "Se ignoraron {count} identidades de participante duplicadas; la planta muestra un avatar por identidad registrada.",
+  "agentOffice.route.notExposed": "Ruta no expuesta",
+  "agentOffice.route.requested": "solicitada",
+  "agentOffice.route.observed": "observada",
+  "agentOffice.assignment.unitCampaign": "Unidad {unit} · Campaña {campaign}",
+  "agentOffice.assignment.campaign": "Campaña {id}",
+  "agentOffice.assignment.leadRequest": "Solicitud de Lead {id}",
+  "agentOffice.assignment.none": "No hay asignación de Campaña registrada",
+  "agentOffice.card.inspect":
+    "Inspeccionar {role} {id}, estado {status}, observación {observation}",
+  "agentOffice.table.label": "Participantes de la Oficina de agentes",
+  "agentOffice.table.roleParticipant": "Rol / participante",
+  "agentOffice.table.status": "Estado",
+  "agentOffice.table.observation": "Observación",
+  "agentOffice.table.route": "Ruta",
+  "agentOffice.table.assignment": "Asignación",
+  "agentOffice.table.session": "Sesión",
+  "agentOffice.table.lastObserved": "Última observación",
+  "agentOffice.table.generation": "generación {generation}",
+  "agentOffice.table.noSession": "No se aplica ninguna sesión",
+  "agentOffice.emptyTableTitle": "No hay participantes",
+  "agentOffice.emptyTableDescription":
+    "Ningún participante coincide con los filtros autoritativos actuales.",
+  "agentOffice.emptyTimelineTitle": "No hay observaciones de participantes",
+  "agentOffice.emptyTimelineDescription":
+    "Ningún participante coincide con los filtros autoritativos actuales.",
+  "agentOffice.timeline.note":
+    "Esta vista ordena los mismos registros de participantes por su última observación registrada. No es un flujo de eventos y no inventa actividad entre observaciones.",
+  "agentOffice.timeline.recorded": "Registrado {date} · fuente {source}",
+  "inspector.title": "Inspector de participantes",
+  "inspector.close": "Cerrar el inspector de participantes",
+  "inspector.assignment": "Asignación e identidad",
+  "inspector.route": "Ruta del proveedor",
+  "inspector.session": "Sesión de proveedor",
+  "inspector.usage": "Uso",
+  "inspector.evidence": "Evidencia de calidad",
+  "inspector.error": "Error y limpieza",
+  "inspector.timestamps": "Marcas de tiempo registradas",
+  "inspector.selectTitle": "Selecciona un participante",
+  "inspector.selectDescription":
+    "Elige una estación de trabajo, una fila de la tabla o una entrada de la cronología para inspeccionar sus registros autoritativos de Core.",
+  "inspector.participant": "Participante",
+  "inspector.principal": "Principal",
+  "inspector.project": "Proyecto",
+  "inspector.action": "Acción",
+  "inspector.campaign": "Campaña",
+  "inspector.workUnit": "Unidad de trabajo",
+  "inspector.run": "Ejecución",
+  "inspector.attempt": "Intento",
+  "inspector.attemptGeneration": "Generación del intento",
+  "inspector.worker": "Trabajador",
+  "inspector.leadRequest": "Solicitud de Lead",
+  "inspector.modelCalls": "Llamadas de modelo",
+  "inspector.modelCallsRecorded": "{count} registradas",
+  "inspector.modelCallsLatest": "última {state}",
+  "inspector.provenance": "Procedencia: {value}",
+  "inspector.externalSession": "Sesión externa",
+  "inspector.created": "Creada",
+  "inspector.updated": "Actualizada",
+  "inspector.input": "Entrada",
+  "inspector.output": "Salida",
+  "inspector.totalTokens": "Tokens totales",
+  "inspector.measuredCost": "Coste medido",
+  "inspector.usageUnknown":
+    "Core registra este uso como desconocido, no como cero.",
+  "inspector.noUsage":
+    "No se aplica ningún uso a este registro de participante.",
+  "inspector.candidate": "Candidato",
+  "inspector.commit": "Commit",
+  "inspector.tree": "Árbol",
+  "inspector.gate": "Quality Gate",
+  "inspector.verifierReceipt": "Recibo del verificador",
+  "inspector.reviewerReceipt": "Recibo del revisor",
+  "inspector.openWorkGraph": "Abrir WorkGraph",
+  "inspector.openExecution": "Abrir ejecución",
+  "inspector.openEvidence": "Abrir evidencia",
+  "inspector.noGateRecorded": "SIN GATE REGISTRADO",
+  "inspector.noEvidence":
+    "No hay ningún candidato ni evidencia de calidad vinculados a este registro de participante.",
+  "inspector.cleanup": "Limpieza: {cleanup}",
+  "inspector.recorded": "Registrado",
+  "inspector.lastObserved": "Última observación",
+  "inspector.routeText": "solicitada {requested} · observada {observed}",
+  "inspector.detail.recorded": "registrado",
+  "inspector.detail.withheld": "contenido del proveedor retenido",
+  "inspector.detail.redacted": "registro heredado redactado",
+  "inspector.detail.empty": "sin detalle registrado",
+  "inspector.toolEvents.title": "Eventos de herramientas registrados",
+  "inspector.toolEvents.refresh": "Actualizar eventos",
+  "inspector.toolEvents.description":
+    "Proyección de solo lectura de provider_tool_events. El detalle libre del proveedor se retiene salvo que Core lo clasifique como seguro.",
+  "inspector.toolEvents.loading":
+    "Cargando eventos de herramientas registrados…",
+  "inspector.toolEvents.emptyTitle":
+    "No hay eventos de herramientas registrados",
+  "inspector.toolEvents.emptyDescription":
+    "Core no tiene ningún evento de herramienta del proveedor para esta sesión exacta. Una lista vacía no es evidencia de inactividad.",
+  "inspector.toolEvents.discardedOne":
+    "Core descartó {count} registro malformado o fuera de orden.",
+  "inspector.toolEvents.discardedOther":
+    "Core descartó {count} registros malformados o fuera de orden.",
+  "inspector.toolEvents.loadMore": "Cargar más eventos",
+  "inspector.toolEvents.loadingMore": "Cargando…",
+  "inspector.toolEvents.end": "Fin de la proyección de eventos registrados.",
+  "inspector.toolEvents.error":
+    "No se pudieron cargar los eventos de herramientas registrados.",
+  "inspector.toolEvents.errorMore":
+    "No se pudieron cargar más eventos de herramientas.",
+  "inspector.toolEvents.table.label": "Eventos de herramientas registrados",
+  "inspector.toolEvents.table.seq": "Sec.",
+  "inspector.toolEvents.table.recorded": "Registrado",
+  "inspector.toolEvents.table.tool": "Herramienta",
+  "inspector.toolEvents.table.decision": "Decisión",
+  "inspector.toolEvents.table.detail": "Detalle",
+  "inspector.toolEvents.table.callRef": "Ref. de llamada",
+  "inspector.toolEvents.digest": "resumen {id}",
+
+  "issues.title": "Incidencias",
+  "issues.description":
+    "Instantáneas sincronizadas de incidencias de GitHub para un Proyecto vinculado. El texto de la incidencia no es de confianza y se muestra como texto plano; Core nunca lo trata como instrucciones.",
+  "issues.meta.snapshots": "Instantáneas propiedad de Core",
+  "issues.meta.manual": "Sincronización manual",
+  "issues.meta.noExecution": "Sin ejecución de agentes",
+  "issues.refresh": "Actualizar",
+  "issues.sync": "Sincronizar incidencias",
+  "issues.syncing": "Sincronizando…",
+  "issues.syncBackoffTitle": "Espera por límite de tasa de GitHub hasta {date}",
+  "issues.syncBindFirst": "Vincula primero un repositorio de GitHub",
+  "issues.syncConnectFirst": "Conecta GitHub primero",
+  "issues.error.integrationUnavailable": "Integración con GitHub no disponible",
+  "issues.error.loadState":
+    "No se pudo cargar el estado de la integración con GitHub.",
+  "issues.error.issueNumber": "El número de incidencia no es válido.",
+  "issues.error.issueGone":
+    "La incidencia ya no está en la instantánea sincronizada.",
+  "issues.error.detail": "No se pudo cargar el detalle de la incidencia.",
+  "issues.error.snapshot":
+    "No se pudo cargar la instantánea sincronizada de incidencias.",
+  "issues.error.connect": "No se pudo verificar la credencial de GitHub.",
+  "issues.error.disconnect": "No se pudo desconectar GitHub.",
+  "issues.error.repositories":
+    "No se pudieron cargar los repositorios de GitHub.",
+  "issues.error.bind": "No se pudo vincular el repositorio de GitHub.",
+  "issues.error.sync": "No se pudo sincronizar las incidencias de GitHub.",
+  "issues.notice.connected":
+    "Credencial de GitHub verificada para {login}. No se implica acceso a repositorios ni inferencia.",
+  "issues.notice.disconnected":
+    "Conexión de GitHub revocada. La credencial cifrada se borró y la sincronización está deshabilitada.",
+  "issues.notice.rateLimited":
+    "Se alcanzó el límite de tasa de GitHub. Reintenta después de {date}.",
+  "issues.notice.noRepositories":
+    "GitHub no devolvió repositorios visibles para esta credencial.",
+  "issues.notice.bound":
+    "Se vinculó {repo} en la rama {branch}. Ejecuta una sincronización para importar las incidencias.",
+  "issues.notice.syncCompleted":
+    "Sincronización completada: {fetched} obtenidas, {created} creadas, {updated} actualizadas, {removed} eliminadas.",
+  "issues.notice.syncStatus": "La sincronización terminó con {status}.",
+  "issues.connection.title": "Conexión con GitHub",
+  "issues.connection.loading": "Cargando la conexión con GitHub…",
+  "issues.connection.detailFallback":
+    "Core guarda el token de GitHub cifrado y nunca lo devuelve a Office.",
+  "issues.connection.login": "Inicio de sesión autenticado",
+  "issues.connection.scopes": "Alcances del token",
+  "issues.connection.noneReported": "ninguno informado",
+  "issues.connection.scopesUnreported": "no informado por este tipo de token",
+  "issues.connection.verifiedAt": "Verificado el",
+  "issues.connection.fingerprint": "Huella de la credencial",
+  "issues.connection.revision": "Revisión",
+  "issues.connection.note":
+    "Un token verificado solo demuestra autenticación. No demuestra acceso a repositorios, inferencia, cuota ni autoridad de entrega.",
+  "issues.connection.replace": "Sustituir token",
+  "issues.connection.token": "Token de GitHub",
+  "issues.connection.replaceHelp":
+    "Core lo guarda cifrado. Nunca se escribe en el almacenamiento del navegador ni lo devuelve Core.",
+  "issues.connection.connectHelp":
+    "Usa un token de grano fino o clásico con acceso de lectura a las Incidencias del repositorio. Core lo verifica con GitHub, lo guarda cifrado y nunca lo devuelve.",
+  "issues.connection.verifying": "Verificando…",
+  "issues.connection.verify": "Verificar y guardar",
+  "issues.connection.disconnectLegend": "Confirmar la desconexión de GitHub",
+  "issues.connection.disconnectDescription":
+    "Desconectar borra la credencial cifrada, deshabilita la conexión y detiene toda sincronización.",
+  "issues.connection.disconnecting": "Desconectando…",
+  "issues.connection.confirmDisconnect": "Confirmar desconexión",
+  "issues.connection.disconnect": "Desconectar GitHub",
+  "issues.connection.cancel": "Cancelar",
+  "issues.connection.audit": "Auditoría de la conexión ({count})",
+  "issues.connection.auditEntry": "revisión {revision} por {actor} — {date}",
+  "issues.project.title": "Proyecto y repositorio",
+  "issues.project.loading": "Cargando Proyectos…",
+  "issues.project.noneTitle": "No hay Proyectos registrados",
+  "issues.project.noneDescription":
+    "Registra un Proyecto antes de vincular un repositorio de GitHub.",
+  "issues.project.label": "Proyecto",
+  "issues.project.select": "Selecciona un Proyecto",
+  "issues.repository.name": "Repositorio",
+  "issues.repository.branch": "Rama predeterminada",
+  "issues.repository.boundAt": "Vinculado el",
+  "issues.repository.unbound":
+    "Este Proyecto no tiene ningún repositorio de GitHub vinculado. Vincular no importa incidencias hasta que se ejecute una sincronización.",
+  "issues.repository.change": "Cambiar vinculación",
+  "issues.repository.browse": "Explorar repositorios de GitHub",
+  "issues.repository.browsing": "Cargando repositorios…",
+  "issues.repository.visible": "Repositorio visible",
+  "issues.repository.visiblePlaceholder": "Selecciona un repositorio…",
+  "issues.repository.visibleHelp":
+    "Los repositorios privados solo se muestran cuando el token puede acceder a ellos.",
+  "issues.repository.private": " (privado)",
+  "issues.repository.owner": "Propietario",
+  "issues.repository.ownerPlaceholder": "propietario",
+  "issues.repository.repoPlaceholder": "repositorio",
+  "issues.repository.branchPlaceholder": "main",
+  "issues.repository.binding": "Vinculando…",
+  "issues.repository.bind": "Vincular repositorio",
+  "issues.repository.connectFirst": "Conecta GitHub para explorar repositorios",
+  "issues.list.title": "Incidencias sincronizadas",
+  "issues.list.lastSync": "Última sincronización correcta {date}",
+  "issues.list.neverSynced": "Nunca sincronizado",
+  "issues.list.retryAfter": "Reintento por límite de tasa después de {date}",
+  "issues.list.lastRun":
+    "Última ejecución: {fetched} obtenidas, {created} creadas, {updated} actualizadas, {removed} eliminadas",
+  "issues.list.backoffNotice":
+    "La espera por límite de tasa de GitHub está activa hasta {date}. La sincronización está deshabilitada para todos los Proyectos que comparten esta credencial.",
+  "issues.list.truncatedNotice":
+    "Solo se sincronizan las primeras páginas acotadas de incidencias. Las incidencias adicionales de GitHub no se muestran y la reconciliación de eliminaciones está suspendida para esta instantánea.",
+  "issues.list.selectProjectTitle": "Selecciona un Proyecto",
+  "issues.list.selectProjectDescription":
+    "Elige un Proyecto para inspeccionar su instantánea de incidencias de GitHub.",
+  "issues.filters.state": "Estado",
+  "issues.filters.open": "Abiertas",
+  "issues.filters.closed": "Cerradas",
+  "issues.filters.allStates": "Todos los estados",
+  "issues.filters.label": "Etiqueta",
+  "issues.filters.labelPlaceholder": "etiqueta exacta",
+  "issues.filters.search": "Buscar en el título o el cuerpo",
+  "issues.filters.searchPlaceholder": "texto",
+  "issues.filters.apply": "Aplicar filtros",
+  "issues.filters.clear": "Limpiar",
+  "issues.list.loading": "Cargando incidencias sincronizadas…",
+  "issues.list.unavailableTitle": "Instantánea de incidencias no disponible",
+  "issues.list.unboundTitle": "No hay ningún repositorio vinculado",
+  "issues.list.unboundDescription":
+    "Vincula arriba un repositorio de GitHub y ejecuta una sincronización para importar sus incidencias.",
+  "issues.list.emptyNeverTitle": "No se ha sincronizado ninguna incidencia",
+  "issues.list.emptyNeverDescription":
+    "Ejecuta Sincronizar incidencias para obtener la primera instantánea acotada de este repositorio.",
+  "issues.list.emptyFilteredTitle":
+    "Ninguna incidencia coincide con estos filtros",
+  "issues.list.emptyFilteredDescription":
+    "Ajusta el estado, la etiqueta o el filtro de búsqueda.",
+  "issues.list.emptyRepoTitle": "GitHub no informó de incidencias",
+  "issues.list.emptyRepoDescription":
+    "La última sincronización correcta no encontró incidencias en este repositorio.",
+  "issues.table.label": "Incidencias sincronizadas",
+  "issues.intake.select": "Seleccionar",
+  "issues.intake.selectIssue": "Seleccionar incidencia n.º {number}",
+  "issues.table.number": "#",
+  "issues.table.title": "Título",
+  "issues.table.state": "Estado",
+  "issues.table.labels": "Etiquetas",
+  "issues.table.author": "Autor",
+  "issues.table.updated": "Actualizada",
+  "issues.pagination.showing": "Mostrando {from}–{to} de {total}",
+  "issues.pagination.previous": "Anterior",
+  "issues.pagination.next": "Siguiente",
+  "issues.detail.title": "Detalle de la incidencia",
+  "issues.detail.close": "Cerrar",
+  "issues.detail.loading": "Cargando la incidencia…",
+  "issues.detail.unavailableTitle": "Incidencia no disponible",
+  "issues.detail.author": "Autor: {author}",
+  "issues.detail.updated": "Actualizada {date}",
+  "issues.detail.closed": "Cerrada {date}",
+  "issues.detail.comments": "{count} comentarios en GitHub (sin sincronizar)",
+  "issues.detail.truncated":
+    "El cuerpo almacenado se truncó en el límite de Core. Lee la incidencia completa en GitHub.",
+  "issues.detail.noDescription": "No se proporcionó ninguna descripción.",
+  "issues.detail.untrusted":
+    "Contenido de GitHub no confiable mostrado como texto plano. No es una instrucción para los agentes de Factory y no concede autoridad.",
+  "issues.detail.open": "Abrir la incidencia en GitHub",
+
+  "issues.intake.loading": "Cargando la política de admisión de incidencias…",
+  "issues.intake.unavailableTitle": "Admisión de incidencias no disponible",
+  "issues.intake.title": "Admisión de incidencias gobernada",
+  "issues.intake.badge.enabled": "HABILITADA",
+  "issues.intake.badge.off": "DESACTIVADA",
+  "issues.intake.description":
+    "Desactivada por defecto. Una política reconoce límites exactos de repositorio, autoría, etiquetas, perfil, rutas y presupuesto. Un lote reconoce instantáneas exactas de incidencias. Ninguno inicia una Campaña: la ejecución, la aprobación y el despacho al Worker siguen siendo operaciones explícitas e independientes.",
+  "issues.intake.cancel": "Cancelar",
+  "issues.intake.error.load":
+    "No se pudo cargar la política de admisión de incidencias.",
+  "issues.intake.editPolicy": "Editar y volver a reconocer",
+  "issues.intake.disable": "Deshabilitar la admisión de incidencias",
+  "issues.intake.disableReason": "Motivo de deshabilitación",
+  "issues.intake.disableReasonPlaceholder":
+    "por qué se deshabilita la admisión de incidencias",
+  "issues.intake.disabling": "Deshabilitando…",
+  "issues.intake.confirmDisable": "Confirmar deshabilitación",
+  "issues.intake.notice.disabled":
+    "La admisión de incidencias está deshabilitada. Los lotes activos y sus delegaciones fueron revocados.",
+  "issues.intake.error.disable":
+    "No se pudo deshabilitar la admisión de incidencias.",
+  "issues.intake.defaultDisableReason":
+    "el operador deshabilitó la admisión de incidencias",
+
+  "issues.intake.error.noBinding":
+    "Vincula un repositorio de GitHub antes de habilitar la admisión de incidencias.",
+  "issues.intake.error.legacyBinding":
+    "Esta vinculación es anterior a la identidad inmutable del repositorio. Vuelve a vincular desde Explorar repositorios de GitHub. Las etiquetas por sí solas nunca autorizan la admisión.",
+  "issues.intake.error.noConnection":
+    "GitHub no está conectado. Conecta una credencial antes de habilitar la admisión de incidencias.",
+  "issues.intake.error.profile":
+    "Selecciona un perfil de ejecución ejecutable.",
+  "issues.intake.error.acknowledgePolicy":
+    "Reconoce la política exacta antes de habilitar la admisión de incidencias.",
+  "issues.intake.error.repositoryIdentity":
+    "La vinculación del Proyecto no tiene un ID inmutable de repositorio. Vuelve a vincular desde Explorar repositorios de GitHub.",
+  "issues.intake.error.configUnavailable":
+    "La configuración del Proyecto no está disponible.",
+  "issues.intake.error.reason":
+    "Se requiere un motivo para el registro de auditoría.",
+
+  "issues.intake.fact.policyRevision": "Revisión de la política",
+  "issues.intake.fact.repository": "Repositorio",
+  "issues.intake.fact.repositoryValue": "{name} (ID {id})",
+  "issues.intake.fact.requiredLabels": "Etiquetas obligatorias",
+  "issues.intake.fact.excludedLabels": "Etiquetas excluidas",
+  "issues.intake.fact.authorIds": "ID de autor",
+  "issues.intake.fact.authorAssociation": "Asociación del autor",
+  "issues.intake.fact.profile": "Perfil",
+  "issues.intake.fact.profileValue": "{id} rev. {revision}",
+  "issues.intake.fact.riskCeiling": "Techo de riesgo",
+  "issues.intake.fact.paths": "Rutas",
+  "issues.intake.fact.capabilities": "Capacidades",
+  "issues.intake.fact.maxIssues": "Máx. incidencias / concurrencia",
+  "issues.intake.fact.cost": "Coste por incidencia / lote",
+  "issues.intake.fact.costValue": "{perIssue} / {perBatch} micros",
+  "issues.intake.fact.expires": "Caduca",
+  "issues.intake.fact.autoStart": "Inicio automático",
+  "issues.intake.fact.autoStartValue": "no concedido por esta política",
+  "issues.intake.fact.autoStartNote":
+    "El inicio automático del perfil se ignora para la admisión de incidencias. Esta política solo permite la conciliación determinista en propuestas ordinarias.",
+
+  "issues.intake.field.repository": "Repositorio vinculado",
+  "issues.intake.field.repositoryHelp":
+    "Repositorio vinculado; se requiere el ID inmutable del repositorio de GitHub.",
+  "issues.intake.field.profile": "Perfil de ejecución",
+  "issues.intake.field.profileHelp":
+    "Solo se pueden reconocer revisiones exactas ejecutables.",
+  "issues.intake.field.profileSelect": "Selecciona un perfil…",
+  "issues.intake.field.profileOption": "{name} rev. {revision}",
+  "issues.intake.field.notExecutable": " (no ejecutable)",
+  "issues.intake.field.requiredLabels":
+    "Etiquetas obligatorias (separadas por comas)",
+  "issues.intake.field.requiredLabelsHelp":
+    "Todas las etiquetas indicadas deben estar presentes. Las etiquetas por sí solas nunca autorizan nada.",
+  "issues.intake.field.excludedLabels": "Etiquetas excluidas",
+  "issues.intake.field.authorIds":
+    "ID de autor (ID inmutables de usuario de GitHub)",
+  "issues.intake.field.authorIdsHelp":
+    "Los nombres de usuario no son identidad. Los ID de autor desconocidos fallan de forma cerrada.",
+  "issues.intake.field.associations": "Asociaciones permitidas",
+  "issues.intake.field.paths": "Rutas permitidas (separadas por comas)",
+  "issues.intake.field.pathsHelp":
+    "Deben estar dentro de la configuración del Proyecto. Se rechazan las rutas protegidas de política, entrega, credenciales y migraciones.",
+  "issues.intake.field.capabilities": "Capacidades",
+  "issues.intake.field.capabilitiesHelp":
+    "Capacidades en kebab-case ya presentes en la configuración del Proyecto.",
+  "issues.intake.field.maxIssues": "Máx. incidencias por lote",
+  "issues.intake.field.maxCostPerIssue": "Coste máx. por incidencia (micros)",
+  "issues.intake.field.maxBatchCost": "Coste máx. del lote (micros)",
+  "issues.intake.field.maxAttempts": "Máx. intentos por solicitud",
+  "issues.intake.field.maxSessions": "Máx. sesiones por solicitud",
+  "issues.intake.field.maxTurns": "Máx. turnos por solicitud",
+  "issues.intake.field.maxWallClock": "Tiempo máx. de reloj (segundos)",
+  "issues.intake.field.policyExpiry": "Caducidad de la política",
+  "issues.intake.field.reason": "Motivo del reconocimiento",
+  "issues.intake.field.reasonHelp":
+    "Se guarda en la auditoría inmutable. No incluyas secretos ni cuerpos de incidencias.",
+  "issues.intake.field.acknowledge":
+    "Reconozco esta política exacta de repositorio, autoría, etiquetas, perfil, rutas, R0 y presupuesto. Esto no inicia ninguna Campaña.",
+  "issues.intake.acknowledging": "Reconociendo…",
+  "issues.intake.saveRevision": "Guardar nueva revisión de la política",
+  "issues.intake.enable": "Habilitar la admisión de incidencias",
+  "issues.intake.notice.policySaved":
+    "Revisión de la política de admisión reconocida. La ejecución sigue deshabilitada; cada lote y propuesta siguen siendo explícitos.",
+  "issues.intake.error.savePolicy":
+    "No se pudo guardar la política de admisión de incidencias.",
+  "issues.intake.notice.autoStart":
+    "Este perfil tiene el inicio automático habilitado. La admisión de incidencias lo ignora: siguen siendo necesarios una política, un lote y una aprobación explícita, y este panel no permite iniciar una Campaña de forma autónoma.",
+
+  "issues.intake.selection.title": "Selección exacta de instantáneas",
+  "issues.intake.selection.empty":
+    "Selecciona incidencias con las casillas de la tabla de incidencias sincronizadas. La selección es solo manual; no hay suscripción a incidencias futuras.",
+  "issues.intake.selection.selected":
+    "{count} instantánea(s) seleccionada(s). Coste máximo reconocido: {cost} micros.",
+  "issues.intake.selection.badge": "{count} SELECCIONADAS",
+  "issues.intake.field.batchBudget": "Presupuesto del lote (micros)",
+  "issues.intake.field.batchBudgetHelp":
+    "Debe cubrir {count} instantánea(s) seleccionada(s): al menos {minimum} micros.",
+  "issues.intake.field.batchExpiry": "Caducidad del lote",
+  "issues.intake.field.batchReason": "Motivo del lote",
+  "issues.intake.field.batchReasonHelp":
+    "Ningún cuerpo de incidencia se copia en la auditoría ni en la telemetría.",
+  "issues.intake.field.batchAcknowledge":
+    "Reconozco estos ID de incidencia y resúmenes de contenido exactos. Una edición posterior o una incidencia nueva requiere un nuevo reconocimiento.",
+  "issues.intake.acknowledgingBatch": "Reconociendo el lote…",
+  "issues.intake.acknowledgeBatch": "Reconocer lote finito",
+  "issues.intake.error.noSelection":
+    "Selecciona al menos una instantánea exacta de incidencia.",
+  "issues.intake.error.acknowledgeBatch":
+    "Reconoce las instantáneas exactas seleccionadas antes de crear un lote.",
+  "issues.intake.error.batchReason":
+    "Se requiere un motivo para el reconocimiento del lote.",
+  "issues.intake.error.batchBudget":
+    "El presupuesto del lote debe cubrir las instantáneas seleccionadas (mínimo {minimum} micros).",
+  "issues.intake.notice.batchCreated":
+    "Reconocimiento registrado: {count} instantánea(s) exacta(s). La conciliación sigue requiriendo una acción independiente del operador y nunca inicia una Campaña.",
+  "issues.intake.error.batch": "Falló el reconocimiento del lote.",
+  "issues.intake.error.withCode": "{message} ({code})",
+
+  "issues.intake.batches.title": "Lotes y cola duradera",
+  "issues.intake.batches.emptyTitle": "No hay ningún lote activo",
+  "issues.intake.batches.emptyDescription":
+    "Un lote es el reconocimiento finito de instantáneas exactas de incidencias. No autoriza una Campaña.",
+  "issues.intake.field.revokeReason": "Motivo de revocación",
+  "issues.intake.field.revokeReasonPlaceholder":
+    "opcional; por defecto, el operador revocó el lote de incidencias",
+  "issues.intake.batch.meta":
+    "revisión de política {revision} · {count} incidencia(s) · caduca {date}",
+  "issues.intake.batch.remaining":
+    "Incidencias restantes: {issues}; coste restante: {cost} micros. El reconocimiento no concede autoridad de ejecución ni de fusión.",
+  "issues.intake.batch.proposalIntake": "Admisión de propuesta",
+  "issues.intake.batch.proposalRecorded":
+    "registrada. El inicio de Campaña sigue siendo independiente.",
+  "issues.intake.revokingBatch": "Revocando…",
+  "issues.intake.revokeBatch": "Revocar lote",
+  "issues.intake.notice.batchRevoked":
+    "Lote revocado. Se conservan las reservas existentes.",
+  "issues.intake.error.revoke": "No se pudo revocar el lote.",
+  "issues.intake.defaultRevokeReason":
+    "el operador revocó el lote de incidencias",
+  "issues.intake.item.meta": "autor {author} (ID {id}, {association})",
+  "issues.intake.item.digest": "resumen",
+  "issues.intake.eligibility.eligible": "ELEGIBLE",
+  "issues.intake.eligibility.blocked": "BLOQUEADA",
+
+  "issues.intake.queue.title": "Cola de conciliación duradera",
+  "issues.intake.queue.description":
+    "Un despacho comprueba directamente en GitHub que la instantánea siga vigente y puede crear una propuesta REVIEW_PLAN ordinaria. La ejecución sigue deshabilitada; una Campaña sigue requiriendo una aprobación explícita independiente.",
+  "issues.intake.queue.attempt": "intento {attempts}/{max}",
+  "issues.intake.queue.next": " · próximo {date}",
+  "issues.intake.queue.proposal": "Propuesta",
+  "issues.intake.queue.lead": "Lead",
+  "issues.intake.queue.noCampaign": "no se inició ninguna Campaña.",
+  "issues.intake.checkingFreshness": "Comprobando vigencia…",
+  "issues.intake.createProposal": "Crear propuesta",
+  "issues.intake.notice.proposalCreated":
+    "Propuesta {id} creada como {mode}. No se inició ninguna Campaña y no se realizó ninguna llamada al proveedor.",
+  "issues.intake.notice.proposalReplayed":
+    "Elemento de la cola reproducido desde su propuesta confirmada. No se inició ninguna Campaña.",
+  "issues.intake.error.reconciliation": "Conciliación {status}",
+  "issues.intake.error.reconciliationReasons":
+    "Conciliación {status}: {reasons}",
+  "issues.intake.error.dispatch":
+    "La conciliación de incidencias falló antes de crear una propuesta.",
+  "issues.intake.audit.title": "Auditoría de admisión de incidencias ({count})",
+  "issues.intake.audit.by": "por {actor}",
+
+  "settings.language.title": "Idioma",
+  "settings.language.description":
+    "Elige el idioma de los controles, etiquetas y mensajes de Office. Los identificadores de Core, los códigos de estado, las rutas de proveedores y el contenido de los repositorios nunca se traducen.",
+  "settings.language.label": "Idioma de la interfaz",
+  "settings.language.note":
+    "La preferencia se guarda en este dispositivo y se aplica de inmediato.",
+
+  "access.loading": "Cargando acceso y sesiones de dispositivos…",
+  "access.error.load": "El estado de acceso no está disponible.",
+  "access.error.unknownTitle": "Estado de acceso desconocido",
+  "access.error.unknownDescription": "Core no devolvió información de acceso.",
+  "access.local.title": "Acceso local",
+  "access.local.description": "Estado de acceso de Office según Core",
+  "access.local.refresh": "Actualizar estado",
+  "access.local.sessionNote":
+    "Office usa una sesión de navegador independiente y revocable. La credencial de recuperación del operador no se guarda en este navegador.",
+  "access.remote.title": "Acceso remoto privado",
+  "access.remote.configured":
+    "El acceso remoto privado está configurado. Core no puede comprobar la salud de Tailscale a través del límite aislado de solo socket; abre el endpoint HTTPS privado para confirmar la ruta de Serve. Factory sigue exigiendo su propia sesión de dispositivo inscrita.",
+  "access.remote.connected":
+    "Core puede alcanzar el endpoint privado de salud de Office. Esto solo confirma la ruta de Serve actual; Factory sigue exigiendo su propia sesión de dispositivo inscrita.",
+  "access.remote.disconnected":
+    "Core no puede alcanzar el endpoint privado de salud de Office configurado. Revisa el servicio de Tailscale, la configuración de Serve y el endpoint HTTPS privado en `docs/operations/compose-deployment.md`.",
+  "access.remote.unknown":
+    "No se pudo verificar la conectividad con Tailscale. Revisa el servicio y el endpoint HTTPS privado en `docs/operations/compose-deployment.md`. No trates la pertenencia a la tailnet como una sesión de Factory.",
+  "access.remote.disabled":
+    "El acceso remoto está deshabilitado. Para habilitarlo, sigue la configuración opcional del overlay de Tailscale en `docs/operations/compose-deployment.md`.",
+  "access.remote.endpoint": "Endpoint HTTPS privado:",
+  "access.remote.noEndpoint":
+    "Actualmente no hay ningún endpoint HTTPS privado configurado.",
+  "access.remote.localAvailable":
+    "La conexión local de Office sigue disponible. El overlay de Tailscale no publica los servicios de Core, Worker ni runtime.",
+  "access.remote.guidanceTitle":
+    "Configuración HTTPS de Tailscale y privacidad",
+  "access.remote.guidance":
+    "Habilita MagicDNS y los certificados HTTPS en la configuración de tu tailnet. Los nombres de host de los certificados de Tailscale se publican en los registros públicos de Certificate Transparency, por lo que el nombre de host del dispositivo puede ser visible públicamente. El certificado no publica Factory: Office permanece privado dentro de la tailnet y Funnel sigue deshabilitado.",
+  "access.devices.title": "Dispositivos inscritos",
+  "access.devices.description":
+    "Cada navegador y teléfono recibe su propia sesión.",
+  "access.devices.pair": "Emparejar dispositivo",
+  "access.devices.preparing": "Preparando…",
+  "access.devices.revokeAll": "Revocar todos los dispositivos",
+  "access.devices.revokeAllConfirm":
+    "¿Revocar todas las sesiones de dispositivos inscritos, incluido este dispositivo? Tendrás que inscribirlo de nuevo.",
+  "access.devices.emptyTitle": "No hay otros dispositivos inscritos",
+  "access.devices.emptyDescription":
+    "Empareja un teléfono u otro navegador para crear una sesión independiente.",
+  "access.devices.refreshNote":
+    "La lista de dispositivos se actualiza cada cinco segundos. La última actividad y la caducidad provienen de Core.",
+  "access.pairing.scanTitle": "Escanea con la cámara del teléfono",
+  "access.pairing.scanDescription":
+    "Confirma que este código coincide en ambas pantallas antes de aprobar el dispositivo pendiente.",
+  "access.pairing.verificationCode": "Código de verificación",
+  "access.pairing.expires": "Caduca",
+  "access.pairing.qrNote":
+    "El QR solo contiene un identificador de desafío aleatorio. No concede acceso. Aquí se requiere aprobación antes de que Core cree una sesión para el teléfono.",
+  "access.pairing.cancel": "Cancelar código de emparejamiento",
+  "access.pairing.createdNotice":
+    "Desafío creado. Caduca automáticamente y solo se puede usar una vez.",
+  "access.pairing.cancelledNotice":
+    "Código de emparejamiento cancelado. No se puede reclamar ni aprobar.",
+  "access.pairing.createError":
+    "No se pudo crear un desafío de emparejamiento.",
+  "access.pairing.cancelError":
+    "No se pudo cancelar el código de emparejamiento.",
+  "access.pairing.revokeAllError":
+    "No se pudieron revocar las sesiones de dispositivos.",
+  "access.pairing.qrError":
+    "No se pudo renderizar el código de emparejamiento.",
+  "access.pairing.qrAria":
+    "Código QR de emparejamiento de dispositivo de un solo uso",
+  "access.audit.title": "Actividad de seguridad",
+  "access.audit.description":
+    "Eventos recientes de sesiones y emparejamiento registrados por Core.",
+  "access.audit.emptyTitle": "Aún no hay eventos de seguridad",
+  "access.audit.emptyDescription":
+    "La creación, rotación y revocación de sesiones y las decisiones de emparejamiento aparecen aquí.",
+  "access.audit.by": "por {actor}",
+  "access.audit.unknownDevice": "Dispositivo desconocido",
+  "access.audit.created": "Sesión creada",
+  "access.audit.rotated": "Sesión rotada",
+  "access.audit.revoked": "Sesión revocada",
+  "access.audit.revokedAll": "Todas las sesiones revocadas",
+  "access.audit.claimed": "Emparejamiento reclamado",
+  "access.audit.approved": "Emparejamiento aprobado",
+  "access.audit.rejected": "Emparejamiento rechazado",
+  "access.audit.cancelled": "Emparejamiento cancelado",
+  "access.audit.consumed": "Emparejamiento completado",
+  "access.audit.revocationRequested": "Revocación solicitada",
+  "access.device.verifyCodeBefore": "Verifica el código",
+  "access.device.verifyCodeAfter": "en ambos dispositivos antes de aprobar.",
+  "access.device.enterCode": "Introduce el código que muestra el teléfono",
+  "access.device.confirmCodeAria":
+    "Confirma el código de verificación que muestra el teléfono",
+  "access.device.approvedWaiting":
+    "Aprobado. Se espera que el teléfono complete el intercambio de un solo uso; la aprobación caduca si no se recoge.",
+  "access.device.lastActivity": "Última actividad",
+  "access.device.expires": "caduca el {date}",
+  "access.device.approve": "Aprobar dispositivo",
+  "access.device.reject": "Rechazar",
+  "access.device.cancelApproval": "Cancelar aprobación",
+  "access.device.signOut": "Cerrar sesión",
+  "access.device.revoke": "Revocar",
+  "access.device.signOutConfirm":
+    "¿Cerrar la sesión de este dispositivo? Tendrás que inscribirlo de nuevo.",
+  "access.device.revokeConfirm": "¿Revocar la sesión del dispositivo {name}?",
+  "access.device.actionError": "Falló la acción sobre el dispositivo.",
+  "access.device.unavailable": "No disponible",
+
+  "pair.title": "Empareja este dispositivo",
+  "pair.missingChallenge":
+    "A este enlace de emparejamiento le falta su desafío de un solo uso. Pide al propietario que cree un nuevo código QR.",
+  "pair.waitingOwner":
+    "La aprobación está pendiente en el dispositivo del propietario inscrito. Verifica que el código coincida antes de aprobar.",
+  "pair.verificationCode": "Código de verificación",
+  "pair.waitingStatus":
+    "Esperando la aprobación del propietario. Mantén esta página abierta; esta solicitud de un solo uso no se guarda en el almacenamiento del navegador.",
+  "pair.approved": "Aprobación recibida. Abriendo Factory Office…",
+  "pair.rejected":
+    "El propietario rechazó esta solicitud de dispositivo. Pídele que cree un nuevo código de emparejamiento.",
+  "pair.expired":
+    "Esta solicitud de dispositivo caducó. Pide al propietario que cree un nuevo código de emparejamiento.",
+  "pair.cancelled":
+    "El propietario canceló esta solicitud de emparejamiento. Pídele que cree un nuevo código de emparejamiento.",
+  "pair.confirmOnOwner":
+    "Confirma esta solicitud en la Factory Office del propietario antes de que el teléfono reciba su propia sesión segura.",
+  "pair.deviceName": "Nombre del dispositivo",
+  "pair.deviceNamePlaceholder": "Mi teléfono",
+  "pair.defaultDeviceName": "Dispositivo móvil",
+  "pair.requesting": "Solicitando aprobación…",
+  "pair.request": "Solicitar aprobación del propietario",
+  "pair.errorStatus": "No se pudo comprobar el estado de la aprobación.",
+  "pair.errorClaim":
+    "Este desafío de emparejamiento no es válido o ha caducado.",
+  "pair.privacyNote":
+    "El identificador del desafío se elimina del historial del navegador antes de que Office contacte con Core. No concede acceso; se requiere la aprobación del propietario.",
+  "pair.return": "Volver a Factory",
+
+  "decisions.title": "Bandeja de decisiones",
+  "decisions.description":
+    "Trabajo respaldado por Core que requiere una decisión o conocimiento del operador. Nada de lo que aparece aquí se infiere de la prosa de un proveedor.",
+  "decisions.actionableCount": "Requieren acción: {count}",
+  "decisions.awarenessCount": "Para conocimiento: {count}",
+  "decisions.asOf": "a fecha de {date}",
+  "decisions.loading": "Cargando decisiones…",
+  "decisions.error.load": "No se pudieron cargar las decisiones de Core.",
+  "decisions.needsAction": "Requiere acción",
+  "decisions.needsActionHint": "Solo se muestran operaciones y enlaces de Core",
+  "decisions.emptyActionableTitle": "No hay nada que requiera acción",
+  "decisions.emptyActionableDescription":
+    "Las aprobaciones, las reparaciones de Quality Gate y el uso sin resolver aparecen cuando Core los registra.",
+  "decisions.awareness": "Para conocimiento",
+  "decisions.awarenessHint":
+    "Solo monitorización; no se expone ninguna acción del operador",
+  "decisions.emptyAwarenessTitle":
+    "No hay trabajo en segundo plano sin resolver",
+  "decisions.emptyAwarenessDescription":
+    "Las sesiones de proveedor activas o huérfanas, las ejecuciones fallidas y las acciones que requieren intervención humana aparecen aquí.",
+  "decisions.target.campaigns": "Abrir campañas",
+  "decisions.target.lead": "Abrir Lead",
+  "decisions.target.campaign": "Abrir campaña",
+  "decisions.target.runtime": "Abrir el entorno de ejecución",
+  "decisions.target.action": "Abrir acción",
+  "decisions.target.default": "Abrir destino",
+  "decisions.target.request": "Abrir solicitud",
+  "decisions.subject": "Sujeto {id}",
+  "decisions.refresh": "Actualizar",
+  "decisions.live": "Proyección de Core en vivo",
+  "decisions.stale": "Mostrando la última proyección cargada",
+  "decisions.lastLoaded": "Última carga {date}",
+  "decisions.offlineTitle": "Factory Core no está accesible",
+  "decisions.offlineDetail":
+    "Las acciones están deshabilitadas hasta que Core sea accesible. Los elementos mostrados son la última proyección cargada, no el estado en vivo.",
+  "decisions.offlineActions":
+    "Las acciones no están disponibles mientras Core no sea accesible.",
+  "decisions.connectionError":
+    "El navegador no pudo contactar con Factory Core.",
+  "decisions.error.unauthorized":
+    "Esta sesión de dispositivo no está autorizada para leer decisiones. Vuelve a inscribir o desbloquear este dispositivo.",
+  "decisions.severity.critical": "Crítico",
+  "decisions.severity.attention": "Atención",
+  "decisions.severity.info": "Información",
+  "decisions.context": "Contexto de la decisión",
+  "decisions.project": "Proyecto",
+  "decisions.campaign": "Campaña",
+  "decisions.risk": "Riesgo",
+  "decisions.change": "Cambio propuesto",
+  "decisions.workUnits": "Unidades de trabajo",
+  "decisions.acceptanceCriteria": "Comprobaciones de aceptación",
+  "decisions.negativeCases": "Casos negativos",
+  "decisions.paths": "Rutas",
+  "decisions.impact": "Impacto en presupuesto y permisos",
+  "decisions.budget": "Presupuesto",
+  "decisions.permissions": "Permisos",
+  "decisions.executionMode": "Modo de ejecución",
+  "decisions.route": "Ruta de modelo",
+  "decisions.tools": "Herramientas permitidas",
+  "decisions.delegation": "Delegación",
+  "decisions.noBudget": "No hay presupuesto registrado para esta decisión.",
+  "decisions.noPermissions": "No hay permiso de ejecución registrado.",
+  "decisions.actionUnavailable": "Bloqueado o no disponible:",
+  "decisions.actionUnavailableDetail":
+    "Core informa de una condición bloqueante de autoridad o evidencia. Sigue el espacio de trabajo enlazado; la Bandeja no la omitirá.",
+  "decisions.evidence": "Evidencia e identificadores",
+  "decisions.evidenceSummary": "Evidencia clave",
+  "decisions.revision": "Revisión",
+  "decisions.staleTitle": "El estado cambió",
+  "decisions.staleBody":
+    "El estado de Core cambió desde que se cargó este elemento. Revisa el elemento actualizado y vuelve a confirmar la acción.",
+  "decisions.actions": "Acciones disponibles",
+  "decisions.noActions":
+    "No se expone ninguna mutación de la Bandeja para este elemento. Usa el espacio de trabajo enlazado para inspeccionarlo.",
+  "decisions.measured": "medido",
+  "decisions.unmeasured": "SIN MEDIR",
+  "decisions.budget.attempts": "Intentos",
+  "decisions.budget.sessions": "Sesiones",
+  "decisions.budget.turns": "Turnos",
+  "decisions.budget.inputTokens": "Tokens de entrada",
+  "decisions.budget.outputTokens": "Tokens de salida",
+  "decisions.budget.cost": "Techo de coste",
+  "decisions.budget.deadline": "Fecha límite",
+  "decisions.budget.wallClock": "Tiempo máximo",
+  "decisions.budget.timeout": "Tiempo de espera",
+  "decisions.budget.repairCycles": "Ciclos de reparación",
+  "decisions.budget.parallel": "Unidades en paralelo",
+  "decisions.budget.usage": "Uso",
+  "decisions.budget.recordedCost": "Coste registrado",
+  "decisions.action.approveIntake": "Aprobar plan congelado…",
+  "decisions.action.approveIntakeSubmit": "Aprobar e iniciar campaña",
+  "decisions.action.approved":
+    "Core aprobó el plan congelado exacto e inició la campaña.",
+  "decisions.action.approveIntakeConsequence":
+    "Esto crea una campaña con el plan congelado, la revisión de perfil, la ruta y el presupuesto exactos. Core rechaza una identidad obsoleta; no se puede deshacer desde la Bandeja.",
+  "decisions.action.rationale": "Motivo de la decisión",
+  "decisions.action.rationaleHelp":
+    "Core lo registra con la aprobación. No altera el plan congelado.",
+  "decisions.action.confirmApprove":
+    "He revisado el plan congelado, la revisión de perfil, el alcance, el presupuesto y los criterios de aceptación.",
+  "decisions.action.requiredRationale": "Se requiere un motivo.",
+  "decisions.action.cancelIntake": "Cancelar solicitud…",
+  "decisions.action.cancelIntakeSubmit": "Cancelar solicitud",
+  "decisions.action.intakeCancelled":
+    "Core registró la cancelación de la solicitud.",
+  "decisions.action.cancelIntakeConsequence":
+    "Esto retira la solicitud de Lead asociada a la solicitud de intake. No cancela una campaña ya autorizada.",
+  "decisions.action.reason": "Motivo",
+  "decisions.action.reasonHelp": "Core lo registra con la decisión.",
+  "decisions.action.confirmWithdraw":
+    "Entiendo que esto retira la solicitud en el límite de Lead y no se puede deshacer aquí.",
+  "decisions.action.requiredReason": "Se requiere un motivo.",
+  "decisions.action.withdrawLead": "Retirar solicitud…",
+  "decisions.action.withdrawLeadSubmit": "Retirar solicitud",
+  "decisions.action.leadWithdrawn": "Core registró la retirada de Lead.",
+  "decisions.action.withdrawLeadConsequence":
+    "Esto registra una retirada autoritativa en el límite de Lead. Una campaña ya iniciada no se puede retirar aquí.",
+  "decisions.action.cancelCampaign": "Cancelar campaña…",
+  "decisions.action.cancelCampaignSubmit": "Cancelar campaña",
+  "decisions.action.campaignCancelled":
+    "Core registró la cancelación de la campaña.",
+  "decisions.action.cancelCampaignConsequence":
+    "Esto cancela la campaña y sus registros activos. La terminación del proveedor puede quedar sin confirmar; inspecciona la campaña después.",
+  "decisions.action.confirmCampaignCancel":
+    "Entiendo que la cancelación detiene la campaña; la terminación del proveedor puede quedar sin confirmar.",
+  "decisions.action.completed": "Core registró la decisión.",
+  "decisions.action.noConsequence":
+    "Core registra esta operación. Revisa la proyección actualizada después.",
+  "decisions.action.staleMissing":
+    "Este elemento ya no está en la Bandeja. Puede que otro operador lo haya resuelto.",
+  "decisions.action.alreadyStarted": "Ya se inició una campaña.",
+  "decisions.action.requiredConfirmation":
+    "Confirma la consecuencia antes de continuar.",
+  "decisions.action.error": "La operación de Core falló.",
+  "decisions.action.offline":
+    "El navegador no pudo contactar con Factory Core. La acción no se envió.",
+  "decisions.action.unauthorized":
+    "Este dispositivo no está autorizado para esa operación de Core. Desbloquea o vuelve a inscribir el dispositivo.",
+  "decisions.action.busy": "Aplicando…",
+  "decisions.action.close": "Cerrar",
+  "decisions.action.planHash": "Hash exacto del plan",
+  "decisions.action.profileRevision": "Revisión exacta del perfil",
+  "decisions.action.profileHash": "Hash exacto del perfil",
+  "decisions.action.modelResolved": "Core liberó la reserva del modelo.",
+  "decisions.action.unsupported":
+    "Este tipo de acción de Core no está disponible en esta revisión de Office:",
+
+  "projects.title": "Proyectos",
+  "projects.description":
+    "Conecta un repositorio autorizado de GitHub, importa un repositorio local de la raíz gestionada aprobada o registra una URL Git pública. Core realiza la importación y congela el commit base actual; el registro no concede autoridad de ejecución.",
+  "projects.error.load": "No se pudieron cargar los proyectos.",
+  "projects.error.register": "Falló el registro del proyecto.",
+  "projects.error.configLoad":
+    "No se pudo cargar la configuración del proyecto.",
+  "projects.error.configSave":
+    "Falló la actualización de la configuración del proyecto.",
+  "projects.register.title": "Registrar un proyecto Git",
+  "projects.register.label":
+    "URL del repositorio Git HTTPS (o ruta gestionada)",
+  "projects.register.submit": "Registrar proyecto",
+  "projects.register.busy": "Registrando…",
+  "projects.register.notice": "Se registró {id} en el commit base {commit}.",
+  "projects.list.title": "Proyectos registrados ({count})",
+  "projects.list.empty": "No hay proyectos registrados.",
+  "projects.table.label": "Proyectos registrados",
+  "projects.table.id": "ID",
+  "projects.table.repository": "Repositorio",
+  "projects.table.baseCommit": "Commit base",
+  "projects.table.created": "Creado",
+  "projects.table.actions": "Acciones",
+  "projects.browseFiles": "Explorar archivos",
+  "projects.configure": "Configurar",
+  "projects.config.title": "Configuración del proyecto — {id}",
+  "projects.config.revision": "Revisión {revision}",
+  "projects.config.base": "base",
+  "projects.config.hash": "hash",
+  "projects.config.allowedPaths":
+    "Rutas permitidas del repositorio (separadas por comas)",
+  "projects.config.allowedPathsPlaceholder": "src, tests",
+  "projects.config.capabilities": "Capacidades",
+  "projects.config.qualityProfile": "Perfil de calidad",
+  "projects.config.active": "Activo",
+  "projects.config.save": "Guardar configuración del proyecto",
+  "projects.config.saving": "Guardando…",
+  "projects.config.notice":
+    "Configuración del proyecto revisión {revision} guardada ({hash}).",
+  "projects.count": "{count} proyectos",
+  "projects.countOne": "{count} proyecto",
+  "projects.openIssues": "Integración con GitHub",
+  "projects.import.title": "Añadir un proyecto",
+  "projects.import.description":
+    "Importa un repositorio autorizado de GitHub mediante la conexión cifrada de Core, importa un repositorio dentro de la raíz gestionada aprobada o registra una URL Git pública. Core realiza la importación; la Office nunca recibe un token.",
+  "projects.import.loading": "Cargando opciones de importación…",
+  "projects.import.tab.github": "GitHub",
+  "projects.import.tab.local": "Repositorio local",
+  "projects.import.tab.url": "URL Git pública",
+  "projects.import.name": "Nombre del proyecto (opcional)",
+  "projects.import.namePlaceholder":
+    "Se deriva del repositorio cuando está vacío",
+  "projects.import.github.connected": "Conectado",
+  "projects.import.github.disconnectedTitle": "GitHub no está conectado",
+  "projects.import.github.disconnectedBody":
+    "Configura un token cifrado en la integración con GitHub antes de importar un repositorio público o privado. La Office nunca recibe el token.",
+  "projects.import.github.openSettings": "Abrir integración con GitHub",
+  "projects.import.github.login": "Sesión iniciada como {login}",
+  "projects.import.github.scopes": "Ámbitos informados: {scopes}",
+  "projects.import.github.scopesUnreported":
+    "Este token no informa ámbitos; GitHub informa el acceso específico por repositorio.",
+  "projects.import.github.revision": "Revisión de conexión {revision}",
+  "projects.import.github.appUnavailable":
+    "La incorporación mediante GitHub App y OAuth no está implementada. Solo la conexión por token existente puede listar e importar repositorios.",
+  "projects.import.github.searchLabel": "Buscar un repositorio autorizado",
+  "projects.import.github.searchPlaceholder": "propietario/repositorio",
+  "projects.import.github.search": "Buscar repositorios",
+  "projects.import.github.loading": "Cargando repositorios…",
+  "projects.import.github.empty": "No hay repositorios autorizados",
+  "projects.import.github.emptyDescription":
+    "El token no ve ningún repositorio que coincida con esta búsqueda. Revisa el acceso del token; Factory no lo amplía.",
+  "projects.import.github.rateLimited":
+    "El límite de GitHub está agotado hasta {until}.",
+  "projects.import.github.defaultBranch": "Rama por defecto",
+  "projects.import.github.pushed": "Último push {date}",
+  "projects.import.github.connect": "Importar repositorio",
+  "projects.import.github.connecting": "Importando…",
+  "projects.import.github.notice": "Se importó {name}. Abriendo su resumen.",
+  "projects.import.github.error":
+    "No se pudieron cargar los repositorios autorizados.",
+  "projects.import.github.errorConnect":
+    "Falló la importación del repositorio.",
+  "projects.import.local.disabledTitle":
+    "La importación local está deshabilitada",
+  "projects.import.local.path": "Ruta absoluta del repositorio local",
+  "projects.import.local.submit": "Importar repositorio local",
+  "projects.import.local.busy": "Importando…",
+  "projects.import.url.label": "URL HTTPS de repositorio Git público",
+  "projects.import.url.help":
+    "Úsala para un host Git público sin credenciales. Un repositorio privado de GitHub debe importarse desde la pestaña GitHub para que Core reutilice la conexión cifrada.",
+  "projects.visibility.public": "público",
+  "projects.visibility.private": "privado",
+  "projects.search.label": "Buscar proyectos",
+  "projects.search.placeholder": "Nombre, propietario o repositorio",
+  "projects.search.clear": "Borrar búsqueda",
+  "projects.list.emptyDescription":
+    "Conecta un repositorio autorizado de GitHub o importa un repositorio de la raíz gestionada aprobada para crear el primer proyecto.",
+  "projects.list.emptyAction": "Conectar GitHub",
+  "projects.list.noMatches": "Ningún proyecto coincide con esta búsqueda",
+  "projects.table.project": "Proyecto",
+  "projects.table.source": "Origen",
+  "projects.table.branch": "Rama por defecto",
+  "projects.table.registered": "Registrado",
+  "projects.detail.open": "Abrir resumen",
+  "projects.detail.back": "Volver a Proyectos",
+  "projects.detail.loading": "Cargando el resumen del proyecto…",
+  "projects.detail.error": "No se pudo cargar el resumen del proyecto.",
+  "projects.detail.errorTitle": "Resumen del proyecto no disponible",
+  "projects.detail.notFound": "Proyecto no encontrado",
+  "projects.detail.browseFiles": "Explorar archivos",
+  "projects.detail.active": "Activo",
+  "projects.detail.inactive": "Inactivo",
+  "projects.detail.localRepository":
+    "Repositorio en almacenamiento gestionado por Factory",
+  "projects.detail.sourceTitle": "Origen y revisión",
+  "projects.detail.sourceUrl": "URL de origen",
+  "projects.detail.defaultBranch": "Rama por defecto",
+  "projects.detail.baseCommit": "Commit base congelado",
+  "projects.detail.created": "Registrado",
+  "projects.detail.lastActivity": "Última actividad",
+  "projects.detail.noActivity": "Aún no hay actividad registrada",
+  "projects.detail.remoteOrigin": "Origen Git local",
+  "projects.detail.connection": "Conexión con GitHub",
+  "projects.detail.login": "Sesión iniciada como {login}",
+  "projects.detail.scopes": "Ámbitos informados: {scopes}",
+  "projects.detail.scopesUnreported":
+    "Este token no informa ámbitos; el acceso queda limitado a lo que GitHub le conceda.",
+  "projects.detail.connectionRevision": "Revisión de conexión {revision}",
+  "projects.detail.connectionNotApplicable":
+    "Este proyecto local no usa una conexión con GitHub.",
+  "projects.detail.binding": "Repositorio vinculado",
+  "projects.detail.boundAt": "Vinculado",
+  "projects.detail.sync": "Sincronización de issues",
+  "projects.detail.notSynced": "No hay sincronización de issues registrada.",
+  "projects.detail.notBound":
+    "Este proyecto no está vinculado a un repositorio de GitHub. La sincronización de issues no está disponible.",
+  "projects.detail.activityTitle": "Campañas y decisiones",
+  "projects.detail.activeCampaigns": "Campañas activas: {count}",
+  "projects.detail.noActiveCampaigns": "No hay campañas activas.",
+  "projects.detail.pendingDecisions": "Decisiones pendientes: {count}",
+  "projects.detail.noPendingDecisions": "No hay decisiones pendientes.",
+  "projects.detail.capabilitiesTitle": "Herramientas y capacidades",
+  "projects.detail.noCapabilities":
+    "No se concede ninguna capacidad. Configúralas explícitamente antes de ejecutar.",
+  "projects.detail.qualityProfile": "Perfil de calidad",
+  "projects.detail.configRevision": "Revisión de configuración",
+  "projects.detail.allowedPaths": "Rutas permitidas del repositorio",
+  "projects.detail.toolingTitle": "Descubrimiento de toolchain",
+  "projects.detail.toolingDescription":
+    "Un escaneo acotado lee manifiestos conocidos del commit base congelado. El resultado es evidencia orientativa, no prueba de que un comando funcione ni una concesión de capacidad.",
+  "projects.detail.scan": "Escanear repositorio",
+  "projects.detail.rescan": "Volver a escanear",
+  "projects.detail.scanning": "Escaneando…",
+  "projects.detail.scanNotice": "El escaneo registró {count} toolchain(s).",
+  "projects.detail.noDiscovery":
+    "No hay un escaneo registrado. Ejecuta uno para inspeccionar la evidencia de manifiestos en el commit base.",
+  "projects.detail.discoveryMeta": "Escaneado {commit} el {date}.",
+  "projects.detail.discoveryStale": "El commit base ha avanzado",
+  "projects.detail.noToolchains":
+    "No se encontró ningún manifiesto de toolchain conocido. No se sugiere ninguna capacidad ni comprobación.",
+  "projects.detail.advisory":
+    "La evidencia se limita a este escaneo acotado de manifiestos. Procedencia:",
+  "projects.detail.suggestedCapabilities": "Capacidades sugeridas",
+  "projects.detail.suggestedChecks": "Comprobaciones seguras sugeridas",
+  "projects.detail.noSuggestedChecks":
+    "No se dedujo ningún comando de comprobación a partir de la evidencia disponible.",
+  "projects.detail.allowedPathsRequired":
+    "Rutas permitidas del repositorio (obligatorias antes de aplicar capacidades)",
+  "projects.detail.applyCapabilities": "Aplicar capacidades sugeridas",
+  "projects.detail.applying": "Aplicando…",
+  "projects.detail.applied":
+    "Las capacidades sugeridas se añadieron a la revisión de configuración del proyecto.",
+  "projects.detail.errorScan": "Falló el descubrimiento de toolchain.",
+  "projects.detail.errorApply":
+    "No se pudieron aplicar las capacidades sugeridas. Actualiza el resumen y reintenta.",
+  "projects.detail.checkId": "Comprobación",
+  "projects.detail.checkKind": "Tipo",
+  "projects.detail.checkCommand": "Comando",
+  "projects.detail.technical": "Detalles técnicos",
+  "projects.detail.projectId": "ID del proyecto",
+  "projects.detail.repositoryPath": "Ruta del repositorio gestionado",
+  "projects.detail.identity": "Identidad del repositorio",
+  "projects.detail.sourceKey": "Clave de identidad del origen",
+  "projects.detail.configHash": "Hash de configuración",
+
+  "runs.title": "Ejecuciones",
+  "runs.description":
+    "Las ejecuciones se crean desde una campaña autorizada. Pon en cola un intento por cada ejecución en cola; el arrendamiento y la ejecución del Worker se observan aquí y la Office no los activa.",
+  "runs.error.load": "No se pudieron cargar las ejecuciones.",
+  "runs.error.queue": "Falló la puesta en cola del intento.",
+  "runs.section.allRuns": "Todas las ejecuciones ({count})",
+  "runs.list.empty":
+    "Aún no hay ejecuciones. Autoriza una campaña y pon una ejecución en cola primero.",
+  "runs.table.label": "Ejecuciones",
+  "runs.table.run": "Ejecución",
+  "runs.table.campaign": "Campaña",
+  "runs.table.status": "Estado",
+  "runs.table.attempts": "Intentos",
+  "runs.table.created": "Creada",
+  "runs.table.control": "Control",
+  "runs.queue": "Poner intento en cola",
+  "runs.queueing": "Poniendo en cola…",
+  "runs.attemptQueued": "intento en cola",
+  "runs.section.allAttempts": "Todos los intentos ({count})",
+  "runs.attempts.empty": "No hay intentos en cola.",
+  "runs.table.attempt": "Intento",
+  "runs.notice.queued":
+    "Intento {attempt} puesto en cola para la ejecución {run}.",
+
+  "workers.title": "Trabajadores",
+  "workers.description":
+    "Solo credenciales de Worker registradas. Esta vista no inventa estado de actividad, latido ni ejecución.",
+  "workers.error.load": "No se pudieron cargar los trabajadores.",
+  "workers.section.registered": "Trabajadores registrados ({count})",
+  "workers.list.empty": "No hay trabajadores registrados.",
+  "workers.table.label": "Trabajadores registrados",
+  "workers.table.worker": "Trabajador",
+  "workers.table.credentialUpdated": "Credencial actualizada",
+
+  "runtime.title": "Entorno de ejecución",
+  "runtime.description":
+    "Proyecciones duraderas de Core para sesiones de proveedor, reservas de llamadas a modelos, limpieza y telemetría. Un registro ausente no demuestra que la limpieza haya tenido éxito.",
+  "runtime.meta.coreHealthy": "Core en buen estado",
+  "runtime.meta.coreUnavailable": "Core no disponible",
+  "runtime.meta.coreVersion": "Core {version}",
+  "runtime.meta.fetched": "Obtenido {date}",
+  "runtime.meta.workers": "Trabajadores registrados: {count}",
+  "runtime.actions.inbox": "Bandeja de decisiones",
+  "runtime.actions.settings": "Configuración",
+  "runtime.error.load": "No se pudo cargar el estado del entorno de ejecución.",
+  "runtime.staleSuffix":
+    "La instantánea mostrada del entorno de ejecución puede estar desactualizada.",
+  "runtime.loading": "Cargando el estado del entorno de ejecución…",
+  "runtime.tabs.label": "Secciones del entorno de ejecución",
+  "runtime.tabs.overview": "Resumen",
+  "runtime.tabs.sessions": "Sesiones",
+  "runtime.tabs.modelCalls": "Llamadas a modelos",
+  "runtime.tabs.diagnostics": "Diagnóstico",
+  "runtime.metrics.summaryAria": "Resumen del entorno de ejecución",
+  "runtime.metrics.spend.label": "Gasto medido muestreado",
+  "runtime.metrics.spend.detail":
+    "Sesiones con uso conocido más las últimas 200 llamadas a modelos; no es un total (sesiones: {sessions}, llamadas: {calls})",
+  "runtime.metrics.ceiling.label": "Techo reservado",
+  "runtime.metrics.ceiling.detail":
+    "Llamadas a modelos sin resolver: {calls} + turnos de proveedor abiertos: {turns}",
+  "runtime.metrics.unresolved.label": "Llamadas sin resolver",
+  "runtime.metrics.unresolved.detail": "Reservas de Core AMBIGUOUS o UNKNOWN",
+  "runtime.metrics.openSessions.label": "Sesiones abiertas",
+  "runtime.metrics.openSessions.detail":
+    "Sesiones registradas: {total}; INTENT, ACTIVE, cancelación o huérfanas",
+  "runtime.metrics.unmeasured.label": "Sesiones sin medición",
+  "runtime.metrics.unmeasured.detail": "Excluidas del gasto medido",
+  "runtime.metrics.telemetry.label": "Telemetría",
+  "runtime.metrics.telemetry.detail": "cursor {cursor} · {pending} pendientes",
+  "runtime.availability.title": "Disponibilidad de servicios",
+  "runtime.availability.hint": "Solo se muestran hechos respaldados por Core",
+  "runtime.availability.core": "Core",
+  "runtime.availability.workers": "Trabajadores registrados",
+  "runtime.availability.sessions": "Sesiones de proveedor",
+  "runtime.availability.modelCalls": "Llamadas a modelos recientes",
+  "runtime.availability.sampled": "Muestreadas: {count}",
+  "runtime.availability.openTurns": "Turnos de proveedor abiertos",
+  "runtime.availability.boundaryNote":
+    "La API actual de Core no expone el estado del Supervisor ni del entorno de ejecución anidado. Office no infiere su salud a partir de un registro ausente, una vista desconectada o el estado de un proceso de Compose.",
+  "runtime.states.title": "Estados de sesión",
+  "runtime.states.inspect": "Inspeccionar sesiones",
+  "runtime.states.emptyTitle": "No hay sesiones de proveedor",
+  "runtime.states.emptyDescription":
+    "Core no tiene registrada ninguna sesión de proveedor.",
+  "runtime.workers.title": "Trabajadores registrados",
+  "runtime.workers.hint":
+    "El registro no es un latido ni un certificado de salud",
+  "runtime.workers.emptyTitle": "No hay trabajadores registrados",
+  "runtime.workers.emptyDescription":
+    "Un Worker aparece después de registrarse; esto no demuestra que esté en línea.",
+  "runtime.workers.table.label": "Trabajadores registrados",
+  "runtime.workers.table.worker": "Trabajador",
+  "runtime.workers.table.lastRegistration": "Último registro de credencial",
+  "runtime.unresolved.title": "Reservas sin resolver",
+  "runtime.unresolved.open": "Abrir llamadas a modelos",
+  "runtime.unresolved.emptyTitle": "No hay llamadas a modelos sin resolver",
+  "runtime.unresolved.emptyDescription":
+    "No hay ninguna reserva de Core AMBIGUOUS o UNKNOWN registrada.",
+  "runtime.unresolved.ceiling": "Techo {cost}",
+  "runtime.sessions.title": "Sesiones de proveedor (mostradas: {count})",
+  "runtime.sessions.hint":
+    "Los recibos de limpieza son evidencia registrada, no prueba de aislamiento",
+  "runtime.filters.state": "Estado",
+  "runtime.filters.usage": "Uso",
+  "runtime.filters.cleanup": "Limpieza",
+  "runtime.filters.workerOrRoute": "Trabajador o ruta",
+  "runtime.filters.workerOrRoutePlaceholder":
+    "Filtrar por trabajador, proveedor o modelo",
+  "runtime.filters.allStates": "Todos los estados",
+  "runtime.filters.allUsage": "Todo el uso",
+  "runtime.filters.measured": "Medido",
+  "runtime.filters.unmeasured": "Sin medición",
+  "runtime.filters.allCleanup": "Todos los estados de limpieza",
+  "runtime.filters.receiptRecorded": "Recibo registrado",
+  "runtime.filters.noReceipt": "Sin recibo",
+  "runtime.sessions.emptyTitle": "No hay sesiones coincidentes",
+  "runtime.sessions.emptyDescription":
+    "Ajusta los filtros; no se infiere ningún estado para los registros ocultos.",
+  "runtime.calls.title":
+    "Llamadas a modelos propiedad de Core (mostradas: {count})",
+  "runtime.calls.hint":
+    "Las llamadas recientes se muestrean hasta 200; las llamadas sin resolver usan el libro completo",
+  "runtime.filters.role": "Rol",
+  "runtime.filters.allRoles": "Todos los roles",
+  "runtime.filters.roleLead": "Lead",
+  "runtime.filters.roleSemanticReviewer": "Revisor semántico",
+  "runtime.filters.roleEvaluation": "Evaluación",
+  "runtime.calls.emptyTitle": "No hay llamadas a modelos coincidentes",
+  "runtime.calls.emptyDescription":
+    "Ajusta los filtros; la muestra de llamadas recientes nunca oculta reservas sin resolver.",
+  "runtime.calls.table.label": "Llamadas a modelos",
+  "runtime.calls.table.reservation": "Reserva",
+  "runtime.calls.table.roleScope": "Rol / ámbito",
+  "runtime.calls.table.route": "Ruta",
+  "runtime.calls.table.state": "Estado",
+  "runtime.calls.table.usage": "Uso",
+  "runtime.calls.table.ceiling": "Techo",
+  "runtime.calls.table.updated": "Actualizada",
+  "runtime.calls.scope": "ámbito",
+  "runtime.calls.tokens": "{tokens} tokens / {cost}",
+  "runtime.calls.unresolvedTitle": "Reservas sin resolver ({count})",
+  "runtime.calls.unresolvedHint":
+    "La liberación es explícita y auditada por Core; no es automática",
+  "runtime.telemetry.title": "Exportación de telemetría",
+  "runtime.telemetry.emptyTitle": "No hay estado de observabilidad",
+  "runtime.telemetry.emptyDescription":
+    "Core no devolvió el estado de telemetría.",
+  "runtime.telemetry.cursor": "Cursor",
+  "runtime.telemetry.exported": "Exportados",
+  "runtime.telemetry.pending": "Pendientes",
+  "runtime.telemetry.droppedHints": "Indicadores descartados",
+  "runtime.telemetry.failedAttempts": "Intentos fallidos",
+  "runtime.telemetry.note":
+    "Un fallo del exportador es degradación de la telemetría, no estado autoritativo de Factory.",
+  "runtime.policy.title": "Política del entorno de ejecución",
+  "runtime.policy.openSettings": "Abrir configuración",
+  "runtime.policy.semanticReview": "Revisión semántica",
+  "runtime.policy.modelReceipts": "Recibos MODEL autorizados",
+  "runtime.policy.deterministicReceipts": "Solo recibos DETERMINISTIC",
+  "runtime.policy.maxOutputTokens": "Máximo de tokens de salida",
+  "runtime.policy.updated": "Actualizado",
+  "runtime.policy.empty":
+    "No se devolvió la configuración del entorno de ejecución.",
+  "runtime.policy.note":
+    "Las credenciales de proveedores nunca se muestran aquí. Configúralas en Configuración.",
+  "runtime.boundaries.title": "Límites de los servicios",
+  "runtime.boundaries.hint":
+    "No todos los componentes del entorno de ejecución exponen estado",
+  "runtime.boundaries.core": "Core",
+  "runtime.boundaries.coreVersion": "versión {version}",
+  "runtime.boundaries.workers": "Trabajadores",
+  "runtime.boundaries.workersDetail":
+    "Registrados: {count}; solo el registro de credencial, no un latido",
+  "runtime.boundaries.supervisor": "Supervisor",
+  "runtime.boundaries.nestedRuntime": "Entorno de ejecución anidado de Podman",
+  "runtime.boundaries.broker": "Broker",
+  "runtime.boundaries.notExposed": "No expuesto por la API actual de Core",
+  "runtime.boundaries.note":
+    "Los registros de Compose siguen siendo la fuente de diagnóstico para los componentes sin proyección en Core. Office no infiere detenido, saludable o limpio a partir de un registro ausente en el navegador.",
+
+  "sessions.table.label": "Sesiones de proveedor",
+  "sessions.table.session": "Sesión",
+  "sessions.table.attempt": "Intento",
+  "sessions.table.route": "Trabajador / ruta",
+  "sessions.table.state": "Estado",
+  "sessions.table.usage": "Uso",
+  "sessions.table.cleanup": "Limpieza",
+  "sessions.table.updated": "Actualizada",
+  "sessions.generation": "generación {generation}",
+  "sessions.usage.inputOutput": "{input} entrada / {output} salida",
+  "sessions.usage.total": "{tokens} tokens · {cost}",
+  "sessions.cleanup.recordedWithheld": "registrado (recibo retenido)",
+  "sessions.cleanup.missing": "sin recibo de limpieza",
+  "sessions.cleanup.unrecognized": "recibo de limpieza no reconocido",
+  "sessions.cleanup.notRecorded": "aún sin registrar",
+  "sessions.emptyTitle": "No hay sesiones de proveedor",
+  "sessions.emptyDescription":
+    "No hay ninguna sesión de proveedor registrada para este ámbito.",
+
+  "modelResolution.operator": "Operador",
+  "modelResolution.reason": "Motivo de liberación",
+  "modelResolution.reasonPlaceholder": "¿Por qué liberas esta reserva?",
+  "modelResolution.release": "Liberar reserva",
+  "modelResolution.releasing": "Liberando…",
+  "modelResolution.reasonRequired": "Se requiere un motivo.",
+  "modelResolution.error": "No se pudo liberar la reserva del modelo.",
+  "modelResolution.refreshError":
+    "La reserva se liberó, pero falló la actualización. Recarga para confirmar.",
+  "overview.title": "Resumen",
+  "overview.description":
+    "Estado operativo a partir de registros duraderos de Core. Los valores desconocidos y no medidos se muestran como tales.",
+  "overview.meta.coreSnapshot": "Instantánea de Core {date}",
+  "overview.meta.workers": "Trabajadores registrados: {count}",
+  "overview.actions.openAgents": "Abrir Oficina de agentes",
+  "overview.actions.openDecisions": "Abrir Bandeja de decisiones",
+  "overview.actions.runtime": "Entorno de ejecución",
+  "overview.error.load": "No se pudo cargar el resumen de Core.",
+  "overview.loading": "Cargando resumen de Core…",
+  "overview.summary.aria": "Resumen operativo",
+  "overview.metric.authorizedCampaigns": "Campañas autorizadas",
+  "overview.metric.authorizedCampaignsDetail":
+    "{count} en espera de autorización",
+  "overview.metric.runningAgents": "Agentes en ejecución",
+  "overview.metric.runningAgentsDetail": "{count} sesiones sin resolver",
+  "overview.metric.runningAgentsDetailOne": "1 sesión sin resolver",
+  "overview.metric.pendingDecisions": "Decisiones pendientes",
+  "overview.metric.pendingDecisionsDetail":
+    "Elementos accionables respaldados por Core",
+  "overview.metric.blockedSignals": "Señales bloqueadas",
+  "overview.metric.blockedSignalsDetail":
+    "Acciones, Ejecuciones, Campañas o Puertas",
+  "overview.metric.acceptedCandidates": "Candidatos aceptados",
+  "overview.metric.acceptedDetail": "{count} registrados",
+  "overview.metric.measuredSpend": "Gasto medido",
+  "overview.metric.measuredTokens": "{tokens} tokens medidos",
+  "overview.metric.open": "Abrir",
+  "overview.metric.openAria": "Abrir {label}",
+  "overview.gate.title": "Resultados de la Puerta de calidad",
+  "overview.gate.all": "Todos los candidatos",
+  "overview.gate.emptyTitle": "Sin decisiones de Puerta",
+  "overview.gate.emptyDescription":
+    "Un candidato aparece aquí después de registrar la evidencia independiente del verificador y del revisor.",
+  "overview.facts.unmeasuredSessions": "Sesiones no medidas",
+  "overview.facts.unmeasuredModelCalls": "Llamadas a modelo no medidas",
+  "overview.facts.unmeasuredBound": "Límite no medido",
+  "overview.facts.core": "Core",
+  "overview.decisions.title": "Bandeja de decisiones",
+  "overview.decisions.open": "Abrir Bandeja",
+  "overview.decisions.emptyTitle": "No hay decisiones en espera",
+  "overview.decisions.emptyDescription":
+    "Las nuevas aprobaciones o intervenciones aparecen aquí cuando Core las registra.",
+  "overview.accepted.title": "Candidatos aceptados recientes",
+  "overview.accepted.campaigns": "Campañas",
+  "overview.accepted.emptyTitle": "No hay candidatos aceptados",
+  "overview.accepted.emptyDescription":
+    "La aceptación solo se muestra cuando Core registra una Puerta de calidad ACCEPTED.",
+  "overview.runtime.title": "Salud del entorno de ejecución",
+  "overview.runtime.inspect": "Inspeccionar entorno",
+  "overview.runtime.activeAgents": "Agentes activos",
+  "overview.runtime.unresolvedSessions": "Sesiones sin resolver",
+  "overview.runtime.unresolvedModelCalls": "Llamadas a modelo sin resolver",
+  "overview.runtime.telemetry": "Exportación de telemetría",
+  "overview.recentEvents.title": "Eventos recientes",
+  "overview.recentEvents.shown": "{count} mostrados",
+  "overview.recentEvents.emptyTitle": "Sin eventos",
+  "overview.recentEvents.emptyDescription":
+    "Core registra un evento cuando cambia el estado de Proyecto, Acción, Ejecución o calidad.",
+
+  "delegations.title": "Delegaciones",
+  "delegations.description":
+    "Una delegación es una concesión acotada y revocable. No inicia trabajo por sí misma y la ejecución autónoma está desactivada por defecto.",
+  "delegations.error.load": "No se pudieron cargar las delegaciones.",
+  "delegations.error.create": "No se pudo crear la delegación.",
+  "delegations.error.revoke": "No se pudo revocar.",
+  "delegations.validation.project": "Selecciona un Proyecto.",
+  "delegations.validation.paths": "Se requiere al menos una ruta.",
+  "delegations.form.title": "Nueva delegación",
+  "delegations.form.project": "Proyecto",
+  "delegations.form.id": "ID de delegación (vacío para generar)",
+  "delegations.form.idPlaceholder": "se genera si queda vacío",
+  "delegations.form.provider": "Proveedor",
+  "delegations.form.model": "Modelo",
+  "delegations.form.mode": "Modo",
+  "delegations.form.paths": "Rutas permitidas (separadas por comas)",
+  "delegations.form.limits":
+    "Límites: 2 intentos, 16 sesiones, 4 solicitudes, 32 intentos acumulados, 300 s por intento, caducidad de 24 h. Solo R0/R1; R2/R3 requieren aprobación protegida.",
+  "delegations.form.creating": "Creando…",
+  "delegations.form.create": "Crear delegación",
+  "delegations.notice.created":
+    "Delegación {id} creada con revisión {revision}.",
+  "delegations.notice.revoked": "Delegación {id} revocada.",
+  "delegations.confirm.revoke": "¿Revocar la delegación {id}?",
+  "delegations.list.title": "Delegaciones ({count})",
+  "delegations.list.empty": "No hay delegaciones.",
+  "delegations.table.id": "ID",
+  "delegations.table.project": "Proyecto",
+  "delegations.table.route": "Ruta",
+  "delegations.table.paths": "Rutas",
+  "delegations.table.state": "Estado",
+  "delegations.table.usage": "Uso",
+  "delegations.table.expires": "Caduca",
+  "delegations.table.actions": "Acciones",
+  "delegations.table.autonomous": "autónoma",
+  "delegations.table.revoke": "Revocar",
+  "delegations.table.usageValue":
+    "{requests} sol · {sessions} ses · {attempts} int",
+
+  "campaignDetail.title": "Campaña {id}",
+  "campaignDetail.descriptionFallback":
+    "El objetivo congelado de la Acción no está disponible.",
+  "campaignDetail.loading": "Cargando Campaña…",
+  "campaignDetail.error.load": "No se pudo cargar la Campaña.",
+  "campaignDetail.error.refresh":
+    "No se pudo actualizar la Campaña tras la cancelación.",
+  "campaignDetail.error.stale":
+    "La instantánea mostrada puede estar desactualizada.",
+  "campaignDetail.pending": "pendiente",
+  "campaignDetail.back": "Volver a Campañas",
+  "campaignDetail.notice.cancelled":
+    "La Campaña {id} está {status}. Core registra la cancelación; la terminación del proveedor puede quedar sin confirmar.",
+  "campaignDetail.meta.action": "Acción",
+  "campaignDetail.meta.authorizationMissing": "Autorización no registrada",
+  "campaignDetail.meta.latestGate": "Última Puerta:",
+  "campaignDetail.meta.fetched": "Obtenido {date}",
+  "campaignDetail.summary.title": "Panorama operativo",
+  "campaignDetail.summary.noAttention":
+    "No hay señales de atención del operador registradas",
+  "campaignDetail.summary.attention": "{count} señales de atención",
+  "campaignDetail.summary.attentionOne": "1 señal de atención",
+  "campaignDetail.summary.project": "Proyecto",
+  "campaignDetail.summary.action": "Acción",
+  "campaignDetail.summary.frozenPlan": "Plan congelado",
+  "campaignDetail.summary.authorization": "Autorización",
+  "campaignDetail.summary.latestRun": "Última Ejecución",
+  "campaignDetail.summary.latestAttempt": "Último Intento",
+  "campaignDetail.summary.latestCandidate": "Último Candidato",
+  "campaignDetail.summary.latestGate": "Última Puerta",
+  "campaignDetail.summary.notRecorded": "no registrado",
+  "campaignDetail.summary.none": "ninguno",
+  "campaignDetail.tabs.label": "Secciones de la Campaña",
+  "campaignDetail.tabs.overview": "Resumen",
+  "campaignDetail.tabs.workgraph": "WorkGraph",
+  "campaignDetail.tabs.execution": "Ejecución",
+  "campaignDetail.tabs.candidates": "Candidatos",
+  "campaignDetail.tabs.evidence": "Evidencia",
+  "campaignDetail.tabs.gate": "Puerta de calidad",
+  "campaignDetail.tabs.budget": "Presupuesto y uso",
+  "campaignDetail.tabs.events": "Eventos",
+  "campaignDetail.attention.authorization": "La Campaña espera autorización",
+  "campaignDetail.attention.leadBlocked": "La solicitud de Lead está BLOCKED",
+  "campaignDetail.attention.leadFailed": "La solicitud de Lead está FAILED",
+  "campaignDetail.attention.runFailed": "Una Ejecución falló o fue rechazada",
+  "campaignDetail.attention.gateReview":
+    "Al menos una Puerta de calidad requiere revisión",
+  "campaignDetail.attention.sessionCleanup":
+    "La limpieza de sesiones del proveedor no se ha resuelto",
+  "campaignDetail.attention.termination":
+    "La terminación del proveedor no está confirmada",
+  "campaignDetail.attention.overBudget":
+    "El uso medido supera la autorización para {items}",
+  "campaignDetail.waitingCandidate": "en espera de un Candidato",
+  "campaignDetail.receiptsRecorded": "{recorded}/{total} registrados{detail}",
+  "campaignDetail.gatesDecided": "{decided}/{total} decididas{detail}",
+  "campaignDetail.executionMode.fixture":
+    "FIXTURE (determinista, sin proveedor)",
+  "campaignDetail.executionMode.trustedLocal":
+    "TRUSTED_LOCAL_PROVIDER (sin aislamiento)",
+  "campaignDetail.workflow.stage.project": "Proyecto",
+  "campaignDetail.workflow.stage.action": "Acción",
+  "campaignDetail.workflow.stage.lead": "Solicitud de Lead",
+  "campaignDetail.workflow.stage.assessment": "Evaluación",
+  "campaignDetail.workflow.stage.plan": "Plan",
+  "campaignDetail.workflow.stage.campaign": "Campaña",
+  "campaignDetail.workflow.stage.workgraph": "WorkGraph",
+  "campaignDetail.workflow.stage.runs": "Ejecuciones",
+  "campaignDetail.workflow.stage.attempts": "Intentos",
+  "campaignDetail.workflow.stage.candidates": "Candidatos",
+  "campaignDetail.workflow.stage.verifier": "Verificador",
+  "campaignDetail.workflow.stage.reviewer": "Revisor",
+  "campaignDetail.workflow.stage.gate": "Puerta de calidad",
+  "campaignDetail.workflow.notLinked": "sin vincular",
+  "campaignDetail.workflow.notFound": "no encontrado",
+  "campaignDetail.workflow.notFrozen": "no congelado",
+  "campaignDetail.workflow.missing": "faltante",
+  "campaignDetail.workflow.projectMissing": "sin Proyecto para esta Acción",
+  "campaignDetail.workflow.actionState": "{status} · riesgo {risk}",
+  "campaignDetail.workflow.actionMissing": "Core no devolvió la Acción",
+  "campaignDetail.workflow.leadMissing":
+    "sin solicitud de Lead para esta Campaña",
+  "campaignDetail.workflow.assessmentState": "mecanismo {mechanism} · {date}",
+  "campaignDetail.workflow.assessmentMissing": "sin evaluación registrada",
+  "campaignDetail.workflow.planState": "congelado · config {hash}",
+  "campaignDetail.workflow.planMissing": "sin plan congelado registrado",
+  "campaignDetail.workflow.unitOne": "{count} unidad",
+  "campaignDetail.workflow.units": "{count} unidades",
+  "campaignDetail.workflow.noneRecorded": "ninguno registrado",
+  "campaignDetail.workflow.gatePendingOne": "{count} puerta pendiente",
+  "campaignDetail.workflow.gatesPending": "{count} puertas pendientes",
+  "campaignDetail.workflow.verifierState":
+    "evidencia tal como la registra Core",
+  "campaignDetail.workflow.reviewerState":
+    "los recibos faltantes siguen pendientes",
+  "campaignDetail.workflow.gateState":
+    "decisión determinista propiedad de Core",
+  "campaignDetail.overview.lifecycleTitle": "Proyección del ciclo de vida",
+  "campaignDetail.overview.lifecycleHint":
+    "La autorización de la Campaña, la ejecución de la Ejecución y la aceptación de la Puerta siguen separadas",
+  "campaignDetail.overview.stage": "Etapa",
+  "campaignDetail.overview.reference": "Referencia",
+  "campaignDetail.overview.coreState": "Estado en Core",
+  "campaignDetail.overview.leadModelCalls": "Llamadas a modelo de Lead",
+  "campaignDetail.overview.leadModelCall":
+    "{route} · reserva {reservation} · {state} · {usage}",
+  "campaignDetail.overview.callUsage":
+    "{input} entrada / {output} salida / {total} total / {cost}",
+  "campaignDetail.overview.usageUnmeasured": "uso UNMEASURED",
+  "campaignDetail.workgraph.titleOne": "WorkGraph ({count} unidad)",
+  "campaignDetail.workgraph.title": "WorkGraph ({count} unidades)",
+  "campaignDetail.execution.title": "Ejecuciones e intentos",
+  "campaignDetail.execution.noRunsTitle": "Sin Ejecuciones",
+  "campaignDetail.execution.noRunsDescription":
+    "Esta Campaña no ha encolado ninguna Ejecución.",
+  "campaignDetail.execution.table.run": "Ejecución",
+  "campaignDetail.execution.table.status": "Estado",
+  "campaignDetail.execution.table.attempts": "Intentos",
+  "campaignDetail.execution.attemptsTitle": "Intentos ({count})",
+  "campaignDetail.execution.noAttempts": "Sin Intentos.",
+  "campaignDetail.execution.table.attempt": "Intento",
+  "campaignDetail.execution.table.created": "Creado",
+  "campaignDetail.execution.sessionsTitle": "Sesiones de participantes",
+  "campaignDetail.execution.sessionsHint":
+    "La limpieza es evidencia registrada por el Trabajador, no un certificado de aislamiento",
+  "campaignDetail.execution.sessionsEmptyTitle": "Sin sesiones de proveedor",
+  "campaignDetail.execution.sessionsEmptyDescription":
+    "No hay ninguna sesión de proveedor registrada para los Intentos de esta Campaña.",
+  "campaignDetail.candidates.emptyTitle": "Sin candidatos",
+  "campaignDetail.candidates.emptyDescription":
+    "Una Puerta no puede existir antes de que haya un Candidato y ambos recibos independientes.",
+  "campaignDetail.candidateHeading": "Candidato {id}",
+  "campaignDetail.candidates.gatePending": "GATE PENDING",
+  "campaignDetail.candidates.viewEvidence": "Ver evidencia",
+  "campaignDetail.candidates.viewGate": "Ver Puerta",
+  "campaignDetail.evidence.emptyTitle": "Sin evidencia",
+  "campaignDetail.evidence.emptyDescription":
+    "Los recibos del Verificador y del Revisor aparecen después de registrar un Candidato.",
+  "campaignDetail.evidence.independent":
+    "El Verificador y el Revisor son independientes",
+  "campaignDetail.evidence.reviewFindings": "Hallazgos de revisión",
+  "campaignDetail.gate.emptyTitle": "Sin decisiones de Puerta",
+  "campaignDetail.gate.emptyDescription":
+    "Una decisión de Puerta requiere un Candidato y ambos recibos independientes.",
+  "campaignDetail.budget.title": "Autorización, presupuesto y uso observado",
+  "campaignDetail.budget.hint":
+    "Los límites V2 son por operación; los topes V1 son evidencia histórica",
+  "campaignDetail.budget.actor": "actor {actor}",
+  "campaignDetail.budget.execution": "Ejecución",
+  "campaignDetail.budget.route": "Ruta",
+  "campaignDetail.budget.modeNotSet": "modo no establecido",
+  "campaignDetail.budget.fixtureRoute":
+    "{provider}/{model} ({mode}; ruta del plan congelado, no ejecutada)",
+  "campaignDetail.budget.fixtureNoProvider":
+    "ejecución fixture (sin ruta de proveedor)",
+  "campaignDetail.budget.providerRoute": "{provider}/{model} ({mode})",
+  "campaignDetail.budget.providerNoRoute":
+    "ejecución de proveedor sin ruta registrada",
+  "campaignDetail.budget.delegation": "Delegación",
+  "campaignDetail.budget.authorizedPaths": "Rutas autorizadas",
+  "campaignDetail.budget.allowedTools": "Herramientas permitidas",
+  "campaignDetail.budget.schemaVersion": "Versión de esquema",
+  "campaignDetail.budget.policyId": "Política",
+  "campaignDetail.budget.monetaryEnvelope": "Envolvente monetaria",
+  "campaignDetail.budget.scopeHash": "Hash del alcance",
+  "campaignDetail.budget.observedAttempts": "{count} observados",
+  "campaignDetail.budget.observedSessions": "{count} observadas",
+  "campaignDetail.budget.turnRecordsObserved":
+    "{count} registros con id de turno",
+  "campaignDetail.budget.tokensMeasured": "{count} medidos",
+  "campaignDetail.budget.costMeasured": "{amount} medido",
+  "campaignDetail.budget.operationsAria": "Límites técnicos de operación V2",
+  "campaignDetail.budget.operationsTitle": "Límites técnicos de operación (V2)",
+  "campaignDetail.budget.modelRequestTimeout":
+    "Tiempo máximo de solicitud de modelo",
+  "campaignDetail.budget.toolCallTimeout":
+    "Tiempo máximo de llamada a herramienta",
+  "campaignDetail.budget.maxRequestBytes": "Bytes máximos de solicitud",
+  "campaignDetail.budget.maxResponseBytes": "Bytes máximos de respuesta",
+  "campaignDetail.budget.maxGenerationTokens": "Tokens máximos de generación",
+  "campaignDetail.budget.maxInFlight": "Operaciones simultáneas máximas",
+  "campaignDetail.budget.progressTitle": "Supervisión del progreso",
+  "campaignDetail.budget.diagnoseAfter":
+    "Diagnosticar tras puntos de control estancados",
+  "campaignDetail.budget.escalateAfter":
+    "Escalar tras replanteamientos fallidos",
+  "campaignDetail.budget.autonomyTitle": "Reparación autónoma",
+  "campaignDetail.budget.autonomyEnabled": "Activada",
+  "campaignDetail.budget.autonomyDisabled": "Desactivada",
+  "campaignDetail.budget.autonomyR0": "R0: {points} puntos / {cycles} ciclos",
+  "campaignDetail.budget.autonomyR1": "R1: {points} puntos / {cycles} ciclos",
+  "campaignDetail.budget.observationTimeout": "Tiempo máximo de observación",
+  "campaignDetail.budget.seconds": "{count} s",
+  "campaignDetail.budget.bytes": "{count} bytes",
+  "campaignDetail.budget.legacyAria": "Evidencia histórica de topes V1",
+  "campaignDetail.budget.legacyTitle": "Evidencia histórica de topes V1",
+  "campaignDetail.budget.legacyHint":
+    "Estos campos son procedencia histórica de una autorización V1. La política de ejecución V2 no los aplica y Office no puede ampliarlos.",
+  "campaignDetail.budget.legacyTurns": "Máximo de turnos (V1)",
+  "campaignDetail.budget.legacyInputTokens": "Tokens máximos de entrada (V1)",
+  "campaignDetail.budget.legacyOutputTokens": "Tokens máximos de salida (V1)",
+  "campaignDetail.budget.legacyCost": "Coste máximo (V1)",
+  "campaignDetail.budget.missingPolicy":
+    "Esta autorización V2 no contiene su política de ejecución. Los datos de Core están incompletos; Office no inventará límites de operación.",
+  "campaignDetail.budget.attempts": "Intentos",
+  "campaignDetail.budget.sessions": "Sesiones",
+  "campaignDetail.budget.observedAuthorized":
+    "{observed} observados / {authorized} autorizados",
+  "campaignDetail.budget.turnRecords": "Registros de turno",
+  "campaignDetail.budget.turnRecordsValue":
+    "{count} con id de turno / {authorized} autorizados",
+  "campaignDetail.budget.inputTokens": "Tokens de entrada",
+  "campaignDetail.budget.outputTokens": "Tokens de salida",
+  "campaignDetail.budget.tokensValue":
+    "{measured} medidos / {authorized} autorizados",
+  "campaignDetail.budget.cost": "Coste",
+  "campaignDetail.budget.costValue":
+    "{measured} medido / {authorized} autorizado",
+  "campaignDetail.budget.unmeasuredSessions": "Sesiones no medidas",
+  "campaignDetail.budget.unmeasuredOf": "{count} de {total}",
+  "campaignDetail.budget.unmeasuredBound": "Límite no medido de sesiones",
+  "campaignDetail.budget.unmeasuredBoundValue":
+    "{amount} techo de sesiones observadas, no gasto observado",
+  "campaignDetail.budget.deadline": "Fecha límite",
+  "campaignDetail.budget.note":
+    "Los totales medidos excluyen sesiones con uso desconocido. Las sesiones no medidas aportan un importe de reserva acotado, nunca un total observado de tokens o coste. Los límites de operación y umbrales de progreso V2 no son topes de productividad de la Campaña. Son registros de Core, no una factura.",
+  "campaignDetail.budget.overBudget":
+    "El uso medido supera la autorización registrada para {items}.",
+  "campaignDetail.budget.noAuthorization":
+    "No hay autorización de Campaña registrada, por lo que no hay presupuesto de ejecución vigente.",
+  "campaignDetail.budget.leadReservationsTitle":
+    "Reservas de llamadas a modelo de Lead",
+  "campaignDetail.budget.leadReservationsHint":
+    "Las llamadas sin resolver se resuelven en el Entorno de ejecución o en la Bandeja de decisiones",
+  "campaignDetail.budget.noLeadCallsTitle": "Sin llamadas a modelo de Lead",
+  "campaignDetail.budget.noLeadCallsDescription":
+    "No hay ninguna reserva de llamada a modelo registrada para esta solicitud de Lead.",
+  "campaignDetail.budget.table.reservation": "Reserva",
+  "campaignDetail.budget.table.role": "Rol",
+  "campaignDetail.budget.table.route": "Ruta",
+  "campaignDetail.budget.table.state": "Estado",
+  "campaignDetail.budget.table.usage": "Uso",
+  "campaignDetail.budget.table.updated": "Actualizada",
+  "campaignDetail.budget.callUsage": "{tokens} tokens / {cost}",
+  "campaignDetail.events.cancelTitle": "Cancelación y recuperación",
+  "campaignDetail.events.campaignState": "Estado de la Campaña:",
+  "campaignDetail.events.noCancel":
+    "No hay ningún evento campaign.cancelled registrado.",
+  "campaignDetail.events.leadBlocked":
+    "La solicitud de Lead {id} está BLOCKED: {reason}",
+  "campaignDetail.events.leadFailed":
+    "La solicitud de Lead {id} está FAILED: {reason}",
+  "campaignDetail.events.noFailureReason": "sin motivo de fallo registrado",
+  "campaignDetail.events.summary":
+    "Sesiones de proveedor sin resolver: {unresolved} · solicitudes de cancelación sin recibo de limpieza: {unconfirmed}.",
+  "campaignDetail.events.terminationWarning":
+    "La terminación del proveedor externo no está confirmada para {ids}. Core registra la solicitud, no la prueba de que el proveedor se detuvo.",
+  "campaignDetail.events.noUnresolved":
+    "No hay sesiones de proveedor sin resolver registradas para esta Campaña.",
+  "campaignDetail.events.title": "Eventos",
+  "campaignDetail.events.count": "Eventos de Core: {count}",
+  "campaignDetail.events.emptyTitle": "Sin eventos de Campaña",
+  "campaignDetail.events.emptyDescription":
+    "Core registra un evento cuando cambia la Campaña o el trabajo relacionado.",
+
+  "workgraph.emptyTitle": "Sin unidades de WorkGraph",
+  "workgraph.emptyDescription":
+    "Esta Campaña no tiene ninguna unidad de WorkGraph registrada. Core no sintetiza un plan en el navegador.",
+  "workgraph.stale":
+    "La proyección de la Campaña está desactualizada. El grafo siguiente es la última instantánea autoritativa; no implica que la ejecución se haya detenido.",
+  "workgraph.heading": "Grafo de dependencias ({count} unidades)",
+  "workgraph.headingOne": "Grafo de dependencias ({count} unidad)",
+  "workgraph.headingHint":
+    "La posición de izquierda a derecha es la profundidad de dependencia derivada, no el progreso de planificación ni la hora de finalización.",
+  "workgraph.edges": "{count} aristas de dependencia registradas",
+  "workgraph.edgesOne": "{count} arista de dependencia registrada",
+  "workgraph.issuesTitle": "Inconsistencias del grafo",
+  "workgraph.issuesHint":
+    "Los datos se muestran tal como se registraron. La tabla siguiente sigue siendo la alternativa autoritativa accesible.",
+  "workgraph.selectedMissing":
+    "La unidad de trabajo seleccionada no forma parte de la proyección de esta Campaña. La URL se conserva y no se seleccionó ningún nodo.",
+  "workgraph.canvasAria": "Vista visual de dependencias de WorkGraph",
+  "workgraph.nodeAria":
+    "Unidad de trabajo {unit}, estado registrado {status}, presentación {presentation}, {count} dependencias",
+  "workgraph.node.after": "después de {units}",
+  "workgraph.node.noDependencies": "sin dependencias",
+  "workgraph.node.candidateGate": "candidato {candidate} · puerta {gate}",
+  "workgraph.node.candidatePending": "candidato {candidate} · puerta pendiente",
+  "workgraph.node.noCandidate": "sin candidato registrado",
+  "workgraph.scrollNote":
+    "El lienzo se desplaza horizontalmente cuando es necesario. Cada nodo es un objetivo de foco del teclado; las flechas se mueven entre nodos y Enter o Espacio selecciona.",
+  "workgraph.table.title": "Tabla de WorkGraph (alternativa accesible)",
+  "workgraph.table.hint":
+    "Secuencia congelada exacta, dependencias e identidad de ejecución registrada.",
+  "workgraph.table.unit": "Unidad",
+  "workgraph.table.recordedStatus": "Estado registrado",
+  "workgraph.table.dependencyState": "Estado de dependencia",
+  "workgraph.table.dependsOn": "Depende de",
+  "workgraph.table.runAttempt": "Ejecución / Intento",
+  "workgraph.table.candidate": "Candidato",
+  "workgraph.table.gate": "Puerta",
+  "workgraph.table.updated": "Actualizada",
+  "workgraph.table.inspect": "Inspeccionar",
+  "workgraph.table.task": "tarea",
+  "workgraph.none": "ninguna",
+  "workgraph.selectedInconsistent":
+    "La unidad de trabajo seleccionada tiene un registro de dependencia inconsistente.",
+  "workgraph.inspector.title": "Unidad de trabajo",
+  "workgraph.inspector.close": "Cerrar",
+  "workgraph.fact.sequence": "Secuencia congelada",
+  "workgraph.fact.dependencies": "Dependencias",
+  "workgraph.fact.baseCommit": "Commit base",
+  "workgraph.fact.updated": "Actualizada",
+  "workgraph.fact.run": "Ejecución",
+  "workgraph.fact.attempt": "Intento",
+  "workgraph.fact.candidate": "Candidato",
+  "workgraph.fact.candidateCommit": "Commit del candidato",
+  "workgraph.fact.candidateTree": "Árbol del candidato",
+  "workgraph.fact.gate": "Puerta de calidad",
+  "workgraph.fact.verifier": "Verificador",
+  "workgraph.fact.reviewer": "Revisor",
+  "workgraph.notRecorded": "NOT RECORDED",
+  "workgraph.noGate": "NO GATE RECORDED",
+  "workgraph.noReceipt": "NO RECEIPT",
+  "workgraph.participant.title": "Participante y sesión",
+  "workgraph.participant.open": "Abrir participante Implementador",
+  "workgraph.participant.emptyTitle": "Sin sesión de proveedor",
+  "workgraph.participant.emptyDescription":
+    "No hay ninguna sesión de proveedor vinculada a este Intento.",
+  "workgraph.participant.none":
+    "No hay ninguna sesión de proveedor registrada para el Intento de esta unidad de trabajo.",
+  "workgraph.inconsistency.title":
+    "Inconsistencia registrada o evidencia faltante",
+  "workgraph.inconsistency.hint":
+    "Office muestra estas condiciones; no repara los datos del grafo ni de la evidencia.",
+  "workgraph.selectionHint":
+    "Seleccionar una unidad mantiene la Campaña, la pestaña y la unidad de trabajo exactas en la URL para que la recarga y el historial del navegador restauren el mismo contexto de inspección.",
+  "workgraph.missing.candidateNotBound":
+    "La unidad de trabajo está registrada SUCCEEDED pero no hay ningún Candidato vinculado.",
+  "workgraph.missing.gateNotRecorded":
+    "No hay ninguna decisión de Puerta de calidad registrada para el Candidato vinculado.",
+  "workgraph.missing.verifierReceipt":
+    "No hay ningún recibo del verificador registrado.",
+  "workgraph.missing.reviewerReceipt":
+    "No hay ningún recibo del revisor registrado.",
+  "workgraph.missing.attemptNotBound":
+    "La unidad de trabajo está registrada RUNNING pero no hay ningún Intento vinculado.",
+  "workgraph.presentation.ready": "READY (derivado)",
+  "workgraph.presentation.waiting": "WAITING (derivado)",
+  "workgraph.presentation.blocked": "BLOCKED (derivado)",
+  "workgraph.presentation.running": "RUNNING",
+  "workgraph.presentation.succeeded": "SUCCEEDED",
+  "workgraph.presentation.failed": "FAILED",
+  "workgraph.presentation.cancelled": "CANCELLED",
+  "workgraph.presentation.unknown": "UNKNOWN",
+  "workgraph.presentation.inconsistent": "INCONSISTENT",
+  "workgraph.explanation.ready":
+    "Registrado PENDING con todas las dependencias registradas SUCCEEDED (o sin dependencias). Es un hecho de dependencia, no el progreso de planificación.",
+  "workgraph.explanation.waiting":
+    "Registrado PENDING mientras al menos una dependencia no está SUCCEEDED. Es un hecho de dependencia, no una previsión de ejecución.",
+  "workgraph.explanation.blocked":
+    "Registrado PENDING mientras una dependencia está FAILED o CANCELLED.",
+  "workgraph.explanation.running":
+    "Estado exacto registrado de la unidad de trabajo.",
+  "workgraph.explanation.succeeded":
+    "Estado exacto registrado de la unidad de trabajo.",
+  "workgraph.explanation.failed":
+    "Estado exacto registrado de la unidad de trabajo.",
+  "workgraph.explanation.cancelled":
+    "Estado exacto registrado de la unidad de trabajo.",
+  "workgraph.explanation.unknown":
+    "Estado exacto registrado de la unidad de trabajo.",
+  "workgraph.explanation.inconsistent":
+    "Registrado PENDING con una dependencia que no está presente en la proyección de esta Campaña. La interfaz no repara el grafo.",
+  "workgraph.issue.missingDependency":
+    "La unidad de trabajo {unit} depende de {dependency}, que no forma parte de la proyección de esta Campaña.",
+  "workgraph.issue.selfDependency":
+    "La unidad de trabajo {unit} depende de sí misma.",
+  "workgraph.issue.cycle":
+    "El grafo de dependencias registrado contiene un ciclo. La alternativa visual coloca las unidades por la secuencia congelada; no se repararon datos del grafo.",
+  "workgraph.issue.duplicateUnit":
+    "La unidad de trabajo {unit} está registrada más de una vez.",
+  "workgraph.issue.duplicateTask":
+    "La tarea {task} está registrada más de una vez.",
+  "workgraph.issue.sequenceOrder":
+    "La unidad de trabajo {unit} (secuencia {sequence}) depende de {dependency} (secuencia {dependencySequence}); la secuencia registrada no sigue la dependencia.",
+  "workgraph.issue.unknownStatus":
+    "La unidad de trabajo {unit} tiene un estado registrado no reconocido {status}.",
+
+  "diff.loading": "Cargando el diff de archivos del candidato…",
+  "diff.error.title": "Diff no disponible.",
+  "diff.error.fallback": "No se pudo cargar el diff del candidato.",
+  "diff.title": "Archivos modificados",
+  "diff.description":
+    "Base congelada exacta hasta el commit exacto del Candidato. Core lee objetos Git; no ejecuta el Candidato.",
+  "diff.totals.aria": "Totales del diff",
+  "diff.totals.shown": "mostrados",
+  "diff.totals.file": "archivo",
+  "diff.totals.files": "archivos",
+  "diff.totals.patch": "{size} de parche",
+  "diff.revision.base": "Commit base",
+  "diff.revision.candidate": "Commit del candidato",
+  "diff.revision.tree": "Árbol del candidato",
+  "diff.revision.copyBase": "Copiar SHA del commit base",
+  "diff.revision.copyCandidate": "Copiar SHA del commit del candidato",
+  "diff.revision.copyTree": "Copiar SHA del árbol del candidato",
+  "diff.revision.candidateLabel": "Candidato",
+  "diff.revision.implementer": "implementador {id}",
+  "diff.revision.gateIdentity": "Identidad de la Puerta",
+  "diff.gate.noneRecorded": "Sin decisión de Puerta registrada",
+  "diff.truncated.files":
+    "Core devolvió solo los primeros {count} archivos modificados. La lista de rutas está truncada en el límite de Core; no se infiere ningún archivo faltante.",
+  "diff.truncated.patch":
+    "Al menos un parche se truncó en el límite de bytes de Core. El texto truncado se etiqueta por archivo.",
+  "diff.gitStat": "Estadística de git diff:",
+  "diff.noDiffStat": "sin estadística de diff registrada",
+  "diff.empty.title": "Sin archivos modificados",
+  "diff.empty.description":
+    "Core resolvió ambas revisiones, pero el árbol del candidato no tiene diferencias de archivos respecto a la base registrada.",
+  "diff.fileList.aria": "Archivos modificados",
+  "diff.status.added": "añadido",
+  "diff.status.deleted": "eliminado",
+  "diff.status.modified": "modificado",
+  "diff.omitted.binary": "binario",
+  "diff.omitted.large": "grande",
+  "diff.omitted.notAFile": "no es un archivo",
+  "diff.omitted.nonUtf8": "no UTF-8",
+  "diff.omitted.budget": "presupuesto",
+  "diff.omitted.binaryDescription":
+    "Archivo binario; Core no genera un parche de texto.",
+  "diff.omitted.tooLargeDescription":
+    "El archivo supera el límite de texto de 512 KiB de Core; no se genera ningún parche.",
+  "diff.omitted.notAFileDescription":
+    "Enlace simbólico o gitlink; Core no lo sigue.",
+  "diff.omitted.nonUtf8Description":
+    "El parche no es UTF-8 válido; Core no adivina una codificación.",
+  "diff.omitted.budgetDescription":
+    "Parche omitido porque se alcanzó el presupuesto total de bytes del diff.",
+  "diff.viewer.mode": "modo {oldMode} → {newMode}",
+  "diff.viewer.wrap": "Ajustar líneas",
+  "diff.viewer.copyPatch": "Copiar parche de {path}",
+  "diff.viewer.patchTruncated":
+    "Parche truncado en el límite de bytes de Core. Solo se muestran las líneas visibles.",
+  "diff.viewer.noPatchTitle": "Sin parche de texto.",
+  "diff.viewer.noPatchDescription":
+    "Core no devolvió ningún parche para este archivo.",
+  "diff.select.title": "Selecciona un archivo modificado",
+  "diff.select.description":
+    "Elige un archivo de la lista de archivos modificados para leer su parche unificado acotado.",
+  "diff.copy.copy": "Copiar",
+  "diff.copy.copied": "Copiado",
+  "diff.copy.unavailable":
+    "Portapapeles no disponible en este contexto del navegador.",
+  "diff.unifiedAria": "Diff unificado de {path}",
+  "diff.provenance.omitted":
+    "Archivos que omitieron el cuerpo del parche: {count}",
+
+  "pr.title": "Pull request de GitHub",
+  "pr.description":
+    "Core usa la conexión cifrada de GitHub. Los tokens nunca llegan a esta página; la protección de ramas y las comprobaciones requeridas siguen siendo autoritativas en GitHub.",
+  "pr.binding.base": "base {branch}",
+  "pr.binding.refresh": "Actualizar",
+  "pr.binding.refreshAria": "Actualizar el vínculo de GitHub del Proyecto",
+  "pr.binding.loading": "Leyendo el vínculo de GitHub del Proyecto…",
+  "pr.binding.unbound":
+    "Este Proyecto no está vinculado a un repositorio de GitHub. Las lecturas y acciones de pull request no están disponibles hasta vincular el Proyecto en Proyectos. Core no infiere un repositorio ni un PR.",
+  "pr.error.title": "La operación de pull request falló",
+  "pr.error.binding": "No se pudo leer el vínculo de GitHub del Proyecto.",
+  "pr.error.read": "No se pudo leer el pull request.",
+  "pr.error.comments": "No se pudieron leer los comentarios del pull request.",
+  "pr.error.comment": "No se pudo publicar el comentario.",
+  "pr.error.diff": "No se pudo leer el diff del pull request.",
+  "pr.error.review": "No se pudo solicitar la revisión.",
+  "pr.error.merge": "No se aceptó la fusión.",
+  "pr.error.open": "No se abrió el pull request.",
+  "pr.merge.blockedTitle": "Fusión bloqueada por la lectura reciente de Core.",
+  "pr.lookup.label": "Número de pull request",
+  "pr.lookup.help":
+    "Lee un PR existente de GitHub. No se inventa ningún PR a partir de un candidato.",
+  "pr.lookup.reading": "Leyendo…",
+  "pr.lookup.read": "Leer PR y comprobaciones",
+  "pr.checks.title": "Comprobaciones",
+  "pr.checks.fetched": "obtenidas {date}",
+  "pr.checks.empty":
+    "GitHub no informó de ninguna ejecución de comprobación ni estado de commit para este head. No se infiere ningún éxito.",
+  "pr.checks.table.check": "Comprobación",
+  "pr.checks.table.status": "Estado",
+  "pr.checks.table.conclusion": "Conclusión",
+  "pr.checks.table.source": "Origen",
+  "pr.checks.checkRun": "ejecución de comprobación",
+  "pr.checks.commitStatus": "estado de commit",
+  "pr.checks.status": "estado",
+  "pr.checks.truncated":
+    "Los resultados de las comprobaciones se truncaron en el límite de Core. La preparación para fusión sigue bloqueada hasta que haya una lectura reciente completa.",
+  "pr.diff.title": "Diff del pull request",
+  "pr.diff.meta": "{bytes} bytes · obtenido {date}",
+  "pr.diff.headMismatch":
+    "El head de este pull request no coincide con el commit registrado del Candidato. El diff se muestra para el pull request, no como evidencia del Candidato.",
+  "pr.diff.truncated":
+    "Diff del pull request truncado en el límite de bytes de Core.",
+  "pr.diff.aria": "Diff unificado del pull request {number}",
+  "pr.diff.read": "Leer diff del PR",
+  "pr.diff.reading": "Leyendo diff…",
+  "pr.facts.head": "Head",
+  "pr.facts.base": "Base",
+  "pr.facts.mergeable": "Fusionable en GitHub",
+  "pr.facts.changes": "Cambios",
+  "pr.facts.gate": "Puerta",
+  "pr.facts.checked": "Comprobado",
+  "pr.facts.headMatches": "coincide con el Candidato",
+  "pr.facts.headMismatch": "no coincide con el Candidato",
+  "pr.facts.mergeableUnknown": "desconocido (GitHub no lo ha calculado)",
+  "pr.facts.mergeableYes": "sí",
+  "pr.facts.mergeableNo": "no",
+  "pr.facts.mergeableState": "estado {state}",
+  "pr.facts.changesValue": "Archivos: {files} · +{additions} / −{deletions}",
+  "pr.facts.gateNone": "sin decisión de Puerta registrada",
+  "pr.actions.freshRead": "Lectura reciente",
+  "pr.comments.title": "Comentarios",
+  "pr.comments.shown": "{count} mostrados",
+  "pr.comments.loading": "Leyendo comentarios…",
+  "pr.comments.emptyTitle": "Sin comentarios",
+  "pr.comments.emptyDescription":
+    "GitHub no devolvió ningún comentario de incidencia o revisión para este pull request.",
+  "pr.comments.unknownAuthor": "autor desconocido",
+  "pr.comments.truncatedBody":
+    "Cuerpo del comentario truncado por el límite de Core.",
+  "pr.comments.listTruncated":
+    "Lista de comentarios truncada en el límite de Core.",
+  "pr.comments.addLabel": "Añadir un comentario",
+  "pr.comments.placeholder": "Registra un hallazgo o una solicitud concreta.",
+  "pr.comments.post": "Publicar comentario",
+  "pr.comments.posting": "Publicando…",
+  "pr.notice.comment": "GitHub aceptó el comentario a través de Core.",
+  "pr.review.title": "Solicitar revisión",
+  "pr.review.logins": "Usuarios de revisores",
+  "pr.review.help":
+    "Usuarios de GitHub separados por comas. Una solicitud no es una aprobación.",
+  "pr.review.empty": "Introduce al menos un usuario de GitHub para revisar.",
+  "pr.review.request": "Solicitar revisión",
+  "pr.review.requesting": "Solicitando…",
+  "pr.notice.review":
+    "Revisión solicitada a {reviewers}. No se infiere ninguna aprobación.",
+  "pr.merge.title": "Fusión autorizada",
+  "pr.merge.hint":
+    "sin fusión automática · Core relee el PR y las comprobaciones justo antes de fusionar",
+  "pr.merge.expectedHead": "Head esperado",
+  "pr.merge.expectedHeadDetail":
+    "queda fijado en la solicitud de fusión. GitHub sigue aplicando la protección de ramas y las comprobaciones requeridas. Una respuesta bloqueada se muestra como bloqueada, nunca como éxito.",
+  "pr.merge.method": "Método de fusión",
+  "pr.merge.squash": "Squash",
+  "pr.merge.mergeCommit": "Commit de fusión",
+  "pr.merge.rebase": "Rebase",
+  "pr.merge.confirm":
+    "Confirmo explícitamente esta fusión del head esperado exacto.",
+  "pr.merge.submit": "Fusionar pull request",
+  "pr.merge.merging": "Fusionando…",
+  "pr.merge.disabled":
+    "La fusión está deshabilitada hasta que la lectura reciente de Core informe un head limpio y coincidente con comprobaciones exitosas completas.",
+  "pr.merge.noSha": "un commit de fusión registrado por GitHub",
+  "pr.notice.merge": "Fusionado como {sha}. {message}",
+  "pr.notice.open":
+    "Pull request #{number} abierto. Core verificó que la rama head resolvía al commit exacto del Candidato.",
+  "pr.open.summary": "Abrir un pull request desde una rama exacta",
+  "pr.open.hint": "Core verifica que la rama de GitHub resuelve a",
+  "pr.open.hintSuffix":
+    "Una rama faltante o no coincidente es un resultado bloqueado tipado.",
+  "pr.open.head": "Rama head",
+  "pr.open.title": "Título",
+  "pr.open.body": "Cuerpo",
+  "pr.open.draft": "Abrir como borrador",
+  "pr.open.opening": "Abriendo…",
+  "pr.open.submit": "Abrir pull request",
+
+  "evidence.receipts.role": "Rol",
+  "evidence.receipts.result": "Resultado",
+  "evidence.receipts.evidence": "Evidencia",
+  "evidence.receipts.principal": "Principal",
+  "evidence.receipts.received": "Recibido",
+  "evidence.receipts.noReceipt": "sin recibo registrado",
+  "evidence.receipts.receipt": "recibo {id}",
+  "evidence.provenance":
+    "modelo {role}: {provider}/{model} · reserva {reservation} · solicitud {request} · {usage}",
+  "evidence.providerNotRecorded": "proveedor no registrado",
+  "evidence.modelNotRecorded": "modelo no registrado",
+  "evidence.usage":
+    "{input} entrada / {output} salida / {total} total / {cost}",
+  "evidence.usageUnmeasured": "uso UNMEASURED",
+  "evidence.noFindings": "No hay hallazgos registrados.",
+  "evidence.gate.pending":
+    "no hay ninguna decisión de Puerta de Core registrada para el candidato {id}. Los recibos faltantes o la evidencia no superada no son aprobación.",
+  "evidence.gate.decided": "decidida {date}",
+  "evidence.gate.noReasons": "No hay motivos registrados.",
+  "evidence.finding.points": "{points} puntos",
+  "evidence.repair.title": "Autorización de reparación",
+  "evidence.repair.detail": "{points} puntos · ciclo {cycle} · {reason}",
+  "evidence.identity.commit": "Commit",
+  "evidence.identity.tree": "Árbol",
+  "evidence.identity.attempt": "Intento",
+  "evidence.identity.implementer": "Implementador",
+  "evidence.identity.recorded": "Registrado",
+
+  "projectFiles.title": "Archivos del Proyecto",
+  "projectFiles.description":
+    "Proyección de solo lectura del repositorio registrado del Proyecto. Office lee objetos Git exactos; nunca escribe archivos, sigue enlaces simbólicos ni guarda una segunda copia de la documentación.",
+  "projectFiles.loading": "Cargando el repositorio del Proyecto…",
+  "projectFiles.back": "Volver a Proyectos",
+  "projectFiles.notFoundTitle": "Proyecto no encontrado",
+  "projectFiles.notFoundDescription":
+    "No hay ningún Proyecto {id} registrado en Core.",
+  "projectFiles.identifierFallback": "identificador",
+  "projectFiles.staleTitle": "El vínculo del repositorio está desactualizado",
+  "projectFiles.staleDescription":
+    "Core revalidó el repositorio registrado y ya no coincide con la identidad congelada del Proyecto ni con el commit esperado. Office no leerá archivos de un repositorio no verificado.",
+  "projectFiles.unavailableTitle": "Repositorio del Proyecto no disponible",
+  "projectFiles.error.project": "No se pudo cargar el Proyecto registrado.",
+  "projectFiles.error.root": "No se pudo leer la raíz del repositorio.",
+  "projectFiles.error.directory": "No se pudo leer este directorio.",
+  "projectFiles.error.file": "No se pudo leer este archivo en esta revisión.",
+  "projectFiles.meta.revision": "Revisión {id}",
+  "projectFiles.meta.frozenBase": "Base congelada",
+  "projectFiles.meta.commit": "Commit",
+  "projectFiles.meta.identity": "Identidad del repositorio",
+  "projectFiles.invalidRevision":
+    "El parámetro ref no es un ID de commit Git completo de 40 o 64 caracteres, por lo que Office muestra la revisión base congelada.",
+  "projectFiles.breadcrumb": "Ruta de navegación del repositorio",
+  "projectFiles.repository": "Repositorio",
+  "projectFiles.revision": "Revisión",
+  "projectFiles.filter.label": "Filtrar este directorio",
+  "projectFiles.filter.placeholder": "Filtrar por nombre o ruta",
+  "projectFiles.ref.frozenBase": "Base congelada · {id}",
+  "projectFiles.ref.commit": "Commit · {id}",
+  "projectFiles.tree.title": "Árbol del repositorio",
+  "projectFiles.tree.entries": "Entradas: {count}",
+  "projectFiles.tree.parent": "Directorio superior",
+  "projectFiles.tree.loading": "Leyendo directorio…",
+  "projectFiles.tree.errorTitle": "Directorio no disponible",
+  "projectFiles.tree.count": "Mostrando {shown} de {total} entradas{filter}.",
+  "projectFiles.tree.truncated":
+    "Este directorio tiene más entradas de las que Core devuelve en una página acotada. Abre un directorio más específico.",
+  "projectFiles.tree.skipped":
+    "Entradas ocultas con nombres no admitidos: {count}.",
+  "projectFiles.tree.emptyTitle": "Directorio vacío",
+  "projectFiles.tree.emptyDescription":
+    "Este directorio está rastreado pero no contiene entradas en la revisión seleccionada.",
+  "projectFiles.tree.noMatchTitle": "Sin entradas coincidentes",
+  "projectFiles.tree.noMatchDescription":
+    "Cambia el filtro o bórralo para volver a ver este directorio.",
+  "projectFiles.tree.clearFilter": "Borrar filtro",
+  "projectFiles.entry.openDirectory": "Abrir directorio {path}",
+  "projectFiles.entry.openFile": "Abrir archivo {path}",
+  "projectFiles.kind.directory": "directorio",
+  "projectFiles.kind.symlink": "enlace simbólico",
+  "projectFiles.kind.submodule": "submódulo",
+  "projectFiles.kind.file": "archivo",
+  "projectFiles.file.loading": "Leyendo archivo…",
+  "projectFiles.file.errorTitle": "Archivo no disponible",
+  "projectFiles.file.backToDirectory": "Volver al directorio",
+  "projectFiles.file.selectTitle": "Selecciona un archivo",
+  "projectFiles.file.selectDescription":
+    "Elige un archivo del árbol del repositorio para leer su proyección acotada de solo lectura. Los directorios se abren en el lugar y admiten navegación por teclado.",
+  "projectFiles.file.notSelectedTitle": "Archivo no seleccionado",
+  "projectFiles.file.notSelectedDescription":
+    "La ruta seleccionada no está disponible en la proyección actual del directorio.",
+  "projectFiles.file.binary": "Binario",
+  "projectFiles.file.large": "Archivo grande",
+  "projectFiles.file.notFollowed": "No seguido",
+  "projectFiles.file.markdown": "Markdown",
+  "projectFiles.file.path": "Ruta",
+  "projectFiles.file.revision": "Revisión",
+  "projectFiles.file.blob": "Blob",
+  "projectFiles.file.mode": "Modo",
+  "projectFiles.file.size": "Tamaño",
+  "projectFiles.file.lines": "Líneas",
+  "projectFiles.file.provenance": "Procedencia",
+  "projectFiles.file.tooLarge":
+    "Este archivo pesa {size} y supera el límite de proyección de 512 KiB de Office. Se muestran sus metadatos; el contenido no está disponible en el navegador.",
+  "projectFiles.file.binaryDescription":
+    "El contenido binario o no UTF-8 no se representa. Office solo muestra los metadatos Git exactos de este blob.",
+  "projectFiles.file.symlinkDescription":
+    "Esta entrada es un enlace simbólico. Office no sigue enlaces simbólicos del repositorio.",
+  "projectFiles.file.submoduleDescription":
+    "Esta entrada es un submódulo o gitlink. Office no inspecciona el contenido de los submódulos.",
+  "projectFiles.file.emptyTitle": "Archivo vacío",
+  "projectFiles.file.emptyDescription":
+    "Este archivo está rastreado pero no tiene contenido en la revisión seleccionada.",
+  "projectFiles.file.rendering": "Representación de la documentación",
+  "projectFiles.file.preview": "Vista previa",
+  "projectFiles.file.source": "Código",
+  "projectFiles.file.markdownNote":
+    "Subconjunto seguro de Markdown. El HTML sin procesar se muestra como texto y nunca se ejecuta; los enlaces relativos y de script no se siguen.",
+  "projectFiles.codeAria": "Contenido de {path}",
+  "projectFiles.codeTruncated":
+    "Mostrando las primeras {shown} de {total} líneas. El archivo completo no se representa en Office.",
+  "projectFiles.selectedNote": "{path} seleccionado de la revisión {revision}.",
+
+  "settings.title": "Configuración",
+  "settings.description.access":
+    "Revisa el acceso local y remoto privado, empareja dispositivos de confianza y revoca sesiones.",
+  "settings.description.profiles":
+    "Crea perfiles de ejecución versionados y propiedad de Core para los roles Lead, Implementador y Revisor semántico. Un perfil es configuración, no una autorización.",
+  "settings.description.providers":
+    "Configura rutas de proveedor propiedad de Core y la política de revisión. Las credenciales se cifran en reposo y nunca se devuelven tras el envío. Una ruta configurada no es prueba de inferencia de código en vivo.",
+  "settings.loading": "Cargando configuración…",
+  "settings.error.load": "No se pudo cargar la configuración de proveedores.",
+  "settings.error.stale":
+    "La configuración mostrada puede estar desactualizada.",
+  "settings.refresh": "Actualizar",
+  "settings.meta.providers": "Proveedores: {count}",
+  "settings.meta.fetched": "Obtenido {date}",
+  "settings.tabs.label": "Secciones de configuración",
+  "settings.tabs.profiles": "Perfiles de ejecución",
+  "settings.tabs.providers": "Proveedores y modelos",
+  "settings.tabs.runtime": "Política del entorno",
+  "settings.tabs.access": "Acceso y dispositivos",
+  "settings.providers.emptyTitle": "Sin rutas de proveedor",
+  "settings.providers.emptyDescription":
+    "Core no devolvió ninguna entrada del catálogo de proveedores.",
+  "settings.provider.credentialConfigured": "credencial configurada",
+  "settings.provider.notConfigured": "no configurado",
+  "settings.provider.enabled": "habilitado",
+  "settings.provider.disabled": "deshabilitado",
+  "settings.provider.defaultRoute": "ruta predeterminada",
+  "settings.provider.model": "Modelo",
+  "settings.provider.currentModel": "Modelo actual",
+  "settings.provider.modelSelector": "Modelo",
+  "settings.provider.modelSelectorHelp":
+    "El selector muestra el modelo actual, el predeterminado del proveedor y los modelos descubiertos. Busca para acotar la lista.",
+  "settings.provider.modelCurrentSuffix": " (actual)",
+  "settings.provider.endpoint": "Endpoint",
+  "settings.provider.authModes": "Modos de autenticación",
+  "settings.provider.chatgptOauth": "ChatGPT OAuth",
+  "settings.provider.revision": "Revisión",
+  "settings.provider.updated": "Actualizado",
+  "settings.provider.verification.aria": "Ruta de verificación",
+  "settings.provider.verification.route": "Ruta configurada",
+  "settings.provider.verification.routeDetail":
+    "Una ruta y una credencial guardadas son configuración, no prueba de acceso.",
+  "settings.provider.verification.catalog": "Catálogo de modelos",
+  "settings.provider.verification.catalogNotRun":
+    "No descubierto en este proceso de Core. No se ha evaluado ningún endpoint de catálogo.",
+  "settings.provider.verification.credential": "Credencial",
+  "settings.provider.verification.credentialMissing":
+    "No hay ninguna credencial guardada para esta ruta de proveedor.",
+  "settings.provider.verification.credentialRejected":
+    "El endpoint del catálogo rechazó la credencial guardada. Es una señal de permiso para ese endpoint, no prueba sobre la inferencia.",
+  "settings.provider.verification.credentialPresent":
+    "Hay una credencial guardada. La presencia es configuración; una respuesta del catálogo no valida el acceso de inferencia.",
+  "settings.provider.verification.test": "Prueba de conexión",
+  "settings.provider.verification.testDetail": "{detail}; modelo {model}",
+  "settings.provider.verification.testNotRun":
+    "No se ejecutó en esta carga de página. Una lista de modelos no es inferencia de código.",
+  "settings.provider.verification.inference": "Inferencia de código",
+  "settings.provider.verification.inferenceDetail":
+    "Ninguna inferencia de pago está autorizada ni demostrada por una respuesta de /models.",
+  "settings.provider.listed": "en la lista",
+  "settings.provider.notListed": "no está en la lista",
+  "settings.provider.catalog.aria": "Catálogo de modelos",
+  "settings.provider.catalog.title": "Catálogo de modelos",
+  "settings.provider.catalog.description":
+    "Un catálogo real del proveedor sustenta los ID de modelo. Es descubrimiento, no prueba de inferencia de código.",
+  "settings.provider.catalog.discovering": "Descubriendo…",
+  "settings.provider.catalog.discover": "Descubrir modelos",
+  "settings.provider.catalog.emptyConfigured":
+    "No hay ningún descubrimiento de modelos registrado en este proceso de Core. Ejecuta el descubrimiento para leer el catálogo del proveedor.",
+  "settings.provider.catalog.emptyUnconfigured":
+    "No hay ningún descubrimiento de modelos registrado en este proceso de Core. Configura primero la conexión.",
+  "settings.provider.catalog.search": "Buscar modelos catalogados",
+  "settings.provider.catalog.searchPlaceholder": "Filtrar por ID de modelo",
+  "settings.provider.catalog.filtered":
+    "{shown} de {total} modelos catalogados",
+  "settings.provider.catalog.noMatches":
+    "Ningún modelo catalogado coincide con esta búsqueda.",
+  "settings.provider.catalog.source": "Origen: {source}",
+  "settings.provider.catalog.endpointUnsupported":
+    "Este proveedor no publica un catálogo de modelos en la URL de catálogo configurada. Es un hecho del endpoint de catálogo, no una conclusión sobre la credencial. Usa la configuración avanzada solo si el proveedor documenta un ID de modelo.",
+  "settings.provider.catalog.lastKnown":
+    "Último catálogo correcto en este proceso de Core: {count} modelos, observado {date}.",
+  "settings.provider.catalog.noModels":
+    "No se devolvieron ID de modelo. Core no los inventa.",
+  "settings.provider.baseUrl": "URL base",
+  "settings.provider.replaceCredential":
+    "Reemplazar credencial (deja vacío para conservar la actual)",
+  "settings.provider.credential": "Credencial del proveedor",
+  "settings.provider.credentialUnchanged": "sin cambios",
+  "settings.provider.credentialPlaceholder": "clave API del proveedor",
+  "settings.provider.credentialHelp":
+    "Core cifra las credenciales, nunca las devuelve al navegador ni las muestra en las filas de auditoría.",
+  "settings.provider.advancedRoute": "Ruta manual avanzada",
+  "settings.provider.advancedRouteHint":
+    "Usa estos controles solo cuando el proveedor no publique catálogo o documente un endpoint obligatorio. Un modelo manual permanece sin verificar hasta que un catálogo del proveedor lo respalde.",
+  "settings.provider.manualModel":
+    "Avanzado: ID de modelo manual (sin verificar)",
+  "settings.provider.manualModelHelp":
+    "Core mantiene esta ruta sin verificar hasta que el proveedor anuncie el modelo exacto. Los usuarios normales pueden seleccionar arriba un modelo descubierto.",
+  "settings.provider.connectionDetails": "Detalles de conexión",
+  "settings.provider.advanced": "Límites técnicos y tarifas avanzados",
+  "settings.provider.maxTurns": "Máximo de turnos",
+  "settings.provider.maxCost": "Coste máximo (micros)",
+  "settings.provider.maxInput": "Máximo de tokens de entrada",
+  "settings.provider.maxOutput": "Máximo de tokens de salida",
+  "settings.provider.inputRate": "Micros de entrada / millón",
+  "settings.provider.outputRate": "Micros de salida / millón",
+  "settings.provider.advancedHint":
+    "Valores técnicos opcionales para esta ruta de proveedor. La autorización explícita de la Campaña sigue siendo autoritativa para las sesiones de proveedor; estos límites no la amplían. Una revisión de configuración del proveedor no reescribe los vínculos congelados de Campaña.",
+  "settings.provider.enabledLabel": "Habilitado",
+  "settings.provider.defaultLabel":
+    "Ruta predeterminada para las llamadas a modelo de Core",
+  "settings.provider.saving": "Guardando…",
+  "settings.provider.save": "Guardar configuración",
+  "settings.provider.working": "Procesando…",
+  "settings.provider.test": "Probar conexión",
+  "settings.provider.revoke": "Revocar credencial",
+  "settings.provider.revokeConfirm":
+    "¿Revocar la credencial guardada de {provider}? Core deshabilitará esta ruta de proveedor. Los vínculos de Campaña ya congelados conservan su ruta registrada; ninguna nueva llamada a modelo de Core podrá usar la credencial.",
+  "settings.provider.revoking": "Revocando…",
+  "settings.provider.confirmRevoke": "Confirmar revocación",
+  "settings.provider.keepCredential": "Conservar credencial",
+  "settings.provider.saved":
+    "Configuración guardada. La credencial no se devolvió a esta página.",
+  "settings.provider.saveFailed": "No se pudo guardar el proveedor.",
+  "settings.provider.discoveryFailed": "No se pudo descubrir los modelos.",
+  "settings.provider.testFailed": "La prueba de conexión falló.",
+  "settings.provider.revoked": "Credencial revocada y proveedor deshabilitado.",
+  "settings.provider.revokeFailed": "No se pudo revocar la credencial.",
+  "settings.provider.auditError":
+    "No se pudo cargar la auditoría de configuración.",
+  "settings.provider.testTitle": "Prueba de conexión:",
+  "settings.provider.testModel": "modelo",
+  "settings.provider.models": "Modelos: {models}",
+  "settings.provider.testNote":
+    "Una lista de modelos no certifica acceso, precios ni inferencia de código.",
+  "settings.provider.audit.title": "Auditoría de configuración ({count})",
+  "settings.provider.audit.error":
+    "{error} El historial de auditoría es desconocido, no vacío.",
+  "settings.provider.audit.retry": "Reintentar auditoría",
+  "settings.provider.audit.emptyTitle": "Sin entradas de auditoría",
+  "settings.provider.audit.emptyDescription":
+    "Core devolvió un historial de auditoría vacío para este proveedor.",
+  "settings.provider.audit.revision": "Revisión",
+  "settings.provider.audit.action": "Acción",
+  "settings.provider.audit.actor": "Actor",
+  "settings.provider.audit.detail": "Detalle",
+  "settings.provider.audit.time": "Hora",
+  "settings.runtime.title": "Política de revisión y entorno",
+  "settings.runtime.hint":
+    "Esta política es independiente de una ruta de proveedor o de la autorización de una Campaña",
+  "settings.runtime.description":
+    "Las llamadas a modelo del Revisor semántico están deshabilitadas por defecto. Habilitarlas autoriza llamadas a modelo acotadas y propiedad de Core para cada revisión de candidato; pueden generar cargos del proveedor. El verificador siempre ejecuta las comprobaciones congeladas de forma independiente.",
+  "settings.runtime.enable":
+    "Habilitar llamadas a modelo del Revisor semántico (ruta de proveedor de pago)",
+  "settings.runtime.maxOutput":
+    "Máximo de tokens de salida de la revisión semántica",
+  "settings.runtime.current": "Actual: {mechanism} · actualizado {date}",
+  "settings.runtime.notLoaded": "Política del entorno no cargada.",
+  "settings.runtime.save": "Guardar política del entorno",
+  "settings.runtime.saved": "Política de revisión del entorno guardada.",
+  "settings.runtime.saveFailed":
+    "No se pudo actualizar la política del entorno.",
+  "settings.boundaries.title": "Límites de configuración",
+  "settings.boundaries.openRuntime": "Abrir diagnóstico del entorno",
+  "settings.boundaries.credentials": "Credenciales del proveedor",
+  "settings.boundaries.credentialsDetail":
+    "Cifradas por Core; nunca se devuelven a este navegador.",
+  "settings.boundaries.frozen": "Campañas congeladas",
+  "settings.boundaries.frozenDetail":
+    "Las revisiones del proveedor no reescriben un vínculo ya congelado de Campaña o Delegación.",
+  "settings.boundaries.test": "Prueba de conexión",
+  "settings.boundaries.testDetail":
+    "Solo lee la lista de modelos del proveedor. No es inferencia de código.",
+  "settings.boundaries.oauth": "ChatGPT OAuth",
+  "settings.boundaries.oauthDetail":
+    "Los estados OAuth de proveedor no admitidos siguen visibles como bloqueados o no aplicables; Office no afirma autenticación de Codex en vivo.",
+  "settings.boundaries.fingerprint": "Huella de la credencial",
+  "settings.boundaries.fingerprintDetail":
+    "Las filas de configuración incluyen una huella no secreta; el valor de la credencial nunca se muestra.",
+
+  "execProfiles.title": "Perfiles de ejecución ({count})",
+  "execProfiles.description":
+    "Configuración versionada del operador para los roles respaldados por modelos. Elige un perfil, revisa sus rutas y mantén los límites técnicos de operación en Avanzado. Un perfil no es una autorización ni una concesión de capacidades.",
+  "execProfiles.newProfile": "Nuevo perfil",
+  "execProfiles.refresh": "Actualizar",
+  "execProfiles.meta":
+    "Obtenido {date} · {routes} rutas base probadas · {providers} conexiones de proveedor",
+  "execProfiles.loading": "Cargando perfiles de ejecución…",
+  "execProfiles.unavailableTitle": "Perfiles de ejecución no disponibles",
+  "execProfiles.error.load": "No se pudieron cargar los perfiles de ejecución.",
+  "execProfiles.error.discovery":
+    "No se pudo descubrir los modelos del proveedor.",
+  "execProfiles.error.resolution":
+    "La resolución del perfil del Proyecto no está disponible.",
+  "execProfiles.error.reload": "No se pudo recargar la revisión actual.",
+  "execProfiles.error.save": "No se pudo guardar el perfil de ejecución.",
+  "execProfiles.error.defaultSet":
+    "No se pudo establecer el perfil predeterminado.",
+  "execProfiles.error.defaultCleared":
+    "No se pudo borrar el perfil predeterminado.",
+  "execProfiles.error.stale":
+    "{error} Los perfiles mostrados pueden estar desactualizados.",
+  "execProfiles.emptyTitle": "Sin perfiles de ejecución",
+  "execProfiles.emptyDescription":
+    "Crea un perfil a partir de las rutas admitidas por Core. Un borrador con un proveedor no configurado se guarda como no ejecutable y no puede convertirse en predeterminado.",
+  "execProfiles.emptyAction": "Crear perfil de ejecución",
+  "execProfiles.table.profile": "Perfil",
+  "execProfiles.table.category": "Categoría",
+  "execProfiles.table.revision": "Revisión",
+  "execProfiles.table.hash": "Hash de contenido",
+  "execProfiles.table.executable": "Ejecutable",
+  "execProfiles.table.defaults": "Predeterminados",
+  "execProfiles.table.action": "Acción",
+  "execProfiles.table.warnings": "Advertencias: {count}",
+  "execProfiles.table.globalDefault": "GLOBAL DEFAULT",
+  "execProfiles.table.projectDefault": "PROJECT {id}",
+  "execProfiles.table.none": "ninguno",
+  "execProfiles.table.edit": "Editar",
+  "execProfiles.state.executable": "ejecutable",
+  "execProfiles.state.draftNotExecutable": "borrador, no ejecutable",
+  "execProfiles.notice.reloaded": "Revisión {revision} recargada.",
+  "execProfiles.notice.saved":
+    "Guardado {name}, revisión {revision} ({state}).",
+  "execProfiles.notice.globalDefaultSet":
+    "Predeterminado global establecido en {name}.",
+  "execProfiles.notice.projectDefaultSet":
+    "Predeterminado del Proyecto establecido en {name}.",
+  "execProfiles.notice.globalDefaultCleared": "Predeterminado global borrado.",
+  "execProfiles.notice.projectDefaultCleared":
+    "Predeterminado del Proyecto borrado.",
+  "execProfiles.category.BUDGET": "Económico",
+  "execProfiles.category.BALANCED": "Equilibrado",
+  "execProfiles.category.QUALITY": "Máxima calidad",
+  "execProfiles.category.CUSTOM": "Personalizado",
+  "execProfiles.role.lead": "Lead",
+  "execProfiles.role.leadResponsibility":
+    "Evaluación semántica y propuesta de plan",
+  "execProfiles.role.implementer": "Implementador",
+  "execProfiles.role.implementerResponsibility":
+    "Ruta de sesión de implementación de la Campaña",
+  "execProfiles.role.semanticReviewer": "Revisor semántico",
+  "execProfiles.role.semanticReviewerResponsibility":
+    "Llamada a modelo de revisión semántica, cuando está habilitada",
+  "execProfiles.validation.nameRequired": "El nombre es obligatorio.",
+  "execProfiles.validation.nameTooLong":
+    "El nombre debe tener como máximo 80 caracteres.",
+  "execProfiles.validation.descriptionTooLong":
+    "La descripción debe tener como máximo 500 caracteres.",
+  "execProfiles.validation.riskRequired":
+    "Selecciona al menos una clase de riesgo cuando el inicio autónomo está habilitado.",
+  "execProfiles.validation.providerRequired":
+    "Selecciona un proveedor configurado para el rol {role}.",
+  "execProfiles.validation.modelRequired": "El ID de modelo es obligatorio.",
+  "execProfiles.validation.modelTooLong":
+    "El ID de modelo debe tener como máximo 128 caracteres.",
+  "execProfiles.validation.modelWhitespace":
+    "El ID de modelo no debe contener espacios en blanco.",
+  "execProfiles.validation.operationRange":
+    "{field} debe estar entre {min} y {max}.",
+  "execProfiles.validation.progressRange":
+    "{field} debe estar entre {min} y {max}.",
+  "execProfiles.warning.unknownProvider":
+    "El proveedor de {role} no es una conexión configurada de Core; este perfil sigue siendo un borrador no ejecutable.",
+  "execProfiles.warning.unconfiguredProvider":
+    "El proveedor de {role} {provider} no tiene credencial guardada; este perfil sigue siendo un borrador no ejecutable.",
+  "execProfiles.warning.disabledProvider":
+    "El proveedor de {role} {provider} está deshabilitado; este perfil sigue siendo un borrador no ejecutable.",
+  "execProfiles.warning.appServerProvider":
+    "La ruta de {role} necesita una pasarela de chat-completions; el App Server {kind} no tiene transporte de chat. Elige un proveedor compatible con OpenAI para este rol.",
+  "execProfiles.transport.chatReview":
+    "Transporte de revisión: pasarela de chat-completions",
+  "execProfiles.transport.nativeReview":
+    "Transporte de revisión: adaptador nativo",
+  "execProfiles.progress.autonomyEnabled":
+    "Activar diagnóstico autónomo y reparación acotada",
+  "execProfiles.progress.autonomyHint":
+    "Core valida de forma determinista los puntos del revisor, el cero crítico y los presupuestos de riesgo. R2/R3 siempre requieren una persona.",
+  "execProfiles.progress.r0Points": "Presupuesto de puntos R0",
+  "execProfiles.progress.r0Cycles": "Ciclos de reparación R0",
+  "execProfiles.progress.r1Points": "Presupuesto de puntos R1 (máx. 5)",
+  "execProfiles.progress.r1Cycles": "Ciclos de reparación R1 (máx. 1)",
+  "execProfiles.validation.autonomyBudget":
+    "La reparación autónoma requiere un presupuesto R0 positivo, como máximo 5 puntos/1 ciclo para R1 y presupuestos R2/R3 en cero.",
+  "execProfiles.warning.unadvertisedModel":
+    "El modelo {model} de {role} no lo anuncia {provider}; ejecuta el descubrimiento de modelos o selecciona un modelo anunciado.",
+  "execProfiles.defaults.aria": "Predeterminados del perfil de ejecución",
+  "execProfiles.defaults.title": "Predeterminados y perfil efectivo",
+  "execProfiles.defaults.revision": "Revisión",
+  "execProfiles.defaults.revisionId": "ID de revisión",
+  "execProfiles.defaults.contentHash": "Hash de contenido",
+  "execProfiles.defaults.warning":
+    "Este perfil es un borrador no ejecutable. Core lo rechazará como predeterminado o ruta de ejecución hasta que se resuelvan todas las advertencias.",
+  "execProfiles.defaults.clearGlobal": "Borrar predeterminado global",
+  "execProfiles.defaults.setGlobal": "Establecer predeterminado global",
+  "execProfiles.defaults.project": "Proyecto predeterminado",
+  "execProfiles.defaults.projectHelp":
+    "Un predeterminado de Proyecto anula el predeterminado global solo para ese Proyecto.",
+  "execProfiles.defaults.noProjects": "Sin Proyectos registrados",
+  "execProfiles.defaults.clearProject": "Borrar predeterminado del Proyecto",
+  "execProfiles.defaults.setProject": "Establecer predeterminado del Proyecto",
+  "execProfiles.defaults.registerProject":
+    "Registra un Proyecto para inspeccionar la resolución del predeterminado del Proyecto.",
+  "execProfiles.defaults.resolutionError":
+    "La resolución del Proyecto falló: {error}",
+  "execProfiles.defaults.effective": "Efectivo para {project}: perfil",
+  "execProfiles.defaults.effectiveRevision": "revisión {revision}, origen",
+  "execProfiles.defaults.noDefault":
+    "No existe ningún perfil de ejecución predeterminado para este Proyecto.",
+  "execProfiles.editor.editTitle": "Editar {name}",
+  "execProfiles.editor.newTitle": "Nuevo perfil de ejecución",
+  "execProfiles.editor.description":
+    "Cada guardado crea una revisión inmutable. La revisión esperada evita sobrescribir una edición más reciente del operador.",
+  "execProfiles.editor.editingRevision": "Editando la revisión {revision}",
+  "execProfiles.editor.stale":
+    "Core rechazó este guardado porque el perfil cambió desde que se cargó. No se escribió ninguna revisión.",
+  "execProfiles.editor.reload": "Recargar revisión actual",
+  "execProfiles.editor.draftWarning":
+    "Este borrador no es ejecutable. Core rechaza vincular o usar un perfil hasta que se sustente cada ruta de rol.",
+  "execProfiles.editor.legacyV1":
+    "Esta es una revisión V1 histórica. Al guardarla se escribe una nueva revisión V2 con los valores técnicos predeterminados de Avanzado; los antiguos topes de turnos, intentos, sesiones, tokens, coste y fecha límite no se trasladan.",
+  "execProfiles.editor.name": "Nombre",
+  "execProfiles.editor.category": "Categoría",
+  "execProfiles.editor.profileDescription": "Descripción",
+  "execProfiles.matrix.aria": "Matriz de roles",
+  "execProfiles.matrix.title": "Matriz de roles",
+  "execProfiles.matrix.hint":
+    "Cada rol resuelve su propia conexión de proveedor, modelo y razonamiento. Estas rutas son la configuración normal; el Verificador determinista no es un rol del perfil.",
+  "execProfiles.matrix.refresh": "Actualizar catálogo de modelos",
+  "execProfiles.matrix.role": "Rol",
+  "execProfiles.matrix.provider": "Proveedor",
+  "execProfiles.matrix.model": "Modelo",
+  "execProfiles.matrix.reasoning": "Razonamiento",
+  "execProfiles.matrix.providerLabel": "Proveedor de {role}",
+  "execProfiles.matrix.notConfigured": "{provider} (no configurado)",
+  "execProfiles.matrix.discovering": "Descubriendo modelos…",
+  "execProfiles.matrix.catalogUnavailable":
+    "Catálogo de modelos no disponible: {error}",
+  "execProfiles.matrix.discovered": "Modelos descubiertos: {count}",
+  "execProfiles.matrix.discoveryUnavailable":
+    "Descubrimiento no disponible: {detail}",
+  "execProfiles.matrix.catalogNotLoaded": "Catálogo de modelos no cargado",
+  "execProfiles.matrix.providerUnconfigured":
+    "El proveedor no está configurado",
+  "execProfiles.matrix.searchModels": "Buscar modelos de {role}",
+  "execProfiles.matrix.filterPlaceholder": "Filtrar modelos descubiertos",
+  "execProfiles.matrix.modelLabel": "Modelo de {role}",
+  "execProfiles.matrix.noAdvertisedModel": "Sin modelo anunciado",
+  "execProfiles.matrix.unverified": "{model} (sin verificar)",
+  "execProfiles.matrix.manualLabel":
+    "ID de modelo manual de {role} (sin verificar)",
+  "execProfiles.matrix.manualHelp":
+    "Core mantiene el perfil como no ejecutable hasta que el proveedor anuncie este modelo exacto.",
+  "execProfiles.matrix.manualToggle":
+    "Avanzado: ID de modelo manual de {role} (sin verificar)",
+  "execProfiles.matrix.reasoningLabel": "Razonamiento de {role}",
+  "execProfiles.matrix.providerDefault": "Predeterminado del proveedor",
+  "execProfiles.advanced.title": "Límites técnicos avanzados de operación",
+  "execProfiles.advanced.hint":
+    "Opcional. Estos límites por operación y umbrales de progreso no son presupuestos de turnos, intentos, sesiones, tokens, coste ni fecha límite de Campaña. Core los aplica por seguridad.",
+  "execProfiles.operations.modelRequestTimeout":
+    "Tiempo máximo de solicitud de modelo (s)",
+  "execProfiles.operations.modelRequestTimeoutHelp":
+    "Duración máxima de una solicitud de modelo, no una fecha límite de Campaña.",
+  "execProfiles.operations.toolCallTimeout":
+    "Tiempo máximo de llamada a herramienta (s)",
+  "execProfiles.operations.maxRequestBytes": "Bytes máximos de solicitud",
+  "execProfiles.operations.maxResponseBytes": "Bytes máximos de respuesta",
+  "execProfiles.operations.maxGenerationTokens": "Tokens máximos de generación",
+  "execProfiles.operations.maxInFlight": "Operaciones simultáneas máximas",
+  "execProfiles.progress.title": "Supervisión del progreso",
+  "execProfiles.progress.hint":
+    "Estos umbrales activan diagnóstico o escalado. No detienen trabajo legítimo por sí solos.",
+  "execProfiles.progress.diagnoseAfter":
+    "Diagnosticar tras puntos de control estancados",
+  "execProfiles.progress.escalateAfter":
+    "Escalar tras replanteamientos fallidos",
+  "execProfiles.progress.observationTimeout":
+    "Tiempo máximo de observación (s)",
+  "execProfiles.autoStart.aria": "Política de inicio autónomo",
+  "execProfiles.autoStart.title": "Política de inicio autónomo",
+  "execProfiles.autoStart.hint":
+    "Es una declaración de política, no autoridad. Core sigue requiriendo el plan congelado, la delegación y la aprobación de riesgo.",
+  "execProfiles.autoStart.label":
+    "Declarar el inicio autónomo elegible para las clases de riesgo seleccionadas",
+  "execProfiles.editor.saving": "Guardando…",
+  "execProfiles.editor.saveRevision": "Guardar revisión",
+  "execProfiles.editor.create": "Crear perfil",
+  "execProfiles.editor.close": "Cerrar editor",
+  "execProfiles.editor.cancel": "Cancelar",
+};

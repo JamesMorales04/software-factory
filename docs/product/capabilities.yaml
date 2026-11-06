@@ -242,6 +242,7 @@ milestones:
   - automatic independent verifier and reviewer
   capability_ids:
   - CAP-045
+  - CAP-053
   exclusions:
   - SEC-01 isolation certification
   - production or Windows support claim
@@ -278,6 +279,8 @@ milestones:
   - CAP-050
   - CAP-051
   - CAP-052
+  - CAP-054
+  - CAP-055
   exclusions:
   - Generic SaaS dashboard scope
   - invented backend capability or decorative actions
@@ -497,11 +500,13 @@ capabilities:
   limitations:
   - OpenCode and Codex App Server adapters support bounded multi-turn tool events and frozen-check execution through
     the Supervisor. OpenCode has managed live acceptance; Codex has deterministic real-executable coverage and a
-    test-only GPT-6 Luna proxy record. Native ChatGPT-authenticated Codex live inference and ISOLATED dispatch
-    remain blocked.
+    test-only GPT-6 Luna proxy record. A reviewer-only native Codex App Server `review/start` transport and
+    dedicated ChatGPT credential volume are implemented behind `FACTORY_ENABLE_CODEX_REVIEW=1`; real ChatGPT
+    login, live Luna review and ISOLATED dispatch remain NOT_TESTED.
   blockers:
   - SEC-01 isolation remains paused; TRUSTED_LOCAL has broad host access.
-  - Native ChatGPT OAuth token refresh and account-header injection are outside the current egress boundary.
+  - Real ChatGPT login, live Luna review and the Office authentication-status surface remain pending; the current
+    bootstrap is the reviewer CLI/Compose flow.
 - id: CAP-005
   name: Candidate revision lineage
   category: Quality
@@ -793,12 +798,31 @@ capabilities:
     - office/src/App.tsx
     - office/src/views/AgentOffice.tsx
     - office/src/components/office/AgentOfficeFloor.tsx
+    - office/src/components/office/AgentOfficeIsometric.tsx
+    - office/src/components/office/OfficeAvatar.tsx
+    - office/src/components/office/OfficeAvatarFigure.tsx
+    - office/src/components/office/OfficeRoomBackdrop.tsx
+    - office/src/components/office/OfficeRoomFurniture.tsx
+    - office/src/components/office/OfficeStudioShell.tsx
+    - office/src/components/office/officeAvatarAppearance.ts
+    - office/src/components/office/officeSceneLayout.ts
     - office/src/components/office/ParticipantInspector.tsx
+    - office/src/views/Issues.tsx
+    - office/src/views/issues.css
     - native/src/db/participants.rs
+    - native/src/db/github.rs
+    - native/src/github.rs
+    - native/src/github_sync.rs
     test:
     - office/src/views/Campaigns.tsx
     - office/src/views/AgentOffice.test.tsx
+    - office/src/components/office/AgentOfficeIsometric.test.tsx
+    - office/src/components/office/officeAvatarAppearance.test.ts
+    - office/src/components/office/officeSceneLayout.test.ts
+    - office/src/views/Issues.test.tsx
     - native/src/db/participants.rs
+    - native/src/github.rs
+    - native/src/github_sync.rs
     - native/src/bin/core.rs
   acceptance:
     deterministic: The Office typechecks, lints, passes component tests and builds; participant and tool-event routes require operator authentication, validate filters, bound pagination and redact provider detail.
@@ -817,6 +841,8 @@ capabilities:
   - Campaign and Lead labels can remain AUTHORIZED/RUNNING after an ACCEPTED Run; the gate and Run states are authoritative.
   - Agent Office is read-only; it does not expose stop, model switching, budget changes or tool invocation.
   - Provider-session liveness is represented by recorded lease state only; external provider state is not independently verified.
+  - Agent Office V3 covers deterministic layouts and unique avatar appearances through the current 200-participant projection. Renderer fixture captures are not live Core or inspector acceptance; the original vector scene remains less painterly and spatially rich than the approved reference. Product Owner visual approval and authenticated Agent Office browser acceptance remain pending.
+  - GitHub issue synchronization is read-only and bounded; governed intake/board ordering, issue writing, comments, Action/Campaign relationships and a real authorized GitHub call remain not tested. The Issues view is wired at /issues; real browser acceptance is pending.
   blockers: []
 - id: CAP-012
   name: Durable events and telemetry
@@ -1279,9 +1305,9 @@ capabilities:
   purpose: Create and reconcile exact-candidate pull requests
   product_objective: Governed delivery
   decision_status: proposed
-  implementation_status: not_implemented
+  implementation_status: in_progress
   verification:
-    deterministic: not_tested
+    deterministic: verified
     live_agent: not_tested
     uat: not_tested
     deployment: not_tested
@@ -1294,28 +1320,39 @@ capabilities:
   refs:
     adr: []
     contract: []
-    source: []
-    test: []
+    source:
+    - native/src/github.rs
+    - native/src/bin/core.rs
+    - office/src/components/office/CandidatePullRequest.tsx
+    test:
+    - native/src/github.rs
+    - native/src/bin/core.rs
+    - office/src/components/office/CandidatePullRequest.test.tsx
   acceptance:
     deterministic: Applicable github pr delivery contract, negative and regression checks pass on an exact candidate.
     real: Exercise github pr delivery in a genuine authorized project journey and independently verify the outcome.
   evidence:
-    deterministic: []
+    deterministic:
+    - docs/evidence/office-campaign-diff-pr-2026-10-28.json
     live_agent: []
     uat: []
     deployment: []
     isolation: []
-  limitations: []
-  blockers: []
+  limitations:
+  - Pull request creation requires an already pushed head branch that resolves exactly to the candidate commit; Core does not push branches.
+  - Pull request number entry is operator-supplied; no PR is inferred from a candidate.
+  - Real GitHub API and permission behavior is NOT_TESTED; fake-upstream tests only cover deterministic response handling.
+  blockers:
+  - Authorized disposable GitHub repository, live credential and pushed candidate branch are required for real acceptance.
 - id: CAP-025
   name: CI and review reconciliation
   category: Delivery
   purpose: Observe exact-head checks review and branch protection
   product_objective: Governed delivery
   decision_status: proposed
-  implementation_status: not_implemented
+  implementation_status: in_progress
   verification:
-    deterministic: not_tested
+    deterministic: verified
     live_agent: not_tested
     uat: not_tested
     deployment: not_tested
@@ -1327,21 +1364,32 @@ capabilities:
   refs:
     adr: []
     contract: []
-    source: []
-    test: []
+    source:
+    - native/src/github.rs
+    - native/src/bin/core.rs
+    - office/src/components/office/CandidatePullRequest.tsx
+    test:
+    - native/src/github.rs
+    - native/src/bin/core.rs
+    - office/src/components/office/CandidatePullRequest.test.tsx
   acceptance:
     deterministic: Applicable ci and review reconciliation contract, negative and regression checks pass on an exact
       candidate.
     real: Exercise ci and review reconciliation in a genuine authorized project journey and independently verify
       the outcome.
   evidence:
-    deterministic: []
+    deterministic:
+    - docs/evidence/office-campaign-diff-pr-2026-10-28.json
     live_agent: []
     uat: []
     deployment: []
     isolation: []
-  limitations: []
-  blockers: []
+  limitations:
+  - Check runs, commit statuses, PR state and mergeability are read live from GitHub and bounded; Core does not duplicate GitHub's branch-protection policy engine.
+  - A check list that is truncated or not bound to the PR head blocks merge.
+  - Real GitHub checks, review state and branch protection are NOT_TESTED.
+  blockers:
+  - Live GitHub repository, checks and protection rules are required for real acceptance.
 - id: CAP-026
   name: Conditional R0 merge
   category: Delivery
@@ -2038,6 +2086,10 @@ capabilities:
     source:
     - compose.yaml
     - deploy/Containerfile
+    - native/src/device_session.rs
+    - native/src/db/device_sessions.rs
+    - native/src/bin/core.rs
+    - factory
     - native/src/bin/runtime_broker.rs
     test:
     - scripts/compose-e2e.sh
@@ -2049,6 +2101,7 @@ capabilities:
   evidence:
     deterministic:
     - docs/evidence/container-native-compose-2026-10-26.json
+    - docs/evidence/personal-access-auth-2026-10-28.json
     live_agent:
     - docs/evidence/container-native-live-uat-certification-manifest.json
     uat: []
@@ -2180,16 +2233,27 @@ capabilities:
     - office/src/components/ui/Field.tsx
     - office/src/components/ui/Surface.tsx
     - office/src/styles/tokens.css
+    - office/src/styles/layout.css
+    - office/src/styles/components.css
+    - office/src/styles/home.css
+    - office/src/views/Home.tsx
+    - office/src/views/HomeThread.tsx
     test:
     - office/src/components/ui/Button.test.tsx
+    - office/src/components/ui/Field.test.tsx
+    - office/src/views/Home.test.tsx
+    - office/src/views/Home.styles.test.ts
+    - office/e2e-browser/office-conversation-home.mjs
     - office/src/theme.test.tsx
+    - office/e2e-browser/office-home-visual-polish.mjs
     - office/e2e-browser/rust-journey.mjs
   acceptance:
-    deterministic: Semantic tokens, light/dark themes, density, grouped navigation, command search and shared accessible primitives typecheck, lint, pass component tests and build inside the container-native workflow.
+    deterministic: Semantic tokens, light/dark themes, density, grouped navigation, command search and shared accessible primitives typecheck, lint, pass component tests and build inside the container-native workflow. The conversational Home slice renders the latest durable intake request and Lead state from Core, supports keyboard submission and objective prompts, and links to the existing Request workspace; component and fixture Chromium checks cover 1440/834/390/320 widths.
     real: Primary Office journeys remain usable at desktop, tablet and narrow widths with visible focus, truthful states and real Core-backed browser acceptance.
   evidence:
     deterministic:
     - docs/evidence/office-design-foundation-2026-10-27.json
+    - docs/evidence/office-home-visual-polish-2026-10-29/visual-polish-evidence.json
     live_agent: []
     uat: []
     deployment: []
@@ -2197,9 +2261,13 @@ capabilities:
   limitations:
   - Storybook, visual regression, the full axe audit, the interactive WorkGraph, a full code-diff viewer and a visual Agent Office remain later slices.
   - Provider connection tests read model discovery only; no live coding inference is authorized by these Office slices.
+  - The 2026-10-29 visual-polish slice propagates the new tokens and primitives only to the shell and Home; Projects, Campaigns, Settings and Agent Office keep their existing composition until their own slices.
+  - Fixture Chromium screenshots at 1440/834/390/320 are style evidence only. Real Core/Compose browser acceptance and Product Owner visual acceptance remain NOT_TESTED.
+  - The Home Lead thread is a compact projection of the existing Request workspace, not a new chat or approval API; fixture screenshots use mocked Core responses.
   - Existing operational views still use the legacy compatibility surface until their module redesign.
   blockers:
   - The full accessible WorkGraph and Agent Office journeys remain to be implemented.
+  - Product Owner visual acceptance of the shell and Home remains outstanding.
 
 - id: CAP-049
   name: Operational Overview and Decision Inbox
@@ -2278,35 +2346,49 @@ capabilities:
     - docs/product/factory-office.md
     source:
     - native/src/bin/core.rs
+    - native/src/candidate_diff.rs
+    - native/src/github.rs
     - office/src/views/CampaignDetail.tsx
+    - office/src/views/RequestWorkspace.tsx
+    - office/src/coreApi.ts
     - office/src/components/office/CandidateEvidence.tsx
     - office/src/components/office/ParticipantSessionList.tsx
     - office/src/components/office/CandidateDiff.tsx
+    - office/src/components/office/CandidatePullRequest.tsx
     - office/src/components/office/WorkGraph.tsx
     - office/src/components/office/workGraphLayout.ts
     test:
     - office/src/views/CampaignDetail.test.tsx
+    - office/src/views/RequestWorkspace.test.tsx
+    - office/e2e-browser/office-home-fixture.mjs
+    - office/src/components/office/CandidateDiff.test.tsx
+    - office/src/components/office/CandidateDiff.styles.test.ts
+    - office/src/components/office/CandidatePullRequest.test.tsx
     - office/src/components/office/WorkGraph.test.tsx
     - office/src/components/office/workGraphLayout.test.ts
     - office/e2e-browser/rust-journey.mjs
   acceptance:
-    deterministic: The tabbed Campaign workspace typechecks, lints, passes component tests and builds; the WorkGraph derives only recorded dependency facts, surfaces malformed data and preserves the authoritative table; candidate diff metadata requires operator authentication and returns only bounded paths/stat.
+    deterministic: The tabbed Campaign workspace typechecks, lints, passes component tests and builds; the WorkGraph derives only recorded dependency facts, surfaces malformed data and preserves the authoritative table; candidate diff and GitHub PR routes require operator authentication; the diff projection returns only bounded, safe-path file patches with exact base/candidate/Gate identity; the PR projection uses the encrypted Core connection and fake-upstream tests cover checks, comments, review requests, typed permission blocks and pinned-head merge without auto-merge; V2 camelCase authorization fixtures and V1 legacy fixtures cover the Budget & usage and Request Campaign panels, including missing/empty arrays.
     real: An authenticated Chromium journey opens a Campaign from the list, selects a WorkUnit in the visual graph and exact inspector, persists the WorkUnit selection across reload, inspects Budget, Candidates, Evidence, Gate and Events, and observes the accepted Gate only after independent evidence.
   evidence:
     deterministic:
     - docs/evidence/office-campaign-workspace-2026-10-27.json
     - docs/evidence/office-agent-office-slice4-2026-10-27.json
+    - docs/evidence/office-campaign-diff-pr-2026-10-28.json
     live_agent: []
     uat: []
     deployment: []
     isolation: []
   limitations:
   - The WorkGraph visualizes recorded dependencies; position is derived dependency depth, not scheduling progress.
-  - Candidate diff projection exposes changed paths and diff stat only; file bodies are not returned to the browser.
+  - Candidate diff projection is bounded and omits binary, oversized, symlink/gitlink, non-UTF-8 and budget-exhausted patches; it never executes the candidate.
+  - GitHub pull request operations require a Project repository binding and an already pushed head branch; Core does not create or push branches.
+  - Real GitHub API permissions, branch protection and a live merge are NOT_TESTED; the fake-upstream tests do not certify live behavior.
   - Campaign authorization and Gate repair remain on their existing module controls.
+  - Campaign and Request panels consume Core's camelCase V2 authorization record; V1 caps are historical only. Fixture Chromium screenshots cover the repaired budget/request panels; real Core/Compose browser acceptance remains NOT_TESTED.
   - Malformed graph data is surfaced as an inconsistency and never repaired in the browser.
   blockers:
-  - Real browser acceptance and Product Owner review remain pending.
+  - Real browser acceptance, real GitHub acceptance and Product Owner review remain pending.
 
 - id: CAP-051
   name: Runtime operational console
@@ -2362,7 +2444,7 @@ capabilities:
 - id: CAP-052
   name: Provider and runtime Settings workspace
   category: Product
-  purpose: Operators can configure provider routes, credential lifecycle, limits and review policy while distinguishing configuration from tested or proven inference
+  purpose: Operators can select a discovered provider model, configure a provider route and review policy, and distinguish configuration from tested or proven inference without filling in raw model IDs, base URLs, token caps or micro-unit costs on the ordinary path
   product_objective: Coherent engineering command center
   decision_status: approved
   implementation_status: in_progress
@@ -2385,10 +2467,15 @@ capabilities:
     - docs/product/office-design-system.md
     source:
     - office/src/views/Settings.tsx
+    - office/src/views/ExecutionProfiles.tsx
+    - office/src/views/Home.tsx
     - office/src/coreApi.ts
     - native/src/bin/core.rs
     test:
     - office/src/views/Settings.test.tsx
+    - office/src/views/ExecutionProfiles.test.tsx
+    - office/src/views/Home.test.tsx
+    - office/e2e-browser/office-home-fixture.mjs
     - office/e2e-browser/rust-journey.mjs
   acceptance:
     deterministic: Settings typechecks, lints, passes component tests and builds; credential values are never returned after submission and destructive revocation requires confirmation.
@@ -2402,7 +2489,171 @@ capabilities:
     isolation: []
   limitations:
   - Connection testing reads the provider model list; it does not prove coding inference or pricing.
-  - ChatGPT OAuth remains blocked for Codex; no live OAuth or Codex inference is claimed.
+  - Codex ChatGPT authentication is a reviewer-only CLI/Compose flow backed by the dedicated `factory-codex-home`
+    volume; Office does not yet expose Codex auth status, and no live OAuth or Codex inference is claimed.
   - The UI does not expose arbitrary provider payloads or credential values.
+  - Base URL, manual model IDs, token/cost/rate limits and connection details remain in explicit advanced configuration; the V2 technical limits are real Core safety bounds, not productivity caps.
+  - Fixture Chromium screenshots cover Home and Execution Profiles at 1440/390; real Core/Compose browser acceptance of the simplified path remains NOT_TESTED.
   blockers:
   - Real live inference and Product Owner review remain pending.
+
+- id: CAP-053
+  name: Private Tailscale Office access
+  category: Runtime
+  purpose: An owner reaches authenticated Office over private tailnet HTTPS without exposing the Core control API or requiring a public port
+  product_objective: Private remote access to the local-first Factory
+  decision_status: approved
+  implementation_status: in_progress
+  verification:
+    deterministic: verified
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-011
+  - CAP-045
+  target_milestone: F1-S8
+  refs:
+    adr:
+    - docs/architecture/decisions/ADR-0027-optional-tailscale-access.md
+    contract:
+    - docs/operations/compose-deployment.md
+    - docs/architecture/assessments/tailscale-service.md
+    source:
+    - compose.tailscale.yaml
+    - deploy/tailscale/serve.json
+    - native/src/bin/core.rs
+    test:
+    - native/src/bin/core.rs
+    - .github/scripts/check-compose-policy.py
+    - .github/scripts/test_check_compose_policy.py
+  acceptance:
+    deterministic: The pinned official Tailscale service uses userspace networking, a persistent identity volume and private HTTPS Serve to a restricted Office Unix socket; it shares no network with Core, so Core's control and egress addresses are unreachable from the Tailscale container. Control routes and forged Host or Origin requests are denied.
+    real: An authenticated Office journey works over the enrolled tailnet HTTPS origin with Secure session cookies, while tailnet membership alone is unauthenticated and mobile-data reachability is confirmed by the owner.
+  evidence:
+    deterministic:
+    - docs/evidence/personal-access-tailscale-2026-10-28.json
+    - docs/evidence/personal-access-tailscale-isolation-2026-11-02.json
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations:
+  - Only Tailscale Serve is supported; public Funnel, host networking, privileged mode and a host Podman socket are forbidden.
+  - Tailnet device identity does not confer Factory operator authorization; a separate Core device session is required.
+  - Because Core shares no network with Tailscale, Access & Devices reports the configured endpoint as CONFIGURED; it does not claim a live probe of the Serve path.
+  - The optional overlay does not start for the default local-only installation.
+  blockers:
+  - Mobile-data UAT, independent security review and deployment remain pending.
+
+- id: CAP-054
+  name: Personal Access and Device Sessions
+  category: Product
+  purpose: Operators enroll browsers without exposing permanent credentials, pair independent devices through explicit owner approval, and inspect optional private remote access
+  product_objective: Secure local-first multi-device Factory access
+  decision_status: approved
+  implementation_status: in_progress
+  verification:
+    deterministic: verified
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Office
+  dependencies:
+  - CAP-011
+  - CAP-045
+  - CAP-052
+  target_milestone: F1-S9
+  refs:
+    adr:
+    - docs/architecture/decisions/ADR-0025-container-native-and-office-parity.md
+    - docs/architecture/decisions/ADR-0028-device-pairing-approval-boundary.md
+    contract:
+    - docs/product/office-design-system.md
+    - docs/operations/compose-deployment.md
+    source:
+    - office/src/App.tsx
+    - office/src/coreApi.ts
+    - office/src/views/AccessDevices.tsx
+    - office/src/views/DevicePairClaim.tsx
+    - office/src/styles/access.css
+    test:
+    - office/src/coreApi.auth.test.ts
+    - office/src/views/AccessDevices.test.tsx
+    - office/src/views/DevicePairClaim.test.tsx
+    - office/e2e-browser/personal-access.mjs
+  acceptance:
+    deterministic: Office uses the cookie session contract with CSRF headers, renders device pairing and revocation against Core APIs, strips the public challenge identifier from phone browser history before submitting, and keeps Core responses network-only in the PWA service worker.
+    real: A fresh Compose installation enrolls the owner, preserves desktop session across restart, pairs a phone using code confirmation, approves and rejects requests, revokes sessions and inspects access at 1440px, 834px and 390px; remote mobile-data acceptance requires private HTTPS through Tailscale and no Funnel or public service exposure.
+  evidence:
+    deterministic:
+    - docs/evidence/personal-access-pairing-2026-10-28.json
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations:
+  - Tailscale status reports the configured private Office endpoint as CONFIGURED; Core has no network path to probe it and does not claim reachability from mobile data. HTTPS certificate hostnames appear in public Certificate Transparency logs.
+  - The service worker does not cache API responses and does not offer offline authorization.
+  - The Office shell remains available without a session so recovery and enrollment can render; protected API access still fails closed.
+  blockers:
+  - Mobile-data Tailscale UAT, independent review and Product Owner approval remain pending.
+
+- id: CAP-055
+  name: Provider-agnostic reviewer selection and bounded autonomy
+  category: Quality
+  purpose: Select any configured provider/model for the semantic reviewer, validate reviewer findings deterministically, and bound repair and progress replanning by frozen risk budgets
+  product_objective: Governed, provider-agnostic independent review with bounded autonomous recovery
+  decision_status: proposed
+  implementation_status: in_progress
+  verification:
+    deterministic: verified
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-011
+  - CAP-052
+  target_milestone: F1-S9
+  refs:
+    adr:
+    - docs/architecture/decisions/ADR-0033-provider-agnostic-review-and-bounded-autonomy.md
+    contract:
+    - docs/contracts/semantic-review-s4c.md
+    - docs/product/office-design-system.md
+    source:
+    - native/src/autonomy.rs
+    - native/src/execution_policy.rs
+    - native/src/db/quality.rs
+    - native/src/db/lead.rs
+    - native/src/bin/core.rs
+    - office/src/views/ExecutionProfiles.tsx
+    - office/src/components/office/CandidateEvidence.tsx
+    test:
+    - native/src/autonomy.rs
+    - native/src/db/tests.rs
+    - native/src/progress.rs
+    - native/src/bin/core.rs
+    - office/src/views/ExecutionProfiles.test.tsx
+  acceptance:
+    deterministic: 'The frozen profile semanticReviewer route selects chat or native review transport; a first-time frozen-check PASS is progress; critical findings, R2/R3 and exhausted budgets are human stops; repair authorization and the no-progress breaker are append-only Core evidence; disabled autonomy preserves historical policy hashes.'
+    real: 'A fresh Compose Campaign selects the Codex reviewer through the profile, receives an exact-candidate PASS with measured usage and an ACCEPTED gate, and Office renders the selected transport, findings points/rationale and repair authorization without inventing state.'
+  evidence:
+    deterministic:
+    - docs/evidence/provider-agnostic-review-and-bounded-autonomy-2026-11-06.json
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations:
+  - Autonomous repair records a deterministic authorization decision; automatically scheduling the next repair attempt remains a separate bounded change.
+  - Codex native review remains outside the Core chat-completions reservation ledger and is attested by the dedicated reviewer process under ADR-0032.
+  - Autonomy defaults off for existing profiles; only explicitly enabled R0/R1 policies can authorize repair or autonomous progress replanning.
+  - TRUSTED_LOCAL work is not isolation and does not certify SEC-01.
+  blockers:
+  - Independent review, Product Owner approval of ADR-0033 and a fresh real-model acceptance remain pending.

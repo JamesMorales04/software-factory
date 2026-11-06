@@ -24,3 +24,17 @@ npm run test:launch
 The legacy API journeys and provider-specific views were retired with the former
 implementation. Historical records are archived under
 `docs/evidence/history/`.
+
+`personal-access.mjs` exercises the session and device-pairing journey against
+an already running disposable Compose candidate. Start first-run onboarding or
+local recovery, set `FACTORY_OFFICE_URL`, pass the one-time confirmation as
+`FACTORY_BOOTSTRAP_CODE`, and point `CHROMIUM_EXE` at the pinned browser.
+It verifies the initial cookie session, reload persistence, current-device
+marking, independent phone session, matching-code approval, rejection,
+cancellation, single-device revocation, all-device revocation, challenge replay
+rejection, proxy-header denial, PWA worker registration without cache entries,
+security activity rendering, and 1440/834/390 px layouts. Its output marks
+mobile-network Tailscale access `NOT_TESTED`; this local browser journey does not
+prove remote connectivity, node restart persistence, HTTPS, or Funnel exposure.
+The harness passed at implementation `9afbb6f`; the evidence record is
+`docs/evidence/personal-access-pairing-2026-10-28.json`.

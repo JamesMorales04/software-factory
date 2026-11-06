@@ -8,11 +8,20 @@
 
 use std::{env, time::Duration};
 
-use factory_native::db::{ActionSpec, ProviderTerminal, ProviderTurnAuthorization};
+use chrono::Utc;
+use factory_native::db::{
+    ActionSpec, ExecutionCheckReceiptRecord, ProviderTerminal, ProviderToolEventRecord,
+    ProviderTurnAuthorization,
+};
 use factory_native::execution::{
     ApplyFilesRequest, ExecuteWorkspace, ExecutionResult, ToolRunRequest, WorkspaceAllocation,
     WorkspaceHandle, WorkspaceStatus, WriteFilesRequest,
 };
+use factory_native::execution_policy::{
+    ContinuationDecision, FrozenExecutionPolicy, OperationLimits, ProgressCheckpoint,
+    ProgressEvidence, ProgressKind,
+};
+use factory_native::progress::ProgressCheckpointRequest;
 use factory_native::protocol::{
     DynamicToolCallParams, DynamicToolCallResult, DynamicToolContentItem, DynamicToolSpec, JsonRpc,
     RpcEvent, ThreadStartParams, ThreadTokenUsageUpdatedParams, TurnSandboxPolicy, TurnStartParams,
@@ -43,6 +52,12 @@ struct ClaimResponse {
 #[derive(Debug, Deserialize)]
 struct Assignment {
     lease: Lease,
+    #[serde(default)]
+    campaign_id: String,
+    #[serde(default)]
+    work_item_id: String,
+    #[serde(default)]
+    progress_last_sequence: u64,
     action_id: String,
     action_spec: ActionSpec,
     action_spec_sha256: String,
@@ -59,17 +74,7 @@ struct Assignment {
     #[serde(default)]
     delegation_id: String,
     #[serde(default)]
-    max_sessions: u32,
-    #[serde(default)]
-    max_turns: u32,
-    #[serde(default)]
-    max_input_tokens: u64,
-    #[serde(default)]
-    max_output_tokens: u64,
-    #[serde(default)]
-    max_cost_micros: u64,
-    #[serde(default)]
-    deadline_secs: u64,
+    execution_policy: Option<FrozenExecutionPolicy>,
     #[serde(default)]
     allowed_tools: Vec<String>,
     #[serde(default)]
@@ -298,6 +303,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             Err(error) => {
                 let message = error.to_string();
+                // A deterministic progress hold or a progress-transport failure
+                // is a control state, never a generic failed attempt. Core
+                // records BLOCKED and refuses redispatch until operator or
+                // verified-change resolution.
+                let terminal_status = if error.downcast_ref::<WorkerProgressHalt>().is_some()
+                    || error.downcast_ref::<ProgressTransportError>().is_some()
+                {
+                    "BLOCKED"
+                } else {
+                    "FAILED"
+                };
                 let response = client
                     .post(core.join("worker/report")?)
                     .bearer_auth(&session_token)
@@ -307,7 +323,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "generation": assignment.lease.generation,
                         "receipt_id": Uuid::new_v4().to_string(),
                         "result_sha256": sha256_hex(message.as_bytes()),
-                        "terminal_status": "FAILED"
+                        "terminal_status": terminal_status
                     }))
                     .send()
                     .await?;
@@ -653,19 +669,21 @@ async fn execute_provider_assignment(
 ) -> Result<factory_native::workspace::CandidateRevision, Box<dyn std::error::Error>> {
     validate_provider_tools(&assignment.allowed_tools)
         .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
-    if assignment.deadline_secs == 0
-        || !(1..=4).contains(&assignment.max_turns)
-        || assignment.max_sessions == 0
-        || assignment.max_input_tokens == 0
-        || assignment.max_output_tokens == 0
-        || assignment.max_cost_micros == 0
-        || assignment.delegation_id.is_empty()
-    {
-        return Err("provider assignment has an unsupported deadline or budget".into());
+    assignment
+        .execution_policy
+        .as_ref()
+        .and_then(FrozenExecutionPolicy::v2)
+        .ok_or("provider assignment has no Execution Policy V2")?;
+    if assignment.delegation_id.is_empty() {
+        return Err("provider assignment has no delegation identity".into());
     }
     let configured_kind = env::var("FACTORY_PROVIDER_KIND").unwrap_or_default();
     let sandbox_mode = env::var("FACTORY_PROVIDER_SANDBOX").unwrap_or_default();
-    let provider_profile = if sandbox_mode == "container"
+    // An explicit deterministic fixture kind is test-only and must not be
+    // silently upgraded to a stored live provider profile.
+    let fixture_override = configured_kind == "fixture";
+    let provider_profile = if !fixture_override
+        && sandbox_mode == "container"
         && matches!(assignment.provider.as_str(), "opencode" | "opencode-go")
     {
         let profile = client
@@ -1005,10 +1023,22 @@ async fn start_provider_runtime(
     turn_policy: &SharedTurnPolicy,
     provider_profile: Option<ProviderProfile>,
 ) -> Result<ProviderRuntime, Box<dyn std::error::Error>> {
-    let deadline_secs = assignment.deadline_secs;
     let provider = assignment.provider.as_str();
     let model = assignment.model.as_str();
-    let max_turns = assignment.max_turns;
+    let operations = assignment
+        .execution_policy
+        .as_ref()
+        .and_then(FrozenExecutionPolicy::v2)
+        .map(|policy| policy.operations)
+        .ok_or("provider runtime requires Execution Policy V2")?;
+    let request_timeout_secs = u64::from(operations.model_request_timeout_secs.get());
+    // A finite technical egress batch for this provider session. It does not
+    // bound Campaign lifetime: continuation is driven by durable progress and a
+    // new attempt opens a new bridge.
+    let max_requests = usize::try_from(operations.max_generation_tokens.get())
+        .unwrap_or(1)
+        .saturating_mul(4)
+        .max(64);
     let allowed_tools = assignment.allowed_tools.as_slice();
     let mode = env::var("FACTORY_PROVIDER_SANDBOX").unwrap_or_default();
     match mode.as_str() {
@@ -1124,7 +1154,7 @@ async fn start_provider_runtime(
                 .ok()
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(64 * 1024 * 1024);
-            let lifetime = Duration::from_secs(deadline_secs.saturating_add(30).min(3600));
+            let lifetime = Duration::from_secs(request_timeout_secs.saturating_add(30).min(3600));
             let (egress, egress_bridge) = match env::var("FACTORY_PROVIDER_UPSTREAM_URL") {
                 Ok(upstream) => {
                     let credential =
@@ -1143,13 +1173,6 @@ async fn start_provider_runtime(
                     )?;
                     let allow_test_upstream =
                         env::var("FACTORY_ALLOW_TEST_UPSTREAM").ok().as_deref() == Some("1");
-                    let max_requests = if opencode {
-                        max_turns as usize + 4
-                    } else if codex {
-                        (max_turns as usize).saturating_mul(8).saturating_add(1)
-                    } else {
-                        max_turns as usize + 1
-                    };
                     let mut config = factory_native::provider_egress::EgressConfig::new(
                         &upstream,
                         credential,
@@ -1373,7 +1396,7 @@ async fn start_provider_runtime(
                 let mut egress =
                     EgressConfig::new(&upstream, credential, token.clone(), allow_test_upstream)?
                         .with_model(model.to_owned())
-                        .with_max_requests(max_turns as usize + 4)
+                        .with_max_requests(max_requests)
                         .with_turn_policy(turn_policy.clone());
                 if let Some(binder) = turn_binder {
                     egress = egress.with_turn_binder(binder);
@@ -1429,7 +1452,7 @@ async fn start_provider_runtime(
                 }
                 (None, env)
             };
-            let lifetime = Duration::from_secs(deadline_secs.saturating_add(30).min(3600));
+            let lifetime = Duration::from_secs(request_timeout_secs.saturating_add(30).min(3600));
             let sandbox = ContainerProviderSandbox::start(ContainerSandboxConfig {
                 session_dir: session_dir.to_path_buf(),
                 broker_base: env::var("FACTORY_RUNTIME_BROKER_URL")
@@ -1551,7 +1574,11 @@ fn opencode_sandbox_config(
                 "name": format!("Factory {provider}"),
                 "options": {
                     "baseURL": "http://127.0.0.1:18080/v1",
-                    "apiKey": egress_token
+                    "apiKey": egress_token,
+                    // Factory authorizes exactly one provider request per
+                    // turn. OpenCode's own retry would consume a second
+                    // request and mask the first upstream outcome.
+                    "maxRetries": 0
                 },
                 "models": {
                     model: {
@@ -1637,13 +1664,332 @@ async fn finalize_written_provider_work(
     }))
 }
 
+fn operation_limits(context: &ProviderContext<'_>) -> OperationLimits {
+    context
+        .assignment
+        .execution_policy
+        .as_ref()
+        .and_then(FrozenExecutionPolicy::v2)
+        .map(|policy| policy.operations)
+        .expect("provider assignment is validated before the runtime loop starts")
+}
+
+/// Typed Worker outcome when deterministic progress supervision stops an
+/// Implementer. This is a diagnosis/escalation request to Core, not a new cap:
+/// Core may authorize a replan, a new observation, or a linked V2 request.
+#[derive(Debug)]
+struct WorkerProgressHalt {
+    decision: ContinuationDecision,
+    work_item_id: String,
+    stagnant_checkpoints: u32,
+    unsuccessful_replans: u32,
+}
+
+impl std::fmt::Display for WorkerProgressHalt {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "IMPLEMENTER_PROGRESS_{:?}: work item {} has {} stagnant checkpoint(s) and {} unsuccessful replan(s); Core diagnosis is required",
+            self.decision, self.work_item_id, self.stagnant_checkpoints, self.unsuccessful_replans
+        )
+    }
+}
+
+impl std::error::Error for WorkerProgressHalt {}
+
+/// Worker-side evidence collection for one Implementer session.
+///
+/// The Supervisor is authoritative in Core. The Worker derives only durable
+/// observations (workspace writes and frozen-check outcomes) and submits them
+/// with the stable Campaign/work-item identity; restart and repair attempts
+/// therefore reuse the same progress counters.
+struct TurnProgress {
+    campaign_id: String,
+    work_item_id: String,
+    attempt_id: String,
+    /// Attempt/run-scoped prefix keeps checkpoint/operation ids unique across
+    /// repair attempts and Worker restarts while progress counters remain
+    /// work-item scoped.
+    operation_prefix: String,
+    run_identity: String,
+    turn: u64,
+    sequence: u64,
+    evidence: Vec<ProgressEvidence>,
+    last_content: std::collections::BTreeMap<String, String>,
+    last_check: std::collections::BTreeMap<String, String>,
+}
+
+impl TurnProgress {
+    fn new(context: &ProviderContext<'_>) -> Self {
+        Self::from_identity(
+            context.assignment.campaign_id.clone(),
+            context.assignment.work_item_id.clone(),
+            context.assignment.lease.attempt_id.clone(),
+            context.assignment.lease.generation,
+            Uuid::new_v4().simple().to_string(),
+            context.assignment.progress_last_sequence,
+        )
+    }
+
+    fn from_identity(
+        campaign_id: String,
+        work_item_id: String,
+        attempt_id: String,
+        generation: i64,
+        run_id: String,
+        initial_sequence: u64,
+    ) -> Self {
+        let run_identity = format!("{attempt_id}-g{generation}-{run_id}");
+        let operation_prefix = format!("{work_item_id}/{run_identity}");
+        Self {
+            campaign_id,
+            work_item_id,
+            attempt_id,
+            operation_prefix,
+            run_identity,
+            turn: 0,
+            sequence: initial_sequence,
+            evidence: Vec::new(),
+            last_content: std::collections::BTreeMap::new(),
+            last_check: std::collections::BTreeMap::new(),
+        }
+    }
+
+    fn begin_turn(&mut self) {
+        self.turn += 1;
+    }
+
+    /// Monotonic across Worker restarts: epoch milliseconds in the high bits
+    /// and a small in-process counter in the low three digits. A clock that
+    /// moves backwards inside one run is clamped to the last value.
+    fn next_sequence(&mut self) -> u64 {
+        // Epoch microseconds plus a durable seed from Core's last accepted
+        // sequence: later runs and restarts cannot fall below prior evidence.
+        let now = u64::try_from(Utc::now().timestamp_micros()).unwrap_or(0);
+        self.sequence = if now > self.sequence {
+            now
+        } else {
+            self.sequence.saturating_add(1)
+        };
+        self.sequence
+    }
+
+    fn observe_write(&mut self, path: &str, content: &str) {
+        let artifact = sha256_hex(content.as_bytes());
+        let baseline = self
+            .last_content
+            .get(path)
+            .cloned()
+            .unwrap_or_else(|| sha256_hex(b""));
+        self.last_content.insert(path.to_owned(), artifact.clone());
+        let sequence = self.next_sequence();
+        self.evidence.push(ProgressEvidence {
+            evidence_id: format!("{}-write-{sequence}", self.run_identity),
+            campaign_id: self.campaign_id.clone(),
+            work_item_id: self.work_item_id.clone(),
+            attempt_id: self.attempt_id.clone(),
+            kind: ProgressKind::CandidateChanged,
+            artifact_ref: path.to_owned(),
+            artifact_sha256: artifact,
+            baseline_ref: baseline,
+            observed_sequence: sequence,
+            execution_receipt_id: String::new(),
+        });
+    }
+
+    fn candidate_digest(&self) -> String {
+        let mut parts = Vec::with_capacity(self.last_content.len());
+        for (path, sha) in &self.last_content {
+            parts.push(format!("{path}:{sha}"));
+        }
+        sha256_hex(parts.join("\n").as_bytes())
+    }
+
+    /// Record every fresh check result from the immutable Core execution
+    /// receipt. A first-time PASS is verified progress: greenfield acceptance
+    /// checks often start from "not yet executed" rather than an earlier FAIL.
+    /// An unchanged repeat of the same suite and result is not new progress.
+    /// The receipt binds the exact suite, candidate and result digest; the
+    /// Worker cannot relabel a check by choosing its own identity.
+    fn observe_check(&mut self, receipt: &ExecutionCheckReceiptRecord) {
+        if self.last_check.get(&receipt.suite) == Some(&receipt.result_sha256) {
+            return;
+        }
+        self.last_check
+            .insert(receipt.suite.clone(), receipt.result_sha256.clone());
+        let sequence = self.next_sequence();
+        self.evidence.push(ProgressEvidence {
+            evidence_id: format!("{}-check-{sequence}", self.run_identity),
+            campaign_id: self.campaign_id.clone(),
+            work_item_id: self.work_item_id.clone(),
+            attempt_id: self.attempt_id.clone(),
+            kind: ProgressKind::TestsImproved,
+            artifact_ref: format!(
+                "suite:{}|{}|{}",
+                receipt.suite, receipt.outcome, receipt.call_id
+            ),
+            artifact_sha256: receipt.result_sha256.clone(),
+            baseline_ref: receipt.suite.clone(),
+            observed_sequence: sequence,
+            execution_receipt_id: receipt.receipt_id.clone(),
+        });
+    }
+
+    /// Build the checkpoint for the completed turn. The evidence is cleared so
+    /// each terminal operation is submitted exactly once.
+    fn checkpoint_request(&mut self) -> Option<ProgressCheckpointRequest> {
+        if self.turn == 0 {
+            return None;
+        }
+        let checkpoint_id = format!("{}-turn-{}", self.operation_prefix, self.turn);
+        let operation_id = checkpoint_id.clone();
+        let outcome_sha256 = sha256_hex(
+            serde_json::to_string(&serde_json::json!({
+                "workItemId": self.work_item_id,
+                "operation": self.operation_prefix,
+                "turn": self.turn,
+                "evidence": self.evidence.iter().map(|item| item.evidence_id.clone()).collect::<Vec<_>>(),
+            }))
+            .ok()?
+            .as_bytes(),
+        );
+        let checkpoint = ProgressCheckpoint {
+            checkpoint_id,
+            work_item_id: self.work_item_id.clone(),
+            operation_id,
+            evidence_ids: self
+                .evidence
+                .iter()
+                .map(|item| item.evidence_id.clone())
+                .collect(),
+            outcome_sha256,
+        };
+        let request = ProgressCheckpointRequest {
+            campaign_id: self.campaign_id.clone(),
+            work_item_id: self.work_item_id.clone(),
+            checkpoint,
+            evidence: self.evidence.clone(),
+            gate: None,
+        };
+        self.evidence.clear();
+        Some(request)
+    }
+}
+
+#[derive(Debug)]
+struct ProgressTransportError {
+    detail: String,
+}
+
+impl std::fmt::Display for ProgressTransportError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "PROGRESS_TRANSPORT_FAILURE: {}", self.detail)
+    }
+}
+
+impl std::error::Error for ProgressTransportError {}
+
+impl WorkerProgressHalt {
+    fn from_response(
+        work_item_id: &str,
+        response: &factory_native::progress::ProgressCheckpointResponse,
+    ) -> Option<Self> {
+        match response.decision {
+            ContinuationDecision::Diagnose
+            | ContinuationDecision::Escalate
+            | ContinuationDecision::AwaitAuthorization
+            | ContinuationDecision::AwaitReconciliation
+            | ContinuationDecision::Cancel => Some(Self {
+                decision: response.decision,
+                work_item_id: work_item_id.to_owned(),
+                stagnant_checkpoints: response.stagnant_checkpoints,
+                unsuccessful_replans: response.unsuccessful_replans,
+            }),
+            ContinuationDecision::Continue
+            | ContinuationDecision::Replan
+            | ContinuationDecision::Complete => None,
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn submit_progress_checkpoint(
+    client: &reqwest::Client,
+    core: &reqwest::Url,
+    session_token: &str,
+    worker_id: &str,
+    assignment: &Assignment,
+    request: &factory_native::progress::ProgressCheckpointRequest,
+) -> Result<factory_native::progress::ProgressCheckpointResponse, ProgressTransportError> {
+    let response = client
+        .post(
+            core.join("worker/progress_checkpoint")
+                .map_err(|error| ProgressTransportError {
+                    detail: format!("progress endpoint URL: {error}"),
+                })?,
+        )
+        .bearer_auth(session_token)
+        .json(&serde_json::json!({
+            "attempt_id": assignment.lease.attempt_id,
+            "worker_id": worker_id,
+            "generation": assignment.lease.generation,
+            "campaign_id": assignment.campaign_id,
+            "work_item_id": assignment.work_item_id,
+            "checkpoint": request.checkpoint,
+            "evidence": request.evidence,
+            "gate": request.gate,
+        }))
+        .send()
+        .await
+        .map_err(|error| ProgressTransportError {
+            detail: format!("progress checkpoint request failed: {error}"),
+        })?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(ProgressTransportError {
+            detail: format!(
+                "Core refused progress checkpoint: HTTP {status} {}",
+                body.chars().take(512).collect::<String>()
+            ),
+        });
+    }
+    response
+        .json::<factory_native::progress::ProgressCheckpointResponse>()
+        .await
+        .map_err(|error| ProgressTransportError {
+            detail: format!("progress checkpoint response: {error}"),
+        })
+}
+
+/// Persist the final terminal operation before the candidate is reported. The
+/// Quality Gate remains independent; an open progress hold blocks the next
+/// attempt, not the gate for this candidate.
+async fn persist_final_progress_checkpoint(
+    context: &ProviderContext<'_>,
+    progress: &mut TurnProgress,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(request) = progress.checkpoint_request() {
+        let _ = submit_progress_checkpoint(
+            context.client,
+            context.core,
+            context.session_token,
+            context.worker_id,
+            context.assignment,
+            &request,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 async fn run_provider_tool_loop(
     context: &ProviderContext<'_>,
 ) -> Result<ProviderRun, Box<dyn std::error::Error>> {
     let directory = context.directory.to_owned();
-    let http = factory_native::runtime::opencode_http_client(Duration::from_secs(
-        context.assignment.deadline_secs,
-    ))?;
+    let http = factory_native::runtime::opencode_http_client(Duration::from_secs(u64::from(
+        operation_limits(context).model_request_timeout_secs.get(),
+    )))?;
     let event_response = factory_native::runtime::open_opencode_event_stream(
         &http,
         context.base_url,
@@ -1751,7 +2097,24 @@ async fn run_provider_tool_loop(
     let mut written = false;
     let mut last_message_id = String::new();
     let mut call_ids = std::collections::BTreeSet::new();
-    for _ in 0..context.assignment.max_turns {
+    let mut progress = TurnProgress::new(context);
+    loop {
+        if let Some(request) = progress.checkpoint_request() {
+            let response = submit_progress_checkpoint(
+                context.client,
+                context.core,
+                context.session_token,
+                context.worker_id,
+                context.assignment,
+                &request,
+            )
+            .await?;
+            if let Some(halt) = WorkerProgressHalt::from_response(&progress.work_item_id, &response)
+            {
+                return Err(Box::new(halt));
+            }
+        }
+        progress.begin_turn();
         let turn = if context.turn_policy.is_some() {
             Some(authorize_provider_turn(context, &prompt).await?)
         } else {
@@ -1787,7 +2150,9 @@ async fn run_provider_tool_loop(
             return Err(error.into());
         }
         let terminal = match tokio::time::timeout(
-            Duration::from_secs(context.assignment.deadline_secs),
+            Duration::from_secs(u64::from(
+                operation_limits(context).model_request_timeout_secs.get(),
+            )),
             factory_native::runtime::wait_for_opencode_prompt_terminal(
                 &mut event_stream,
                 &mut parser,
@@ -1983,9 +2348,12 @@ async fn run_provider_tool_loop(
                     }
                     let applied = files
                         .into_iter()
-                        .map(|file| factory_native::execution::AppliedFile {
-                            path: file.path,
-                            content: file.content,
+                        .map(|file| {
+                            progress.observe_write(&file.path, &file.content);
+                            factory_native::execution::AppliedFile {
+                                path: file.path,
+                                content: file.content,
+                            }
                         })
                         .collect::<Vec<_>>();
                     supervisor_write(
@@ -1997,6 +2365,7 @@ async fn run_provider_tool_loop(
                     )
                     .await?;
                 }
+                persist_final_progress_checkpoint(context, &mut progress).await?;
                 factory_native::runtime::delete_opencode_session(
                     &http,
                     context.base_url,
@@ -2052,6 +2421,7 @@ async fn run_provider_tool_loop(
                     Ok(ToolDecision::Write) => {
                         post_tool_event(context, &call_id, &tool, "ALLOW", "path authorized")
                             .await?;
+                        progress.observe_write(&path, &content);
                         let file = factory_native::execution::AppliedFile { path, content };
                         match supervisor_write(
                             context,
@@ -2114,19 +2484,23 @@ async fn run_provider_tool_loop(
                         .await
                         {
                             Ok(result) => {
-                                let status = if result.exit_code == Some(0) {
+                                // post_check_result posts the required
+                                // run_command RESULT event together with its
+                                // execution-check receipt.
+                                let receipt = post_check_result(
+                                    context,
+                                    &call_id,
+                                    &argv,
+                                    &progress.candidate_digest(),
+                                    result.exit_code,
+                                )
+                                .await?;
+                                progress.observe_check(&receipt);
+                                let status = if receipt.outcome == "PASS" {
                                     "ok"
                                 } else {
                                     "failed"
                                 };
-                                post_tool_event(
-                                    context,
-                                    &call_id,
-                                    &tool,
-                                    "RESULT",
-                                    &format!("exit={:?}", result.exit_code),
-                                )
-                                .await?;
                                 prompt = tool_result(
                                     context.assignment.provider.as_str(),
                                     context.assignment.model.as_str(),
@@ -2137,12 +2511,13 @@ async fn run_provider_tool_loop(
                                 );
                             }
                             Err(error) => {
+                                let detail = format!("command failed: {error}");
                                 post_tool_event(
                                     context,
                                     &call_id,
                                     &tool,
                                     "ERROR",
-                                    "command failed",
+                                    &detail.chars().take(800).collect::<String>(),
                                 )
                                 .await?;
                                 prompt = tool_result(
@@ -2171,43 +2546,6 @@ async fn run_provider_tool_loop(
             }
         }
     }
-    if written {
-        post_tool_event(
-            context,
-            "turn-budget-exhausted",
-            "final",
-            "RESULT",
-            "provider wrote one or more files but did not emit a final response; finalizing the applied writes for independent verification",
-        )
-        .await?;
-        factory_native::runtime::delete_opencode_session(
-            &http,
-            context.base_url,
-            context.password,
-            context.api_directory,
-            &session_id,
-        )
-        .await?;
-        let candidate =
-            supervisor_finalize(context, &handle.workspace_id, &handle.capability).await?;
-        cleanup(context.supervisor, &handle.workspace_id, &handle.capability).await?;
-        return Ok(ProviderRun {
-            candidate,
-            provider_session_id: session_id,
-            turn_id: last_message_id,
-            usage,
-        });
-    }
-    let _ = factory_native::runtime::delete_opencode_session(
-        &http,
-        context.base_url,
-        context.password,
-        context.api_directory,
-        &session_id,
-    )
-    .await;
-    let _ = cleanup(context.supervisor, &handle.workspace_id, &handle.capability).await;
-    Err("provider exceeded the authorized turn budget without writing a file".into())
 }
 
 fn codex_upstream_tools(allowed_tools: &[String]) -> Vec<Value> {
@@ -2368,6 +2706,7 @@ struct CodexToolState {
     written: bool,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn execute_codex_tool(
     context: &ProviderContext<'_>,
     handle: &WorkspaceHandle,
@@ -2375,6 +2714,7 @@ async fn execute_codex_tool(
     tool: &str,
     arguments: &Value,
     tool_state: &mut CodexToolState,
+    progress: &mut TurnProgress,
     deadline: tokio::time::Instant,
 ) -> Result<(bool, String), Box<dyn std::error::Error>> {
     if call_id.trim().is_empty() || !tool_state.call_ids.insert(call_id.to_owned()) {
@@ -2449,6 +2789,7 @@ async fn execute_codex_tool(
     match decision {
         Ok(ToolDecision::Write) => {
             post_tool_event(context, call_id, tool, "ALLOW", "path authorized").await?;
+            progress.observe_write(&path, &content);
             let file = factory_native::execution::AppliedFile { path, content };
             match supervisor_write(
                 context,
@@ -2485,16 +2826,17 @@ async fn execute_codex_tool(
             .await;
             match run {
                 Ok(Ok(result)) => {
-                    post_tool_event(
+                    let receipt = post_check_result(
                         context,
                         call_id,
-                        tool,
-                        "RESULT",
-                        &format!("exit={:?}", result.exit_code),
+                        &argv,
+                        &progress.candidate_digest(),
+                        result.exit_code,
                     )
                     .await?;
+                    progress.observe_check(&receipt);
                     Ok((
-                        true,
+                        receipt.outcome == "PASS",
                         bounded_tool_text(&format!(
                             "exit={:?}\nstdout:\n{}\nstderr:\n{}",
                             result.exit_code, result.stdout, result.stderr
@@ -2509,14 +2851,8 @@ async fn execute_codex_tool(
                     ))
                 }
                 Err(_) => {
-                    post_tool_event(
-                        context,
-                        call_id,
-                        tool,
-                        "ERROR",
-                        "provider deadline exceeded",
-                    )
-                    .await?;
+                    post_tool_event(context, call_id, tool, "ERROR", "tool operation timed out")
+                        .await?;
                     Err("provider deadline exceeded".into())
                 }
             }
@@ -2588,7 +2924,8 @@ async fn run_codex_tool_loop(
         .start_thread(ThreadStartParams {
             cwd: "/session".into(),
             approval_policy: factory_native::protocol::DenyApprovalPolicy::Never,
-            sandbox: factory_native::protocol::ReadOnlySandbox::ReadOnly,
+            sandbox: Some(factory_native::protocol::ReadOnlySandbox::ReadOnly),
+            permissions: None,
             model: Some(context.assignment.model.clone()),
             model_provider: Some("factory".into()),
             ephemeral: Some(true),
@@ -2598,6 +2935,7 @@ async fn run_codex_tool_loop(
                     .into(),
             ),
             developer_instructions: None,
+            allow_provider_model_fallback: Some(false),
         })
         .await
     {
@@ -2658,8 +2996,10 @@ async fn run_codex_tool_loop(
         return Err("Core did not bind the Codex provider session as ACTIVE".into());
     }
     let mut prompt = prompt_text;
-    let session_deadline =
-        tokio::time::Instant::now() + Duration::from_secs(context.assignment.deadline_secs);
+    let operations = operation_limits(context);
+    let request_timeout =
+        Duration::from_secs(u64::from(operations.model_request_timeout_secs.get()));
+    let tool_timeout = Duration::from_secs(u64::from(operations.tool_call_timeout_secs.get()));
     let mut usage = ProviderUsage::default();
     let mut usage_before = factory_native::protocol::TokenUsageBreakdown {
         cached_input_tokens: 0,
@@ -2675,8 +3015,26 @@ async fn run_codex_tool_loop(
     };
     let mut last_turn_id = String::new();
     let mut active_reservation: Option<String> = None;
+    let mut progress = TurnProgress::new(context);
     let result: Result<ProviderRun, Box<dyn std::error::Error>> = async {
-        for _ in 0..context.assignment.max_turns {
+        loop {
+            if let Some(request) = progress.checkpoint_request() {
+                let response = submit_progress_checkpoint(
+                    context.client,
+                    context.core,
+                    context.session_token,
+                    context.worker_id,
+                    context.assignment,
+                    &request,
+                )
+                .await?;
+                if let Some(halt) =
+                    WorkerProgressHalt::from_response(&progress.work_item_id, &response)
+                {
+                    return Err(Box::new(halt) as Box<dyn std::error::Error>);
+                }
+            }
+            progress.begin_turn();
             let turn = if context.turn_policy.is_some() {
                 let turn = authorize_provider_turn(context, &json!({"text": prompt})).await?;
                 active_reservation = Some(turn.reservation_id.clone());
@@ -2690,15 +3048,9 @@ async fn run_codex_tool_loop(
                 }
                 return Err("provider cancellation was requested".into());
             }
-            let remaining = session_deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                if let Some(turn) = &turn {
-                    release_provider_turn(context, &turn.reservation_id).await;
-                }
-                return Err("Codex provider deadline exceeded".into());
-            }
+            let turn_deadline = tokio::time::Instant::now() + request_timeout;
             let started = match tokio::time::timeout(
-                remaining,
+                request_timeout,
                 rpc.start_turn(TurnStartParams {
                     thread_id: thread_id.clone(),
                     input: vec![UserInput::Text { text: prompt.clone() }],
@@ -2733,7 +3085,7 @@ async fn run_codex_tool_loop(
             let mut last_state_check = tokio::time::Instant::now();
             loop {
                 let poll_at = (tokio::time::Instant::now() + Duration::from_secs(1))
-                    .min(session_deadline);
+                    .min(turn_deadline);
                 let event = match tokio::time::timeout_at(poll_at, rpc.next_event()).await {
                     Ok(Ok(event)) => event,
                     Ok(Err(error)) => {
@@ -2742,7 +3094,7 @@ async fn run_codex_tool_loop(
                         }
                         return Err(error.into());
                     }
-                    Err(_) if tokio::time::Instant::now() >= session_deadline => {
+                    Err(_) if tokio::time::Instant::now() >= turn_deadline => {
                         let _ = rpc.interrupt_turn(&thread_id, &turn_id).await;
                         if let Some(turn) = &turn {
                             release_provider_turn(context, &turn.reservation_id).await;
@@ -2760,12 +3112,12 @@ async fn run_codex_tool_loop(
                         continue;
                     }
                 };
-                if tokio::time::Instant::now() >= session_deadline {
+                if tokio::time::Instant::now() >= turn_deadline {
                     let _ = rpc.interrupt_turn(&thread_id, &turn_id).await;
                     if let Some(turn) = &turn {
                         release_provider_turn(context, &turn.reservation_id).await;
                     }
-                    return Err("Codex provider deadline exceeded".into());
+                    return Err("Codex turn operation timed out".into());
                 }
                 if last_state_check.elapsed() >= Duration::from_secs(1) {
                     last_state_check = tokio::time::Instant::now();
@@ -2798,7 +3150,8 @@ async fn run_codex_tool_loop(
                                 &call.tool,
                                 &call.arguments,
                                 &mut tool_state,
-                                session_deadline,
+                                &mut progress,
+                                tokio::time::Instant::now() + tool_timeout,
                             )
                             .await?;
                             rpc.respond(
@@ -2866,10 +3219,15 @@ async fn run_codex_tool_loop(
                         "thread/tokenUsage/updated" => {
                             let usage: ThreadTokenUsageUpdatedParams =
                                 serde_json::from_value(notification.params)?;
-                            if usage.thread_id != thread_id || usage.turn_id != turn_id {
+                            if usage.thread_id != thread_id
+                                || usage
+                                    .turn_id
+                                    .as_deref()
+                                    .is_some_and(|notification_turn| notification_turn != turn_id)
+                            {
                                 continue;
                             }
-                            usage_after = Some(usage.token_usage.total);
+                            usage_after = Some(usage.token_usage.total().clone());
                         }
                         "turn/completed" => {
                             let thread = notification
@@ -3022,6 +3380,7 @@ async fn run_codex_tool_loop(
                         )
                         .await?;
                     }
+                    persist_final_progress_checkpoint(context, &mut progress).await?;
                     let _ = tokio::time::timeout(
                         Duration::from_secs(5),
                         rpc.archive_thread(&thread_id),
@@ -3059,7 +3418,8 @@ async fn run_codex_tool_loop(
                         &tool,
                         &arguments,
                         &mut tool_state,
-                        session_deadline,
+                        &mut progress,
+                        tokio::time::Instant::now() + tool_timeout,
                     )
                     .await?;
                     prompt = format!(
@@ -3068,28 +3428,6 @@ async fn run_codex_tool_loop(
                 }
             }
         }
-        if tool_state.written {
-            post_tool_event(
-                context,
-                "codex-turn-budget-exhausted",
-                "final",
-                "RESULT",
-                "Codex wrote files but did not emit a final response; preserving applied writes",
-            )
-            .await?;
-            let _ = rpc.archive_thread(&thread_id).await;
-            let candidate =
-                supervisor_finalize(context, &handle.workspace_id, &handle.capability).await?;
-            cleanup(context.supervisor, &handle.workspace_id, &handle.capability).await?;
-            return Ok(ProviderRun {
-                candidate,
-                provider_session_id: thread_id,
-                turn_id: last_turn_id,
-                usage,
-            });
-        }
-        let _ = cleanup(context.supervisor, &handle.workspace_id, &handle.capability).await;
-        Err("Codex exceeded the authorized turn budget without writing a file".into())
     }
     .await;
     if result.is_err() {
@@ -3147,7 +3485,7 @@ fn decide_tool(
                 .ok_or_else(|| "command does not match a frozen acceptance check".to_string())?;
             if timeout_secs == 0
                 || timeout_secs > u64::from(check.timeout_secs.min(300))
-                || timeout_secs > context.assignment.deadline_secs
+                || timeout_secs > u64::from(operation_limits(context).tool_call_timeout_secs.get())
             {
                 return Err("command timeout exceeds the frozen check or assignment bound".into());
             }
@@ -3229,6 +3567,42 @@ async fn post_tool_event(
     Ok(())
 }
 
+async fn post_check_result(
+    context: &ProviderContext<'_>,
+    call_id: &str,
+    command: &[String],
+    candidate_sha256: &str,
+    exit_code: Option<i32>,
+) -> Result<ExecutionCheckReceiptRecord, Box<dyn std::error::Error>> {
+    let response = context
+        .client
+        .post(context.core.join("worker/provider_tool_event")?)
+        .bearer_auth(context.session_token)
+        .json(&json!({
+            "session_record_id": context.session_record_id,
+            "worker_id": context.worker_id,
+            "generation": context.assignment.lease.generation,
+            "call_id": call_id,
+            "tool": "run_command",
+            "decision": "RESULT",
+            "detail": format!("exit={exit_code:?}"),
+            "check": {
+                "command": command,
+                "candidate_sha256": candidate_sha256,
+                "exit_code": exit_code
+            }
+        }))
+        .send()
+        .await?;
+    if !response.status().is_success() {
+        return Err(format!("Core rejected execution receipt: {}", response.status()).into());
+    }
+    let record: ProviderToolEventRecord = response.json().await?;
+    record
+        .execution_check
+        .ok_or_else(|| "Core did not return an execution receipt".into())
+}
+
 struct WorkspaceOperation<'a> {
     client: &'a reqwest::Client,
     core: &'a reqwest::Url,
@@ -3265,7 +3639,10 @@ async fn authorize_provider_turn(
     let max_requests = if context.assignment.provider == "codex" {
         8
     } else {
-        1
+        // The OpenCode runtime can retry an empty or stream-truncated first
+        // response. Both requests share this one Core turn reservation and its
+        // split output bound; this grants no additional authority or budget.
+        2
     };
     let response = context
         .client
@@ -3303,6 +3680,8 @@ async fn authorize_provider_turn(
         max_requests: authorization.max_requests as usize,
         strict_request_digest: strict_request_digest(context.provider_kind),
         binding: false,
+        last_upstream_status: None,
+        last_upstream_error: String::new(),
     });
     Ok(authorization)
 }
@@ -3386,10 +3765,12 @@ async fn request_workspace_operation(
         .send()
         .await?;
     if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        let body = body.chars().take(500).collect::<String>();
         return Err(format!(
-            "Core refused workspace operation {}: {}",
-            request.operation,
-            response.status()
+            "Core refused workspace operation {}: {status}: {body}",
+            request.operation
         )
         .into());
     }
@@ -3484,7 +3865,10 @@ async fn supervisor_run(
         .send()
         .await?;
     if !response.status().is_success() {
-        return Err(format!("Supervisor run failed: {}", response.status()).into());
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        let body = body.chars().take(500).collect::<String>();
+        return Err(format!("Supervisor run failed: {status}: {body}").into());
     }
     Ok(response.json().await?)
 }
@@ -3558,9 +3942,9 @@ async fn run_provider_patch(
             )
         }]
     });
-    let http = factory_native::runtime::opencode_http_client(Duration::from_secs(
-        context.assignment.deadline_secs,
-    ))?;
+    let http = factory_native::runtime::opencode_http_client(Duration::from_secs(u64::from(
+        operation_limits(context).model_request_timeout_secs.get(),
+    )))?;
     let event_response = factory_native::runtime::open_opencode_event_stream(
         &http,
         context.base_url,
@@ -3643,7 +4027,9 @@ async fn run_provider_patch(
         return Err(error.into());
     }
     let terminal = match tokio::time::timeout(
-        Duration::from_secs(context.assignment.deadline_secs),
+        Duration::from_secs(u64::from(
+            operation_limits(context).model_request_timeout_secs.get(),
+        )),
         factory_native::runtime::wait_for_opencode_prompt_terminal(
             &mut event_stream,
             &mut parser,
@@ -4210,10 +4596,53 @@ fn validated_loopback_url(
 
 #[cfg(test)]
 mod tests {
+    use super::opencode_sandbox_config;
+
+    #[test]
+    fn opencode_provider_config_disables_internal_retries() {
+        let config = opencode_sandbox_config(
+            "opencode-go",
+            "deepseek-v4.1-flash",
+            "test-egress-token",
+            128_000,
+            8_192,
+        );
+        assert_eq!(
+            config.pointer("/provider/opencode-go/options/maxRetries"),
+            Some(&serde_json::Value::from(0))
+        );
+    }
+
     use super::{
-        opencode_first_action_instruction, strict_request_digest, validate_provider_tools,
-        validated_loopback_url,
+        ActionSpec, Assignment, ContinuationDecision, Lease, ProgressKind, TurnProgress,
+        WorkerProgressHalt, opencode_first_action_instruction, sha256_hex, strict_request_digest,
+        submit_progress_checkpoint, validate_provider_tools, validated_loopback_url,
     };
+    use factory_native::db::ExecutionCheckReceiptRecord;
+
+    fn check_receipt(
+        call_id: &str,
+        outcome: &str,
+        result: &str,
+        fail_to_pass: bool,
+    ) -> ExecutionCheckReceiptRecord {
+        ExecutionCheckReceiptRecord {
+            receipt_id: format!("receipt-{call_id}"),
+            campaign_id: "campaign".into(),
+            work_item_id: "unit-1".into(),
+            attempt_id: "attempt-1".into(),
+            session_record_id: "session".into(),
+            sequence: 1,
+            call_id: call_id.into(),
+            suite: "check:cargo\u{0}test".into(),
+            candidate_sha256: "c".repeat(64),
+            exit_code: Some(if outcome == "PASS" { 0 } else { 1 }),
+            expected_exit: 0,
+            outcome: outcome.into(),
+            result_sha256: sha256_hex(result.as_bytes()),
+            fail_to_pass,
+        }
+    }
 
     #[test]
     fn first_action_instruction_requires_a_write_only_when_authorized() {
@@ -4240,6 +4669,351 @@ mod tests {
         assert!(strict_request_digest("fixture"));
         assert!(!strict_request_digest("opencode"));
         assert!(!strict_request_digest("codex"));
+    }
+
+    fn assignment_for_progress() -> Assignment {
+        Assignment {
+            lease: Lease {
+                attempt_id: "attempt".into(),
+                generation: 1,
+            },
+            campaign_id: "campaign".into(),
+            work_item_id: "unit-1".into(),
+            progress_last_sequence: 0,
+            action_id: "action".into(),
+            action_spec: ActionSpec {
+                schema_version: 1,
+                project_id: "project".into(),
+                repository: "/repo".into(),
+                base_commit: "a".repeat(40),
+                objective: "objective".into(),
+                objective_sha256: "b".repeat(64),
+                provider: "opencode".into(),
+                model: "deepseek-v4.1-flash".into(),
+                allowed_paths: vec!["src".into()],
+                checks: Vec::new(),
+            },
+            action_spec_sha256: "c".repeat(64),
+            repository: "/repo".into(),
+            execution_mode: "TRUSTED_LOCAL_PROVIDER".into(),
+            kind: "UNIT".into(),
+            integration_candidates: Vec::new(),
+            provider: "opencode".into(),
+            model: "deepseek-v4.1-flash".into(),
+            provider_mode: "build".into(),
+            delegation_id: "grant".into(),
+            execution_policy: None,
+            allowed_tools: Vec::new(),
+            attempt_grant: String::new(),
+        }
+    }
+
+    #[test]
+    fn twelve_turns_build_stable_campaign_checkpoints() {
+        let mut progress = TurnProgress::from_identity(
+            "campaign".into(),
+            "unit-1".into(),
+            "attempt-1".into(),
+            1,
+            "run-1".into(),
+            0,
+        );
+        for turn in 0..12 {
+            progress.begin_turn();
+            progress.observe_write("src/lib.rs", &format!("candidate-{turn}"));
+            progress.observe_check(&check_receipt(
+                &format!("call-{turn}"),
+                "PASS",
+                &format!("pass-{turn}"),
+                true,
+            ));
+            let request = progress.checkpoint_request().expect("checkpoint request");
+            assert_eq!(request.campaign_id, "campaign");
+            assert_eq!(request.work_item_id, "unit-1");
+            assert_eq!(request.checkpoint.work_item_id, "unit-1");
+            assert!(!request.evidence.is_empty());
+            assert!(
+                request.evidence.iter().all(|item| {
+                    item.campaign_id == "campaign" && item.work_item_id == "unit-1"
+                })
+            );
+        }
+        assert_eq!(progress.turn, 12);
+        assert!(progress.checkpoint_request().is_none() || progress.evidence.is_empty());
+    }
+
+    #[test]
+    fn first_time_pass_emits_tests_improved_evidence() {
+        let mut progress = TurnProgress::from_identity(
+            "campaign".into(),
+            "unit-1".into(),
+            "attempt-1".into(),
+            1,
+            "run-1".into(),
+            0,
+        );
+        progress.begin_turn();
+        progress.observe_write("src/lib.rs", "candidate");
+        progress.observe_check(&check_receipt(
+            "call-first-pass",
+            "PASS",
+            "first-pass",
+            false,
+        ));
+        let request = progress.checkpoint_request().expect("checkpoint request");
+        assert!(
+            request
+                .evidence
+                .iter()
+                .any(|item| item.kind == ProgressKind::CandidateChanged),
+            "candidate-change evidence must still carry a first-time PASS turn"
+        );
+        assert!(
+            request
+                .evidence
+                .iter()
+                .any(|item| item.kind == ProgressKind::TestsImproved
+                    && item.artifact_ref.contains("|PASS|")),
+            "a first-time PASS of a frozen check is verified progress"
+        );
+    }
+
+    #[test]
+    fn check_observations_encode_suite_and_pass_fail_outcomes() {
+        let mut progress = TurnProgress::from_identity(
+            "campaign".into(),
+            "unit-1".into(),
+            "attempt-1".into(),
+            1,
+            "run-1".into(),
+            0,
+        );
+        progress.begin_turn();
+        progress.observe_write("src/lib.rs", "candidate");
+        progress.observe_check(&check_receipt("call-fail", "FAIL", "fail-result", false));
+        progress.observe_check(&check_receipt("call-pass", "PASS", "pass-result", true));
+        let request = progress.checkpoint_request().unwrap();
+        let outcomes: Vec<_> = request
+            .evidence
+            .iter()
+            .filter(|item| item.kind == ProgressKind::TestsImproved)
+            .map(|item| item.artifact_ref.as_str())
+            .collect();
+        assert_eq!(outcomes.len(), 2, "{outcomes:?}");
+        assert!(outcomes.iter().any(|value| value.contains("|FAIL|")));
+        assert!(outcomes.iter().any(|value| value.contains("|PASS|")));
+        assert!(
+            outcomes
+                .iter()
+                .all(|value| value.starts_with("suite:check:"))
+        );
+    }
+
+    #[test]
+    fn duplicate_identical_checks_do_not_duplicate_evidence() {
+        let mut progress = TurnProgress::from_identity(
+            "campaign".into(),
+            "unit-1".into(),
+            "attempt-1".into(),
+            1,
+            "run-1".into(),
+            0,
+        );
+        progress.begin_turn();
+        progress.observe_write("src/lib.rs", "same");
+        progress.observe_check(&check_receipt("call-1", "PASS", "same-pass", true));
+        let first = progress.checkpoint_request().unwrap();
+        let first_checks = first
+            .evidence
+            .iter()
+            .filter(|item| item.kind == ProgressKind::TestsImproved)
+            .count();
+        assert_eq!(first_checks, 1);
+        progress.begin_turn();
+        progress.observe_write("src/lib.rs", "same");
+        progress.observe_check(&check_receipt("call-2", "PASS", "same-pass", true));
+        let second = progress.checkpoint_request().unwrap();
+        assert!(
+            second
+                .evidence
+                .iter()
+                .all(|item| item.kind != ProgressKind::TestsImproved),
+            "identical check replay must not create new evidence"
+        );
+    }
+
+    #[test]
+    fn repair_attempts_share_work_item_but_not_checkpoint_ids() {
+        let mut first = TurnProgress::from_identity(
+            "campaign".into(),
+            "unit-1".into(),
+            "attempt-1".into(),
+            1,
+            "run-1".into(),
+            0,
+        );
+        first.begin_turn();
+        first.observe_write("src/lib.rs", "attempt-1-candidate");
+        let first_request = first.checkpoint_request().unwrap();
+        let mut second = TurnProgress::from_identity(
+            "campaign".into(),
+            "unit-1".into(),
+            "attempt-2".into(),
+            1,
+            "run-2".into(),
+            0,
+        );
+        second.begin_turn();
+        let second_request = second.checkpoint_request().unwrap();
+        assert_eq!(first_request.work_item_id, second_request.work_item_id);
+        assert_eq!(first_request.campaign_id, second_request.campaign_id);
+        assert_ne!(
+            first_request.checkpoint.checkpoint_id, second_request.checkpoint.checkpoint_id,
+            "a repair attempt must not reuse the prior attempt's operation identity"
+        );
+    }
+
+    #[test]
+    fn observation_sequences_are_strictly_increasing_within_a_run() {
+        let mut progress = TurnProgress::from_identity(
+            "campaign".into(),
+            "unit-1".into(),
+            "attempt-1".into(),
+            1,
+            "run-1".into(),
+            0,
+        );
+        let first = progress.next_sequence();
+        let second = progress.next_sequence();
+        let third = progress.next_sequence();
+        assert!(first > 0);
+        assert!(second > first);
+        assert!(third > second);
+        // Production seeds a later run from Core's durable last accepted
+        // sequence, so it must stay above older observations even when the
+        // process clock has not advanced beyond that microsecond.
+        let mut later = TurnProgress::from_identity(
+            "campaign".into(),
+            "unit-1".into(),
+            "attempt-1".into(),
+            1,
+            "run-2".into(),
+            third,
+        );
+        assert!(later.next_sequence() > third);
+    }
+
+    #[test]
+    fn restarted_run_never_reuses_evidence_or_checkpoint_ids() {
+        let mut first = TurnProgress::from_identity(
+            "campaign".into(),
+            "unit-1".into(),
+            "attempt-1".into(),
+            1,
+            "run-before".into(),
+            0,
+        );
+        first.begin_turn();
+        first.observe_write("src/lib.rs", "before-restart");
+        let first_request = first.checkpoint_request().unwrap();
+        let mut restarted = TurnProgress::from_identity(
+            "campaign".into(),
+            "unit-1".into(),
+            "attempt-1".into(),
+            1,
+            "run-after".into(),
+            0,
+        );
+        restarted.begin_turn();
+        restarted.observe_write("src/lib.rs", "after-restart");
+        let restarted_request = restarted.checkpoint_request().unwrap();
+        assert_ne!(
+            first_request.checkpoint.checkpoint_id,
+            restarted_request.checkpoint.checkpoint_id
+        );
+        assert_ne!(
+            first_request.evidence[0].evidence_id,
+            restarted_request.evidence[0].evidence_id
+        );
+        assert_eq!(restarted_request.work_item_id, "unit-1");
+    }
+
+    #[test]
+    fn progress_response_maps_to_typed_halt() {
+        let response = factory_native::progress::ProgressCheckpointResponse {
+            checkpoint_id: "checkpoint".into(),
+            decision: ContinuationDecision::Diagnose,
+            classification: factory_native::progress::CheckpointClassification::Stagnant,
+            stagnant_checkpoints: 2,
+            unsuccessful_replans: 0,
+            hold_open: true,
+        };
+        let halt = WorkerProgressHalt::from_response("unit-1", &response).unwrap();
+        assert_eq!(halt.decision, ContinuationDecision::Diagnose);
+        assert!(halt.to_string().contains("IMPLEMENTER_PROGRESS_Diagnose"));
+
+        let continue_response = factory_native::progress::ProgressCheckpointResponse {
+            decision: ContinuationDecision::Continue,
+            ..response
+        };
+        assert!(WorkerProgressHalt::from_response("unit-1", &continue_response).is_none());
+    }
+
+    #[tokio::test]
+    async fn worker_submits_progress_checkpoint_to_core_contract() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let body = serde_json::to_string(&factory_native::progress::ProgressCheckpointResponse {
+            checkpoint_id: "unit-1-turn-1".into(),
+            decision: ContinuationDecision::Diagnose,
+            classification: factory_native::progress::CheckpointClassification::Stagnant,
+            stagnant_checkpoints: 2,
+            unsuccessful_replans: 0,
+            hold_open: true,
+        })
+        .unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buffer = [0u8; 8192];
+            let _ = socket.read(&mut buffer).await.unwrap();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+        });
+        let assignment = assignment_for_progress();
+        let request = factory_native::progress::ProgressCheckpointRequest {
+            campaign_id: assignment.campaign_id.clone(),
+            work_item_id: assignment.work_item_id.clone(),
+            checkpoint: factory_native::execution_policy::ProgressCheckpoint {
+                checkpoint_id: "unit-1-turn-1".into(),
+                work_item_id: assignment.work_item_id.clone(),
+                operation_id: "unit-1-turn-1".into(),
+                evidence_ids: Vec::new(),
+                outcome_sha256: sha256_hex(b"turn-1"),
+            },
+            evidence: Vec::new(),
+            gate: None,
+        };
+        let client = reqwest::Client::new();
+        let core = reqwest::Url::parse(&format!("http://{addr}")).unwrap();
+        let response = submit_progress_checkpoint(
+            &client,
+            &core,
+            "session-token",
+            "worker",
+            &assignment,
+            &request,
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.decision, ContinuationDecision::Diagnose);
+        assert!(response.hold_open);
+        server.await.unwrap();
     }
 
     #[test]

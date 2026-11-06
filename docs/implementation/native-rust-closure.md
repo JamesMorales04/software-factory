@@ -378,6 +378,27 @@ is an operator API key at `https://api.openai.com/v1`; live Codex inference is
 not tested. Evidence:
 [Codex managed configuration](../evidence/codex-managed-config-2026-10-26.md).
 
+### Codex native authentication and review addendum (2026-11-05)
+
+The reviewer now uses the official Codex App Server instead of the Worker broker
+for ChatGPT authentication and independent review. A dedicated
+`factory-codex-home` volume is mounted only into the reviewer and one-shot
+`codex-auth`/`codex-status` services. Official `account/login/start` device-code
+or browser login is supported; `account/read` must return a ChatGPT account and
+`model/list` must contain exactly one visible `gpt-6-luna`. API-key and ambiguous
+states fail closed.
+
+Native review creates a fresh disposable candidate snapshot, starts a read-only
+App Server thread, calls `review/start` targeting the exact commit, requires
+terminal identity and unchanged candidate HEAD/tree, and converts the review to
+a candidate-bound `CODEX_APP_SERVER` receipt. Missing usage remains `UNKNOWN`
+and cannot produce `PASS`. Activation is opt-in through
+`FACTORY_ENABLE_CODEX_REVIEW=1`; the default Compose stack keeps it off. See
+[Codex ChatGPT authentication and native review](../operations/codex-review-auth.md)
+and [ADR-0032](../architecture/decisions/ADR-0032-codex-chatgpt-auth-native-review.md).
+No real Factory ChatGPT login, live Luna review or paid inference was performed
+in this addendum; those remain `NOT_TESTED`.
+
 ## Container-native Compose iteration (2026-10-26)
 
 A Product Owner campaign directive authorized a container-native installation
@@ -406,6 +427,7 @@ See [container-native status](container-native-status.md),
 [Compose deployment](../operations/compose-deployment.md).
 
 This iteration does **not** claim a paid provider UAT, live OpenCode-in-container
-inference, Codex API-key live inference, containerized Codex stdio, native
-ChatGPT OAuth, SEC-01 isolation, Windows, independent security review or merge
-authorization. The historical host-managed acceptance remains provenance.
+inference, Codex API-key live inference, containerized Codex stdio, a completed
+Factory ChatGPT login, live Luna review, SEC-01 isolation, Windows, independent
+security review or merge authorization. The historical host-managed acceptance
+remains provenance.

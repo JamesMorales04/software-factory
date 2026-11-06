@@ -9,6 +9,8 @@ acceptance is the separate manual harness.
 """
 import json
 import sys
+from pathlib import Path
+from urllib.parse import urlsplit
 
 PERMANENT = {"core", "supervisor", "worker", "verifier", "reviewer"}
 CONFIG_VOLUMES = {
@@ -25,7 +27,9 @@ EXPECTED_NETWORKS = {
     "supervisor": {"factory-control"},
     "worker": {"factory-control", "factory-egress"},
     "verifier": {"factory-control"},
-    "reviewer": {"factory-control"},
+    # The reviewer owns the dedicated Codex ChatGPT credential and needs
+    # outbound access to the official App Server auth/review endpoints.
+    "reviewer": {"factory-control", "factory-egress"},
     "runtime": {"factory-control", "factory-egress"},
 }
 ALLOWED_RUNTIME_CAPS = {
@@ -60,11 +64,75 @@ def as_set(service, key):
     return set(value)
 
 
+def bind_entries(value):
+    return [entry.strip() for entry in str(value or "").split(",") if entry.strip()]
+
+
+def core_alias_networks(services):
+    aliases = {}
+    for network, config in (services.get("core", {}).get("networks") or {}).items():
+        for alias in (config or {}).get("aliases") or []:
+            aliases[alias] = network
+    return aliases
+
+
+def tailscale_serve_config_errors(path: Path) -> list[str]:
+    try:
+        with path.open(encoding="utf-8") as handle:
+            serve = json.load(handle)
+    except (OSError, json.JSONDecodeError) as error:
+        return [f"tailscale: cannot read Serve config: {error}"]
+
+    errors = []
+    if set(serve) != {"TCP", "Web", "AllowFunnel"}:
+        errors.append("tailscale: Serve config must contain only the approved endpoints")
+    domain = "${TS_CERT_DOMAIN}:443"
+    if serve.get("TCP") != {"443": {"HTTPS": True}}:
+        errors.append("tailscale: Serve must expose HTTPS 443 only")
+    expected_web = {
+        domain: {"Handlers": {"/": {"Proxy": "unix:/office-socket/office.sock"}}}
+    }
+    if serve.get("Web") != expected_web:
+        errors.append("tailscale: Serve must proxy only to Core on its private network")
+    if serve.get("AllowFunnel") != {domain: False} or "Funnel" in serve:
+        errors.append("tailscale: Funnel must be explicitly disabled")
+    return errors
+
+
+def office_socket_volume_sources(config: dict) -> set[str]:
+    """Resolve Compose volume keys that refer to the protected socket volume."""
+    volumes = config.get("volumes") or {}
+    protected_names = {"factory-office-socket"}
+    socket_definition = volumes.get("factory-office-socket") or {}
+    explicit_socket_name = socket_definition.get("name")
+    if explicit_socket_name:
+        protected_names.add(str(explicit_socket_name))
+    elif config.get("name"):
+        protected_names.add(f"{config['name']}_factory-office-socket")
+
+    protected_sources = set()
+    for source, definition in volumes.items():
+        definition = definition or {}
+        effective_name = definition.get("name")
+        external = definition.get("external")
+        if isinstance(external, dict):
+            effective_name = external.get("name") or effective_name or source
+        elif external is True and not effective_name:
+            # Compose uses the source key as the physical name for an implicit
+            # external volume. Treat it as an identity before checking aliases.
+            effective_name = source
+        if source == "factory-office-socket" or effective_name in protected_names:
+            protected_sources.add(source)
+    return protected_sources
+
+
 def main(path: str) -> int:
     with open(path, encoding="utf-8") as handle:
         config = json.load(handle)
     services = config.get("services", {})
-    named_volumes = set((config.get("volumes") or {}).keys())
+    volume_definitions = config.get("volumes") or {}
+    named_volumes = set(volume_definitions.keys())
+    office_socket_sources = office_socket_volume_sources(config)
     errors: list[str] = []
 
     def fail(message: str) -> None:
@@ -73,8 +141,12 @@ def main(path: str) -> int:
     missing = (PERMANENT | {"init", "provider-bundle", "runtime"}) - set(services)
     if missing:
         fail(f"missing services: {sorted(missing)}")
-    if set(services) != PERMANENT | {"init", "provider-bundle", "runtime"}:
-        fail(f"unexpected services: {sorted(set(services) - PERMANENT - {'init', 'provider-bundle', 'runtime'})}")
+    has_tailscale = "tailscale" in services
+    expected_services = PERMANENT | {"init", "provider-bundle", "runtime"}
+    if has_tailscale:
+        expected_services.add("tailscale")
+    if set(services) != expected_services:
+        fail(f"unexpected services: {sorted(set(services) - expected_services)}")
 
     published = []
     for name, service in services.items():
@@ -103,11 +175,41 @@ def main(path: str) -> int:
         for volume in service.get("volumes", []) or []:
             source = str(volume.get("source", ""))
             target = str(volume.get("target", ""))
+            if source in office_socket_sources:
+                if name not in {"init", "core", "tailscale"}:
+                    fail(
+                        f"{name}: Office socket volume is restricted to init, core, and tailscale"
+                    )
+                else:
+                    expected_read_only = name == "tailscale"
+                    if target != "/office-socket":
+                        fail(f"{name}: Office socket volume must mount at /office-socket")
+                    if (volume.get("read_only") is True) != expected_read_only:
+                        access = "read-only" if expected_read_only else "writable"
+                        fail(f"{name}: Office socket volume must be {access}")
             for forbidden in FORBIDDEN_VOLUME_SUBSTRINGS:
                 if forbidden in source:
                     fail(f"{name}: forbidden volume source {source!r}")
             if volume.get("type") == "bind":
-                fail(f"{name}: host bind {source!r} -> {target!r} is forbidden in the base stack")
+                expected_serve_path = (
+                    Path(__file__).resolve().parents[2]
+                    / "deploy"
+                    / "tailscale"
+                    / "serve.json"
+                ).resolve()
+                try:
+                    resolved_source = Path(source).resolve(strict=True)
+                except (OSError, RuntimeError):
+                    resolved_source = None
+                allowed_tailscale_config = (
+                    has_tailscale
+                    and name == "tailscale"
+                    and resolved_source == expected_serve_path
+                    and target == "/etc/factory/serve.json"
+                    and volume.get("read_only") is True
+                )
+                if not allowed_tailscale_config:
+                    fail(f"{name}: host bind {source!r} -> {target!r} is forbidden")
             elif source and source not in named_volumes:
                 fail(f"{name}: volume {source!r} is not a declared named volume")
 
@@ -136,9 +238,10 @@ def main(path: str) -> int:
                     f"{name}: must mount only {expected_config}; got {sorted(config_sources)}"
                 )
             actual_networks = set((service.get("networks") or {}).keys())
-            if actual_networks != EXPECTED_NETWORKS[name]:
+            expected_networks = EXPECTED_NETWORKS[name]
+            if actual_networks != expected_networks:
                 fail(
-                    f"{name}: networks {sorted(actual_networks)} do not match {sorted(EXPECTED_NETWORKS[name])}"
+                    f"{name}: networks {sorted(actual_networks)} do not match {sorted(expected_networks)}"
                 )
 
         for port in service.get("ports", []) or []:
@@ -146,8 +249,75 @@ def main(path: str) -> int:
             if str(port.get("host_ip", "")) != "127.0.0.1":
                 fail(f"{name}: published ports must bind 127.0.0.1")
 
-    if [name for name, _ in published] != ["core"]:
-        fail(f"only core may publish a port; got {[name for name, _ in published]}")
+    expected_published = ["core"]
+    if [name for name, _ in published] != expected_published:
+        fail(f"published ports must match mode; got {[name for name, _ in published]}")
+
+    core = services.get("core", {})
+    core_environment = core.get("environment") or {}
+    aliases = core_alias_networks(services)
+    allowed_core_networks = {
+        "factory-control": {"core-control"},
+        "factory-egress": {"core-egress"},
+    }
+    if set(core.get("networks") or {}) != set(EXPECTED_NETWORKS["core"]):
+        fail("core: unexpected network membership")
+    for network, network_config in (core.get("networks") or {}).items():
+        network_config = network_config or {}
+        if set(network_config) - {"aliases"}:
+            fail(f"core: network address overrides are forbidden on {network}")
+        if set(network_config.get("aliases") or []) != allowed_core_networks.get(
+            network, set()
+        ):
+            fail(f"core: {network} aliases must match the reviewed listener hosts")
+
+    def bind_networks(environment_key):
+        resolved = []
+        for entry in bind_entries(core_environment.get(environment_key)):
+            host, separator, port = entry.rpartition(":")
+            if not separator or not port.isdigit() or not host:
+                fail(f"core: {environment_key} entries must be HOST:PORT")
+                continue
+            if aliases.get(host) is None:
+                fail(f"core: {environment_key} host {host!r} must be a core network alias")
+                continue
+            resolved.append((host, aliases[host], int(port)))
+        return resolved
+
+    control_binds = bind_networks("FACTORY_BIND")
+    if {(host, port) for host, _, port in control_binds} != {
+        ("core-control", 8765),
+        ("core-egress", 8765),
+    }:
+        fail("core: the full control listener must bind core-control and core-egress only")
+    if {"factory-control", "factory-egress"} & set(
+        (services.get("tailscale") or {}).get("networks") or {}
+    ):
+        fail("core: a control listener is reachable from the Tailscale network")
+    if has_tailscale:
+        if core_environment.get("FACTORY_OFFICE_ACCESS_SOCKET") != (
+            "/office-socket/office.sock"
+        ):
+            fail("core: the Office socket listener path is required")
+        if core_environment.get("FACTORY_OFFICE_ACCESS_BIND") is not None:
+            fail("core: the Office listener must not bind a TCP port")
+        socket_mounts = [
+            volume
+            for volume in core.get("volumes", []) or []
+            if volume.get("source") == "factory-office-socket"
+            and volume.get("target") == "/office-socket"
+            and volume.get("read_only") is not True
+        ]
+        if not socket_mounts:
+            fail("core: the Office socket volume must be mounted writable")
+        for host, network, _ in control_binds:
+            if network in ((services.get("tailscale") or {}).get("networks") or {}):
+                fail(f"core: control listener host {host!r} is on the Tailscale network")
+    else:
+        if core_environment.get("FACTORY_OFFICE_ACCESS_SOCKET") is not None:
+            fail("core: the Office listener requires the Tailscale overlay")
+        if core_environment.get("FACTORY_OFFICE_ACCESS_BIND") is not None:
+            fail("core: the Office listener must not bind a TCP port")
 
     for name in ("init", "provider-bundle"):
         service = services.get(name, {})
@@ -171,6 +341,14 @@ def main(path: str) -> int:
         if unexpected:
             fail(f"{name}: unsupported one-shot capabilities {sorted(unexpected)}")
 
+    init_socket = [
+        volume
+        for volume in services.get("init", {}).get("volumes", []) or []
+        if volume.get("source") == "factory-office-socket"
+        and volume.get("target") == "/office-socket"
+    ]
+    if not init_socket:
+        fail("init: must prepare the shared Office socket directory")
     init_config = {
         str(volume.get("source", ""))
         for volume in services.get("init", {}).get("volumes", []) or []
@@ -205,6 +383,182 @@ def main(path: str) -> int:
     if runtime_config != {"factory-config-runtime"}:
         fail(f"runtime: must mount only its own config volume; got {sorted(runtime_config)}")
 
+    if has_tailscale:
+        tailscale = services["tailscale"]
+        expected_image = (
+            "docker.io/tailscale/tailscale@sha256:"
+            "ed6480b33c6eb67c9cbd203ed42b9fb57e361986725b6856def71b7a3d9e276c"
+        )
+        if tailscale.get("image") != expected_image:
+            fail("tailscale: official image must remain pinned to the reviewed digest")
+        if tailscale.get("privileged") or tailscale.get("network_mode") == "host":
+            fail("tailscale: privileged mode and host networking are forbidden")
+        for override in (
+            "command",
+            "entrypoint",
+            "extra_hosts",
+            "dns",
+            "dns_search",
+            "links",
+            "network_mode",
+        ):
+            if tailscale.get(override):
+                fail(f"tailscale: {override} overrides are forbidden")
+        if tailscale.get("devices") or tailscale.get("ports"):
+            fail("tailscale: device and published-port grants are forbidden")
+        if as_set(tailscale, "cap_drop") != {"ALL"} or as_set(tailscale, "cap_add"):
+            fail("tailscale: all capabilities must be dropped")
+        if tailscale.get("read_only") is not True:
+            fail("tailscale: read-only root filesystem is required")
+        if not any(
+            str(option).replace(" ", "") == "no-new-privileges:true"
+            for option in tailscale.get("security_opt", []) or []
+        ):
+            fail("tailscale: no-new-privileges is required")
+        environment = tailscale.get("environment") or {}
+        allowed_environment = {
+            "TS_ACCEPT_DNS",
+            "TS_AUTH_ONCE",
+            "TS_ENABLE_HEALTH_CHECK",
+            "TS_HOSTNAME",
+            "TS_LOCAL_ADDR_PORT",
+            "TS_SERVE_CONFIG",
+            "TS_STATE_DIR",
+            "TS_USERSPACE",
+        }
+        unexpected_environment = set(environment) - allowed_environment
+        if unexpected_environment:
+            fail(
+                "tailscale: unsupported environment variable(s): "
+                f"{sorted(unexpected_environment)}"
+            )
+        if environment.get("TS_USERSPACE") != "true":
+            fail("tailscale: userspace networking is required")
+        if environment.get("TS_AUTH_ONCE") != "true":
+            fail("tailscale: persistent one-time login is required")
+        if environment.get("TS_SERVE_CONFIG") != "/etc/factory/serve.json":
+            fail("tailscale: Serve config path is required")
+        if environment.get("TS_STATE_DIR") != "/var/lib/tailscale":
+            fail("tailscale: persistent node state path is required")
+        if environment.get("TS_ENABLE_HEALTH_CHECK") != "true":
+            fail("tailscale: the sanitized health endpoint is required")
+        if environment.get("TS_LOCAL_ADDR_PORT") != "0.0.0.0:9002":
+            fail("tailscale: health endpoint must use the private container port")
+        state_mounts = [
+            volume for volume in tailscale.get("volumes", []) or []
+            if volume.get("source") == "factory-tailscale-state"
+            and volume.get("target") == "/var/lib/tailscale"
+            and volume.get("type") == "volume"
+            and volume.get("read_only") is not True
+        ]
+        if not state_mounts:
+            fail("tailscale: node state must use its persistent writable volume")
+        expected_serve_path = (
+            Path(__file__).resolve().parents[2] / "deploy" / "tailscale" / "serve.json"
+        ).resolve()
+        errors.extend(tailscale_serve_config_errors(expected_serve_path))
+        allowed_tailscale_mounts = {
+            ("factory-tailscale-state", "/var/lib/tailscale", "volume", False),
+            ("factory-office-socket", "/office-socket", "volume", True),
+            (str(expected_serve_path), "/etc/factory/serve.json", "bind", True),
+        }
+        actual_tailscale_mounts = {
+            (
+                str(volume.get("source", "")),
+                str(volume.get("target", "")),
+                str(volume.get("type", "")),
+                volume.get("read_only", False) is True,
+            )
+            for volume in tailscale.get("volumes", []) or []
+        }
+        if actual_tailscale_mounts != allowed_tailscale_mounts:
+            fail(
+                "tailscale: mounts must be limited to persistent state, the read-only Office socket and Serve config"
+            )
+        if any(
+            environment.get(name)
+            for name in ("TS_AUTHKEY", "TS_CLIENT_SECRET", "TS_ID_TOKEN")
+        ):
+            fail("tailscale: authentication material must not be in Compose environment")
+        if environment.get("TS_EXTRA_ARGS") or environment.get("TS_TAILSCALED_EXTRA_ARGS"):
+            fail("tailscale: extra Tailscale features and flags are forbidden")
+        if (
+            tailscale.get("cpus") != 0.5
+            or tailscale.get("mem_limit") != "268435456"
+            or tailscale.get("pids_limit") != 128
+        ):
+            fail("tailscale: CPU, memory and PID bounds are required")
+        if set(tailscale.get("networks") or {}) != {"factory-tailscale-uplink"}:
+            fail("tailscale: must use only the dedicated uplink network")
+        for network_config in (tailscale.get("networks") or {}).values():
+            if set(network_config or {}) - {"aliases"}:
+                fail("tailscale: network address overrides are forbidden")
+            if (network_config or {}).get("aliases"):
+                fail("tailscale: network aliases are forbidden")
+        uplink_members = {
+            service_name for service_name, service in services.items()
+            if "factory-tailscale-uplink" in (service.get("networks") or {})
+        }
+        if uplink_members != {"tailscale"}:
+            fail("factory-tailscale-uplink: only Tailscale may be a member")
+        if set(tailscale.get("networks") or {}) & set(core.get("networks") or {}):
+            fail("tailscale: must not share any Core network")
+        trusted_origin = str(
+            services["core"].get("environment", {}).get("FACTORY_TRUSTED_ORIGINS", "")
+        )
+        tailscale_origin = str(
+            services["core"].get("environment", {}).get("FACTORY_TAILSCALE_ORIGIN", "")
+        )
+        parsed_origin = urlsplit(trusted_origin)
+        hostname = str(environment.get("TS_HOSTNAME", ""))
+        try:
+            origin_port = parsed_origin.port
+        except ValueError:
+            origin_port = -1
+        valid_origin = (
+            parsed_origin.scheme == "https"
+            and bool(parsed_origin.hostname)
+            and parsed_origin.hostname.endswith(".ts.net")
+            and origin_port is None
+            and parsed_origin.path in {"", "/"}
+            and not parsed_origin.query
+            and not parsed_origin.fragment
+            and not parsed_origin.username
+            and not parsed_origin.password
+            and "," not in trusted_origin
+            and "*" not in trusted_origin
+            and parsed_origin.hostname.split(".")[0] == hostname
+        )
+        if not valid_origin or tailscale_origin != trusted_origin:
+            fail(
+                "core: trusted and status origins must match one exact HTTPS "
+                "MagicDNS origin for TS_HOSTNAME"
+            )
+        if "factory-tailscale-state" not in named_volumes:
+            fail("tailscale: persistent node state volume is required")
+        if "factory-office-socket" not in named_volumes:
+            fail("tailscale: the shared Office socket volume is required")
+
+        if (config.get("networks", {}).get("factory-tailscale-uplink", {}).get("internal") is True):
+            fail("factory-tailscale-uplink: outbound connectivity is required")
+
+    for network_name, network in (config.get("networks") or {}).items():
+        driver_opts = (network or {}).get("driver_opts") or {}
+        if str(driver_opts.get("isolate")).lower() != "true":
+            fail(f"network {network_name}: driver_opts.isolate must be 'true'")
+    if (config.get("networks", {}).get("factory-control", {}).get("internal") is True):
+        fail("factory-control: internal networks are not bridge-isolated by Netavark")
+    if (
+        (config.get("networks", {}).get("factory-control", {}).get("driver_opts") or {}).get(
+            "no_default_route"
+        )
+        != "true"
+    ):
+        fail("factory-control: no_default_route=true is required to deny egress")
+    for network_name in ("factory-egress", "factory-tailscale-uplink"):
+        if (config.get("networks", {}).get(network_name, {}).get("internal") is True):
+            fail(f"{network_name}: outbound connectivity is required")
+
     for name, volume in (config.get("volumes") or {}).items():
         if volume.get("driver_opts"):
             fail(f"named volume {name}: driver_opts are forbidden (host bind risk)")
@@ -215,6 +569,7 @@ def main(path: str) -> int:
         "factory-provider-sessions",
         "factory-image-bundle",
         "factory-engine",
+        "factory-office-socket",
     ):
         if required not in named_volumes:
             fail(f"missing durable volume {required}")

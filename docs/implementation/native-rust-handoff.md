@@ -817,3 +817,14 @@ runs) and governance. The next required product milestone is the independently
 configured semantic Reviewer, followed by CAP-014 integration, browser test
 server, WorkGraph cancellation/restart, Office multi-unit/recovery and
 telemetry.
+
+## 2026-10-29 subscription refusal follow-up
+
+The subscription-funding lane adds typed refusals shared by Core model calls
+and Worker turn admission/egress, and moves Worker funding checks before
+historical monetary prerequisites. See
+[the funding milestone](subscription-funding-v3-milestone-1.md) for the exact
+scope and remaining architectural blockers. This does not enable model
+inference or alter historical ledger settlement/reconciliation. Container-native
+focused validation is author evidence only; independent review, live provider
+proof and real browser/runtime acceptance remain NOT_VERIFIED.

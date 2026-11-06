@@ -32,6 +32,14 @@ RUN cargo build --locked --release -p factory-native \
       --bin factory-provider-bridge \
       --bin factory-fixture-provider
 
+# Deterministic Compose E2E only: a debug build with the debug-only
+# `test-support` admission seam. Production targets never use this stage and
+# `native/src/lib.rs` rejects `test-support` outside debug builds.
+FROM workspace AS core-e2e-builder
+RUN cargo build --locked -p factory-native --features test-support \
+      --bin factory-core \
+      --bin factory-compose-init
+
 FROM node:${NODE_VERSION}-bookworm-slim AS office-builder
 
 WORKDIR /office
@@ -61,10 +69,31 @@ VOLUME ["/data"]
 STOPSIGNAL SIGTERM
 USER factory
 
-FROM debian:bookworm-slim AS supervisor
+FROM debian:bookworm-slim AS core-e2e
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl git \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 10001 factory \
+    && useradd --uid 10001 --gid factory --no-create-home \
+        --home-dir /nonexistent --shell /usr/sbin/nologin factory \
+    && install -d -o factory -g factory -m 0700 /data /projects
+
+COPY --from=core-e2e-builder /build/target/debug/factory-core /usr/local/bin/factory-core
+COPY --from=core-e2e-builder /build/target/debug/factory-compose-init /usr/local/bin/factory-compose-init
+COPY --from=office-builder /office/dist /app/office
+
+ENV FACTORY_DATABASE=/data/factory.sqlite \
+    FACTORY_OFFICE_DIR=/app/office
+EXPOSE 8765
+VOLUME ["/data"]
+STOPSIGNAL SIGTERM
+USER factory
+
+FROM debian:bookworm-slim AS supervisor
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl git python3 \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 factory \
     && useradd --uid 10001 --gid factory --no-create-home \
@@ -88,6 +117,28 @@ RUN apt-get update \
 COPY --from=workspace /build/target/release/factory-worker /usr/local/bin/factory-worker
 COPY --from=workspace /build/target/release/factory-provider-bridge /usr/local/bin/factory-provider-bridge
 COPY --from=workspace /build/target/release/factory-egress-bridge /usr/local/bin/factory-egress-bridge
+USER 10001:10001
+STOPSIGNAL SIGTERM
+
+FROM node:${NODE_VERSION}-bookworm-slim AS reviewer
+
+ARG REVIEWER_CODEX_VERSION=0.165.0
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl git \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install --global --no-audit --no-fund \
+        "@openai/codex@${REVIEWER_CODEX_VERSION}" \
+    && command -v codex \
+    && groupadd --gid 10001 factory \
+    && useradd --uid 10001 --gid factory --no-create-home \
+        --home-dir /nonexistent --shell /usr/sbin/nologin factory \
+    && install -d -o factory -g factory -m 0700 /state /codex-home
+
+COPY --from=workspace /build/target/release/factory-reviewer /usr/local/bin/factory-reviewer
+ENV HOME=/tmp \
+    TMPDIR=/tmp \
+    PATH=/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 USER 10001:10001
 STOPSIGNAL SIGTERM
 

@@ -7,6 +7,7 @@ import type {
   QualityReceipt,
 } from "../../coreApi";
 import { formatTimestamp, shortId } from "../../format";
+import { type MessageKey, useI18n } from "../../i18n";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
 import { EmptyState, Panel } from "../ui/Surface";
@@ -14,8 +15,6 @@ import { ParticipantSessionList } from "./ParticipantSessionList";
 import { StatusBadge } from "./StatusBadge";
 import {
   buildWorkGraphLayout,
-  presentationExplanation,
-  presentationLabel,
   WORKGRAPH_NODE_HEIGHT,
   WORKGRAPH_NODE_WIDTH,
   type WorkGraphIssue,
@@ -34,6 +33,82 @@ const STATE_TONE: Record<WorkGraphPresentationState, string> = {
   UNKNOWN: "workgraph-state-unknown",
   INCONSISTENT: "workgraph-state-inconsistent",
 };
+
+const PRESENTATION_LABEL: Record<WorkGraphPresentationState, MessageKey> = {
+  READY: "workgraph.presentation.ready",
+  WAITING: "workgraph.presentation.waiting",
+  BLOCKED: "workgraph.presentation.blocked",
+  RUNNING: "workgraph.presentation.running",
+  SUCCEEDED: "workgraph.presentation.succeeded",
+  FAILED: "workgraph.presentation.failed",
+  CANCELLED: "workgraph.presentation.cancelled",
+  UNKNOWN: "workgraph.presentation.unknown",
+  INCONSISTENT: "workgraph.presentation.inconsistent",
+};
+
+const PRESENTATION_EXPLANATION: Record<WorkGraphPresentationState, MessageKey> =
+  {
+    READY: "workgraph.explanation.ready",
+    WAITING: "workgraph.explanation.waiting",
+    BLOCKED: "workgraph.explanation.blocked",
+    RUNNING: "workgraph.explanation.running",
+    SUCCEEDED: "workgraph.explanation.succeeded",
+    FAILED: "workgraph.explanation.failed",
+    CANCELLED: "workgraph.explanation.cancelled",
+    UNKNOWN: "workgraph.explanation.unknown",
+    INCONSISTENT: "workgraph.explanation.inconsistent",
+  };
+
+function presentationLabel(
+  state: WorkGraphPresentationState,
+  t: ReturnType<typeof useI18n>["t"],
+): string {
+  return t(PRESENTATION_LABEL[state]);
+}
+
+function presentationExplanation(
+  state: WorkGraphPresentationState,
+  t: ReturnType<typeof useI18n>["t"],
+): string {
+  return t(PRESENTATION_EXPLANATION[state]);
+}
+
+function issueMessage(
+  issue: WorkGraphIssue,
+  t: ReturnType<typeof useI18n>["t"],
+): string {
+  switch (issue.kind) {
+    case "MISSING_DEPENDENCY":
+      return t("workgraph.issue.missingDependency", {
+        unit: issue.unitId ?? "",
+        dependency: issue.dependency ?? "",
+      });
+    case "SELF_DEPENDENCY":
+      return t("workgraph.issue.selfDependency", { unit: issue.unitId ?? "" });
+    case "CYCLE":
+      return t("workgraph.issue.cycle");
+    case "DUPLICATE_UNIT":
+      return t("workgraph.issue.duplicateUnit", { unit: issue.unitId ?? "" });
+    case "DUPLICATE_TASK":
+      return t("workgraph.issue.duplicateTask", {
+        task: issue.taskId ?? "",
+      });
+    case "SEQUENCE_ORDER":
+      return t("workgraph.issue.sequenceOrder", {
+        unit: issue.unitId ?? "",
+        sequence: issue.sequence ?? 0,
+        dependency: issue.dependency ?? "",
+        dependencySequence: issue.dependencySequence ?? 0,
+      });
+    case "UNKNOWN_STATUS":
+      return t("workgraph.issue.unknownStatus", {
+        unit: issue.unitId ?? "",
+        status: issue.status ?? "",
+      });
+    default:
+      return issue.message;
+  }
+}
 
 function edgePath(from: WorkGraphNode, to: WorkGraphNode): string {
   const x1 = from.x + WORKGRAPH_NODE_WIDTH;
@@ -65,6 +140,7 @@ function WorkUnitInspector({
   receipts: QualityReceipt[];
   onClose: () => void;
 }) {
+  const { t } = useI18n();
   const node = layout.nodes.find((item) => item.task.unit_id === task.unit_id);
   const session =
     sessions
@@ -76,25 +152,19 @@ function WorkUnitInspector({
   const state = node?.state ?? "UNKNOWN";
   const missingEvidence: string[] = [];
   if (task.status === "SUCCEEDED" && !task.candidate_id) {
-    missingEvidence.push(
-      "The WorkUnit is recorded SUCCEEDED but no Candidate is bound.",
-    );
+    missingEvidence.push(t("workgraph.missing.candidateNotBound"));
   }
   if (task.status === "SUCCEEDED" && task.candidate_id && !gate) {
-    missingEvidence.push(
-      "No Quality Gate decision is recorded for the bound Candidate.",
-    );
+    missingEvidence.push(t("workgraph.missing.gateNotRecorded"));
   }
   if (task.candidate_id && !verifier) {
-    missingEvidence.push("No verifier receipt is recorded.");
+    missingEvidence.push(t("workgraph.missing.verifierReceipt"));
   }
   if (task.candidate_id && !reviewer) {
-    missingEvidence.push("No reviewer receipt is recorded.");
+    missingEvidence.push(t("workgraph.missing.reviewerReceipt"));
   }
   if (task.status === "RUNNING" && !task.attempt_id) {
-    missingEvidence.push(
-      "The WorkUnit is recorded RUNNING but no Attempt is bound.",
-    );
+    missingEvidence.push(t("workgraph.missing.attemptNotBound"));
   }
 
   return (
@@ -105,41 +175,43 @@ function WorkUnitInspector({
     >
       <div className="section-heading">
         <h3>
-          WorkUnit <code>{task.unit_id}</code>
+          {t("workgraph.inspector.title")} <code>{task.unit_id}</code>
         </h3>
         <Button size="sm" variant="quiet" onClick={onClose}>
-          Close
+          {t("workgraph.inspector.close")}
         </Button>
       </div>
       <div className="workgraph-inspector-badges">
         <StatusBadge status={task.status} />
-        <StatusBadge status={state} label={presentationLabel(state)} />
+        <StatusBadge status={state} label={presentationLabel(state, t)} />
       </div>
-      <p className="muted">{presentationExplanation(state)}</p>
+      <p className="muted">{presentationExplanation(state, t)}</p>
 
       <dl className="agent-facts">
         <div>
-          <dt>Frozen sequence</dt>
+          <dt>{t("workgraph.fact.sequence")}</dt>
           <dd>{task.sequence}</dd>
         </div>
         <div>
-          <dt>Dependencies</dt>
+          <dt>{t("workgraph.fact.dependencies")}</dt>
           <dd>
-            {task.depends_on.length > 0 ? task.depends_on.join(", ") : "none"}
+            {task.depends_on.length > 0
+              ? task.depends_on.join(", ")
+              : t("workgraph.none")}
           </dd>
         </div>
         <div>
-          <dt>Base commit</dt>
+          <dt>{t("workgraph.fact.baseCommit")}</dt>
           <dd>
             <code>{task.base_commit}</code>
           </dd>
         </div>
         <div>
-          <dt>Updated</dt>
+          <dt>{t("workgraph.fact.updated")}</dt>
           <dd>{formatTimestamp(task.updated_at)}</dd>
         </div>
         <div>
-          <dt>Run</dt>
+          <dt>{t("workgraph.fact.run")}</dt>
           <dd>
             {task.run_id ? (
               <Link
@@ -148,12 +220,12 @@ function WorkUnitInspector({
                 <code>{task.run_id}</code>
               </Link>
             ) : (
-              "NOT RECORDED"
+              t("workgraph.notRecorded")
             )}
           </dd>
         </div>
         <div>
-          <dt>Attempt</dt>
+          <dt>{t("workgraph.fact.attempt")}</dt>
           <dd>
             {task.attempt_id ? (
               <Link
@@ -162,12 +234,12 @@ function WorkUnitInspector({
                 <code>{task.attempt_id}</code>
               </Link>
             ) : (
-              "NOT RECORDED"
+              t("workgraph.notRecorded")
             )}
           </dd>
         </div>
         <div>
-          <dt>Candidate</dt>
+          <dt>{t("workgraph.fact.candidate")}</dt>
           <dd>
             {task.candidate_id ? (
               <Link
@@ -176,32 +248,32 @@ function WorkUnitInspector({
                 <code>{task.candidate_id}</code>
               </Link>
             ) : (
-              "NOT RECORDED"
+              t("workgraph.notRecorded")
             )}
           </dd>
         </div>
         <div>
-          <dt>Candidate commit</dt>
+          <dt>{t("workgraph.fact.candidateCommit")}</dt>
           <dd>
             {task.candidate_commit ? (
               <code>{task.candidate_commit}</code>
             ) : (
-              "NOT RECORDED"
+              t("workgraph.notRecorded")
             )}
           </dd>
         </div>
         <div>
-          <dt>Candidate tree</dt>
+          <dt>{t("workgraph.fact.candidateTree")}</dt>
           <dd>
             {task.candidate_tree ? (
               <code>{task.candidate_tree}</code>
             ) : (
-              "NOT RECORDED"
+              t("workgraph.notRecorded")
             )}
           </dd>
         </div>
         <div>
-          <dt>Quality Gate</dt>
+          <dt>{t("workgraph.fact.gate")}</dt>
           <dd>
             {gate ? (
               <Link
@@ -210,12 +282,12 @@ function WorkUnitInspector({
                 <StatusBadge status={gate.outcome} />
               </Link>
             ) : (
-              <StatusBadge status="PENDING" label="NO GATE RECORDED" />
+              <StatusBadge status="PENDING" label={t("workgraph.noGate")} />
             )}
           </dd>
         </div>
         <div>
-          <dt>Verifier</dt>
+          <dt>{t("workgraph.fact.verifier")}</dt>
           <dd>
             {verifier ? (
               <Link
@@ -225,12 +297,12 @@ function WorkUnitInspector({
                 <code>{shortId(verifier.principal_id, 18)}</code>
               </Link>
             ) : (
-              <StatusBadge status="PENDING" label="NO RECEIPT" />
+              <StatusBadge status="PENDING" label={t("workgraph.noReceipt")} />
             )}
           </dd>
         </div>
         <div>
-          <dt>Reviewer</dt>
+          <dt>{t("workgraph.fact.reviewer")}</dt>
           <dd>
             {reviewer ? (
               <Link
@@ -240,60 +312,54 @@ function WorkUnitInspector({
                 <code>{shortId(reviewer.principal_id, 18)}</code>
               </Link>
             ) : (
-              <StatusBadge status="PENDING" label="NO RECEIPT" />
+              <StatusBadge status="PENDING" label={t("workgraph.noReceipt")} />
             )}
           </dd>
         </div>
       </dl>
 
       <div className="workgraph-inspector-section">
-        <h4>Participant and session</h4>
+        <h4>{t("workgraph.participant.title")}</h4>
         {session ? (
           <>
             <p>
               <Link
                 to={`/agents/${encodeURIComponent(`implementer:${session.session_record_id}`)}`}
               >
-                Open Implementer participant{" "}
+                {t("workgraph.participant.open")}{" "}
                 <code>{shortId(session.session_record_id, 18)}</code>
               </Link>
             </p>
             <ParticipantSessionList
               sessions={[session]}
               showAttempt={false}
-              emptyTitle="No provider session"
-              emptyDescription="No provider session is bound to this Attempt."
+              emptyTitle={t("workgraph.participant.emptyTitle")}
+              emptyDescription={t("workgraph.participant.emptyDescription")}
             />
           </>
         ) : (
-          <p className="muted">
-            No provider session is recorded for this WorkUnit&apos;s Attempt.
-          </p>
+          <p className="muted">{t("workgraph.participant.none")}</p>
         )}
       </div>
 
       {(unitIssues.length > 0 || missingEvidence.length > 0) && (
         <div className="callout callout-attention" role="status">
-          <strong>Recorded inconsistency or missing evidence</strong>
+          <strong>{t("workgraph.inconsistency.title")}</strong>
           <ul>
             {unitIssues.map((issue) => (
-              <li key={`${issue.kind}-${issue.message}`}>{issue.message}</li>
+              <li key={`${issue.kind}-${issue.message}`}>
+                {issueMessage(issue, t)}
+              </li>
             ))}
             {missingEvidence.map((message) => (
               <li key={message}>{message}</li>
             ))}
           </ul>
-          <p className="muted">
-            The Office surfaces these conditions; it does not repair graph or
-            evidence data.
-          </p>
+          <p className="muted">{t("workgraph.inconsistency.hint")}</p>
         </div>
       )}
 
-      <p className="muted">
-        Selecting a unit keeps the exact Campaign, tab and WorkUnit in the URL
-        so reload and browser history restore the same inspection context.
-      </p>
+      <p className="muted">{t("workgraph.selectionHint")}</p>
     </Panel>
   );
 }
@@ -319,6 +385,7 @@ export function WorkGraphPanel({
   stale?: boolean;
   selectedUnitMissing?: boolean;
 }) {
+  const { t } = useI18n();
   const markerId = `workgraph-arrow-${useId().replaceAll(/[^a-zA-Z0-9]/g, "")}`;
   const refs = useRef<Record<string, HTMLButtonElement | null>>({});
   const layout = buildWorkGraphLayout(tasks);
@@ -374,8 +441,8 @@ export function WorkGraphPanel({
   if (tasks.length === 0) {
     return (
       <EmptyState
-        title="No WorkGraph units"
-        description="This Campaign has no recorded WorkGraph unit. Core does not synthesize a plan in the browser."
+        title={t("workgraph.emptyTitle")}
+        description={t("workgraph.emptyDescription")}
       />
     );
   }
@@ -384,52 +451,48 @@ export function WorkGraphPanel({
     <div className="workgraph">
       {stale && (
         <div className="callout callout-attention" role="status">
-          The Campaign projection is stale. The graph below is the last
-          authoritative snapshot; it does not imply that execution stopped.
+          {t("workgraph.stale")}
         </div>
       )}
       <div className="workgraph-heading">
         <div>
           <h3>
-            Dependency graph ({layout.nodes.length} unit
-            {layout.nodes.length === 1 ? "" : "s"})
+            {layout.nodes.length === 1
+              ? t("workgraph.headingOne", { count: layout.nodes.length })
+              : t("workgraph.heading", { count: layout.nodes.length })}
           </h3>
-          <p className="muted">
-            Left-to-right position is derived dependency depth, not scheduling
-            progress or completion time.
-          </p>
+          <p className="muted">{t("workgraph.headingHint")}</p>
         </div>
         <span className="muted">
-          {layout.edges.length} recorded dependency edge
-          {layout.edges.length === 1 ? "" : "s"}
+          {layout.edges.length === 1
+            ? t("workgraph.edgesOne", { count: layout.edges.length })
+            : t("workgraph.edges", { count: layout.edges.length })}
         </span>
       </div>
 
       {layout.issues.length > 0 && (
         <div className="callout callout-attention" role="status">
-          <strong>Graph inconsistencies</strong>
+          <strong>{t("workgraph.issuesTitle")}</strong>
           <ul>
             {layout.issues.map((issue) => (
-              <li key={`${issue.kind}-${issue.message}`}>{issue.message}</li>
+              <li key={`${issue.kind}-${issue.message}`}>
+                {issueMessage(issue, t)}
+              </li>
             ))}
           </ul>
-          <p className="muted">
-            Data is displayed as recorded. The table below remains the
-            accessible authoritative alternative.
-          </p>
+          <p className="muted">{t("workgraph.issuesHint")}</p>
         </div>
       )}
 
       {selectedUnitMissing && (
         <div className="callout" role="status">
-          The selected WorkUnit is not part of this Campaign projection. The URL
-          is preserved and no node was selected.
+          {t("workgraph.selectedMissing")}
         </div>
       )}
 
       <section
         className="workgraph-scroll"
-        aria-label="WorkGraph visual dependency view"
+        aria-label={t("workgraph.canvasAria")}
       >
         <div
           className="workgraph-canvas"
@@ -501,7 +564,12 @@ export function WorkGraphPanel({
                   height: WORKGRAPH_NODE_HEIGHT,
                 }}
                 aria-pressed={selected}
-                aria-label={`WorkUnit ${node.task.unit_id}, recorded status ${node.task.status}, presentation ${presentationLabel(node.state)}, ${node.task.depends_on.length} dependencies`}
+                aria-label={t("workgraph.nodeAria", {
+                  unit: node.task.unit_id,
+                  status: node.task.status,
+                  presentation: presentationLabel(node.state, t),
+                  count: node.task.depends_on.length,
+                })}
                 onClick={() => onSelectUnit(node.task.unit_id)}
                 onKeyDown={(event) => onNodeKeyDown(event, node)}
                 data-testid={`workgraph-node-${node.task.unit_id}`}
@@ -518,51 +586,53 @@ export function WorkGraphPanel({
                 <span className="workgraph-node-state">
                   <StatusBadge
                     status={node.state}
-                    label={presentationLabel(node.state)}
+                    label={presentationLabel(node.state, t)}
                   />
                 </span>
                 <span className="workgraph-node-meta">
                   {node.task.depends_on.length > 0
-                    ? `after ${node.task.depends_on.join(", ")}`
-                    : "no dependencies"}
+                    ? t("workgraph.node.after", {
+                        units: node.task.depends_on.join(", "),
+                      })
+                    : t("workgraph.node.noDependencies")}
                 </span>
                 <span className="workgraph-node-meta">
                   {node.task.candidate_id
-                    ? `candidate ${shortId(node.task.candidate_id, 10)}${
-                        gate ? ` · gate ${gate.outcome}` : " · gate pending"
-                      }`
-                    : "no candidate recorded"}
+                    ? gate
+                      ? t("workgraph.node.candidateGate", {
+                          candidate: shortId(node.task.candidate_id, 10),
+                          gate: gate.outcome,
+                        })
+                      : t("workgraph.node.candidatePending", {
+                          candidate: shortId(node.task.candidate_id, 10),
+                        })
+                    : t("workgraph.node.noCandidate")}
                 </span>
               </button>
             );
           })}
         </div>
       </section>
-      <p className="muted workgraph-scroll-note">
-        The canvas scrolls horizontally when needed. Every node is a keyboard
-        focus target; arrow keys move between nodes and Enter or Space selects.
-      </p>
+      <p className="muted workgraph-scroll-note">{t("workgraph.scrollNote")}</p>
 
       <div className="workgraph-table-heading">
-        <h3>WorkGraph table (accessible alternative)</h3>
-        <span className="muted">
-          Exact frozen sequence, dependencies and recorded execution identity.
-        </span>
+        <h3>{t("workgraph.table.title")}</h3>
+        <span className="muted">{t("workgraph.table.hint")}</span>
       </div>
       <div className="workgraph-table-wrap">
         <table data-testid="workgraph-table">
           <thead>
             <tr>
               <th>#</th>
-              <th>Unit</th>
-              <th>Recorded status</th>
-              <th>Dependency state</th>
-              <th>Depends on</th>
-              <th>Run / Attempt</th>
-              <th>Candidate</th>
-              <th>Gate</th>
-              <th>Updated</th>
-              <th scope="col" aria-label="Inspect" />
+              <th>{t("workgraph.table.unit")}</th>
+              <th>{t("workgraph.table.recordedStatus")}</th>
+              <th>{t("workgraph.table.dependencyState")}</th>
+              <th>{t("workgraph.table.dependsOn")}</th>
+              <th>{t("workgraph.table.runAttempt")}</th>
+              <th>{t("workgraph.table.candidate")}</th>
+              <th>{t("workgraph.table.gate")}</th>
+              <th>{t("workgraph.table.updated")}</th>
+              <th scope="col" aria-label={t("workgraph.table.inspect")} />
             </tr>
           </thead>
           <tbody>
@@ -587,7 +657,8 @@ export function WorkGraphPanel({
                     <code>{task.unit_id}</code>
                     {(duplicateUnit || !row.graphNode) && (
                       <div className="muted">
-                        task <code>{shortId(task.task_id, 12)}</code>
+                        {t("workgraph.table.task")}{" "}
+                        <code>{shortId(task.task_id, 12)}</code>
                       </div>
                     )}
                   </th>
@@ -597,10 +668,10 @@ export function WorkGraphPanel({
                   <td>
                     <StatusBadge
                       status={row.state}
-                      label={presentationLabel(row.state)}
+                      label={presentationLabel(row.state, t)}
                     />
                   </td>
-                  <td>{task.depends_on.join(", ") || "none"}</td>
+                  <td>{task.depends_on.join(", ") || t("workgraph.none")}</td>
                   <td>
                     {task.run_id ? shortId(task.run_id) : "—"} /{" "}
                     {task.attempt_id ? shortId(task.attempt_id) : "—"}
@@ -636,7 +707,7 @@ export function WorkGraphPanel({
                       aria-pressed={selected}
                       onClick={() => onSelectUnit(task.unit_id)}
                     >
-                      Inspect
+                      {t("workgraph.table.inspect")}
                     </button>
                   </td>
                 </tr>
@@ -666,9 +737,7 @@ export function WorkGraphPanel({
         />
       )}
       {selectedNode && selectedNode.state === "INCONSISTENT" && (
-        <p className="warning">
-          Selected WorkUnit has an inconsistent dependency record.
-        </p>
+        <p className="warning">{t("workgraph.selectedInconsistent")}</p>
       )}
     </div>
   );

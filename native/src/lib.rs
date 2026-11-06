@@ -1,15 +1,35 @@
+#[cfg(all(feature = "test-support", not(debug_assertions)))]
+compile_error!("feature `test-support` is restricted to debug test builds");
+
 pub mod attempt_grant;
+pub mod autonomy;
 pub mod browser;
+pub mod candidate_diff;
+pub mod codex_auth;
+pub mod codex_review;
 pub mod db;
+pub mod device_session;
 pub mod evaluation;
 pub mod execution;
+pub mod execution_policy;
+pub mod execution_profile;
+pub mod funding_status;
+pub mod github;
+pub mod github_sync;
+pub mod inference_ledger;
+pub mod intake;
+pub mod issue_intake;
 pub mod lead;
 pub mod lead_model;
 pub mod model_gateway;
 pub mod model_output;
+pub mod model_routing;
 pub mod observability;
+pub mod progress;
+pub mod project_files;
 pub mod project_import;
 pub mod protocol;
+pub mod provider_adapter;
 pub mod provider_catalog;
 pub mod provider_egress;
 pub mod provider_patch;
@@ -27,6 +47,9 @@ pub mod secrets;
 pub mod semantic_review;
 pub mod service_network;
 pub mod sse;
+pub mod subscription_admission;
 pub mod telemetry;
 pub mod workspace;
 pub mod workspace_archive;
+
+pub mod device_pairing;

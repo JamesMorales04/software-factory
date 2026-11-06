@@ -1,0 +1,19 @@
+{
+  "id": "/",
+  "name": "Factory Office",
+  "short_name": "Factory",
+  "description": "Local-first engineering operations workspace",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#07111f",
+  "theme_color": "#0d1a2b",
+  "icons": [
+    {
+      "src": "/factory-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

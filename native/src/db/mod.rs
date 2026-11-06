@@ -38,12 +38,29 @@ pub enum Error {
     Repository(String),
     #[error("invalid request: {0}")]
     Invalid(&'static str),
+    #[error("invalid request: {0}")]
+    Validation(String),
     #[error("record not found")]
     NotFound,
+    #[error("rate limited: {0}")]
+    RateLimited(String),
+    #[error("service unavailable: {0}")]
+    Unavailable(String),
+    #[error("subscription funding refused: {0}")]
+    SubscriptionFunding(#[from] crate::execution_policy::SubscriptionFundingRefusal),
     #[error("conflict: {0}")]
     Conflict(&'static str),
     #[error("forbidden: {0}")]
     Forbidden(String),
+    #[error("lead request was withdrawn by an authenticated operator")]
+    Withdrawn,
+    #[error("lead request already started Campaign {campaign_id} ({campaign_status})")]
+    AlreadyStarted {
+        campaign_id: String,
+        campaign_status: String,
+    },
+    #[error("intake conflict {code}: {message}")]
+    IntakeConflict { code: &'static str, message: String },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -53,6 +70,20 @@ pub struct Project {
     pub base_commit: String,
     pub created_at: String,
     pub identity: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub source_kind: String,
+    #[serde(default)]
+    pub source_url: String,
+    #[serde(default)]
+    pub source_key: String,
+    #[serde(default)]
+    pub source_visibility: String,
+    #[serde(default)]
+    pub default_branch: String,
+    #[serde(default)]
+    pub remote_origin: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -122,6 +153,14 @@ pub struct Attempt {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorkerAssignment {
     pub lease: WorkerLease,
+    pub campaign_id: String,
+    /// Stable identity of the work item across attempts/repair sessions. Lead
+    /// Campaigns use the frozen WorkGraph unit id; direct Campaigns use the
+    /// Campaign id.
+    pub work_item_id: String,
+    /// Highest observed progress sequence accepted by Core for this Campaign;
+    /// the Worker uses it to seed a monotonic sequence across restarts.
+    pub progress_last_sequence: u64,
     pub action_id: String,
     pub action_spec: ActionSpec,
     pub action_spec_sha256: String,
@@ -133,12 +172,9 @@ pub struct WorkerAssignment {
     pub model: String,
     pub provider_mode: String,
     pub delegation_id: String,
-    pub max_sessions: u32,
-    pub max_turns: u32,
-    pub max_input_tokens: u64,
-    pub max_output_tokens: u64,
-    pub max_cost_micros: u64,
-    pub deadline_secs: u64,
+    /// Frozen Execution Policy V2. `None` and `LegacyV1` are historical evidence
+    /// only and never dispatch under V2.
+    pub execution_policy: Option<crate::execution_policy::FrozenExecutionPolicy>,
     pub allowed_tools: Vec<String>,
     /// Populated by Core immediately before returning a claim. The database
     /// layer never invents or stores this capability.
@@ -193,6 +229,7 @@ pub const EVENTS_PAGE_MAX: usize = 500;
 pub const EVENT_KINDS: &[&str] = &[
     "action.classified",
     "action.created",
+    "action.spec_frozen",
     "attempt.created",
     "campaign.authorized",
     "campaign.cancelled",
@@ -204,6 +241,23 @@ pub const EVENT_KINDS: &[&str] = &[
     "delegation.released",
     "delegation.reserved",
     "delegation.revoked",
+    "execution_policy.granted",
+    "github.connection_configured",
+    "github.connection_revoked",
+    "github.issues_synced",
+    "github.project_bound",
+    "intake.message_recorded",
+    "intake.request_created",
+    "issue_intake.batch_acknowledged",
+    "issue_intake.batch_revoked",
+    "issue_intake.policy_configured",
+    "issue_intake.policy_disabled",
+    "issue_intake.policy_updated",
+    "issue_intake.queue_blocked",
+    "issue_intake.queue_recovered",
+    "issue_intake.queue_reconciled",
+    "issue_intake.queue_retry",
+    "lead.approved",
     "lead.assessment_recorded",
     "lead.plan_completed",
     "lead.plan_frozen",
@@ -212,6 +266,7 @@ pub const EVENT_KINDS: &[&str] = &[
     "lead.request_created",
     "lead.started",
     "lead.state_changed",
+    "lead.withdrawn",
     "lead.work_failed",
     "model.call_ambiguous",
     "model.call_authorized",
@@ -231,6 +286,7 @@ pub const EVENT_KINDS: &[&str] = &[
     "provider.turn_settled",
     "provider.session_terminal",
     "project.config_updated",
+    "project.discovery_completed",
     "project.registered",
     "quality.gate_decided",
     "quality.receipt_recorded",
@@ -324,13 +380,24 @@ pub enum ReviewMechanism {
     #[default]
     Deterministic,
     Model,
+    /// Independent review executed by the official Codex App Server review
+    /// transport. It is model-backed but does not use Core's chat gateway or a
+    /// model-call reservation.
+    CodexAppServer,
 }
 
 impl ReviewMechanism {
+    /// Model-backed reviews must provide model provenance; the transport may be
+    /// Core's chat gateway or the official Codex App Server.
+    pub const fn is_model_backed(self) -> bool {
+        matches!(self, Self::Model | Self::CodexAppServer)
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Deterministic => "DETERMINISTIC",
             Self::Model => "MODEL",
+            Self::CodexAppServer => "CODEX_APP_SERVER",
         }
     }
 
@@ -338,6 +405,7 @@ impl ReviewMechanism {
         match value {
             "DETERMINISTIC" => Some(Self::Deterministic),
             "MODEL" => Some(Self::Model),
+            "CODEX_APP_SERVER" => Some(Self::CodexAppServer),
             _ => None,
         }
     }
@@ -411,6 +479,29 @@ pub struct GateRecord {
     pub decided_at: String,
 }
 
+/// Append-only deterministic repair authorization for one candidate.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AutonomyRepairRecord {
+    pub repair_id: String,
+    pub campaign_id: String,
+    pub candidate_id: String,
+    pub work_item_id: String,
+    pub repair_trigger: String,
+    pub risk_class: String,
+    pub total_points: u16,
+    pub critical_count: u32,
+    pub blocking_count: u32,
+    pub warning_count: u32,
+    pub info_count: u32,
+    pub cycle_index: u32,
+    pub decision: String,
+    pub reason_code: String,
+    pub reason: String,
+    pub policy_sha256: String,
+    pub reviewer_receipt_id: String,
+    pub created_at: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct QualityIngestResult {
     pub receipt: QualityReceiptRecord,
@@ -424,6 +515,11 @@ pub struct Database {
     /// async gate so callers never hold a blocking lock or a connection mutex
     /// across an await. Reads continue under WAL.
     write_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Process-local provider model discovery cache. It is not authoritative
+    /// state: it can only substantiate a model ID while the provider connection
+    /// is enabled, credentialed and has an implemented adapter. A poisoned or
+    /// empty cache fails closed.
+    provider_models: Arc<std::sync::RwLock<crate::provider_catalog::ProviderModelCache>>,
 }
 
 impl Database {
@@ -446,6 +542,9 @@ impl Database {
             .connect_with(options)
             .await?;
         migrate!("../migrations").run(&pool).await?;
+        #[cfg(any(test, feature = "test-support"))]
+        install_test_subscription_dispatch_admissions(&pool).await?;
+        issue_intake::recover_issue_intake_leases_on_open(&pool).await?;
         // Fail closed if an unrelated/older schema was present and the
         // migrations could not establish the expected columns.
         sqlx::query::query(
@@ -456,7 +555,31 @@ impl Database {
         Ok(Self {
             pool,
             write_lock: Arc::new(tokio::sync::Mutex::new(())),
+            provider_models: Arc::new(std::sync::RwLock::new(
+                crate::provider_catalog::ProviderModelCache::default(),
+            )),
         })
+    }
+
+    /// Snapshot the process-local provider model catalog. Cloning releases the
+    /// lock before any await so no blocking guard crosses an async boundary.
+    pub fn provider_model_cache(&self) -> crate::provider_catalog::ProviderModelCache {
+        match self.provider_models.read() {
+            Ok(cache) => cache.clone(),
+            Err(_) => crate::provider_catalog::ProviderModelCache::default(),
+        }
+    }
+
+    /// Record one bounded discovery outcome. An unavailable outcome replaces the
+    /// entry with an empty catalog, so stale model IDs never keep a route
+    /// executable after a failed rediscovery.
+    pub fn record_provider_model_discovery(
+        &self,
+        discovery: crate::provider_catalog::ProviderModelCatalogEntry,
+    ) {
+        if let Ok(mut cache) = self.provider_models.write() {
+            cache.record(discovery);
+        }
     }
 
     pub async fn close(&self) {
@@ -572,6 +695,12 @@ impl From<crate::lead::LeadError> for Error {
             crate::lead::LeadError::Delegation(_) => Self::Forbidden(error.to_string()),
             _ => Self::Delegation(error.to_string()),
         }
+    }
+}
+
+impl From<crate::execution_profile::ExecutionProfileError> for Error {
+    fn from(error: crate::execution_profile::ExecutionProfileError) -> Self {
+        Self::Validation(error.to_string())
     }
 }
 
@@ -735,12 +864,54 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
         == 0
 }
 
+mod access_revocation;
 mod authorization;
-pub use authorization::{CampaignAuthorizationRecord, NewCampaignAuthorization};
+pub use authorization::{
+    CampaignAuthorizationRecord, NO_BILLABLE_ENVELOPE, NewCampaignAuthorization,
+    SubscriptionFundingRecord,
+};
 mod delegations;
+mod device_sessions;
+pub use device_sessions::{DeviceSessionRecord, NewDeviceSession};
+mod execution_profiles;
+pub use execution_profiles::{
+    ExecutionProfileAudit, ExecutionProfileDefaultBinding, ExecutionProfileDefaultSource,
+    ExecutionProfileRecord, ResolvedExecutionProfile,
+};
+mod github;
+pub use github::{
+    GitHubConnectionAudit, GitHubConnectionRecord, GitHubIssueDetail, GitHubIssueFilters,
+    GitHubIssueList, GitHubIssueSummary, GitHubSyncFailureWrite, GitHubSyncResultWrite,
+    GitHubSyncStateRecord, NewProjectGitHubBinding, ProjectGitHubBinding,
+};
+mod inference_ledger;
 mod lead;
 mod model_calls;
-pub use lead::LeadTaskRecord;
+pub use crate::inference_ledger::{
+    CampaignEnvelopeBindingInput, CampaignInferenceRequirement, InferenceEnvelopeRecord,
+    InferenceLedgerMode, InferencePricingQuote, InferenceReservationRecord,
+    MarkInferenceDispatchedInput, NewInferenceAuthorization, NewInferenceEnvelope,
+    NewInferencePricingQuote, ReconcileInferenceInput, ReconciliationOutcome,
+    RevokeInferenceEnvelopeInput,
+};
+pub use lead::{
+    ActionDraftRecord, AuthenticatedOperatorApproval, CampaignExecutionBindingRecord,
+    ExpectedStartBinding, LeadRequestRecord, LeadStartEvidenceRecord, LeadStartResult,
+    LeadTaskRecord, LeadWithdrawalRecord, NewDraftLeadRequest, StartAuthority,
+    ValidatedAutonomyContext,
+};
+mod intake;
+pub use intake::{
+    ExecutionPolicyGrantRecord, ExecutionPolicyGrantResult, IntakeApprovalContext,
+    IntakeMessageRecord, IntakeRequestRecord, LeadExecutionContextRecord, NewExecutionPolicyGrant,
+};
+mod issue_intake;
+pub use issue_intake::{
+    ClaimedIssueIntakeItem, IssueIntakeBatchResult, IssueIntakeBatchState, IssueIntakeItemState,
+    IssueIntakeLimits, IssueIntakePolicyResult, IssueIntakeQueueFailure,
+    IssueIntakeReconcileResult, IssueIntakeState, NewIssueIntakeBatch, NewIssueIntakeBatchItem,
+    NewIssueIntakePolicy, NewIssueIntakePolicyV2,
+};
 pub use model_calls::{
     ModelCallDecision, ModelCallGrant, ModelCallPolicy, ModelCallRecord, ModelCallResult,
     ModelCallRole, ModelCallUsage, NewModelCallAuthorization,
@@ -752,16 +923,174 @@ pub use participants::{
     ParticipantRoute, ParticipantSession, ParticipantSource, ParticipantUsage,
     ProviderSessionContext, ProviderToolEventProjection, ProviderToolEventView,
 };
+mod execution_receipts;
 mod project_configs;
+pub use execution_receipts::{ExecutionCheckInput, ExecutionCheckReceiptRecord};
 mod provider_sessions;
 mod provider_settings;
+mod subscription_admissions;
 pub use provider_settings::{ProviderSettingsAudit, ProviderSettingsRecord, ProviderSettingsWrite};
+pub use subscription_admissions::{ScopeAdmissionRecord, ScopeAdmissionWrite};
 mod runtime_settings;
 pub use project_configs::NewProjectConfig;
 pub use runtime_settings::FactorySettings;
 mod projects;
+pub use projects::{ProjectCampaignSummary, ProjectDiscoveryRecord, RegisterProjectSource};
 mod quality;
 mod workers;
 
+mod device_pairing;
+#[cfg(test)]
+mod issue_intake_tests;
 #[cfg(test)]
 mod tests;
+pub use device_pairing::{
+    DevicePairingPoll, DevicePairingRecord, PairingExchange, SecurityAuditEntry,
+};
+
+/// Test-only subscription dispatch admission fixtures.
+///
+/// Milestone 1 deliberately records subscription proposals and refuses every
+/// provider dispatch until trusted verification exists. Ledger, gateway, routing
+/// and Worker regressions still need to exercise dispatch intent, ambiguity,
+/// settlement, replay and egress binding, so an individual test can opt a
+/// specific scope into this explicit per-database fixture.
+///
+/// Safety properties:
+///
+/// * the table and helpers exist only under `cfg(test)` or the explicit
+///   `test-support` feature; default/release builds
+///   contain no such table, helper or branch;
+/// * it is not an environment variable or a runtime switch;
+/// * the gate consults it only when no `subscription_funding_policies` row
+///   exists for the Campaign, so a persisted proposal in any state always wins;
+/// * admission is keyed by the exact scope, so opting one test scope in does not
+///   admit another.
+#[cfg(any(test, feature = "test-support"))]
+const TEST_SUBSCRIPTION_DISPATCH_ADMISSIONS: &str = "test_subscription_dispatch_admissions";
+
+#[cfg(any(test, feature = "test-support"))]
+async fn install_test_subscription_dispatch_admissions(pool: &SqlitePool) -> Result<(), Error> {
+    sqlx::query::query(
+        "CREATE TABLE IF NOT EXISTS test_subscription_dispatch_admissions (
+           scope TEXT PRIMARY KEY CHECK (length(scope) > 0),
+           fixture_only INTEGER NOT NULL DEFAULT 0 CHECK (fixture_only IN (0,1)),
+           created_at_ms INTEGER NOT NULL CHECK (created_at_ms > 0)
+         );
+         CREATE TABLE IF NOT EXISTS test_subscription_fixture_mode (
+           id INTEGER PRIMARY KEY CHECK (id = 1),
+           enabled INTEGER NOT NULL CHECK (enabled IN (0,1))
+         )",
+    )
+    .execute(pool)
+    .await?;
+    let fixture = cfg!(test) || std::env::var("FACTORY_PROVIDER_KIND").as_deref() == Ok("fixture");
+    sqlx::query::query(
+        "INSERT INTO test_subscription_fixture_mode(id,enabled) VALUES (1,?1)
+         ON CONFLICT(id) DO UPDATE SET enabled=excluded.enabled",
+    )
+    .bind(i64::from(fixture))
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Database {
+    /// Opt one test scope into the ledger fixture. This grants no provider
+    /// entitlement outside the test process and is never reachable in a
+    /// production build.
+    pub async fn admit_test_subscription_dispatch(&self, scope: &str) -> Result<(), Error> {
+        if scope.trim().is_empty() {
+            return Err(Error::Invalid("test dispatch admission scope"));
+        }
+        sqlx::query::query(&format!(
+            "INSERT INTO {TEST_SUBSCRIPTION_DISPATCH_ADMISSIONS}(scope,fixture_only,created_at_ms)
+             VALUES (?1,?2,?3) ON CONFLICT(scope) DO NOTHING"
+        ))
+        .bind(scope)
+        .bind(i64::from(scope == "*"))
+        .bind(Utc::now().timestamp_millis())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Database {
+    /// Explicitly opt this disposable test database into fixture admission.
+    /// Unlike the process environment, this does not affect other tests that
+    /// open a different database concurrently.
+    pub async fn enable_test_subscription_fixture_mode(&self) -> Result<(), Error> {
+        sqlx::query::query(
+            "INSERT INTO test_subscription_fixture_mode(id,enabled) VALUES (1,1)
+             ON CONFLICT(id) DO UPDATE SET enabled=1",
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) async fn test_subscription_dispatch_admitted_for_route_in_tx(
+    connection: &mut sqlx_sqlite::SqliteConnection,
+    scope: &str,
+    provider: &str,
+    _model: &str,
+) -> Result<bool, Error> {
+    if !test_subscription_dispatch_admitted_in_tx(connection, scope).await? {
+        return Ok(false);
+    }
+    // Library unit tests never exercise a real adapter; the test-support
+    // feature in a real binary still has to prove a fixture route. A model
+    // name is not transport evidence, so only the explicit fixture provider
+    // or a configured test upstream is accepted.
+    if cfg!(test) || provider == "fixture" {
+        return Ok(true);
+    }
+    let base_url: Option<(String,)> =
+        sqlx::query_as::query_as("SELECT base_url FROM provider_settings WHERE provider=?1")
+            .bind(provider)
+            .fetch_optional(&mut *connection)
+            .await?;
+    Ok(base_url.is_some_and(|(value,)| crate::provider_catalog::is_test_upstream_url(&value)))
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) async fn test_subscription_dispatch_admitted_in_tx(
+    connection: &mut sqlx_sqlite::SqliteConnection,
+    scope: &str,
+) -> Result<bool, Error> {
+    // `*` is reserved for the disposable Compose E2E database, where the
+    // Campaign identity is created inside approval and cannot be admitted
+    // before the Worker may claim it. This seam is still debug-only, applies
+    // only when no funding policy row exists, and can never relax a persisted
+    // disabled, paused or invalid policy.
+    let fixture: Option<(i64,)> =
+        sqlx::query_as::query_as("SELECT enabled FROM test_subscription_fixture_mode WHERE id=1")
+            .fetch_optional(&mut *connection)
+            .await?;
+    if fixture != Some((1,)) {
+        return Ok(false);
+    }
+    let exact: Option<(String,)> = sqlx::query_as::query_as(&format!(
+        "SELECT scope FROM {TEST_SUBSCRIPTION_DISPATCH_ADMISSIONS} WHERE scope=?1"
+    ))
+    .bind(scope)
+    .fetch_optional(&mut *connection)
+    .await?;
+    if exact.is_some() {
+        return Ok(true);
+    }
+    let wildcard: Option<(i64, i64)> = sqlx::query_as::query_as(&format!(
+        "SELECT a.fixture_only,m.enabled
+         FROM {TEST_SUBSCRIPTION_DISPATCH_ADMISSIONS} a
+         JOIN test_subscription_fixture_mode m ON m.id=1
+         WHERE a.scope='*'"
+    ))
+    .fetch_optional(&mut *connection)
+    .await?;
+    Ok(wildcard == Some((1, 1)))
+}

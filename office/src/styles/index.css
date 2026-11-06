@@ -4,5 +4,13 @@
 @import "./components.css";
 @import "./legacy.css";
 @import "./views.css";
+@import "./home.css";
+@import "./request.css";
 @import "./agent-office.css";
 @import "./workgraph.css";
+@import "./project-files.css";
+@import "./candidate-diff.css";
+@import "./projects.css";
+@import "./access.css";
+@import "./decision.css";
+@import "./localization.css";

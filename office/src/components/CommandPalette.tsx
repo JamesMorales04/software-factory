@@ -2,6 +2,7 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { CornerDownLeft, Search } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { useI18n } from "../i18n";
 import { NAV_ITEMS } from "../navigation";
 
 export function CommandPalette({
@@ -12,6 +13,7 @@ export function CommandPalette({
   onOpenChange: (open: boolean) => void;
 }) {
   const navigate = useNavigate();
+  const { t } = useI18n();
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -20,11 +22,11 @@ export function CommandPalette({
     const needle = query.trim().toLowerCase();
     if (!needle) return NAV_ITEMS;
     return NAV_ITEMS.filter((item) =>
-      `${item.label} ${item.keywords} ${item.to}`
+      `${t(item.labelKey)} ${item.keywords} ${item.to}`
         .toLowerCase()
         .includes(needle),
     );
-  }, [query]);
+  }, [query, t]);
 
   function choose(to: string) {
     onOpenChange(false);
@@ -51,10 +53,10 @@ export function CommandPalette({
           }}
         >
           <Dialog.Title className="ui-visually-hidden">
-            Command navigation
+            {t("shell.command.title")}
           </Dialog.Title>
           <Dialog.Description className="ui-visually-hidden">
-            Search implemented Office pages and open one.
+            {t("shell.command.description")}
           </Dialog.Description>
           <div className="command-input-row">
             <Search size={18} aria-hidden="true" />
@@ -93,8 +95,8 @@ export function CommandPalette({
                   }
                 }
               }}
-              placeholder="Search implemented pages…"
-              aria-label="Search implemented pages"
+              placeholder={t("shell.command.placeholder")}
+              aria-label={t("shell.command.searchLabel")}
               autoComplete="off"
             />
             <kbd className="ui-kbd">Esc</kbd>
@@ -103,10 +105,10 @@ export function CommandPalette({
             className="command-results"
             id="command-results"
             role="listbox"
-            aria-label="Pages"
+            aria-label={t("shell.command.pages")}
           >
             {results.length === 0 ? (
-              <p className="command-empty">No implemented page matches.</p>
+              <p className="command-empty">{t("shell.command.empty")}</p>
             ) : (
               results.map((item, index) => {
                 const Icon = item.icon;
@@ -123,7 +125,7 @@ export function CommandPalette({
                     onClick={() => choose(item.to)}
                   >
                     <Icon size={17} aria-hidden="true" />
-                    <span>{item.label}</span>
+                    <span>{t(item.labelKey)}</span>
                     <code>{item.to}</code>
                     <CornerDownLeft size={14} aria-hidden="true" />
                   </button>
@@ -131,9 +133,7 @@ export function CommandPalette({
               })
             )}
           </div>
-          <p className="command-hint">
-            Navigation only. Office actions remain on their authenticated page.
-          </p>
+          <p className="command-hint">{t("shell.command.hint")}</p>
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>

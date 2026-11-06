@@ -172,8 +172,8 @@ Decision: `proposed`
 
 ### Capabilities
 
-- CAP-024 — GitHub PR delivery (proposed, not_implemented)
-- CAP-025 — CI and review reconciliation (proposed, not_implemented)
+- CAP-024 — GitHub PR delivery (proposed, in_progress)
+- CAP-025 — CI and review reconciliation (proposed, in_progress)
 - CAP-026 — Conditional R0 merge (proposed, not_implemented)
 
 ### Deliverables
@@ -368,6 +368,7 @@ Decision: `approved`
 ### Capabilities
 
 - CAP-045 — Container-native Compose installation (approved, in_progress)
+- CAP-053 — Private Tailscale Office access (approved, in_progress)
 
 ### Deliverables
 
@@ -421,6 +422,8 @@ Decision: `approved`
 - CAP-050 — Campaign operational workspace (approved, in_progress)
 - CAP-051 — Runtime operational console (approved, in_progress)
 - CAP-052 — Provider and runtime Settings workspace (approved, in_progress)
+- CAP-054 — Personal Access and Device Sessions (approved, in_progress)
+- CAP-055 — Provider-agnostic reviewer selection and bounded autonomy (proposed, in_progress)
 
 ### Deliverables
 

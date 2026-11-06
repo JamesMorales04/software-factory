@@ -5,11 +5,25 @@
 
 use super::*;
 
+use crate::execution_policy::{InferenceRole, ReserveInferenceInput, UsdMicros};
+use crate::inference_ledger::MarkInferenceDispatchedInput;
 use chrono::Utc;
+use sqlx::connection::Connection;
+use sqlx::transaction::Transaction;
 use sqlx_sqlite::SqliteConnection;
 use uuid::Uuid;
 
-type IntentContext = (String, i64, i64, String, String, String, String, String);
+type IntentContext = (
+    String,
+    i64,
+    i64,
+    String,
+    String,
+    String,
+    String,
+    String,
+    i64,
+);
 type TerminalRow = (String, String, i64, String, String, String, String, String);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -185,18 +199,9 @@ impl Database {
             return Err(Error::Invalid("provider turn request"));
         }
         let _write = self.write_lock.lock().await;
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         use sqlx::row::Row;
         let now_ms = Utc::now().timestamp_millis();
-        sqlx::query::query(
-            "UPDATE provider_turn_reservations
-             SET state='RELEASED',error='expired before any egress request',updated_at=?1
-             WHERE state='RESERVED' AND requests_bound=0 AND expires_at_ms<=?2",
-        )
-        .bind(Utc::now().to_rfc3339())
-        .bind(now_ms)
-        .execute(&mut *transaction)
-        .await?;
         let session = sqlx::query::query(
             "SELECT attempt_id,worker_id,generation,state,provider,model
              FROM provider_sessions WHERE session_record_id=?1",
@@ -213,11 +218,6 @@ impl Database {
         let state: String = session.try_get("state")?;
         let provider: String = session.try_get("provider")?;
         let model: String = session.try_get("model")?;
-        if provider != "codex" && max_requests != 1 {
-            return Err(Error::Invalid(
-                "only a Codex provider turn may bind multiple egress requests",
-            ));
-        }
         if session_worker != worker_id || session_generation != generation || state != "ACTIVE" {
             return Err(Error::Forbidden(
                 "provider turn is not authorized by the active session".into(),
@@ -225,7 +225,7 @@ impl Database {
         }
         let lease = sqlx::query::query(
             "SELECT l.worker_id,l.generation,l.expires_at_ms,a.status,c.status AS campaign_status,
-                    r.campaign_id,ca.max_input_tokens,ca.max_output_tokens,
+                    r.campaign_id,ca.schema_version,ca.max_input_tokens,ca.max_output_tokens,
                     ca.max_cost_micros,ca.deadline_secs
              FROM attempts a JOIN runs r ON r.id=a.run_id
              JOIN campaigns c ON c.id=r.campaign_id
@@ -257,55 +257,320 @@ impl Database {
             ));
         }
         let campaign_id: String = lease.try_get("campaign_id")?;
-        let max_input: i64 = lease.try_get("max_input_tokens")?;
-        let max_output: i64 = lease.try_get("max_output_tokens")?;
-        let max_cost: i64 = lease.try_get("max_cost_micros")?;
-        let deadline_secs: i64 = lease.try_get("deadline_secs")?;
-        let used: (i64, i64, i64, i64) = sqlx::query_as::query_as(
-            "SELECT COALESCE(SUM(ps.input_tokens),0),COALESCE(SUM(ps.output_tokens),0),
-                    COALESCE(SUM(ps.total_tokens),0),COALESCE(SUM(ps.cost_micros),0)
-             FROM provider_sessions ps JOIN attempts a ON a.id=ps.attempt_id
-             JOIN runs r ON r.id=a.run_id WHERE r.campaign_id=?1",
+        let authorization_version: i64 = lease.try_get("schema_version")?;
+        // Subscription eligibility precedes historical monetary requirements.
+        // Keep V2's durable blocking hold so a refused turn cannot churn
+        // through repeated assignments. No monetary reservation is created.
+        if let Err(error) =
+            super::inference_ledger::require_enabled_subscription_funding_for_route_in_tx(
+                &mut transaction,
+                &campaign_id,
+                &provider,
+                &model,
+            )
+            .await
+        {
+            if authorization_version == 2 && matches!(error, Error::SubscriptionFunding(_)) {
+                super::lead::record_blocking_progress_hold_in_tx(
+                    &mut transaction,
+                    &attempt_id,
+                    "BLOCKED",
+                    &error.to_string(),
+                )
+                .await?;
+                transaction.commit().await?;
+            }
+            return Err(error);
+        }
+        super::inference_ledger::require_subscription_route_in_tx(
+            &mut transaction,
+            &campaign_id,
+            &provider,
+            &model,
         )
-        .bind(&campaign_id)
-        .fetch_one(&mut *transaction)
         .await?;
-        let reserved: (i64, i64, i64) = sqlx::query_as::query_as(
-            "SELECT COALESCE(SUM(ptr.max_input_tokens),0),
-                    COALESCE(SUM(ptr.max_output_tokens),0),
-                    COALESCE(SUM(ptr.max_cost_micros),0)
-             FROM provider_turn_reservations ptr JOIN attempts a ON a.id=ptr.attempt_id
-             JOIN runs r ON r.id=a.run_id
-             WHERE r.campaign_id=?1 AND ptr.state='RESERVED'",
+        // An expired, unbound turn has provably produced no egress request.
+        // Release its shared-ledger hold before reclaiming the legacy row; a
+        // linked hold that is already ambiguous refuses new turns instead.
+        let expired_unbound: Vec<(String, String)> = sqlx::query_as::query_as(
+            "SELECT reservation_id,ledger_reservation_id FROM provider_turn_reservations
+             WHERE state='RESERVED' AND requests_bound=0 AND expires_at_ms<=?1
+               AND ledger_reservation_id IS NOT NULL",
         )
-        .bind(&campaign_id)
-        .fetch_one(&mut *transaction)
+        .bind(now_ms)
+        .fetch_all(&mut *transaction)
         .await?;
-        let used_input = used.0;
-        let used_output = used.1;
-        let used_total = used.2;
-        let used_cost = used.3;
+        for (reservation_id, ledger_reservation_id) in expired_unbound {
+            super::inference_ledger::release_inference_in_tx(
+                &mut transaction,
+                &ledger_reservation_id,
+                "core:provider_turn",
+                &format!("provider_turn:{reservation_id}:expired_unbound"),
+                now_ms,
+            )
+            .await?;
+        }
+        sqlx::query::query(
+            "UPDATE provider_turn_reservations
+             SET state='RELEASED',error='expired before any egress request',updated_at=?1
+             WHERE state='RESERVED' AND requests_bound=0 AND expires_at_ms<=?2",
+        )
+        .bind(Utc::now().to_rfc3339())
+        .bind(now_ms)
+        .execute(&mut *transaction)
+        .await?;
+        // V1 may use legacy accounting; V2 (or a global V2 cutover) must have a
+        // bound active envelope before this billable turn is even reserved.
+        let requirement =
+            super::inference_ledger::campaign_requirement_in_tx(&mut transaction, &campaign_id)
+                .await?;
+        let subscription = matches!(
+            &requirement,
+            crate::inference_ledger::CampaignInferenceRequirement::Subscription
+        );
+        let ledger_quote = match requirement {
+            crate::inference_ledger::CampaignInferenceRequirement::EnvelopeBound { .. } => Some(
+                super::inference_ledger::latest_pricing_quote_in_tx(
+                    &mut transaction,
+                    &provider,
+                    &model,
+                )
+                .await
+                .map_err(|_| {
+                    Error::Forbidden(
+                        "inference-bound provider turn has no enforceable pricing quote".into(),
+                    )
+                })?,
+            ),
+            crate::inference_ledger::CampaignInferenceRequirement::LegacyV1
+            | crate::inference_ledger::CampaignInferenceRequirement::Subscription => None,
+        };
+        let ledger_turn_cost_bound = ledger_quote
+            .as_ref()
+            .map(|quote| {
+                quote
+                    .upper_bound_micros
+                    .get()
+                    .checked_mul(u64::from(max_requests))
+                    .ok_or(Error::Validation(
+                        "provider turn cost bound overflow".into(),
+                    ))
+            })
+            .transpose()?;
+        // V2 has no cumulative per-role token/cost ceiling. The frozen quote
+        // bounds one request; provider settings bound its context and the
+        // frozen operation limits bound its timeout. V1 keeps its historical
+        // accounting path and caps.
+        let (
+            max_input,
+            max_output,
+            max_cost,
+            deadline_secs,
+            used_input,
+            used_output,
+            used_total,
+            used_cost,
+            reserved_input,
+            reserved_output,
+            reserved_cost,
+        ) = if authorization_version == 2 && !subscription {
+            let Some(quote) = ledger_quote.as_ref() else {
+                super::lead::record_blocking_progress_hold_in_tx(
+                    &mut transaction,
+                    &attempt_id,
+                    "BLOCKED",
+                    "V2 provider turn authorization requires a bound inference envelope",
+                )
+                .await?;
+                transaction.commit().await?;
+                return Err(Error::Unavailable(
+                    "V2 provider turn authorization requires a bound inference envelope".into(),
+                ));
+            };
+            let max_input = i64::try_from(quote.input_tokens)
+                .map_err(|_| Error::Invalid("provider turn input quote"))?;
+            let max_output = i64::try_from(quote.output_tokens)
+                .map_err(|_| Error::Invalid("provider turn output quote"))?;
+            let max_cost = i64::try_from(quote.upper_bound_micros.get())
+                .map_err(|_| Error::Invalid("provider turn cost quote"))?;
+            let operation_limits: Option<String> = sqlx::query_scalar::query_scalar(
+                "SELECT ep.operation_limits_json
+                 FROM campaigns c
+                 JOIN campaign_authorizations ca ON ca.campaign_id=c.id
+                 JOIN execution_policies ep ON ep.policy_id=ca.policy_id
+                 WHERE c.id=?1",
+            )
+            .bind(&campaign_id)
+            .fetch_optional(&mut *transaction)
+            .await?;
+            let Some(operation_limits) = operation_limits else {
+                return Err(Error::Unavailable(
+                    "V2 provider turn has no frozen operation limits".into(),
+                ));
+            };
+            let operation_limits: crate::execution_policy::OperationLimits =
+                serde_json::from_str(&operation_limits).map_err(|_| {
+                    Error::Invalid("V2 provider turn operation limits are malformed")
+                })?;
+            let deadline_secs = i64::from(operation_limits.model_request_timeout_secs.get());
+            (
+                max_input,
+                max_output,
+                max_cost,
+                deadline_secs,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            )
+        } else if subscription {
+            // A subscription turn has no billable monetary envelope. Core
+            // records the observed token cost as telemetry; cost must not
+            // reject a healthy turn.
+            let (max_input, max_output): (i64, i64) = sqlx::query_as::query_as(
+                "SELECT max_input_tokens,max_output_tokens
+                     FROM provider_settings WHERE provider=?1",
+            )
+            .bind(&provider)
+            .fetch_optional(&mut *transaction)
+            .await?
+            .ok_or(Error::Unavailable(
+                "subscription provider settings are missing".into(),
+            ))?;
+            let operation_limits: Option<String> = sqlx::query_scalar::query_scalar(
+                "SELECT ep.operation_limits_json
+                 FROM campaigns c
+                 JOIN campaign_authorizations ca ON ca.campaign_id=c.id
+                 JOIN execution_policies ep ON ep.policy_id=ca.policy_id
+                 WHERE c.id=?1",
+            )
+            .bind(&campaign_id)
+            .fetch_optional(&mut *transaction)
+            .await?;
+            let Some(operation_limits) = operation_limits else {
+                return Err(Error::Unavailable(
+                    "subscription provider turn has no frozen operation limits".into(),
+                ));
+            };
+            let operation_limits: crate::execution_policy::OperationLimits =
+                serde_json::from_str(&operation_limits).map_err(|_| {
+                    Error::Invalid("subscription provider turn operation limits are malformed")
+                })?;
+            let deadline_secs = i64::from(operation_limits.model_request_timeout_secs.get());
+            (
+                max_input,
+                max_output,
+                i64::MAX / 4,
+                deadline_secs,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            )
+        } else if authorization_version == 1 {
+            let max_input: Option<i64> = lease.try_get("max_input_tokens")?;
+            let max_output: Option<i64> = lease.try_get("max_output_tokens")?;
+            let max_cost: Option<i64> = lease.try_get("max_cost_micros")?;
+            let deadline_secs: Option<i64> = lease.try_get("deadline_secs")?;
+            let (max_input, max_output, max_cost, deadline_secs) =
+                match (max_input, max_output, max_cost, deadline_secs) {
+                    (Some(input), Some(output), Some(cost), Some(deadline)) => {
+                        (input, output, cost, deadline)
+                    }
+                    _ => {
+                        return Err(Error::Invalid("legacy authorization is missing its caps"));
+                    }
+                };
+            let used: (i64, i64, i64, i64) = sqlx::query_as::query_as(
+                "SELECT COALESCE(SUM(ps.input_tokens),0),COALESCE(SUM(ps.output_tokens),0),
+                        COALESCE(SUM(ps.total_tokens),0),COALESCE(SUM(ps.cost_micros),0)
+                 FROM provider_sessions ps JOIN attempts a ON a.id=ps.attempt_id
+                 JOIN runs r ON r.id=a.run_id WHERE r.campaign_id=?1",
+            )
+            .bind(&campaign_id)
+            .fetch_one(&mut *transaction)
+            .await?;
+            let reserved: (i64, i64, i64) = sqlx::query_as::query_as(
+                "SELECT COALESCE(SUM(ptr.max_input_tokens),0),
+                        COALESCE(SUM(ptr.max_output_tokens),0),
+                        COALESCE(SUM(ptr.max_cost_micros),0)
+                 FROM provider_turn_reservations ptr JOIN attempts a ON a.id=ptr.attempt_id
+                 JOIN runs r ON r.id=a.run_id
+                 WHERE r.campaign_id=?1 AND ptr.state='RESERVED'",
+            )
+            .bind(&campaign_id)
+            .fetch_one(&mut *transaction)
+            .await?;
+            (
+                max_input,
+                max_output,
+                max_cost,
+                deadline_secs,
+                used.0,
+                used.1,
+                used.2,
+                used.3,
+                reserved.0,
+                reserved.1,
+                reserved.2,
+            )
+        } else {
+            return Err(Error::Invalid("unknown authorization policy version"));
+        };
         let max_total = max_input.saturating_add(max_output);
         let remaining_input = max_input
             .saturating_sub(used_input)
-            .saturating_sub(reserved.0);
+            .saturating_sub(reserved_input);
         let remaining_output = max_output
             .saturating_sub(used_output)
-            .saturating_sub(reserved.1);
+            .saturating_sub(reserved_output);
         let remaining_total = max_total
             .saturating_sub(used_total)
-            .saturating_sub(reserved.0)
-            .saturating_sub(reserved.1);
+            .saturating_sub(reserved_input)
+            .saturating_sub(reserved_output);
         let remaining_cost = max_cost
             .saturating_sub(used_cost)
-            .saturating_sub(reserved.2);
-        let grant_output = i64::try_from(requested_output_tokens)
-            .map_err(|_| Error::Invalid("provider turn output"))?
-            .min(remaining_output)
-            .min(remaining_total);
-        if remaining_input <= 0 || grant_output <= 0 || remaining_cost <= 0 {
+            .saturating_sub(reserved_cost);
+        let (reservation_input, grant_output, reservation_total) =
+            if let Some(quote) = &ledger_quote {
+                // V2 grants only the frozen per-request token envelope; it does
+                // not subtract lifetime campaign token allowances.
+                let input = i64::try_from(quote.input_tokens)
+                    .map_err(|_| Error::Invalid("provider turn input quote"))?;
+                let output = i64::try_from(quote.output_tokens)
+                    .map_err(|_| Error::Invalid("provider turn output quote"))?;
+                let grant = i64::try_from(requested_output_tokens)
+                    .map_err(|_| Error::Invalid("provider turn output"))?
+                    .min(output);
+                let total = input
+                    .checked_add(grant)
+                    .ok_or(Error::Invalid("provider turn total quote"))?;
+                (input, grant, total)
+            } else {
+                let grant = i64::try_from(requested_output_tokens)
+                    .map_err(|_| Error::Invalid("provider turn output"))?
+                    .min(remaining_output)
+                    .min(remaining_total);
+                (remaining_input, grant, remaining_total)
+            };
+        if reservation_input <= 0
+            || grant_output <= 0
+            || (!subscription && ledger_turn_cost_bound.is_none() && remaining_cost <= 0)
+        {
             return Err(Error::Forbidden("provider turn budget is exhausted".into()));
         }
+        let reservation_cost = match ledger_turn_cost_bound {
+            Some(bound) => {
+                i64::try_from(bound).map_err(|_| Error::Invalid("provider turn ledger bound"))?
+            }
+            None => remaining_cost,
+        };
         let reservation_id = Uuid::new_v4().to_string();
         let expires_at_ms = now_ms
             .saturating_add(deadline_secs.saturating_mul(1000))
@@ -324,10 +589,10 @@ impl Database {
         .bind(generation)
         .bind(&provider)
         .bind(&model)
-        .bind(remaining_input)
+        .bind(reservation_input)
         .bind(grant_output)
-        .bind(remaining_total)
-        .bind(remaining_cost)
+        .bind(reservation_total)
+        .bind(reservation_cost)
         .bind(request_sha256)
         .bind(expires_at_ms)
         .bind(&now)
@@ -338,7 +603,7 @@ impl Database {
             &mut transaction,
             &attempt_id,
             "provider.turn_authorized",
-            &format!("reservation={reservation_id} output={grant_output} cost={remaining_cost}"),
+            &format!("reservation={reservation_id} output={grant_output} cost={reservation_cost}"),
         )
         .await?;
         transaction.commit().await?;
@@ -349,13 +614,13 @@ impl Database {
             generation,
             provider,
             model,
-            max_input_tokens: u64::try_from(remaining_input)
+            max_input_tokens: u64::try_from(reservation_input)
                 .map_err(|_| Error::Invalid("provider turn input"))?,
             max_output_tokens: u64::try_from(grant_output)
                 .map_err(|_| Error::Invalid("provider turn output"))?,
-            max_total_tokens: u64::try_from(remaining_total)
+            max_total_tokens: u64::try_from(reservation_total)
                 .map_err(|_| Error::Invalid("provider turn total"))?,
-            max_cost_micros: u64::try_from(remaining_cost)
+            max_cost_micros: u64::try_from(reservation_cost)
                 .map_err(|_| Error::Invalid("provider turn cost"))?,
             request_sha256: request_sha256.into(),
             expires_at_ms,
@@ -384,16 +649,17 @@ impl Database {
             return Err(Error::Invalid("provider turn binding request"));
         }
         let _write = self.write_lock.lock().await;
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         use sqlx::row::Row;
         let row = sqlx::query::query(
-            "SELECT ptr.session_record_id,ptr.attempt_id,ptr.generation,ptr.model,ptr.state,
-                    ptr.actual_request_sha256,ptr.expires_at_ms,ptr.max_requests,
-                    ptr.requests_bound,
-                    ps.worker_id,ps.state AS session_state,
+            "SELECT ptr.session_record_id,ptr.attempt_id,ptr.generation,ptr.provider,ptr.model,
+                    ptr.state,ptr.actual_request_sha256,ptr.expires_at_ms,ptr.max_requests,
+                    ptr.requests_bound,ptr.max_input_tokens,ptr.max_output_tokens,
+                    ps.worker_id,ps.provider AS session_provider,ps.model AS session_model,
+                    ps.state AS session_state,
                     l.worker_id AS lease_worker,l.generation AS lease_generation,
                     l.expires_at_ms AS lease_expires, a.status AS attempt_status,
-                    c.status AS campaign_status
+                    c.status AS campaign_status,r.campaign_id
              FROM provider_turn_reservations ptr
              JOIN provider_sessions ps ON ps.session_record_id=ptr.session_record_id
              JOIN attempts a ON a.id=ptr.attempt_id
@@ -411,23 +677,31 @@ impl Database {
         let session_record_id: String = row.try_get("session_record_id")?;
         let attempt_id: String = row.try_get("attempt_id")?;
         let generation: i64 = row.try_get("generation")?;
+        let provider: String = row.try_get("provider")?;
         let model: String = row.try_get("model")?;
         let state: String = row.try_get("state")?;
         let actual_request_sha256: String = row.try_get("actual_request_sha256")?;
         let expires_at_ms: i64 = row.try_get("expires_at_ms")?;
         let max_requests: i64 = row.try_get("max_requests")?;
         let requests_bound: i64 = row.try_get("requests_bound")?;
+        let reservation_input_tokens: i64 = row.try_get("max_input_tokens")?;
+        let reservation_output_tokens: i64 = row.try_get("max_output_tokens")?;
         let session_worker: String = row.try_get("worker_id")?;
+        let session_provider: String = row.try_get("session_provider")?;
+        let session_model: String = row.try_get("session_model")?;
         let session_state: String = row.try_get("session_state")?;
         let lease_worker: Option<String> = row.try_get("lease_worker")?;
         let lease_generation: Option<i64> = row.try_get("lease_generation")?;
         let lease_expires: Option<i64> = row.try_get("lease_expires")?;
         let attempt_status: String = row.try_get("attempt_status")?;
         let campaign_status: String = row.try_get("campaign_status")?;
+        let campaign_id: String = row.try_get("campaign_id")?;
         let now_ms = Utc::now().timestamp_millis();
         if session_record_id != input.session_record_id
             || generation != input.generation
             || session_worker != input.worker_id
+            || provider != session_provider
+            || model != session_model
             || session_state != "ACTIVE"
             || state != "RESERVED"
             || expires_at_ms <= now_ms
@@ -457,6 +731,13 @@ impl Database {
         if sequence == 0 && !actual_request_sha256.is_empty() {
             return Err(Error::Conflict("provider turn request is already bound"));
         }
+        super::inference_ledger::require_enabled_subscription_funding_for_route_in_tx(
+            &mut transaction,
+            &campaign_id,
+            &provider,
+            &model,
+        )
+        .await?;
         let now = Utc::now().to_rfc3339();
         let request_id = Uuid::new_v4().to_string();
         sqlx::query::query(
@@ -493,6 +774,105 @@ impl Database {
         .rows_affected();
         if changed != 1 {
             return Err(Error::Conflict("provider turn egress request raced"));
+        }
+        // Each billable egress request owns a fresh ledger reservation and a
+        // fresh envelope-state/revocation check, even when one turn groups up
+        // to eight requests. V1 campaigns remain on historical evidence rows.
+        let requirement =
+            super::inference_ledger::campaign_requirement_in_tx(&mut transaction, &campaign_id)
+                .await?;
+        if let crate::inference_ledger::CampaignInferenceRequirement::EnvelopeBound {
+            envelope_id,
+        } = requirement
+        {
+            let quote = super::inference_ledger::latest_pricing_quote_in_tx(
+                &mut transaction,
+                &provider,
+                &model,
+            )
+            .await
+            .map_err(|_| {
+                Error::Forbidden(
+                    "inference-bound provider request has no enforceable pricing quote".into(),
+                )
+            })?;
+            if u64::try_from(reservation_input_tokens)
+                .map_or(true, |value| value > quote.input_tokens)
+                || u64::try_from(reservation_output_tokens)
+                    .map_or(true, |value| value > quote.output_tokens)
+            {
+                return Err(Error::Forbidden(
+                    "provider request exceeds its frozen token quote".into(),
+                ));
+            }
+            let (authorization_revision, scope_sha256) =
+                super::inference_ledger::envelope_authorization_context_in_tx(
+                    &mut transaction,
+                    &envelope_id,
+                )
+                .await?
+                .ok_or(Error::Conflict(
+                    "inference envelope has no durable authorization",
+                ))?;
+            let operation_id = format!("provider_turn:{}:request:{sequence}", input.reservation_id);
+            let reserved = super::inference_ledger::reserve_inference_in_tx(
+                &mut transaction,
+                &ReserveInferenceInput {
+                    envelope_id: envelope_id.clone(),
+                    operation_id: operation_id.clone(),
+                    idempotency_key: operation_id,
+                    request_sha256: input.request_sha256.clone(),
+                    role: InferenceRole::Implementer,
+                    principal_id: input.worker_id.clone(),
+                    parent_operation_id: None,
+                    provider: provider.clone(),
+                    model: model.clone(),
+                    pricing_revision: quote.quote_id.clone(),
+                    pricing_snapshot_json: quote.snapshot_json.clone(),
+                    upper_bound_micros: quote.upper_bound_micros,
+                    expires_at_ms,
+                    authorization_revision,
+                    scope_sha256,
+                    worker_id: Some(input.worker_id.clone()),
+                    generation: Some(input.generation),
+                },
+                now_ms,
+            )
+            .await?;
+            super::inference_ledger::acquire_inference_dispatch_in_tx(
+                &mut transaction,
+                &MarkInferenceDispatchedInput {
+                    reservation_id: reserved.reservation_id.clone(),
+                    worker_id: Some(input.worker_id.clone()),
+                    generation: Some(input.generation),
+                    provider_request_id: Some(request_id.clone()),
+                    attempt_id: Some(attempt_id.clone()),
+                    actor: "core:provider_turn".into(),
+                },
+                now_ms,
+            )
+            .await?;
+            sqlx::query::query(
+                "INSERT INTO provider_turn_ledger_requests
+                 (reservation_id,sequence,ledger_reservation_id,created_at_ms)
+                 VALUES (?1,?2,?3,?4)",
+            )
+            .bind(&input.reservation_id)
+            .bind(sequence)
+            .bind(&reserved.reservation_id)
+            .bind(now_ms)
+            .execute(&mut *transaction)
+            .await?;
+            if sequence == 0 {
+                sqlx::query::query(
+                    "UPDATE provider_turn_reservations SET ledger_reservation_id=?1
+                     WHERE reservation_id=?2 AND ledger_reservation_id IS NULL",
+                )
+                .bind(&reserved.reservation_id)
+                .bind(&input.reservation_id)
+                .execute(&mut *transaction)
+                .await?;
+            }
         }
         record_event(
             &mut transaction,
@@ -534,11 +914,11 @@ impl Database {
             return Err(Error::Invalid("provider turn resolution identity"));
         }
         let _write = self.write_lock.lock().await;
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         use sqlx::row::Row;
         let row = sqlx::query::query(
             "SELECT session_record_id,attempt_id,max_input_tokens,max_output_tokens,
-                    max_total_tokens,max_cost_micros,actual_request_sha256
+                    max_total_tokens,max_cost_micros,actual_request_sha256,ledger_reservation_id
              FROM provider_turn_reservations
              WHERE reservation_id=?1 AND state='RESERVED'",
         )
@@ -596,6 +976,14 @@ impl Database {
         .bind(&session_record_id)
         .execute(&mut *transaction)
         .await?;
+        super::inference_ledger::settle_provider_turn_ledger_at_bounds_in_tx(
+            &mut transaction,
+            reservation_id,
+            actor,
+            &format!("provider_turn:{reservation_id}:resolve"),
+            Utc::now().timestamp_millis(),
+        )
+        .await?;
         record_event(
             &mut transaction,
             &attempt_id,
@@ -614,12 +1002,12 @@ impl Database {
         usage: &ProviderTurnUsage,
     ) -> Result<ProviderTurnUsage, Error> {
         let _write = self.write_lock.lock().await;
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         use sqlx::row::Row;
         let row = sqlx::query::query(
             "SELECT session_record_id,attempt_id,state,max_input_tokens,max_output_tokens,
                     max_total_tokens,max_cost_micros,input_tokens,output_tokens,total_tokens,
-                    cost_micros,usage_known
+                    cost_micros,usage_known,ledger_reservation_id
              FROM provider_turn_reservations WHERE reservation_id=?1",
         )
         .bind(&usage.reservation_id)
@@ -659,6 +1047,17 @@ impl Database {
                 usage_known: row.try_get::<i64, _>("usage_known")? != 0,
             };
             if prior == *usage {
+                super::inference_ledger::settle_provider_turn_ledger_in_tx(
+                    &mut transaction,
+                    &usage.reservation_id,
+                    UsdMicros::new(prior.cost_micros)
+                        .map_err(|_| Error::Invalid("stored provider turn cost"))?,
+                    "core:provider_turn",
+                    &format!("provider_turn:{}:settle", usage.reservation_id),
+                    Utc::now().timestamp_millis(),
+                )
+                .await?;
+                transaction.commit().await?;
                 return Ok(prior);
             }
             return Err(Error::Conflict("provider turn already settled"));
@@ -667,6 +1066,18 @@ impl Database {
             return Err(Error::Conflict("provider turn is not reserved"));
         }
         if !usage.usage_known {
+            super::inference_ledger::mark_provider_turn_ledger_ambiguous_in_tx(
+                &mut transaction,
+                &usage.reservation_id,
+                "core:provider_turn",
+                &format!("provider_turn:{}:unknown_usage", usage.reservation_id),
+                &sha256_hex(
+                    format!("provider-turn-unknown:v1:{}", usage.reservation_id).as_bytes(),
+                ),
+                Utc::now().timestamp_millis(),
+            )
+            .await?;
+            transaction.commit().await?;
             return Err(Error::Forbidden(
                 "provider turn usage is unknown; operator resolution is required".into(),
             ));
@@ -722,6 +1133,16 @@ impl Database {
         .bind(&session_record_id)
         .execute(&mut *transaction)
         .await?;
+        super::inference_ledger::settle_provider_turn_ledger_in_tx(
+            &mut transaction,
+            &usage.reservation_id,
+            UsdMicros::new(usage.cost_micros)
+                .map_err(|_| Error::Invalid("provider turn cost usage"))?,
+            "core:provider_turn",
+            &format!("provider_turn:{}:settle", usage.reservation_id),
+            Utc::now().timestamp_millis(),
+        )
+        .await?;
         record_event(
             &mut transaction,
             &attempt_id,
@@ -748,7 +1169,7 @@ impl Database {
         reason: &str,
     ) -> Result<(), Error> {
         let _write = self.write_lock.lock().await;
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let binding: Option<(String, i64)> = sqlx::query_as::query_as(
             "SELECT ptr.actual_request_sha256,ptr.requests_bound
              FROM provider_turn_reservations ptr
@@ -783,6 +1204,21 @@ impl Database {
         .rows_affected();
         if changed != 1 {
             return Err(Error::Conflict("provider turn is not reserved"));
+        }
+        for (_, ledger_id) in super::inference_ledger::provider_turn_ledger_ids_in_tx(
+            &mut transaction,
+            reservation_id,
+        )
+        .await?
+        {
+            super::inference_ledger::release_inference_in_tx(
+                &mut transaction,
+                &ledger_id,
+                "core:provider_turn",
+                &format!("provider_turn:{reservation_id}:release"),
+                Utc::now().timestamp_millis(),
+            )
+            .await?;
         }
         transaction.commit().await?;
         Ok(())
@@ -878,7 +1314,7 @@ impl Database {
         let mut transaction = self.pool.begin().await?;
         let context: Option<IntentContext> = sqlx::query_as::query_as(
             "SELECT l.worker_id,l.generation,l.expires_at_ms,ca.execution_mode,
-                        ca.provider,ca.model,ca.provider_mode,r.campaign_id
+                        ca.provider,ca.model,ca.provider_mode,r.campaign_id,ca.schema_version
                  FROM attempts a
                  JOIN runs r ON r.id=a.run_id
                  JOIN campaigns c ON c.id=r.campaign_id
@@ -898,6 +1334,7 @@ impl Database {
             model,
             provider_mode,
             campaign_id,
+            authorization_version,
         ) = context.ok_or(Error::Forbidden(
             "provider intent requires a live Worker lease and authorization".into(),
         ))?;
@@ -944,16 +1381,28 @@ impl Database {
         .bind(&campaign_id)
         .fetch_one(&mut *transaction)
         .await?;
-        let (max_sessions,): (i64,) = sqlx::query_as::query_as(
+        let (stored_max_sessions,): (Option<i64>,) = sqlx::query_as::query_as(
             "SELECT max_sessions FROM campaign_authorizations WHERE campaign_id=?1",
         )
         .bind(&campaign_id)
         .fetch_one(&mut *transaction)
         .await?;
-        if session_count >= max_sessions {
-            return Err(Error::Forbidden(
-                "provider session budget is exhausted".into(),
-            ));
+        match authorization_version {
+            1 => {
+                let max_sessions = stored_max_sessions.ok_or(Error::Invalid(
+                    "legacy provider authorization is missing its session cap",
+                ))?;
+                if session_count >= max_sessions {
+                    return Err(Error::Forbidden(
+                        "provider session budget is exhausted".into(),
+                    ));
+                }
+            }
+            2 => {
+                // V2 has no lifetime provider-session cap. Session count remains
+                // diagnostic telemetry.
+            }
+            _ => return Err(Error::Invalid("provider authorization schema version")),
         }
         let now = Utc::now().to_rfc3339();
         let record = ProviderSessionRecord {
@@ -1052,17 +1501,18 @@ impl Database {
         if !matches!(state.as_str(), "INTENT" | "ACTIVE") {
             return Err(Error::Conflict("provider session is already terminal"));
         }
-        let campaign: (String, i64, i64, i64) = sqlx::query_as::query_as(
-            "SELECT r.campaign_id,ca.max_input_tokens,ca.max_output_tokens,ca.max_cost_micros
-             FROM attempts a JOIN runs r ON r.id=a.run_id
-             JOIN campaign_authorizations ca ON ca.campaign_id=r.campaign_id
-             WHERE a.id=?1",
-        )
-        .bind(&attempt_id)
-        .fetch_one(&mut *transaction)
-        .await?;
-        let (campaign_id, max_input, max_output, max_cost) = campaign;
-        let max_total = max_input.saturating_add(max_output);
+        let campaign: (String, i64, Option<i64>, Option<i64>, Option<i64>) =
+            sqlx::query_as::query_as(
+                "SELECT r.campaign_id,ca.schema_version,ca.max_input_tokens,
+                        ca.max_output_tokens,ca.max_cost_micros
+                 FROM attempts a JOIN runs r ON r.id=a.run_id
+                 JOIN campaign_authorizations ca ON ca.campaign_id=r.campaign_id
+                 WHERE a.id=?1",
+            )
+            .bind(&attempt_id)
+            .fetch_one(&mut *transaction)
+            .await?;
+        let (campaign_id, authorization_version, max_input, max_output, max_cost) = campaign;
         let (used_input, used_output, used_total, used_cost): (i64, i64, i64, i64) =
             sqlx::query_as::query_as(
                 "SELECT COALESCE(SUM(ps.input_tokens),0),COALESCE(SUM(ps.output_tokens),0),
@@ -1099,10 +1549,29 @@ impl Database {
         let next_output = used_output.saturating_add(session_output);
         let next_total = used_total.saturating_add(session_total);
         let next_cost = used_cost.saturating_add(session_cost);
-        let over_budget = next_input > max_input
-            || next_output > max_output
-            || next_total > max_total
-            || next_cost > max_cost;
+        let over_budget = match authorization_version {
+            1 => {
+                let max_input = max_input.ok_or(Error::Invalid(
+                    "legacy provider authorization is missing its input cap",
+                ))?;
+                let max_output = max_output.ok_or(Error::Invalid(
+                    "legacy provider authorization is missing its output cap",
+                ))?;
+                let max_cost = max_cost.ok_or(Error::Invalid(
+                    "legacy provider authorization is missing its cost cap",
+                ))?;
+                let max_total = max_input.saturating_add(max_output);
+                next_input > max_input
+                    || next_output > max_output
+                    || next_total > max_total
+                    || next_cost > max_cost
+            }
+            // V2 usage is recorded truthfully. Monetary authority lives in the
+            // shared inference ledger; provider-session totals are evidence
+            // projections, never a cumulative role ceiling.
+            2 => false,
+            _ => return Err(Error::Invalid("provider authorization schema version")),
+        };
         let cancel_requested = state == "CANCEL_REQUESTED";
         let stored_state = if over_budget {
             "FAILED"
@@ -1146,6 +1615,29 @@ impl Database {
             &format!("state={stored_state} usage_known={}", input.usage_known),
         )
         .await?;
+        if input.state == "FAILED" && provider_quota_error(&input.error) {
+            let authorization: Option<(String,)> = sqlx::query_as::query_as(
+                "SELECT authorization_id FROM campaign_authorizations WHERE campaign_id=?1",
+            )
+            .bind(&campaign_id)
+            .fetch_optional(&mut *transaction)
+            .await?;
+            if let Some((authorization_id,)) = authorization {
+                let now_ms = Utc::now().timestamp_millis();
+                let reason: String = input.error.chars().take(480).collect::<String>();
+                sqlx::query::query(
+                    "UPDATE subscription_funding_policies
+                     SET state='PAUSED_QUOTA',reason=?1,observed_at_ms=?2,resets_at_ms=NULL,updated_at_ms=?2
+                     WHERE campaign_id=?3 AND authorization_id=?4 AND state='ENABLED'",
+                )
+                .bind(format!("provider quota exhaustion: {reason}"))
+                .bind(now_ms)
+                .bind(&campaign_id)
+                .bind(&authorization_id)
+                .execute(&mut *transaction)
+                .await?;
+            }
+        }
         let record = load_provider_session(&mut transaction, &record_id).await?;
         transaction.commit().await?;
         if over_budget {
@@ -1379,18 +1871,32 @@ mod tests {
     use chrono::Utc;
 
     async fn fixture(max_input: i64) -> (std::path::PathBuf, Database) {
+        fixture_with_authorization(max_input, false).await
+    }
+
+    async fn v2_fixture() -> (std::path::PathBuf, Database) {
+        fixture_with_authorization(100, true).await
+    }
+
+    async fn fixture_with_authorization(
+        max_input: i64,
+        v2: bool,
+    ) -> (std::path::PathBuf, Database) {
         let path = std::env::temp_dir().join(format!(
             "factory-provider-session-{}.sqlite",
             Uuid::new_v4()
         ));
         let db = Database::open(&path).await.unwrap();
         let now = Utc::now().to_rfc3339();
-        sqlx::query::query("INSERT INTO projects VALUES ('project','/fixture',?1,?2,'')")
-            .bind("a".repeat(40))
-            .bind(&now)
-            .execute(&db.pool)
-            .await
-            .unwrap();
+        sqlx::query::query(
+            "INSERT INTO projects(id,repository,base_commit,created_at,identity)
+             VALUES ('project','/fixture',?1,?2,'')",
+        )
+        .bind("a".repeat(40))
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
         sqlx::query::query(
             "INSERT INTO actions VALUES ('action','project','objective','opencode','deepseek-v4.1-flash','R0','AUTHORIZED','hash',?1)",
         )
@@ -1398,7 +1904,7 @@ mod tests {
         .execute(&db.pool)
         .await
         .unwrap();
-        let spec = r#"{"schema_version":1,"project_id":"project","repository":"/fixture","base_commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","objective":"objective","objective_sha256":"hash","provider":"opencode","model":"deepseek-v4.1-flash","allowed_paths":["src"],"checks":[]}"#;
+        let spec = r#"{"schema_version":1,"project_id":"project","repository":"/fixture","base_commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","objective":"objective","objective_sha256":"hash","provider":"opencode","model":"deepseek-v4.1-flash","allowed_paths":["src"],"checks":[{"id":"test","kind":"test","description":"test","command":["cargo","test"],"expectExit":0,"timeoutSecs":60}]}"#;
         sqlx::query::query(
             "INSERT INTO action_specs(action_id,spec_json,spec_sha256) VALUES ('action',?1,?2)",
         )
@@ -1424,20 +1930,65 @@ mod tests {
         .execute(&db.pool)
         .await
         .unwrap();
-        sqlx::query::query(
-            "INSERT INTO campaign_authorizations
-             (campaign_id,authorization_id,risk_class,execution_mode,actor,rationale,
-              authorized_paths_json,max_attempts,provider,model,provider_mode,delegation_id,
-              max_sessions,max_turns,max_input_tokens,max_output_tokens,max_cost_micros,
-              deadline_secs,allowed_tools_json,created_at)
-             VALUES ('campaign','auth','R0','TRUSTED_LOCAL_PROVIDER','test','test','[\"src\"]',1,
-                     'opencode','deepseek-v4.1-flash','build','grant',1,1,?1,100,1000,30,'[]',?2)",
-        )
-        .bind(max_input)
-        .bind(&now)
-        .execute(&db.pool)
-        .await
-        .unwrap();
+        if v2 {
+            let hash = "a".repeat(64);
+            sqlx::query::query(
+                "INSERT INTO standing_delegations
+                 (id,principal_id,audit_id,project_id,revision,content_hash,content_json,
+                  revoked_at,created_at,schema_version,authority_json,authority_sha256)
+                 VALUES ('grant','test','audit','project',1,?1,'',NULL,?2,2,'{}',?1)",
+            )
+            .bind(&hash)
+            .bind(&now)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+            sqlx::query::query(
+                "INSERT INTO delegation_usage(delegation_id,requests,sessions,attempts)
+                 VALUES ('grant',0,0,0)",
+            )
+            .execute(&db.pool)
+            .await
+            .unwrap();
+            sqlx::query::query(
+                "INSERT INTO execution_policies
+                 (policy_id,schema_version,authorization_id,monetary_envelope_id,scope_sha256,
+                  progress_policy_json,operation_limits_json,policy_json,policy_sha256,created_at)
+                 VALUES ('policy',2,'auth','envelope',?1,'{}','{}','{}',?1,?2)",
+            )
+            .bind(&hash)
+            .bind(&now)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+            sqlx::query::query(
+                "INSERT INTO campaign_authorizations
+                 (campaign_id,authorization_id,risk_class,execution_mode,actor,rationale,
+                  authorized_paths_json,provider,model,provider_mode,delegation_id,
+                  allowed_tools_json,created_at,schema_version,policy_id)
+                 VALUES ('campaign','auth','R0','TRUSTED_LOCAL_PROVIDER','test','test','[\"src\"]',
+                         'opencode','deepseek-v4.1-flash','build','grant','[]',?1,2,'policy')",
+            )
+            .bind(&now)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        } else {
+            sqlx::query::query(
+                "INSERT INTO campaign_authorizations
+                 (campaign_id,authorization_id,risk_class,execution_mode,actor,rationale,
+                  authorized_paths_json,max_attempts,provider,model,provider_mode,delegation_id,
+                  max_sessions,max_turns,max_input_tokens,max_output_tokens,max_cost_micros,
+                  deadline_secs,allowed_tools_json,created_at)
+                 VALUES ('campaign','auth','R0','TRUSTED_LOCAL_PROVIDER','test','test','[\"src\"]',1,
+                         'opencode','deepseek-v4.1-flash','build','grant',1,1,?1,100,1000,30,'[]',?2)",
+            )
+            .bind(max_input)
+            .bind(&now)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        }
         (path, db)
     }
 
@@ -1457,8 +2008,82 @@ mod tests {
         .unwrap();
     }
 
-    async fn active_turn_fixture(max_input: i64) -> (std::path::PathBuf, Database, String) {
+    pub(super) async fn active_turn_fixture(
+        max_input: i64,
+    ) -> (std::path::PathBuf, Database, String) {
         let (path, db) = fixture(max_input).await;
+        active_turn_fixture_with(db, path).await
+    }
+
+    async fn active_turn_fixture_v2() -> (std::path::PathBuf, Database, String) {
+        let (path, db) = v2_fixture().await;
+        active_turn_fixture_with(db, path).await
+    }
+
+    pub(super) async fn insert_reserved_turn(
+        db: &Database,
+        session_record_id: &str,
+        reservation_id: &str,
+        provider: &str,
+        model: &str,
+    ) {
+        let now = Utc::now().to_rfc3339();
+        sqlx::query::query(
+            "INSERT INTO provider_turn_reservations
+             (reservation_id,session_record_id,attempt_id,generation,provider,model,
+              max_input_tokens,max_output_tokens,max_total_tokens,max_cost_micros,
+              request_sha256,state,expires_at_ms,created_at,updated_at,max_requests)
+             VALUES (?1,?2,'attempt',1,?3,?4,100,100,200,1000,?5,'RESERVED',?6,?7,?7,1)",
+        )
+        .bind(reservation_id)
+        .bind(session_record_id)
+        .bind(provider)
+        .bind(model)
+        .bind("a".repeat(64))
+        .bind(Utc::now().timestamp_millis() + 60_000)
+        .bind(now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    }
+
+    async fn insert_bound_test_turn(
+        db: &Database,
+        session_record_id: &str,
+        reservation_id: &str,
+        provider: &str,
+        model: &str,
+    ) {
+        insert_reserved_turn(db, session_record_id, reservation_id, provider, model).await;
+        let now = Utc::now().to_rfc3339();
+        sqlx::query::query(
+            "INSERT INTO provider_turn_egress_requests
+             (request_id,reservation_id,sequence,actual_request_sha256,model,path,body_bytes,created_at)
+             VALUES (?1,?2,0,?3,?4,'/v1/chat/completions',100,?5)",
+        )
+        .bind(format!("egress-{reservation_id}"))
+        .bind(reservation_id)
+        .bind("b".repeat(64))
+        .bind(model)
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "UPDATE provider_turn_reservations SET actual_request_sha256=?1,requests_bound=1
+             WHERE reservation_id=?2",
+        )
+        .bind("b".repeat(64))
+        .bind(reservation_id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    }
+
+    async fn active_turn_fixture_with(
+        db: Database,
+        path: std::path::PathBuf,
+    ) -> (std::path::PathBuf, Database, String) {
         let now = Utc::now().timestamp_millis();
         sqlx::query::query("INSERT INTO worker_leases VALUES ('attempt','worker',1,?1)")
             .bind(now + 60_000)
@@ -1473,8 +2098,229 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn provider_profile_requires_live_attempt_campaign_and_deadline() {
-        let (_path, db, _session) = active_turn_fixture(100).await;
+    async fn v2_provider_turn_refuses_funding_before_monetary_prerequisites() {
+        let (_path, db, session) = active_turn_fixture_v2().await;
+        for _ in 0..2 {
+            let error = db
+                .authorize_provider_turn(&session, "worker", 1, 1_000, &"a".repeat(64), 1)
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(
+                    error,
+                    Error::SubscriptionFunding(
+                        crate::execution_policy::SubscriptionFundingRefusal::BindingRequired
+                    )
+                ),
+                "a monetary prerequisite must not obscure missing subscription funding: {error:?}"
+            );
+        }
+        assert!(
+            db.progress_hold("campaign", "campaign")
+                .await
+                .unwrap()
+                .is_some_and(|hold| hold.reason.contains("subscription funding")),
+            "a V2 funding refusal must retain its truthful blocking progress hold"
+        );
+        let counts: (i64, i64, i64, i64) = sqlx::query_as::query_as(
+            "SELECT (SELECT COUNT(*) FROM provider_turn_reservations),
+                    (SELECT COUNT(*) FROM provider_turn_egress_requests),
+                    (SELECT COUNT(*) FROM inference_reservations),
+                    (SELECT COUNT(*) FROM progress_holds)",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            counts,
+            (0, 0, 0, 1),
+            "repeated refusal must not reserve, bind egress or duplicate the hold"
+        );
+        sqlx::query::query("UPDATE attempts SET status='QUEUED' WHERE id='attempt'")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        assert!(
+            db.claim_assignment("worker-2", Utc::now().timestamp_millis(), 30_000)
+                .await
+                .unwrap()
+                .is_none(),
+            "the subscription funding hold must prevent repeated assignment"
+        );
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn funding_storage_failure_does_not_become_a_durable_policy_refusal() {
+        let (_path, db, session) = active_turn_fixture_v2().await;
+        sqlx::query::query("DROP TABLE subscription_funding_policies")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let error = db
+            .authorize_provider_turn(&session, "worker", 1, 50, &"a".repeat(64), 1)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::Sqlx(_)), "{error:?}");
+        assert!(
+            db.progress_hold("campaign", "campaign")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let (reservations,): (i64,) =
+            sqlx::query_as::query_as("SELECT COUNT(*) FROM provider_turn_reservations")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(reservations, 0);
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn provider_turn_refuses_subscription_proposal_before_reservation() {
+        let (_path, db, session) = active_turn_fixture_v2().await;
+        // Simulate a stale/partially migrated state that the normal immutable
+        // triggers prevent. Runtime admission must still fail closed if the
+        // subscription record is present beside an executable authorization.
+        sqlx::query::query("DROP TRIGGER subscription_funding_policy_requires_unapproved_campaign")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        sqlx::query::query("DROP TRIGGER campaign_authorization_excludes_subscription_proposal")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let policy_json = r#"{"funding":{"kind":"SUBSCRIPTION"}}"#;
+        sqlx::query::query(
+            "INSERT INTO subscription_funding_policies
+             (campaign_id,authorization_id,policy_json,policy_sha256,state,reason,
+              observed_at_ms,resets_at_ms,created_at_ms,updated_at_ms)
+             VALUES ('campaign','subscription-auth',?1,?2,'DISABLED',NULL,1,NULL,1,1)",
+        )
+        .bind(policy_json)
+        .bind("a".repeat(64))
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+        let error = db
+            .authorize_provider_turn(&session, "worker", 1, 1_000, &"a".repeat(64), 1)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::SubscriptionFunding(_)),
+            "a subscription proposal cannot authorize Worker egress without runtime admission: {error:?}"
+        );
+        let reservations: (i64,) =
+            sqlx::query_as::query_as("SELECT COUNT(*) FROM provider_turn_reservations")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(reservations.0, 0, "refusal must precede reservation");
+    }
+
+    #[tokio::test]
+    async fn provider_turn_refuses_when_subscription_funding_evidence_is_absent() {
+        let (_path, db, session) = active_turn_fixture(100).await;
+        let error = db
+            .authorize_provider_turn(&session, "worker", 1, 50, &"a".repeat(64), 1)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::SubscriptionFunding(_)),
+            "missing subscription evidence must not fall through to legacy billing: {error:?}"
+        );
+        let reservations: (i64,) =
+            sqlx::query_as::query_as("SELECT COUNT(*) FROM provider_turn_reservations")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(reservations.0, 0, "refusal must precede reservation");
+    }
+
+    #[tokio::test]
+    async fn provider_egress_binding_refuses_missing_subscription_evidence() {
+        let (_path, db, session) = active_turn_fixture(100).await;
+        let now = Utc::now().to_rfc3339();
+        let now_ms = Utc::now().timestamp_millis();
+        sqlx::query::query(
+            "INSERT INTO provider_turn_reservations
+             (reservation_id,session_record_id,attempt_id,generation,provider,model,
+              max_input_tokens,max_output_tokens,max_total_tokens,max_cost_micros,
+              request_sha256,state,expires_at_ms,created_at,updated_at)
+             VALUES ('stale-subscription-turn',?1,'attempt',1,'opencode',
+                     'deepseek-v4.1-flash',100,50,150,1000,?2,'RESERVED',?3,?4,?4)",
+        )
+        .bind(&session)
+        .bind("a".repeat(64))
+        .bind(now_ms + 60_000)
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+        let error = db
+            .bind_provider_turn(&ProviderTurnBindingInput {
+                reservation_id: "stale-subscription-turn".into(),
+                session_record_id: session,
+                worker_id: "worker".into(),
+                generation: 1,
+                request_sha256: "b".repeat(64),
+                model: "deepseek-v4.1-flash".into(),
+                path: "/v1/chat/completions".into(),
+                body_bytes: 100,
+                sequence: 0,
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::SubscriptionFunding(_)),
+            "Worker egress must recheck funding before binding an external request: {error:?}"
+        );
+        let bound: (i64, i64) = sqlx::query_as::query_as(
+            "SELECT requests_bound,
+                    (SELECT COUNT(*) FROM provider_turn_egress_requests
+                     WHERE reservation_id='stale-subscription-turn')
+             FROM provider_turn_reservations WHERE reservation_id='stale-subscription-turn'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(bound, (0, 0), "refusal must precede egress binding");
+    }
+
+    #[tokio::test]
+    async fn v2_provider_tool_events_have_no_lifetime_turn_cap() {
+        let (_path, db, session) = active_turn_fixture_v2().await;
+        for index in 0..64 {
+            db.record_provider_tool_event(&ProviderToolEventInput {
+                session_record_id: session.clone(),
+                worker_id: "worker".into(),
+                generation: 1,
+                call_id: format!("call-{index}"),
+                tool: "run_command".into(),
+                decision: "REQUEST".into(),
+                detail: "bounded tool request".into(),
+                check: None,
+            })
+            .await
+            .unwrap();
+        }
+        let count: (i64,) = sqlx::query_as::query_as(
+            "SELECT COUNT(*) FROM provider_tool_events WHERE session_record_id=?1 AND decision='REQUEST'",
+        )
+        .bind(&session)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(count.0, 64);
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn provider_profile_requires_live_v2_assignment_and_lease_fence() {
+        let (_path, db, _session) = active_turn_fixture_v2().await;
         let now_ms = Utc::now().timestamp_millis();
         assert_eq!(
             db.assigned_provider_route("worker", "attempt", 1, now_ms)
@@ -1511,145 +2357,33 @@ mod tests {
             .execute(&db.pool)
             .await
             .unwrap();
+        sqlx::query::query("UPDATE worker_leases SET expires_at_ms=1 WHERE attempt_id='attempt'")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        assert!(matches!(
+            db.assigned_provider_route("worker", "attempt", 1, now_ms)
+                .await,
+            Err(Error::Forbidden(_))
+        ));
         db.close().await;
     }
 
     #[tokio::test]
     async fn provider_turn_binding_binds_the_exact_request_and_requires_operator_release() {
         let (_path, db, session) = active_turn_fixture(100).await;
-        let digest = "a".repeat(64);
-        let unbound = db
-            .authorize_provider_turn(&session, "worker", 1, 50, &digest, 1)
-            .await
-            .unwrap();
-        db.release_provider_turn(
-            &unbound.reservation_id,
-            "session-turn",
-            "worker",
-            1,
-            "worker released",
+        insert_reserved_turn(
+            &db,
+            &session,
+            "reserved-binding",
+            "opencode",
+            "deepseek-v4.1-flash",
         )
-        .await
-        .unwrap();
-
-        let turn = db
-            .authorize_provider_turn(&session, "worker", 1, 50, &digest, 1)
-            .await
-            .unwrap();
-        let actual = "b".repeat(64);
-        let binding = db
+        .await;
+        let error = db
             .bind_provider_turn(&ProviderTurnBindingInput {
-                reservation_id: turn.reservation_id.clone(),
+                reservation_id: "reserved-binding".into(),
                 session_record_id: session.clone(),
-                worker_id: "worker".into(),
-                generation: 1,
-                request_sha256: actual.clone(),
-                model: "deepseek-v4.1-flash".into(),
-                path: "/v1/chat/completions".into(),
-                body_bytes: 123,
-                sequence: 0,
-            })
-            .await
-            .unwrap();
-        assert_eq!(binding.request_sha256, actual);
-        assert!(matches!(
-            db.bind_provider_turn(&ProviderTurnBindingInput {
-                reservation_id: turn.reservation_id.clone(),
-                session_record_id: session.clone(),
-                worker_id: "worker".into(),
-                generation: 1,
-                request_sha256: "c".repeat(64),
-                model: "deepseek-v4.1-flash".into(),
-                path: "/v1/chat/completions".into(),
-                body_bytes: 123,
-                sequence: 0,
-            })
-            .await,
-            Err(Error::Forbidden(_) | Error::Conflict(_))
-        ));
-        assert!(matches!(
-            db.release_provider_turn(
-                &turn.reservation_id,
-                &turn.session_record_id,
-                "worker",
-                turn.generation,
-                "worker released"
-            )
-            .await,
-            Err(Error::Conflict(_))
-        ));
-        db.resolve_provider_turn_reservation(&turn.reservation_id, "operator", "reviewed")
-            .await
-            .unwrap();
-        let (state, input, output, cost): (String, i64, i64, i64) = sqlx::query_as::query_as(
-            "SELECT state,input_tokens,output_tokens,cost_micros
-             FROM provider_turn_reservations WHERE reservation_id=?1",
-        )
-        .bind(&turn.reservation_id)
-        .fetch_one(&db.pool)
-        .await
-        .unwrap();
-        assert_eq!(state, "SETTLED");
-        assert!(input > 0 && output > 0 && cost > 0);
-        assert!(matches!(
-            db.release_provider_turn(
-                &turn.reservation_id,
-                &turn.session_record_id,
-                "worker",
-                turn.generation,
-                "worker released"
-            )
-            .await,
-            Err(Error::Conflict(_))
-        ));
-    }
-
-    #[tokio::test]
-    async fn provider_turn_binding_rejects_wrong_identity_scope_and_expiry() {
-        let (_path, db, session) = active_turn_fixture(1000).await;
-        let digest = "a".repeat(64);
-        let turn = db
-            .authorize_provider_turn(&session, "worker", 1, 50, &digest, 1)
-            .await
-            .unwrap();
-        for (model, path, worker) in [
-            ("other-model", "/v1/chat/completions", "worker"),
-            ("deepseek-v4.1-flash", "/v1/embeddings", "worker"),
-            (
-                "deepseek-v4.1-flash",
-                "/v1/chat/completions",
-                "other-worker",
-            ),
-        ] {
-            let result = db
-                .bind_provider_turn(&ProviderTurnBindingInput {
-                    reservation_id: turn.reservation_id.clone(),
-                    session_record_id: session.clone(),
-                    worker_id: worker.into(),
-                    generation: 1,
-                    request_sha256: "b".repeat(64),
-                    model: model.into(),
-                    path: path.into(),
-                    body_bytes: 123,
-                    sequence: 0,
-                })
-                .await;
-            assert!(
-                matches!(result, Err(Error::Forbidden(_) | Error::Invalid(_))),
-                "{result:?}"
-            );
-        }
-        sqlx::query::query(
-            "UPDATE provider_turn_reservations SET expires_at_ms=1 WHERE reservation_id=?1",
-        )
-        .bind(&turn.reservation_id)
-        .execute(&db.pool)
-        .await
-        .unwrap();
-        let expired = db
-            .bind_provider_turn(&ProviderTurnBindingInput {
-                reservation_id: turn.reservation_id.clone(),
-                session_record_id: session,
                 worker_id: "worker".into(),
                 generation: 1,
                 request_sha256: "b".repeat(64),
@@ -1658,33 +2392,128 @@ mod tests {
                 body_bytes: 123,
                 sequence: 0,
             })
-            .await;
-        assert!(matches!(expired, Err(Error::Forbidden(_))), "{expired:?}");
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::SubscriptionFunding(_)),
+            "verified subscription evidence is required: {error:?}"
+        );
+        let bound: (i64, i64) = sqlx::query_as::query_as(
+            "SELECT requests_bound,(SELECT COUNT(*) FROM provider_turn_egress_requests WHERE reservation_id='reserved-binding') FROM provider_turn_reservations WHERE reservation_id='reserved-binding'",
+        ).fetch_one(&db.pool).await.unwrap();
+        assert_eq!(
+            bound,
+            (0, 0),
+            "funding refusal must precede binding and dispatch intent"
+        );
+        db.release_provider_turn("reserved-binding", &session, "worker", 1, "not dispatched")
+            .await
+            .unwrap();
+        let state: (String,) = sqlx::query_as::query_as(
+            "SELECT state FROM provider_turn_reservations WHERE reservation_id='reserved-binding'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(state.0, "RELEASED");
+    }
+
+    #[tokio::test]
+    async fn provider_turn_binding_rejects_wrong_identity_scope_and_expiry() {
+        let (_path, db, session) = active_turn_fixture(1000).await;
+        insert_reserved_turn(
+            &db,
+            &session,
+            "reserved-identity",
+            "opencode",
+            "deepseek-v4.1-flash",
+        )
+        .await;
+        let bind = |model: &str, worker: &str, generation: i64| ProviderTurnBindingInput {
+            reservation_id: "reserved-identity".into(),
+            session_record_id: session.clone(),
+            worker_id: worker.into(),
+            generation,
+            request_sha256: "b".repeat(64),
+            model: model.into(),
+            path: "/v1/chat/completions".into(),
+            body_bytes: 123,
+            sequence: 0,
+        };
+        for input in [
+            bind("other-model", "worker", 1),
+            bind("deepseek-v4.1-flash", "other-worker", 1),
+            bind("deepseek-v4.1-flash", "worker", 2),
+        ] {
+            assert!(matches!(
+                db.bind_provider_turn(&input).await,
+                Err(Error::Forbidden(_))
+            ));
+        }
+        let mut wrong_path = bind("deepseek-v4.1-flash", "worker", 1);
+        wrong_path.path = "/v1/embeddings".into();
+        assert!(matches!(
+            db.bind_provider_turn(&wrong_path).await,
+            Err(Error::Invalid(_))
+        ));
+        let mut wrong_session = bind("deepseek-v4.1-flash", "worker", 1);
+        wrong_session.session_record_id = "other-session".into();
+        assert!(matches!(
+            db.bind_provider_turn(&wrong_session).await,
+            Err(Error::Forbidden(_))
+        ));
+        sqlx::query::query(
+            "UPDATE provider_turn_reservations SET provider='codex' WHERE reservation_id='reserved-identity'",
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        assert!(
+            matches!(
+                db.bind_provider_turn(&bind("deepseek-v4.1-flash", "worker", 1))
+                    .await,
+                Err(Error::Forbidden(_))
+            ),
+            "reservation provider must remain bound to the active session provider"
+        );
+        sqlx::query::query(
+            "UPDATE provider_turn_reservations SET provider='opencode' WHERE reservation_id='reserved-identity'",
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let valid = bind("deepseek-v4.1-flash", "worker", 1);
+        assert!(matches!(
+            db.bind_provider_turn(&valid).await,
+            Err(Error::SubscriptionFunding(_))
+        ));
+        sqlx::query::query("UPDATE provider_turn_reservations SET expires_at_ms=1 WHERE reservation_id='reserved-identity'").execute(&db.pool).await.unwrap();
+        assert!(matches!(
+            db.bind_provider_turn(&valid).await,
+            Err(Error::Forbidden(_))
+        ));
+        let egress: (i64,) =
+            sqlx::query_as::query_as("SELECT COUNT(*) FROM provider_turn_egress_requests")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(egress.0, 0);
     }
 
     #[tokio::test]
     async fn unknown_turn_usage_leaves_the_bound_reservation_reserved() {
         let (_path, db, session) = active_turn_fixture(100).await;
-        let turn = db
-            .authorize_provider_turn(&session, "worker", 1, 50, &"a".repeat(64), 1)
-            .await
-            .unwrap();
-        db.bind_provider_turn(&ProviderTurnBindingInput {
-            reservation_id: turn.reservation_id.clone(),
-            session_record_id: session.clone(),
-            worker_id: "worker".into(),
-            generation: 1,
-            request_sha256: "b".repeat(64),
-            model: "deepseek-v4.1-flash".into(),
-            path: "/v1/chat/completions".into(),
-            body_bytes: 123,
-            sequence: 0,
-        })
-        .await
-        .unwrap();
+        insert_bound_test_turn(
+            &db,
+            &session,
+            "unknown-usage",
+            "opencode",
+            "deepseek-v4.1-flash",
+        )
+        .await;
         let result = db
             .settle_provider_turn(&ProviderTurnUsage {
-                reservation_id: turn.reservation_id.clone(),
+                reservation_id: "unknown-usage".into(),
                 worker_id: "worker".into(),
                 input_tokens: 0,
                 output_tokens: 0,
@@ -1693,16 +2522,18 @@ mod tests {
                 usage_known: false,
             })
             .await;
-        assert!(matches!(result, Err(Error::Forbidden(_))), "{result:?}");
-        let (state,): (String,) = sqlx::query_as::query_as(
-            "SELECT state FROM provider_turn_reservations WHERE reservation_id=?1",
+        assert!(
+            matches!(result, Err(Error::Forbidden(_))),
+            "unknown usage must remain unreconciled: {result:?}"
+        );
+        let state: (String,) = sqlx::query_as::query_as(
+            "SELECT state FROM provider_turn_reservations WHERE reservation_id='unknown-usage'",
         )
-        .bind(&turn.reservation_id)
         .fetch_one(&db.pool)
         .await
         .unwrap();
-        assert_eq!(state, "RESERVED");
-        db.resolve_provider_turn_reservation(&turn.reservation_id, "operator", "unknown usage")
+        assert_eq!(state.0, "RESERVED");
+        db.resolve_provider_turn_reservation("unknown-usage", "operator", "unknown usage")
             .await
             .unwrap();
     }
@@ -1710,12 +2541,16 @@ mod tests {
     #[tokio::test]
     async fn failed_terminal_preserves_prior_settled_session_usage() {
         let (_path, db, session) = active_turn_fixture(100).await;
-        let turn = db
-            .authorize_provider_turn(&session, "worker", 1, 50, &"a".repeat(64), 1)
-            .await
-            .unwrap();
+        insert_reserved_turn(
+            &db,
+            &session,
+            "settled-before-failure",
+            "opencode",
+            "deepseek-v4.1-flash",
+        )
+        .await;
         db.settle_provider_turn(&ProviderTurnUsage {
-            reservation_id: turn.reservation_id,
+            reservation_id: "settled-before-failure".into(),
             worker_id: "worker".into(),
             input_tokens: 4,
             output_tokens: 20,
@@ -1743,28 +2578,39 @@ mod tests {
         .await
         .unwrap();
         let (input, output, total, cost): (i64, i64, i64, i64) = sqlx::query_as::query_as(
-            "SELECT input_tokens,output_tokens,total_tokens,cost_micros
-             FROM provider_sessions WHERE session_record_id=?1",
-        )
-        .bind(&session)
-        .fetch_one(&db.pool)
-        .await
-        .unwrap();
+            "SELECT input_tokens,output_tokens,total_tokens,cost_micros FROM provider_sessions WHERE session_record_id=?1",
+        ).bind(&session).fetch_one(&db.pool).await.unwrap();
         assert_eq!((input, output, total, cost), (4, 20, 24, 100));
     }
 
     #[tokio::test]
-    async fn provider_turn_authorization_reserves_settles_and_fences_budget() {
-        let (path, db, session) = active_turn_fixture(10).await;
-        let digest = "a".repeat(64);
-        let first = db
-            .authorize_provider_turn(&session, "worker", 1, 50, &digest, 1)
-            .await
-            .unwrap();
-        assert_eq!(first.max_output_tokens, 50);
-        assert_eq!(first.max_input_tokens, 10);
+    async fn subscription_only_admission_refuses_without_verified_funding_but_settlement_is_idempotent()
+     {
+        let (_path, db, session) = active_turn_fixture(10).await;
+        let result = db
+            .authorize_provider_turn(&session, "worker", 1, 50, &"a".repeat(64), 1)
+            .await;
+        assert!(
+            matches!(result, Err(Error::SubscriptionFunding(_))),
+            "no verified subscription route is available: {result:?}"
+        );
+        let (reservations,): (i64,) =
+            sqlx::query_as::query_as("SELECT COUNT(*) FROM provider_turn_reservations")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(reservations, 0, "refusal precedes budget reservation");
+        let (_path, db, session) = active_turn_fixture(10).await;
+        insert_reserved_turn(
+            &db,
+            &session,
+            "settlement-idempotency",
+            "opencode",
+            "deepseek-v4.1-flash",
+        )
+        .await;
         let usage = ProviderTurnUsage {
-            reservation_id: first.reservation_id.clone(),
+            reservation_id: "settlement-idempotency".into(),
             worker_id: "worker".into(),
             input_tokens: 4,
             output_tokens: 20,
@@ -1774,79 +2620,49 @@ mod tests {
         };
         db.settle_provider_turn(&usage).await.unwrap();
         db.settle_provider_turn(&usage).await.unwrap();
-        let mut different = usage.clone();
-        different.output_tokens = 21;
+        let mut conflicting = usage;
+        conflicting.output_tokens = 21;
         assert!(matches!(
-            db.settle_provider_turn(&different).await,
+            db.settle_provider_turn(&conflicting).await,
             Err(Error::Conflict(_))
         ));
-        let second = db
-            .authorize_provider_turn(&session, "worker", 1, 80, &digest, 1)
-            .await
-            .unwrap();
-        assert_eq!(second.max_output_tokens, 80);
-        db.settle_provider_turn(&ProviderTurnUsage {
-            reservation_id: second.reservation_id,
-            worker_id: "worker".into(),
-            input_tokens: 4,
-            output_tokens: 80,
-            total_tokens: 84,
-            cost_micros: 900,
-            usage_known: true,
-        })
-        .await
-        .unwrap();
-        assert!(matches!(
-            db.authorize_provider_turn(&session, "worker", 1, 1, &digest, 1)
-                .await,
-            Err(Error::Forbidden(_))
-        ));
-        assert!(matches!(
-            db.authorize_provider_turn(&session, "worker", 2, 1, &digest, 1)
-                .await,
-            Err(Error::Forbidden(_))
-        ));
-        sqlx::query::query("UPDATE campaigns SET status='CANCELLED' WHERE id='campaign'")
-            .execute(&db.pool)
-            .await
-            .unwrap();
-        assert!(matches!(
-            db.authorize_provider_turn(&session, "worker", 1, 1, &digest, 1)
-                .await,
-            Err(Error::Forbidden(_))
-        ));
-        db.close().await;
-        let _ = std::fs::remove_file(path);
     }
 
     #[tokio::test]
-    async fn concurrent_turn_reservations_cannot_reuse_the_input_budget() {
-        let (path, db, session) = active_turn_fixture(10).await;
-        let digest = "a".repeat(64);
-        let first = db
-            .authorize_provider_turn(&session, "worker", 1, 10, &digest, 1)
-            .await
-            .unwrap();
-        assert_eq!(first.max_input_tokens, 10);
-        assert!(matches!(
-            db.authorize_provider_turn(&session, "worker", 1, 10, &digest, 1)
-                .await,
-            Err(Error::Forbidden(_))
-        ));
-        db.close().await;
-        let _ = std::fs::remove_file(path);
+    async fn repeated_turn_admission_refuses_without_verified_funding() {
+        let (_path, db, session) = active_turn_fixture(10).await;
+        for _ in 0..2 {
+            assert!(matches!(
+                db.authorize_provider_turn(&session, "worker", 1, 10, &"a".repeat(64), 1)
+                    .await,
+                Err(Error::SubscriptionFunding(_))
+            ));
+        }
+        let reservations: (i64,) =
+            sqlx::query_as::query_as("SELECT COUNT(*) FROM provider_turn_reservations")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            reservations.0, 0,
+            "concurrent/unreliable funding cannot reserve budget"
+        );
     }
 
     #[tokio::test]
     async fn unknown_turn_usage_fails_closed() {
-        let (path, db, session) = active_turn_fixture(10).await;
-        let authorization = db
-            .authorize_provider_turn(&session, "worker", 1, 10, &"b".repeat(64), 1)
-            .await
-            .unwrap();
+        let (_path, db, session) = active_turn_fixture(10).await;
+        insert_reserved_turn(
+            &db,
+            &session,
+            "unknown-session-usage",
+            "opencode",
+            "deepseek-v4.1-flash",
+        )
+        .await;
         let result = db
             .settle_provider_turn(&ProviderTurnUsage {
-                reservation_id: authorization.reservation_id,
+                reservation_id: "unknown-session-usage".into(),
                 worker_id: "worker".into(),
                 input_tokens: 0,
                 output_tokens: 0,
@@ -1856,22 +2672,15 @@ mod tests {
             })
             .await;
         assert!(matches!(result, Err(Error::Forbidden(_))));
-        let (state,): (String,) = sqlx::query_as::query_as(
+        let state: (String,) = sqlx::query_as::query_as(
             "SELECT state FROM provider_sessions WHERE session_record_id='session-turn'",
         )
         .fetch_one(&db.pool)
         .await
         .unwrap();
-        assert_eq!(state, "ACTIVE");
-        let (reservation_state,): (String,) = sqlx::query_as::query_as(
-            "SELECT state FROM provider_turn_reservations WHERE session_record_id='session-turn'",
-        )
-        .fetch_one(&db.pool)
-        .await
-        .unwrap();
-        assert_eq!(reservation_state, "RESERVED");
-        db.close().await;
-        let _ = std::fs::remove_file(path);
+        assert_eq!(state.0, "ACTIVE");
+        let reservation: (String,) = sqlx::query_as::query_as("SELECT state FROM provider_turn_reservations WHERE reservation_id='unknown-session-usage'").fetch_one(&db.pool).await.unwrap();
+        assert_eq!(reservation.0, "RESERVED");
     }
 
     #[tokio::test]
@@ -1937,134 +2746,78 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn codex_turn_binds_a_bounded_sequence_of_actual_requests() {
+    async fn codex_egress_binding_refuses_without_subscription_evidence() {
         let (_path, db, session) = active_turn_fixture(100).await;
-        sqlx::query::query(
-            "UPDATE provider_sessions SET provider='codex',model='gpt-6-luna' WHERE session_record_id=?1",
-        )
-        .bind(&session)
-        .execute(&db.pool)
-        .await
-        .unwrap();
-        let turn = db
-            .authorize_provider_turn(&session, "worker", 1, 50, &"a".repeat(64), 8)
-            .await
-            .unwrap();
-        assert_eq!(turn.max_requests, 8);
-        let first = db
-            .bind_provider_turn(&ProviderTurnBindingInput {
-                reservation_id: turn.reservation_id.clone(),
-                session_record_id: session.clone(),
-                worker_id: "worker".into(),
-                generation: 1,
-                request_sha256: "b".repeat(64),
-                model: "gpt-6-luna".into(),
-                path: "/v1/responses".into(),
-                body_bytes: 123,
-                sequence: 0,
-            })
-            .await
-            .unwrap();
-        assert_eq!(first.requests_bound, 1);
-        let second = db
-            .bind_provider_turn(&ProviderTurnBindingInput {
-                reservation_id: turn.reservation_id.clone(),
-                session_record_id: session.clone(),
-                worker_id: "worker".into(),
-                generation: 1,
-                request_sha256: "c".repeat(64),
-                model: "gpt-6-luna".into(),
-                path: "/v1/responses".into(),
-                body_bytes: 456,
-                sequence: 1,
-            })
-            .await
-            .unwrap();
-        assert_eq!(second.requests_bound, 2);
-        assert!(matches!(
-            db.bind_provider_turn(&ProviderTurnBindingInput {
-                reservation_id: turn.reservation_id.clone(),
-                session_record_id: session.clone(),
-                worker_id: "worker".into(),
-                generation: 1,
-                request_sha256: "d".repeat(64),
-                model: "gpt-6-luna".into(),
-                path: "/v1/responses".into(),
-                body_bytes: 1,
-                sequence: 3,
-            })
-            .await,
-            Err(Error::Conflict(_))
-        ));
-        assert!(matches!(
-            db.bind_provider_turn(&ProviderTurnBindingInput {
-                reservation_id: turn.reservation_id.clone(),
-                session_record_id: session.clone(),
-                worker_id: "worker".into(),
-                generation: 1,
-                request_sha256: "e".repeat(64),
-                model: "gpt-6-luna".into(),
-                path: "/v1/responses".into(),
-                body_bytes: 1,
-                sequence: 1,
-            })
-            .await,
-            Err(Error::Conflict(_))
-        ));
-        assert!(matches!(
-            db.release_provider_turn(
-                &turn.reservation_id,
-                &turn.session_record_id,
-                "worker",
-                turn.generation,
-                "worker released"
-            )
-            .await,
-            Err(Error::Conflict(_))
-        ));
+        sqlx::query::query("UPDATE provider_sessions SET provider='codex',model='gpt-6-luna' WHERE session_record_id=?1").bind(&session).execute(&db.pool).await.unwrap();
+        insert_reserved_turn(&db, &session, "codex-sequence", "codex", "gpt-6-luna").await;
+        for sequence in [0] {
+            let result = db
+                .bind_provider_turn(&ProviderTurnBindingInput {
+                    reservation_id: "codex-sequence".into(),
+                    session_record_id: session.clone(),
+                    worker_id: "worker".into(),
+                    generation: 1,
+                    request_sha256: "b".repeat(64),
+                    model: "gpt-6-luna".into(),
+                    path: "/v1/responses".into(),
+                    body_bytes: 123,
+                    sequence,
+                })
+                .await;
+            assert!(
+                matches!(result, Err(Error::SubscriptionFunding(_))),
+                "subscription refusal precedes egress binding: {result:?}"
+            );
+        }
+        let (bound, egress): (i64, i64) = sqlx::query_as::query_as("SELECT requests_bound,(SELECT COUNT(*) FROM provider_turn_egress_requests WHERE reservation_id='codex-sequence') FROM provider_turn_reservations WHERE reservation_id='codex-sequence'").fetch_one(&db.pool).await.unwrap();
+        assert_eq!((bound, egress), (0, 0));
     }
 
     #[tokio::test]
-    async fn expired_unbound_turn_reservation_is_reclaimed() {
+    async fn funding_refusal_does_not_mutate_expired_reservation() {
         let (_path, db, session) = active_turn_fixture(100).await;
-        let first = db
-            .authorize_provider_turn(&session, "worker", 1, 50, &"a".repeat(64), 1)
-            .await
-            .unwrap();
-        sqlx::query::query(
-            "UPDATE provider_turn_reservations SET expires_at_ms=1 WHERE reservation_id=?1",
+        insert_reserved_turn(
+            &db,
+            &session,
+            "expired-unbound",
+            "opencode",
+            "deepseek-v4.1-flash",
         )
-        .bind(&first.reservation_id)
-        .execute(&db.pool)
-        .await
-        .unwrap();
-        let second = db
+        .await;
+        sqlx::query::query("UPDATE provider_turn_reservations SET expires_at_ms=1 WHERE reservation_id='expired-unbound'").execute(&db.pool).await.unwrap();
+        let result = db
             .authorize_provider_turn(&session, "worker", 1, 50, &"b".repeat(64), 1)
-            .await
-            .unwrap();
-        assert_ne!(first.reservation_id, second.reservation_id);
-        let (state,): (String,) = sqlx::query_as::query_as(
-            "SELECT state FROM provider_turn_reservations WHERE reservation_id=?1",
+            .await;
+        assert!(
+            matches!(result, Err(Error::SubscriptionFunding(_))),
+            "funding remains the first dispatch gate: {result:?}"
+        );
+        let state: (String,) = sqlx::query_as::query_as(
+            "SELECT state FROM provider_turn_reservations WHERE reservation_id='expired-unbound'",
         )
-        .bind(&first.reservation_id)
         .fetch_one(&db.pool)
         .await
         .unwrap();
-        assert_eq!(state, "RELEASED");
+        assert_eq!(
+            state.0, "RESERVED",
+            "the denied route must not mutate existing reservation evidence"
+        );
     }
 
     #[tokio::test]
-    async fn non_codex_turns_cannot_bind_multiple_requests() {
+    async fn opencode_multiple_requests_reach_the_funding_gate() {
         let (_path, db, session) = active_turn_fixture(100).await;
-        assert!(matches!(
-            db.authorize_provider_turn(&session, "worker", 1, 50, &"a".repeat(64), 8)
-                .await,
-            Err(Error::Invalid(_))
-        ));
+        let result = db
+            .authorize_provider_turn(&session, "worker", 1, 50, &"a".repeat(64), 8)
+            .await;
+        assert!(
+            matches!(result, Err(Error::SubscriptionFunding(_))),
+            "the provider-specific rejection is gone; funding remains the first dispatch gate: {result:?}"
+        );
     }
 
     #[tokio::test]
-    async fn dynamic_tool_events_are_bounded_and_unique_per_session() {
+    async fn dynamic_tool_events_are_unique_without_a_lifetime_turn_budget() {
         let (path, db) = fixture(100).await;
         insert_session(&db, "session-tools", "attempt").await;
         db.mark_provider_active("session-tools", "worker", 1, "ses_tools", "/tmp/tools")
@@ -2079,23 +2832,26 @@ mod tests {
                 tool: "write_file".into(),
                 decision: "REQUEST".into(),
                 detail: "requested".into(),
+                check: None,
             })
             .await
             .unwrap();
         }
-        assert!(matches!(
-            db.record_provider_tool_event(&ProviderToolEventInput {
-                session_record_id: "session-tools".into(),
-                worker_id: "worker".into(),
-                generation: 1,
-                call_id: "call-over-budget".into(),
-                tool: "write_file".into(),
-                decision: "REQUEST".into(),
-                detail: "requested".into(),
-            })
-            .await,
-            Err(Error::Forbidden(_))
-        ));
+        // There is no lifetime `max_turns * 8` allowance. The call beyond the
+        // former budget succeeds; per-request capacity and tool timeouts are
+        // enforced by the operation loop instead.
+        db.record_provider_tool_event(&ProviderToolEventInput {
+            session_record_id: "session-tools".into(),
+            worker_id: "worker".into(),
+            generation: 1,
+            call_id: "call-over-former-budget".into(),
+            tool: "write_file".into(),
+            decision: "REQUEST".into(),
+            detail: "requested".into(),
+            check: None,
+        })
+        .await
+        .unwrap();
         assert!(matches!(
             db.record_provider_tool_event(&ProviderToolEventInput {
                 session_record_id: "session-tools".into(),
@@ -2105,10 +2861,196 @@ mod tests {
                 tool: "write_file".into(),
                 decision: "REQUEST".into(),
                 detail: "duplicate".into(),
+                check: None,
             })
             .await,
             Err(Error::Conflict(_))
         ));
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn execution_check_receipts_bind_the_frozen_command_and_candidate() {
+        let (path, db) = fixture(100).await;
+        insert_session(&db, "session-check", "attempt").await;
+        db.mark_provider_active("session-check", "worker", 1, "ses_check", "/tmp/check")
+            .await
+            .unwrap();
+        let record = db
+            .record_provider_tool_event(&ProviderToolEventInput {
+                session_record_id: "session-check".into(),
+                worker_id: "worker".into(),
+                generation: 1,
+                call_id: "check-call".into(),
+                tool: "run_command".into(),
+                decision: "RESULT".into(),
+                detail: "exit=Some(0)".into(),
+                check: Some(ExecutionCheckInput {
+                    command: vec!["cargo".into(), "test".into()],
+                    candidate_sha256: "c".repeat(64),
+                    exit_code: Some(0),
+                }),
+            })
+            .await
+            .unwrap();
+        let receipt = record.execution_check.expect("execution receipt");
+        assert_eq!(receipt.suite, "check:cargo\u{0}test");
+        assert_eq!(receipt.outcome, "PASS");
+        assert_eq!(receipt.candidate_sha256, "c".repeat(64));
+        assert_eq!(receipt.result_sha256.len(), 64);
+
+        let missing = db
+            .record_provider_tool_event(&ProviderToolEventInput {
+                session_record_id: "session-check".into(),
+                worker_id: "worker".into(),
+                generation: 1,
+                call_id: "check-missing".into(),
+                tool: "run_command".into(),
+                decision: "RESULT".into(),
+                detail: "exit=Some(0)".into(),
+                check: None,
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(missing, Error::Forbidden(_)), "{missing:?}");
+
+        let false_command = db
+            .record_provider_tool_event(&ProviderToolEventInput {
+                session_record_id: "session-check".into(),
+                worker_id: "worker".into(),
+                generation: 1,
+                call_id: "check-false".into(),
+                tool: "run_command".into(),
+                decision: "RESULT".into(),
+                detail: "exit=Some(0)".into(),
+                check: Some(ExecutionCheckInput {
+                    command: vec!["false".into()],
+                    candidate_sha256: "c".repeat(64),
+                    exit_code: Some(0),
+                }),
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(false_command, Error::Forbidden(_)),
+            "{false_command:?}"
+        );
+
+        let bad_candidate = db
+            .record_provider_tool_event(&ProviderToolEventInput {
+                session_record_id: "session-check".into(),
+                worker_id: "worker".into(),
+                generation: 1,
+                call_id: "check-bad-candidate".into(),
+                tool: "run_command".into(),
+                decision: "RESULT".into(),
+                detail: "exit=Some(0)".into(),
+                check: Some(ExecutionCheckInput {
+                    command: vec!["cargo".into(), "test".into()],
+                    candidate_sha256: "not-a-digest".into(),
+                    exit_code: Some(0),
+                }),
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(bad_candidate, Error::Invalid(_)),
+            "{bad_candidate:?}"
+        );
+        // A rejected execution check must not persist a provider tool event.
+        // The recorded flake followed a rejected check that had already
+        // written: its rollback was queued asynchronously while the next
+        // transaction attempted a deferred read-to-write upgrade.
+        let (events,): (i64,) = sqlx::query_as::query_as(
+            "SELECT COUNT(*) FROM provider_tool_events WHERE session_record_id='session-check'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(events, 1);
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn rejected_execution_checks_never_race_the_next_writer() {
+        let (path, db) = fixture(100).await;
+        insert_session(&db, "session-race", "attempt").await;
+        db.mark_provider_active("session-race", "worker", 1, "ses_race", "/tmp/race")
+            .await
+            .unwrap();
+        let db = std::sync::Arc::new(db);
+        let mut accepted = 0_i64;
+        for index in 0..24 {
+            let invalid_call = format!("invalid-{index}");
+            let valid_call = format!("valid-{index}");
+            let invalid = {
+                let db = db.clone();
+                async move {
+                    db.record_provider_tool_event(&ProviderToolEventInput {
+                        session_record_id: "session-race".into(),
+                        worker_id: "worker".into(),
+                        generation: 1,
+                        call_id: invalid_call,
+                        tool: "run_command".into(),
+                        decision: "RESULT".into(),
+                        detail: "exit=Some(0)".into(),
+                        check: Some(ExecutionCheckInput {
+                            command: vec!["false".into()],
+                            candidate_sha256: "c".repeat(64),
+                            exit_code: Some(0),
+                        }),
+                    })
+                    .await
+                }
+            };
+            let valid = {
+                let db = db.clone();
+                async move {
+                    db.record_provider_tool_event(&ProviderToolEventInput {
+                        session_record_id: "session-race".into(),
+                        worker_id: "worker".into(),
+                        generation: 1,
+                        call_id: valid_call,
+                        tool: "run_command".into(),
+                        decision: "RESULT".into(),
+                        detail: "exit=Some(0)".into(),
+                        check: Some(ExecutionCheckInput {
+                            command: vec!["cargo".into(), "test".into()],
+                            candidate_sha256: "c".repeat(64),
+                            exit_code: Some(0),
+                        }),
+                    })
+                    .await
+                }
+            };
+            // The per-database write gate serializes these in-process writers,
+            // so this exercises ordering after a rejected call rather than
+            // cross-process SQLite contention.
+            let (invalid, valid) = tokio::join!(invalid, valid);
+            let invalid = invalid.expect_err("the frozen check does not include `false`");
+            assert!(
+                matches!(invalid, Error::Forbidden(_)),
+                "unexpected invalid outcome: {invalid:?}"
+            );
+            valid.expect("valid execution checks must not fail with Busy");
+            accepted += 1;
+        }
+        let (events,): (i64,) = sqlx::query_as::query_as(
+            "SELECT COUNT(*) FROM provider_tool_events WHERE session_record_id='session-race'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(events, accepted);
+        let (receipts,): (i64,) = sqlx::query_as::query_as(
+            "SELECT COUNT(*) FROM execution_check_receipts WHERE session_record_id='session-race'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(receipts, accepted);
         db.close().await;
         let _ = std::fs::remove_file(path);
     }
@@ -2291,6 +3233,10 @@ pub struct ProviderToolEventInput {
     pub tool: String,
     pub decision: String,
     pub detail: String,
+    /// Present for `run_command` RESULTS. Core validates the command against
+    /// the frozen Attempt spec and records an immutable execution receipt.
+    #[serde(default)]
+    pub check: Option<super::execution_receipts::ExecutionCheckInput>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2302,6 +3248,8 @@ pub struct ProviderToolEventRecord {
     pub decision: String,
     pub detail: String,
     pub created_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_check: Option<super::execution_receipts::ExecutionCheckReceiptRecord>,
 }
 
 impl Database {
@@ -2319,13 +3267,36 @@ impl Database {
             return Err(Error::Invalid("provider tool event"));
         }
         let _write = self.write_lock.lock().await;
-        let mut transaction = self.pool.begin().await?;
+        // `BEGIN` is deferred in SQLite: a read followed by a write upgrades
+        // the snapshot and can fail with BUSY_SNAPSHOT, which bypasses the busy
+        // handler. Writer transactions take the reserved lock up front.
+        let mut connection = self.pool.acquire().await?;
+        let mut transaction = Connection::begin_with(&mut *connection, "BEGIN IMMEDIATE").await?;
+        let outcome = Self::record_provider_tool_event_in_tx(&mut transaction, input).await;
+        match outcome {
+            Ok(record) => {
+                transaction.commit().await?;
+                Ok(record)
+            }
+            Err(error) => {
+                // Await the rollback so the write lock is released before any
+                // queued writer observes the failed attempt.
+                transaction.rollback().await?;
+                Err(error)
+            }
+        }
+    }
+
+    async fn record_provider_tool_event_in_tx(
+        transaction: &mut Transaction<'_, sqlx_sqlite::Sqlite>,
+        input: &ProviderToolEventInput,
+    ) -> Result<ProviderToolEventRecord, Error> {
         let row: Option<(String, i64)> = sqlx::query_as::query_as(
             "SELECT worker_id,generation FROM provider_sessions
              WHERE session_record_id=?1 AND state IN ('ACTIVE','CANCEL_REQUESTED')",
         )
         .bind(&input.session_record_id)
-        .fetch_optional(&mut *transaction)
+        .fetch_optional(&mut **transaction)
         .await?;
         let (worker_id, generation) = row.ok_or(Error::Forbidden(
             "provider tool event requires an active owned session".into(),
@@ -2342,42 +3313,42 @@ impl Database {
             )
             .bind(&input.session_record_id)
             .bind(&input.call_id)
-            .fetch_optional(&mut *transaction)
+            .fetch_optional(&mut **transaction)
             .await?;
             if duplicate.is_some() {
                 return Err(Error::Conflict(
                     "provider dynamic tool call id was already used",
                 ));
             }
-            let (max_turns,): (i64,) = sqlx::query_as::query_as(
-                "SELECT ca.max_turns FROM provider_sessions ps
-                 JOIN attempts a ON a.id=ps.attempt_id
-                 JOIN runs r ON r.id=a.run_id
-                 JOIN campaign_authorizations ca ON ca.campaign_id=r.campaign_id
-                 WHERE ps.session_record_id=?1",
-            )
-            .bind(&input.session_record_id)
-            .fetch_one(&mut *transaction)
-            .await?;
-            let (requests,): (i64,) = sqlx::query_as::query_as(
-                "SELECT COUNT(*) FROM provider_tool_events
-                 WHERE session_record_id=?1 AND decision='REQUEST'",
-            )
-            .bind(&input.session_record_id)
-            .fetch_one(&mut *transaction)
-            .await?;
-            if requests >= max_turns.saturating_mul(8) {
-                return Err(Error::Forbidden(
-                    "provider dynamic tool call budget is exhausted".into(),
-                ));
-            }
+            // There is no lifetime dynamic-tool allowance tied to campaign
+            // turns. Each operation remains bounded by the per-turn client
+            // capacity, tool timeout and lease/fencing checks.
         }
         let (sequence,): (i64,) = sqlx::query_as::query_as(
             "SELECT COALESCE(MAX(sequence),0)+1 FROM provider_tool_events WHERE session_record_id=?1",
         )
         .bind(&input.session_record_id)
-        .fetch_one(&mut *transaction)
+        .fetch_one(&mut **transaction)
         .await?;
+        // Resolve every execution-check fact before writing so an invalid
+        // result cannot persist a tool event and then rely on a rollback.
+        let requires_check = input.tool == "run_command" && input.decision == "RESULT";
+        let resolved_check = if requires_check {
+            let check = input.check.as_ref().ok_or(Error::Forbidden(
+                "run_command result requires an execution check receipt".into(),
+            ))?;
+            Some(
+                super::execution_receipts::resolve_execution_check(
+                    transaction,
+                    &input.session_record_id,
+                    input.generation,
+                    check,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
         let created_at = Utc::now().to_rfc3339();
         sqlx::query::query(
             "INSERT INTO provider_tool_events
@@ -2391,10 +3362,24 @@ impl Database {
         .bind(&input.decision)
         .bind(&input.detail)
         .bind(&created_at)
-        .execute(&mut *transaction)
+        .execute(&mut **transaction)
         .await?;
+        let execution_check = match resolved_check {
+            Some(resolved) => Some(
+                super::execution_receipts::insert_execution_check_receipt(
+                    transaction,
+                    &resolved,
+                    &input.session_record_id,
+                    sequence,
+                    input.generation,
+                    &input.call_id,
+                )
+                .await?,
+            ),
+            None => None,
+        };
         record_event(
-            &mut transaction,
+            transaction,
             &input.session_record_id,
             "provider.tool_event",
             &format!(
@@ -2403,7 +3388,6 @@ impl Database {
             ),
         )
         .await?;
-        transaction.commit().await?;
         Ok(ProviderToolEventRecord {
             session_record_id: input.session_record_id.clone(),
             sequence,
@@ -2412,6 +3396,7 @@ impl Database {
             decision: input.decision.clone(),
             detail: input.detail.clone(),
             created_at,
+            execution_check,
         })
     }
 
@@ -2439,9 +3424,701 @@ impl Database {
                         decision,
                         detail,
                         created_at,
+                        execution_check: None,
                     }
                 },
             )
             .collect())
+    }
+}
+
+#[cfg(test)]
+mod ledger_link_tests {
+    use super::tests::active_turn_fixture;
+    use super::*;
+    use crate::db::CampaignEnvelopeBindingInput;
+    use crate::execution_policy::ReservationState;
+    use crate::inference_ledger::NewInferenceEnvelope;
+
+    async fn setup_turn_envelope(
+        db: &Database,
+        provider: &str,
+        model: &str,
+        request_id: &str,
+        bound: u64,
+    ) -> String {
+        let envelope = db
+            .create_inference_envelope(&NewInferenceEnvelope {
+                request_id: request_id.into(),
+                project_id: "project".into(),
+                authorized_micros: UsdMicros::new(10_000).unwrap(),
+                actor: "operator".into(),
+                scope_sha256: "a".repeat(64),
+                evidence_sha256: "b".repeat(64),
+                idempotency_key: format!("envelope-{request_id}"),
+            })
+            .await
+            .unwrap();
+        let now = Utc::now().to_rfc3339();
+        sqlx::query::query(
+            "INSERT INTO standing_delegations
+             (id,principal_id,audit_id,project_id,revision,content_hash,content_json,created_at)
+             VALUES (?1,'worker','audit','project',1,'hash','{}',?2)",
+        )
+        .bind(format!("delegation-{request_id}"))
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO lead_requests
+             (id,project_id,action_id,delegation_id,objective,request_hash,project_config_hash,
+              state,created_at,updated_at)
+             VALUES (?1,'project','action',?2,'objective','hash','hash','FROZEN',?3,?3)",
+        )
+        .bind(request_id)
+        .bind(format!("delegation-{request_id}"))
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO lead_start_evidence
+             (request_id,campaign_id,mode,principal_id,principal_label,rationale,
+              idempotency_key,request_hash,plan_hash,profile_revision_id,profile_hash,
+              spec_sha256,config_hash,delegation_hash,policy_hash,authorization_digest,created_at)
+             VALUES (?1,'campaign','OPERATOR','operator',NULL,'test',?2,?3,?3,NULL,NULL,?3,?3,?3,?3,?3,?4)",
+        )
+        .bind(request_id)
+        .bind(format!("lead-start-{request_id}"))
+        .bind("a".repeat(64))
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO provider_settings
+             (provider,kind,model,base_url,auth_mode,credential_ciphertext,credential_nonce,
+              credential_fingerprint,enabled,is_default,max_turns,max_input_tokens,
+              max_output_tokens,max_cost_micros,input_micros_per_million,
+              output_micros_per_million,revision,updated_at)
+             VALUES (?1,?2,?3,'http://127.0.0.1:9','api_key','cipher','nonce','fingerprint',
+                     1,0,1,?4,?5,?6,1000000,0,1,?7)
+             ON CONFLICT(provider) DO UPDATE SET
+               kind=excluded.kind,model=excluded.model,max_input_tokens=excluded.max_input_tokens,
+               max_output_tokens=excluded.max_output_tokens,max_cost_micros=excluded.max_cost_micros,
+               input_micros_per_million=excluded.input_micros_per_million,
+               output_micros_per_million=excluded.output_micros_per_million,
+               revision=excluded.revision,updated_at=excluded.updated_at",
+        )
+        .bind(provider)
+        .bind(if provider == "codex" { "codex" } else { "opencode" })
+        .bind(model)
+        .bind(i64::try_from(bound / 2).unwrap())
+        .bind(i64::try_from(bound / 2).unwrap())
+        .bind(i64::try_from(bound).unwrap())
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        db.create_inference_pricing_quote(&crate::inference_ledger::NewInferencePricingQuote {
+            provider: provider.into(),
+            model: model.into(),
+            revision: 1,
+            evidence_sha256: "f".repeat(64),
+            actor: "operator".into(),
+        })
+        .await
+        .unwrap();
+        db.bind_campaign_inference_envelope(&CampaignEnvelopeBindingInput {
+            campaign_id: "campaign".into(),
+            envelope_id: envelope.envelope_id.clone(),
+            actor: "operator".into(),
+            evidence_sha256: "c".repeat(64),
+        })
+        .await
+        .unwrap();
+        envelope.envelope_id
+    }
+
+    // Seed an already-persisted, previously authorized dispatch via the normal
+    // ledger APIs. Tests exercise recovery/settlement without sending upstream.
+    async fn seed_worker_ledger_link(
+        db: &Database,
+        worker_reservation_id: &str,
+        envelope_id: &str,
+        sequence: u32,
+    ) -> String {
+        let provider = "opencode";
+        let model = "deepseek-v4.1-flash";
+        let quote = db.inference_pricing_quote(provider, model).await.unwrap();
+        let request_sha256 = if sequence == 0 { "b" } else { "c" }.repeat(64);
+        let operation_id = format!("provider_turn:{worker_reservation_id}:request:{sequence}");
+        let ledger = db
+            .reserve_inference(&ReserveInferenceInput {
+                envelope_id: envelope_id.into(),
+                operation_id: operation_id.clone(),
+                idempotency_key: operation_id,
+                request_sha256: request_sha256.clone(),
+                role: InferenceRole::Implementer,
+                principal_id: "worker".into(),
+                parent_operation_id: None,
+                provider: provider.into(),
+                model: model.into(),
+                pricing_revision: quote.quote_id,
+                pricing_snapshot_json: quote.snapshot_json,
+                upper_bound_micros: quote.upper_bound_micros,
+                expires_at_ms: Utc::now().timestamp_millis() + 60_000,
+                authorization_revision: 1,
+                scope_sha256: "a".repeat(64),
+                worker_id: Some("worker".into()),
+                generation: Some(1),
+            })
+            .await
+            .unwrap();
+        let provider_request_id = format!("historical-provider-request-{sequence}");
+        db.mark_inference_dispatched(&MarkInferenceDispatchedInput {
+            reservation_id: ledger.reservation_id.clone(),
+            worker_id: Some("worker".into()),
+            generation: Some(1),
+            provider_request_id: Some(provider_request_id),
+            attempt_id: Some("attempt".into()),
+            actor: "test:persisted_worker_dispatch".into(),
+        })
+        .await
+        .unwrap();
+
+        let now = Utc::now().timestamp_millis();
+        sqlx::query::query(
+            "INSERT INTO provider_turn_egress_requests
+             (request_id,reservation_id,sequence,actual_request_sha256,model,path,body_bytes,created_at)
+             VALUES (?1,?2,?3,?4,?5,'/v1/chat/completions',128,?6)",
+        )
+        .bind(format!("historical-egress-{worker_reservation_id}-{sequence}"))
+        .bind(worker_reservation_id)
+        .bind(i64::from(sequence))
+        .bind(&request_sha256)
+        .bind(model)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO provider_turn_ledger_requests
+             (reservation_id,sequence,ledger_reservation_id,created_at_ms)
+             VALUES (?1,?2,?3,?4)",
+        )
+        .bind(worker_reservation_id)
+        .bind(i64::from(sequence))
+        .bind(&ledger.reservation_id)
+        .bind(now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        if sequence == 0 {
+            sqlx::query::query(
+                "UPDATE provider_turn_reservations
+                 SET actual_request_sha256=?1,requests_bound=1,ledger_reservation_id=?2
+                 WHERE reservation_id=?3",
+            )
+            .bind(&request_sha256)
+            .bind(&ledger.reservation_id)
+            .bind(worker_reservation_id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        } else {
+            sqlx::query::query(
+                "UPDATE provider_turn_reservations SET requests_bound=?1 WHERE reservation_id=?2",
+            )
+            .bind(i64::from(sequence + 1))
+            .bind(worker_reservation_id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        }
+        ledger.reservation_id
+    }
+
+    #[tokio::test]
+    async fn persisted_worker_egress_links_replay_and_settle_after_restart() {
+        let (path, db, session) = active_turn_fixture(100).await;
+        let envelope_id = setup_turn_envelope(
+            &db,
+            "opencode",
+            "deepseek-v4.1-flash",
+            "request-linked-restart",
+            1_000,
+        )
+        .await;
+        super::tests::insert_reserved_turn(
+            &db,
+            &session,
+            "worker-linked-turn",
+            "opencode",
+            "deepseek-v4.1-flash",
+        )
+        .await;
+        sqlx::query::query(
+            "UPDATE provider_turn_reservations SET max_requests=2,max_cost_micros=3000 WHERE reservation_id='worker-linked-turn'",
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let first_ledger_id =
+            seed_worker_ledger_link(&db, "worker-linked-turn", &envelope_id, 0).await;
+        let second_ledger_id =
+            seed_worker_ledger_link(&db, "worker-linked-turn", &envelope_id, 1).await;
+        let mappings: (i64,) = sqlx::query_as::query_as(
+            "SELECT COUNT(*) FROM provider_turn_ledger_requests WHERE reservation_id='worker-linked-turn'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(mappings.0, 2, "each persisted egress owns one ledger hold");
+        db.close().await;
+
+        let reopened = Database::open(&path).await.unwrap();
+        let replay = reopened
+            .bind_provider_turn(&ProviderTurnBindingInput {
+                reservation_id: "worker-linked-turn".into(),
+                session_record_id: session.clone(),
+                worker_id: "worker".into(),
+                generation: 1,
+                request_sha256: "b".repeat(64),
+                model: "deepseek-v4.1-flash".into(),
+                path: "/v1/chat/completions".into(),
+                body_bytes: 128,
+                sequence: 0,
+            })
+            .await;
+        assert!(matches!(replay, Err(Error::Conflict(_))));
+        let (next_request,): (i64,) = sqlx::query_as::query_as(
+            "SELECT requests_bound FROM provider_turn_reservations WHERE reservation_id='worker-linked-turn'",
+        )
+        .fetch_one(&reopened.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            next_request, 2,
+            "persisted second egress cannot be replayed"
+        );
+        let replay_counts: (i64, i64) = sqlx::query_as::query_as(
+            "SELECT (SELECT COUNT(*) FROM provider_turn_ledger_requests WHERE reservation_id='worker-linked-turn'),
+                    (SELECT COUNT(*) FROM provider_turn_egress_requests WHERE reservation_id='worker-linked-turn')",
+        )
+        .fetch_one(&reopened.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            replay_counts,
+            (2, 2),
+            "restart replay must not duplicate per-egress links"
+        );
+
+        reopened
+            .settle_provider_turn(&ProviderTurnUsage {
+                reservation_id: "worker-linked-turn".into(),
+                worker_id: "worker".into(),
+                input_tokens: 10,
+                output_tokens: 20,
+                total_tokens: 30,
+                cost_micros: 1_500,
+                usage_known: true,
+            })
+            .await
+            .unwrap();
+        reopened
+            .settle_provider_turn(&ProviderTurnUsage {
+                reservation_id: "worker-linked-turn".into(),
+                worker_id: "worker".into(),
+                input_tokens: 10,
+                output_tokens: 20,
+                total_tokens: 30,
+                cost_micros: 1_500,
+                usage_known: true,
+            })
+            .await
+            .unwrap();
+        for (ledger_id, expected) in [(first_ledger_id, 1_000), (second_ledger_id, 500)] {
+            let record = reopened.inference_reservation(&ledger_id).await.unwrap();
+            assert_eq!(record.state, ReservationState::Settled);
+            assert_eq!(record.settled_micros.unwrap().get(), expected);
+            assert!(record.dispatched_at_ms.is_some());
+        }
+        let status = reopened
+            .inference_spending_status(&envelope_id)
+            .await
+            .unwrap();
+        assert_eq!(status.settled_micros.get(), 1_500);
+        assert_eq!(status.reserved_micros.get(), 0);
+        reopened.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn mid_turn_revocation_blocks_next_egress_and_preserves_first_hold() {
+        let (path, db, session) = active_turn_fixture(100).await;
+        let envelope_id = setup_turn_envelope(
+            &db,
+            "opencode",
+            "deepseek-v4.1-flash",
+            "request-revoke-linked",
+            1_000,
+        )
+        .await;
+        super::tests::insert_reserved_turn(
+            &db,
+            &session,
+            "revoked-worker-turn",
+            "opencode",
+            "deepseek-v4.1-flash",
+        )
+        .await;
+        sqlx::query::query(
+            "UPDATE provider_turn_reservations SET max_requests=2 WHERE reservation_id='revoked-worker-turn'",
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let first_ledger_id =
+            seed_worker_ledger_link(&db, "revoked-worker-turn", &envelope_id, 0).await;
+        db.revoke_inference_envelope(&crate::inference_ledger::RevokeInferenceEnvelopeInput {
+            envelope_id: envelope_id.clone(),
+            actor: "operator".into(),
+            evidence_ref: "mid-turn-revoke".into(),
+            evidence_sha256: "d".repeat(64),
+        })
+        .await
+        .unwrap();
+
+        let next = db
+            .bind_provider_turn(&ProviderTurnBindingInput {
+                reservation_id: "revoked-worker-turn".into(),
+                session_record_id: session,
+                worker_id: "worker".into(),
+                generation: 1,
+                request_sha256: "c".repeat(64),
+                model: "deepseek-v4.1-flash".into(),
+                path: "/v1/chat/completions".into(),
+                body_bytes: 128,
+                sequence: 1,
+            })
+            .await;
+        assert!(matches!(next, Err(Error::SubscriptionFunding(_))));
+        let quote = db
+            .inference_pricing_quote("opencode", "deepseek-v4.1-flash")
+            .await
+            .unwrap();
+        let second_request = db
+            .reserve_inference(&ReserveInferenceInput {
+                envelope_id: envelope_id.clone(),
+                operation_id: "provider_turn:revoked-worker-turn:request:1".into(),
+                idempotency_key: "provider_turn:revoked-worker-turn:request:1".into(),
+                request_sha256: "c".repeat(64),
+                role: InferenceRole::Implementer,
+                principal_id: "worker".into(),
+                parent_operation_id: None,
+                provider: "opencode".into(),
+                model: "deepseek-v4.1-flash".into(),
+                pricing_revision: quote.quote_id,
+                pricing_snapshot_json: quote.snapshot_json,
+                upper_bound_micros: quote.upper_bound_micros,
+                expires_at_ms: Utc::now().timestamp_millis() + 60_000,
+                authorization_revision: 1,
+                scope_sha256: "a".repeat(64),
+                worker_id: Some("worker".into()),
+                generation: Some(1),
+            })
+            .await;
+        assert!(
+            matches!(second_request, Err(Error::Forbidden(_))),
+            "the lower-level ledger must reject a second request after envelope revocation"
+        );
+        let counts: (i64, i64) = sqlx::query_as::query_as(
+            "SELECT requests_bound,(SELECT COUNT(*) FROM provider_turn_egress_requests WHERE reservation_id='revoked-worker-turn') FROM provider_turn_reservations WHERE reservation_id='revoked-worker-turn'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            counts,
+            (1, 1),
+            "failed second egress must preserve first request only"
+        );
+        assert!(matches!(
+            db.inference_reservation(&first_ledger_id)
+                .await
+                .unwrap()
+                .state,
+            ReservationState::Reserved
+        ));
+        db.settle_provider_turn(&ProviderTurnUsage {
+            reservation_id: "revoked-worker-turn".into(),
+            worker_id: "worker".into(),
+            input_tokens: 4,
+            output_tokens: 8,
+            total_tokens: 12,
+            cost_micros: 500,
+            usage_known: true,
+        })
+        .await
+        .unwrap();
+        let first = db.inference_reservation(&first_ledger_id).await.unwrap();
+        assert_eq!(first.state, ReservationState::Settled);
+        assert_eq!(first.settled_micros.unwrap().get(), 500);
+        let status = db.inference_spending_status(&envelope_id).await.unwrap();
+        assert_eq!(status.settled_micros.get(), 500);
+        assert_eq!(status.reserved_micros.get(), 0);
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn monetary_envelope_does_not_authorize_provider_dispatch() {
+        let (path, db, session) = active_turn_fixture(100).await;
+        let envelope_id = setup_turn_envelope(
+            &db,
+            "opencode",
+            "deepseek-v4.1-flash",
+            "request-crash",
+            1_000,
+        )
+        .await;
+        let result = db
+            .authorize_provider_turn(&session, "worker", 1, 50, &"a".repeat(64), 1)
+            .await;
+        assert!(
+            matches!(result, Err(Error::SubscriptionFunding(_))),
+            "monetary envelope is not subscription evidence: {result:?}"
+        );
+        let status = db.inference_spending_status(&envelope_id).await.unwrap();
+        assert_eq!(status.reserved_micros.get(), 0);
+        assert_eq!(status.ambiguous_micros.get(), 0);
+        let counts: (i64, i64, i64) = sqlx::query_as::query_as(
+            "SELECT (SELECT COUNT(*) FROM provider_turn_reservations),
+                    (SELECT COUNT(*) FROM provider_turn_egress_requests),
+                    (SELECT COUNT(*) FROM provider_turn_ledger_requests)",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            counts,
+            (0, 0, 0),
+            "denial must precede Worker dispatch intent"
+        );
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn v2_turn_without_subscription_funding_fails_closed() {
+        let (_path, db, session) = active_turn_fixture(100).await;
+        db.set_inference_ledger_mode_v2("operator", &"e".repeat(64))
+            .await
+            .unwrap();
+        assert!(matches!(
+            db.authorize_provider_turn(&session, "worker", 1, 50, &"a".repeat(64), 1)
+                .await,
+            Err(Error::SubscriptionFunding(_) | Error::Forbidden(_))
+        ));
+        let count: (i64,) =
+            sqlx::query_as::query_as("SELECT COUNT(*) FROM provider_turn_reservations")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(count.0, 0);
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn monetary_quote_does_not_authorize_subscription_turn() {
+        let (_path, db, session) = active_turn_fixture(10).await;
+        setup_turn_envelope(
+            &db,
+            "opencode",
+            "deepseek-v4.1-flash",
+            "request-token-quote",
+            200,
+        )
+        .await;
+        let quote = db
+            .inference_pricing_quote("opencode", "deepseek-v4.1-flash")
+            .await
+            .unwrap();
+        assert_eq!(quote.upper_bound_micros.get(), 200);
+        let result = db
+            .authorize_provider_turn(&session, "worker", 1, 500, &"a".repeat(64), 1)
+            .await;
+        assert!(
+            matches!(result, Err(Error::SubscriptionFunding(_))),
+            "positive USD and token envelopes still need subscription route evidence: {result:?}"
+        );
+        let count: (i64,) =
+            sqlx::query_as::query_as("SELECT COUNT(*) FROM provider_turn_reservations")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(count.0, 0);
+    }
+
+    #[tokio::test]
+    async fn codex_chatgpt_identity_requires_verified_plan_funding() {
+        let (_path, db, session) = active_turn_fixture(100).await;
+        sqlx::query::query("UPDATE provider_sessions SET provider='codex',model='gpt-6' WHERE session_record_id=?1").bind(&session).execute(&db.pool).await.unwrap();
+        setup_turn_envelope(&db, "codex", "gpt-6", "request-multi", 1_000).await;
+        let result = db
+            .authorize_provider_turn(&session, "worker", 1, 50, &"a".repeat(64), 2)
+            .await;
+        assert!(
+            matches!(result, Err(Error::SubscriptionFunding(_))),
+            "Codex model identity does not prove ChatGPT-plan funding: {result:?}"
+        );
+        let counts: (i64, i64, i64) = sqlx::query_as::query_as("SELECT (SELECT COUNT(*) FROM provider_turn_reservations),(SELECT COUNT(*) FROM provider_turn_egress_requests),(SELECT COUNT(*) FROM inference_reservations)").fetch_one(&db.pool).await.unwrap();
+        assert_eq!(counts, (0, 0, 0));
+    }
+
+    #[tokio::test]
+    async fn envelope_revocation_persists_without_provider_egress() {
+        let (_path, db, session) = active_turn_fixture(100).await;
+        sqlx::query::query("UPDATE provider_sessions SET provider='codex',model='gpt-6' WHERE session_record_id=?1").bind(&session).execute(&db.pool).await.unwrap();
+        let envelope_id =
+            setup_turn_envelope(&db, "codex", "gpt-6", "request-revoke-turn", 1_000).await;
+        let result = db
+            .authorize_provider_turn(&session, "worker", 1, 50, &"a".repeat(64), 2)
+            .await;
+        assert!(
+            matches!(result, Err(Error::SubscriptionFunding(_))),
+            "provider turn is blocked before the first egress without verified subscription evidence"
+        );
+        db.revoke_inference_envelope(&crate::inference_ledger::RevokeInferenceEnvelopeInput {
+            envelope_id: envelope_id.clone(),
+            actor: "operator".into(),
+            evidence_ref: "revoke-turn".into(),
+            evidence_sha256: "d".repeat(64),
+        })
+        .await
+        .unwrap();
+        let revoked: (String,) =
+            sqlx::query_as::query_as("SELECT state FROM inference_envelopes WHERE id=?1")
+                .bind(&envelope_id)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(revoked.0, "REVOKED");
+        let counts: (i64, i64) = sqlx::query_as::query_as("SELECT (SELECT COUNT(*) FROM provider_turn_egress_requests),(SELECT COUNT(*) FROM provider_turn_ledger_requests)").fetch_one(&db.pool).await.unwrap();
+        assert_eq!(
+            counts,
+            (0, 0),
+            "revocation test must not require or create upstream egress"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_lease_blocks_egress_binding() {
+        let (_path, db, session) = active_turn_fixture(100).await;
+        super::tests::insert_reserved_turn(
+            &db,
+            &session,
+            "stale-lease-reservation",
+            "opencode",
+            "deepseek-v4.1-flash",
+        )
+        .await;
+        sqlx::query::query("UPDATE worker_leases SET expires_at_ms=1 WHERE attempt_id='attempt'")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        assert!(matches!(
+            db.bind_provider_turn(&ProviderTurnBindingInput {
+                reservation_id: "stale-lease-reservation".into(),
+                session_record_id: session,
+                worker_id: "worker".into(),
+                generation: 1,
+                request_sha256: "b".repeat(64),
+                model: "deepseek-v4.1-flash".into(),
+                path: "/v1/chat/completions".into(),
+                body_bytes: 123,
+                sequence: 0,
+            })
+            .await,
+            Err(Error::Forbidden(_))
+        ));
+        let counts: (i64, i64) = sqlx::query_as::query_as("SELECT requests_bound,(SELECT COUNT(*) FROM provider_turn_egress_requests WHERE reservation_id='stale-lease-reservation') FROM provider_turn_reservations WHERE reservation_id='stale-lease-reservation'").fetch_one(&db.pool).await.unwrap();
+        assert_eq!(
+            counts,
+            (0, 0),
+            "stale lease must block before any egress row is written"
+        );
+    }
+
+    #[tokio::test]
+    async fn monetary_envelope_does_not_substitute_for_subscription_funding() {
+        let (_path, db, session) = active_turn_fixture(100).await;
+        let envelope_id = setup_turn_envelope(
+            &db,
+            "opencode",
+            "deepseek-v4.1-flash",
+            "request-turn",
+            1_000,
+        )
+        .await;
+        let result = db
+            .authorize_provider_turn(&session, "worker", 1, 50, &"d".repeat(64), 1)
+            .await;
+        assert!(
+            matches!(result, Err(Error::SubscriptionFunding(_))),
+            "a shared monetary ledger cannot substitute for subscription verification: {result:?}"
+        );
+        let status = db.inference_spending_status(&envelope_id).await.unwrap();
+        assert_eq!(status.reserved_micros.get(), 0);
+        let reservations: (i64,) =
+            sqlx::query_as::query_as("SELECT COUNT(*) FROM provider_turn_reservations")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(reservations.0, 0);
+    }
+}
+
+fn provider_quota_error(error: &str) -> bool {
+    let lower = error.to_ascii_lowercase();
+    [
+        "insufficient_quota",
+        "quota exhausted",
+        "quota_exhausted",
+        "usage limit",
+        "exceeded your current quota",
+        "included quota",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+#[cfg(test)]
+mod quota_error_tests {
+    use super::provider_quota_error;
+
+    #[test]
+    fn provider_quota_errors_are_classified_narrowly() {
+        for message in [
+            "HTTP 429: insufficient_quota",
+            "included quota exhausted",
+            "usage limit reached",
+            "exceeded your current quota",
+        ] {
+            assert!(provider_quota_error(message), "{message}");
+        }
+        for message in [
+            "connection reset",
+            "invalid model",
+            "authentication failed",
+            "temporary upstream 500",
+            "HTTP 429 Too Many Requests",
+            "rate limit exceeded",
+        ] {
+            assert!(!provider_quota_error(message), "{message}");
+        }
     }
 }

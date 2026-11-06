@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Action, DecisionItem, OfficeOverview } from "../coreApi";
+import { I18nProvider } from "../i18n";
 import { ActionDetail } from "./ActionDetail";
 import { DecisionInbox } from "./DecisionInbox";
 import { Overview } from "./Overview";
@@ -144,6 +145,8 @@ function renderView(node: React.ReactNode) {
 
 describe("operational workspace", () => {
   beforeEach(() => {
+    localStorage.clear();
+    document.documentElement.lang = "en";
     mocks.getOverview.mockReset().mockResolvedValue(overview);
     mocks.getDecisions.mockReset().mockResolvedValue({
       items: [decision],
@@ -178,6 +181,29 @@ describe("operational workspace", () => {
     await screen.findByRole("heading", { name: "Action action-1" });
     expect(screen.getByText("Frozen checks (1)")).toBeDefined();
     expect(screen.getByText("true")).toBeDefined();
+  });
+
+  it("renders the Decision Inbox chrome in Spanish while keeping Core data", async () => {
+    render(
+      <MemoryRouter>
+        <I18nProvider initialLocale="es">
+          <DecisionInbox />
+        </I18nProvider>
+      </MemoryRouter>,
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: "Bandeja de decisiones" }),
+    ).toBeDefined();
+    expect(screen.getByText("Requiere acción")).toBeDefined();
+    expect(screen.getByText("Requieren acción: 1")).toBeDefined();
+    expect(
+      screen.getByRole("link", { name: "Abrir el entorno de ejecución" }),
+    ).toBeDefined();
+    expect(screen.getByLabelText("Motivo de liberación")).toBeDefined();
+    expect(screen.getByText("Unresolved model usage")).toBeDefined();
+    expect(screen.getByText("Sujeto reservation-1")).toBeDefined();
+    expect(document.documentElement.lang).toBe("es");
   });
 
   it("resolves an ambiguous model call through the Core operation", async () => {

@@ -3,6 +3,7 @@ import { Button } from "./components/ui/Button";
 import { Input } from "./components/ui/Field";
 import { type Campaign, CoreApiError, coreApi } from "./coreApi";
 import { shortId } from "./format";
+import { useI18n } from "./i18n";
 
 const TERMINAL = new Set(["CANCELLED", "COMPLETED", "FAILED"]);
 
@@ -21,6 +22,7 @@ export function CancelCampaign({
   disabled = false,
   onCancelled,
 }: CancelCampaignProps) {
+  const { t } = useI18n();
   const [confirming, setConfirming] = useState(false);
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
@@ -46,7 +48,7 @@ export function CancelCampaign({
       setError(
         cause instanceof CoreApiError
           ? cause.message
-          : "Campaign cancellation failed.",
+          : t("cancelCampaign.error"),
       );
     } finally {
       setBusy(false);
@@ -64,7 +66,7 @@ export function CancelCampaign({
           setConfirming(true);
         }}
       >
-        Cancel Campaign
+        {t("cancelCampaign.button")}
       </Button>
     );
   }
@@ -72,17 +74,15 @@ export function CancelCampaign({
   return (
     <form
       className="cancel-confirm"
-      aria-label={`Confirm cancellation of Campaign ${shortId(campaign.id)}`}
+      aria-label={t("cancelCampaign.aria", {
+        id: shortId(campaign.id),
+      })}
       onSubmit={submit}
     >
-      <p>
-        Cancel <code>{shortId(campaign.id)}</code>? Core will request
-        cancellation, mark queued work cancelled and flag active provider
-        sessions. External provider termination may remain unconfirmed.
-      </p>
+      <p>{t("cancelCampaign.confirm", { id: shortId(campaign.id) })}</p>
       <Input
         data-testid="cancel-reason"
-        label="Reason (optional)"
+        label={t("cancelCampaign.reason")}
         value={reason}
         maxLength={500}
         onChange={(event) => setReason(event.target.value)}
@@ -94,7 +94,9 @@ export function CancelCampaign({
       )}
       <div className="row">
         <Button type="submit" variant="danger" disabled={busy}>
-          {busy ? "Cancelling…" : "Confirm cancellation"}
+          {busy
+            ? t("cancelCampaign.cancelling")
+            : t("cancelCampaign.confirmButton")}
         </Button>
         <Button
           type="button"
@@ -104,7 +106,7 @@ export function CancelCampaign({
             setError(null);
           }}
         >
-          Keep Campaign
+          {t("cancelCampaign.keep")}
         </Button>
       </div>
     </form>

@@ -16,6 +16,7 @@ import {
   type OfficeOverview,
 } from "../coreApi";
 import { formatCostMicros, formatTimestamp, shortId } from "../format";
+import { useI18n } from "../i18n";
 
 function toneForGate(outcome: string) {
   if (outcome === "ACCEPTED") return "success" as const;
@@ -35,11 +36,15 @@ function Metric({
   value,
   detail,
   to,
+  openLabel,
+  openAria,
 }: {
   label: string;
   value: number | string;
   detail?: string;
   to?: string;
+  openLabel: string;
+  openAria: string;
 }) {
   return (
     <Panel className="overview-metric">
@@ -47,12 +52,8 @@ function Metric({
       <p className="overview-metric-value">{value}</p>
       {detail && <p className="overview-metric-detail">{detail}</p>}
       {to && (
-        <Link
-          className="overview-metric-link"
-          to={to}
-          aria-label={`Open ${label}`}
-        >
-          Open
+        <Link className="overview-metric-link" to={to} aria-label={openAria}>
+          {openLabel}
         </Link>
       )}
     </Panel>
@@ -60,6 +61,7 @@ function Metric({
 }
 
 export function Overview() {
+  const { t, formatNumber } = useI18n();
   const [data, setData] = useState<OfficeOverview | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -76,7 +78,7 @@ export function Overview() {
         setError(
           cause instanceof CoreApiError
             ? cause.message
-            : "Failed to load the Core overview.",
+            : t("overview.error.load"),
         );
       }
     }
@@ -86,18 +88,22 @@ export function Overview() {
       active = false;
       clearInterval(timer);
     };
-  }, []);
+  }, [t]);
 
   if (error && !data) {
     return (
       <ErrorState
         message={error}
-        action={<Button onClick={() => window.location.reload()}>Retry</Button>}
+        action={
+          <Button onClick={() => window.location.reload()}>
+            {t("common.retry")}
+          </Button>
+        }
       />
     );
   }
   if (!data) {
-    return <LoadingState label="Loading Core overview…" />;
+    return <LoadingState label={t("overview.loading")} />;
   }
 
   const gateEntries = Object.entries(data.gate_outcomes);
@@ -109,29 +115,35 @@ export function Overview() {
     data.budget.measured_session_tokens + data.budget.measured_model_tokens;
 
   return (
-    <div>
+    <div className="overview-workspace">
       <PageHeader
-        title="Overview"
-        description="Operational state from durable Core records. Unknown and unmeasured values are shown as such."
+        title={t("overview.title")}
+        description={t("overview.description")}
         meta={
           <>
-            <span>Core snapshot {formatTimestamp(data.as_of)}</span>
+            <span>
+              {t("overview.meta.coreSnapshot", {
+                date: formatTimestamp(data.as_of),
+              })}
+            </span>
             <span className="overview-meta-separator" aria-hidden="true">
               /
             </span>
-            <span>{data.runtime.workers} registered Workers</span>
+            <span>
+              {t("overview.meta.workers", { count: data.runtime.workers })}
+            </span>
           </>
         }
         actions={
           <>
             <Link className={buttonClass("secondary")} to="/agents">
-              Open Agent Office
+              {t("overview.actions.openAgents")}
             </Link>
             <Link className={buttonClass("quiet")} to="/inbox">
-              Open Decision Inbox
+              {t("overview.actions.openDecisions")}
             </Link>
             <Link className={buttonClass("quiet")} to="/runtime">
-              Runtime
+              {t("overview.actions.runtime")}
             </Link>
           </>
         }
@@ -139,55 +151,94 @@ export function Overview() {
 
       {error && <p className="error">{error}</p>}
 
-      <section className="overview-metrics" aria-label="Operational summary">
+      <section
+        className="overview-metrics"
+        aria-label={t("overview.summary.aria")}
+      >
         <Metric
-          label="Authorized campaigns"
+          label={t("overview.metric.authorizedCampaigns")}
           value={data.counts.authorized_campaigns}
-          detail={`${data.counts.campaigns_awaiting_authorization} awaiting authorization`}
+          detail={t("overview.metric.authorizedCampaignsDetail", {
+            count: data.counts.campaigns_awaiting_authorization,
+          })}
           to="/campaigns"
+          openLabel={t("overview.metric.open")}
+          openAria={t("overview.metric.openAria", {
+            label: t("overview.metric.authorizedCampaigns"),
+          })}
         />
         <Metric
-          label="Running agents"
+          label={t("overview.metric.runningAgents")}
           value={data.counts.active_agents}
-          detail={`${data.counts.unresolved_sessions} unresolved session${data.counts.unresolved_sessions === 1 ? "" : "s"}`}
+          detail={
+            data.counts.unresolved_sessions === 1
+              ? t("overview.metric.runningAgentsDetailOne")
+              : t("overview.metric.runningAgentsDetail", {
+                  count: data.counts.unresolved_sessions,
+                })
+          }
           to="/agents"
+          openLabel={t("overview.metric.open")}
+          openAria={t("overview.metric.openAria", {
+            label: t("overview.metric.runningAgents"),
+          })}
         />
         <Metric
-          label="Pending decisions"
+          label={t("overview.metric.pendingDecisions")}
           value={data.counts.pending_decisions}
-          detail="Actionable Core-backed items"
+          detail={t("overview.metric.pendingDecisionsDetail")}
           to="/inbox"
+          openLabel={t("overview.metric.open")}
+          openAria={t("overview.metric.openAria", {
+            label: t("overview.metric.pendingDecisions"),
+          })}
         />
         <Metric
-          label="Blocked signals"
+          label={t("overview.metric.blockedSignals")}
           value={data.counts.blocked_signals}
-          detail="Actions, Runs, Campaigns or Gates"
+          detail={t("overview.metric.blockedSignalsDetail")}
           to="/campaigns"
+          openLabel={t("overview.metric.open")}
+          openAria={t("overview.metric.openAria", {
+            label: t("overview.metric.blockedSignals"),
+          })}
         />
         <Metric
-          label="Accepted candidates"
+          label={t("overview.metric.acceptedCandidates")}
           value={accepted}
-          detail={`${data.counts.candidates} recorded`}
+          detail={t("overview.metric.acceptedDetail", {
+            count: data.counts.candidates,
+          })}
           to="/campaigns"
+          openLabel={t("overview.metric.open")}
+          openAria={t("overview.metric.openAria", {
+            label: t("overview.metric.acceptedCandidates"),
+          })}
         />
         <Metric
-          label="Measured spend"
+          label={t("overview.metric.measuredSpend")}
           value={formatCostMicros(measuredCost)}
-          detail={`${measuredTokens.toLocaleString()} measured tokens`}
+          detail={t("overview.metric.measuredTokens", {
+            tokens: formatNumber(measuredTokens),
+          })}
           to="/runtime"
+          openLabel={t("overview.metric.open")}
+          openAria={t("overview.metric.openAria", {
+            label: t("overview.metric.measuredSpend"),
+          })}
         />
       </section>
 
       <div className="overview-grid">
         <Panel className="overview-panel">
           <div className="section-heading">
-            <h2>Quality Gate outcomes</h2>
-            <Link to="/campaigns">All candidates</Link>
+            <h2>{t("overview.gate.title")}</h2>
+            <Link to="/campaigns">{t("overview.gate.all")}</Link>
           </div>
           {gateEntries.length === 0 ? (
             <EmptyState
-              title="No Gate decisions"
-              description="A candidate appears here after independent verifier and reviewer evidence is recorded."
+              title={t("overview.gate.emptyTitle")}
+              description={t("overview.gate.emptyDescription")}
             />
           ) : (
             <div className="overview-badges">
@@ -200,21 +251,21 @@ export function Overview() {
           )}
           <dl className="overview-facts">
             <div>
-              <dt>Unmeasured sessions</dt>
+              <dt>{t("overview.facts.unmeasuredSessions")}</dt>
               <dd>{data.budget.unmeasured_sessions}</dd>
             </div>
             <div>
-              <dt>Unmeasured model calls</dt>
+              <dt>{t("overview.facts.unmeasuredModelCalls")}</dt>
               <dd>{data.budget.unmeasured_model_calls}</dd>
             </div>
             <div>
-              <dt>Unmeasured bound</dt>
+              <dt>{t("overview.facts.unmeasuredBound")}</dt>
               <dd>
                 {formatCostMicros(data.budget.unmeasured_bound_cost_micros)}
               </dd>
             </div>
             <div>
-              <dt>Core</dt>
+              <dt>{t("overview.facts.core")}</dt>
               <dd>
                 <Badge tone={data.runtime.core_healthy ? "success" : "danger"}>
                   {data.runtime.core_healthy ? "HEALTHY" : "UNHEALTHY"}
@@ -227,13 +278,13 @@ export function Overview() {
 
         <Panel className="overview-panel">
           <div className="section-heading">
-            <h2>Decision Inbox</h2>
-            <Link to="/inbox">Open Inbox</Link>
+            <h2>{t("overview.decisions.title")}</h2>
+            <Link to="/inbox">{t("overview.decisions.open")}</Link>
           </div>
           {data.recent_decisions.length === 0 ? (
             <EmptyState
-              title="No decisions waiting"
-              description="New approvals or interventions appear here when Core records them."
+              title={t("overview.decisions.emptyTitle")}
+              description={t("overview.decisions.emptyDescription")}
             />
           ) : (
             <ul className="overview-decisions">
@@ -254,13 +305,13 @@ export function Overview() {
       <div className="overview-grid">
         <Panel className="overview-panel">
           <div className="section-heading">
-            <h2>Recent accepted candidates</h2>
-            <Link to="/campaigns">Campaigns</Link>
+            <h2>{t("overview.accepted.title")}</h2>
+            <Link to="/campaigns">{t("overview.accepted.campaigns")}</Link>
           </div>
           {data.recent_accepted.length === 0 ? (
             <EmptyState
-              title="No accepted candidates"
-              description="Acceptance is shown only when Core records an ACCEPTED Quality Gate."
+              title={t("overview.accepted.emptyTitle")}
+              description={t("overview.accepted.emptyDescription")}
             />
           ) : (
             <ul className="overview-accepted">
@@ -288,24 +339,24 @@ export function Overview() {
 
         <Panel className="overview-panel">
           <div className="section-heading">
-            <h2>Runtime health</h2>
-            <Link to="/runtime">Inspect runtime</Link>
+            <h2>{t("overview.runtime.title")}</h2>
+            <Link to="/runtime">{t("overview.runtime.inspect")}</Link>
           </div>
           <dl className="overview-facts">
             <div>
-              <dt>Active agents</dt>
+              <dt>{t("overview.runtime.activeAgents")}</dt>
               <dd>{data.runtime.active_agents}</dd>
             </div>
             <div>
-              <dt>Unresolved sessions</dt>
+              <dt>{t("overview.runtime.unresolvedSessions")}</dt>
               <dd>{data.runtime.unresolved_sessions}</dd>
             </div>
             <div>
-              <dt>Unresolved model calls</dt>
+              <dt>{t("overview.runtime.unresolvedModelCalls")}</dt>
               <dd>{data.runtime.unresolved_model_calls}</dd>
             </div>
             <div>
-              <dt>Telemetry export</dt>
+              <dt>{t("overview.runtime.telemetry")}</dt>
               <dd>
                 <Badge
                   tone={
@@ -322,13 +373,17 @@ export function Overview() {
 
       <Panel className="overview-panel">
         <div className="section-heading">
-          <h2>Recent events</h2>
-          <span className="muted">{data.recent_events.length} shown</span>
+          <h2>{t("overview.recentEvents.title")}</h2>
+          <span className="muted">
+            {t("overview.recentEvents.shown", {
+              count: data.recent_events.length,
+            })}
+          </span>
         </div>
         {data.recent_events.length === 0 ? (
           <EmptyState
-            title="No events"
-            description="Core records an event when Project, Action, Run or quality state changes."
+            title={t("overview.recentEvents.emptyTitle")}
+            description={t("overview.recentEvents.emptyDescription")}
           />
         ) : (
           <ul className="events">

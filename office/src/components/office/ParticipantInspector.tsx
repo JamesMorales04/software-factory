@@ -7,28 +7,42 @@ import {
   type ProviderToolEventProjection,
   type ProviderToolEventView,
 } from "../../coreApi";
-import { formatCostMicros, formatTimestamp, shortId } from "../../format";
+import { shortId } from "../../format";
+import { useI18n } from "../../i18n";
 import { Button, IconButton } from "../ui/Button";
 import { EmptyState, Panel } from "../ui/Surface";
 import { ParticipantSessionList } from "./ParticipantSessionList";
 import { StatusBadge } from "./StatusBadge";
 
-const ROLE_LABEL: Record<ParticipantRecord["role"], string> = {
-  IMPLEMENTER: "Implementer",
-  LEAD: "Lead",
-  VERIFIER: "Verifier",
-  REVIEWER: "Reviewer",
-  WORKER: "Worker",
-};
+function roleLabel(
+  role: ParticipantRecord["role"],
+  t: ReturnType<typeof useI18n>["t"],
+): string {
+  switch (role) {
+    case "IMPLEMENTER":
+      return t("agentOffice.role.IMPLEMENTER");
+    case "LEAD":
+      return t("agentOffice.role.LEAD");
+    case "VERIFIER":
+      return t("agentOffice.role.VERIFIER");
+    case "REVIEWER":
+      return t("agentOffice.role.REVIEWER");
+    case "WORKER":
+      return t("agentOffice.role.WORKER");
+  }
+}
 
-const DETAIL_LABEL: Record<string, string> = {
-  RECORDED: "recorded",
-  WITHHELD: "provider content withheld",
-  REDACTED: "redacted legacy record",
-  EMPTY: "no detail recorded",
-};
+const DETAIL_KEY = {
+  RECORDED: "inspector.detail.recorded",
+  WITHHELD: "inspector.detail.withheld",
+  REDACTED: "inspector.detail.redacted",
+  EMPTY: "inspector.detail.empty",
+} as const;
 
-function routeText(participant: ParticipantRecord): string {
+function routeText(
+  participant: ParticipantRecord,
+  t: ReturnType<typeof useI18n>["t"],
+): string {
   const requested = participant.requested_route
     ? `${participant.requested_route.provider}/${participant.requested_route.model}${
         participant.requested_route.mode
@@ -39,7 +53,7 @@ function routeText(participant: ParticipantRecord): string {
   const observed = participant.observed_route
     ? `${participant.observed_route.provider}/${participant.observed_route.model}`
     : "NOT EXPOSED";
-  return `requested ${requested} · observed ${observed}`;
+  return t("inspector.routeText", { requested, observed });
 }
 
 function campaignTab(
@@ -53,43 +67,65 @@ function campaignTab(
 }
 
 function ToolEventTable({ events }: { events: ProviderToolEventView[] }) {
+  const { t, formatDate } = useI18n();
   return (
-    <div className="agent-tool-events-wrap">
-      <table data-testid="tool-event-table">
+    <div className="agent-tool-events-wrap table-responsive">
+      <table
+        data-testid="tool-event-table"
+        aria-label={t("inspector.toolEvents.table.label")}
+      >
         <thead>
           <tr>
-            <th>Seq</th>
-            <th>Recorded</th>
-            <th>Tool</th>
-            <th>Decision</th>
-            <th>Detail</th>
-            <th>Call ref</th>
+            <th>{t("inspector.toolEvents.table.seq")}</th>
+            <th>{t("inspector.toolEvents.table.recorded")}</th>
+            <th>{t("inspector.toolEvents.table.tool")}</th>
+            <th>{t("inspector.toolEvents.table.decision")}</th>
+            <th>{t("inspector.toolEvents.table.detail")}</th>
+            <th>{t("inspector.toolEvents.table.callRef")}</th>
           </tr>
         </thead>
         <tbody>
           {events.map((event) => (
             <tr key={event.sequence}>
-              <td className="numeric">{event.sequence}</td>
-              <td className="muted">{formatTimestamp(event.recorded_at)}</td>
-              <td>
+              <td
+                className="numeric"
+                data-label={t("inspector.toolEvents.table.seq")}
+              >
+                {event.sequence}
+              </td>
+              <td
+                className="muted"
+                data-label={t("inspector.toolEvents.table.recorded")}
+              >
+                {formatDate(event.recorded_at)}
+              </td>
+              <td data-label={t("inspector.toolEvents.table.tool")}>
                 <code>{event.tool}</code>
                 {event.tool === "OTHER" && (
                   <div className="muted">
-                    digest {shortId(event.tool_digest, 12)}
+                    {t("inspector.toolEvents.digest", {
+                      id: shortId(event.tool_digest, 12),
+                    })}
                   </div>
                 )}
               </td>
-              <td>
+              <td data-label={t("inspector.toolEvents.table.decision")}>
                 <StatusBadge status={event.decision} />
               </td>
-              <td>
+              <td data-label={t("inspector.toolEvents.table.detail")}>
                 {event.detail ?? (
                   <span className="muted">
-                    {DETAIL_LABEL[event.detail_state] ?? event.detail_state}
+                    {DETAIL_KEY[event.detail_state as keyof typeof DETAIL_KEY]
+                      ? t(
+                          DETAIL_KEY[
+                            event.detail_state as keyof typeof DETAIL_KEY
+                          ],
+                        )
+                      : event.detail_state}
                   </span>
                 )}
               </td>
-              <td>
+              <td data-label={t("inspector.toolEvents.table.callRef")}>
                 <code>{event.call_ref}</code>
               </td>
             </tr>
@@ -101,6 +137,7 @@ function ToolEventTable({ events }: { events: ProviderToolEventView[] }) {
 }
 
 function ToolEvents({ participant }: { participant: ParticipantRecord }) {
+  const { t } = useI18n();
   const sessionId = participant.session?.session_record_id ?? null;
   const [events, setEvents] = useState<ProviderToolEventView[]>([]);
   const [projection, setProjection] =
@@ -130,7 +167,7 @@ function ToolEvents({ participant }: { participant: ParticipantRecord }) {
         setError(
           cause instanceof CoreApiError
             ? cause.message
-            : "Failed to load recorded tool events.",
+            : t("inspector.toolEvents.error"),
         );
       })
       .finally(() => {
@@ -139,7 +176,7 @@ function ToolEvents({ participant }: { participant: ParticipantRecord }) {
     return () => {
       sequence.current += 1;
     };
-  }, [sessionId]);
+  }, [sessionId, t]);
 
   if (!sessionId) return null;
 
@@ -159,7 +196,7 @@ function ToolEvents({ participant }: { participant: ParticipantRecord }) {
         setError(
           cause instanceof CoreApiError
             ? cause.message
-            : "Failed to load recorded tool events.",
+            : t("inspector.toolEvents.error"),
         );
       })
       .finally(() => {
@@ -195,7 +232,7 @@ function ToolEvents({ participant }: { participant: ParticipantRecord }) {
         setError(
           cause instanceof CoreApiError
             ? cause.message
-            : "Failed to load more tool events.",
+            : t("inspector.toolEvents.errorMore"),
         );
       })
       .finally(() => {
@@ -206,16 +243,13 @@ function ToolEvents({ participant }: { participant: ParticipantRecord }) {
   return (
     <section className="agent-inspector-section" aria-labelledby="tool-events">
       <div className="section-heading">
-        <h4 id="tool-events">Recorded tool events</h4>
+        <h4 id="tool-events">{t("inspector.toolEvents.title")}</h4>
         <Button size="sm" onClick={retry} disabled={loading}>
-          Refresh events
+          {t("inspector.toolEvents.refresh")}
         </Button>
       </div>
-      <p className="muted">
-        Read-only projection of <code>provider_tool_events</code>. Free-form
-        provider detail is withheld unless Core classifies it as safe.
-      </p>
-      {loading && <p className="muted">Loading recorded tool events…</p>}
+      <p className="muted">{t("inspector.toolEvents.description")}</p>
+      {loading && <p className="muted">{t("inspector.toolEvents.loading")}</p>}
       {error && (
         <p className="error" role="alert">
           {error}
@@ -223,24 +257,30 @@ function ToolEvents({ participant }: { participant: ParticipantRecord }) {
       )}
       {!loading && !error && events.length === 0 && (
         <EmptyState
-          title="No recorded tool events"
-          description="Core has no provider tool event for this exact session. An empty list is not evidence of inactivity."
+          title={t("inspector.toolEvents.emptyTitle")}
+          description={t("inspector.toolEvents.emptyDescription")}
         />
       )}
       {events.length > 0 && <ToolEventTable events={events} />}
       {projection?.discarded ? (
         <p className="warning">
-          {projection.discarded} malformed or out-of-order record
-          {projection.discarded === 1 ? " was" : "s were"} discarded by Core.
+          {t(
+            projection.discarded === 1
+              ? "inspector.toolEvents.discardedOne"
+              : "inspector.toolEvents.discardedOther",
+            { count: projection.discarded },
+          )}
         </p>
       ) : null}
       {projection?.has_more && (
         <Button size="sm" onClick={loadMore} disabled={loadingMore}>
-          {loadingMore ? "Loading…" : "Load more events"}
+          {loadingMore
+            ? t("inspector.toolEvents.loadingMore")
+            : t("inspector.toolEvents.loadMore")}
         </Button>
       )}
       {projection && !projection.has_more && events.length > 0 && (
-        <p className="muted">End of the recorded event projection.</p>
+        <p className="muted">{t("inspector.toolEvents.end")}</p>
       )}
     </section>
   );
@@ -253,12 +293,13 @@ export function ParticipantInspector({
   participant: ParticipantRecord | null;
   onClose: () => void;
 }) {
+  const { t, formatDate, formatNumber, formatMicros } = useI18n();
   if (!participant) {
     return (
       <Panel className="agent-inspector" as="aside">
         <EmptyState
-          title="Select a participant"
-          description="Choose a workstation, table row or timeline entry to inspect its authoritative Core records."
+          title={t("inspector.selectTitle")}
+          description={t("inspector.selectDescription")}
         />
       </Panel>
     );
@@ -273,13 +314,13 @@ export function ParticipantInspector({
     >
       <div className="agent-inspector-header">
         <div>
-          <p className="muted">Participant inspector</p>
+          <p className="muted">{t("inspector.title")}</p>
           <h3>
-            {ROLE_LABEL[participant.role]}{" "}
+            {roleLabel(participant.role, t)}{" "}
             <code>{shortId(participant.identity_id, 18)}</code>
           </h3>
         </div>
-        <IconButton label="Close participant inspector" onClick={onClose}>
+        <IconButton label={t("inspector.close")} onClick={onClose}>
           ×
         </IconButton>
       </div>
@@ -294,16 +335,16 @@ export function ParticipantInspector({
       <p className="muted">{participant.observation_note}</p>
 
       <section className="agent-inspector-section" aria-labelledby="assignment">
-        <h4 id="assignment">Assignment and identity</h4>
+        <h4 id="assignment">{t("inspector.assignment")}</h4>
         <dl className="agent-facts">
           <div>
-            <dt>Participant</dt>
+            <dt>{t("inspector.participant")}</dt>
             <dd>
               <code>{participant.participant_id}</code>
             </dd>
           </div>
           <div>
-            <dt>Principal</dt>
+            <dt>{t("inspector.principal")}</dt>
             <dd>
               {participant.principal_id ? (
                 <code>{participant.principal_id}</code>
@@ -313,7 +354,7 @@ export function ParticipantInspector({
             </dd>
           </div>
           <div>
-            <dt>Project</dt>
+            <dt>{t("inspector.project")}</dt>
             <dd>
               {participant.project_id ? (
                 <Link to="/projects">{participant.project_id}</Link>
@@ -323,7 +364,7 @@ export function ParticipantInspector({
             </dd>
           </div>
           <div>
-            <dt>Action</dt>
+            <dt>{t("inspector.action")}</dt>
             <dd>
               {participant.action_id ? (
                 <Link
@@ -337,7 +378,7 @@ export function ParticipantInspector({
             </dd>
           </div>
           <div>
-            <dt>Campaign</dt>
+            <dt>{t("inspector.campaign")}</dt>
             <dd>
               {participant.campaign_id ? (
                 <Link to={campaignTab(participant, "overview")}>
@@ -349,7 +390,7 @@ export function ParticipantInspector({
             </dd>
           </div>
           <div>
-            <dt>Work unit</dt>
+            <dt>{t("inspector.workUnit")}</dt>
             <dd>
               {participant.work_unit_id ? (
                 <Link
@@ -367,7 +408,7 @@ export function ParticipantInspector({
             </dd>
           </div>
           <div>
-            <dt>Run</dt>
+            <dt>{t("inspector.run")}</dt>
             <dd>
               {participant.run_id ? (
                 <Link to={campaignTab(participant, "execution")}>
@@ -379,7 +420,7 @@ export function ParticipantInspector({
             </dd>
           </div>
           <div>
-            <dt>Attempt</dt>
+            <dt>{t("inspector.attempt")}</dt>
             <dd>
               {participant.attempt_id ? (
                 <Link to={campaignTab(participant, "execution")}>
@@ -391,11 +432,11 @@ export function ParticipantInspector({
             </dd>
           </div>
           <div>
-            <dt>Attempt generation</dt>
+            <dt>{t("inspector.attemptGeneration")}</dt>
             <dd>{participant.attempt_generation ?? "NOT APPLICABLE"}</dd>
           </div>
           <div>
-            <dt>Worker</dt>
+            <dt>{t("inspector.worker")}</dt>
             <dd>
               {participant.worker_id ? (
                 <Link to="/workers">
@@ -407,7 +448,7 @@ export function ParticipantInspector({
             </dd>
           </div>
           <div>
-            <dt>Lead request</dt>
+            <dt>{t("inspector.leadRequest")}</dt>
             <dd>
               {participant.request_id ? (
                 <Link to="/lead">
@@ -419,38 +460,49 @@ export function ParticipantInspector({
             </dd>
           </div>
           <div>
-            <dt>Model calls</dt>
+            <dt>{t("inspector.modelCalls")}</dt>
             <dd>
               {participant.model_call_count === null
                 ? "NOT APPLICABLE"
-                : `${participant.model_call_count} recorded${
+                : [
+                    t("inspector.modelCallsRecorded", {
+                      count: formatNumber(participant.model_call_count),
+                    }),
                     participant.model_call_state
-                      ? ` · latest ${participant.model_call_state}`
-                      : ""
-                  }`}
+                      ? t("inspector.modelCallsLatest", {
+                          state: participant.model_call_state,
+                        })
+                      : null,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
             </dd>
           </div>
         </dl>
       </section>
 
       <section className="agent-inspector-section" aria-labelledby="route">
-        <h4 id="route">Provider route</h4>
-        <p>{routeText(participant)}</p>
-        <p className="muted">Provenance: {participant.route_provenance}</p>
+        <h4 id="route">{t("inspector.route")}</h4>
+        <p>{routeText(participant, t)}</p>
+        <p className="muted">
+          {t("inspector.provenance", {
+            value: participant.route_provenance,
+          })}
+        </p>
       </section>
 
       {participant.session && (
         <section className="agent-inspector-section" aria-labelledby="session">
-          <h4 id="session">Provider session</h4>
+          <h4 id="session">{t("inspector.session")}</h4>
           <ParticipantSessionList
             sessions={[participant.session]}
             showAttempt={false}
-            emptyTitle="No provider session"
-            emptyDescription="This participant has no recorded provider session."
+            emptyTitle={t("sessions.emptyTitle")}
+            emptyDescription={t("sessions.emptyDescription")}
           />
           <dl className="agent-facts">
             <div>
-              <dt>External session</dt>
+              <dt>{t("inspector.externalSession")}</dt>
               <dd>
                 {participant.session.provider_session_id ? (
                   <code>{participant.session.provider_session_id}</code>
@@ -460,69 +512,70 @@ export function ParticipantInspector({
               </dd>
             </div>
             <div>
-              <dt>Created</dt>
-              <dd>{formatTimestamp(participant.session.created_at)}</dd>
+              <dt>{t("inspector.created")}</dt>
+              <dd>{formatDate(participant.session.created_at)}</dd>
             </div>
             <div>
-              <dt>Updated</dt>
-              <dd>{formatTimestamp(participant.session.updated_at)}</dd>
+              <dt>{t("inspector.updated")}</dt>
+              <dd>{formatDate(participant.session.updated_at)}</dd>
             </div>
           </dl>
         </section>
       )}
 
       <section className="agent-inspector-section" aria-labelledby="usage">
-        <h4 id="usage">Usage</h4>
+        <h4 id="usage">{t("inspector.usage")}</h4>
         {participant.usage ? (
           participant.usage.usage_known ? (
             <dl className="agent-facts">
               <div>
-                <dt>Input</dt>
+                <dt>{t("inspector.input")}</dt>
                 <dd className="numeric">
-                  {participant.usage.input_tokens.toLocaleString()}
+                  {formatNumber(participant.usage.input_tokens)}
                 </dd>
               </div>
               <div>
-                <dt>Output</dt>
+                <dt>{t("inspector.output")}</dt>
                 <dd className="numeric">
-                  {participant.usage.output_tokens.toLocaleString()}
+                  {formatNumber(participant.usage.output_tokens)}
                 </dd>
               </div>
               <div>
-                <dt>Total tokens</dt>
+                <dt>{t("inspector.totalTokens")}</dt>
                 <dd className="numeric">
-                  {participant.usage.total_tokens.toLocaleString()}
+                  {formatNumber(participant.usage.total_tokens)}
                 </dd>
               </div>
               <div>
-                <dt>Measured cost</dt>
+                <dt>{t("inspector.measuredCost")}</dt>
                 <dd className="numeric">
-                  {formatCostMicros(participant.usage.cost_micros)}
+                  {formatMicros(participant.usage.cost_micros)}
                 </dd>
               </div>
             </dl>
           ) : (
             <p>
               <StatusBadge status="UNMEASURED" />
-              <span className="muted">
-                {" "}
-                Core records this usage as unknown, not zero.
-              </span>
+              <span className="muted"> {t("inspector.usageUnknown")}</span>
             </p>
           )
         ) : (
-          <p className="muted">No usage applies to this participant record.</p>
+          <p className="muted">{t("inspector.noUsage")}</p>
         )}
-        <p className="muted">Provenance: {participant.usage_provenance}</p>
+        <p className="muted">
+          {t("inspector.provenance", {
+            value: participant.usage_provenance,
+          })}
+        </p>
       </section>
 
       <section className="agent-inspector-section" aria-labelledby="evidence">
-        <h4 id="evidence">Quality evidence</h4>
+        <h4 id="evidence">{t("inspector.evidence")}</h4>
         {evidence ? (
           <>
             <dl className="agent-facts">
               <div>
-                <dt>Candidate</dt>
+                <dt>{t("inspector.candidate")}</dt>
                 <dd>
                   {evidence.candidate_id ? (
                     <Link to={campaignTab(participant, "candidates")}>
@@ -534,7 +587,7 @@ export function ParticipantInspector({
                 </dd>
               </div>
               <div>
-                <dt>Commit</dt>
+                <dt>{t("inspector.commit")}</dt>
                 <dd>
                   {evidence.candidate_commit ? (
                     <code>{evidence.candidate_commit}</code>
@@ -544,7 +597,7 @@ export function ParticipantInspector({
                 </dd>
               </div>
               <div>
-                <dt>Tree</dt>
+                <dt>{t("inspector.tree")}</dt>
                 <dd>
                   {evidence.candidate_tree ? (
                     <code>{evidence.candidate_tree}</code>
@@ -554,19 +607,22 @@ export function ParticipantInspector({
                 </dd>
               </div>
               <div>
-                <dt>Quality Gate</dt>
+                <dt>{t("inspector.gate")}</dt>
                 <dd>
                   {evidence.gate_outcome ? (
                     <Link to={campaignTab(participant, "gate")}>
                       <StatusBadge status={evidence.gate_outcome} />
                     </Link>
                   ) : (
-                    <StatusBadge status="PENDING" label="NO GATE RECORDED" />
+                    <StatusBadge
+                      status="PENDING"
+                      label={t("inspector.noGateRecorded")}
+                    />
                   )}
                 </dd>
               </div>
               <div>
-                <dt>Verifier receipt</dt>
+                <dt>{t("inspector.verifierReceipt")}</dt>
                 <dd>
                   {evidence.verifier_receipt_id ? (
                     <Link to={campaignTab(participant, "evidence")}>
@@ -578,7 +634,7 @@ export function ParticipantInspector({
                 </dd>
               </div>
               <div>
-                <dt>Reviewer receipt</dt>
+                <dt>{t("inspector.reviewerReceipt")}</dt>
                 <dd>
                   {evidence.reviewer_receipt_id ? (
                     <Link to={campaignTab(participant, "evidence")}>
@@ -592,49 +648,50 @@ export function ParticipantInspector({
             </dl>
             <div className="agent-inspector-links">
               <Link to={campaignTab(participant, "workgraph")}>
-                Open WorkGraph
+                {t("inspector.openWorkGraph")}
               </Link>
               <Link to={campaignTab(participant, "execution")}>
-                Open execution
+                {t("inspector.openExecution")}
               </Link>
               <Link to={campaignTab(participant, "evidence")}>
-                Open evidence
+                {t("inspector.openEvidence")}
               </Link>
             </div>
           </>
         ) : (
-          <p className="muted">
-            No candidate or quality evidence is bound to this participant
-            record.
-          </p>
+          <p className="muted">{t("inspector.noEvidence")}</p>
         )}
       </section>
 
       {participant.failure_reason && (
         <section className="agent-inspector-section" aria-labelledby="failure">
-          <h4 id="failure">Error and cleanup</h4>
+          <h4 id="failure">{t("inspector.error")}</h4>
           <p className="error">{participant.failure_reason}</p>
           {participant.session && (
             <p className="muted">
-              Cleanup: {participant.session.cleanup}
-              {participant.session.cleanup_receipt
-                ? ` · ${participant.session.cleanup_receipt}`
-                : ""}
+              {t("inspector.cleanup", {
+                cleanup: [
+                  participant.session.cleanup,
+                  participant.session.cleanup_receipt,
+                ]
+                  .filter(Boolean)
+                  .join(" · "),
+              })}
             </p>
           )}
         </section>
       )}
 
       <section className="agent-inspector-section" aria-labelledby="timestamps">
-        <h4 id="timestamps">Recorded timestamps</h4>
+        <h4 id="timestamps">{t("inspector.timestamps")}</h4>
         <dl className="agent-facts">
           <div>
-            <dt>Recorded</dt>
-            <dd>{formatTimestamp(participant.recorded_at)}</dd>
+            <dt>{t("inspector.recorded")}</dt>
+            <dd>{formatDate(participant.recorded_at)}</dd>
           </div>
           <div>
-            <dt>Last observed</dt>
-            <dd>{formatTimestamp(participant.last_observed_at)}</dd>
+            <dt>{t("inspector.lastObserved")}</dt>
+            <dd>{formatDate(participant.last_observed_at)}</dd>
           </div>
         </dl>
       </section>

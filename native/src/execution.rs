@@ -915,7 +915,10 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
         self.active.lock().unwrap().remove(workspace_id);
         let exported = self.backend.export_volume(&record.volume).await;
         let _ = self.backend.remove_container(&container).await;
-        let _ = self.backend.remove_volume(&record.volume).await;
+        // Keep the workspace transfer volume alive for subsequent checks and
+        // writes. Cleanup and reconciliation remove it when the workspace is
+        // terminal; deleting it here made every check after the first one fail
+        // at volume import.
         record.container = None;
         record.updated_at_ms = now_ms();
         let (result, exported) = match (result, exported) {

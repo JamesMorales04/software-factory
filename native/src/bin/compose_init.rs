@@ -55,6 +55,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::env::var("FACTORY_PROVIDER_SESSIONS_DIR")
             .unwrap_or_else(|_| "/provider-sessions".into()),
     );
+    let codex_home = PathBuf::from(
+        std::env::var("FACTORY_CODEX_HOME_DIR").unwrap_or_else(|_| "/codex-home".into()),
+    );
+    let office_socket = PathBuf::from(
+        std::env::var("FACTORY_OFFICE_SOCKET_DIR").unwrap_or_else(|_| "/office-socket".into()),
+    );
     let uid = std::env::var("FACTORY_CONFIG_UID")
         .ok()
         .and_then(|value| value.parse::<u32>().ok())
@@ -85,14 +91,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             secrets: RUNTIME_SECRETS,
         },
     ];
-    let operator_preexisting = placements[0].directory.join("operator.token").is_file();
     for placement in &placements {
         prepare_directory(&placement.directory, uid)?;
         let _ = fs::remove_file(placement.directory.join(".ready"));
     }
-    for directory in [&data, &projects, &provider_sessions] {
+    for directory in [&data, &projects, &provider_sessions, &office_socket] {
         prepare_directory(directory, uid)?;
     }
+    prepare_directory(&codex_home, uid)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&codex_home, fs::Permissions::from_mode(0o700))?;
+    }
+    // The dedicated Office socket volume is shared with the Tailscale
+    // container, whose root is mapped outside Core's UID in rootless Podman.
+    fs::set_permissions(&office_socket, fs::Permissions::from_mode(0o755))?;
 
     let mut names = BTreeSet::new();
     for placement in &placements {
@@ -126,14 +140,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         values.insert(name, value);
     }
 
-    let enrollment = data.join("enrollment-code");
-    if !operator_preexisting && !enrollment.exists() && !data.join("enrollment-used").exists() {
-        write_secret(&enrollment, &random_hex(20)?, uid)?;
-        println!("First-run enrollment code material created.");
-    }
-    if enrollment.exists() {
-        ensure_mode(&enrollment)?;
-    }
     for placement in &placements {
         write_secret(&placement.directory.join(".ready"), "ready", uid)?;
     }

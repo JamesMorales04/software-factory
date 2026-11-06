@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { type Attempt, CoreApiError, coreApi, type Run } from "../coreApi";
-import { formatTimestamp, shortId } from "../format";
+import { shortId } from "../format";
+import { useI18n } from "../i18n";
 
 export function Runs() {
+  const { t, formatDate } = useI18n();
   const [runs, setRuns] = useState<Run[]>([]);
   const [attempts, setAttempts] = useState<Attempt[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -11,23 +13,23 @@ export function Runs() {
   const [busyId, setBusyId] = useState<string | null>(null);
 
   useEffect(() => {
-    let active = true;
+    let mounted = true;
     async function load() {
       try {
         const [nextRuns, nextAttempts] = await Promise.all([
           coreApi.listRuns(),
           coreApi.listAttempts(),
         ]);
-        if (active) {
+        if (mounted) {
           setRuns(nextRuns);
           setAttempts(nextAttempts);
         }
       } catch (cause) {
-        if (active) {
+        if (mounted) {
           setError(
             cause instanceof CoreApiError
               ? cause.message
-              : "Failed to load Runs.",
+              : t("runs.error.load"),
           );
         }
       }
@@ -35,10 +37,10 @@ export function Runs() {
     void load();
     const timer = setInterval(() => void load(), 2000);
     return () => {
-      active = false;
+      mounted = false;
       clearInterval(timer);
     };
-  }, []);
+  }, [t]);
 
   async function onQueueAttempt(run: Run) {
     setBusyId(run.id);
@@ -47,7 +49,10 @@ export function Runs() {
     try {
       const attempt = await coreApi.createRunAttempt(run.id);
       setNotice(
-        `Queued Attempt ${shortId(attempt.id)} for Run ${shortId(run.id)}.`,
+        t("runs.notice.queued", {
+          attempt: shortId(attempt.id),
+          run: shortId(run.id),
+        }),
       );
       const [nextRuns, nextAttempts] = await Promise.all([
         coreApi.listRuns(),
@@ -57,9 +62,7 @@ export function Runs() {
       setAttempts(nextAttempts);
     } catch (cause) {
       setError(
-        cause instanceof CoreApiError
-          ? cause.message
-          : "Attempt queueing failed.",
+        cause instanceof CoreApiError ? cause.message : t("runs.error.queue"),
       );
     } finally {
       setBusyId(null);
@@ -74,103 +77,117 @@ export function Runs() {
   }
 
   return (
-    <div>
-      <h2>Runs</h2>
-      <p className="muted">
-        Runs are created from an authorized Campaign. Queue one Attempt per
-        queued Run; Worker leasing and execution are observed here and not
-        triggered by the Office.
-      </p>
+    <div className="runs-workspace">
+      <h2>{t("runs.title")}</h2>
+      <p className="muted">{t("runs.description")}</p>
       {error && <p className="error">{error}</p>}
       {notice && <p className="notice">{notice}</p>}
 
-      <h3>All Runs ({runs.length})</h3>
+      <h3>{t("runs.section.allRuns", { count: runs.length })}</h3>
       {runs.length === 0 ? (
-        <p className="muted">
-          No Runs yet. Authorize a Campaign and queue a Run first.
-        </p>
+        <p className="muted">{t("runs.list.empty")}</p>
       ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>Run</th>
-              <th>Campaign</th>
-              <th>Status</th>
-              <th>Attempts</th>
-              <th>Created</th>
-              <th>Control</th>
-            </tr>
-          </thead>
-          <tbody>
-            {runs.map((run) => {
-              const runAttempts = attemptsByRun.get(run.id) ?? [];
-              return (
-                <tr key={run.id}>
-                  <td>
-                    <code>{shortId(run.id)}</code>
-                  </td>
-                  <td>
-                    <Link to={`/campaigns/${run.campaign_id}`}>
-                      <code>{shortId(run.campaign_id)}</code>
-                    </Link>
-                  </td>
-                  <td>
-                    <span className="pill">{run.status}</span>
-                  </td>
-                  <td>{runAttempts.length}</td>
-                  <td className="muted">{formatTimestamp(run.created_at)}</td>
-                  <td>
-                    {run.status === "QUEUED" && runAttempts.length === 0 ? (
-                      <button
-                        type="button"
-                        disabled={busyId === run.id}
-                        onClick={() => void onQueueAttempt(run)}
-                      >
-                        {busyId === run.id ? "Queueing…" : "Queue Attempt"}
-                      </button>
-                    ) : (
-                      <span className="muted">
-                        {runAttempts.length > 0 ? "attempt queued" : "—"}
-                      </span>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        <section
+          className="table-responsive"
+          aria-label={t("runs.table.label")}
+        >
+          <table>
+            <thead>
+              <tr>
+                <th>{t("runs.table.run")}</th>
+                <th>{t("runs.table.campaign")}</th>
+                <th>{t("runs.table.status")}</th>
+                <th>{t("runs.table.attempts")}</th>
+                <th>{t("runs.table.created")}</th>
+                <th>{t("runs.table.control")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {runs.map((run) => {
+                const runAttempts = attemptsByRun.get(run.id) ?? [];
+                return (
+                  <tr key={run.id}>
+                    <td data-label={t("runs.table.run")}>
+                      <code>{shortId(run.id)}</code>
+                    </td>
+                    <td data-label={t("runs.table.campaign")}>
+                      <Link to={`/campaigns/${run.campaign_id}`}>
+                        <code>{shortId(run.campaign_id)}</code>
+                      </Link>
+                    </td>
+                    <td data-label={t("runs.table.status")}>
+                      <span className="pill">{run.status}</span>
+                    </td>
+                    <td data-label={t("runs.table.attempts")}>
+                      {runAttempts.length}
+                    </td>
+                    <td className="muted" data-label={t("runs.table.created")}>
+                      {formatDate(run.created_at)}
+                    </td>
+                    <td data-label={t("runs.table.control")}>
+                      {run.status === "QUEUED" && runAttempts.length === 0 ? (
+                        <button
+                          type="button"
+                          disabled={busyId === run.id}
+                          onClick={() => void onQueueAttempt(run)}
+                        >
+                          {busyId === run.id
+                            ? t("runs.queueing")
+                            : t("runs.queue")}
+                        </button>
+                      ) : (
+                        <span className="muted">
+                          {runAttempts.length > 0
+                            ? t("runs.attemptQueued")
+                            : t("common.dash")}
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </section>
       )}
 
-      <h3>All Attempts ({attempts.length})</h3>
+      <h3>{t("runs.section.allAttempts", { count: attempts.length })}</h3>
       {attempts.length === 0 ? (
-        <p className="muted">No Attempts queued.</p>
+        <p className="muted">{t("runs.attempts.empty")}</p>
       ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>Attempt</th>
-              <th>Run</th>
-              <th>Status</th>
-              <th>Created</th>
-            </tr>
-          </thead>
-          <tbody>
-            {attempts.map((attempt) => (
-              <tr key={attempt.id}>
-                <td>
-                  <code>{shortId(attempt.id)}</code>
-                </td>
-                <td>
-                  <code>{shortId(attempt.run_id)}</code>
-                </td>
-                <td>
-                  <span className="pill">{attempt.status}</span>
-                </td>
-                <td className="muted">{formatTimestamp(attempt.created_at)}</td>
+        <section
+          className="table-responsive"
+          aria-label={t("runs.table.label")}
+        >
+          <table>
+            <thead>
+              <tr>
+                <th>{t("runs.table.attempt")}</th>
+                <th>{t("runs.table.run")}</th>
+                <th>{t("runs.table.status")}</th>
+                <th>{t("runs.table.created")}</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {attempts.map((attempt) => (
+                <tr key={attempt.id}>
+                  <td data-label={t("runs.table.attempt")}>
+                    <code>{shortId(attempt.id)}</code>
+                  </td>
+                  <td data-label={t("runs.table.run")}>
+                    <code>{shortId(attempt.run_id)}</code>
+                  </td>
+                  <td data-label={t("runs.table.status")}>
+                    <span className="pill">{attempt.status}</span>
+                  </td>
+                  <td className="muted" data-label={t("runs.table.created")}>
+                    {formatDate(attempt.created_at)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
       )}
     </div>
   );

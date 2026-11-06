@@ -5,8 +5,12 @@ import "@fontsource-variable/ibm-plex-sans";
 import "@fontsource/ibm-plex-mono/400.css";
 import "@fontsource/ibm-plex-mono/500.css";
 import { App } from "./App";
+import { I18nProvider } from "./i18n";
+import { initializeOffice } from "./legacyCredentials";
 import { ThemeProvider } from "./theme";
 import "./styles.css";
+
+initializeOffice();
 
 const root = document.getElementById("root");
 if (!root) {
@@ -14,10 +18,16 @@ if (!root) {
 }
 createRoot(root).render(
   <StrictMode>
-    <ThemeProvider>
-      <HashRouter>
-        <App />
-      </HashRouter>
-    </ThemeProvider>
+    <I18nProvider>
+      <ThemeProvider>
+        <HashRouter>
+          <App />
+        </HashRouter>
+      </ThemeProvider>
+    </I18nProvider>
   </StrictMode>,
 );
+
+if ("serviceWorker" in navigator && import.meta.env.PROD) {
+  void navigator.serviceWorker.register("/sw.js", { scope: "/" });
+}

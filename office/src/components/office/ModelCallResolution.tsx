@@ -1,5 +1,6 @@
 import { useId, useState } from "react";
 import { CoreApiError, coreApi } from "../../coreApi";
+import { useI18n } from "../../i18n";
 import { Button } from "../ui/Button";
 import { Input } from "../ui/Field";
 
@@ -12,6 +13,7 @@ export function ModelCallResolution({
   onResolved: () => Promise<void>;
   compact?: boolean;
 }) {
+  const { t } = useI18n();
   const actorId = useId();
   const reasonId = useId();
   const [actor, setActor] = useState("office-operator");
@@ -21,7 +23,7 @@ export function ModelCallResolution({
 
   async function submit() {
     if (!reason.trim()) {
-      setError("A reason is required.");
+      setError(t("modelResolution.reasonRequired"));
       return;
     }
     setBusy(true);
@@ -36,7 +38,7 @@ export function ModelCallResolution({
       setError(
         cause instanceof CoreApiError
           ? cause.message
-          : "Failed to release the model reservation.",
+          : t("modelResolution.error"),
       );
       setBusy(false);
       return;
@@ -45,9 +47,7 @@ export function ModelCallResolution({
     try {
       await onResolved();
     } catch {
-      setError(
-        "Reservation released, but the refresh failed. Reload to confirm.",
-      );
+      setError(t("modelResolution.refreshError"));
     } finally {
       setBusy(false);
     }
@@ -63,7 +63,7 @@ export function ModelCallResolution({
     >
       <Input
         id={actorId}
-        label="Operator"
+        label={t("modelResolution.operator")}
         value={actor}
         onChange={(event) => setActor(event.target.value)}
         autoComplete="username"
@@ -71,10 +71,10 @@ export function ModelCallResolution({
       />
       <Input
         id={reasonId}
-        label="Release reason"
+        label={t("modelResolution.reason")}
         value={reason}
         onChange={(event) => setReason(event.target.value)}
-        placeholder="Why are you releasing this reservation?"
+        placeholder={t("modelResolution.reasonPlaceholder")}
         className="decision-resolve-reason"
       />
       <Button
@@ -83,7 +83,7 @@ export function ModelCallResolution({
         onClick={() => void submit()}
         disabled={busy || !reason.trim()}
       >
-        {busy ? "Releasing…" : "Release reservation"}
+        {busy ? t("modelResolution.releasing") : t("modelResolution.release")}
       </Button>
       {error && (
         <p className="error" role="alert">

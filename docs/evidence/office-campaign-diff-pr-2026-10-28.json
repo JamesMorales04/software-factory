@@ -1,0 +1,72 @@
+{
+  "schema": "factory.office-campaign-diff-pr.v1",
+  "recorded_at": "2026-10-28T18:00:00Z",
+  "result": "PASS (implementer deterministic evidence; not independent acceptance)",
+  "branch": "campaign/office-ux-diff-20261028",
+  "baseline_sha": "924e026",
+  "implementation_shas": [
+    "b5be0f1027c5b585d0aae49e970e7e3384d926da",
+    "541edfcb2ed18db7837cf19dbc7284dc34fe1fed",
+    "89413c8ae1c11bc69a5054439757c49b794dec36",
+    "c6c5497cf30f727dae936e83369a3a5d8daf8a46"
+  ],
+  "migration": "none",
+  "implementation": {
+    "core_diff_module": "native/src/candidate_diff.rs",
+    "core_routes": [
+      "GET /campaigns/{id}/candidates/{candidate_id}/diff",
+      "GET /projects/{id}/github",
+      "GET /campaigns/{id}/candidates/{candidate_id}/pull-request",
+      "POST /campaigns/{id}/candidates/{candidate_id}/pull-request",
+      "GET /campaigns/{id}/candidates/{candidate_id}/pull-request/diff",
+      "GET /campaigns/{id}/candidates/{candidate_id}/pull-request/comments",
+      "POST /campaigns/{id}/candidates/{candidate_id}/pull-request/comments",
+      "POST /campaigns/{id}/candidates/{candidate_id}/pull-request/review",
+      "POST /campaigns/{id}/candidates/{candidate_id}/pull-request/merge"
+    ],
+    "github_client": "native/src/github.rs adds pull request, branch identity, check-run/status, bounded diff, comment, review request and pinned-head merge reads/writes on the existing encrypted connection.",
+    "office_components": [
+      "office/src/components/office/CandidateDiff.tsx",
+      "office/src/components/office/CandidatePullRequest.tsx",
+      "office/src/views/CampaignDetail.tsx"
+    ],
+    "diff_bounds": {
+      "changed_files": 200,
+      "text_blob_bytes": 524288,
+      "per_file_patch_bytes": 131072,
+      "total_patch_bytes": 524288,
+      "path_bytes": 1000
+    },
+    "omissions": [
+      "binary",
+      "too large",
+      "symlink/gitlink",
+      "non-UTF-8 patch",
+      "patch budget"
+    ],
+    "identity": "Project repository identity is revalidated; base and candidate must be exact full Git object IDs; the candidate commit must descend from the recorded base; the recorded candidate tree must equal the commit tree; the Candidate ActionSpec hash must equal the frozen Action; the Office projection includes exact candidate and Gate identity.",
+    "pr_policy": "Pull request reads use the encrypted Core GitHub connection; tokens never reach Office. Opening a PR verifies the GitHub head branch resolves to the exact candidate commit. Review requests and comments are explicit operator actions and re-read the PR head first so an effect is refused when the head does not match the candidate commit. Merge requires explicit confirmation, an exact expected head pinned in the request, a fresh pull request read, a fresh check read, a clean GitHub mergeable state and GitHub API success. No auto-merge. Branch protection and required checks remain GitHub-authoritative; blocked responses are typed."
+  },
+  "commands": {
+    "rust_format": "PASS: cargo fmt --all --check",
+    "rust_clippy": "PASS: CARGO_TARGET_DIR=/home/james/Escritorio/Development/sf-office-ux/target-diff cargo clippy --workspace --all-targets --all-features --locked -- -D warnings",
+    "rust_candidate_diff": "PASS: cargo test -p factory-native --lib candidate_diff (7 passed)",
+    "rust_github_client": "PASS: cargo test -p factory-native --lib github::tests (14 passed)",
+    "rust_core_routes": "PASS: cargo test -p factory-native --bin factory-core (22 passed, including campaign_diff_and_pr_routes_bind_exact_candidate_and_project_binding)",
+    "rust_lib_suite": "PASS: cargo test -p factory-native --lib -- --skip browser::tests::logs_inside_the_workspace_are_rejected_before_creation (348 passed, 2 ignored, 1 filtered). The skipped pre-existing browser log-path test fails in this host environment and is outside this lane.",
+    "office_typecheck": "PASS: npm run typecheck",
+    "office_lint": "PASS: npm run lint (Biome, 112 files)",
+    "office_tests": "PASS: npm run test (26 files, 148 tests)",
+    "office_build": "PASS: npm run build (existing chunk-size warning only)",
+    "full_rust_suite": "PARTIAL: cargo test -p factory-native reached pre-existing environment-dependent failures in native/tests/provider_sandbox.rs (actual/confined OpenCode did not start) and native/src/browser.rs logs_inside_the_workspace_are_rejected_before_creation; neither path is changed by this lane."
+  },
+  "not_tested": [
+    "real GitHub API read, PR creation, comment, review request or merge (NOT_TESTED; no live GitHub credential was used)",
+    "real Chromium browser acceptance of the diff/PR interfaces at 1440/1024/834/390/320 (NOT_TESTED; component tests and a static responsive CSS contract only)",
+    "independent verifier, semantic reviewer, Quality Gate acceptance or Product Owner review of this lane",
+    "screen-reader/axe audit and dark/compact-density visual review",
+    "pushing candidate commits to GitHub; Core does not create or push branches, so an absent or mismatched remote head is a typed blocked state",
+    "Windows or deployment behavior"
+  ],
+  "notes": "The existing candidate diff route now returns bounded file patches in addition to the retained path/stat summary. The diff viewer never executes the candidate and never reads host paths supplied by Office. The PR interface is a truthful projection of GitHub plus Core policy; unavailable credentials, permissions, branch identity and merge state are shown as typed errors rather than success. No parity claim is made for a real GitHub or real browser run."
+}

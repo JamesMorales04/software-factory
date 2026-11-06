@@ -9,10 +9,17 @@ projection/client of typed Core APIs; it is never an authorization bypass.
 ## Onboarding
 
 - First-run status is public but read-only.
-- Enrollment requires the one-time code from the private data volume.
-- The operator token is returned once to the tab and kept in session storage;
-  it is not written to a provider setting or URL.
-- After enrollment, no unauthenticated administrative mutation endpoint exists.
+- `./factory open` obtains a five-minute, single-use confirmation code through
+  a protected Core container operation. The Owner enters it once in Office;
+  it is not placed in a URL or request log.
+- Office uses an opaque server-managed device session in an HttpOnly,
+  SameSite=Strict cookie. Core persists only its SHA-256 digest. A separate
+  readable CSRF cookie is sent in `x-factory-csrf` for browser mutations.
+- Browser sessions use exact Host/Origin checks and require loopback HTTP for
+  local development. Exact private HTTPS origins are configured explicitly.
+- `./factory recover` revokes enrolled sessions and issues a new one-time local
+  confirmation code. The permanent operator credential remains a protected
+  internal API/recovery mechanism and is not returned to Office.
 
 ## Settings → Providers & Models
 
@@ -25,12 +32,14 @@ The provider catalog is typed:
 
 Each provider card exposes:
 
-- installed/configured status and masked credential fingerprint;
-- model, endpoint, enabled/default route;
-- provider-route token/cost limits and per-million rates; these cap Core model
-  calls but never widen or replace the explicit Campaign authorization that
-  bounds provider sessions. The turn limit is stored as an operator default but
-  is not enforced in this iteration;
+- installed/configured status, enabled/default route and the current model;
+- a searchable model selector built from the current model, provider default
+  and real model discovery;
+- explicit advanced configuration for base URL, manual model IDs, connection
+  details, provider-route token/cost limits and per-million rates. These limits
+  cap Core model calls but never widen or replace the explicit Campaign
+  authorization that bounds provider sessions. The turn limit is stored as an
+  operator default but is not enforced in this iteration;
 - test connection (model list only), configuration revision and audit;
 - credential replacement and revocation.
 
@@ -39,6 +48,17 @@ returned. Saving or testing does not start inference. The base Compose stack
 defaults to the live OpenCode adapter and fails closed without matching provider
 settings; the deterministic fixture is enabled only by the explicit E2E
 override, never as a silent fallback.
+
+## Execution profiles
+
+Execution profiles keep the normal path readable: name, category and one
+provider/model/reasoning route each for Lead, Implementer and Semantic Reviewer.
+Technical per-operation timeouts, request/response bounds, generation limits,
+in-flight capacity and deterministic progress supervision are optional
+advanced settings. A profile revision carries no turn, attempt, session, token,
+cost or Campaign-deadline budget; Core still enforces its real operation limits
+and the separate explicit inference envelope. A historical V1 revision is
+readable, but saving it writes a V2 revision without carrying the old caps.
 
 ## Review & runtime policy
 
@@ -50,6 +70,37 @@ reviewer binary runs its deterministic pre-review before model review; Core
 enforces the policy and budget but cannot prove that internal ordering against
 a compromised reviewer token. A model `approve` alone does not create the
 verifier receipt required by the gate.
+
+## Settings → Access & Devices
+
+Access & Devices shows the current browser session, enrolled devices, last
+activity, expiry and recent Core security activity. Each browser or phone has
+its own revocable session; the permanent operator credential is never sent to
+the browser.
+
+To pair a phone:
+
+1. Open **Settings → Access & Devices** on the enrolled desktop and select
+   **Pair device**. The QR contains only a short-lived random challenge
+   identifier, never a session, operator token or verification code.
+2. Scan the QR with the phone while it can reach the Factory Office origin.
+   The phone claims the challenge and displays a six-digit verification code.
+3. Confirm the same code in Office and select **Approve device**. Core creates
+   an independent HttpOnly phone session only after the matching code is
+   submitted.
+4. Use **Reject** for an unexpected claimant or **Cancel pairing code** to make
+   an unclaimed or awaiting-pickup challenge terminal. Challenges expire after
+   three minutes and cannot be replayed.
+
+**Revoke** ends one device session; **Sign out** ends the current device; **Revoke
+all devices** ends every session, including the current browser. Revocation is
+immediate for protected API access. The Office shell still loads so local
+recovery can be shown, but it grants no operator API authority.
+
+The PWA service worker is network-only. It does not cache Core responses,
+campaign data, credentials or authorization state and offers no offline
+administration. Private Tailscale status is reported from Core's health probe;
+tailnet membership alone is not a Factory session, and Funnel is not supported.
 
 ## Projects
 
@@ -103,3 +154,6 @@ Create/revoke scoped grants with:
 - Live Codex configuration is visible but container inference remains blocked.
 - Browser onboarding and the deterministic full journey are author-run; an
   independent browser acceptance remains open.
+- The simplified Home and Execution Profiles surfaces have component and
+  fixture-Chromium evidence only; real Core/Compose browser acceptance remains
+  not tested.

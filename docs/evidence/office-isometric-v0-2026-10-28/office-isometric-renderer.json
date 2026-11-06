@@ -1,0 +1,151 @@
+{
+  "schema_version": 1,
+  "capability": "CAP-011",
+  "slice": "office-isometric-v0",
+  "candidate": "c06432d",
+  "code_candidate": "c06432d",
+  "candidate_tree": "dfa09c0372f60272d67f7fce853cf40469dd5ef7",
+  "recorded_at": "2026-10-29T01:15:00Z",
+  "evidence_level": "AUTHOR_SELF_TEST_FIXTURE_ONLY",
+  "live_core": false,
+  "live_activity": false,
+  "statement": "Real Chromium rendered the real Office bundle at four viewports and exercised selection, filtering, zoom and pan. Core API responses were deterministic Playwright route fixtures and the page carried a visible MOCK CORE FIXTURE banner. This is renderer and interaction self-test evidence, not live agent activity, not independent acceptance and not Compose acceptance.",
+  "browser": {
+    "engine": "Chromium",
+    "product": "Google Chrome for Testing 156.0.8078.4",
+    "executable": "/home/james/.cache/ms-playwright/chromium-1248/chrome-linux64/chrome",
+    "automation": "playwright-core 1.64.1",
+    "headless": true
+  },
+  "method": {
+    "server": "Vite dev server from office/ on 127.0.0.1:4173",
+    "app": "Factory Office hash route /#/agents",
+    "fixtures": "Playwright page.route interception of **/core-api/** with 12 deterministic ParticipantRecord fixtures, 2 Campaigns and 1 Project; a visible MOCK CORE FIXTURE banner was injected before capture",
+    "scene_harness": "office/visual-harness.html, served only by the Vite dev server, excluded from the production build, with a permanent TEST FIXTURE \u2014 NOT LIVE CORE DATA banner. It renders the same AgentOfficeIsometric component with deterministic fixtures."
+  },
+  "viewports": [
+    {
+      "width": 1440,
+      "height": 1000,
+      "avatars": 12,
+      "document_overflow_px": 0,
+      "zoom": "Zoom 78%",
+      "console_errors": 0,
+      "failed_requests": 0,
+      "screenshot": "page-1440.png"
+    },
+    {
+      "width": 834,
+      "height": 1000,
+      "avatars": 12,
+      "document_overflow_px": 0,
+      "zoom": "Zoom 84%",
+      "console_errors": 0,
+      "failed_requests": 0,
+      "screenshot": "page-834.png"
+    },
+    {
+      "width": 390,
+      "height": 900,
+      "avatars": 12,
+      "document_overflow_px": 0,
+      "zoom": "Zoom 55%",
+      "scene_crop": "pannable crop; descendant scene art intentionally exceeds the clipped viewport",
+      "console_errors": 0,
+      "failed_requests": 0,
+      "screenshot": "page-390.png"
+    },
+    {
+      "width": 320,
+      "height": 780,
+      "avatars": 12,
+      "document_overflow_px": 0,
+      "zoom": "Zoom 55%",
+      "scene_crop": "pannable crop; descendant scene art intentionally exceeds the clipped viewport",
+      "console_errors": 0,
+      "failed_requests": 0,
+      "screenshot": "page-320.png"
+    }
+  ],
+  "interactions": {
+    "keyboard_selection": {
+      "action": "focus first avatar, press Enter",
+      "url": "#/agents/lead:participant-00",
+      "inspector": "Lead lead-019919",
+      "screenshot": "page-selected-1440.png"
+    },
+    "filter": {
+      "action": "select Role = IMPLEMENTER",
+      "url": "#/agents?role=IMPLEMENTER",
+      "avatars": 3,
+      "zoom": "Zoom 86%",
+      "screenshot": "page-filtered-1440.png"
+    },
+    "inspector_collapse": {
+      "action": "Hide inspector / Show inspector on the Visual Office tab",
+      "result": "the side panel hides and restores without losing the view or filters",
+      "component_test": "office/src/views/AgentOffice.test.tsx"
+    },
+    "scene_density": {
+      "fixtures": [
+        "5 all-current Implementers",
+        "30 all-current Implementers",
+        "12 mixed observations"
+      ],
+      "viewports": [
+        1440,
+        834,
+        390,
+        320
+      ],
+      "result": "one unique avatar appearance per participant, non-working poses for STALE/FINAL/UNKNOWN, no document overflow; narrow widths use a pannable crop",
+      "screenshots": [
+        "scene-0-1440.png",
+        "scene-0-390.png",
+        "scene-1-1440.png",
+        "scene-1-390.png",
+        "scene-5-implementers-1440.png",
+        "scene-5-implementers-390.png",
+        "scene-12-1440.png",
+        "scene-12-390.png",
+        "scene-30-1440.png",
+        "scene-30-390.png",
+        "scene-30-320.png",
+        "scene-12-es-1440.png"
+      ]
+    },
+    "empty": {
+      "fixture": "0 participants",
+      "result": "No recorded participants empty state, zero avatars, no fabricated entity",
+      "screenshot": "scene-0-1440.png"
+    },
+    "avatar_bounds": {
+      "result": "Every pair of 84x100 avatar bounds is non-overlapping for 0/1/5/12/30 mixed and 30 Implementers.",
+      "test": "office/src/components/office/officeSceneLayout.test.ts",
+      "slot_pitch": "92x104"
+    },
+    "duplicate_identity": {
+      "result": "CURRENT wins over STALE/FINAL/UNKNOWN; newest last_observed_at; lexical field tiebreak. Reversed input yields the same station, state and appearance.",
+      "test": "office/src/components/office/officeSceneLayout.test.ts"
+    }
+  },
+  "not_tested": [
+    "Real Core /office/participants projection against a running Core process",
+    "Compose stack (Core, Worker, Supervisor, nested Podman, broker)",
+    "Independent verification or Quality Gate acceptance",
+    "Live provider sessions or model inference",
+    "Automated axe audit and full manual screen-reader review",
+    "Visual regression baseline",
+    "Owner visual approval of the studio amendment"
+  ],
+  "artifacts_note": "Screenshots are bounded renderer-review artifacts. Page captures carry a visible MOCK CORE FIXTURE banner and scene captures carry a TEST FIXTURE \u2014 NOT LIVE CORE DATA header. They must never be read as live agent activity or Core acceptance.",
+  "visual_comparison": {
+    "primary_reference": "factory-office-visual-reference-pack-20261028/01-office-isometrica-referencia-principal.png",
+    "artifacts": [
+      "comparison-primary-vs-full-page.jpg",
+      "comparison-primary-vs-30-active.jpg"
+    ],
+    "assessment": "dark studio shell/rooms/avatars aligned in direction; simpler flat room geometry, smaller front-facing characters, less volumetric lighting and no animation remain.",
+    "approval": false
+  }
+}

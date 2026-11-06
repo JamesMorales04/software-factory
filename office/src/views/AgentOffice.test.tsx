@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -7,6 +7,7 @@ import type {
   ParticipantRecord,
   ProviderToolEventProjection,
 } from "../coreApi";
+import { I18nProvider, type Locale } from "../i18n";
 import { AgentOffice } from "./AgentOffice";
 
 const mocks = vi.hoisted(() => ({
@@ -250,8 +251,8 @@ function LocationProbe() {
   );
 }
 
-function renderOffice(path = "/agents") {
-  return render(
+function renderOffice(path = "/agents", locale?: Locale) {
+  const content = (
     <MemoryRouter initialEntries={[path]}>
       <Routes>
         <Route
@@ -273,7 +274,14 @@ function renderOffice(path = "/agents") {
           }
         />
       </Routes>
-    </MemoryRouter>,
+    </MemoryRouter>
+  );
+  return render(
+    locale ? (
+      <I18nProvider initialLocale={locale}>{content}</I18nProvider>
+    ) : (
+      content
+    ),
   );
 }
 
@@ -308,7 +316,10 @@ describe("AgentOffice", () => {
     await screen.findByRole("heading", { name: "Agent Office" });
     expect(screen.getByText("Implementation")).toBeDefined();
     expect(screen.getByText("Planning")).toBeDefined();
-    expect(screen.getByText("Operations")).toBeDefined();
+    const emptyStations = screen.getByTestId("office-empty-stations");
+    expect(emptyStations.textContent).toContain("Verification");
+    expect(emptyStations.textContent).toContain("Review");
+    expect(emptyStations.textContent).toContain("Operations");
     expect(
       screen.getByText(/unresolved participant observation is stale/),
     ).toBeDefined();
@@ -320,8 +331,26 @@ describe("AgentOffice", () => {
     expect(
       screen.getByRole("button", { name: /Inspect Lead lead:lead-1/ }),
     ).toBeDefined();
-    expect(screen.getByText(/No recorded verifier/)).toBeDefined();
     expect(screen.getByTestId("location").textContent).toBe("/agents");
+  });
+
+  it("renders zones, filters and participant controls in Spanish", async () => {
+    renderOffice("/agents", "es");
+    await screen.findByRole("heading", { name: "Oficina de agentes" });
+    expect(screen.getByText("Planificación")).toBeDefined();
+    expect(screen.getByText("Implementación")).toBeDefined();
+    const emptyStations = screen.getByTestId("office-empty-stations");
+    expect(emptyStations.textContent).toContain("Verificación");
+    expect(emptyStations.textContent).toContain("Revisión");
+    expect(emptyStations.textContent).toContain("Operaciones");
+    expect(screen.getByLabelText("Rol")).toBeDefined();
+    expect(screen.getByLabelText("Proveedor")).toBeDefined();
+    expect(
+      screen.getByRole("button", {
+        name: /Inspeccionar Implementador implementer:session-1/,
+      }),
+    ).toBeDefined();
+    expect(screen.getByText("Estado veraz")).toBeDefined();
   });
 
   it("selects a participant, shows evidence and recorded tool events", async () => {
@@ -344,6 +373,20 @@ describe("AgentOffice", () => {
     expect(events.textContent).toContain("tool requested");
     expect(events.textContent).toContain("provider content withheld");
     expect(mocks.listToolEvents).toHaveBeenCalledWith("session-1", 0, 100);
+  });
+
+  it("collapses and restores the visual-view inspector", async () => {
+    renderOffice();
+    await screen.findByRole("heading", { name: "Agent Office" });
+    expect(screen.getByText("Select a participant")).toBeDefined();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Hide inspector" }),
+    );
+    expect(screen.queryByText("Select a participant")).toBeNull();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Show inspector" }),
+    );
+    expect(screen.getByText("Select a participant")).toBeDefined();
   });
 
   it("keeps selection across floor, table and timeline views", async () => {
@@ -379,6 +422,41 @@ describe("AgentOffice", () => {
     expect(screen.getByText(/Projection scope only/)).toBeDefined();
   });
 
+  it("renders only participants returned for the active project and campaign scope", async () => {
+    mocks.listParticipants.mockImplementation(
+      (filters: { projectId?: string; campaignId?: string }) =>
+        Promise.resolve(
+          filters.projectId === "project-1" &&
+            filters.campaignId === "campaign-1"
+            ? {
+                ...page,
+                participants: [implementer],
+                page: { ...page.page, returned: 1 },
+              }
+            : page,
+        ),
+    );
+    renderOffice("/agents?project=project-1&campaign=campaign-1");
+    await screen.findByRole("heading", { name: "Agent Office" });
+    await waitFor(() =>
+      expect(mocks.listParticipants).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: "project-1",
+          campaignId: "campaign-1",
+        }),
+      ),
+    );
+    expect(
+      screen.getByTestId(`office-avatar-${implementer.participant_id}`),
+    ).toBeDefined();
+    expect(
+      screen.queryByTestId(`office-avatar-${lead.participant_id}`),
+    ).toBeNull();
+    expect(screen.getAllByRole("button", { name: /^Inspect / })).toHaveLength(
+      1,
+    );
+  });
+
   it("preserves the last snapshot and surfaces a disconnected refresh", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     mocks.listParticipants
@@ -407,6 +485,28 @@ describe("AgentOffice", () => {
     await screen.findByRole("heading", { name: "Agent Office" });
     expect(screen.getByText("No recorded participants")).toBeDefined();
     expect(screen.queryByTestId("agent-floor")).toBeNull();
+  });
+
+  it("uses the floor's duplicate winner in the inspector", async () => {
+    const duplicate: ParticipantRecord = {
+      ...implementer,
+      observation: "FINAL",
+      status: "COMPLETED",
+      lease_state: "RELEASED",
+      evidence: null,
+      last_observed_at: "2026-10-29T10:09:00Z",
+    };
+    mocks.listParticipants.mockResolvedValue({
+      ...page,
+      participants: [duplicate, implementer],
+      page: { ...page.page, returned: 2 },
+    });
+    renderOffice(`/agents/${encodeURIComponent(implementer.participant_id)}`);
+    await screen.findByTestId("participant-inspector");
+    const inspector = screen.getByTestId("participant-inspector");
+    expect(within(inspector).getAllByText("ACTIVE").length).toBeGreaterThan(0);
+    expect(within(inspector).queryByText("COMPLETED")).toBeNull();
+    expect(within(inspector).getAllByText("CURRENT").length).toBeGreaterThan(0);
   });
 
   it("does not inject a deep-linked participant outside the active filters", async () => {

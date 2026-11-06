@@ -26,6 +26,35 @@ impl Database {
         if action.is_none() {
             return Err(Error::NotFound);
         }
+        let lead_request: Option<(String,)> =
+            sqlx::query_as::query_as("SELECT id FROM lead_requests WHERE action_id=?1")
+                .bind(action_id)
+                .fetch_optional(&mut *transaction)
+                .await?;
+        let draft: Option<(String,)> =
+            sqlx::query_as::query_as("SELECT action_id FROM action_drafts WHERE action_id=?1")
+                .bind(action_id)
+                .fetch_optional(&mut *transaction)
+                .await?;
+        if let Some((request_id,)) = lead_request {
+            let withdrawal: Option<(String,)> = sqlx::query_as::query_as(
+                "SELECT request_id FROM lead_withdrawals WHERE request_id=?1",
+            )
+            .bind(&request_id)
+            .fetch_optional(&mut *transaction)
+            .await?;
+            if withdrawal.is_some() {
+                return Err(Error::Withdrawn);
+            }
+            return Err(Error::Forbidden(
+                "Lead Actions may execute only through the shared Lead start boundary".into(),
+            ));
+        }
+        if draft.is_some() {
+            return Err(Error::Forbidden(
+                "draft Actions cannot create a Campaign".into(),
+            ));
+        }
         let value = Campaign {
             id: Uuid::new_v4().to_string(),
             action_id: action_id.into(),
@@ -85,6 +114,11 @@ impl Database {
                 "campaign lacks explicit execution authorization",
             ));
         }
+        if campaign_requires_shared_workgraph(&mut transaction, campaign_id).await? {
+            return Err(Error::Forbidden(
+                "Lead Campaigns may queue Runs only through the shared WorkGraph scheduler".into(),
+            ));
+        }
         let value = Run {
             id: Uuid::new_v4().to_string(),
             campaign_id: campaign_id.into(),
@@ -130,6 +164,18 @@ impl Database {
                 .await?;
         if queued.as_ref().map(|(status,)| status.as_str()) != Some("QUEUED") {
             return Err(Error::Invalid("run is not queued"));
+        }
+        let campaign: Option<(String,)> =
+            sqlx::query_as::query_as("SELECT campaign_id FROM runs WHERE id=?1")
+                .bind(run_id)
+                .fetch_optional(&mut *transaction)
+                .await?;
+        let campaign = campaign.ok_or(Error::NotFound)?.0;
+        if campaign_requires_shared_workgraph(&mut transaction, &campaign).await? {
+            return Err(Error::Forbidden(
+                "Lead Campaigns may queue Attempts only through the shared WorkGraph scheduler"
+                    .into(),
+            ));
         }
         let value = Attempt {
             id: Uuid::new_v4().to_string(),
@@ -227,6 +273,24 @@ impl Database {
             })
             .collect())
     }
+}
+
+async fn campaign_requires_shared_workgraph(
+    connection: &mut SqliteConnection,
+    campaign_id: &str,
+) -> Result<bool, Error> {
+    let row: Option<(String,)> = sqlx::query_as::query_as(
+        "SELECT campaign_id FROM campaign_execution_bindings WHERE campaign_id=?1
+         UNION ALL
+         SELECT c.id FROM campaigns c
+         JOIN lead_requests lr ON lr.action_id=c.action_id
+         WHERE c.id=?1
+         LIMIT 1",
+    )
+    .bind(campaign_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    Ok(row.is_some())
 }
 
 pub(super) async fn load_campaign(
