@@ -295,6 +295,23 @@ pub struct TurnInterruptParams {
     pub turn_id: String,
 }
 
+/// Read the native review verdict from an `ExitedReviewMode` item. Codex has
+/// used both snake_case `review_output` and camelCase `reviewOutput`; older
+/// fixtures used a prose `review` string. Accept a structured object or string
+/// and never treat an empty value as a verdict.
+pub fn review_item_text(item: &Value) -> Option<String> {
+    for key in ["review_output", "reviewOutput", "review"] {
+        if let Some(value) = item.get(key) {
+            match value {
+                Value::String(text) if !text.trim().is_empty() => return Some(text.clone()),
+                Value::String(_) | Value::Null => {}
+                other => return Some(other.to_string()),
+            }
+        }
+    }
+    None
+}
+
 /// Extract the final review text from a `thread/read` response. Current Codex
 /// emits `ExitedReviewMode.review_output` as a structured JSON object; older
 /// fixtures used a lowercase `exitedReviewMode.review` string. Prefer the
@@ -310,20 +327,9 @@ pub fn review_text(thread: &Value) -> Option<String> {
         for item in items {
             let kind = item.get("type").and_then(Value::as_str).unwrap_or_default();
             if kind.eq_ignore_ascii_case("exitedReviewMode") {
-                if let Some(output) = item.get("review_output") {
-                    let text = match output {
-                        Value::String(text) => text.clone(),
-                        other => other.to_string(),
-                    };
-                    if !text.trim().is_empty() {
-                        review = Some(text);
-                        continue;
-                    }
-                }
-                if let Some(text) = item.get("review").and_then(Value::as_str)
-                    && !text.trim().is_empty()
-                {
-                    review = Some(text.to_owned());
+                if let Some(text) = review_item_text(item) {
+                    review = Some(text);
+                    continue;
                 }
             } else if kind.eq_ignore_ascii_case("agentMessage") {
                 if let Some(text) = item.get("text").and_then(Value::as_str)
@@ -1316,21 +1322,33 @@ mod tests {
 
     #[test]
     fn review_text_reads_native_review_output() {
-        let thread = json!({
-            "thread": {
-                "turns": [{
-                    "items": [{
-                        "type": "ExitedReviewMode",
-                        "review_output": {
-                            "findings": [],
-                            "overall_correctness": "patch is correct"
-                        }
-                    }]
-                }]
-            }
-        });
-        let text = review_text(&thread).expect("native review output");
-        assert!(text.contains("patch is correct"));
+        for item in [
+            json!({
+                "type": "ExitedReviewMode",
+                "review_output": {
+                    "findings": [],
+                    "overall_correctness": "patch is correct"
+                }
+            }),
+            json!({
+                "type": "exitedReviewMode",
+                "reviewOutput": {
+                    "findings": [],
+                    "overall_correctness": "patch is correct"
+                }
+            }),
+            json!({
+                "type": "ExitedReviewMode",
+                "review": {
+                    "findings": [],
+                    "overall_correctness": "patch is correct"
+                }
+            }),
+        ] {
+            let thread = json!({ "thread": { "turns": [{ "items": [item] }] } });
+            let text = review_text(&thread).expect("native review output");
+            assert!(text.contains("patch is correct"), "{text}");
+        }
     }
 
     #[tokio::test]

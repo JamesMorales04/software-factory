@@ -30,7 +30,7 @@ use crate::{
     device_session::sha256_hex,
     protocol::{
         JsonRpc, ReviewStartParams, ReviewTarget, ThreadStartParams, ThreadTokenUsageUpdatedParams,
-        review_text,
+        review_item_text, review_text,
     },
     quality::ReceiptResult,
     review::{FindingCategory, FindingSeverity, ReviewFinding},
@@ -513,20 +513,18 @@ async fn run_review_in_snapshot(
         };
         match notification.method.as_str() {
             "item/completed" => {
-                if let Some(item) = notification.params.get("item")
-                    && item
-                        .get("type")
-                        .and_then(Value::as_str)
-                        .is_some_and(|kind| kind.eq_ignore_ascii_case("exitedReviewMode"))
-                {
-                    if let Some(output) = item.get("review_output") {
-                        // Codex 0.165.0 emits the native verdict as a JSON
-                        // object, not the legacy prose `review` string.
-                        item_review = Some(output.to_string());
-                    } else if let Some(text) = item.get("review").and_then(Value::as_str)
-                        && !text.trim().is_empty()
-                    {
-                        item_review = Some(text.to_owned());
+                if let Some(item) = notification.params.get("item") {
+                    let kind = item.get("type").and_then(Value::as_str).unwrap_or_default();
+                    if kind.eq_ignore_ascii_case("exitedReviewMode") {
+                        if let Some(text) = review_item_text(item) {
+                            item_review = Some(text);
+                        } else {
+                            eprintln!(
+                                "codex review: exitedReviewMode item has no verdict field; keys={:?}",
+                                item.as_object()
+                                    .map(|object| object.keys().cloned().collect::<Vec<_>>())
+                            );
+                        }
                     }
                 }
             }
@@ -634,6 +632,13 @@ async fn run_review_in_snapshot(
         return Err(CodexReviewError::OutputTooLarge);
     }
     let (result, findings) = parse_review_text(&text);
+    if result == ReceiptResult::NotTested {
+        eprintln!(
+            "codex review: no explicit clean verdict (len={} prefix={:?})",
+            text.len(),
+            text.chars().take(180).collect::<String>()
+        );
+    }
     let request_sha256 = sha256_hex(&format!(
         "codex-review:v1:{}:{}:{}:{}:{}",
         request.candidate_sha, request.tree_sha, thread_id, turn_id, text
