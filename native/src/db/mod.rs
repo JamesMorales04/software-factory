@@ -841,6 +841,7 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
         == 0
 }
 
+mod access_revocation;
 mod authorization;
 pub use authorization::{
     CampaignAuthorizationRecord, NO_BILLABLE_ENVELOPE, NewCampaignAuthorization,
@@ -920,7 +921,9 @@ mod device_pairing;
 mod issue_intake_tests;
 #[cfg(test)]
 mod tests;
-pub use device_pairing::{DevicePairingPoll, DevicePairingRecord, SecurityAuditEntry};
+pub use device_pairing::{
+    DevicePairingPoll, DevicePairingRecord, PairingExchange, SecurityAuditEntry,
+};
 
 /// Test-only subscription dispatch admission fixtures.
 ///

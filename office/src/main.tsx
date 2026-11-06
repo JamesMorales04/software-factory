@@ -6,8 +6,11 @@ import "@fontsource/ibm-plex-mono/400.css";
 import "@fontsource/ibm-plex-mono/500.css";
 import { App } from "./App";
 import { I18nProvider } from "./i18n";
+import { initializeOffice } from "./legacyCredentials";
 import { ThemeProvider } from "./theme";
 import "./styles.css";
+
+initializeOffice();
 
 const root = document.getElementById("root");
 if (!root) {

@@ -1295,6 +1295,8 @@ export const en = {
   "access.local.sessionNote":
     "Office uses an independent, revocable browser session. The operator recovery credential is not stored in this browser.",
   "access.remote.title": "Private remote access",
+  "access.remote.configured":
+    "Private remote access is configured. Core cannot probe Tailscale health across the isolated socket-only boundary; open the private HTTPS endpoint to confirm the Serve path. Factory still requires its own enrolled device session.",
   "access.remote.connected":
     "Core can reach the private Office health endpoint. This confirms the current Serve path only; Factory still requires its own enrolled device session.",
   "access.remote.disconnected":

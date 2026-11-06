@@ -1341,6 +1341,8 @@ export const es: Catalog = {
   "access.local.sessionNote":
     "Office usa una sesión de navegador independiente y revocable. La credencial de recuperación del operador no se guarda en este navegador.",
   "access.remote.title": "Acceso remoto privado",
+  "access.remote.configured":
+    "El acceso remoto privado está configurado. Core no puede comprobar la salud de Tailscale a través del límite aislado de solo socket; abre el endpoint HTTPS privado para confirmar la ruta de Serve. Factory sigue exigiendo su propia sesión de dispositivo inscrita.",
   "access.remote.connected":
     "Core puede alcanzar el endpoint privado de salud de Office. Esto solo confirma la ruta de Serve actual; Factory sigue exigiendo su propia sesión de dispositivo inscrita.",
   "access.remote.disconnected":

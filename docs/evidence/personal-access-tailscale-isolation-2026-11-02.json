@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "record": "personal-access-tailscale-isolation-author-run",
+  "implementation_sha": "e473919c01cbe96f2c2adaa0891409a6f3936f32",
+  "supersedes_runtime_probe": "7bca75159ee39ed74106744dc19f5c0dec4b82e1",
+  "date": "2026-11-02",
+  "environment": {
+    "host_os": "CachyOS",
+    "podman": "6.1.4 rootless",
+    "netavark": "2.1.0",
+    "compose_provider": "podman-compose 1.6.0",
+    "core_image": "localhost/software-factory-core:dev",
+    "tailscale_image": "docker.io/tailscale/tailscale@sha256:ed6480b33c6eb67c9cbd203ed42b9fb57e361986725b6856def71b7a3d9e276c",
+    "tailscale_image_id": "sha256:9cb91ed119a2c502813cfef5a14430944163dfb2b290ccfc69d671d1469ec09d",
+    "tailscale_version": "1.104.4"
+  },
+  "result": "PASS (author-run real rootless Podman network-separation and socket probes; tailnet authentication, Serve HTTPS, mobile-data UAT and full Compose E2E after this isolation change are NOT_TESTED)",
+  "status": "author_run",
+  "project": "sf-access-final",
+  "checks": [
+    {
+      "name": "final topology",
+      "pass": true,
+      "detail": "Core joined only factory-control (10.89.42.0/24) and factory-egress (10.89.43.0/24); the Tailscale container joined only factory-tailscale-uplink (10.89.44.0/24). Every bridge declared isolate=strict. factory-control was non-internal with no_default_route=true; factory-egress and the uplink were non-internal."
+    },
+    {
+      "name": "host loopback publication",
+      "pass": true,
+      "detail": "GET http://127.0.0.1:18994/health with Host: localhost:8765 returned HTTP 200 while the Tailscale container was running."
+    },
+    {
+      "name": "Tailscale cannot reach the full Core API",
+      "pass": true,
+      "detail": "From inside the real Tailscale 1.104.4 container (uplink only): control 10.89.42.2:8765 timed out, egress 10.89.43.2:8765 timed out, 10.89.42.2:8768 timed out, and core:8765 failed DNS. An earlier socket-only candidate without explicit isolation returned HTTP 200 from the control listener; that result is corrected here."
+    },
+    {
+      "name": "Tailscale retains outbound connectivity",
+      "pass": true,
+      "detail": "The same Tailscale container reached https://tailscale.com over the uplink with isolate=strict."
+    },
+    {
+      "name": "control-only role remains egress-denied",
+      "pass": true,
+      "detail": "A disposable container attached only to factory-control reached core-control:8765/health with HTTP 200 and could not connect to https://tailscale.com (no default route)."
+    },
+    {
+      "name": "multi-homed worker/runtime path",
+      "pass": true,
+      "detail": "A disposable container attached to factory-control and factory-egress reached core-control:8765/health with HTTP 200 and https://tailscale.com with HTTP 200."
+    },
+    {
+      "name": "Office socket reachability and route allowlist",
+      "pass": true,
+      "detail": "A disposable container with no network and only the read-only factory-office-socket volume received HTTP/1.1 200 from /core-api/health and HTTP/1.1 404 from /core-api/quality/pending over the Unix socket. The 8765/8768 probes above prove the socket is the only Core application path from the Tailscale network."
+    },
+    {
+      "name": "policy and negative tests",
+      "pass": true,
+      "detail": "The Compose policy checker passed on the base and Tailscale configurations. 29 policy tests passed for each configuration (5 Tailscale-only tests skipped on the base). Tests reject a missing or weakened isolate option, an internal control bridge, and a control bridge without no_default_route."
+    }
+  ],
+  "not_tested": [
+    "Tailscale account authentication and Serve HTTPS over the Unix socket",
+    "mobile-data access from a phone",
+    "full Compose Core/Worker/Supervisor/provider E2E after this network-isolation change",
+    "independent exact-SHA security review",
+    "paid inference",
+    "deployment",
+    "Windows",
+    "SEC-01 isolation"
+  ],
+  "security_notes": [
+    "The isolation change is required because Netavark 2.1.0 did not include an internal bridge in the isolation chain; the Tailscale uplink could reach Core's control listener even though the two services shared no network. Netavark's isolate option applies to non-internal bridges, so control is non-internal with no_default_route=true.",
+    "Rootless Podman and the nested runtime remain TRUSTED_LOCAL and are not SEC-01 isolation.",
+    "No Tailscale auth key, login URL, session cookie, CSRF value, pairing code or bootstrap code is recorded here.",
+    "The disposable project was removed with down -v; zero project containers, volumes or networks remained."
+  ],
+  "cleanup": "confirmed (0 containers, 0 volumes, 0 project networks)"
+}

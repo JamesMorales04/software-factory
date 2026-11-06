@@ -405,7 +405,9 @@ export function AccessDevices() {
             {access.tailscale.status}
           </span>
         </div>
-        {access.tailscale.status === "CONNECTED" ? (
+        {access.tailscale.status === "CONFIGURED" ? (
+          <p className="muted">{t("access.remote.configured")}</p>
+        ) : access.tailscale.status === "CONNECTED" ? (
           <p className="muted">{t("access.remote.connected")}</p>
         ) : access.tailscale.status === "DISCONNECTED" ? (
           <p className="muted">{t("access.remote.disconnected")}</p>
