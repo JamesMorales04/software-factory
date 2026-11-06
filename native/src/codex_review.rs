@@ -365,7 +365,7 @@ fn thread_usage(thread: &serde_json::Value) -> Option<CodexTokenUsage> {
     None
 }
 
-async fn persisted_thread_tokens(home: &CodexHome, thread_id: &str) -> Option<u64> {
+async fn codex_state_pool(home: &CodexHome) -> Option<sqlx_sqlite::SqlitePool> {
     let path = home.path().join("state_5.sqlite");
     if !path.is_file() {
         return None;
@@ -374,11 +374,15 @@ async fn persisted_thread_tokens(home: &CodexHome, thread_id: &str) -> Option<u6
         .filename(&path)
         .read_only(true)
         .create_if_missing(false);
-    let pool = SqlitePoolOptions::new()
+    SqlitePoolOptions::new()
         .max_connections(1)
         .connect_with(options)
         .await
-        .ok()?;
+        .ok()
+}
+
+async fn persisted_thread_tokens(home: &CodexHome, thread_id: &str) -> Option<u64> {
+    let pool = codex_state_pool(home).await?;
     let tokens: Option<i64> =
         sqlx::query_scalar::query_scalar("SELECT tokens_used FROM threads WHERE id=?1")
             .bind(thread_id)
@@ -389,6 +393,24 @@ async fn persisted_thread_tokens(home: &CodexHome, thread_id: &str) -> Option<u6
     tokens
         .filter(|tokens| *tokens > 0)
         .map(|tokens| tokens as u64)
+}
+
+async fn persisted_review_tokens(home: &CodexHome, snapshot: &Path, model: &str) -> Option<u64> {
+    let pool = codex_state_pool(home).await?;
+    // The review orchestrator thread is archived with zero usage; Codex runs
+    // the actual review inference in a sibling thread with the same unique
+    // snapshot cwd. Sum the measured usage for that exact snapshot.
+    let tokens: i64 = sqlx::query_scalar::query_scalar(
+        "SELECT COALESCE(SUM(tokens_used),0) FROM threads
+         WHERE cwd=?1 AND model=?2 AND tokens_used > 0",
+    )
+    .bind(snapshot.to_string_lossy().as_ref())
+    .bind(model)
+    .fetch_one(&pool)
+    .await
+    .ok()?;
+    pool.close().await;
+    (tokens > 0).then_some(tokens as u64)
 }
 
 async fn run_review_in_snapshot(
@@ -577,6 +599,15 @@ async fn run_review_in_snapshot(
     }
     if usage.is_none()
         && let Some(total) = persisted_thread_tokens(home, &thread_id).await
+    {
+        usage = Some(CodexTokenUsage {
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: total,
+        });
+    }
+    if usage.is_none()
+        && let Some(total) = persisted_review_tokens(home, snapshot, REVIEW_MODEL).await
     {
         usage = Some(CodexTokenUsage {
             input_tokens: 0,
