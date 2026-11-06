@@ -556,11 +556,15 @@ where
                 "thread/read requires a nonempty threadId".into(),
             ));
         }
-        // Ephemeral threads reject `includeTurns`; the completed review item
-        // carries the review text, so the bounded review client must not ask
-        // the server to materialize the thread history.
-        self.request("thread/read", json!({"threadId": thread_id}))
-            .await
+        // The native review thread is persisted so Codex records measured
+        // usage. Request its turns so the `ExitedReviewMode.review_output`
+        // verdict is available even if the notification races the terminal
+        // event.
+        self.request(
+            "thread/read",
+            json!({"threadId": thread_id, "includeTurns": true}),
+        )
+        .await
     }
 
     pub async fn interrupt_turn(
@@ -1330,7 +1334,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ephemeral_thread_read_omits_include_turns() {
+    async fn persisted_review_thread_read_includes_turns() {
         let (client, server) = tokio::io::duplex(4096);
         let (client_read, client_write) = tokio::io::split(client);
         let server = tokio::spawn(async move {
@@ -1340,7 +1344,7 @@ mod tests {
             let request: Value = serde_json::from_str(&line).unwrap();
             assert_eq!(request["method"], "thread/read");
             assert_eq!(request["params"]["threadId"], "thread-1");
-            assert!(request["params"].get("includeTurns").is_none());
+            assert_eq!(request["params"]["includeTurns"], true);
             let response = json!({"id":request["id"],"result":{"thread":{"id":"thread-1"}}});
             reader
                 .get_mut()
