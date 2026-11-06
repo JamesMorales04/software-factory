@@ -173,6 +173,8 @@ async fn broker_enforces_a_core_turn_policy_and_rewrites_output() {
         max_requests: 2,
         strict_request_digest: true,
         binding: false,
+        last_upstream_status: None,
+        last_upstream_error: String::new(),
     })));
     let socket = std::env::temp_dir().join(format!("tp-{}", uuid::Uuid::new_v4().simple()));
     let config = EgressConfig::new(
@@ -283,6 +285,8 @@ async fn broker_rejects_bodies_above_the_quote_token_byte_bound_before_send() {
         max_requests: 2,
         strict_request_digest: false,
         binding: false,
+        last_upstream_status: None,
+        last_upstream_error: String::new(),
     })));
     let socket = std::env::temp_dir().join(format!("tb-{}", uuid::Uuid::new_v4().simple()));
     let config = EgressConfig::new(
@@ -542,6 +546,8 @@ async fn broker_binds_the_actual_emitted_body_to_core_before_forwarding() {
         max_requests: 2,
         strict_request_digest: false,
         binding: false,
+        last_upstream_status: None,
+        last_upstream_error: String::new(),
     })));
     let binder = TurnBinder::new(
         reqwest::Client::new(),
