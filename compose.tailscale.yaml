@@ -46,4 +46,4 @@ networks:
   factory-tailscale-uplink:
     internal: false
     driver_opts:
-      isolate: "strict"
+      isolate: "true"

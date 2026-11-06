@@ -544,8 +544,8 @@ def main(path: str) -> int:
 
     for network_name, network in (config.get("networks") or {}).items():
         driver_opts = (network or {}).get("driver_opts") or {}
-        if driver_opts.get("isolate") != "strict":
-            fail(f"network {network_name}: driver_opts.isolate must be 'strict'")
+        if str(driver_opts.get("isolate")).lower() != "true":
+            fail(f"network {network_name}: driver_opts.isolate must be 'true'")
     if (config.get("networks", {}).get("factory-control", {}).get("internal") is True):
         fail("factory-control: internal networks are not bridge-isolated by Netavark")
     if (

@@ -440,8 +440,8 @@ networks:
   factory-control:
     internal: false
     driver_opts:
-      isolate: "strict"
+      isolate: "true"
       no_default_route: "true"
   factory-egress:
     driver_opts:
-      isolate: "strict"
+      isolate: "true"

@@ -48,7 +48,7 @@ Tailscale service joins one network only:
   other Factory service members.
 
 It shares no network with Core and cannot reach any Core TCP listener. Every
-bridge network sets Netavark `isolate=strict`. The control network is
+bridge network sets Netavark `isolate=true`. The control network is
 non-internal with `no_default_route=true` because Netavark does not include
 `internal` bridges in its isolation rules; this keeps control-only roles
 without egress while blocking uplink-to-control traffic. Tailscale Serve
@@ -98,7 +98,7 @@ contains no credentials.
   restricted Office socket can be reached by a container with only the
   dedicated read-only volume. An earlier socket-only candidate still allowed
   uplink-to-control traffic because Podman did not bridge-isolate the
-  `internal` control network; the final `isolate=strict` /
+  `internal` control network; the final `isolate=true` /
   `no_default_route=true` policy and its probe supersede that claim. The
   isolation repair and real Podman probes are recorded in
   [personal-access-tailscale-isolation-2026-11-02.json](../evidence/personal-access-tailscale-isolation-2026-11-02.json).

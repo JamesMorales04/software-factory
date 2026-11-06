@@ -456,20 +456,20 @@ class ComposePolicyTests(unittest.TestCase):
     def test_rejects_missing_or_weakened_network_isolation(self):
         self.assert_rejected(
             lambda c: c["networks"]["factory-control"].pop("driver_opts", None),
-            "isolate must be 'strict'",
+            "isolate must be 'true'",
         )
         self.assert_rejected(
             lambda c: c["networks"]["factory-egress"]["driver_opts"].__setitem__(
-                "isolate", "true"
+                "isolate", "false"
             ),
-            "isolate must be 'strict'",
+            "isolate must be 'true'",
         )
         if "tailscale" in base_config()["services"]:
             self.assert_rejected(
                 lambda c: c["networks"]["factory-tailscale-uplink"].pop(
                     "driver_opts", None
                 ),
-                "isolate must be 'strict'",
+                "isolate must be 'true'",
             )
 
     def test_rejects_tailscale_route_proxy_and_feature_environment(self):

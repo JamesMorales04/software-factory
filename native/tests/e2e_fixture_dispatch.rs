@@ -467,7 +467,7 @@ async fn seed_provider_settings(database: &Path, provider: &str, kind: &str, mod
             credential_nonce: "nonce".into(),
             credential_fingerprint: "configured".into(),
             enabled: true,
-            is_default: false,
+            is_default: true,
             max_turns: 4,
             max_input_tokens: 100_000,
             max_output_tokens: 12_000,
@@ -1246,7 +1246,7 @@ async fn seed_test_provider(
             credential_nonce: "nonce".into(),
             credential_fingerprint: "configured".into(),
             enabled: true,
-            is_default: false,
+            is_default: true,
             max_turns: 4,
             max_input_tokens: 100_000,
             max_output_tokens: 12_000,
@@ -1590,6 +1590,14 @@ async fn semantic_reviewer_model_and_codex_modes_bind_findings_provenance_and_re
         "semantic-verifier-third",
         "third",
         FIXTURE_IMAGE,
+    )
+    .await;
+    seed_test_provider(
+        &database,
+        "codex",
+        "codex",
+        "gpt-6-luna",
+        "https://api.openai.com/v1",
     )
     .await;
     admit_test_campaign(&database, &third.campaign_id).await;

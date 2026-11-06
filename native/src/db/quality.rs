@@ -1191,11 +1191,13 @@ async fn decide_gate(
                 };
             }
         }
-        Err(Error::Unavailable(reason)) if decision.outcome == GateOutcome::Accepted => {
-            decision = crate::quality::GateDecision {
-                outcome: GateOutcome::NotTested,
-                reasons: vec![reason],
-            };
+        Err(Error::Unavailable(reason)) => {
+            if decision.outcome == GateOutcome::Accepted {
+                decision = crate::quality::GateDecision {
+                    outcome: GateOutcome::NotTested,
+                    reasons: vec![reason],
+                };
+            }
         }
         Err(error) => return Err(error),
     }
