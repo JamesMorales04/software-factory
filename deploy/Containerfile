@@ -93,7 +93,7 @@ USER factory
 FROM debian:bookworm-slim AS supervisor
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl git \
+    && apt-get install -y --no-install-recommends ca-certificates curl git python3 \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 factory \
     && useradd --uid 10001 --gid factory --no-create-home \
