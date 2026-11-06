@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "record": "provider-agnostic-review-and-bounded-autonomy-static-evidence",
-  "implementation_sha": "c1f9ae062741b351bc536924a44738267c29a5f9",
+  "implementation_sha": "7ea261c",
   "date": "2026-11-06",
   "result": "PASS (author-run deterministic checks; real-model acceptance, Office browser acceptance and independent review are NOT_TESTED in this record)",
   "status": "author_run",
