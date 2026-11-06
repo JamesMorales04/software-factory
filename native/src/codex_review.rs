@@ -14,6 +14,7 @@ use std::{
 };
 
 use serde_json::{Value, json};
+use sqlx_sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use tokio::{
     io::AsyncReadExt,
     process::{Child, Command},
@@ -321,6 +322,75 @@ pub async fn run_review(
     })
 }
 
+fn codex_usage_from_value(value: &serde_json::Value) -> Option<CodexTokenUsage> {
+    let parsed: crate::protocol::ThreadTokenUsage = serde_json::from_value(value.clone()).ok()?;
+    let last = parsed.last();
+    if last.input_tokens == 0 && last.output_tokens == 0 && last.total_tokens == 0 {
+        return None;
+    }
+    Some(CodexTokenUsage {
+        input_tokens: last.input_tokens,
+        output_tokens: last.output_tokens,
+        total_tokens: last.total_tokens,
+    })
+}
+
+fn thread_usage(thread: &serde_json::Value) -> Option<CodexTokenUsage> {
+    for pointer in [
+        "/thread/tokenUsage",
+        "/thread/usage",
+        "/tokenUsage",
+        "/usage",
+    ] {
+        if let Some(value) = thread.pointer(pointer)
+            && let Some(usage) = codex_usage_from_value(value)
+        {
+            return Some(usage);
+        }
+    }
+    for turn in thread
+        .pointer("/thread/turns")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        for pointer in ["/usage", "/tokenUsage"] {
+            if let Some(value) = turn.get(pointer)
+                && let Some(usage) = codex_usage_from_value(value)
+            {
+                return Some(usage);
+            }
+        }
+    }
+    None
+}
+
+async fn persisted_thread_tokens(home: &CodexHome, thread_id: &str) -> Option<u64> {
+    let path = home.path().join("state_5.sqlite");
+    if !path.is_file() {
+        return None;
+    }
+    let options = SqliteConnectOptions::new()
+        .filename(&path)
+        .read_only(true)
+        .create_if_missing(false);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .ok()?;
+    let tokens: Option<i64> =
+        sqlx::query_scalar::query_scalar("SELECT tokens_used FROM threads WHERE id=?1")
+            .bind(thread_id)
+            .fetch_optional(&pool)
+            .await
+            .ok()?;
+    pool.close().await;
+    tokens
+        .filter(|tokens| *tokens > 0)
+        .map(|tokens| tokens as u64)
+}
+
 async fn run_review_in_snapshot(
     request: &CodexReviewRequest,
     home: &CodexHome,
@@ -352,7 +422,10 @@ async fn run_review_in_snapshot(
             permissions: Some("factory-review".into()),
             model: Some(REVIEW_MODEL.into()),
             model_provider: Some(APP_SERVER_PROVIDER.into()),
-            ephemeral: Some(true),
+            // The review thread must be persisted long enough for Codex to
+            // report measured token usage. The dedicated Codex home is private
+            // and the thread is archived after the review.
+            ephemeral: Some(false),
             dynamic_tools: None,
             base_instructions: Some(
                 "Review only the exact frozen diff supplied in the developer instructions. No shell, network or project-code execution tools are available. Do not modify files. Report only concrete findings with file and line evidence."
@@ -498,6 +571,21 @@ async fn run_review_in_snapshot(
         return Err(CodexReviewError::Protocol(
             "thread/read returned a different thread".into(),
         ));
+    }
+    if usage.is_none() {
+        usage = thread_usage(&thread);
+    }
+    if usage.is_none()
+        && let Some(total) = persisted_thread_tokens(home, &thread_id).await
+    {
+        usage = Some(CodexTokenUsage {
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: total,
+        });
+    }
+    if usage.is_none() {
+        eprintln!("codex review completed without measured token usage for thread {thread_id}");
     }
     let text = review_text(&thread)
         .or(item_review)
