@@ -42,7 +42,11 @@ fields, and binds the exact `candidateCommitSha`, `candidateTreeSha` and
   `message` and 1..=16 `evidenceRefs`.
 
 Duplicate finding IDs, empty/oversized fields, a wrong candidate identity, too
-many findings, and a blocking finding combined with `approve` are rejected.
+many findings, and a blocking or critical finding combined with `approve` are
+rejected. Every finding must set `points` to the canonical severity weight
+(`critical=8`, `blocking=5`, `warning=2`, `info=1`) and include a non-empty
+`rationale` plus 1..=16 evidence references. Core rejects any mismatch;
+finding points are advisory input and never grant repair or acceptance.
 Malformed or uncertain output is never converted into approval.
 
 ## Verdict mapping
@@ -74,8 +78,22 @@ Migration `0017_semantic_review.sql` extends `quality_receipts` with
 `findings_json`, `mechanism`, `model_provider`, `model_name`,
 `model_reservation_id`, token totals, `cost_micros` and `usage_known`.
 
-Deterministic receipts use explicit defaults. A `MODEL` `PASS` receipt is
-rejected unless it matches a `SETTLED` `SEMANTIC_REVIEWER` reservation for the
-same candidate scope, principal, provider/model and measured usage. Operator,
+Deterministic receipts use explicit defaults. The candidate's frozen Execution
+Profile `semanticReviewer` route is the only reviewer selection authority:
+`GET /quality/candidates/{id}/review-config` resolves it to a chat-completions
+(`MODEL`) or native adapter (`CODEX_APP_SERVER`) transport. A global
+`FACTORY_ENABLE_CODEX_REVIEW` flag is an availability signal only; it never
+overrides a selected route. A `MODEL` `PASS` receipt is rejected unless it
+matches a `SETTLED` `SEMANTIC_REVIEWER` reservation for the same candidate
+scope, principal, frozen provider/model and measured usage. A native `PASS`
+receipt is rejected unless its provider/model match the frozen route, it has no
+Core reservation, it carries known measured usage and a request hash. Operator,
 verifier and reviewer credentials may read candidate receipts for inspection;
 ingestion remains role-scoped and independent.
+
+Critical findings produce `HUMAN_REQUIRED` and cannot be converted into an
+autonomous repair. For non-critical reviewer changes, Core recomputes points,
+checks reviewer independence and applies the frozen `AutonomyPolicy` risk
+budgets; the resulting `AUTHORIZED`, `DENIED` or `HUMAN_REQUIRED` decision is
+append-only `autonomy_repairs` evidence. It is not delivery authority and does
+not by itself create a new attempt. See ADR-0033.

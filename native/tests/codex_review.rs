@@ -118,6 +118,7 @@ fn request(
         base_sha: base.into(),
         candidate_sha: candidate.into(),
         tree_sha: tree.into(),
+        model: "gpt-6-luna".into(),
         timeout: Duration::from_secs(30),
     }
 }

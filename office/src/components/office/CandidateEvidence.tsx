@@ -98,7 +98,7 @@ export function ReceiptModelProvenance({
 }) {
   const { t } = useI18n();
   const modelReceipts = receipts.filter(
-    (receipt) => receipt.mechanism === "MODEL",
+    (receipt) => receipt.mechanism !== "DETERMINISTIC",
   );
   if (modelReceipts.length === 0) return null;
   return (
@@ -132,6 +132,7 @@ export function ReceiptModelProvenance({
 }
 
 function FindingList({ findings }: { findings: ReviewFinding[] }) {
+  const { t } = useI18n();
   if (findings.length === 0) return null;
   return (
     <ul className="findings">
@@ -139,7 +140,7 @@ function FindingList({ findings }: { findings: ReviewFinding[] }) {
         <li key={finding.id}>
           <StatusBadge
             status={
-              finding.severity === "blocking"
+              finding.severity === "critical" || finding.severity === "blocking"
                 ? "FAIL"
                 : finding.severity === "warning"
                   ? "CHANGES_REQUESTED"
@@ -147,9 +148,15 @@ function FindingList({ findings }: { findings: ReviewFinding[] }) {
             }
             label={finding.severity}
           />{" "}
-          <strong>{finding.category}</strong>: {finding.message}
-          {finding.evidence_refs.length > 0 && (
-            <span className="muted"> ({finding.evidence_refs.join(", ")})</span>
+          <strong>{finding.category}</strong>: {finding.message}{" "}
+          <span className="muted">
+            {t("evidence.finding.points", { points: finding.points })}
+          </span>
+          {finding.rationale.trim() !== "" && (
+            <div className="muted">{finding.rationale}</div>
+          )}
+          {finding.evidenceRefs.length > 0 && (
+            <span className="muted"> ({finding.evidenceRefs.join(", ")})</span>
           )}
         </li>
       ))}
@@ -213,6 +220,19 @@ export function QualityGatePanel({
             <li key={reason}>{reason}</li>
           ))}
         </ul>
+      )}
+      {gate.repair_authorization && (
+        <div className="ui-callout ui-callout--attention" role="status">
+          <strong>{t("evidence.repair.title")}</strong>{" "}
+          <StatusBadge status={gate.repair_authorization.decision} />{" "}
+          <span className="muted">
+            {t("evidence.repair.detail", {
+              points: gate.repair_authorization.total_points,
+              cycle: gate.repair_authorization.cycle_index,
+              reason: gate.repair_authorization.reason,
+            })}
+          </span>
+        </div>
       )}
     </div>
   );

@@ -865,6 +865,10 @@ fn validate_policy(policy: &ProgressPolicy) -> Result<(), ProgressError> {
             "observation timeout must be positive".into(),
         ));
     }
+    policy
+        .autonomy
+        .validate()
+        .map_err(ProgressError::InvalidPolicy)?;
     Ok(())
 }
 
@@ -975,6 +979,7 @@ mod tests {
             diagnose_after_stagnant_checkpoints: NonZeroU32::new(2).unwrap(),
             escalate_after_unsuccessful_replans: NonZeroU32::new(1).unwrap(),
             observation_timeout_secs: NonZeroU32::new(300).unwrap(),
+            autonomy: Default::default(),
         }
     }
 

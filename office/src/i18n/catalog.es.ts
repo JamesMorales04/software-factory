@@ -2287,6 +2287,11 @@ export const es: Catalog = {
     "Diagnosticar tras puntos de control estancados",
   "campaignDetail.budget.escalateAfter":
     "Escalar tras replanteamientos fallidos",
+  "campaignDetail.budget.autonomyTitle": "Reparación autónoma",
+  "campaignDetail.budget.autonomyEnabled": "Activada",
+  "campaignDetail.budget.autonomyDisabled": "Desactivada",
+  "campaignDetail.budget.autonomyR0": "R0: {points} puntos / {cycles} ciclos",
+  "campaignDetail.budget.autonomyR1": "R1: {points} puntos / {cycles} ciclos",
   "campaignDetail.budget.observationTimeout": "Tiempo máximo de observación",
   "campaignDetail.budget.seconds": "{count} s",
   "campaignDetail.budget.bytes": "{count} bytes",
@@ -2689,6 +2694,9 @@ export const es: Catalog = {
     "no hay ninguna decisión de Puerta de Core registrada para el candidato {id}. Los recibos faltantes o la evidencia no superada no son aprobación.",
   "evidence.gate.decided": "decidida {date}",
   "evidence.gate.noReasons": "No hay motivos registrados.",
+  "evidence.finding.points": "{points} puntos",
+  "evidence.repair.title": "Autorización de reparación",
+  "evidence.repair.detail": "{points} puntos · ciclo {cycle} · {reason}",
   "evidence.identity.commit": "Commit",
   "evidence.identity.tree": "Árbol",
   "evidence.identity.attempt": "Intento",
@@ -3058,7 +3066,21 @@ export const es: Catalog = {
   "execProfiles.warning.disabledProvider":
     "El proveedor de {role} {provider} está deshabilitado; este perfil sigue siendo un borrador no ejecutable.",
   "execProfiles.warning.appServerProvider":
-    "La ruta de {role} usa el App Server {kind}, que no puede ejecutar llamadas a modelo de un solo uso en esta compilación; la ruta del Implementador no se ve afectada.",
+    "La ruta de {role} necesita una pasarela de chat-completions; el App Server {kind} no tiene transporte de chat. Elige un proveedor compatible con OpenAI para este rol.",
+  "execProfiles.transport.chatReview":
+    "Transporte de revisión: pasarela de chat-completions",
+  "execProfiles.transport.nativeReview":
+    "Transporte de revisión: adaptador nativo",
+  "execProfiles.progress.autonomyEnabled":
+    "Activar diagnóstico autónomo y reparación acotada",
+  "execProfiles.progress.autonomyHint":
+    "Core valida de forma determinista los puntos del revisor, el cero crítico y los presupuestos de riesgo. R2/R3 siempre requieren una persona.",
+  "execProfiles.progress.r0Points": "Presupuesto de puntos R0",
+  "execProfiles.progress.r0Cycles": "Ciclos de reparación R0",
+  "execProfiles.progress.r1Points": "Presupuesto de puntos R1 (máx. 5)",
+  "execProfiles.progress.r1Cycles": "Ciclos de reparación R1 (máx. 1)",
+  "execProfiles.validation.autonomyBudget":
+    "La reparación autónoma requiere un presupuesto R0 positivo, como máximo 5 puntos/1 ciclo para R1 y presupuestos R2/R3 en cero.",
   "execProfiles.warning.unadvertisedModel":
     "El modelo {model} de {role} no lo anuncia {provider}; ejecuta el descubrimiento de modelos o selecciona un modelo anunciado.",
   "execProfiles.defaults.aria": "Predeterminados del perfil de ejecución",

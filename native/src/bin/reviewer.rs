@@ -127,12 +127,24 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     run_candidate(&config, &candidate_id).await
 }
 
+struct ReviewSelection {
+    mechanism: SemanticReviewMechanism,
+    provider: String,
+    model: String,
+    max_output_tokens: u32,
+}
+
 async fn review_mechanism(
     config: &ReviewerConfig,
-) -> Result<(SemanticReviewMechanism, u32), Box<dyn std::error::Error>> {
+    candidate_id: &str,
+) -> Result<ReviewSelection, Box<dyn std::error::Error>> {
     let response = config
         .client
-        .get(config.core.join("review/config")?)
+        .get(
+            config
+                .core
+                .join(&format!("quality/candidates/{candidate_id}/review-config"))?,
+        )
         .bearer_auth(&config.token)
         .send()
         .await?;
@@ -156,7 +168,20 @@ async fn review_mechanism(
         .and_then(|value| u32::try_from(value).ok())
         .filter(|value| (128..=32_768).contains(value))
         .unwrap_or(8192);
-    Ok((mechanism, max_output_tokens))
+    Ok(ReviewSelection {
+        mechanism,
+        provider: body
+            .get("provider")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+        model: body
+            .get("model")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+        max_output_tokens,
+    })
 }
 
 async fn watch(config: &ReviewerConfig) -> Result<(), Box<dyn std::error::Error>> {
@@ -235,11 +260,16 @@ async fn run_candidate(
         .json()
         .await?;
     let action_spec_sha256 = inspection.action_spec_sha256.clone();
-    let (mechanism, max_output_tokens) = match config.mechanism {
-        Some(mechanism) => (mechanism, 8192),
-        None => review_mechanism(config).await?,
+    let selection = match config.mechanism {
+        Some(mechanism) => ReviewSelection {
+            mechanism,
+            provider: RECEIPT_PROVIDER.into(),
+            model: REVIEW_MODEL.into(),
+            max_output_tokens: 8192,
+        },
+        None => review_mechanism(config, candidate_id).await?,
     };
-    let outcome = match mechanism {
+    let outcome = match selection.mechanism {
         SemanticReviewMechanism::Deterministic => deterministic_outcome(inspection).await?,
         SemanticReviewMechanism::CodexAppServer => {
             let deterministic = deterministic_evidence(&inspection).await?;
@@ -262,7 +292,14 @@ async fn run_candidate(
                     usage_known: false,
                 }
             } else {
-                codex_outcome(candidate_id, inspection, deterministic).await?
+                codex_outcome(
+                    candidate_id,
+                    inspection,
+                    deterministic,
+                    &selection.provider,
+                    &selection.model,
+                )
+                .await?
             }
         }
         SemanticReviewMechanism::Model => {
@@ -291,7 +328,7 @@ async fn run_candidate(
                     candidate_id,
                     inspection,
                     deterministic,
-                    max_output_tokens,
+                    selection.max_output_tokens,
                 )
                 .await?
             }
@@ -621,6 +658,8 @@ async fn codex_outcome(
     candidate_id: &str,
     inspection: CandidateInspection,
     deterministic: ReviewEvidence,
+    provider: &str,
+    model: &str,
 ) -> Result<CompletedOutcome, Box<dyn std::error::Error>> {
     let workspace_root =
         PathBuf::from(env::var("FACTORY_REVIEW_WORKSPACE").unwrap_or_else(|_| "/state".into()));
@@ -635,6 +674,7 @@ async fn codex_outcome(
         base_sha: inspection.base_commit.clone(),
         candidate_sha: inspection.candidate.commit_sha.clone(),
         tree_sha: inspection.candidate.tree_sha.clone(),
+        model: model.into(),
         timeout: Duration::from_secs(timeout),
     };
     let deterministic_findings: Vec<ReviewFinding> = deterministic
@@ -654,8 +694,8 @@ async fn codex_outcome(
                 evidence: EvidenceKind::Unknown,
                 findings: vec![failure_finding(candidate_id, &message)],
                 mechanism: ReviewMechanism::CodexAppServer,
-                provider: RECEIPT_PROVIDER.into(),
-                model: REVIEW_MODEL.into(),
+                provider: provider.into(),
+                model: model.into(),
                 reservation_id: String::new(),
                 request_sha256: factory_native::device_session::sha256_hex(&format!(
                     "codex-review-failure:v1:{commit_sha}:{message}"
@@ -698,8 +738,8 @@ async fn codex_outcome(
         evidence: EvidenceKind::Executed,
         findings,
         mechanism: ReviewMechanism::CodexAppServer,
-        provider: RECEIPT_PROVIDER.into(),
-        model: REVIEW_MODEL.into(),
+        provider: provider.into(),
+        model: model.into(),
         reservation_id: String::new(),
         request_sha256: outcome.request_sha256,
         input_tokens: usage.input_tokens,
@@ -776,6 +816,8 @@ fn failure_finding(candidate_id: &str, message: &str) -> ReviewFinding {
         id: "semantic-review-unavailable".into(),
         severity: FindingSeverity::Blocking,
         category: FindingCategory::Other,
+        points: FindingSeverity::Blocking.canonical_points(),
+        rationale: bounded(message, 500),
         message: bounded(message, 500),
         evidence_refs: vec![candidate_id.to_owned()],
     }

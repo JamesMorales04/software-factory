@@ -50,6 +50,15 @@ pub struct SemanticReview {
     pub findings: Vec<ReviewFinding>,
 }
 
+/// Frozen reviewer selection for one candidate. The profile route is the
+/// single authority; Core never silently substitutes a different provider.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReviewerSelection {
+    Deterministic,
+    Chat { provider: String, model: String },
+    Native { provider: String, model: String },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SemanticReviewInput {
     pub candidate_commit_sha: String,
@@ -103,12 +112,14 @@ impl SemanticReview {
             }
         }
         if self.verdict == SemanticVerdict::Approve
-            && self
-                .findings
-                .iter()
-                .any(|finding| finding.severity == FindingSeverity::Blocking)
+            && self.findings.iter().any(|finding| {
+                matches!(
+                    finding.severity,
+                    FindingSeverity::Blocking | FindingSeverity::Critical
+                )
+            })
         {
-            return invalid("an approval cannot contain blocking findings");
+            return invalid("an approval cannot contain blocking or critical findings");
         }
         if self.verdict != SemanticVerdict::Approve && self.findings.is_empty() {
             return invalid("a non-approval verdict requires at least one finding");
@@ -124,6 +135,10 @@ pub fn validate_finding(finding: &ReviewFinding) -> Result<(), SemanticReviewErr
         &finding.message,
         MAX_FINDING_MESSAGE_CHARS,
     )?;
+    if finding.points != finding.severity.canonical_points() {
+        return invalid("finding points do not match the canonical severity weight");
+    }
+    validate_text("finding rationale", &finding.rationale, 2000)?;
     if finding.evidence_refs.is_empty() || finding.evidence_refs.len() > MAX_EVIDENCE_REFS {
         return invalid("finding must cite 1..=16 evidence references");
     }
@@ -325,8 +340,11 @@ every identity and finding, a deterministic pre-review must also approve, and th
 Quality Gate makes the final decision. Your approval is corroborating advice, not acceptance \
 authority. Approve only when the exact diff plausibly satisfies the frozen objective without \
 blocking functional, architectural, security, testing or scope defects. Use request_changes with \
-blocking findings for defects, and uncertain with at least one concrete finding when evidence \
-is insufficient. Never approve from the candidate description alone.\n\nJSON Schema:\n{schema}"
+blocking findings for defects, critical findings for security or irreparable authority defects, \
+and uncertain with at least one concrete finding when evidence is insufficient. Every finding must \
+set points to the canonical severity weight (critical=8, blocking=5, warning=2, info=1), include a \
+concrete rationale and cite 1..=16 evidence references. Never approve from the candidate \
+description alone.\n\nJSON Schema:\n{schema}"
     );
     let mut prompt = String::new();
     prompt.push_str("Review the following exact frozen candidate.\n\n");
@@ -464,6 +482,8 @@ mod tests {
             severity,
             category: FindingCategory::Functional,
             message: "concrete defect".into(),
+            points: severity.canonical_points(),
+            rationale: "The exact diff demonstrates a concrete defect.".into(),
             evidence_refs: vec!["src/lib.rs".into()],
         }
     }

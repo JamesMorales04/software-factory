@@ -252,7 +252,10 @@ function routeSupportWarning(
       provider: provider.provider,
     });
   }
-  if (role.id !== "implementer" && provider.kind !== "opencode") {
+  // The Lead role needs a chat-completions gateway. Implementers use a
+  // provider session and Semantic Reviewers use either chat completions or
+  // the adapter-native review transport, so Codex is valid for both.
+  if (role.id === "lead" && provider.kind !== "opencode") {
     return t("execProfiles.warning.appServerProvider", {
       role: label,
       kind: provider.kind,
@@ -378,6 +381,27 @@ function validateDraft(
         min,
         max,
       });
+    }
+  }
+  const autonomy = draft.progress.autonomy;
+  if (autonomy?.enabled) {
+    const points = autonomy.repairPointBudgets;
+    const cycles = autonomy.repairCycleBudgets;
+    if (
+      !Number.isFinite(points[0]) ||
+      points[0] < 1 ||
+      points[0] > 40 ||
+      !Number.isFinite(cycles[0]) ||
+      cycles[0] < 1 ||
+      cycles[0] > 10 ||
+      points[1] > 5 ||
+      cycles[1] > 1 ||
+      points[2] !== 0 ||
+      cycles[2] !== 0 ||
+      points[3] !== 0 ||
+      cycles[3] !== 0
+    ) {
+      return t("execProfiles.validation.autonomyBudget");
     }
   }
   return null;
@@ -1252,6 +1276,15 @@ export function ExecutionProfiles() {
                             <span className="execution-profile-role-note">
                               {t(role.responsibilityKey)}
                             </span>
+                            {role.id === "semanticReviewer" && provider && (
+                              <span className="execution-profile-role-note">
+                                {t(
+                                  provider.kind === "codex"
+                                    ? "execProfiles.transport.nativeReview"
+                                    : "execProfiles.transport.chatReview",
+                                )}
+                              </span>
+                            )}
                           </th>
                           <td>
                             <Select
@@ -1535,6 +1568,65 @@ export function ExecutionProfiles() {
                   }
                 />
               </div>
+              <Checkbox
+                label={t("execProfiles.progress.autonomyEnabled")}
+                checked={draft.progress.autonomy?.enabled ?? false}
+                onChange={(event) =>
+                  updateProgress({
+                    autonomy: event.target.checked
+                      ? {
+                          enabled: true,
+                          repairPointBudgets: [8, 5, 0, 0],
+                          repairCycleBudgets: [2, 1, 0, 0],
+                        }
+                      : {
+                          enabled: false,
+                          repairPointBudgets: [0, 0, 0, 0],
+                          repairCycleBudgets: [0, 0, 0, 0],
+                        },
+                  })
+                }
+              />
+              <p className="muted">{t("execProfiles.progress.autonomyHint")}</p>
+              {draft.progress.autonomy?.enabled && (
+                <div className="grid-2">
+                  {(
+                    [
+                      ["r0Points", "repairPointBudgets", 0, 40],
+                      ["r0Cycles", "repairCycleBudgets", 1, 10],
+                      ["r1Points", "repairPointBudgets", 0, 5],
+                      ["r1Cycles", "repairCycleBudgets", 0, 1],
+                    ] as const
+                  ).map(([key, field, min, max]) => {
+                    const index =
+                      key === "r0Points" || key === "r0Cycles" ? 0 : 1;
+                    const autonomy = draft.progress.autonomy;
+                    if (!autonomy) return null;
+                    return (
+                      <Input
+                        key={key}
+                        label={t(`execProfiles.progress.${key}` as MessageKey)}
+                        type="number"
+                        min={min}
+                        max={max}
+                        value={autonomy[field][index]}
+                        onChange={(event) => {
+                          const values = [...autonomy[field]] as [
+                            number,
+                            number,
+                            number,
+                            number,
+                          ];
+                          values[index] = Number(event.target.value);
+                          updateProgress({
+                            autonomy: { ...autonomy, [field]: values },
+                          });
+                        }}
+                      />
+                    );
+                  })}
+                </div>
+              )}
               <h4>{t("execProfiles.autoStart.title")}</h4>
               <p className="muted">{t("execProfiles.autoStart.hint")}</p>
               <Checkbox

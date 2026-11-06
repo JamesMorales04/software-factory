@@ -88,6 +88,7 @@ pub struct CodexReviewRequest {
     pub base_sha: String,
     pub candidate_sha: String,
     pub tree_sha: String,
+    pub model: String,
     pub timeout: Duration,
 }
 
@@ -164,13 +165,13 @@ impl CodexProcess {
         Ok(require_chatgpt(&value)?)
     }
 
-    async fn require_model(&mut self) -> Result<(), CodexReviewError> {
+    async fn require_model(&mut self, model: &str) -> Result<(), CodexReviewError> {
         let value = self
             .rpc
             .request("model/list", json!({}))
             .await
             .map_err(|error| CodexReviewError::Protocol(error.to_string()))?;
-        require_review_model(&value)?;
+        require_review_model(&value, model)?;
         Ok(())
     }
 }
@@ -270,7 +271,7 @@ pub async fn login(home: &CodexHome, device_code: bool) -> Result<Value, CodexRe
         .request("model/list", json!({}))
         .await
         .map_err(|error| CodexReviewError::Protocol(error.to_string()))?;
-    require_review_model(&models)?;
+    require_review_model(&models, REVIEW_MODEL)?;
     Ok(json!({"authenticated": true, "account": account}))
 }
 
@@ -288,7 +289,7 @@ pub async fn status(home: &CodexHome) -> Result<Value, CodexReviewError> {
         .request("model/list", json!({}))
         .await
         .map_err(|error| CodexReviewError::Protocol(error.to_string()))?;
-    let model_ok = require_review_model(&models).is_ok();
+    let model_ok = require_review_model(&models, REVIEW_MODEL).is_ok();
     Ok(json!({
         "account": match account {
             crate::codex_auth::AccountState::LoggedOut => json!({"type":"loggedOut"}),
@@ -455,7 +456,7 @@ async fn run_review_in_snapshot(
     );
     let mut process = CodexProcess::start(home, binary).await?;
     process.account().await?;
-    process.require_model().await?;
+    process.require_model(&request.model).await?;
     let thread = process
         .rpc
         .start_thread(ThreadStartParams {
@@ -463,7 +464,7 @@ async fn run_review_in_snapshot(
             approval_policy: crate::protocol::DenyApprovalPolicy::Never,
             sandbox: None,
             permissions: Some("factory-review".into()),
-            model: Some(REVIEW_MODEL.into()),
+            model: Some(request.model.clone()),
             model_provider: Some(APP_SERVER_PROVIDER.into()),
             // The review thread must be persisted long enough for Codex to
             // report measured token usage. The dedicated Codex home is private
@@ -479,10 +480,10 @@ async fn run_review_in_snapshot(
         })
         .await
         .map_err(|error| CodexReviewError::Protocol(error.to_string()))?;
-    if thread.model.as_deref() != Some(REVIEW_MODEL) {
+    if thread.model.as_deref() != Some(request.model.as_str()) {
         return Err(CodexReviewError::Protocol(format!(
-            "Codex thread model {:?} is not exact {REVIEW_MODEL:?}",
-            thread.model
+            "Codex thread model {:?} is not exact {:?}",
+            thread.model, request.model
         )));
     }
     if thread.model_provider.as_deref() != Some(APP_SERVER_PROVIDER) {
@@ -635,7 +636,7 @@ async fn run_review_in_snapshot(
         });
     }
     if usage.is_none()
-        && let Some(total) = persisted_review_tokens(home, snapshot, REVIEW_MODEL).await
+        && let Some(total) = persisted_review_tokens(home, snapshot, &request.model).await
     {
         usage = Some(CodexTokenUsage {
             input_tokens: 0,
@@ -647,7 +648,7 @@ async fn run_review_in_snapshot(
         eprintln!("codex review completed without measured token usage for thread {thread_id}");
     }
     let mut text = item_review.or_else(|| review_text(&thread));
-    if let Some(subagent_id) = persisted_review_thread(home, snapshot, REVIEW_MODEL).await
+    if let Some(subagent_id) = persisted_review_thread(home, snapshot, &request.model).await
         && let Ok(subagent) = process.rpc.read_thread_value(&subagent_id).await
         && let Some(candidate) = review_text(&subagent)
         && parse_json_review(&candidate).is_some()
@@ -1049,7 +1050,8 @@ fn parse_json_review(text: &str) -> Option<(ReceiptResult, Vec<ReviewFinding>)> 
                     .and_then(|value| value.parse::<u64>().ok())
             });
             let severity = match priority {
-                Some(0 | 1) => FindingSeverity::Blocking,
+                Some(0) => FindingSeverity::Critical,
+                Some(1) => FindingSeverity::Blocking,
                 Some(2) => FindingSeverity::Warning,
                 Some(3) => FindingSeverity::Info,
                 _ => match finding
@@ -1059,7 +1061,8 @@ fn parse_json_review(text: &str) -> Option<(ReceiptResult, Vec<ReviewFinding>)> 
                     .to_ascii_lowercase()
                     .as_str()
                 {
-                    "critical" | "blocking" | "high" => FindingSeverity::Blocking,
+                    "critical" => FindingSeverity::Critical,
+                    "blocking" | "high" => FindingSeverity::Blocking,
                     "warning" | "medium" => FindingSeverity::Warning,
                     "info" | "low" => FindingSeverity::Info,
                     _ => FindingSeverity::Warning,
@@ -1099,7 +1102,7 @@ fn parse_json_review(text: &str) -> Option<(ReceiptResult, Vec<ReviewFinding>)> 
 fn priority_heading(line: &str) -> Option<(FindingSeverity, String)> {
     let upper = line.to_ascii_uppercase();
     for (marker, severity) in [
-        ("P0", FindingSeverity::Blocking),
+        ("P0", FindingSeverity::Critical),
         ("P1", FindingSeverity::Blocking),
         ("P2", FindingSeverity::Warning),
         ("P3", FindingSeverity::Info),
@@ -1161,11 +1164,14 @@ fn build_finding(
         } else {
             FindingCategory::Other
         };
+    let message: String = message.chars().take(2000).collect();
     ReviewFinding {
         id: format!("codex-review-{}", index + 1),
         severity,
         category,
-        message: message.chars().take(2000).collect(),
+        message: message.clone(),
+        points: severity.canonical_points(),
+        rationale: message,
         evidence_refs: if evidence_refs.is_empty() {
             vec!["candidate".into()]
         } else {
@@ -1389,13 +1395,15 @@ mod tests {
     #[test]
     fn priority_headings_map_to_factory_severity() {
         for (marker, severity) in [
-            ("P0", FindingSeverity::Blocking),
+            ("P0", FindingSeverity::Critical),
             ("P1", FindingSeverity::Blocking),
             ("P2", FindingSeverity::Warning),
             ("P3", FindingSeverity::Info),
         ] {
             let (_, findings) = parse_review_text(&format!("### [{marker}] issue at src/lib.rs:7"));
             assert_eq!(findings[0].severity, severity);
+            assert_eq!(findings[0].points, severity.canonical_points());
+            assert!(!findings[0].rationale.trim().is_empty());
         }
     }
 }

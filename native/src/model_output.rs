@@ -306,6 +306,8 @@ mod tests {
             severity: FindingSeverity::Blocking,
             category: FindingCategory::Security,
             message: "credential path".into(),
+            points: 5,
+            rationale: "The diff touches a credential path.".into(),
             evidence_refs: vec!["src/credential.rs".into()],
         }])
         .unwrap();

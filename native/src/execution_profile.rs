@@ -330,6 +330,10 @@ pub struct ProviderRouteAvailability {
     pub models: Vec<String>,
     pub enabled: bool,
     pub has_credential: bool,
+    /// The deployment exposes the adapter-native reviewer transport. This is
+    /// an availability signal, not a routing override; the frozen profile
+    /// route still selects the provider/model.
+    pub native_review_available: bool,
     /// `provider_settings.is_default = 1`.
     pub is_default: bool,
 }
@@ -387,7 +391,9 @@ pub fn evaluate_executability(
             ));
             continue;
         };
-        if !provider.has_credential {
+        let native_reviewer =
+            role == ExecutionRole::SemanticReviewer && provider.native_review_available;
+        if !provider.has_credential && !native_reviewer {
             warnings.push(format!(
                 "{} route {}/{} cannot run because {} has no stored credential",
                 role.as_str(),
@@ -423,10 +429,29 @@ pub fn evaluate_executability(
                     ));
                 }
             }
+            Some(adapter) if role == ExecutionRole::SemanticReviewer => {
+                let available = match adapter.review_transport() {
+                    Some(crate::provider_adapter::ReviewTransport::ChatCompletions) => {
+                        provider.has_credential
+                    }
+                    Some(crate::provider_adapter::ReviewTransport::NativeAdapter) => {
+                        provider.native_review_available
+                    }
+                    None => false,
+                };
+                if !available {
+                    warnings.push(format!(
+                        "semanticReviewer route {}/{} cannot run because the {} adapter has no available review transport",
+                        route.provider,
+                        route.model,
+                        provider.kind
+                    ));
+                }
+            }
             Some(adapter) => {
                 if !adapter.supports_chat_completions() {
                     warnings.push(format!(
-                        "{} route {}/{} cannot execute a one-shot model call in this build: the {} adapter is a Worker App Server, not an OpenAI-compatible model gateway",
+                        "{} route {}/{} cannot execute a one-shot model call in this build: the {} adapter is not an OpenAI-compatible model gateway",
                         role.as_str(),
                         route.provider,
                         route.model,
@@ -562,6 +587,10 @@ fn validate_progress_policy(policy: &ProgressPolicy) -> Result<(), ExecutionProf
             "progress.observationTimeoutSecs must be between 1 and {MAX_OBSERVATION_TIMEOUT_SECS}"
         )));
     }
+    policy
+        .autonomy
+        .validate()
+        .map_err(|reason| ExecutionProfileError::Invalid(format!("progress.autonomy: {reason}")))?;
     Ok(())
 }
 
@@ -677,6 +706,7 @@ mod tests {
             diagnose_after_stagnant_checkpoints: NonZeroU32::new(2).unwrap(),
             escalate_after_unsuccessful_replans: NonZeroU32::new(1).unwrap(),
             observation_timeout_secs: NonZeroU32::new(300).unwrap(),
+            autonomy: Default::default(),
         }
     }
 
@@ -1041,6 +1071,7 @@ mod tests {
             models: models.iter().map(|model| (*model).to_owned()).collect(),
             enabled: true,
             has_credential: true,
+            native_review_available: kind == "codex",
             is_default: false,
         }
     }

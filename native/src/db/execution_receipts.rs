@@ -400,14 +400,14 @@ pub(super) async fn verify_tests_improved_evidence_in_tx(
         .bind(receipt.rowid)
         .fetch_optional(&mut *connection)
         .await?;
-        if let Some((prior_outcome, prior_candidate)) = prior {
-            if prior_candidate == receipt.candidate_sha256 {
-                return Err(Error::Forbidden(if prior_outcome == "FAIL" {
-                    "test PASS candidate did not advance from the failing candidate".into()
-                } else {
-                    "test PASS repeats an earlier PASS for the same candidate".into()
-                }));
-            }
+        if let Some((prior_outcome, prior_candidate)) = prior
+            && prior_candidate == receipt.candidate_sha256
+        {
+            return Err(Error::Forbidden(if prior_outcome == "FAIL" {
+                "test PASS candidate did not advance from the failing candidate".into()
+            } else {
+                "test PASS repeats an earlier PASS for the same candidate".into()
+            }));
         }
     }
     Ok(())

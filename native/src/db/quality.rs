@@ -1,5 +1,10 @@
 use super::*;
 
+use crate::autonomy::{self, RepairDecision, RepairRequest};
+use crate::execution_policy::AutonomyPolicy;
+use crate::execution_profile::ExecutionProfileRevisionContent;
+use crate::semantic_review::ReviewerSelection;
+
 use chrono::Utc;
 use sqlx::row::Row;
 use sqlx_sqlite::{SqliteConnection, SqliteRow};
@@ -432,12 +437,56 @@ impl Database {
         load_candidate(&mut connection, id).await
     }
 
+    pub async fn reviewer_selection(&self, candidate_id: &str) -> Result<ReviewerSelection, Error> {
+        let mut connection = self.pool.acquire().await?;
+        reviewer_selection_for_candidate(&mut connection, candidate_id).await
+    }
+
     pub async fn gate_for_candidate(
         &self,
         candidate_id: &str,
     ) -> Result<Option<GateRecord>, Error> {
         let mut connection = self.pool.acquire().await?;
         load_gate(&mut connection, candidate_id).await
+    }
+
+    pub async fn repair_authorization_for_candidate(
+        &self,
+        candidate_id: &str,
+    ) -> Result<Option<AutonomyRepairRecord>, Error> {
+        let row = sqlx::query::query(
+            "SELECT repair_id,campaign_id,candidate_id,work_item_id,repair_trigger,risk_class,
+                    total_points,critical_count,blocking_count,warning_count,info_count,
+                    cycle_index,decision,reason_code,reason,policy_sha256,reviewer_receipt_id,
+                    created_at
+             FROM autonomy_repairs WHERE candidate_id=?1 ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(candidate_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        Ok(Some(AutonomyRepairRecord {
+            repair_id: row.try_get("repair_id")?,
+            campaign_id: row.try_get("campaign_id")?,
+            candidate_id: row.try_get("candidate_id")?,
+            work_item_id: row.try_get("work_item_id")?,
+            repair_trigger: row.try_get("repair_trigger")?,
+            risk_class: row.try_get("risk_class")?,
+            total_points: row.try_get::<i64, _>("total_points")? as u16,
+            critical_count: row.try_get::<i64, _>("critical_count")? as u32,
+            blocking_count: row.try_get::<i64, _>("blocking_count")? as u32,
+            warning_count: row.try_get::<i64, _>("warning_count")? as u32,
+            info_count: row.try_get::<i64, _>("info_count")? as u32,
+            cycle_index: row.try_get::<i64, _>("cycle_index")? as u32,
+            decision: row.try_get("decision")?,
+            reason_code: row.try_get("reason_code")?,
+            reason: row.try_get("reason")?,
+            policy_sha256: row.try_get("policy_sha256")?,
+            reviewer_receipt_id: row.try_get("reviewer_receipt_id")?,
+            created_at: row.try_get("created_at")?,
+        }))
     }
 
     pub async fn quality_receipts(
@@ -599,6 +648,18 @@ fn validate_receipt_input(input: &QualityReceiptInput) -> Result<(), Error> {
     }
     crate::semantic_review::validate_findings(&input.findings)
         .map_err(|_| Error::Invalid("quality receipt findings"))?;
+    if input.result == ReceiptResult::Pass
+        && input.findings.iter().any(|finding| {
+            matches!(
+                finding.severity,
+                crate::review::FindingSeverity::Blocking | crate::review::FindingSeverity::Critical
+            )
+        })
+    {
+        return Err(Error::Invalid(
+            "a passing review cannot carry blocking or critical findings",
+        ));
+    }
     for value in [
         input.model_provider.as_str(),
         input.model_name.as_str(),
@@ -809,34 +870,54 @@ async fn validate_model_review_receipt(
     role: QualityRole,
     input: &QualityReceiptInput,
 ) -> Result<(), Error> {
-    if role != QualityRole::Reviewer
-        || !input.mechanism.is_model_backed()
-        || input.result != ReceiptResult::Pass
-    {
+    if role != QualityRole::Reviewer || !input.mechanism.is_model_backed() {
         return Ok(());
     }
-    if input.mechanism == ReviewMechanism::CodexAppServer {
-        // Trust boundary: a CODEX_APP_SERVER receipt is authored by the
-        // dedicated reviewer role. Core binds the exact candidate, mechanism,
-        // model, no-reservation rule, known usage and request-hash shape, but
-        // the App Server turn is attested by that reviewer process. A
-        // compromised reviewer token is equivalent to a compromised reviewer;
-        // see ADR-0032. This is not a provider-issued attestation.
-        if input.model_provider != "codex"
-            || input.model_name != "gpt-6-luna"
-            || !input.usage_known
-            || !input.model_reservation_id.is_empty()
-            || input.model_request_sha256.len() != 64
-            || !input
-                .model_request_sha256
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit())
-        {
+    let selection = reviewer_selection_for_candidate(connection, candidate_id).await?;
+    match (&input.mechanism, &selection) {
+        (ReviewMechanism::CodexAppServer, ReviewerSelection::Native { provider, model }) => {
+            // Trust boundary: a CODEX_APP_SERVER receipt is authored by the
+            // dedicated reviewer role. Core binds the exact candidate,
+            // mechanism, frozen provider/model, no-reservation rule, known
+            // usage for approval and request-hash shape, but the App Server
+            // turn is attested by that reviewer process. A compromised
+            // reviewer token is equivalent to a compromised reviewer; see
+            // ADR-0032. This is not a provider-issued attestation.
+            if input.model_provider != *provider || input.model_name != *model {
+                return Err(Error::Forbidden(
+                    "native review provenance does not match the frozen reviewer route".into(),
+                ));
+            }
+            if input.result == ReceiptResult::Pass
+                && (!input.usage_known
+                    || !input.model_reservation_id.is_empty()
+                    || input.model_request_sha256.len() != 64
+                    || !input
+                        .model_request_sha256
+                        .bytes()
+                        .all(|byte| byte.is_ascii_hexdigit()))
+            {
+                return Err(Error::Forbidden(
+                    "native review approval requires known usage, no reservation and a request hash"
+                        .into(),
+                ));
+            }
+            return Ok(());
+        }
+        (ReviewMechanism::Model, ReviewerSelection::Chat { provider, model }) => {
+            if input.model_provider != *provider || input.model_name != *model {
+                return Err(Error::Forbidden(
+                    "model review provenance does not match the frozen reviewer route".into(),
+                ));
+            }
+        }
+        _ => {
             return Err(Error::Forbidden(
-                "Codex review approval requires exact codex/gpt-6-luna provenance and known usage"
-                    .into(),
+                "reviewer mechanism does not match the frozen reviewer route".into(),
             ));
         }
+    }
+    if input.result != ReceiptResult::Pass {
         return Ok(());
     }
     if !input.usage_known
@@ -919,17 +1000,108 @@ async fn semantic_review_enabled(connection: &mut SqliteConnection) -> Result<bo
     Ok(enabled.is_some_and(|(enabled,)| enabled != 0))
 }
 
-async fn semantic_review_requires_model(connection: &mut SqliteConnection) -> Result<bool, Error> {
+/// Resolve the frozen semantic-review route for a candidate. The Execution
+/// Profile revision is authoritative; a global env flag cannot override it.
+async fn reviewer_selection_for_candidate_in_tx(
+    connection: &mut SqliteConnection,
+    candidate_id: &str,
+) -> Result<ReviewerSelection, Error> {
     if !semantic_review_enabled(connection).await? {
-        return Ok(false);
+        return Ok(ReviewerSelection::Deterministic);
     }
-    let configured: Option<(String,)> = sqlx::query_as::query_as(
-        "SELECT provider FROM provider_settings
-         WHERE is_default=1 AND enabled=1 AND credential_ciphertext<>'' LIMIT 1",
+    let profile: Option<(Option<String>,)> = sqlx::query_as::query_as(
+        "SELECT epr.content_json
+         FROM candidates cd
+         JOIN attempts a ON a.id=cd.attempt_id
+         JOIN runs r ON r.id=a.run_id
+         JOIN campaigns c ON c.id=r.campaign_id
+         LEFT JOIN campaign_execution_profile_bindings b ON b.campaign_id=c.id
+         LEFT JOIN lead_start_evidence e ON e.campaign_id=c.id
+         LEFT JOIN execution_profile_revisions epr
+           ON epr.revision_id = COALESCE(b.profile_revision_id, e.profile_revision_id)
+         WHERE cd.id=?1",
     )
+    .bind(candidate_id)
     .fetch_optional(&mut *connection)
     .await?;
-    Ok(configured.is_some())
+    let (provider, model) = match profile.and_then(|(raw,)| raw) {
+        Some(raw) => {
+            let content: ExecutionProfileRevisionContent = serde_json::from_str(&raw)
+                .map_err(|_| Error::Invalid("frozen execution profile content"))?;
+            let content = content
+                .v2()
+                .ok_or_else(|| Error::Unavailable("V1 profile has no reviewer route".into()))?;
+            (
+                content.roles.semantic_reviewer.provider.clone(),
+                content.roles.semantic_reviewer.model.clone(),
+            )
+        }
+        None => {
+            // Legacy Campaign without a frozen profile: use the enabled
+            // default connection only as an explicit, non-substituting route.
+            let legacy: Option<(String, String, String)> = sqlx::query_as::query_as(
+                "SELECT provider,kind,model FROM provider_settings
+                 WHERE is_default=1 AND enabled=1 AND credential_ciphertext<>'' LIMIT 1",
+            )
+            .fetch_optional(&mut *connection)
+            .await?;
+            let Some((provider, _kind, model)) = legacy else {
+                return Err(Error::Unavailable(
+                    "semantic review is enabled but no reviewer route is configured".into(),
+                ));
+            };
+            (provider, model)
+        }
+    };
+    let settings: Option<(String, bool, String)> = sqlx::query_as::query_as(
+        "SELECT kind,enabled,credential_ciphertext FROM provider_settings WHERE provider=?1",
+    )
+    .bind(&provider)
+    .fetch_optional(&mut *connection)
+    .await?;
+    let native_review = std::env::var("FACTORY_ENABLE_CODEX_REVIEW").as_deref() == Ok("1");
+    let Some((kind, enabled, credential)) = settings else {
+        if provider == "codex" && native_review {
+            // The dedicated reviewer container owns the ChatGPT login; Core
+            // has no provider_settings credential for it. The reviewer adapter
+            // verifies its own auth and returns fail-closed evidence if absent.
+            return Ok(ReviewerSelection::Native { provider, model });
+        }
+        return Err(Error::Unavailable(format!(
+            "reviewer provider {provider} is not configured"
+        )));
+    };
+    if !enabled {
+        return Err(Error::Unavailable(format!(
+            "reviewer provider {provider} is disabled"
+        )));
+    }
+    let adapter = crate::provider_adapter::ProviderAdapter::from_kind(&kind).ok_or_else(|| {
+        Error::Unavailable(format!("reviewer provider kind {kind} is unsupported"))
+    })?;
+    match adapter.review_transport() {
+        Some(crate::provider_adapter::ReviewTransport::ChatCompletions) => {
+            if credential.is_empty() {
+                return Err(Error::Unavailable(format!(
+                    "reviewer provider {provider} has no stored credential"
+                )));
+            }
+            Ok(ReviewerSelection::Chat { provider, model })
+        }
+        Some(crate::provider_adapter::ReviewTransport::NativeAdapter) => {
+            Ok(ReviewerSelection::Native { provider, model })
+        }
+        None => Err(Error::Unavailable(format!(
+            "reviewer provider {provider} has no review transport"
+        ))),
+    }
+}
+
+async fn reviewer_selection_for_candidate(
+    connection: &mut SqliteConnection,
+    candidate_id: &str,
+) -> Result<ReviewerSelection, Error> {
+    reviewer_selection_for_candidate_in_tx(connection, candidate_id).await
 }
 
 async fn decide_gate(
@@ -957,18 +1129,78 @@ async fn decide_gate(
         reviewer.as_ref().map(to_reviewer_receipt).as_ref(),
         policy,
     );
-    if decision.outcome == GateOutcome::Accepted
-        && reviewer
-            .as_ref()
-            .is_some_and(|receipt| !receipt.mechanism.is_model_backed())
-        && (semantic_review_requires_model(connection).await?
-            || (semantic_review_enabled(connection).await?
-                && std::env::var("FACTORY_ENABLE_CODEX_REVIEW").as_deref() == Ok("1")))
-    {
-        decision = crate::quality::GateDecision {
-            outcome: GateOutcome::NotTested,
-            reasons: vec!["semantic review is enabled; MODEL reviewer evidence is required".into()],
-        };
+    if let Some(reviewer) = reviewer.as_ref() {
+        // A critical finding is a hard human stop even if a malformed or
+        // historical receipt also claimed PASS. A PASS with a blocking finding
+        // is contradictory and can never accept the candidate.
+        if reviewer
+            .findings
+            .iter()
+            .any(|finding| finding.severity == crate::review::FindingSeverity::Critical)
+            && matches!(
+                decision.outcome,
+                GateOutcome::Accepted | GateOutcome::RepairRequired
+            )
+        {
+            decision = crate::quality::GateDecision {
+                outcome: GateOutcome::HumanRequired,
+                reasons: vec!["critical review finding requires human review".into()],
+            };
+        } else if reviewer.result == ReceiptResult::Pass
+            && reviewer
+                .findings
+                .iter()
+                .any(|finding| finding.severity == crate::review::FindingSeverity::Blocking)
+            && decision.outcome == GateOutcome::Accepted
+        {
+            decision = crate::quality::GateDecision {
+                outcome: GateOutcome::RepairRequired,
+                reasons: vec!["reviewer approval contradicts a blocking finding".into()],
+            };
+        }
+    }
+    match reviewer_selection_for_candidate_in_tx(connection, candidate_id).await {
+        Ok(ReviewerSelection::Deterministic) => {
+            if decision.outcome == GateOutcome::Accepted
+                && reviewer
+                    .as_ref()
+                    .is_some_and(|receipt| receipt.mechanism.is_model_backed())
+            {
+                decision = crate::quality::GateDecision {
+                    outcome: GateOutcome::NotTested,
+                    reasons: vec![
+                        "semantic review is disabled; deterministic reviewer evidence is required"
+                            .into(),
+                    ],
+                };
+            }
+        }
+        Ok(selection) => {
+            if decision.outcome == GateOutcome::Accepted
+                && reviewer
+                    .as_ref()
+                    .is_some_and(|receipt| !receipt.mechanism.is_model_backed())
+            {
+                let expected = match selection {
+                    ReviewerSelection::Chat { .. } => "MODEL",
+                    ReviewerSelection::Native { .. } => "CODEX_APP_SERVER",
+                    ReviewerSelection::Deterministic => unreachable!(),
+                };
+                decision = crate::quality::GateDecision {
+                    outcome: GateOutcome::NotTested,
+                    reasons: vec![format!(
+                        "reviewer mechanism does not match the frozen {expected} route"
+                    )],
+                };
+            }
+        }
+        Err(Error::Unavailable(reason)) if decision.outcome == GateOutcome::Accepted => {
+            decision = crate::quality::GateDecision {
+                outcome: GateOutcome::NotTested,
+                reasons: vec![reason],
+            };
+        }
+        Err(error) => return Err(error),
     }
     if reviewer.is_none()
         && decision
@@ -1030,7 +1262,164 @@ async fn decide_gate(
         )
         .await?;
     }
+    if let Some(reviewer) = reviewer.as_ref() {
+        record_gate_repair_authorization(connection, &gate, candidate, reviewer, verifier).await?;
+    }
     Ok(Some(gate))
+}
+
+struct RepairContext {
+    campaign_id: String,
+    work_item_id: String,
+    risk_class: String,
+    autonomy: AutonomyPolicy,
+    prior_authorized_cycles: u32,
+}
+
+async fn repair_context(
+    connection: &mut SqliteConnection,
+    candidate_id: &str,
+) -> Result<RepairContext, Error> {
+    let row: Option<(String, String, String)> = sqlx::query_as::query_as(
+        "SELECT r.campaign_id,
+                COALESCE(lt.unit_id, li.integration_id, a.id),
+                COALESCE(ca.risk_class, '')
+         FROM candidates cd
+         JOIN attempts a ON a.id=cd.attempt_id
+         JOIN runs r ON r.id=a.run_id
+         LEFT JOIN lead_tasks lt ON lt.attempt_id=a.id
+         LEFT JOIN lead_integrations li ON li.attempt_id=a.id
+         LEFT JOIN campaign_authorizations ca ON ca.campaign_id=r.campaign_id
+         WHERE cd.id=?1",
+    )
+    .bind(candidate_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    let (campaign_id, work_item_id, risk_class) = row.ok_or(Error::NotFound)?;
+    let profile: Option<(Option<String>,)> = sqlx::query_as::query_as(
+        "SELECT epr.content_json
+         FROM lead_start_evidence e
+         LEFT JOIN execution_profile_revisions epr
+           ON epr.revision_id = e.profile_revision_id
+         WHERE e.campaign_id = ?1",
+    )
+    .bind(&campaign_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    let autonomy = profile
+        .and_then(|(raw,)| raw)
+        .and_then(|raw| {
+            serde_json::from_str::<ExecutionProfileRevisionContent>(&raw)
+                .ok()
+                .and_then(|content| content.v2().map(|content| content.progress.autonomy))
+        })
+        .unwrap_or_default();
+    let prior: i64 = sqlx::query_scalar::query_scalar(
+        "SELECT COUNT(*) FROM autonomy_repairs
+         WHERE campaign_id=?1 AND work_item_id=?2 AND decision='AUTHORIZED'",
+    )
+    .bind(&campaign_id)
+    .bind(&work_item_id)
+    .fetch_one(&mut *connection)
+    .await?;
+    Ok(RepairContext {
+        campaign_id,
+        work_item_id,
+        risk_class,
+        autonomy,
+        prior_authorized_cycles: u32::try_from(prior).unwrap_or(u32::MAX),
+    })
+}
+
+async fn record_gate_repair_authorization(
+    connection: &mut SqliteConnection,
+    gate: &GateRecord,
+    candidate: &CandidateRecord,
+    reviewer: &QualityReceiptRecord,
+    verifier: &QualityReceiptRecord,
+) -> Result<(), Error> {
+    if !matches!(
+        gate.outcome,
+        GateOutcome::RepairRequired | GateOutcome::HumanRequired
+    ) || reviewer.findings.is_empty()
+    {
+        return Ok(());
+    }
+    let score = match autonomy::score_findings(&reviewer.findings) {
+        Ok(score) => score,
+        Err(_) => return Ok(()),
+    };
+    let context = repair_context(connection, &gate.candidate_id).await?;
+    let decision = autonomy::authorize_repair(&RepairRequest {
+        risk_class: &context.risk_class,
+        policy: &context.autonomy,
+        findings: &reviewer.findings,
+        reviewer_result: reviewer.result,
+        reviewer_evidence_executed: reviewer.evidence == EvidenceKind::Executed,
+        reviewer_principal: &reviewer.principal_id,
+        implementer_principal: &candidate.implementer_id,
+        verifier_principal: &verifier.principal_id,
+        prior_repair_cycles: context.prior_authorized_cycles,
+    })
+    .map_err(|_| Error::Invalid("autonomy repair authorization"))?;
+    let (decision, reason_code, reason, cycle_index) = match decision {
+        RepairDecision::Authorize { cycle, .. } => (
+            "AUTHORIZED",
+            "authorized".to_string(),
+            "bounded repair authorized".to_string(),
+            cycle,
+        ),
+        RepairDecision::Deny {
+            reason_code,
+            reason,
+        } => (
+            "DENIED",
+            reason_code,
+            reason,
+            context.prior_authorized_cycles,
+        ),
+        RepairDecision::HumanRequired {
+            reason_code,
+            reason,
+        } => (
+            "HUMAN_REQUIRED",
+            reason_code,
+            reason,
+            context.prior_authorized_cycles,
+        ),
+    };
+    let policy_sha256 = sha256_hex(
+        serde_json::to_vec(&context.autonomy)
+            .map_err(|_| Error::Invalid("autonomy policy encoding"))?
+            .as_slice(),
+    );
+    sqlx::query::query(
+        "INSERT OR IGNORE INTO autonomy_repairs
+         (repair_id,campaign_id,candidate_id,work_item_id,repair_trigger,risk_class,
+          total_points,critical_count,blocking_count,warning_count,info_count,cycle_index,
+          decision,reason_code,reason,policy_sha256,reviewer_receipt_id,created_at)
+         VALUES (?1,?2,?3,?4,'QUALITY_GATE',?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
+    )
+    .bind(Uuid::new_v4().to_string())
+    .bind(&context.campaign_id)
+    .bind(&gate.candidate_id)
+    .bind(&context.work_item_id)
+    .bind(&context.risk_class)
+    .bind(score.total_points)
+    .bind(score.critical_count)
+    .bind(score.blocking_count)
+    .bind(score.warning_count)
+    .bind(score.info_count)
+    .bind(cycle_index)
+    .bind(decision)
+    .bind(reason_code)
+    .bind(reason)
+    .bind(policy_sha256)
+    .bind(&reviewer.receipt_id)
+    .bind(&gate.decided_at)
+    .execute(&mut *connection)
+    .await?;
+    Ok(())
 }
 
 type CandidateColumns = (

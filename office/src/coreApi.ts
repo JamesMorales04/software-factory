@@ -351,11 +351,33 @@ export type GateOutcome =
   | "HUMAN_REQUIRED"
   | "NOT_TESTED";
 
+export interface RepairAuthorization {
+  repair_id: string;
+  campaign_id: string;
+  candidate_id: string;
+  work_item_id: string;
+  repair_trigger: string;
+  risk_class: string;
+  total_points: number;
+  critical_count: number;
+  blocking_count: number;
+  warning_count: number;
+  info_count: number;
+  cycle_index: number;
+  decision: "AUTHORIZED" | "DENIED" | "HUMAN_REQUIRED";
+  reason_code: string;
+  reason: string;
+  policy_sha256: string;
+  reviewer_receipt_id: string;
+  created_at: string;
+}
+
 export interface Gate {
   candidate_id: string;
   outcome: GateOutcome;
   reasons: string[];
   decided_at: string;
+  repair_authorization?: RepairAuthorization | null;
 }
 
 export interface FactoryEvent {
@@ -843,8 +865,8 @@ export type ReceiptResult =
 export type EvidenceKind = "EXECUTED" | "MOCKED" | "UNKNOWN";
 export type QualityRole = "verifier" | "reviewer";
 
-export type ReviewMechanism = "DETERMINISTIC" | "MODEL";
-export type FindingSeverity = "blocking" | "warning" | "info";
+export type ReviewMechanism = "DETERMINISTIC" | "MODEL" | "CODEX_APP_SERVER";
+export type FindingSeverity = "critical" | "blocking" | "warning" | "info";
 export type FindingCategory =
   | "functional"
   | "architecture"
@@ -858,7 +880,9 @@ export interface ReviewFinding {
   severity: FindingSeverity;
   category: FindingCategory;
   message: string;
-  evidence_refs: string[];
+  points: number;
+  rationale: string;
+  evidenceRefs: string[];
 }
 
 export interface QualityReceipt {
@@ -1759,10 +1783,17 @@ export interface ExecutionOperationLimits {
  * Deterministic progress supervision. Thresholds trigger diagnosis or
  * escalation; they do not stop a legitimate Campaign by themselves.
  */
+export interface ExecutionAutonomyPolicy {
+  enabled: boolean;
+  repairPointBudgets: [number, number, number, number];
+  repairCycleBudgets: [number, number, number, number];
+}
+
 export interface ExecutionProgressPolicy {
   diagnoseAfterStagnantCheckpoints: number;
   escalateAfterUnsuccessfulReplans: number;
   observationTimeoutSecs: number;
+  autonomy?: ExecutionAutonomyPolicy;
 }
 
 export interface ExecutionAutoStartPolicy {

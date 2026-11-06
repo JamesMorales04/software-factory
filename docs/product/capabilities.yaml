@@ -280,6 +280,7 @@ milestones:
   - CAP-051
   - CAP-052
   - CAP-054
+  - CAP-055
   exclusions:
   - Generic SaaS dashboard scope
   - invented backend capability or decorative actions
@@ -2600,3 +2601,59 @@ capabilities:
   - The Office shell remains available without a session so recovery and enrollment can render; protected API access still fails closed.
   blockers:
   - Mobile-data Tailscale UAT, independent review and Product Owner approval remain pending.
+
+- id: CAP-055
+  name: Provider-agnostic reviewer selection and bounded autonomy
+  category: Quality
+  purpose: Select any configured provider/model for the semantic reviewer, validate reviewer findings deterministically, and bound repair and progress replanning by frozen risk budgets
+  product_objective: Governed, provider-agnostic independent review with bounded autonomous recovery
+  decision_status: proposed
+  implementation_status: in_progress
+  verification:
+    deterministic: verified
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-011
+  - CAP-052
+  target_milestone: F1-S9
+  refs:
+    adr:
+    - docs/architecture/decisions/ADR-0033-provider-agnostic-review-and-bounded-autonomy.md
+    contract:
+    - docs/contracts/semantic-review-s4c.md
+    - docs/product/office-design-system.md
+    source:
+    - native/src/autonomy.rs
+    - native/src/execution_policy.rs
+    - native/src/db/quality.rs
+    - native/src/db/lead.rs
+    - native/src/bin/core.rs
+    - office/src/views/ExecutionProfiles.tsx
+    - office/src/components/office/CandidateEvidence.tsx
+    test:
+    - native/src/autonomy.rs
+    - native/src/db/tests.rs
+    - native/src/progress.rs
+    - native/src/bin/core.rs
+    - office/src/views/ExecutionProfiles.test.tsx
+  acceptance:
+    deterministic: 'The frozen profile semanticReviewer route selects chat or native review transport; a first-time frozen-check PASS is progress; critical findings, R2/R3 and exhausted budgets are human stops; repair authorization and the no-progress breaker are append-only Core evidence; disabled autonomy preserves historical policy hashes.'
+    real: 'A fresh Compose Campaign selects the Codex reviewer through the profile, receives an exact-candidate PASS with measured usage and an ACCEPTED gate, and Office renders the selected transport, findings points/rationale and repair authorization without inventing state.'
+  evidence:
+    deterministic:
+    - docs/evidence/provider-agnostic-review-and-bounded-autonomy-2026-11-06.json
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations:
+  - Autonomous repair records a deterministic authorization decision; automatically scheduling the next repair attempt remains a separate bounded change.
+  - Codex native review remains outside the Core chat-completions reservation ledger and is attested by the dedicated reviewer process under ADR-0032.
+  - Autonomy defaults off for existing profiles; only explicitly enabled R0/R1 policies can authorize repair or autonomous progress replanning.
+  - TRUSTED_LOCAL work is not isolation and does not certify SEC-01.
+  blockers:
+  - Independent review, Product Owner approval of ADR-0033 and a fresh real-model acceptance remain pending.

@@ -28,6 +28,7 @@ fn fixture_progress() -> crate::execution_policy::ProgressPolicy {
         diagnose_after_stagnant_checkpoints: std::num::NonZeroU32::new(2).unwrap(),
         escalate_after_unsuccessful_replans: std::num::NonZeroU32::new(1).unwrap(),
         observation_timeout_secs: std::num::NonZeroU32::new(300).unwrap(),
+        autonomy: Default::default(),
     }
 }
 
@@ -1015,6 +1016,44 @@ fn git_fixture(root: &Path, arguments: &[&str]) -> String {
     String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
 
+async fn enable_semantic_review(
+    fixture: &CandidateFixture,
+    provider: &str,
+    kind: &str,
+    model: &str,
+    base_url: &str,
+) {
+    sqlx::query::query("UPDATE factory_settings SET semantic_review_enabled=1 WHERE id=1")
+        .execute(&fixture.db.pool)
+        .await
+        .unwrap();
+    fixture
+        .db
+        .save_provider_settings(
+            &ProviderSettingsWrite {
+                provider: provider.into(),
+                kind: kind.into(),
+                model: model.into(),
+                base_url: base_url.into(),
+                auth_mode: "api_key".into(),
+                credential_ciphertext: "ciphertext".into(),
+                credential_nonce: "nonce".into(),
+                credential_fingerprint: "fingerprint".into(),
+                enabled: true,
+                is_default: true,
+                max_turns: 4,
+                max_input_tokens: 60_000,
+                max_output_tokens: 12_000,
+                max_cost_micros: 500_000,
+                input_micros_per_million: 150_000,
+                output_micros_per_million: 600_000,
+            },
+            "test",
+        )
+        .await
+        .unwrap();
+}
+
 async fn candidate_fixture() -> CandidateFixture {
     let root = std::env::temp_dir().join(format!("factory-quality-{}", Uuid::new_v4()));
     std::fs::create_dir(&root).unwrap();
@@ -1205,6 +1244,8 @@ fn model_review_receipt(
             severity: crate::review::FindingSeverity::Blocking,
             category: crate::review::FindingCategory::Functional,
             message: "bounded semantic defect".into(),
+            points: 5,
+            rationale: "The diff contains a bounded semantic defect.".into(),
             evidence_refs: vec!["seed.txt".into()],
         }]
     };
@@ -1233,6 +1274,14 @@ fn model_review_receipt(
 #[tokio::test]
 async fn codex_app_server_review_requires_exact_provenance_without_a_reservation() {
     let fixture = candidate_fixture().await;
+    enable_semantic_review(
+        &fixture,
+        "codex",
+        "codex",
+        "gpt-6-luna",
+        "https://api.openai.com/v1",
+    )
+    .await;
     let mut valid = quality_receipt(&fixture, "codex-review", "reviewer");
     valid.mechanism = ReviewMechanism::CodexAppServer;
     valid.model_provider = "codex".into();
@@ -1296,6 +1345,14 @@ async fn codex_app_server_review_requires_exact_provenance_without_a_reservation
 #[tokio::test]
 async fn codex_app_server_failure_receipt_preserves_unknown_usage() {
     let fixture = candidate_fixture().await;
+    enable_semantic_review(
+        &fixture,
+        "codex",
+        "codex",
+        "gpt-6-luna",
+        "https://api.openai.com/v1",
+    )
+    .await;
     let verifier = quality_receipt(&fixture, "verifier-codex-failure", "verifier");
     fixture
         .db
@@ -1314,6 +1371,8 @@ async fn codex_app_server_failure_receipt_preserves_unknown_usage() {
         severity: crate::review::FindingSeverity::Blocking,
         category: crate::review::FindingCategory::Other,
         message: "Codex authentication is unavailable".into(),
+        points: 5,
+        rationale: "The reviewer could not authenticate to the native adapter.".into(),
         evidence_refs: vec![fixture.candidate_id.clone()],
     }];
     assert!(!failed.usage_known);
@@ -1331,6 +1390,14 @@ async fn codex_app_server_failure_receipt_preserves_unknown_usage() {
 #[tokio::test]
 async fn model_review_approval_requires_matching_settled_reservation() {
     let fixture = candidate_fixture().await;
+    enable_semantic_review(
+        &fixture,
+        "opencode",
+        "opencode",
+        "deepseek-v4.1-flash",
+        "https://gateway.example/v1",
+    )
+    .await;
     fixture
         .db
         .record_quality_receipt(
@@ -1493,6 +1560,59 @@ async fn accepted_gate_projects_run_status_and_survives_restart() {
 }
 
 #[tokio::test]
+async fn critical_review_finding_is_a_human_stop() {
+    let fixture = candidate_fixture().await;
+    fixture
+        .db
+        .record_quality_receipt(
+            &fixture.candidate_id,
+            QualityRole::Verifier,
+            &quality_receipt(&fixture, "verifier-critical", "verifier-1"),
+        )
+        .await
+        .unwrap();
+    let critical = crate::review::ReviewFinding {
+        id: "critical-1".into(),
+        severity: crate::review::FindingSeverity::Critical,
+        category: crate::review::FindingCategory::Security,
+        message: "credential boundary is broken".into(),
+        points: 8,
+        rationale: "the diff exposes a credential boundary".into(),
+        evidence_refs: vec!["seed.txt".into()],
+    };
+    let mut reviewer = quality_receipt(&fixture, "reviewer-critical", "reviewer-1");
+    reviewer.result = ReceiptResult::ChangesRequested;
+    reviewer.findings = vec![critical.clone()];
+    let result = fixture
+        .db
+        .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &reviewer)
+        .await
+        .unwrap();
+    assert_eq!(result.gate.unwrap().outcome, GateOutcome::HumanRequired);
+    let repair = fixture
+        .db
+        .repair_authorization_for_candidate(&fixture.candidate_id)
+        .await
+        .unwrap()
+        .expect("critical repair decision");
+    assert_eq!(repair.decision, "HUMAN_REQUIRED");
+    assert_eq!(repair.reason_code, "critical_zero");
+    assert_eq!(repair.critical_count, 1);
+
+    let mut contradictory = quality_receipt(&fixture, "reviewer-critical-pass", "reviewer-1");
+    contradictory.result = ReceiptResult::Pass;
+    contradictory.findings = vec![critical];
+    assert!(matches!(
+        fixture
+            .db
+            .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &contradictory)
+            .await,
+        Err(Error::Invalid(_))
+    ));
+    fixture.db.close().await;
+}
+
+#[tokio::test]
 async fn repair_required_gate_projects_run_status() {
     let fixture = candidate_fixture().await;
     let run_id = run_id_for_candidate(&fixture.db, &fixture.candidate_id).await;
@@ -1507,6 +1627,15 @@ async fn repair_required_gate_projects_run_status() {
         .unwrap();
     let mut reviewer = quality_receipt(&fixture, "reviewer-run-repair", "reviewer-1");
     reviewer.result = ReceiptResult::ChangesRequested;
+    reviewer.findings = vec![crate::review::ReviewFinding {
+        id: "repair-1".into(),
+        severity: crate::review::FindingSeverity::Blocking,
+        category: crate::review::FindingCategory::Functional,
+        message: "the candidate needs a bounded repair".into(),
+        points: 5,
+        rationale: "the deterministic evidence shows a functional defect".into(),
+        evidence_refs: vec!["seed.txt".into()],
+    }];
     let result = fixture
         .db
         .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &reviewer)
@@ -1514,6 +1643,16 @@ async fn repair_required_gate_projects_run_status() {
         .unwrap();
     assert_eq!(result.gate.unwrap().outcome, GateOutcome::RepairRequired);
     assert_eq!(run_status(&fixture.db, &run_id).await, "REPAIR_REQUIRED");
+    let repair = fixture
+        .db
+        .repair_authorization_for_candidate(&fixture.candidate_id)
+        .await
+        .unwrap()
+        .expect("repair decision is recorded");
+    assert_eq!(repair.decision, "DENIED");
+    assert_eq!(repair.reason_code, "autonomy_disabled");
+    assert_eq!(repair.total_points, 5);
+    assert_eq!(repair.blocking_count, 1);
     fixture.db.close().await;
 }
 
@@ -1596,7 +1735,7 @@ async fn enabled_semantic_review_blocks_a_late_deterministic_reviewer_pass() {
     assert!(
         gate.reasons
             .iter()
-            .any(|reason| reason.contains("MODEL reviewer evidence"))
+            .any(|reason| reason.contains("MODEL") || reason.contains("frozen"))
     );
     fixture.db.close().await;
 }
@@ -1730,6 +1869,14 @@ async fn gate_does_not_overwrite_a_terminal_run() {
 #[tokio::test]
 async fn model_review_findings_and_provenance_survive_restart() {
     let fixture = candidate_fixture().await;
+    enable_semantic_review(
+        &fixture,
+        "opencode",
+        "opencode",
+        "deepseek-v4.1-flash",
+        "https://gateway.example/v1",
+    )
+    .await;
     fixture
         .db
         .record_quality_receipt(

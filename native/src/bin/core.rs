@@ -1060,7 +1060,7 @@ fn api_router(app: Arc<App>) -> Router {
             "/settings/runtime",
             get(runtime_settings).put(update_runtime_settings),
         )
-        .route("/review/config", get(review_config))
+        .route("/quality/candidates/{id}/review-config", get(review_config))
         .route(
             "/settings/providers/{provider}",
             axum::routing::put(update_provider_settings),
@@ -2065,7 +2065,11 @@ async fn update_runtime_settings(
     }
 }
 
-async fn review_config(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+async fn review_config(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
     let token = headers
         .get("authorization")
         .and_then(|value| value.to_str().ok())
@@ -2079,27 +2083,47 @@ async fn review_config(State(app): State<Arc<App>>, headers: HeaderMap) -> Respo
         Ok(settings) => settings,
         Err(error) => return api_error(error),
     };
-    let gateway = app.current_model_gateway().await;
-    let codex_review = codex_review_enabled();
-    let mechanism = if settings.semantic_review_enabled && codex_review {
-        "CODEX_APP_SERVER"
-    } else if settings.semantic_review_enabled && gateway.is_some() {
-        "MODEL"
-    } else {
-        "DETERMINISTIC"
+    let selection = match app.db.reviewer_selection(&id).await {
+        Ok(selection) => selection,
+        Err(factory_native::db::Error::Unavailable(reason)) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": reason})),
+            )
+                .into_response();
+        }
+        Err(error) => return api_error(error),
+    };
+    let (mechanism, transport, provider, model, reason) = match selection {
+        factory_native::semantic_review::ReviewerSelection::Deterministic => (
+            "DETERMINISTIC",
+            "DETERMINISTIC",
+            String::new(),
+            String::new(),
+            "semantic review is disabled by operator policy",
+        ),
+        factory_native::semantic_review::ReviewerSelection::Chat { provider, model } => (
+            "MODEL",
+            "CHAT_COMPLETIONS",
+            provider,
+            model,
+            "the frozen execution profile selected the chat-completions review transport",
+        ),
+        factory_native::semantic_review::ReviewerSelection::Native { provider, model } => (
+            "CODEX_APP_SERVER",
+            "NATIVE_ADAPTER",
+            provider,
+            model,
+            "the frozen execution profile selected the native review adapter",
+        ),
     };
     Json(json!({
         "mechanism": mechanism,
+        "transport": transport,
+        "provider": provider,
+        "model": model,
         "maxOutputTokens": settings.semantic_review_max_output_tokens,
-        "reason": if mechanism == "CODEX_APP_SERVER" {
-            "operator enabled native Codex App Server review"
-        } else if mechanism == "MODEL" {
-            "operator enabled semantic review and a default provider is configured"
-        } else if settings.semantic_review_enabled {
-            "semantic review is enabled but no reviewer route is configured"
-        } else {
-            "semantic review is disabled"
-        }
+        "reason": reason,
     }))
     .into_response()
 }
@@ -8087,44 +8111,6 @@ async fn model_call(
     }
 }
 
-fn codex_review_enabled() -> bool {
-    env::var("FACTORY_ENABLE_CODEX_REVIEW").as_deref() == Ok("1")
-}
-
-fn reviewer_receipt_mechanism_allowed(
-    semantic_review_enabled: bool,
-    route_available: bool,
-    codex_review_enabled: bool,
-    mechanism: factory_native::db::ReviewMechanism,
-) -> Result<(), &'static str> {
-    if mechanism == factory_native::db::ReviewMechanism::CodexAppServer {
-        if !semantic_review_enabled {
-            return Err("semantic review is disabled by the operator");
-        }
-        if !codex_review_enabled {
-            return Err("Codex App Server review transport is not enabled");
-        }
-        return Ok(());
-    }
-    if mechanism == factory_native::db::ReviewMechanism::Model {
-        if !semantic_review_enabled {
-            return Err("semantic review is disabled by the operator");
-        }
-        if !route_available {
-            return Err("semantic review requires a routable semantic reviewer model route");
-        }
-        return Ok(());
-    }
-    if semantic_review_enabled && (route_available || codex_review_enabled) {
-        return Err(if codex_review_enabled {
-            "semantic review is enabled; reviewer must submit CODEX_APP_SERVER evidence"
-        } else {
-            "semantic review is enabled; reviewer must submit MODEL evidence"
-        });
-    }
-    Ok(())
-}
-
 async fn quality_receipt(State(app): State<Arc<App>>, headers: HeaderMap, body: Bytes) -> Response {
     let Some(role) = quality_role(&app, &headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
@@ -8139,33 +8125,6 @@ async fn quality_receipt(State(app): State<Arc<App>>, headers: HeaderMap, body: 
                 .into_response();
         }
     };
-    if role == QualityRole::Reviewer {
-        let settings = match app.db.factory_settings().await {
-            Ok(settings) => settings,
-            Err(error) => return api_error(error),
-        };
-        let route = app.semantic_reviewer_gateway(&input.candidate_id).await;
-        let route_available = route.is_ok();
-        if let Err(message) = reviewer_receipt_mechanism_allowed(
-            settings.semantic_review_enabled,
-            route_available,
-            codex_review_enabled(),
-            input.mechanism,
-        ) {
-            let status =
-                if message == "semantic review requires a routable semantic reviewer model route" {
-                    StatusCode::SERVICE_UNAVAILABLE
-                } else {
-                    StatusCode::FORBIDDEN
-                };
-            let mut body = json!({"error": message});
-            if let Err(route_error) = &route {
-                body["routeCode"] = json!(route_error.code());
-                body["detail"] = json!(route_error.to_string());
-            }
-            return (status, Json(body)).into_response();
-        }
-    }
     let receipt = QualityReceiptInput {
         receipt_id: input.receipt_id,
         principal_id: input.principal_id,
@@ -10336,7 +10295,23 @@ async fn quality_gate(
         return StatusCode::UNAUTHORIZED.into_response();
     }
     match app.db.gate_for_candidate(&id).await {
-        Ok(Some(gate)) => Json(gate).into_response(),
+        Ok(Some(gate)) => {
+            let mut body = serde_json::to_value(&gate).unwrap_or_else(|_| serde_json::json!({}));
+            if let Some(repair) = app
+                .db
+                .repair_authorization_for_candidate(&id)
+                .await
+                .ok()
+                .flatten()
+                && let Some(object) = body.as_object_mut()
+            {
+                object.insert(
+                    "repair_authorization".into(),
+                    serde_json::to_value(repair).unwrap_or(serde_json::Value::Null),
+                );
+            }
+            Json(body).into_response()
+        }
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(error) => api_error(error),
     }
@@ -11946,7 +11921,7 @@ mod tests {
             .clone()
             .oneshot(
                 axum::http::Request::builder()
-                    .uri("/review/config")
+                    .uri("/quality/candidates/candidate-1/review-config")
                     .header("host", "localhost:8765")
                     .header("cookie", &session_cookie)
                     .body(axum::body::Body::empty())
@@ -12377,11 +12352,11 @@ mod tests {
                 "Bearer verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa",
             ),
             (
-                "/review/config",
+                "/quality/candidates/candidate-1/review-config",
                 "Bearer reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb",
             ),
             (
-                "/core-api/review/config",
+                "/core-api/quality/candidates/candidate-1/review-config",
                 "Bearer reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb",
             ),
             (
@@ -12395,7 +12370,7 @@ mod tests {
         ];
         for (uri, credential) in denied {
             let mut request = axum::http::Request::builder()
-                .method(if uri.ends_with("/review/config") {
+                .method(if uri.ends_with("/review-config") {
                     "GET"
                 } else {
                     "POST"
@@ -12403,7 +12378,7 @@ mod tests {
                 .uri(uri)
                 .header("host", "localhost:8768")
                 .header("authorization", credential);
-            let body = if uri.ends_with("/review/config") {
+            let body = if uri.ends_with("/review-config") {
                 axum::body::Body::empty()
             } else {
                 request = request.header("content-type", "application/json");
@@ -12955,7 +12930,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn semantic_review_toggle_is_authoritative_for_receipts() {
+    async fn semantic_review_toggle_controls_model_gateway_routes() {
         use tower::ServiceExt;
         let path = std::env::temp_dir().join(format!(
             "factory-core-semantic-toggle-{}.sqlite",
@@ -13018,7 +12993,7 @@ mod tests {
         );
 
         let config = axum::http::Request::builder()
-            .uri("/review/config")
+            .uri("/quality/candidates/candidate-1/review-config")
             .header(
                 "authorization",
                 "Bearer reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb",
@@ -13078,74 +13053,6 @@ mod tests {
             StatusCode::SERVICE_UNAVAILABLE
         );
 
-        let receipt = axum::http::Request::builder()
-            .method("POST")
-            .uri("/quality/receipts")
-            .header(
-                "authorization",
-                "Bearer reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb",
-            )
-            .header("content-type", "application/json")
-            .body(axum::body::Body::from(
-                serde_json::json!({
-                    "candidate_id": "candidate-1",
-                    "receipt_id": "receipt-1",
-                    "principal_id": "reviewer",
-                    "actionSpecSha256": "a".repeat(64),
-                    "commitSha": "b".repeat(40),
-                    "treeSha": "c".repeat(40),
-                    "result": "PASS",
-                    "evidence": "EXECUTED",
-                    "findings": [],
-                    "mechanism": "MODEL"
-                })
-                .to_string(),
-            ))
-            .unwrap();
-        let response = router.clone().oneshot(receipt).await.unwrap();
-        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-
-        let disable = axum::http::Request::builder()
-            .method("PUT")
-            .uri("/settings/runtime")
-            .header("authorization", "Bearer operator-token")
-            .header("content-type", "application/json")
-            .body(axum::body::Body::from(
-                r#"{"semanticReviewEnabled":false,"semanticReviewMaxOutputTokens":2048}"#,
-            ))
-            .unwrap();
-        assert_eq!(
-            router.clone().oneshot(disable).await.unwrap().status(),
-            StatusCode::OK
-        );
-        let disabled_receipt = axum::http::Request::builder()
-            .method("POST")
-            .uri("/quality/receipts")
-            .header(
-                "authorization",
-                "Bearer reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb",
-            )
-            .header("content-type", "application/json")
-            .body(axum::body::Body::from(
-                serde_json::json!({
-                    "candidate_id": "candidate-1",
-                    "receipt_id": "receipt-2",
-                    "principal_id": "reviewer",
-                    "actionSpecSha256": "a".repeat(64),
-                    "commitSha": "b".repeat(40),
-                    "treeSha": "c".repeat(40),
-                    "result": "PASS",
-                    "evidence": "EXECUTED",
-                    "findings": [],
-                    "mechanism": "MODEL"
-                })
-                .to_string(),
-            ))
-            .unwrap();
-        assert_eq!(
-            router.oneshot(disabled_receipt).await.unwrap().status(),
-            StatusCode::FORBIDDEN
-        );
         drop(app);
         let _ = std::fs::remove_file(path);
     }
@@ -13582,41 +13489,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    #[test]
-    fn enabled_semantic_review_requires_model_reviewer_evidence() {
-        use factory_native::db::ReviewMechanism::{CodexAppServer, Deterministic, Model};
-        assert!(reviewer_receipt_mechanism_allowed(true, true, false, Model).is_ok());
-        assert!(reviewer_receipt_mechanism_allowed(true, false, true, CodexAppServer).is_ok());
-        assert!(
-            reviewer_receipt_mechanism_allowed(true, false, false, CodexAppServer)
-                .unwrap_err()
-                .contains("not enabled")
-        );
-        assert!(
-            reviewer_receipt_mechanism_allowed(true, false, true, Deterministic)
-                .unwrap_err()
-                .contains("CODEX_APP_SERVER evidence")
-        );
-        assert!(
-            reviewer_receipt_mechanism_allowed(true, true, false, Deterministic)
-                .unwrap_err()
-                .contains("must submit MODEL evidence")
-        );
-        assert!(reviewer_receipt_mechanism_allowed(true, false, false, Deterministic).is_ok());
-        assert!(reviewer_receipt_mechanism_allowed(false, true, false, Deterministic).is_ok());
-        assert!(reviewer_receipt_mechanism_allowed(false, false, false, Deterministic).is_ok());
-        assert!(
-            reviewer_receipt_mechanism_allowed(false, true, false, Model)
-                .unwrap_err()
-                .contains("disabled")
-        );
-        assert!(
-            reviewer_receipt_mechanism_allowed(true, false, false, Model)
-                .unwrap_err()
-                .contains("routable semantic reviewer model route")
-        );
-    }
-
     #[tokio::test]
     async fn execution_profile_api_is_versioned_defaultable_and_typed() {
         use factory_native::db::ProviderSettingsWrite;
@@ -14017,17 +13889,13 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::CREATED, "{cross}");
-        assert_eq!(cross["executable"], false);
+        assert_eq!(cross["executable"], true);
         assert!(
             cross["warnings"]
                 .as_array()
-                .is_some_and(|warnings| warnings.iter().any(|warning| warning
+                .is_some_and(|warnings| warnings.iter().all(|warning| warning
                     .as_str()
-                    .is_some_and(|warning| {
-                        warning.contains(
-                    "semanticReviewer route codex/gpt-6-luna cannot execute a one-shot model call"
-                )
-                    })))
+                    .is_some_and(|warning| !warning.contains("cannot execute"))))
         );
         let cross_id = cross["id"].as_str().unwrap().to_owned();
         let (status, _) = send(
@@ -14038,7 +13906,7 @@ mod tests {
             Some(json!({"scope": "global"})),
         )
         .await;
-        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(status, StatusCode::OK);
 
         let _ = std::fs::remove_file(path);
         let _ = std::fs::remove_dir_all(repository);
@@ -14106,6 +13974,7 @@ mod tests {
             diagnose_after_stagnant_checkpoints: std::num::NonZeroU32::new(2).unwrap(),
             escalate_after_unsuccessful_replans: std::num::NonZeroU32::new(1).unwrap(),
             observation_timeout_secs: std::num::NonZeroU32::new(300).unwrap(),
+            autonomy: Default::default(),
         }
     }
 
@@ -14743,6 +14612,7 @@ mod tests {
                 diagnose_after_stagnant_checkpoints: std::num::NonZeroU32::new(2).unwrap(),
                 escalate_after_unsuccessful_replans: std::num::NonZeroU32::new(1).unwrap(),
                 observation_timeout_secs: std::num::NonZeroU32::new(300).unwrap(),
+                autonomy: Default::default(),
             }
         }
 

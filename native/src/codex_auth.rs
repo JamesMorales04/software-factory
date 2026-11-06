@@ -256,31 +256,31 @@ pub fn require_chatgpt(value: &Value) -> Result<ChatGptAccount, CodexAuthError> 
     }
 }
 
-pub fn require_review_model(value: &Value) -> Result<(), CodexAuthError> {
+pub fn require_review_model(value: &Value, expected: &str) -> Result<(), CodexAuthError> {
     let models = value
         .get("data")
         .and_then(Value::as_array)
-        .ok_or_else(|| CodexAuthError::ModelUnavailable(REVIEW_MODEL.into()))?;
+        .ok_or_else(|| CodexAuthError::ModelUnavailable(expected.into()))?;
     let mut matches = 0usize;
     for model in models {
         let Some(id) = model.get("id").and_then(Value::as_str) else {
             continue;
         };
-        if id != REVIEW_MODEL {
+        if id != expected {
             continue;
         }
         let Some(name) = model.get("model").and_then(Value::as_str) else {
-            return Err(CodexAuthError::AmbiguousModel(REVIEW_MODEL.into()));
+            return Err(CodexAuthError::AmbiguousModel(expected.into()));
         };
-        if name != REVIEW_MODEL || model.get("hidden").and_then(Value::as_bool) == Some(true) {
-            return Err(CodexAuthError::ModelUnavailable(REVIEW_MODEL.into()));
+        if name != expected || model.get("hidden").and_then(Value::as_bool) == Some(true) {
+            return Err(CodexAuthError::ModelUnavailable(expected.into()));
         }
         matches += 1;
     }
     match matches {
         1 => Ok(()),
-        0 => Err(CodexAuthError::ModelUnavailable(REVIEW_MODEL.into())),
-        _ => Err(CodexAuthError::AmbiguousModel(REVIEW_MODEL.into())),
+        0 => Err(CodexAuthError::ModelUnavailable(expected.into())),
+        _ => Err(CodexAuthError::AmbiguousModel(expected.into())),
     }
 }
 
@@ -347,26 +347,36 @@ mod tests {
     fn model_must_be_present_exactly_once_and_not_hidden() {
         let exact =
             |id: &str, name: &str, hidden: bool| json!({"id":id,"model":name,"hidden":hidden});
-        assert!(require_review_model(&json!({
-            "data": [exact("gpt-6.1-sol","gpt-6.1-sol",false), exact(REVIEW_MODEL,REVIEW_MODEL,false)]
-        }))
+        assert!(require_review_model(
+            &json!({
+                "data": [exact("gpt-6.1-sol","gpt-6.1-sol",false), exact(REVIEW_MODEL,REVIEW_MODEL,false)]
+            }),
+            REVIEW_MODEL
+        )
         .is_ok());
         assert!(matches!(
-            require_review_model(&json!({"data": []})),
-            Err(CodexAuthError::ModelUnavailable(_))
-        ));
-        assert!(matches!(
-            require_review_model(&json!({"data": [exact(REVIEW_MODEL,REVIEW_MODEL,true)]})),
+            require_review_model(&json!({"data": []}), REVIEW_MODEL),
             Err(CodexAuthError::ModelUnavailable(_))
         ));
         assert!(matches!(
             require_review_model(
-                &json!({"data": [exact(REVIEW_MODEL,REVIEW_MODEL,false), exact(REVIEW_MODEL,REVIEW_MODEL,false)]})
+                &json!({"data": [exact(REVIEW_MODEL,REVIEW_MODEL,true)]}),
+                REVIEW_MODEL
+            ),
+            Err(CodexAuthError::ModelUnavailable(_))
+        ));
+        assert!(matches!(
+            require_review_model(
+                &json!({"data": [exact(REVIEW_MODEL,REVIEW_MODEL,false), exact(REVIEW_MODEL,REVIEW_MODEL,false)]}),
+                REVIEW_MODEL
             ),
             Err(CodexAuthError::AmbiguousModel(_))
         ));
         assert!(matches!(
-            require_review_model(&json!({"data": [exact(REVIEW_MODEL,"other",false)]})),
+            require_review_model(
+                &json!({"data": [exact(REVIEW_MODEL,"other",false)]}),
+                REVIEW_MODEL
+            ),
             Err(CodexAuthError::ModelUnavailable(_))
         ));
     }

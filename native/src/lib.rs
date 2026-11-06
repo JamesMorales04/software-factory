@@ -2,6 +2,7 @@
 compile_error!("feature `test-support` is restricted to debug test builds");
 
 pub mod attempt_grant;
+pub mod autonomy;
 pub mod browser;
 pub mod candidate_diff;
 pub mod codex_auth;

@@ -747,14 +747,18 @@ pub(super) async fn load_provider_availability(
     )
     .fetch_all(&mut *connection)
     .await?;
-    rows.iter()
+    let native_review = std::env::var("FACTORY_ENABLE_CODEX_REVIEW").as_deref() == Ok("1");
+    let mut providers = rows
+        .iter()
         .map(|row| {
             let provider: String = row.try_get("provider")?;
             let model: String = row.try_get("model")?;
             let models = crate::execution_profile::substantiated_models(&provider, &model, cache);
+            let kind: String = row.try_get("kind")?;
             Ok(ProviderRouteAvailability {
-                kind: row.try_get("kind")?,
                 provider,
+                native_review_available: kind == "codex",
+                kind,
                 model,
                 models,
                 enabled: row.try_get::<i64, _>("enabled")? != 0,
@@ -764,7 +768,27 @@ pub(super) async fn load_provider_availability(
                 is_default: row.try_get::<i64, _>("is_default")? != 0,
             })
         })
-        .collect()
+        .collect::<Result<Vec<_>, Error>>()?;
+    if native_review
+        && !providers
+            .iter()
+            .any(|provider| provider.provider == "codex")
+    {
+        // The dedicated reviewer container owns the ChatGPT login. Core has no
+        // provider credential for it; the reviewer adapter verifies its own
+        // auth and returns fail-closed evidence if unavailable.
+        providers.push(ProviderRouteAvailability {
+            provider: "codex".into(),
+            kind: "codex".into(),
+            model: "gpt-6-luna".into(),
+            models: vec!["gpt-6-luna".into()],
+            enabled: true,
+            has_credential: false,
+            native_review_available: true,
+            is_default: false,
+        });
+    }
+    Ok(providers)
 }
 
 async fn load_defaults(
@@ -953,6 +977,7 @@ mod tests {
             diagnose_after_stagnant_checkpoints: NonZeroU32::new(2).unwrap(),
             escalate_after_unsuccessful_replans: NonZeroU32::new(1).unwrap(),
             observation_timeout_secs: NonZeroU32::new(300).unwrap(),
+            autonomy: Default::default(),
         }
     }
 
@@ -1203,7 +1228,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn codex_reviewer_route_is_rejected_as_a_draft_not_a_working_route() {
+    async fn codex_reviewer_route_is_executable_through_the_native_review_transport() {
         let (path, db) = temp_db("factory-execution-profiles-routing").await;
         configure_provider(&db, "opencode-go", "opencode", "deepseek-v4.1-flash").await;
         configure_provider(&db, "codex", "codex", "gpt-6-luna").await;
@@ -1211,25 +1236,19 @@ mod tests {
         let mut cross = content("Cross provider");
         cross.roles.semantic_reviewer = route("codex", "gpt-6-luna");
         let created = db.create_execution_profile(&cross, "owner").await.unwrap();
-        assert!(!created.executable);
-        assert!(created.warnings.iter().any(|warning| warning.contains(
-            "semanticReviewer route codex/gpt-6-luna cannot execute a one-shot model call"
-        )));
+        assert!(created.executable, "{:?}", created.warnings);
         assert!(
             created
                 .warnings
                 .iter()
-                .any(|warning| warning.contains("not an OpenAI-compatible model gateway"))
+                .all(|warning| !warning.contains("cannot execute"))
         );
 
-        let error = db
+        let default = db
             .set_execution_profile_default(&created.id, None, "owner")
             .await
-            .unwrap_err();
-        assert!(matches!(
-            error,
-            Error::Conflict("execution profile is not executable")
-        ));
+            .unwrap();
+        assert_eq!(default.profile_id, created.id);
         let _ = std::fs::remove_file(path);
     }
 

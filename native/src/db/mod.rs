@@ -479,6 +479,29 @@ pub struct GateRecord {
     pub decided_at: String,
 }
 
+/// Append-only deterministic repair authorization for one candidate.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AutonomyRepairRecord {
+    pub repair_id: String,
+    pub campaign_id: String,
+    pub candidate_id: String,
+    pub work_item_id: String,
+    pub repair_trigger: String,
+    pub risk_class: String,
+    pub total_points: u16,
+    pub critical_count: u32,
+    pub blocking_count: u32,
+    pub warning_count: u32,
+    pub info_count: u32,
+    pub cycle_index: u32,
+    pub decision: String,
+    pub reason_code: String,
+    pub reason: String,
+    pub policy_sha256: String,
+    pub reviewer_receipt_id: String,
+    pub created_at: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct QualityIngestResult {
     pub receipt: QualityReceiptRecord,

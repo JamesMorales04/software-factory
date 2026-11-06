@@ -574,6 +574,10 @@ fn validate_progress_policy(policy: &ProgressPolicy) -> Result<(), LeadError> {
             "progress supervision thresholds must be positive".into(),
         ));
     }
+    policy
+        .autonomy
+        .validate()
+        .map_err(|reason| LeadError::Budget(format!("progress.autonomy: {reason}")))?;
     Ok(())
 }
 
@@ -1993,6 +1997,7 @@ mod tests {
             diagnose_after_stagnant_checkpoints: std::num::NonZeroU32::new(2).unwrap(),
             escalate_after_unsuccessful_replans: std::num::NonZeroU32::new(1).unwrap(),
             observation_timeout_secs: std::num::NonZeroU32::new(300).unwrap(),
+            autonomy: Default::default(),
         }
     }
 

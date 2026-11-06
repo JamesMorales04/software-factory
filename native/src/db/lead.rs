@@ -1607,6 +1607,7 @@ fn fixture_progress_policy() -> crate::execution_policy::ProgressPolicy {
         diagnose_after_stagnant_checkpoints: std::num::NonZeroU32::new(2).expect("non-zero"),
         escalate_after_unsuccessful_replans: std::num::NonZeroU32::new(1).expect("non-zero"),
         observation_timeout_secs: std::num::NonZeroU32::new(300).expect("non-zero"),
+        autonomy: Default::default(),
     }
 }
 
@@ -4064,7 +4065,7 @@ impl Database {
                 )
             })
             .collect();
-        let outcome = supervisor
+        let mut outcome = supervisor
             .checkpoint(campaign_id, checkpoint, &fresh_evidence, gate)
             .map_err(|error| match error {
                 ProgressError::WorkItemRetirementRequired { active: _ } => Error::Conflict(
@@ -4072,6 +4073,29 @@ impl Database {
                 ),
                 other => Error::Validation(other.to_string()),
             })?;
+        // Deterministic autonomous diagnosis/replan. When the frozen policy
+        // enables autonomy, a stagnation trigger resets the observation
+        // window and lets the Worker continue with a bounded diagnosis instead
+        // of stopping for an operator. Each diagnosis counts as an unsuccessful
+        // replan; the existing escalation threshold is the no-progress circuit
+        // breaker and still produces a human hold.
+        let mut autonomy_diagnosis = None;
+        if outcome.decision == crate::execution_policy::ContinuationDecision::Diagnose
+            && policy.progress.autonomy.enabled
+        {
+            autonomy_diagnosis = Some(format!(
+                "Progress stagnation at checkpoint {}. Re-read the frozen objective and acceptance checks, change the implementation approach, do not repeat the last failed operation, and make the next checkpoint demonstrate a new passing frozen check or a new candidate artifact.",
+                checkpoint.checkpoint_id
+            ));
+            supervisor
+                .resolve_replan(&checkpoint.work_item_id, None, campaign_id)
+                .map_err(|error| Error::Validation(error.to_string()))?;
+            if let Some(state) = supervisor.work_item(&checkpoint.work_item_id) {
+                outcome.decision = crate::execution_policy::ContinuationDecision::Continue;
+                outcome.stagnant_checkpoints = state.stagnant_checkpoints;
+                outcome.unsuccessful_replans = state.unsuccessful_replans;
+            }
+        }
         if outcome.decision == crate::execution_policy::ContinuationDecision::Complete
             && supervisor.retire_accepted_work_item(&checkpoint.work_item_id)
         {
@@ -4187,10 +4211,16 @@ impl Database {
         .bind(&checkpoint.work_item_id)
         .bind(&checkpoint.checkpoint_id)
         .bind(&decision)
-        .bind(format!(
-            "classification={classification} stagnant={} unsuccessfulReplans={}",
-            outcome.stagnant_checkpoints, outcome.unsuccessful_replans
-        ))
+        .bind(match &autonomy_diagnosis {
+            Some(diagnosis) => format!(
+                "classification={classification} stagnant={} unsuccessfulReplans={} autonomyDiagnosis={diagnosis}",
+                outcome.stagnant_checkpoints, outcome.unsuccessful_replans
+            ),
+            None => format!(
+                "classification={classification} stagnant={} unsuccessfulReplans={}",
+                outcome.stagnant_checkpoints, outcome.unsuccessful_replans
+            ),
+        })
         .bind(&now)
         .execute(&mut *transaction)
         .await?;
@@ -4975,6 +5005,7 @@ mod tests {
             diagnose_after_stagnant_checkpoints: std::num::NonZeroU32::new(2).unwrap(),
             escalate_after_unsuccessful_replans: std::num::NonZeroU32::new(1).unwrap(),
             observation_timeout_secs: std::num::NonZeroU32::new(300).unwrap(),
+            autonomy: Default::default(),
         }
     }
 

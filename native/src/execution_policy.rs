@@ -585,6 +585,55 @@ pub struct ProgressPolicy {
     pub diagnose_after_stagnant_checkpoints: std::num::NonZeroU32,
     pub escalate_after_unsuccessful_replans: std::num::NonZeroU32,
     pub observation_timeout_secs: std::num::NonZeroU32,
+    /// Bounded autonomous repair policy. Missing/disabled policies serialize
+    /// without the field so historical profile/authorization hashes remain
+    /// stable. R2/R3 are never eligible for autonomous repair.
+    #[serde(default, skip_serializing_if = "AutonomyPolicy::is_disabled")]
+    pub autonomy: AutonomyPolicy,
+}
+
+/// Operator-defined outer boundary for autonomous repair. Point and cycle
+/// budgets are indexed by risk class R0..R3; R2/R3 must remain zero.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct AutonomyPolicy {
+    pub enabled: bool,
+    pub repair_point_budgets: [u16; 4],
+    pub repair_cycle_budgets: [u32; 4],
+}
+
+impl AutonomyPolicy {
+    /// The field is omitted when this is true, preserving historical hashes.
+    pub fn is_disabled(&self) -> bool {
+        !self.enabled && self.repair_point_budgets == [0; 4] && self.repair_cycle_budgets == [0; 4]
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.enabled {
+            if self.repair_point_budgets != [0; 4] || self.repair_cycle_budgets != [0; 4] {
+                return Err("disabled autonomy must have zero repair budgets".into());
+            }
+            return Ok(());
+        }
+        if self.repair_point_budgets[0] == 0
+            || self.repair_cycle_budgets[0] == 0
+            || self.repair_point_budgets[1] > 5
+            || self.repair_cycle_budgets[1] > 1
+            || self.repair_point_budgets[2] != 0
+            || self.repair_cycle_budgets[2] != 0
+            || self.repair_point_budgets[3] != 0
+            || self.repair_cycle_budgets[3] != 0
+        {
+            return Err(
+                "enabled autonomy requires R0 budgets, at most one R1 repair, and zero R2/R3 budgets"
+                    .into(),
+            );
+        }
+        if self.repair_point_budgets[0] > 40 {
+            return Err("R0 repair point budget exceeds the bounded maximum".into());
+        }
+        Ok(())
+    }
 }
 
 /// A typed, versioned execution policy.
@@ -912,6 +961,7 @@ mod tests {
                 diagnose_after_stagnant_checkpoints: NonZeroU32::new(2).unwrap(),
                 escalate_after_unsuccessful_replans: NonZeroU32::new(1).unwrap(),
                 observation_timeout_secs: NonZeroU32::new(300).unwrap(),
+                autonomy: Default::default(),
             },
             operations: OperationLimits {
                 model_request_timeout_secs: NonZeroU32::new(300).unwrap(),
@@ -1069,6 +1119,36 @@ mod tests {
         assert_eq!(InferenceRole::ALL.len(), 5);
         assert_eq!(InferenceRole::Auxiliary.as_str(), "AUXILIARY");
     }
+
+    #[test]
+    fn historical_progress_policy_json_is_byte_stable() {
+        let raw = r#"{"diagnoseAfterStagnantCheckpoints":2,"escalateAfterUnsuccessfulReplans":1,"observationTimeoutSecs":300}"#;
+        let policy: ProgressPolicy = serde_json::from_str(raw).unwrap();
+        assert!(policy.autonomy.is_disabled());
+        assert_eq!(serde_json::to_string(&policy).unwrap(), raw);
+    }
+
+    #[test]
+    fn enabled_autonomy_round_trips_and_rejects_human_risk_budgets() {
+        let policy = AutonomyPolicy {
+            enabled: true,
+            repair_point_budgets: [8, 5, 0, 0],
+            repair_cycle_budgets: [2, 1, 0, 0],
+        };
+        assert!(policy.validate().is_ok());
+        let encoded = serde_json::to_string(&policy).unwrap();
+        assert_eq!(
+            serde_json::from_str::<AutonomyPolicy>(&encoded).unwrap(),
+            policy
+        );
+
+        let invalid = AutonomyPolicy {
+            enabled: true,
+            repair_point_budgets: [8, 5, 1, 0],
+            repair_cycle_budgets: [2, 1, 1, 0],
+        };
+        assert!(invalid.validate().is_err());
+    }
 }
 
 #[cfg(test)]
@@ -1111,6 +1191,7 @@ mod subscription_funding_tests {
                 diagnose_after_stagnant_checkpoints: std::num::NonZeroU32::new(2).unwrap(),
                 escalate_after_unsuccessful_replans: std::num::NonZeroU32::new(2).unwrap(),
                 observation_timeout_secs: std::num::NonZeroU32::new(30).unwrap(),
+                autonomy: Default::default(),
             },
             operations: OperationLimits {
                 model_request_timeout_secs: std::num::NonZeroU32::new(60).unwrap(),
@@ -1419,6 +1500,7 @@ mod subscription_funding_tests {
                 diagnose_after_stagnant_checkpoints: std::num::NonZeroU32::new(2).unwrap(),
                 escalate_after_unsuccessful_replans: std::num::NonZeroU32::new(2).unwrap(),
                 observation_timeout_secs: std::num::NonZeroU32::new(30).unwrap(),
+                autonomy: Default::default(),
             },
             operations: OperationLimits {
                 model_request_timeout_secs: std::num::NonZeroU32::new(60).unwrap(),

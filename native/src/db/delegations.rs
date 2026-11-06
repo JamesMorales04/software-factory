@@ -758,6 +758,7 @@ mod tests {
             diagnose_after_stagnant_checkpoints: NonZeroU32::new(2).unwrap(),
             escalate_after_unsuccessful_replans: NonZeroU32::new(1).unwrap(),
             observation_timeout_secs: NonZeroU32::new(300).unwrap(),
+            autonomy: Default::default(),
         }
     }
 

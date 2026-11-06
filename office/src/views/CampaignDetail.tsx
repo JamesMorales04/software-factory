@@ -1292,6 +1292,40 @@ export function CampaignDetail() {
                               .observationTimeoutSecs,
                         })}
                       />
+                      <BudgetRow
+                        label={t("campaignDetail.budget.autonomyTitle")}
+                        value={
+                          authorization.policy.progress.autonomy?.enabled
+                            ? t("campaignDetail.budget.autonomyEnabled")
+                            : t("campaignDetail.budget.autonomyDisabled")
+                        }
+                      />
+                      {authorization.policy.progress.autonomy?.enabled && (
+                        <>
+                          <BudgetRow
+                            label="R0"
+                            value={t("campaignDetail.budget.autonomyR0", {
+                              points:
+                                authorization.policy.progress.autonomy
+                                  .repairPointBudgets[0],
+                              cycles:
+                                authorization.policy.progress.autonomy
+                                  .repairCycleBudgets[0],
+                            })}
+                          />
+                          <BudgetRow
+                            label="R1"
+                            value={t("campaignDetail.budget.autonomyR1", {
+                              points:
+                                authorization.policy.progress.autonomy
+                                  .repairPointBudgets[1],
+                              cycles:
+                                authorization.policy.progress.autonomy
+                                  .repairCycleBudgets[1],
+                            })}
+                          />
+                        </>
+                      )}
                     </dl>
                   </section>
                 )}

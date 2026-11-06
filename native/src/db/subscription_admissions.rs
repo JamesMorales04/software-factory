@@ -508,6 +508,7 @@ pub(super) async fn insert_enabled_campaign_admission_in_tx(
             diagnose_after_stagnant_checkpoints: std::num::NonZeroU32::new(2).unwrap(),
             escalate_after_unsuccessful_replans: std::num::NonZeroU32::new(2).unwrap(),
             observation_timeout_secs: std::num::NonZeroU32::new(3_600).unwrap(),
+            autonomy: Default::default(),
         },
         operations: crate::execution_policy::OperationLimits {
             model_request_timeout_secs: std::num::NonZeroU32::new(300).unwrap(),

@@ -371,6 +371,7 @@ fn v2_progress() -> factory_native::execution_policy::ProgressPolicy {
         diagnose_after_stagnant_checkpoints: std::num::NonZeroU32::new(2).unwrap(),
         escalate_after_unsuccessful_replans: std::num::NonZeroU32::new(1).unwrap(),
         observation_timeout_secs: std::num::NonZeroU32::new(300).unwrap(),
+        autonomy: Default::default(),
     }
 }
 

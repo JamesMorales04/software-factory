@@ -2201,6 +2201,11 @@ export const en = {
   "campaignDetail.budget.progressTitle": "Progress supervision",
   "campaignDetail.budget.diagnoseAfter": "Diagnose after stagnant checkpoints",
   "campaignDetail.budget.escalateAfter": "Escalate after unsuccessful replans",
+  "campaignDetail.budget.autonomyTitle": "Autonomous repair",
+  "campaignDetail.budget.autonomyEnabled": "Enabled",
+  "campaignDetail.budget.autonomyDisabled": "Disabled",
+  "campaignDetail.budget.autonomyR0": "R0: {points} points / {cycles} cycles",
+  "campaignDetail.budget.autonomyR1": "R1: {points} points / {cycles} cycles",
   "campaignDetail.budget.observationTimeout": "Observation timeout",
   "campaignDetail.budget.seconds": "{count} s",
   "campaignDetail.budget.bytes": "{count} bytes",
@@ -2582,6 +2587,9 @@ export const en = {
     "no Core gate decision is recorded for candidate {id}. Missing receipts or non-passing evidence are not approval.",
   "evidence.gate.decided": "decided {date}",
   "evidence.gate.noReasons": "No reasons recorded.",
+  "evidence.finding.points": "{points} points",
+  "evidence.repair.title": "Repair authorization",
+  "evidence.repair.detail": "{points} points · cycle {cycle} · {reason}",
   "evidence.identity.commit": "Commit",
   "evidence.identity.tree": "Tree",
   "evidence.identity.attempt": "Attempt",
@@ -2936,7 +2944,20 @@ export const en = {
   "execProfiles.warning.disabledProvider":
     "The {role} provider {provider} is disabled; this profile stays a non-executable draft.",
   "execProfiles.warning.appServerProvider":
-    "The {role} route uses the {kind} App Server, which cannot execute one-shot model calls in this build; the Implementer route is unaffected.",
+    "The {role} route needs a chat-completions gateway; the {kind} App Server has no chat transport. Choose an OpenAI-compatible provider for this role.",
+  "execProfiles.transport.chatReview":
+    "Review transport: chat-completions gateway",
+  "execProfiles.transport.nativeReview": "Review transport: native adapter",
+  "execProfiles.progress.autonomyEnabled":
+    "Enable autonomous diagnosis and bounded repair",
+  "execProfiles.progress.autonomyHint":
+    "Core deterministically validates reviewer points, critical-zero and risk budgets. R2/R3 always require a human.",
+  "execProfiles.progress.r0Points": "R0 repair point budget",
+  "execProfiles.progress.r0Cycles": "R0 repair cycles",
+  "execProfiles.progress.r1Points": "R1 repair point budget (max 5)",
+  "execProfiles.progress.r1Cycles": "R1 repair cycles (max 1)",
+  "execProfiles.validation.autonomyBudget":
+    "Autonomous repair requires a positive R0 budget, at most 5 points/1 cycle for R1, and zero R2/R3 budgets.",
   "execProfiles.warning.unadvertisedModel":
     "The {role} model {model} is not advertised by {provider}; run model discovery or select an advertised model.",
   "execProfiles.defaults.aria": "Execution profile defaults",
