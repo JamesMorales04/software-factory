@@ -1805,20 +1805,18 @@ impl TurnProgress {
         sha256_hex(parts.join("\n").as_bytes())
     }
 
-    /// Record FAIL observations and genuine FAIL -> PASS transitions from the
-    /// immutable Core execution receipt. A first-time PASS is recorded in Core
-    /// but is not `TestsImproved`: without a failing baseline it is not
-    /// progress. The receipt binds the exact suite, candidate and result digest;
-    /// the Worker cannot relabel a check by choosing its own identity.
+    /// Record every fresh check result from the immutable Core execution
+    /// receipt. A first-time PASS is verified progress: greenfield acceptance
+    /// checks often start from "not yet executed" rather than an earlier FAIL.
+    /// An unchanged repeat of the same suite and result is not new progress.
+    /// The receipt binds the exact suite, candidate and result digest; the
+    /// Worker cannot relabel a check by choosing its own identity.
     fn observe_check(&mut self, receipt: &ExecutionCheckReceiptRecord) {
         if self.last_check.get(&receipt.suite) == Some(&receipt.result_sha256) {
             return;
         }
         self.last_check
             .insert(receipt.suite.clone(), receipt.result_sha256.clone());
-        if receipt.outcome != "FAIL" && !receipt.fail_to_pass {
-            return;
-        }
         let sequence = self.next_sequence();
         self.evidence.push(ProgressEvidence {
             evidence_id: format!("{}-check-{sequence}", self.run_identity),
@@ -4745,7 +4743,7 @@ mod tests {
     }
 
     #[test]
-    fn first_time_pass_does_not_emit_tests_improved() {
+    fn first_time_pass_emits_tests_improved_evidence() {
         let mut progress = TurnProgress::from_identity(
             "campaign".into(),
             "unit-1".into(),
@@ -4774,8 +4772,9 @@ mod tests {
             request
                 .evidence
                 .iter()
-                .all(|item| item.kind != ProgressKind::TestsImproved),
-            "a first-time PASS is not a FAIL-to-PASS improvement"
+                .any(|item| item.kind == ProgressKind::TestsImproved
+                    && item.artifact_ref.contains("|PASS|")),
+            "a first-time PASS of a frozen check is verified progress"
         );
     }
 

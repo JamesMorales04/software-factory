@@ -45,7 +45,7 @@ pub struct ExecutionCheckReceiptRecord {
     pub result_sha256: String,
     /// True when this receipt is a genuine FAIL -> PASS transition for the
     /// exact check: the preceding receipt is FAIL and the candidate advanced.
-    /// A first-time PASS is recorded but is not `TestsImproved` progress.
+    /// Informational provenance: a first-time PASS is also progress.
     pub fail_to_pass: bool,
 }
 

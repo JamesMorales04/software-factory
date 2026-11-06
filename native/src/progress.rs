@@ -17,8 +17,10 @@
 //!
 //! `TestsImproved` evidence is additionally bound to an immutable Core
 //! execution receipt (`execution_receipt_id`) recorded when the Worker ran the
-//! exact frozen command for that Attempt and work item. A caller-supplied suite
-//! label, call id or digest alone never creates a verified test transition.
+//! exact frozen command for that Attempt and work item. A fresh PASS of a frozen
+//! check is verified progress even without an earlier FAIL; an unchanged repeat
+//! is not. A caller-supplied suite label, call id or digest alone never creates
+//! a verified test transition.
 //!
 //! Core integration contract (Director owns `bin/core.rs` wiring):
 //! - `POST /worker/progress_checkpoint` (Worker session auth): body
@@ -680,10 +682,12 @@ fn classify_evidence(
             })
         }
         ProgressKind::TestsImproved => {
-            // A changed receipt hash alone is not an improvement. The artifact
-            // must identify the same suite/environment and an explicit
-            // PASS/FAIL transition; only FAIL -> PASS under the same suite is
-            // verified progress.
+            // The artifact must identify the frozen suite/environment and an
+            // explicit PASS/FAIL outcome. A FAIL is a negative observation. A
+            // fresh PASS is verified progress: acceptance checks frequently
+            // start from "not yet executed", so requiring an earlier FAIL
+            // would make greenfield work permanently stagnant. An unchanged
+            // repeat of the same suite and result is not new progress.
             let (suite, outcome) = parse_test_artifact(&evidence.artifact_ref)
                 .ok_or("test evidence must identify suite/environment and PASS/FAIL outcome")?;
             if suite != evidence.baseline_ref {
@@ -695,25 +699,16 @@ fn classify_evidence(
                 state.test_outcome = Some("FAIL".into());
                 return Ok(Classification::Observed);
             }
-            match (
-                state.test_suite.as_deref(),
-                state.test_outcome.as_deref(),
-                state.test_result.as_deref(),
-            ) {
-                (Some(previous_suite), Some("FAIL"), Some(previous_receipt))
-                    if previous_suite == suite && previous_receipt != evidence.artifact_sha256 =>
-                {
-                    state.test_suite = Some(suite.to_owned());
-                    state.test_result = Some(evidence.artifact_sha256.clone());
-                    state.test_outcome = Some("PASS".into());
-                    Ok(Classification::Verified)
-                }
-                (Some(previous_suite), _, _) if previous_suite != suite => {
-                    Err("test improvement changed the suite/environment".into())
-                }
-                (None, _, _) => Err("test pass has no failing baseline for this suite".into()),
-                _ => Err("test pass is unchanged or not a FAIL-to-PASS transition".into()),
+            if state.test_suite.as_deref() == Some(suite)
+                && state.test_outcome.as_deref() == Some("PASS")
+                && state.test_result.as_deref() == Some(evidence.artifact_sha256.as_str())
+            {
+                return Err("test pass is unchanged".into());
             }
+            state.test_suite = Some(suite.to_owned());
+            state.test_result = Some(evidence.artifact_sha256.clone());
+            state.test_outcome = Some("PASS".into());
+            Ok(Classification::Verified)
         }
         ProgressKind::FindingsResolved => {
             if evidence.artifact_ref.trim().is_empty() {
@@ -1180,7 +1175,7 @@ mod tests {
     }
 
     #[test]
-    fn replayed_receipts_and_changed_test_suites_are_rejected() {
+    fn replayed_receipts_are_rejected_and_new_suite_passes_are_verified() {
         let mut supervisor = supervisor();
         let failed = test_evidence(1, "suite-a", "FAIL");
         run(&mut supervisor, "op-1", std::slice::from_ref(&failed), None);
@@ -1208,23 +1203,18 @@ mod tests {
             std::slice::from_ref(&other_suite),
             None,
         );
-        assert_eq!(changed.rejected.len(), 1);
-        assert!(
-            changed.rejected[0].reason.contains("suite")
-                || changed.rejected[0].reason.contains("baseline"),
-            "{:?}",
-            changed.rejected
-        );
+        assert_eq!(changed.classification, CheckpointClassification::Verified);
+        assert!(changed.rejected.is_empty(), "{:?}", changed.rejected);
     }
 
     #[test]
-    fn a_pass_without_a_failing_baseline_is_not_progress() {
+    fn a_first_time_pass_is_verified_progress() {
         let mut supervisor = supervisor();
         let passed = test_evidence(1, "suite-a", "PASS");
         let outcome = run(&mut supervisor, "op-1", std::slice::from_ref(&passed), None);
-        assert_eq!(outcome.classification, CheckpointClassification::Stagnant);
-        assert_eq!(outcome.stagnant_checkpoints, 1);
-        assert!(!outcome.rejected.is_empty());
+        assert_eq!(outcome.classification, CheckpointClassification::Verified);
+        assert_eq!(outcome.stagnant_checkpoints, 0);
+        assert!(outcome.rejected.is_empty(), "{:?}", outcome.rejected);
     }
 
     #[test]
