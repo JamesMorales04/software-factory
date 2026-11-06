@@ -408,13 +408,14 @@ async fn handle(
                     if chrono::Utc::now().timestamp_millis() >= turn.expires_at_ms
                         || turn.requests >= turn.max_requests
                         || turn.requests as u64 >= turn.max_output_tokens
-                        || turn.binding
                     {
-                        // A second request for the same turn is a conflict,
-                        // never a new inference and never a transient rate
-                        // limit. Returning a non-retryable status stops the
-                        // client retry loop and preserves the first upstream
-                        // outcome in the error message.
+                        Err((429, "request budget exhausted".to_string()))
+                    } else if turn.binding {
+                        // A second request for the same bound turn is a
+                        // conflict, never a new inference and never a
+                        // transient rate limit. Returning a non-retryable
+                        // status stops the client retry loop and preserves the
+                        // first upstream outcome in the error message.
                         Err((
                             409,
                             if let Some(status) = turn.last_upstream_status {
