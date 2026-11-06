@@ -62,16 +62,23 @@ async fn test_scope_admitted(
     .await
 }
 
-/// Resolve the ledger requirement only after current Owner funding policy has
-/// admitted the provider route. The ledger continues to retain V1/V2 billing
-/// protections for a future explicitly authorized billable mode.
-async fn model_call_ledger_requirement(
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ModelCallFunding {
+    Subscription,
+    Envelope(String),
+    LegacyV1,
+}
+
+/// Resolve the funding requirement only after current Owner funding policy has
+/// admitted the provider route. Subscription calls use per-request technical
+/// bounds and telemetry; they never use a cumulative lifetime token allowance.
+async fn model_call_funding(
     connection: &mut SqliteConnection,
     role: ModelCallRole,
     objective_id: &str,
     provider: &str,
     model: &str,
-) -> Result<Option<String>, Error> {
+) -> Result<ModelCallFunding, Error> {
     match role {
         ModelCallRole::Lead => {
             #[cfg(any(test, feature = "test-support"))]
@@ -85,9 +92,9 @@ async fn model_call_ledger_requirement(
                 )
                 .await?
                 {
-                    return Ok(Some(envelope));
+                    return Ok(ModelCallFunding::Envelope(envelope));
                 }
-                return Ok(None);
+                return Ok(ModelCallFunding::LegacyV1);
             }
             // Production path: the exact request/Lead admission must exist.
             // It is created by an authenticated operator before assessment.
@@ -98,7 +105,7 @@ async fn model_call_ledger_requirement(
                 model,
             )
             .await?;
-            Ok(None)
+            Ok(ModelCallFunding::Subscription)
         }
         ModelCallRole::SemanticReviewer => {
             let campaign: Option<(String,)> = sqlx::query_as::query_as(
@@ -113,7 +120,7 @@ async fn model_call_ledger_requirement(
             let Some((campaign_id,)) = campaign else {
                 return Err(Error::NotFound);
             };
-            campaign_requirement_to_envelope(connection, &campaign_id, provider, model).await
+            campaign_requirement_to_funding(connection, &campaign_id, provider, model).await
         }
         ModelCallRole::Evaluation => {
             let campaign: Option<(String,)> = sqlx::query_as::query_as(
@@ -126,28 +133,34 @@ async fn model_call_ledger_requirement(
             .fetch_optional(&mut *connection)
             .await?;
             if let Some((campaign_id,)) = campaign {
-                return campaign_requirement_to_envelope(connection, &campaign_id, provider, model)
+                return campaign_requirement_to_funding(connection, &campaign_id, provider, model)
                     .await;
             }
             #[cfg(any(test, feature = "test-support"))]
             if test_scope_admitted(connection, objective_id, provider, model).await? {
-                return super::inference_ledger::test_request_envelope_in_tx(
-                    connection,
-                    objective_id,
-                )
-                .await;
+                return Ok(
+                    match super::inference_ledger::test_request_envelope_in_tx(
+                        connection,
+                        objective_id,
+                    )
+                    .await?
+                    {
+                        Some(envelope) => ModelCallFunding::Envelope(envelope),
+                        None => ModelCallFunding::LegacyV1,
+                    },
+                );
             }
             Err(SubscriptionFundingRefusal::BindingRequired.into())
         }
     }
 }
 
-async fn campaign_requirement_to_envelope(
+async fn campaign_requirement_to_funding(
     connection: &mut SqliteConnection,
     campaign_id: &str,
     provider: &str,
     model: &str,
-) -> Result<Option<String>, Error> {
+) -> Result<ModelCallFunding, Error> {
     super::inference_ledger::require_enabled_subscription_funding_for_route_in_tx(
         connection,
         campaign_id,
@@ -156,11 +169,15 @@ async fn campaign_requirement_to_envelope(
     )
     .await?;
     match super::inference_ledger::campaign_requirement_in_tx(connection, campaign_id).await? {
-        crate::inference_ledger::CampaignInferenceRequirement::LegacyV1 => Ok(None),
-        crate::inference_ledger::CampaignInferenceRequirement::EnvelopeBound { envelope_id } => {
-            Ok(Some(envelope_id))
+        crate::inference_ledger::CampaignInferenceRequirement::LegacyV1 => {
+            Ok(ModelCallFunding::LegacyV1)
         }
-        crate::inference_ledger::CampaignInferenceRequirement::Subscription => Ok(None),
+        crate::inference_ledger::CampaignInferenceRequirement::EnvelopeBound { envelope_id } => {
+            Ok(ModelCallFunding::Envelope(envelope_id))
+        }
+        crate::inference_ledger::CampaignInferenceRequirement::Subscription => {
+            Ok(ModelCallFunding::Subscription)
+        }
     }
 }
 
@@ -351,6 +368,9 @@ type DispatchReservationRow = (
 );
 const MAX_CALL_OUTPUT_TOKENS: u64 = 8192;
 const RESERVATION_LIFETIME_MS: i64 = 120_000;
+/// Subscription cost is telemetry. This bound exists only to keep SQLite and
+/// aggregation arithmetic finite; it is not a spending cap.
+const SUBSCRIPTION_COST_BOUND: u64 = (i64::MAX / 4) as u64;
 
 impl Database {
     pub async fn authorize_model_call(
@@ -392,7 +412,7 @@ impl Database {
         // A campaign-bound call inherits the request envelope. The envelope is
         // the single monetary authority for this operation; the legacy scope
         // and role columns below remain evidence projections.
-        let ledger_envelope_id = model_call_ledger_requirement(
+        let funding = model_call_funding(
             &mut transaction,
             input.role,
             &input.objective_id,
@@ -400,6 +420,10 @@ impl Database {
             &input.model,
         )
         .await?;
+        let ledger_envelope_id = match &funding {
+            ModelCallFunding::Envelope(envelope) => Some(envelope.clone()),
+            ModelCallFunding::Subscription | ModelCallFunding::LegacyV1 => None,
+        };
         let (used_input, used_output, used_cost) =
             model_call_usage(&mut transaction, &input.scope_id).await?;
         let (reserved_input, reserved_output, reserved_cost) =
@@ -473,7 +497,7 @@ impl Database {
         } else {
             None
         };
-        let (max_input, max_output) = if let Some(quote) = &pricing_quote {
+        let (max_input, max_output, max_cost) = if let Some(quote) = &pricing_quote {
             // V2 uses a per-request technical token bound, never cumulative
             // lifetime role/scope allowances. The bound must fit the frozen
             // quote envelope or the request is refused before any effect.
@@ -491,8 +515,32 @@ impl Database {
                     "model call request exceeds its frozen token quote".into(),
                 ));
             }
-            (input.estimated_input_tokens, input.requested_output_tokens)
+            (
+                input.estimated_input_tokens,
+                input.requested_output_tokens,
+                quote.upper_bound_micros,
+            )
+        } else if matches!(funding, ModelCallFunding::Subscription) {
+            // Subscription model calls have no monetary ledger and no
+            // cumulative role token allowance. Enforce only the per-request
+            // technical policy; cost is recorded as telemetry.
+            if input.estimated_input_tokens > input.policy.max_input_tokens
+                || input.requested_output_tokens > input.policy.max_output_tokens
+            {
+                return Err(Error::Forbidden(
+                    "model call request exceeds its technical policy".into(),
+                ));
+            }
+            (
+                input.policy.max_input_tokens,
+                input
+                    .requested_output_tokens
+                    .min(input.policy.max_output_tokens),
+                UsdMicros::new(SUBSCRIPTION_COST_BOUND)
+                    .map_err(|_| Error::Invalid("model call cost reservation"))?,
+            )
         } else {
+            // Legacy V1 keeps its historical cumulative accounting.
             if input.estimated_input_tokens > remaining_input
                 || input.estimated_cost_micros > remaining_cost
                 || remaining_input == 0
@@ -505,14 +553,14 @@ impl Database {
             if max_output == 0 {
                 return Err(Error::Forbidden("model call budget is exhausted".into()));
             }
-            (max_input, max_output)
+            (
+                max_input,
+                max_output,
+                UsdMicros::new(remaining_cost)
+                    .map_err(|_| Error::Invalid("model call cost reservation"))?,
+            )
         };
         let max_total = max_input.saturating_add(max_output);
-        let max_cost = match &pricing_quote {
-            Some(quote) => quote.upper_bound_micros,
-            None => UsdMicros::new(remaining_cost)
-                .map_err(|_| Error::Invalid("model call cost reservation"))?,
-        };
         let request_sha256 = input.request_sha256.to_ascii_lowercase();
         let reservation_id = Uuid::new_v4().to_string();
         let expires_at_ms = now_ms.saturating_add(RESERVATION_LIFETIME_MS);
@@ -2101,7 +2149,7 @@ mod tests {
     async fn lead_model_call_refuses_without_request_level_subscription_evidence() {
         let (path, db) = project_db("factory-lead-subscription-funding").await;
         let mut connection = db.pool.acquire().await.unwrap();
-        let error = model_call_ledger_requirement(
+        let error = model_call_funding(
             &mut connection,
             ModelCallRole::Lead,
             "lead-request-without-subscription-binding",
@@ -2125,7 +2173,7 @@ mod tests {
     async fn core_campaign_model_admission_refuses_missing_subscription_binding() {
         let (path, db) = project_db("factory-core-subscription-funding-missing").await;
         let mut connection = db.pool.acquire().await.unwrap();
-        let error = campaign_requirement_to_envelope(
+        let error = campaign_requirement_to_funding(
             &mut connection,
             "campaign-without-funding",
             "opencode-go",

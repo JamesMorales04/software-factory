@@ -218,11 +218,6 @@ impl Database {
         let state: String = session.try_get("state")?;
         let provider: String = session.try_get("provider")?;
         let model: String = session.try_get("model")?;
-        if provider != "codex" && max_requests != 1 {
-            return Err(Error::Invalid(
-                "only a Codex provider turn may bind multiple egress requests",
-            ));
-        }
         if session_worker != worker_id || session_generation != generation || state != "ACTIVE" {
             return Err(Error::Forbidden(
                 "provider turn is not authorized by the active session".into(),
@@ -432,13 +427,11 @@ impl Database {
                 0,
             )
         } else if subscription {
-            // A subscription turn has no billable monetary envelope, but Core
-            // still records the observed token cost. Use the provider
-            // connection's configured cost ceiling so a real turn cannot be
-            // rejected merely because its observed cost is nonzero. This is a
-            // technical bound; it grants no monetary authority.
-            let (max_input, max_output, max_cost): (i64, i64, i64) = sqlx::query_as::query_as(
-                "SELECT max_input_tokens,max_output_tokens,max_cost_micros
+            // A subscription turn has no billable monetary envelope. Core
+            // records the observed token cost as telemetry; cost must not
+            // reject a healthy turn.
+            let (max_input, max_output): (i64, i64) = sqlx::query_as::query_as(
+                "SELECT max_input_tokens,max_output_tokens
                      FROM provider_settings WHERE provider=?1",
             )
             .bind(&provider)
@@ -470,7 +463,7 @@ impl Database {
             (
                 max_input,
                 max_output,
-                max_cost,
+                i64::MAX / 4,
                 deadline_secs,
                 0,
                 0,
@@ -2812,13 +2805,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn non_codex_turns_cannot_bind_multiple_requests() {
+    async fn opencode_multiple_requests_reach_the_funding_gate() {
         let (_path, db, session) = active_turn_fixture(100).await;
-        assert!(matches!(
-            db.authorize_provider_turn(&session, "worker", 1, 50, &"a".repeat(64), 8)
-                .await,
-            Err(Error::Invalid(_))
-        ));
+        let result = db
+            .authorize_provider_turn(&session, "worker", 1, 50, &"a".repeat(64), 8)
+            .await;
+        assert!(
+            matches!(result, Err(Error::SubscriptionFunding(_))),
+            "the provider-specific rejection is gone; funding remains the first dispatch gate: {result:?}"
+        );
     }
 
     #[tokio::test]
