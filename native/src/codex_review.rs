@@ -365,6 +365,27 @@ fn thread_usage(thread: &serde_json::Value) -> Option<CodexTokenUsage> {
     None
 }
 
+/// Codex runs the actual review in a review subagent thread and emits only a
+/// prose summary on the orchestrator thread. Resolve the persisted subagent
+/// thread by its unique snapshot cwd so the structured verdict can be read.
+async fn persisted_review_thread(home: &CodexHome, snapshot: &Path, model: &str) -> Option<String> {
+    let pool = codex_state_pool(home).await?;
+    let id: Option<String> = sqlx::query_scalar::query_scalar(
+        "SELECT id FROM threads
+         WHERE cwd=?1 AND model=?2 AND tokens_used > 0
+           AND (thread_source='subagent'
+                OR source LIKE '%subagent%review%')
+         ORDER BY updated_at DESC, rowid DESC LIMIT 1",
+    )
+    .bind(snapshot.to_string_lossy().as_ref())
+    .bind(model)
+    .fetch_optional(&pool)
+    .await
+    .ok()?;
+    pool.close().await;
+    id
+}
+
 async fn codex_state_pool(home: &CodexHome) -> Option<sqlx_sqlite::SqlitePool> {
     let path = home.path().join("state_5.sqlite");
     if !path.is_file() {
@@ -515,15 +536,6 @@ async fn run_review_in_snapshot(
             "item/completed" => {
                 if let Some(item) = notification.params.get("item") {
                     let kind = item.get("type").and_then(Value::as_str).unwrap_or_default();
-                    if kind.to_ascii_lowercase().contains("review")
-                        || notification.method.to_ascii_lowercase().contains("review")
-                    {
-                        eprintln!(
-                            "codex review item type={kind:?} keys={:?}",
-                            item.as_object()
-                                .map(|object| object.keys().cloned().collect::<Vec<_>>())
-                        );
-                    }
                     if kind.eq_ignore_ascii_case("exitedReviewMode") {
                         if let Some(text) = review_item_text(item) {
                             item_review = Some(text);
@@ -576,9 +588,6 @@ async fn run_review_in_snapshot(
                         )));
                     }
                 }
-            }
-            other if other.to_ascii_lowercase().contains("review") => {
-                eprintln!("codex review notification method={other:?}");
             }
             "error" => {
                 return Err(CodexReviewError::Protocol(
@@ -637,24 +646,23 @@ async fn run_review_in_snapshot(
     if usage.is_none() {
         eprintln!("codex review completed without measured token usage for thread {thread_id}");
     }
-    let text = item_review
-        .or_else(|| review_text(&thread))
-        .ok_or(CodexReviewError::Incomplete)?;
+    let mut text = item_review.or_else(|| review_text(&thread));
+    if let Some(subagent_id) = persisted_review_thread(home, snapshot, REVIEW_MODEL).await
+        && let Ok(subagent) = process.rpc.read_thread_value(&subagent_id).await
+        && let Some(candidate) = review_text(&subagent)
+        && parse_json_review(&candidate).is_some()
+    {
+        // The subagent carries the structured verdict. The orchestrator's
+        // `review` field is only a human-readable summary.
+        text = Some(candidate);
+    }
+    let text = text.ok_or(CodexReviewError::Incomplete)?;
     if text.len() > MAX_REVIEW_TEXT_BYTES {
         return Err(CodexReviewError::OutputTooLarge);
     }
     let (result, findings) = parse_review_text(&text);
     if result == ReceiptResult::NotTested {
-        eprintln!(
-            "codex review: no explicit clean verdict (len={} prefix={:?})",
-            text.len(),
-            text.chars().take(180).collect::<String>()
-        );
-        let debug_path = home.path().join(format!("review-debug-{thread_id}.json"));
-        if let Ok(encoded) = serde_json::to_vec_pretty(&thread) {
-            let _ = std::fs::write(&debug_path, encoded);
-            eprintln!("codex review: wrote {}", debug_path.display());
-        }
+        eprintln!("codex review: no explicit clean structured verdict");
     }
     let request_sha256 = sha256_hex(&format!(
         "codex-review:v1:{}:{}:{}:{}:{}",
@@ -1239,6 +1247,87 @@ mod tests {
         );
         assert_eq!(result, ReceiptResult::NotTested);
         assert!(findings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn persisted_review_thread_selects_the_review_subagent() {
+        let root =
+            std::env::temp_dir().join(format!("factory-codex-home-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let home = CodexHome::from_path(root.clone()).unwrap();
+        let path = root.join("state_5.sqlite");
+        let options = SqliteConnectOptions::new()
+            .filename(&path)
+            .create_if_missing(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap();
+        sqlx::query::query(
+            "CREATE TABLE threads (
+                id TEXT PRIMARY KEY,
+                cwd TEXT NOT NULL,
+                model TEXT,
+                tokens_used INTEGER NOT NULL DEFAULT 0,
+                source TEXT NOT NULL DEFAULT '',
+                thread_source TEXT,
+                updated_at INTEGER NOT NULL DEFAULT 0
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        for (id, cwd, tokens, source, thread_source) in [
+            (
+                "orchestrator",
+                "/state/codex-review-test",
+                0,
+                "vscode",
+                None,
+            ),
+            (
+                "subagent",
+                "/state/codex-review-test",
+                900,
+                "{\"subagent\":\"review\"}",
+                Some("subagent"),
+            ),
+            (
+                "other",
+                "/state/other",
+                900,
+                "{\"subagent\":\"review\"}",
+                Some("subagent"),
+            ),
+        ] {
+            sqlx::query::query(
+                "INSERT INTO threads
+                 (id,cwd,model,tokens_used,source,thread_source,updated_at)
+                 VALUES (?1,?2,'gpt-6-luna',?3,?4,?5,1)",
+            )
+            .bind(id)
+            .bind(cwd)
+            .bind(tokens)
+            .bind(source)
+            .bind(thread_source)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        pool.close().await;
+        assert_eq!(
+            persisted_review_thread(&home, Path::new("/state/codex-review-test"), REVIEW_MODEL)
+                .await
+                .as_deref(),
+            Some("subagent")
+        );
+        std::fs::remove_dir_all(root).ok();
     }
 
     #[test]
