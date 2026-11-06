@@ -131,6 +131,10 @@ advisory; Core validates and freezes it. Hard constraints: schemaRevision=1; ech
 and requestId exactly; evidenceRefs must be [\"repository-files\"]; proposal.projectId, actionId, \
 baseRevision, projectConfigHash and objective must match the provided context exactly; proposal.class \
 must be one of {classes:?}; proposal.qualityProfile must be {quality:?}; riskClass must be \"R0\"; \
+Check executables must be available under the listed capabilities: generic-toolchain provides cargo, \
+rustc, python3, sh, grep, awk, sed, find, cat, printf, test and coreutils; node, npm and npx require \
+node-toolchain and are unavailable otherwise. The verifier runs checks in the frozen generic \
+toolchain image, so do not plan a node command when node-toolchain is not listed. \
 budget.maxAttempts=1 and budget.timeoutSecs={timeout_secs}; route must be {route:?}; maxRepairCycles=0; \
 maxWallClockSecs={max_wall_clock_secs}; maxParallel=1; maxSessions={max_sessions}; workUnits must \
 contain exactly one implementation unit with id \"unit-1\" and the exact allowedPaths and capabilities \
