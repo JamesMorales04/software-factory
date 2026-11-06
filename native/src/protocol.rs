@@ -295,9 +295,10 @@ pub struct TurnInterruptParams {
     pub turn_id: String,
 }
 
-/// Extract the final review text from a `thread/read` response. Review mode
-/// emits an `exitedReviewMode` item whose `review` field is the canonical
-/// summary; fall back to the last agent message when the item is absent.
+/// Extract the final review text from a `thread/read` response. Current Codex
+/// emits `ExitedReviewMode.review_output` as a structured JSON object; older
+/// fixtures used a lowercase `exitedReviewMode.review` string. Prefer the
+/// structured verdict and fall back to the last agent message.
 pub fn review_text(thread: &Value) -> Option<String> {
     let turns = thread.pointer("/thread/turns")?.as_array()?;
     let mut review = None;
@@ -307,22 +308,37 @@ pub fn review_text(thread: &Value) -> Option<String> {
             continue;
         };
         for item in items {
-            match item.get("type").and_then(Value::as_str) {
-                Some("exitedReviewMode") => {
-                    if let Some(text) = item.get("review").and_then(Value::as_str)
-                        && !text.trim().is_empty()
-                    {
-                        review = Some(text.to_owned());
+            let kind = item.get("type").and_then(Value::as_str).unwrap_or_default();
+            if kind.eq_ignore_ascii_case("exitedReviewMode") {
+                if let Some(output) = item.get("review_output") {
+                    let text = match output {
+                        Value::String(text) => text.clone(),
+                        other => other.to_string(),
+                    };
+                    if !text.trim().is_empty() {
+                        review = Some(text);
+                        continue;
                     }
                 }
-                Some("agentMessage") => {
-                    if let Some(text) = item.get("text").and_then(Value::as_str)
-                        && !text.trim().is_empty()
-                    {
-                        message = Some(text.to_owned());
-                    }
+                if let Some(text) = item.get("review").and_then(Value::as_str)
+                    && !text.trim().is_empty()
+                {
+                    review = Some(text.to_owned());
                 }
-                _ => {}
+            } else if kind.eq_ignore_ascii_case("agentMessage") {
+                if let Some(text) = item.get("text").and_then(Value::as_str)
+                    && !text.trim().is_empty()
+                {
+                    message = Some(text.to_owned());
+                } else if let Some(content) = item.get("content").and_then(Value::as_array)
+                    && let Some(text) = content.iter().find_map(|part| {
+                        part.get("text")
+                            .and_then(Value::as_str)
+                            .filter(|text| !text.trim().is_empty())
+                    })
+                {
+                    message = Some(text.to_owned());
+                }
             }
         }
     }
@@ -1292,6 +1308,25 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(without_turn.turn_id, None);
+    }
+
+    #[test]
+    fn review_text_reads_native_review_output() {
+        let thread = json!({
+            "thread": {
+                "turns": [{
+                    "items": [{
+                        "type": "ExitedReviewMode",
+                        "review_output": {
+                            "findings": [],
+                            "overall_correctness": "patch is correct"
+                        }
+                    }]
+                }]
+            }
+        });
+        let text = review_text(&thread).expect("native review output");
+        assert!(text.contains("patch is correct"));
     }
 
     #[tokio::test]

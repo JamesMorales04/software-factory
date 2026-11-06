@@ -519,14 +519,14 @@ async fn run_review_in_snapshot(
                         .and_then(Value::as_str)
                         .is_some_and(|kind| kind.eq_ignore_ascii_case("exitedReviewMode"))
                 {
-                    if let Some(text) = item.get("review").and_then(Value::as_str)
-                        && !text.trim().is_empty()
-                    {
-                        item_review = Some(text.to_owned());
-                    } else if let Some(output) = item.get("review_output") {
+                    if let Some(output) = item.get("review_output") {
                         // Codex 0.165.0 emits the native verdict as a JSON
                         // object, not the legacy prose `review` string.
                         item_review = Some(output.to_string());
+                    } else if let Some(text) = item.get("review").and_then(Value::as_str)
+                        && !text.trim().is_empty()
+                    {
+                        item_review = Some(text.to_owned());
                     }
                 }
             }
@@ -960,7 +960,16 @@ pub fn parse_review_text(text: &str) -> (ReceiptResult, Vec<ReviewFinding>) {
         .collect();
     if nonempty.len() == 1 {
         let line = nonempty[0].trim_end_matches('.').to_ascii_lowercase();
-        if line == "no findings" || line == "no issues found" {
+        if matches!(
+            line.as_str(),
+            "no findings"
+                | "no issues found"
+                | "patch is correct"
+                | "the patch is correct"
+                | "the change is correct"
+                | "looks correct"
+                | "approved"
+        ) {
             return (ReceiptResult::Pass, Vec::new());
         }
     }
