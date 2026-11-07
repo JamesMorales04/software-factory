@@ -379,7 +379,7 @@ try {
 
   await page.goto(`${baseUrl}/#/`);
   await page.getByRole("heading", { name: "Home" }).waitFor();
-  await page.getByLabel("What should the Factory do?").waitFor();
+  await page.getByLabel("Your instruction to the Lead").waitFor();
   await page.getByLabel("Execution profile").selectOption("profile-balanced");
   await markFixture(page);
 
@@ -418,7 +418,7 @@ try {
   await page.getByRole("button", { name: "Close navigation drawer" }).click();
 
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.getByLabel("What should the Factory do?").focus();
+  await page.getByLabel("Your instruction to the Lead").focus();
   await page.waitForTimeout(200);
   await page.screenshot({
     path: join(output, "home-1440-focus.png"),
@@ -446,7 +446,7 @@ try {
   const darkPage = await dark.newPage();
   await darkPage.goto(`${baseUrl}/#/`);
   await darkPage.getByRole("heading", { name: "Home" }).waitFor();
-  await darkPage.getByLabel("What should the Factory do?").waitFor();
+  await darkPage.getByLabel("Your instruction to the Lead").waitFor();
   await darkPage
     .getByLabel("Execution profile")
     .selectOption("profile-balanced");

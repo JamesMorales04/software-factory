@@ -271,6 +271,8 @@ function deferred<T>() {
 
 describe("Home", () => {
   beforeEach(() => {
+    localStorage.removeItem("factory-office-project");
+    localStorage.removeItem("factory-office-profile");
     mocks.listProjects.mockReset().mockResolvedValue([project]);
     mocks.listExecutionProfiles
       .mockReset()

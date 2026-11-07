@@ -360,14 +360,14 @@ try {
   record.assertions.provider_and_profile_setup = "PASS";
 
   stage = "home-request";
-  await page.getByRole("link", { name: "Home", exact: true }).click();
+  await page.getByRole("link", { name: "New request", exact: true }).click();
   await page.getByRole("heading", { name: "Home", level: 1 }).waitFor();
   await page.locator("#home-project").selectOption(projectId);
   await page.locator("#home-objective").fill(objective);
   await page.locator("#home-spend").fill("5.00");
   await page.locator("#home-profile").selectOption(profile.id);
   await capturePair("home");
-  await page.getByRole("button", { name: "Submit request" }).click();
+  await page.getByRole("button", { name: "Send to Lead" }).click();
   await page.waitForURL(/#\/requests\/[^/?]+/, { timeout: 120_000 });
   const intakeId = page.url().match(/#\/requests\/([^/?]+)/)?.[1];
   assert.ok(intakeId, "request creation must navigate to the request workspace");
@@ -379,6 +379,18 @@ try {
   assert.equal(created.mode, "REVIEW_PLAN");
   assert.equal(created.objective, objective);
   record.assertions.home_request_creation = "PASS";
+
+  stage = "subscription-dispatch-admission";
+  // The browser UAT runs the debug-only core-e2e image with the deterministic
+  // provider fixture. Admit only these disposable scopes so the Worker can
+  // exercise the UI approval and Campaign journey without paid inference. The
+  // production image does not contain this endpoint.
+  for (const scope of [intakeId, created.leadRequestId, "*"]) {
+    await core("POST", "/test-support/subscription-dispatch-admissions", {
+      scope,
+    });
+  }
+  record.assertions.subscription_dispatch_admission = "PASS";
   record.spend = {
     requested_usd: "5.00",
     authorized_micros: 5_000_000,
@@ -618,7 +630,7 @@ try {
     .first()
     .click();
   await page
-    .getByRole("heading", { name: /^Campaign /, level: 1 })
+    .getByRole("heading", { name: objective, level: 1 })
     .waitFor({ timeout: 30_000 });
   await capturePair("campaign-overview");
 
@@ -657,7 +669,7 @@ try {
   await capturePair("campaign-gate");
 
   stage = "agent-observability";
-  await page.getByRole("link", { name: "Agents", exact: true }).click();
+  await page.getByRole("link", { name: "Agent Office", exact: true }).click();
   await page.getByRole("heading", { name: "Agent Office", level: 1 }).waitFor({
     timeout: 30_000,
   });
@@ -689,7 +701,7 @@ try {
   await capturePair("agent-office");
 
   stage = "final-home";
-  await page.getByRole("link", { name: "Home", exact: true }).click();
+  await page.getByRole("link", { name: "New request", exact: true }).click();
   await page.getByRole("heading", { name: "Home", level: 1 }).waitFor();
   await page.getByText(objective, { exact: false }).first().waitFor({
     timeout: 30_000,

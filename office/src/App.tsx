@@ -211,6 +211,7 @@ export function App() {
 
   return (
     <AppShell
+      deviceName={authSession.device?.name}
       onLock={() => {
         setAuthActionError(null);
         void logoutCurrentDevice()

@@ -1,0 +1,91 @@
+{
+  "fixture_only": true,
+  "note": "Mocked Core layout checks. Not product acceptance.",
+  "checks": [
+    {
+      "name": "home",
+      "viewport": 1440,
+      "documentScrollWidth": 1440,
+      "bodyScrollWidth": 1440,
+      "offenders": []
+    },
+    {
+      "name": "home",
+      "viewport": 834,
+      "documentScrollWidth": 834,
+      "bodyScrollWidth": 834,
+      "offenders": []
+    },
+    {
+      "name": "home",
+      "viewport": 390,
+      "documentScrollWidth": 390,
+      "bodyScrollWidth": 390,
+      "offenders": []
+    },
+    {
+      "name": "execution-profiles",
+      "viewport": 1440,
+      "documentScrollWidth": 1440,
+      "bodyScrollWidth": 1440,
+      "offenders": []
+    },
+    {
+      "name": "execution-profiles",
+      "viewport": 834,
+      "documentScrollWidth": 834,
+      "bodyScrollWidth": 834,
+      "offenders": []
+    },
+    {
+      "name": "execution-profiles",
+      "viewport": 390,
+      "documentScrollWidth": 390,
+      "bodyScrollWidth": 390,
+      "offenders": []
+    },
+    {
+      "name": "campaign-detail",
+      "viewport": 1440,
+      "documentScrollWidth": 1440,
+      "bodyScrollWidth": 1440,
+      "offenders": []
+    },
+    {
+      "name": "campaign-detail",
+      "viewport": 834,
+      "documentScrollWidth": 834,
+      "bodyScrollWidth": 834,
+      "offenders": []
+    },
+    {
+      "name": "campaign-detail",
+      "viewport": 390,
+      "documentScrollWidth": 390,
+      "bodyScrollWidth": 390,
+      "offenders": []
+    },
+    {
+      "name": "request-campaign-v2",
+      "viewport": 1440,
+      "documentScrollWidth": 1440,
+      "bodyScrollWidth": 1440,
+      "offenders": []
+    },
+    {
+      "name": "request-campaign-v2",
+      "viewport": 834,
+      "documentScrollWidth": 834,
+      "bodyScrollWidth": 834,
+      "offenders": []
+    },
+    {
+      "name": "request-campaign-v2",
+      "viewport": 390,
+      "documentScrollWidth": 390,
+      "bodyScrollWidth": 390,
+      "offenders": []
+    }
+  ],
+  "failures": []
+}

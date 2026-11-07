@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "record": "factory-office-ui-standard-visual-baseline",
+  "date": "2026-11-06",
+  "captured_at": "2026-11-07T00:27:00-05:00",
+  "base_commit": "81a151668652b86b6bb67227d47bb35c2c04f6e0",
+  "status": "author-run fixture visual baseline plus deterministic Compose browser UAT; NOT live-model acceptance or Product Owner visual certification",
+  "harness": "office/e2e-browser/office-home-fixture.mjs",
+  "screenshots": [
+    "docs/evidence/office-ui-standard-2026-11-06/home-1440.png",
+    "docs/evidence/office-ui-standard-2026-11-06/home-390.png",
+    "docs/evidence/office-ui-standard-2026-11-06/campaign-detail-1440.png",
+    "docs/evidence/office-ui-standard-2026-11-06/campaign-detail-390.png",
+    "docs/evidence/office-ui-standard-2026-11-06/execution-profiles-1440.png",
+    "docs/evidence/office-ui-standard-2026-11-06/execution-profiles-390.png",
+    "docs/evidence/office-ui-standard-2026-11-06/request-campaign-v2-1440.png",
+    "docs/evidence/office-ui-standard-2026-11-06/request-campaign-v2-390.png"
+  ],
+  "layout_report": "docs/evidence/office-ui-standard-2026-11-06/layout-overflow-report.json",
+  "real_browser_uat": {
+    "record": "docs/evidence/compose-browser-uat-2026-11-06/compose-browser-uat.json",
+    "readme": "docs/evidence/compose-browser-uat-2026-11-06/README.md",
+    "candidate_sha": "bd90e990d31f7110c368b1253da813f729a729e6",
+    "result": "PASS",
+    "claim": "Real rootless Compose Core HTTP API and real Chromium at 1440/390 with a deterministic provider fixture; no paid inference and no Core API interception.",
+    "not_claimed": [
+      "live provider inference",
+      "independent acceptance",
+      "isolation",
+      "GitHub delivery",
+      "Product Owner visual sign-off"
+    ]
+  },
+  "checks": [
+    {
+      "name": "Office typecheck",
+      "pass": true,
+      "detail": "npm run typecheck"
+    },
+    {
+      "name": "Office lint",
+      "pass": true,
+      "detail": "Biome check"
+    },
+    {
+      "name": "Office tests",
+      "pass": true,
+      "detail": "41 files / 295 tests"
+    },
+    {
+      "name": "Office production build",
+      "pass": true,
+      "detail": "npm run build"
+    },
+    {
+      "name": "Fixture screenshots",
+      "pass": true,
+      "detail": "Eight full-page captures at 1440 and 390 px with an explicit fixture banner"
+    },
+    {
+      "name": "Responsive layout guard",
+      "pass": true,
+      "detail": "No visible element escapes the viewport at 1440, 834 or 390 px across Home, Campaign detail, Request workspace and Execution Profiles; per-capture report retained"
+    },
+    {
+      "name": "Real Compose browser UAT",
+      "pass": true,
+      "detail": "Deterministic fixture UAT PASS at candidate bd90e99 with real Core HTTP API and real Chromium: enrollment, Project import, request approval, Campaign, Agent Office, Budget and Gate at 1440/390; live inference remains NOT_TESTED"
+    }
+  ],
+  "limitations": [
+    "All screenshots use deterministic mocked Core responses and are labeled TEST FIXTURE.",
+    "No real provider, agent, gate or acceptance state is claimed by these screenshots.",
+    "The real Compose browser UAT uses a deterministic provider fixture; live-model inference, independent acceptance, isolation and GitHub delivery remain NOT_TESTED.",
+    "A complete keyboard/focus walkthrough, dark-theme and Spanish captures for every view, and Product Owner visual approval remain required before a fidelity claim.",
+    "The fixture layout guard catches visible overflow; it cannot prove interaction quality, contrast or screen-reader behavior."
+  ]
+}

@@ -65,9 +65,10 @@ A row must identify:
 1. Define the observable user job and the authoritative Core data/action.
 2. Identify the Office route and the shared components needed.
 3. Implement the Core operation and projection; keep authority in Core.
-4. Implement the Office experience, including search/filter/deep links,
-   validation, confirmations, cancellation, empty/error/offline states and
-   redaction.
+4. Implement the Office experience following the
+   [Office UI standard](../../../docs/product/office-ui-standard.md), including
+   search/filter/deep links, validation, confirmations, cancellation,
+   empty/error/offline states and redaction.
 5. Add the parity matrix row and update registry/roadmap statuses.
 6. Exercise the journey in a real browser at desktop, tablet and narrow widths;
    check keyboard navigation, focus, console errors, failed requests and 404s.

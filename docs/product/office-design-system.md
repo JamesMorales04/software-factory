@@ -1,5 +1,12 @@
 # Factory Office design system
 
+> **Normative implementation standard:** see
+> [Factory Office UI standard](office-ui-standard.md) (version 1.0,
+> 2026-11-06). It defines the required shell, navigation, Home, Campaign,
+> Agent Office, responsive behavior and change process. Where this older design
+> note and the standard differ, the standard governs. The approved visual
+> reference pack remains the source of visual direction.
+
 **Status:** Design foundation implemented in the Office design-foundation
 slice: semantic tokens, light/dark themes, comfortable/compact density, the
 application shell, shared button/field/badge/surface/tooltip/dialog primitives,

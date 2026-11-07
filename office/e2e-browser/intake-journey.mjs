@@ -1160,7 +1160,7 @@ try {
     await openCampaign.click();
     await page
       .getByRole("heading", {
-        name: `Campaign ${campaign.campaign.id.slice(0, 8)}`,
+        name: objective,
       })
       .waitFor();
     await page.getByRole("tab", { name: /WorkGraph/ }).click();
@@ -1301,7 +1301,7 @@ try {
     );
     await page
       .getByRole("heading", {
-        name: `Campaign ${campaign.campaign.id.slice(0, 8)}`,
+        name: objective,
       })
       .waitFor();
     await page.getByRole("tab", { name: /Candidates/ }).click();

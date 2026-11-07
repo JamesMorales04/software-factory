@@ -337,7 +337,7 @@ try {
   await page.getByRole("button", { name: "Import local repository" }).click();
   await page.getByRole("link", { name: "Back to Projects" }).waitFor();
 
-  await page.getByRole("link", { name: "Home", exact: true }).click();
+  await page.getByRole("link", { name: "New request", exact: true }).click();
   await page.getByRole("heading", { name: "Home", level: 1 }).waitFor();
   for (const width of [1440, 834, 390, 320]) {
     await page.setViewportSize({ width, height: 900 });
@@ -454,9 +454,7 @@ try {
     .first()
     .click();
   await page
-    .getByRole("heading", {
-      name: `Campaign ${fixtureCampaign.id.slice(0, 8)}`,
-    })
+    .getByRole("heading", { name: "Rust Office fixture journey" })
     .waitFor();
   const workflow = page.getByTestId("workflow-projection");
   await workflow.getByText("WorkGraph").waitFor();
@@ -513,9 +511,7 @@ try {
 
   await page.reload();
   await page
-    .getByRole("heading", {
-      name: `Campaign ${fixtureCampaign.id.slice(0, 8)}`,
-    })
+    .getByRole("heading", { name: "Rust Office fixture journey" })
     .waitFor();
   assert.equal(
     await page
@@ -560,9 +556,7 @@ try {
     .first()
     .click();
   await page
-    .getByRole("heading", {
-      name: `Campaign ${fixtureCampaign.id.slice(0, 8)}`,
-    })
+    .getByRole("heading", { name: "Rust Office fixture journey" })
     .waitFor();
 
   await page.getByRole("link", { name: "Workers", exact: true }).click();
@@ -854,7 +848,7 @@ try {
   }
   assert.ok(leadCampaign, "the Office Start control must create a Campaign");
 
-  await page.getByRole("link", { name: "Agents", exact: true }).click();
+  await page.getByRole("link", { name: "Agent Office", exact: true }).click();
   await page
     .getByRole("heading", { name: "Agent Office", exact: true, level: 1 })
     .waitFor();
@@ -927,9 +921,7 @@ try {
     .locator(`a[href="#/campaigns/${leadCampaign.id}"]`)
     .first()
     .click();
-  await page
-    .getByRole("heading", { name: `Campaign ${leadCampaign.id.slice(0, 8)}` })
-    .waitFor();
+  await page.getByRole("heading", { name: "Lead fixture objective" }).waitFor();
   const leadWorkflow = page.getByTestId("workflow-projection");
   await leadWorkflow
     .getByRole("row", { name: /Lead request.*RUNNING/i })
@@ -962,9 +954,7 @@ try {
   await page.waitForURL(/tab=workgraph&unit=/);
   const workGraphUrl = page.url();
   await page.reload();
-  await page
-    .getByRole("heading", { name: `Campaign ${leadCampaign.id.slice(0, 8)}` })
-    .waitFor();
+  await page.getByRole("heading", { name: "Lead fixture objective" }).waitFor();
   await page.getByTestId("workgraph-inspector").waitFor();
   assert.equal(
     page.url(),
@@ -985,7 +975,7 @@ try {
   }
   await page.setViewportSize({ width: 1440, height: 1000 });
 
-  await page.getByRole("link", { name: "Agents", exact: true }).click();
+  await page.getByRole("link", { name: "Agent Office", exact: true }).click();
   await page
     .getByRole("heading", { name: "Agent Office", exact: true, level: 1 })
     .waitFor();
@@ -1004,9 +994,7 @@ try {
     .selectOption("");
 
   await page.goto(`${viteUrl}/#/campaigns/${leadCampaign.id}`);
-  await page
-    .getByRole("heading", { name: `Campaign ${leadCampaign.id.slice(0, 8)}` })
-    .waitFor();
+  await page.getByRole("heading", { name: "Lead fixture objective" }).waitFor();
   await page.getByTestId("workflow-projection").waitFor();
 
   await api(`/actions/${_cancelAction.id}/classify`, {
@@ -1043,7 +1031,7 @@ try {
     .first()
     .click();
   await page
-    .getByRole("heading", { name: `Campaign ${cancelCampaign.id.slice(0, 8)}` })
+    .getByRole("heading", { name: "Cancellation fixture objective" })
     .waitFor();
   await page.getByRole("tab", { name: /Events/ }).click();
   await page.getByText("campaign.cancelled").first().waitFor();

@@ -10,6 +10,12 @@ shared components, tables, forms, dashboards, timelines, graphs, boards,
 inspectors or responsive behavior. It defines product design guidance; Core
 remains the authority for state, authorization and acceptance.
 
+The normative shell, Home, Campaign pulse, Agent Office, responsive and component
+rules are in
+[`docs/product/office-ui-standard.md`](../../../docs/product/office-ui-standard.md).
+Read it before changing Office. That standard governs where this skill and the
+older design notes differ.
+
 ## 1. Product job
 
 Factory Office is the primary place the Product Owner runs an autonomous
@@ -48,18 +54,20 @@ Organize around the operator's tasks, not internal domain types:
 - **Global search/command navigation** — only implemented destinations and
   actions.
 
-Use a persistent, collapsible application shell with project/workspace context,
-breadcrumbs, page headers, health, inbox and account/lock entrypoints. Stable,
-deep-linkable routes and URL-backed filters are required. Do not use a hash-only
-router when the Core static serving path can be separated safely.
+Use a persistent, collapsible application shell with Workspace Project and
+Execution Profile context, the current-route title, page headers, health,
+inbox and account/lock entrypoints. Stable, deep-linkable routes and URL-backed
+filters are required. Do not use a hash-only router when the Core static serving
+path can be separated safely.
 
 ## 3. Visual language
 
 Direction: enterprise engineering workspace, modern, restrained and technically
 precise.
 
-- Slate/navy foundations with neutral work surfaces.
-- A controlled teal/cyan interactive accent.
+- Deep-navy shell foundations with light, airy neutral work surfaces.
+- One controlled blue primary action; turquoise is the active/signal accent,
+  not a second primary color.
 - Amber for attention, semantic red for critical failure, green for verified
   success and blue for information.
 - Compact but readable operational data; tabular numerals for numeric columns.
