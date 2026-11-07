@@ -242,7 +242,7 @@ impl EgressConfig {
             credential,
             token,
             session_id: uuid::Uuid::new_v4().simple().to_string(),
-            timeout: Duration::from_secs(120),
+            timeout: Duration::ZERO,
             max_requests: 8,
             allowed_model: None,
             upstream_tools: Vec::new(),
@@ -556,11 +556,14 @@ async fn handle(
             return Ok(());
         }
     }
-    let client = reqwest::Client::builder()
+    let mut client_builder = reqwest::Client::builder()
         .no_proxy()
-        .timeout(config.timeout)
         .redirect(Policy::none())
-        .resolve(&config.host, config.address)
+        .resolve(&config.host, config.address);
+    if !config.timeout.is_zero() {
+        client_builder = client_builder.timeout(config.timeout);
+    }
+    let client = client_builder
         .build()
         .map_err(|error| EgressError::Upstream(error.to_string()))?;
     let url = format!("{}{}", upstream_origin(config), path);
