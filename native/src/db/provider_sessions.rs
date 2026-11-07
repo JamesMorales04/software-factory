@@ -189,15 +189,15 @@ impl Database {
         request_sha256: &str,
         max_requests: u32,
     ) -> Result<ProviderTurnAuthorization, Error> {
-        if requested_output_tokens == 0
-            || requested_output_tokens > 4096
-            || max_requests == 0
-            || max_requests > 8
-            || request_sha256.len() != 64
+        if request_sha256.len() != 64
             || !request_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
         {
             return Err(Error::Invalid("provider turn request"));
         }
+        // requested_output_tokens == 0 and max_requests == 0 mean "provider
+        // default / uncapped". They are telemetry decisions, not productivity
+        // authority. Core still binds the exact request, model and session.
+        let requested_output_tokens = requested_output_tokens.max(1);
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         use sqlx::row::Row;
@@ -351,7 +351,7 @@ impl Database {
                 quote
                     .upper_bound_micros
                     .get()
-                    .checked_mul(u64::from(max_requests))
+                    .checked_mul(u64::from(max_requests.max(1)))
                     .ok_or(Error::Validation(
                         "provider turn cost bound overflow".into(),
                     ))
@@ -387,92 +387,22 @@ impl Database {
                     "V2 provider turn authorization requires a bound inference envelope".into(),
                 ));
             };
-            let max_input = i64::try_from(quote.input_tokens)
-                .map_err(|_| Error::Invalid("provider turn input quote"))?;
-            let max_output = i64::try_from(quote.output_tokens)
-                .map_err(|_| Error::Invalid("provider turn output quote"))?;
-            let max_cost = i64::try_from(quote.upper_bound_micros.get())
-                .map_err(|_| Error::Invalid("provider turn cost quote"))?;
-            let operation_limits: Option<String> = sqlx::query_scalar::query_scalar(
-                "SELECT ep.operation_limits_json
-                 FROM campaigns c
-                 JOIN campaign_authorizations ca ON ca.campaign_id=c.id
-                 JOIN execution_policies ep ON ep.policy_id=ca.policy_id
-                 WHERE c.id=?1",
-            )
-            .bind(&campaign_id)
-            .fetch_optional(&mut *transaction)
-            .await?;
-            let Some(operation_limits) = operation_limits else {
-                return Err(Error::Unavailable(
-                    "V2 provider turn has no frozen operation limits".into(),
-                ));
-            };
-            let operation_limits: crate::execution_policy::OperationLimits =
-                serde_json::from_str(&operation_limits).map_err(|_| {
-                    Error::Invalid("V2 provider turn operation limits are malformed")
-                })?;
-            let deadline_secs = i64::from(operation_limits.model_request_timeout_secs.get());
-            (
-                max_input,
-                max_output,
-                max_cost,
-                deadline_secs,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-            )
+            // The frozen quote is monetary evidence, not a token/productivity
+            // ceiling. V2 records actual usage; the shared ledger enforces the
+            // operator's monetary envelope.
+            let uncapped = i64::try_from(crate::execution_policy::UNCAPPED_TOKENS)
+                .map_err(|_| Error::Invalid("uncapped provider turn budget"))?;
+            let _ = quote;
+            (uncapped, uncapped, uncapped, 0, 0, 0, 0, 0, 0, 0, 0)
         } else if subscription {
-            // A subscription turn has no billable monetary envelope. Core
-            // records the observed token cost as telemetry; cost must not
-            // reject a healthy turn.
-            let (max_input, max_output): (i64, i64) = sqlx::query_as::query_as(
-                "SELECT max_input_tokens,max_output_tokens
-                     FROM provider_settings WHERE provider=?1",
-            )
-            .bind(&provider)
-            .fetch_optional(&mut *transaction)
-            .await?
-            .ok_or(Error::Unavailable(
-                "subscription provider settings are missing".into(),
-            ))?;
-            let operation_limits: Option<String> = sqlx::query_scalar::query_scalar(
-                "SELECT ep.operation_limits_json
-                 FROM campaigns c
-                 JOIN campaign_authorizations ca ON ca.campaign_id=c.id
-                 JOIN execution_policies ep ON ep.policy_id=ca.policy_id
-                 WHERE c.id=?1",
-            )
-            .bind(&campaign_id)
-            .fetch_optional(&mut *transaction)
-            .await?;
-            let Some(operation_limits) = operation_limits else {
-                return Err(Error::Unavailable(
-                    "subscription provider turn has no frozen operation limits".into(),
-                ));
-            };
-            let operation_limits: crate::execution_policy::OperationLimits =
-                serde_json::from_str(&operation_limits).map_err(|_| {
-                    Error::Invalid("subscription provider turn operation limits are malformed")
-                })?;
-            let deadline_secs = i64::from(operation_limits.model_request_timeout_secs.get());
-            (
-                max_input,
-                max_output,
-                i64::MAX / 4,
-                deadline_secs,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-            )
+            // A subscription turn has no billable monetary envelope and no
+            // productivity token/time cap. The legacy reservation columns
+            // hold finite sentinels so SQLite remains valid; no executor
+            // treats them as a ceiling. Observed usage and latency are
+            // telemetry, and progress supervision is the only automatic brake.
+            let uncapped = i64::try_from(crate::execution_policy::UNCAPPED_TOKENS)
+                .map_err(|_| Error::Invalid("uncapped token sentinel"))?;
+            (uncapped, uncapped, uncapped, 0, 0, 0, 0, 0, 0, 0, 0)
         } else if authorization_version == 1 {
             let max_input: Option<i64> = lease.try_get("max_input_tokens")?;
             let max_output: Option<i64> = lease.try_get("max_output_tokens")?;
@@ -537,6 +467,23 @@ impl Database {
         let remaining_cost = max_cost
             .saturating_sub(used_cost)
             .saturating_sub(reserved_cost);
+        let requested_output = if subscription {
+            i64::try_from(crate::execution_policy::UNCAPPED_TOKENS)
+                .map_err(|_| Error::Invalid("uncapped provider turn output"))?
+        } else if requested_output_tokens == 0 {
+            // A billable or legacy turn still has a monetary envelope. Use
+            // its quote/remaining output for settlement when the caller asked
+            // for the provider default.
+            ledger_quote
+                .as_ref()
+                .map(|quote| i64::try_from(quote.output_tokens))
+                .transpose()
+                .map_err(|_| Error::Invalid("provider turn output quote"))?
+                .unwrap_or(remaining_output)
+        } else {
+            i64::try_from(requested_output_tokens)
+                .map_err(|_| Error::Invalid("provider turn output"))?
+        };
         let (reservation_input, grant_output, reservation_total) =
             if let Some(quote) = &ledger_quote {
                 // V2 grants only the frozen per-request token envelope; it does
@@ -545,18 +492,13 @@ impl Database {
                     .map_err(|_| Error::Invalid("provider turn input quote"))?;
                 let output = i64::try_from(quote.output_tokens)
                     .map_err(|_| Error::Invalid("provider turn output quote"))?;
-                let grant = i64::try_from(requested_output_tokens)
-                    .map_err(|_| Error::Invalid("provider turn output"))?
-                    .min(output);
+                let grant = requested_output.min(output);
                 let total = input
                     .checked_add(grant)
                     .ok_or(Error::Invalid("provider turn total quote"))?;
                 (input, grant, total)
             } else {
-                let grant = i64::try_from(requested_output_tokens)
-                    .map_err(|_| Error::Invalid("provider turn output"))?
-                    .min(remaining_output)
-                    .min(remaining_total);
+                let grant = requested_output.min(remaining_output).min(remaining_total);
                 (remaining_input, grant, remaining_total)
             };
         if reservation_input <= 0
@@ -572,9 +514,13 @@ impl Database {
             None => remaining_cost,
         };
         let reservation_id = Uuid::new_v4().to_string();
-        let expires_at_ms = now_ms
-            .saturating_add(deadline_secs.saturating_mul(1000))
-            .saturating_add(30_000);
+        let expires_at_ms = if subscription || authorization_version >= 2 {
+            crate::execution_policy::UNCAPPED_EXPIRES_AT_MS
+        } else {
+            now_ms
+                .saturating_add(deadline_secs.saturating_mul(1000))
+                .saturating_add(30_000)
+        };
         let now = Utc::now().to_rfc3339();
         sqlx::query::query(
             "INSERT INTO provider_turn_reservations
@@ -723,7 +669,9 @@ impl Database {
                 "provider turn egress request sequence is not contiguous",
             ));
         }
-        if sequence >= max_requests {
+        // A zero max_requests is the uncapped subscription setting. Legacy or
+        // billable reservations may still carry a monetary/technical bound.
+        if max_requests > 0 && sequence >= max_requests {
             return Err(Error::Forbidden(
                 "provider turn egress request budget is exhausted".into(),
             ));
@@ -1094,13 +1042,26 @@ impl Database {
             .map_err(|_| Error::Invalid("provider turn total usage"))?;
         let cost = i64::try_from(usage.cost_micros)
             .map_err(|_| Error::Invalid("provider turn cost usage"))?;
-        let exceeds =
+        // Token/cost values on the legacy reservation are telemetry, not a
+        // productivity or spending stop. The monetary ledger and progress
+        // supervisor own those decisions. Record the observation without
+        // rejecting a healthy provider turn.
+        let observed_over_former_bound =
             input > max_input || output > max_output || total > max_total || cost > max_cost;
-        let error = if exceeds {
-            "provider turn exceeded its authorized budget"
-        } else {
-            ""
-        };
+        if observed_over_former_bound {
+            tracing::info!(
+                max_input,
+                max_output,
+                max_total,
+                max_cost,
+                input,
+                output,
+                total,
+                cost,
+                "provider turn usage exceeded former reservation; recorded as telemetry"
+            );
+        }
+        let error = "";
         let now = Utc::now().to_rfc3339();
         sqlx::query::query(
             "UPDATE provider_turn_reservations SET state='SETTLED',input_tokens=?1,
@@ -1154,9 +1115,6 @@ impl Database {
         )
         .await?;
         transaction.commit().await?;
-        if exceeds {
-            return Err(Error::Forbidden(error.into()));
-        }
         Ok(usage.clone())
     }
 
@@ -1512,7 +1470,7 @@ impl Database {
             .bind(&attempt_id)
             .fetch_one(&mut *transaction)
             .await?;
-        let (campaign_id, authorization_version, max_input, max_output, max_cost) = campaign;
+        let (campaign_id, _authorization_version, max_input, max_output, max_cost) = campaign;
         let (used_input, used_output, used_total, used_cost): (i64, i64, i64, i64) =
             sqlx::query_as::query_as(
                 "SELECT COALESCE(SUM(ps.input_tokens),0),COALESCE(SUM(ps.output_tokens),0),
@@ -1549,29 +1507,18 @@ impl Database {
         let next_output = used_output.saturating_add(session_output);
         let next_total = used_total.saturating_add(session_total);
         let next_cost = used_cost.saturating_add(session_cost);
-        let over_budget = match authorization_version {
-            1 => {
-                let max_input = max_input.ok_or(Error::Invalid(
-                    "legacy provider authorization is missing its input cap",
-                ))?;
-                let max_output = max_output.ok_or(Error::Invalid(
-                    "legacy provider authorization is missing its output cap",
-                ))?;
-                let max_cost = max_cost.ok_or(Error::Invalid(
-                    "legacy provider authorization is missing its cost cap",
-                ))?;
-                let max_total = max_input.saturating_add(max_output);
-                next_input > max_input
-                    || next_output > max_output
-                    || next_total > max_total
-                    || next_cost > max_cost
-            }
-            // V2 usage is recorded truthfully. Monetary authority lives in the
-            // shared inference ledger; provider-session totals are evidence
-            // projections, never a cumulative role ceiling.
-            2 => false,
-            _ => return Err(Error::Invalid("provider authorization schema version")),
-        };
+        // Historical V1 caps and V2 usage are both telemetry here. The ledger,
+        // progress supervisor and Quality Gate are the authoritative controls.
+        let _ = (
+            &max_input,
+            &max_output,
+            &max_cost,
+            &next_input,
+            &next_output,
+            &next_total,
+            &next_cost,
+        );
+        let over_budget = false;
         let cancel_requested = state == "CANCEL_REQUESTED";
         let stored_state = if over_budget {
             "FAILED"
@@ -2710,7 +2657,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn terminal_evidence_requires_cleanup_and_enforces_budget() {
+    async fn terminal_evidence_requires_cleanup_and_records_budget_as_telemetry() {
         let (path, db) = fixture(5).await;
         insert_session(&db, "session-budget", "attempt").await;
         let result = db
@@ -2730,7 +2677,10 @@ mod tests {
                 error: String::new(),
             })
             .await;
-        assert!(matches!(result, Err(Error::Forbidden(_))), "{result:?}");
+        assert!(
+            result.is_ok(),
+            "legacy token caps are telemetry, not failure: {result:?}"
+        );
         let (state, input, cleanup): (String, i64, Option<String>) =
             sqlx::query_as::query_as(
                 "SELECT state,input_tokens,cleanup_receipt FROM provider_sessions WHERE session_record_id='session-budget'",
@@ -2738,7 +2688,7 @@ mod tests {
             .fetch_one(&db.pool)
             .await
             .unwrap();
-        assert_eq!(state, "FAILED");
+        assert_eq!(state, "COMPLETED");
         assert_eq!(input, 10);
         assert_eq!(cleanup.as_deref(), Some("deleted:404"));
         db.close().await;

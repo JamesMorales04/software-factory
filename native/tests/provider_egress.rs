@@ -170,7 +170,7 @@ async fn broker_enforces_a_core_turn_policy_and_rewrites_output() {
         request_sha256: request_digest(&body).unwrap(),
         expires_at_ms: chrono::Utc::now().timestamp_millis() + 60_000,
         requests: 0,
-        max_requests: 2,
+        max_requests: 0,
         strict_request_digest: true,
         binding: false,
         last_upstream_status: None,
@@ -231,17 +231,17 @@ async fn broker_enforces_a_core_turn_policy_and_rewrites_output() {
             .await
             .unwrap()
             .status(),
-        reqwest::StatusCode::TOO_MANY_REQUESTS
+        reqwest::StatusCode::OK
     );
     let seen = seen.lock().unwrap().clone();
-    assert_eq!(seen.len(), 2);
+    assert_eq!(seen.len(), 3);
     assert!(
         seen.iter()
             .all(|(auth, _)| auth == "Bearer real-upstream-credential-0123456789")
     );
     for (_, body) in seen {
         let value: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(value["max_output_tokens"], 2);
+        assert_eq!(value["max_output_tokens"], 5);
     }
     bridge.abort();
     broker.stop();

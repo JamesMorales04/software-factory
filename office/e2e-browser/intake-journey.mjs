@@ -331,10 +331,6 @@ if (!live) {
       const config = await coreApi(
         `/projects/${encodeURIComponent(projectId)}/config`,
       );
-      const maxSessions = Number(user.match(/maxSessions=(\d+)/)?.[1] ?? 2);
-      const maxWallClockSecs = Number(
-        user.match(/maxWallClockSecs=(\d+)/)?.[1] ?? 600,
-      );
       const timeoutSecs = Number(
         user.match(/budget\.timeoutSecs=(\d+)/)?.[1] ?? 300,
       );
@@ -354,16 +350,13 @@ if (!live) {
         negativeCases: negative,
         qualityProfile: config.qualityProfile,
         riskClass: "R0",
-        budget: { maxAttempts: 1, timeoutSecs },
+        budget: { timeoutSecs },
         route: {
           provider,
           model,
           mode: "build",
         },
-        maxRepairCycles: 0,
-        maxWallClockSecs,
         maxParallel: 1,
-        maxSessions,
         workUnits: [
           {
             id: "unit-1",

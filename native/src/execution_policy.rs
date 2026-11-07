@@ -15,6 +15,13 @@ use thiserror::Error;
 /// Largest amount representable without overflowing SQLite's signed INTEGER.
 pub const MAX_USD_MICROS: u64 = i64::MAX as u64;
 
+/// Sentinel used by the legacy reservation columns when a subscription-funded
+/// call is intentionally uncapped. The value is finite only so SQLite and the
+/// aggregation arithmetic remain valid; no execution path enforces it as a
+/// productivity ceiling. New telemetry reports observed usage, not this value.
+pub const UNCAPPED_TOKENS: u64 = 100_000_000;
+pub const UNCAPPED_EXPIRES_AT_MS: i64 = i64::MAX - 1;
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ExecutionPolicyError {
     #[error("invalid execution policy value: {0}")]

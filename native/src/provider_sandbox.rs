@@ -155,8 +155,9 @@ impl ContainerProviderSandbox {
                 "provider session directory must be absolute".into(),
             ));
         }
-        if config.max_lifetime < Duration::from_secs(1)
-            || config.max_lifetime > Duration::from_secs(3600)
+        if !config.max_lifetime.is_zero()
+            && (config.max_lifetime < Duration::from_secs(1)
+                || config.max_lifetime > Duration::from_secs(3600))
         {
             return Err(SandboxError::Invalid(
                 "provider lifetime is outside the allowed bound".into(),
@@ -625,7 +626,8 @@ impl ProviderSandbox {
                 let started = time::Instant::now();
                 while !stop.load(Ordering::SeqCst) {
                     time::sleep(MONITOR_INTERVAL).await;
-                    let exceeded_now = started.elapsed() > max_lifetime
+                    let exceeded_now = (!max_lifetime.is_zero()
+                        && started.elapsed() > max_lifetime)
                         || directory_usage(&directory, max_files)
                             .map(|(bytes, _)| bytes > max_bytes)
                             .unwrap_or(true);
@@ -902,12 +904,16 @@ async fn bridge_connection(
     }
     let mut upstream = UnixStream::connect(socket).await?;
     upstream.write_all(&request).await?;
-    time::timeout(
-        bridge_timeout,
-        tokio::io::copy_bidirectional(&mut stream, &mut upstream),
-    )
-    .await
-    .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "bridge timed out"))??;
+    if bridge_timeout.is_zero() {
+        tokio::io::copy_bidirectional(&mut stream, &mut upstream).await?;
+    } else {
+        time::timeout(
+            bridge_timeout,
+            tokio::io::copy_bidirectional(&mut stream, &mut upstream),
+        )
+        .await
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "bridge timed out"))??;
+    }
     Ok(())
 }
 

@@ -2079,7 +2079,7 @@ export const es: Catalog = {
 
   "delegations.title": "Delegaciones",
   "delegations.description":
-    "Una delegación es una concesión acotada y revocable. No inicia trabajo por sí misma y la ejecución autónoma está desactivada por defecto.",
+    "Evidencia de solo lectura de delegaciones V1. El trabajo nuevo usa el perfil de ejecución congelado y el alcance validado por Core propuesto por el planificador/supervisor.",
   "delegations.error.load": "No se pudieron cargar las delegaciones.",
   "delegations.error.create": "No se pudo crear la delegación.",
   "delegations.error.revoke": "No se pudo revocar.",
@@ -2094,7 +2094,7 @@ export const es: Catalog = {
   "delegations.form.mode": "Modo",
   "delegations.form.paths": "Rutas permitidas (separadas por comas)",
   "delegations.form.limits":
-    "Límites: 2 intentos, 16 sesiones, 4 solicitudes, 32 intentos acumulados, 300 s por intento, caducidad de 24 h. Solo R0/R1; R2/R3 requieren aprobación protegida.",
+    "Evidencia histórica de delegaciones V1. El trabajo nuevo usa el perfil de ejecución congelado y el alcance propuesto por el agente.",
   "delegations.form.creating": "Creando…",
   "delegations.form.create": "Crear delegación",
   "delegations.notice.created":
@@ -2284,7 +2284,7 @@ export const es: Catalog = {
     "Una decisión de Puerta requiere un Candidato y ambos recibos independientes.",
   "campaignDetail.budget.title": "Autorización, presupuesto y uso observado",
   "campaignDetail.budget.hint":
-    "Los límites V2 son por operación; los topes V1 son evidencia histórica",
+    "El uso observado y la supervisión de progreso son telemetría; los topes V1 son evidencia histórica",
   "campaignDetail.budget.actor": "actor {actor}",
   "campaignDetail.budget.execution": "Ejecución",
   "campaignDetail.budget.route": "Ruta",
@@ -2363,7 +2363,7 @@ export const es: Catalog = {
     "{amount} techo de sesiones observadas, no gasto observado",
   "campaignDetail.budget.deadline": "Fecha límite",
   "campaignDetail.budget.note":
-    "Los totales medidos excluyen sesiones con uso desconocido. Las sesiones no medidas aportan un importe de reserva acotado, nunca un total observado de tokens o coste. Los límites de operación y umbrales de progreso V2 no son topes de productividad de la Campaña. Son registros de Core, no una factura.",
+    "Los totales medidos excluyen sesiones con uso desconocido. Las sesiones no medidas aportan un importe de reserva acotado, nunca un total observado de tokens o coste. Las observaciones de tokens, tiempo, reintentos y coste de suscripción son telemetría, no topes de productividad. Son registros de Core, no una factura.",
   "campaignDetail.budget.overBudget":
     "El uso medido supera la autorización registrada para {items}.",
   "campaignDetail.budget.noAuthorization":
@@ -2934,7 +2934,7 @@ export const es: Catalog = {
   "settings.provider.manualModelHelp":
     "Core mantiene esta ruta sin verificar hasta que el proveedor anuncie el modelo exacto. Los usuarios normales pueden seleccionar arriba un modelo descubierto.",
   "settings.provider.connectionDetails": "Detalles de conexión",
-  "settings.provider.advanced": "Límites técnicos y tarifas avanzados",
+  "settings.provider.advanced": "Metadatos de precios",
   "settings.provider.maxTurns": "Máximo de turnos",
   "settings.provider.maxCost": "Coste máximo (micros)",
   "settings.provider.maxInput": "Máximo de tokens de entrada",
@@ -2942,7 +2942,7 @@ export const es: Catalog = {
   "settings.provider.inputRate": "Micros de entrada / millón",
   "settings.provider.outputRate": "Micros de salida / millón",
   "settings.provider.advancedHint":
-    "Valores técnicos opcionales para esta ruta de proveedor. La autorización explícita de la Campaña sigue siendo autoritativa para las sesiones de proveedor; estos límites no la amplían. Una revisión de configuración del proveedor no reescribe los vínculos congelados de Campaña.",
+    "Las tarifas de entrada y salida solo se usan para telemetría de coste. No son límites de uso y una revisión de configuración del proveedor no reescribe los vínculos congelados de Campaña.",
   "settings.provider.enabledLabel": "Habilitado",
   "settings.provider.defaultLabel":
     "Ruta predeterminada para las llamadas a modelo de Core",
@@ -3191,9 +3191,9 @@ export const es: Catalog = {
     "Avanzado: ID de modelo manual de {role} (sin verificar)",
   "execProfiles.matrix.reasoningLabel": "Razonamiento de {role}",
   "execProfiles.matrix.providerDefault": "Predeterminado del proveedor",
-  "execProfiles.advanced.title": "Límites técnicos avanzados de operación",
+  "execProfiles.advanced.title": "Progreso y autonomía",
   "execProfiles.advanced.hint":
-    "Opcional. Estos límites por operación y umbrales de progreso no son presupuestos de turnos, intentos, sesiones, tokens, coste ni fecha límite de Campaña. Core los aplica por seguridad.",
+    "Los umbrales de progreso activan el diagnóstico autónomo; el cortacircuitos por falta de progreso es la única parada automática. Tokens, tiempo, reintentos y coste son telemetría.",
   "execProfiles.operations.modelRequestTimeout":
     "Tiempo máximo de solicitud de modelo (s)",
   "execProfiles.operations.modelRequestTimeoutHelp":

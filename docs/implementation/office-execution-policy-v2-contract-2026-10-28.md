@@ -1,3 +1,9 @@
+> **Superseded in part by [ADR-0034](../architecture/decisions/ADR-0034-model-capability-telemetry-and-agent-scope.md).**
+> The fixed 8,192-token/300-second `KEEP` dispositions below are historical.
+> Active execution uses model/provider capability, telemetry and no-progress
+> supervision; only authority, egress binding, leases, exact candidate and
+> Quality Gate boundaries remain.
+
 ## 1. Enforce-point audit table
 
 Contract scope: read-only architecture assessment; no files changed, execution authorized, or paid inference performed.

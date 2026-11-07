@@ -32,7 +32,7 @@ use crate::{
 };
 
 pub const STATE_SCHEMA_VERSION: u32 = 1;
-pub const MAX_EXECUTION_RUNTIME: Duration = Duration::from_secs(30 * 60);
+pub const MAX_EXECUTION_RUNTIME: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 const OUTPUT_LIMIT: usize = 1024 * 1024;
 const MAX_REPOSITORY_ROOTS: usize = 32;
 const STATE_PREFIX: &str = "workspace-";

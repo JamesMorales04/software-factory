@@ -168,7 +168,7 @@ impl<'a> RoleGatewayFactory<'a> {
             database,
             master_key,
             caps,
-            timeout: timeout.min(Duration::from_secs(MAX_MODEL_TIMEOUT_SECS)),
+            timeout,
             allow_loopback_http,
             test_upstream_hosts,
         }

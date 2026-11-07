@@ -366,25 +366,6 @@ export function CampaignDetail() {
   const turnRecords = sessions.filter(
     (session) => session.turn_id !== "",
   ).length;
-  // Only a historical V1 row has productivity ceilings to compare against.
-  // V2 policy.operations/progress are per-operation bounds, not Campaign caps.
-  const legacyCaps = authorization?.legacy ?? null;
-  const overBudget: string[] = [];
-  if (legacyCaps) {
-    if (legacyCaps.maxSessions > 0 && sessions.length > legacyCaps.maxSessions)
-      overBudget.push("sessions");
-    if (legacyCaps.maxTurns > 0 && turnRecords > legacyCaps.maxTurns)
-      overBudget.push("turns");
-    if (legacyCaps.maxInputTokens > 0 && totalInput > legacyCaps.maxInputTokens)
-      overBudget.push("input tokens");
-    if (
-      legacyCaps.maxOutputTokens > 0 &&
-      totalOutput > legacyCaps.maxOutputTokens
-    )
-      overBudget.push("output tokens");
-    if (legacyCaps.maxCostMicros > 0 && totalCost > legacyCaps.maxCostMicros)
-      overBudget.push("cost");
-  }
 
   const latestRun = detail.runs.at(-1) ?? null;
   const latestAttempt = detail.attempts.at(-1) ?? null;
@@ -416,13 +397,6 @@ export function CampaignDetail() {
   }
   if (unconfirmedTermination.length > 0) {
     attention.push(t("campaignDetail.attention.termination"));
-  }
-  if (overBudget.length > 0) {
-    attention.push(
-      t("campaignDetail.attention.overBudget", {
-        items: overBudget.join(", "),
-      }),
-    );
   }
 
   const workflow = [
@@ -1267,58 +1241,8 @@ export function CampaignDetail() {
                     {authorization.schemaVersion === 2 &&
                       authorization.policy && (
                         <section
-                          aria-label={t("campaignDetail.budget.operationsAria")}
+                          aria-label={t("campaignDetail.budget.progressTitle")}
                         >
-                          <h3>{t("campaignDetail.budget.operationsTitle")}</h3>
-                          <dl className="detail">
-                            <BudgetRow
-                              label={t(
-                                "campaignDetail.budget.modelRequestTimeout",
-                              )}
-                              value={t("campaignDetail.budget.seconds", {
-                                count:
-                                  authorization.policy.operations
-                                    .modelRequestTimeoutSecs,
-                              })}
-                            />
-                            <BudgetRow
-                              label={t("campaignDetail.budget.toolCallTimeout")}
-                              value={t("campaignDetail.budget.seconds", {
-                                count:
-                                  authorization.policy.operations
-                                    .toolCallTimeoutSecs,
-                              })}
-                            />
-                            <BudgetRow
-                              label={t("campaignDetail.budget.maxRequestBytes")}
-                              value={t("campaignDetail.budget.bytes", {
-                                count:
-                                  authorization.policy.operations.maxRequestBytes.toLocaleString(),
-                              })}
-                            />
-                            <BudgetRow
-                              label={t(
-                                "campaignDetail.budget.maxResponseBytes",
-                              )}
-                              value={t("campaignDetail.budget.bytes", {
-                                count:
-                                  authorization.policy.operations.maxResponseBytes.toLocaleString(),
-                              })}
-                            />
-                            <BudgetRow
-                              label={t(
-                                "campaignDetail.budget.maxGenerationTokens",
-                              )}
-                              value={authorization.policy.operations.maxGenerationTokens.toLocaleString()}
-                            />
-                            <BudgetRow
-                              label={t("campaignDetail.budget.maxInFlight")}
-                              value={String(
-                                authorization.policy.operations
-                                  .maxInFlightOperations,
-                              )}
-                            />
-                          </dl>
                           <h3>{t("campaignDetail.budget.progressTitle")}</h3>
                           <dl className="detail">
                             <BudgetRow
@@ -1334,16 +1258,6 @@ export function CampaignDetail() {
                                 authorization.policy.progress
                                   .escalateAfterUnsuccessfulReplans,
                               )}
-                            />
-                            <BudgetRow
-                              label={t(
-                                "campaignDetail.budget.observationTimeout",
-                              )}
-                              value={t("campaignDetail.budget.seconds", {
-                                count:
-                                  authorization.policy.progress
-                                    .observationTimeoutSecs,
-                              })}
                             />
                             <BudgetRow
                               label={t("campaignDetail.budget.autonomyTitle")}
@@ -1389,64 +1303,7 @@ export function CampaignDetail() {
                           {t("campaignDetail.budget.missingPolicy")}
                         </p>
                       )}
-                    {legacyCaps && (
-                      <section
-                        aria-label={t("campaignDetail.budget.legacyAria")}
-                      >
-                        <h3>{t("campaignDetail.budget.legacyTitle")}</h3>
-                        <p className="muted">
-                          {t("campaignDetail.budget.legacyHint")}
-                        </p>
-                        <dl className="detail">
-                          <BudgetRow
-                            label={t("campaignDetail.budget.attempts")}
-                            value={String(legacyCaps.maxAttempts)}
-                          />
-                          <BudgetRow
-                            label={t("campaignDetail.budget.sessions")}
-                            value={String(legacyCaps.maxSessions)}
-                          />
-                          <BudgetRow
-                            label={t("campaignDetail.budget.legacyTurns")}
-                            value={String(legacyCaps.maxTurns)}
-                          />
-                          <BudgetRow
-                            label={t("campaignDetail.budget.legacyInputTokens")}
-                            value={legacyCaps.maxInputTokens.toLocaleString()}
-                          />
-                          <BudgetRow
-                            label={t(
-                              "campaignDetail.budget.legacyOutputTokens",
-                            )}
-                            value={legacyCaps.maxOutputTokens.toLocaleString()}
-                          />
-                          <BudgetRow
-                            label={t("campaignDetail.budget.legacyCost")}
-                            value={
-                              legacyCaps.maxCostMicros > 0
-                                ? formatCostMicros(legacyCaps.maxCostMicros)
-                                : t("common.notSet")
-                            }
-                          />
-                          <BudgetRow
-                            label={t("campaignDetail.budget.deadline")}
-                            value={
-                              legacyCaps.deadlineSecs > 0
-                                ? `${legacyCaps.deadlineSecs}s`
-                                : t("common.notSet")
-                            }
-                          />
-                        </dl>
-                      </section>
-                    )}
                     <p className="muted">{t("campaignDetail.budget.note")}</p>
-                    {overBudget.length > 0 && (
-                      <p className="warning">
-                        {t("campaignDetail.budget.overBudget", {
-                          items: overBudget.join(", "),
-                        })}
-                      </p>
-                    )}
                   </>
                 ) : (
                   <p className="muted">

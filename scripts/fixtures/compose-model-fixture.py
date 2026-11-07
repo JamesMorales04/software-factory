@@ -78,16 +78,13 @@ def assessment(user, ctx):
         "negativeCases": negative,
         "qualityProfile": ctx["qualityProfile"],
         "riskClass": "R0",
-        "budget": {"maxAttempts": 1, "timeoutSecs": 300},
+        "budget": {"timeoutSecs": 300},
         "route": {
             "provider": ctx["provider"],
             "model": ctx["model"],
             "mode": "build",
         },
-        "maxRepairCycles": 0,
-        "maxWallClockSecs": 600,
         "maxParallel": 1,
-        "maxSessions": 2,
         "workUnits": [
             {
                 "id": "unit-1",

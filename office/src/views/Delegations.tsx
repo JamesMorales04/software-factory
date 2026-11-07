@@ -1,48 +1,21 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  CoreApiError,
-  coreApi,
-  type DelegationProjection,
-  newIdempotencyKey,
-  type Project,
-} from "../coreApi";
+import { useCallback, useEffect, useState } from "react";
+import { CoreApiError, coreApi, type DelegationProjection } from "../coreApi";
 import { formatTimestamp, shortId } from "../format";
 import { useI18n } from "../i18n";
 import { isDelegationExpired } from "../leadDelegations";
 
-function split(value: string): string[] {
-  return value
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
 export function Delegations() {
   const { t } = useI18n();
-  const [projects, setProjects] = useState<Project[]>([]);
   const [delegations, setDelegations] = useState<DelegationProjection[]>([]);
-  const [projectId, setProjectId] = useState("");
-  const [newDelegationId, setNewDelegationId] = useState("");
-  const [paths, setPaths] = useState("src");
-  const [provider, setProvider] = useState("opencode-go");
-  const [model, setModel] = useState("deepseek-v4.1-flash");
-  const [mode, setMode] = useState("build");
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [usage, setUsage] = useState<
     Record<string, { requests: number; sessions: number; attempts: number }>
   >({});
-  const key = useRef(newIdempotencyKey());
-
   const load = useCallback(async () => {
-    const [nextProjects, nextDelegations] = await Promise.all([
-      coreApi.listProjects(),
-      coreApi.listDelegations(),
-    ]);
-    setProjects(nextProjects);
+    const nextDelegations = await coreApi.listDelegations();
     setDelegations(nextDelegations);
-    setProjectId((current) => current || nextProjects[0]?.id || "");
     const details = await Promise.all(
       nextDelegations.map(async (projection) => {
         const delegation = projection.delegation;
@@ -84,68 +57,6 @@ export function Delegations() {
     };
   }, [load, t]);
 
-  async function onCreate(event: React.FormEvent) {
-    event.preventDefault();
-    setBusy(true);
-    setError(null);
-    setNotice(null);
-    try {
-      if (!projectId) throw new Error(t("delegations.validation.project"));
-      const id =
-        newDelegationId.trim() ||
-        `office-${new Date().toISOString().replace(/[:.]/g, "-")}`;
-      const allowedPaths = split(paths);
-      if (allowedPaths.length === 0)
-        throw new Error(t("delegations.validation.paths"));
-      const expiresAt = new Date(
-        Date.now() + 24 * 60 * 60 * 1000,
-      ).toISOString();
-      const delegation = await coreApi.createDelegation({
-        idempotency_key: key.current,
-        delegation: {
-          id,
-          principalId: "owner",
-          auditId: "office-delegation",
-          projectId,
-          revision: 1,
-          contentHash: "",
-          objectiveClasses: ["feature"],
-          allowedPaths,
-          capabilities: ["repository-edit", "generic-toolchain"],
-          riskClasses: ["R0", "R1"],
-          autonomousStart: false,
-          autonomousRiskClasses: [],
-          route: { provider, model: model.trim(), mode },
-          maxAttempts: 2,
-          maxTimeoutSecs: 300,
-          maxRepairCycles: 0,
-          maxWallClockSecs: 1800,
-          maxParallel: 1,
-          maxSessions: 16,
-          maxRequests: 4,
-          maxCumulativeSessions: 32,
-          maxCumulativeAttempts: 32,
-          expiresAt,
-        },
-      });
-      key.current = newIdempotencyKey();
-      setNotice(
-        t("delegations.notice.created", {
-          id: shortId(delegation.id),
-          revision: delegation.revision,
-        }),
-      );
-      setNewDelegationId("");
-      await load();
-    } catch (cause) {
-      setError(
-        cause instanceof Error ? cause.message : t("delegations.error.create"),
-      );
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function revoke(id: string) {
     if (!window.confirm(t("delegations.confirm.revoke", { id }))) return;
     setBusy(true);
@@ -171,72 +82,6 @@ export function Delegations() {
       <p className="muted">{t("delegations.description")}</p>
       {error && <p className="error">{error}</p>}
       {notice && <p className="notice">{notice}</p>}
-      <form className="create" onSubmit={(event) => void onCreate(event)}>
-        <h3>{t("delegations.form.title")}</h3>
-        <div className="grid-2">
-          <label>
-            {t("delegations.form.project")}
-            <select
-              value={projectId}
-              onChange={(event) => setProjectId(event.target.value)}
-            >
-              {projects.map((project) => (
-                <option key={project.id} value={project.id}>
-                  {project.repository} ({shortId(project.id)})
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            {t("delegations.form.id")}
-            <input
-              value={newDelegationId}
-              onChange={(event) => setNewDelegationId(event.target.value)}
-              placeholder={t("delegations.form.idPlaceholder")}
-            />
-          </label>
-          <label>
-            {t("delegations.form.provider")}
-            <select
-              value={provider}
-              onChange={(event) => setProvider(event.target.value)}
-            >
-              <option value="opencode-go">opencode-go</option>
-              <option value="opencode">opencode</option>
-              <option value="codex">codex</option>
-            </select>
-          </label>
-          <label>
-            {t("delegations.form.model")}
-            <input
-              value={model}
-              onChange={(event) => setModel(event.target.value)}
-              required
-            />
-          </label>
-          <label>
-            {t("delegations.form.mode")}
-            <input
-              value={mode}
-              onChange={(event) => setMode(event.target.value)}
-              required
-            />
-          </label>
-          <label>
-            {t("delegations.form.paths")}
-            <input
-              value={paths}
-              onChange={(event) => setPaths(event.target.value)}
-              required
-            />
-          </label>
-        </div>
-        <p className="muted">{t("delegations.form.limits")}</p>
-        <button type="submit" disabled={busy || !projectId}>
-          {busy ? t("delegations.form.creating") : t("delegations.form.create")}
-        </button>
-      </form>
-
       <h3>{t("delegations.list.title", { count: delegations.length })}</h3>
       {delegations.length === 0 ? (
         <p className="muted">{t("delegations.list.empty")}</p>

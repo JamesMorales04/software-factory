@@ -821,8 +821,6 @@ export function Runtime() {
                     ? t("runtime.policy.modelReceipts")
                     : t("runtime.policy.deterministicReceipts")}
                 </dd>
-                <dt>{t("runtime.policy.maxOutputTokens")}</dt>
-                <dd>{formatNumber(settings.semanticReviewMaxOutputTokens)}</dd>
                 <dt>{t("runtime.policy.updated")}</dt>
                 <dd>{formatDate(settings.updatedAt)}</dd>
               </dl>

@@ -234,7 +234,7 @@ async fn fixture_codex_review_is_exact_and_fail_closed() {
     set_env("FACTORY_FIXTURE_CODEX_ACCOUNT", "chatgpt");
     let ready = status(&home).await.expect("fixture Codex status");
     assert_eq!(ready["configurationReady"], true);
-    assert_eq!(ready["reviewModelAvailable"], true);
+    assert_eq!(ready["reviewModelAvailable"], serde_json::Value::Null);
     assert_eq!(ready["modelAccessVerified"], false);
     assert_eq!(ready["modelAccess"], "NOT_VERIFIED");
     set_env("FACTORY_FIXTURE_CODEX_ACCOUNT", "apiKey");

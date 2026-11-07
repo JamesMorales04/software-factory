@@ -62,7 +62,7 @@ const CSRF_HEADER: &str = "x-factory-csrf";
 /// Supervisor fence still revalidates the grant against Core (and therefore
 /// against the durable attempt/lease authorization) every 500 ms, so this is
 /// not a revocation bypass.
-const WORKSPACE_OPERATION_GRANT_MILLIS: i64 = 31 * 60 * 1000;
+const WORKSPACE_OPERATION_GRANT_MILLIS: i64 = 7 * 24 * 60 * 60 * 1000 + 60_000;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1306,9 +1306,8 @@ impl App {
             credential,
             provider: settings.provider,
             model: settings.model,
-            timeout: std::time::Duration::from_secs(
-                env_u64("FACTORY_MODEL_TIMEOUT_SECS", 60).ok()?,
-            ),
+            // No total model-request deadline. Latency is telemetry.
+            timeout: std::time::Duration::ZERO,
             input_micros_per_million: settings.input_micros_per_million,
             output_micros_per_million: settings.output_micros_per_million,
             lead_policy,
@@ -1464,7 +1463,6 @@ fn model_gateway_from_env()
     factory_native::telemetry::register_secret(&token);
     let provider = env::var("FACTORY_MODEL_PROVIDER").unwrap_or_else(|_| "opencode-go".into());
     let model = env::var("FACTORY_MODEL_NAME").unwrap_or_else(|_| "deepseek-v4.1-flash".into());
-    let timeout_secs = env_u64("FACTORY_MODEL_TIMEOUT_SECS", 60)?;
     let input_micros = env_u64("FACTORY_MODEL_INPUT_MICROS_PER_MILLION", 150_000)?;
     let output_micros = env_u64("FACTORY_MODEL_OUTPUT_MICROS_PER_MILLION", 600_000)?;
     let lead_policy = policy_from_env("FACTORY_LEAD_MODEL", 128_000, 8_192, 300_000)?;
@@ -1479,7 +1477,7 @@ fn model_gateway_from_env()
             credential: token,
             provider,
             model,
-            timeout: std::time::Duration::from_secs(timeout_secs),
+            timeout: std::time::Duration::ZERO,
             input_micros_per_million: input_micros,
             output_micros_per_million: output_micros,
             lead_policy,
@@ -2079,10 +2077,6 @@ async fn review_config(
     if !authorized {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let settings = match app.db.factory_settings().await {
-        Ok(settings) => settings,
-        Err(error) => return api_error(error),
-    };
     let selection = match app.db.reviewer_selection(&id).await {
         Ok(selection) => selection,
         Err(factory_native::db::Error::Unavailable(reason)) => {
@@ -2122,7 +2116,7 @@ async fn review_config(
         "transport": transport,
         "provider": provider,
         "model": model,
-        "maxOutputTokens": settings.semantic_review_max_output_tokens,
+        "maxOutputTokens": 0,
         "reason": reason,
     }))
     .into_response()

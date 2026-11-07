@@ -2180,6 +2180,7 @@ capabilities:
   refs:
     adr:
     - docs/architecture/decisions/ADR-0025-container-native-and-office-parity.md
+    - docs/architecture/decisions/ADR-0034-model-capability-telemetry-and-agent-scope.md
     contract:
     - docs/product/office-design-system.md
     - docs/product/office-ui-standard.md
@@ -2212,7 +2213,8 @@ capabilities:
     isolation: []
   limitations:
   - This capability covers Office-first parity governance; design tokens, shared components, the application shell, the 2026-11-06 Home/Campaign visual standard and the operational Overview/Decision Inbox workspace are implemented slices.
-  - The 2026-11-06 deterministic Compose browser UAT passed at candidate bd90e99 with real Core HTTP API and real Chromium; live provider inference, independent acceptance, Owner visual sign-off and the remaining module migrations remain later slices.
+  - Fixed Office model productivity caps (token, model time, retry count, subscription cost) were removed under ADR-0034; their former controls are no longer rendered and legacy values are read-only evidence.
+  - The 2026-11-06 deterministic Compose browser UAT passed at candidate bd90e99 with real Core HTTP API and real Chromium; the current telemetry/autonomy revision requires its own candidate-bound UAT. Live provider inference, independent acceptance, Owner visual sign-off and the remaining module migrations remain later slices.
   - The current Office still uses hash routes and polling; stable routes stream/replay and the remaining module migrations are later slices.
   - Concept-image attachment and branch controls are not implemented because the Core intake contract has no such operations; decorative controls are forbidden.
   blockers:

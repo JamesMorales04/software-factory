@@ -81,93 +81,9 @@ export function decisionActions(item: DecisionItem): DecisionAction[] {
   return item.action ? [item.action] : [];
 }
 
-function limit(
-  value: number | undefined,
-  t: Translate,
-  formatNumber: (value: number) => string,
-): string {
-  return value !== undefined && value > 0
-    ? formatNumber(value)
-    : t("common.notSet");
-}
-
 function BudgetFacts({ budget }: { budget: DecisionBudget }) {
-  const { t, formatNumber, formatMicros } = useI18n();
+  const { t, formatMicros } = useI18n();
   const facts: Array<[MessageKey, string]> = [];
-  if (budget.max_attempts !== undefined) {
-    facts.push([
-      "decisions.budget.attempts",
-      limit(budget.max_attempts, t, formatNumber),
-    ]);
-  }
-  if (budget.max_sessions !== undefined) {
-    facts.push([
-      "decisions.budget.sessions",
-      limit(budget.max_sessions, t, formatNumber),
-    ]);
-  }
-  if (budget.max_turns !== undefined) {
-    facts.push([
-      "decisions.budget.turns",
-      limit(budget.max_turns, t, formatNumber),
-    ]);
-  }
-  if (budget.max_input_tokens !== undefined) {
-    facts.push([
-      "decisions.budget.inputTokens",
-      limit(budget.max_input_tokens, t, formatNumber),
-    ]);
-  }
-  if (budget.max_output_tokens !== undefined) {
-    facts.push([
-      "decisions.budget.outputTokens",
-      limit(budget.max_output_tokens, t, formatNumber),
-    ]);
-  }
-  if (budget.max_cost_micros !== undefined) {
-    facts.push([
-      "decisions.budget.cost",
-      budget.max_cost_micros > 0
-        ? formatMicros(budget.max_cost_micros)
-        : t("common.notSet"),
-    ]);
-  }
-  if (budget.deadline_secs !== undefined) {
-    facts.push([
-      "decisions.budget.deadline",
-      budget.deadline_secs > 0
-        ? `${formatNumber(budget.deadline_secs)} s`
-        : t("common.notSet"),
-    ]);
-  }
-  if (budget.max_wall_clock_secs !== undefined) {
-    facts.push([
-      "decisions.budget.wallClock",
-      budget.max_wall_clock_secs > 0
-        ? `${formatNumber(budget.max_wall_clock_secs)} s`
-        : t("common.notSet"),
-    ]);
-  }
-  if (budget.timeout_secs !== undefined) {
-    facts.push([
-      "decisions.budget.timeout",
-      budget.timeout_secs > 0
-        ? `${formatNumber(budget.timeout_secs)} s`
-        : t("common.notSet"),
-    ]);
-  }
-  if (budget.max_repair_cycles !== undefined) {
-    facts.push([
-      "decisions.budget.repairCycles",
-      limit(budget.max_repair_cycles, t, formatNumber),
-    ]);
-  }
-  if (budget.max_parallel !== undefined) {
-    facts.push([
-      "decisions.budget.parallel",
-      limit(budget.max_parallel, t, formatNumber),
-    ]);
-  }
   if (budget.usage_known !== undefined) {
     facts.push([
       "decisions.budget.usage",

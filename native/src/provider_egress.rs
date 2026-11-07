@@ -265,7 +265,7 @@ impl EgressConfig {
     }
 
     pub fn with_max_requests(mut self, max_requests: usize) -> Self {
-        self.max_requests = max_requests.max(1);
+        self.max_requests = max_requests;
         self
     }
 
@@ -387,7 +387,7 @@ async fn handle(
         return Ok(());
     }
     let previous = requests.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    if previous >= config.max_requests {
+    if config.max_requests > 0 && previous >= config.max_requests {
         write_status(&mut stream, 429, "request budget exhausted").await?;
         return Ok(());
     }
@@ -405,29 +405,12 @@ async fn handle(
                     Err((403, "no provider turn is authorized".to_string()))
                 } else {
                     let turn = guard.as_mut().expect("checked");
-                    if chrono::Utc::now().timestamp_millis() >= turn.expires_at_ms
-                        || turn.requests >= turn.max_requests
-                        || turn.requests as u64 >= turn.max_output_tokens
-                    {
+                    let expired = turn.expires_at_ms > 0
+                        && chrono::Utc::now().timestamp_millis() >= turn.expires_at_ms;
+                    let requests_exhausted =
+                        turn.max_requests > 0 && turn.requests >= turn.max_requests;
+                    if expired || requests_exhausted {
                         Err((429, "request budget exhausted".to_string()))
-                    } else if turn.binding {
-                        // A second request for the same bound turn is a
-                        // conflict, never a new inference and never a
-                        // transient rate limit. Returning a non-retryable
-                        // status stops the client retry loop and preserves the
-                        // first upstream outcome in the error message.
-                        Err((
-                            409,
-                            if let Some(status) = turn.last_upstream_status {
-                                format!(
-                                    "provider turn already has a bound request; first upstream status {status}: {}",
-                                    turn.last_upstream_error
-                                )
-                            } else {
-                                "provider turn already has a bound request; first upstream outcome is not yet known"
-                                    .to_string()
-                            },
-                        ))
                     } else {
                         match serde_json::from_slice::<serde_json::Value>(&body) {
                             Err(_) => Err((400, "request body is not JSON".to_string())),
@@ -447,23 +430,31 @@ async fn handle(
                                             "provider turn request does not match".to_string(),
                                         ))
                                     } else {
-                                        let max_output = turn
-                                            .max_output_tokens
-                                            .saturating_div(turn.max_requests.max(1) as u64)
-                                            .max(1)
-                                            .min(u64::from(u32::MAX));
-                                        let fields: &[&str] = if path == "/v1/responses" {
-                                            &["max_output_tokens"]
-                                        } else {
-                                            &["max_tokens", "max_completion_tokens"]
-                                        };
-                                        if let Some(object) = value.as_object_mut() {
-                                            for field in fields {
-                                                object.insert(
-                                                    (*field).into(),
-                                                    serde_json::Value::from(max_output),
-                                                );
+                                        // A zero or sentinel output bound means
+                                        // subscription telemetry: let the
+                                        // provider/model choose its native
+                                        // output and record observed usage.
+                                        if turn.max_output_tokens > 0
+                                            && turn.max_output_tokens
+                                                < crate::execution_policy::UNCAPPED_TOKENS
+                                        {
+                                            let max_output =
+                                                turn.max_output_tokens.min(u64::from(u32::MAX));
+                                            let fields: &[&str] = if path == "/v1/responses" {
+                                                &["max_output_tokens"]
+                                            } else {
+                                                &["max_tokens", "max_completion_tokens"]
+                                            };
+                                            if let Some(object) = value.as_object_mut() {
+                                                for field in fields {
+                                                    object.insert(
+                                                        (*field).into(),
+                                                        serde_json::Value::from(max_output),
+                                                    );
+                                                }
                                             }
+                                        }
+                                        if let Some(object) = value.as_object_mut() {
                                             if path == "/v1/chat/completions" {
                                                 object
                                                     .insert("n".into(), serde_json::Value::from(1));
@@ -497,11 +488,7 @@ async fn handle(
                                             Ok(encoded) => {
                                                 let sequence = u32::try_from(turn.requests)
                                                     .unwrap_or(u32::MAX);
-                                                if config.turn_binder.is_some() {
-                                                    turn.binding = true;
-                                                } else {
-                                                    turn.requests = turn.requests.saturating_add(1);
-                                                }
+                                                turn.requests = turn.requests.saturating_add(1);
                                                 bound_turn = Some((
                                                     turn.reservation_id.clone(),
                                                     turn.model.clone(),
@@ -532,15 +519,12 @@ async fn handle(
             // OpenAI-compatible tokenizers. Do not multiply by four: that is
             // both non-conservative and not a per-request bound. This check is
             // the external-effect boundary and runs before any binder or send.
-            if let Some((_, _, max_input_tokens, _)) = &bound_turn {
+            if let Some((_, _, max_input_tokens, _)) = &bound_turn
+                && *max_input_tokens > 0
+                && *max_input_tokens < crate::execution_policy::UNCAPPED_TOKENS
+            {
                 let max_body_bytes = (*max_input_tokens).min(MAX_REQUEST_BODY as u64);
                 if body.len() as u64 > max_body_bytes {
-                    if let Some(policy) = &config.turn_policy
-                        && let Ok(mut guard) = policy.lock()
-                        && let Some(turn) = guard.as_mut()
-                    {
-                        turn.binding = false;
-                    }
                     write_status(&mut stream, 413, "request exceeds input budget").await?;
                     return Ok(());
                 }
@@ -556,22 +540,9 @@ async fn handle(
                     .bind(reservation_id, &digest, model, path, body.len(), sequence)
                     .await
                 {
-                    if let Some(policy) = &config.turn_policy
-                        && let Ok(mut guard) = policy.lock()
-                        && let Some(turn) = guard.as_mut()
-                    {
-                        turn.binding = false;
-                    }
                     tracing::warn!(%error, "provider turn binding refused");
                     write_status(&mut stream, 403, "provider request binding refused").await?;
                     return Ok(());
-                }
-                if let Some(policy) = &config.turn_policy
-                    && let Ok(mut guard) = policy.lock()
-                    && let Some(turn) = guard.as_mut()
-                {
-                    turn.requests = turn.requests.saturating_add(1);
-                    turn.binding = false;
                 }
             }
         }

@@ -2004,7 +2004,7 @@ export const en = {
 
   "delegations.title": "Delegations",
   "delegations.description":
-    "A delegation is a scoped, revocable grant. It does not start work by itself and autonomous execution defaults to disabled.",
+    "Read-only evidence for legacy V1 delegations. New work uses the frozen execution profile and the planner/supervisor's Core-validated scope.",
   "delegations.error.load": "Failed to load delegations.",
   "delegations.error.create": "Delegation creation failed.",
   "delegations.error.revoke": "Revocation failed.",
@@ -2019,7 +2019,7 @@ export const en = {
   "delegations.form.mode": "Mode",
   "delegations.form.paths": "Allowed paths (comma separated)",
   "delegations.form.limits":
-    "Limits: 2 attempts, 16 sessions, 4 requests, 32 cumulative attempts, 300s per attempt, 24h expiry. R0/R1 only; R2/R3 require protected approval.",
+    "Legacy V1 delegation evidence. New work uses the frozen execution profile and agent-proposed scope.",
   "delegations.form.creating": "Creating…",
   "delegations.form.create": "Create delegation",
   "delegations.notice.created":
@@ -2203,7 +2203,7 @@ export const en = {
     "A Gate decision requires a Candidate and both independent receipts.",
   "campaignDetail.budget.title": "Authorization, budget and observed usage",
   "campaignDetail.budget.hint":
-    "V2 policy bounds are per-operation; V1 ceilings are historical evidence",
+    "Observed usage and progress supervision are telemetry; V1 ceilings are historical evidence",
   "campaignDetail.budget.actor": "actor {actor}",
   "campaignDetail.budget.execution": "Execution",
   "campaignDetail.budget.route": "Route",
@@ -2277,7 +2277,7 @@ export const en = {
     "{amount} observed-session ceiling, not observed spend",
   "campaignDetail.budget.deadline": "Deadline",
   "campaignDetail.budget.note":
-    "Measured totals exclude usage-unknown sessions. Unmeasured sessions contribute a bounded reservation amount, never an observed token or cost total. V2 operation limits and progress thresholds are not Campaign productivity caps. These are Core records, not a billing statement.",
+    "Measured totals exclude usage-unknown sessions. Unmeasured sessions contribute a bounded reservation amount, never an observed token or cost total. Token, time, retry and subscription-cost observations are telemetry, not productivity caps. These are Core records, not a billing statement.",
   "campaignDetail.budget.overBudget":
     "Measured usage exceeds the recorded authorization for {items}.",
   "campaignDetail.budget.noAuthorization":
@@ -2825,7 +2825,7 @@ export const en = {
   "settings.provider.manualModelHelp":
     "Core keeps this route unverified until the provider advertises the exact model. Ordinary users can select a discovered model above instead.",
   "settings.provider.connectionDetails": "Connection details",
-  "settings.provider.advanced": "Advanced technical limits and rates",
+  "settings.provider.advanced": "Pricing metadata",
   "settings.provider.maxTurns": "Max turns",
   "settings.provider.maxCost": "Max cost (micros)",
   "settings.provider.maxInput": "Max input tokens",
@@ -2833,7 +2833,7 @@ export const en = {
   "settings.provider.inputRate": "Input micros / million",
   "settings.provider.outputRate": "Output micros / million",
   "settings.provider.advancedHint":
-    "Optional technical defaults for this provider route. The explicit Campaign authorization remains authoritative for provider sessions; these limits do not widen it. Frozen Campaign bindings are not rewritten by a provider settings revision.",
+    "Input and output rates are used for cost telemetry only. They are not usage caps, and frozen Campaign bindings are not rewritten by a provider settings revision.",
   "settings.provider.enabledLabel": "Enabled",
   "settings.provider.defaultLabel": "Default route for Core model calls",
   "settings.provider.saving": "Saving…",
@@ -3064,9 +3064,9 @@ export const en = {
     "Advanced: manual {role} model ID (unverified)",
   "execProfiles.matrix.reasoningLabel": "{role} reasoning",
   "execProfiles.matrix.providerDefault": "Provider default",
-  "execProfiles.advanced.title": "Advanced technical operation limits",
+  "execProfiles.advanced.title": "Progress and autonomy",
   "execProfiles.advanced.hint":
-    "Optional. These per-operation bounds and progress thresholds are not turn, attempt, session, token, cost or Campaign deadline budgets. Core enforces them for safety.",
+    "Progress thresholds trigger autonomous diagnosis; the no-progress breaker is the only automatic stop. Token, time, retry and cost observations are telemetry.",
   "execProfiles.operations.modelRequestTimeout": "Model request timeout (s)",
   "execProfiles.operations.modelRequestTimeoutHelp":
     "Maximum duration of one model request, not a Campaign deadline.",

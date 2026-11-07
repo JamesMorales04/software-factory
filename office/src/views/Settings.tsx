@@ -479,34 +479,6 @@ function ProviderCard({
           <summary>{t("settings.provider.advanced")}</summary>
           <div className="grid-2">
             <Input
-              label={t("settings.provider.maxTurns")}
-              type="number"
-              min={0}
-              value={maxTurns}
-              onChange={(event) => setMaxTurns(Number(event.target.value))}
-            />
-            <Input
-              label={t("settings.provider.maxCost")}
-              type="number"
-              min={0}
-              value={maxCost}
-              onChange={(event) => setMaxCost(Number(event.target.value))}
-            />
-            <Input
-              label={t("settings.provider.maxInput")}
-              type="number"
-              min={0}
-              value={maxInput}
-              onChange={(event) => setMaxInput(Number(event.target.value))}
-            />
-            <Input
-              label={t("settings.provider.maxOutput")}
-              type="number"
-              min={0}
-              value={maxOutput}
-              onChange={(event) => setMaxOutput(Number(event.target.value))}
-            />
-            <Input
               label={t("settings.provider.inputRate")}
               type="number"
               min={0}
@@ -818,16 +790,6 @@ export function Settings() {
                 label={t("settings.runtime.enable")}
                 checked={reviewEnabled}
                 onChange={(event) => setReviewEnabled(event.target.checked)}
-              />
-              <Input
-                label={t("settings.runtime.maxOutput")}
-                type="number"
-                min={128}
-                max={32768}
-                value={reviewTokens}
-                onChange={(event) =>
-                  setReviewTokens(Number(event.target.value))
-                }
               />
               <p className="muted">
                 {runtime

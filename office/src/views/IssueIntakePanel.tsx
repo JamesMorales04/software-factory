@@ -718,37 +718,6 @@ export function IssueIntakePanel({
               }
             />
             <Input
-              label={t("issues.intake.field.maxAttempts")}
-              type="number"
-              min={1}
-              max={5}
-              value={form.maxAttempts}
-              onChange={(event) => update("maxAttempts", event.target.value)}
-            />
-            <Input
-              label={t("issues.intake.field.maxSessions")}
-              type="number"
-              min={1}
-              value={form.maxSessions}
-              onChange={(event) => update("maxSessions", event.target.value)}
-            />
-            <Input
-              label={t("issues.intake.field.maxTurns")}
-              type="number"
-              min={1}
-              value={form.maxTurns}
-              onChange={(event) => update("maxTurns", event.target.value)}
-            />
-            <Input
-              label={t("issues.intake.field.maxWallClock")}
-              type="number"
-              min={120}
-              value={form.maxWallClockSecs}
-              onChange={(event) =>
-                update("maxWallClockSecs", event.target.value)
-              }
-            />
-            <Input
               label={t("issues.intake.field.policyExpiry")}
               type="datetime-local"
               value={form.expiresAt}
