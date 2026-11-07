@@ -530,19 +530,12 @@ impl Database {
                 quote.upper_bound_micros,
             )
         } else if matches!(funding, ModelCallFunding::Subscription) {
-            // Subscription model calls have no monetary ledger and no
-            // cumulative role token allowance. Enforce only the per-request
-            // technical policy; cost is recorded as telemetry.
-            if input.estimated_input_tokens > input.policy.max_input_tokens
-                || input.requested_output_tokens > input.policy.max_output_tokens
-            {
-                return Err(Error::Forbidden(
-                    "model call request exceeds its technical policy".into(),
-                ));
-            }
-            // Subscription calls are uncapped for productivity. The legacy
-            // reservation columns still need finite values; the sentinel is
-            // never enforced and observed usage remains telemetry.
+            // Subscription model calls have no monetary ledger, no cumulative
+            // role token allowance and no fixed output/token policy ceiling.
+            // Model/provider capability plus the request body bound decide what
+            // can be sent; observed usage remains telemetry.
+            // The legacy reservation columns still need finite values; the
+            // sentinel is never enforced.
             let uncapped = crate::execution_policy::UNCAPPED_TOKENS;
             (
                 uncapped,
