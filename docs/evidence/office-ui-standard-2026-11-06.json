@@ -20,7 +20,7 @@
   "real_browser_uat": {
     "record": "docs/evidence/compose-browser-uat-2026-11-07/compose-browser-uat.json",
     "readme": "docs/evidence/compose-browser-uat-2026-11-07/README.md",
-    "candidate_sha": "eb91fae16fcc783cb15e01ee21957fd936068066",
+    "candidate_sha": "70ddab2bb3f432b633fc66eff52dfab0ad3e0e5f",
     "result": "PASS",
     "claim": "Real rootless Compose Core HTTP API and real Chromium at 1440/390 with a deterministic provider fixture; no paid inference and no Core API interception.",
     "not_claimed": [

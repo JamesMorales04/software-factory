@@ -1,11 +1,11 @@
 {
   "schema": "factory.compose-browser-uat.v1",
   "result": "PASS",
-  "started_at": "2026-11-07T21:18:14.261Z",
-  "finished_at": "2026-11-07T21:18:48.985Z",
-  "candidate_sha": "eb91fae16fcc783cb15e01ee21957fd936068066",
+  "started_at": "2026-11-07T21:40:54.767Z",
+  "finished_at": "2026-11-07T21:41:29.146Z",
+  "candidate_sha": "70ddab2bb3f432b633fc66eff52dfab0ad3e0e5f",
   "office_url": "http://127.0.0.1:8898",
-  "objective": "Add the deterministic Compose browser UAT candidate 1794086294261 and cover it with frozen checks.",
+  "objective": "Add the deterministic Compose browser UAT candidate 1794087654767 and cover it with frozen checks.",
   "runtime": {
     "compose_project": "software-factory-uat60",
     "compose_files": [
@@ -18,18 +18,18 @@
     "core_api_interception": false
   },
   "ids": {
-    "project": "61a262e7-617a-489f-82fd-5e23d460ad47",
-    "intake_request": "f965c820-86b5-4016-b3f0-40094fc5de33",
-    "action": "f9cf1232-7d02-4b29-9520-a23dd4575d94",
-    "lead_request": "a9a4e48f-74df-4227-93d5-6ceee639b63e",
-    "execution_profile": "3b09554c-e9df-47e7-ad49-0be68598340b",
-    "campaign": "865161be-d26e-4d0f-822d-937bd3ed533f",
-    "run": "b5090b23-7b20-496a-ac2e-926193650405",
-    "attempt": "4e9eac0f-407d-46b0-81d3-abd2908dba5f",
-    "candidate": "f63fb5ce-e503-47b1-973b-01f49e77a6dc",
-    "candidate_commit": "f9025722af8008fbcd5ce65a03d5d2391eb49613",
-    "verifier_receipt": "b5eb9504-48d6-4266-80f8-b5a53a4f9261",
-    "reviewer_receipt": "6f27e7ef-e377-4677-a4b4-e85b3b8e89f9",
+    "project": "c16786ff-ce62-4e4c-af20-ff48f0467d88",
+    "intake_request": "306504a7-afca-4e2e-ae95-10e3730e4a57",
+    "action": "20e4166c-31d6-4bc0-bc1d-90da14570c58",
+    "lead_request": "2d54242e-fe2f-40ac-afce-d42d7d36bd54",
+    "execution_profile": "a7bfe732-7343-4213-9269-b5444122b58b",
+    "campaign": "7cc546ba-dfcf-4182-9857-7ccd8e41f9d4",
+    "run": "c07ead4b-fa40-4032-8970-0cc51d4655a0",
+    "attempt": "0002c4bb-6ff1-4e0e-86ef-102257d62d98",
+    "candidate": "933893ed-bf22-4b8c-84f4-808ce36b7507",
+    "candidate_commit": "272bc889564660b2feb8440ca623f61daa970f57",
+    "verifier_receipt": "2672bc90-9bf2-41bd-ac12-e26d1803bf4c",
+    "reviewer_receipt": "b9a5dedc-4ad0-4b8f-b6f6-19094e803873",
     "gate": "ACCEPTED"
   },
   "assertions": {
@@ -148,18 +148,20 @@
       "Failed to load resource: the server responded with a status of 404 (Not Found)",
       "Failed to load resource: the server responded with a status of 404 (Not Found)",
       "Failed to load resource: the server responded with a status of 404 (Not Found)",
+      "Failed to load resource: the server responded with a status of 404 (Not Found)",
       "Failed to load resource: the server responded with a status of 404 (Not Found)"
     ],
     "page_errors": [],
     "failed_requests": [],
     "http_404": [
-      "http://127.0.0.1:8898/core-api/quality/candidates/f63fb5ce-e503-47b1-973b-01f49e77a6dc/gate",
-      "http://127.0.0.1:8898/core-api/quality/candidates/f63fb5ce-e503-47b1-973b-01f49e77a6dc/gate",
-      "http://127.0.0.1:8898/core-api/quality/candidates/f63fb5ce-e503-47b1-973b-01f49e77a6dc/gate",
-      "http://127.0.0.1:8898/core-api/quality/candidates/f63fb5ce-e503-47b1-973b-01f49e77a6dc/gate",
-      "http://127.0.0.1:8898/core-api/quality/candidates/f63fb5ce-e503-47b1-973b-01f49e77a6dc/gate"
+      "http://127.0.0.1:8898/core-api/quality/candidates/933893ed-bf22-4b8c-84f4-808ce36b7507/gate",
+      "http://127.0.0.1:8898/core-api/quality/candidates/933893ed-bf22-4b8c-84f4-808ce36b7507/gate",
+      "http://127.0.0.1:8898/core-api/quality/candidates/933893ed-bf22-4b8c-84f4-808ce36b7507/gate",
+      "http://127.0.0.1:8898/core-api/quality/candidates/933893ed-bf22-4b8c-84f4-808ce36b7507/gate",
+      "http://127.0.0.1:8898/core-api/quality/candidates/933893ed-bf22-4b8c-84f4-808ce36b7507/gate",
+      "http://127.0.0.1:8898/core-api/quality/candidates/933893ed-bf22-4b8c-84f4-808ce36b7507/gate"
     ],
-    "expected_gate_polls": 5,
+    "expected_gate_polls": 6,
     "unexpected_404": [],
     "unexpected_console_errors": [],
     "budget_probe_page_errors": []
@@ -189,7 +191,7 @@
     "billable_gateway": "deterministic model fixture only",
     "paid_inference": false
   },
-  "plan_hash": "177652a454a15bd96324876fd38c1cd5ec5b44264bc2c0ef6bc2b046c8944f84",
+  "plan_hash": "7ac4d7692847a4d14f0b85a252280b535e7abe6f3f6ed1ef79ca2856fed07dd8",
   "campaign_authorization": {
     "execution_mode": "TRUSTED_LOCAL_PROVIDER",
     "risk_class": "R0",
@@ -213,19 +215,19 @@
     "changed_paths": [
       "src/provider.txt"
     ],
-    "base_commit": "43e91bd0c5ca6b136b4f3898a434c5f04cfbafd6",
-    "candidate_commit": "f9025722af8008fbcd5ce65a03d5d2391eb49613"
+    "base_commit": "2760b482250961360d0d5e7aaaa683d1bccb3ce9",
+    "candidate_commit": "272bc889564660b2feb8440ca623f61daa970f57"
   },
   "pr_projection": "UNBOUND_NO_GITHUB_WRITE",
   "agent_office": {
     "participant_count": 4,
     "avatar_labels": [
-      "Inspect Lead lead:a9a4e48f-74df-4227-93d5-6ceee639b63e, status RUNNING, observation NOT EXPOSED",
-      "Inspect Implementer implementer:81850e96-db08-4a7a-b36d-41dc7dc058eb, status COMPLETED, observation FINAL",
-      "Inspect Verifier verifier:b5eb9504-48d6-4266-80f8-b5a53a4f9261, status PASS, observation FINAL",
-      "Inspect Reviewer reviewer:6f27e7ef-e377-4677-a4b4-e85b3b8e89f9, status PASS, observation FINAL"
+      "Inspect Lead lead:2d54242e-fe2f-40ac-afce-d42d7d36bd54, status RUNNING, observation NOT EXPOSED",
+      "Inspect Implementer implementer:1262c04d-1d00-4d72-b378-48cfa5df6d77, status COMPLETED, observation FINAL",
+      "Inspect Verifier verifier:2672bc90-9bf2-41bd-ac12-e26d1803bf4c, status PASS, observation FINAL",
+      "Inspect Reviewer reviewer:b9a5dedc-4ad0-4b8f-b6f6-19094e803873, status PASS, observation FINAL"
     ],
-    "campaign_filter": "865161be-d26e-4d0f-822d-937bd3ed533f"
+    "campaign_filter": "7cc546ba-dfcf-4182-9857-7ccd8e41f9d4"
   },
   "acceptance": "NOT_CLAIMED_FIXTURE_ONLY_UAT"
 }

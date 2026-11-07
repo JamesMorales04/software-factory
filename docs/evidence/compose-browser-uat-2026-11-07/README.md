@@ -2,7 +2,7 @@
 
 **Result:** `PASS` — deterministic-fixture UAT, **not** live-model or independent
 acceptance.
-**Candidate:** `eb91fae16fcc783cb15e01ee21957fd936068066`
+**Candidate:** `70ddab2bb3f432b633fc66eff52dfab0ad3e0e5f`
 **Date:** 2026-11-07
 **Record:** [`compose-browser-uat.json`](compose-browser-uat.json)
 
@@ -39,8 +39,8 @@ exists; these are explicit pending-state probes, not failures.
 ## What this run validates
 
 - The active subscription/legacy execution path reaches the deterministic Gate
-  after the fixed model token/time/request/retry/provider-cap UI and active
-  enforcement were removed (ADR-0034).
+  after fixed model token/time/request/retry/provider-cost caps and their active
+  Office controls were removed (ADR-0034).
 - The top-bar Project/Quality context is populated from real Core projections.
 - The Office Campaign Budget view shows observed usage/progress rather than
   fixed model productivity limits.
