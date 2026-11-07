@@ -527,7 +527,9 @@ describe("newly translated operational surfaces", () => {
       "es",
     );
     expect(
-      await screen.findByRole("heading", { name: "Campaña campaign" }),
+      await screen.findByRole("heading", {
+        name: "Modernize the Campaign workspace.",
+      }),
     ).toBeDefined();
     expect(
       screen.getByRole("heading", { name: "Panorama operativo" }),

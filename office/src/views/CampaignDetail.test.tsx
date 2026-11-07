@@ -174,7 +174,9 @@ describe("CampaignDetail", () => {
 
   it("opens the Overview tab by default and separates lifecycle facts", async () => {
     renderCampaign();
-    await screen.findByRole("heading", { name: "Campaign c1" });
+    await screen.findByRole("heading", {
+      name: "Modernize the Campaign workspace.",
+    });
     expect(
       screen
         .getByRole("tab", { name: "Overview" })

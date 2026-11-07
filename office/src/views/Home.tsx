@@ -32,6 +32,12 @@ import {
 } from "../coreApi";
 import { shortId } from "../format";
 import { type MessageKey, useI18n } from "../i18n";
+import {
+  projectDisplayName,
+  readWorkspaceSelection,
+  subscribeWorkspaceSelection,
+  writeWorkspaceSelection,
+} from "../workspace";
 import { HomeThread } from "./HomeThread";
 import { IntakeStateBadge, isTerminalIntakeState } from "./RequestState";
 
@@ -66,10 +72,12 @@ function projectName(
   projects: Project[] | null,
   t: ReturnType<typeof useI18n>["t"],
 ): string {
-  return (
-    projects?.find((project) => project.id === projectId)?.repository ??
-    t("home.projectFallback", { id: shortId(projectId) })
-  );
+  return (() => {
+    const project = projects?.find((item) => item.id === projectId);
+    return project
+      ? projectDisplayName(project)
+      : t("home.projectFallback", { id: shortId(projectId) });
+  })();
 }
 
 const SUGGESTIONS: Array<{ label: MessageKey; seed: MessageKey }> = [
@@ -117,8 +125,9 @@ export function Home() {
   const threadGeneration = useRef(0);
   const recentGeneration = useRef(0);
 
-  const [projectId, setProjectId] = useState("");
-  const [profileId, setProfileId] = useState("");
+  const initialWorkspace = readWorkspaceSelection();
+  const [projectId, setProjectId] = useState(initialWorkspace.projectId);
+  const [profileId, setProfileId] = useState(initialWorkspace.profileId);
   const [objective, setObjective] = useState("");
   const [spendUsd, setSpendUsd] = useState("5.00");
   const [fieldErrors, setFieldErrors] = useState<{
@@ -143,11 +152,16 @@ export function Home() {
       const next = await coreApi.listProjects();
       setProjects(next);
       setProjectsError(null);
-      setProjectId((current) =>
-        current !== "" && next.some((project) => project.id === current)
-          ? current
-          : (next[0]?.id ?? ""),
-      );
+      setProjectId((current) => {
+        const stored = readWorkspaceSelection().projectId;
+        return (
+          [current, stored].find((id) =>
+            next.some((project) => project.id === id),
+          ) ??
+          next[0]?.id ??
+          ""
+        );
+      });
     } catch (cause) {
       setProjectsError(errorMessage(cause, t("home.projects.error")));
     }
@@ -160,11 +174,14 @@ export function Home() {
     try {
       const { profiles: next } = await coreApi.listExecutionProfiles();
       setProfiles(next);
-      setProfileId((current) =>
-        current !== "" && next.some((profile) => profile.id === current)
-          ? current
-          : "",
-      );
+      setProfileId((current) => {
+        const stored = readWorkspaceSelection().profileId;
+        return (
+          [current, stored].find((id) =>
+            next.some((profile) => profile.id === id),
+          ) ?? ""
+        );
+      });
     } catch (cause) {
       setProfiles([]);
       setProfileId("");
@@ -264,6 +281,27 @@ export function Home() {
     void loadProjects();
     void loadProfiles();
   }, [loadProjects, loadProfiles]);
+
+  useEffect(
+    () =>
+      subscribeWorkspaceSelection((selection) => {
+        if (selection.projectId) setProjectId(selection.projectId);
+        if (selection.profileId) setProfileId(selection.profileId);
+      }),
+    [],
+  );
+
+  useEffect(() => {
+    if (projectId && projects?.some((project) => project.id === projectId)) {
+      writeWorkspaceSelection({ projectId });
+    }
+  }, [projectId, projects]);
+
+  useEffect(() => {
+    if (profileId && profiles?.some((profile) => profile.id === profileId)) {
+      writeWorkspaceSelection({ profileId });
+    }
+  }, [profileId, profiles]);
 
   useEffect(() => {
     void loadOverview();
@@ -534,6 +572,9 @@ export function Home() {
                       value={projectId}
                       onChange={(event) => {
                         setProjectId(event.target.value);
+                        writeWorkspaceSelection({
+                          projectId: event.target.value,
+                        });
                         setFieldErrors((current) => ({
                           ...current,
                           project: undefined,
@@ -546,7 +587,7 @@ export function Home() {
                       <option value="">{t("home.project.select")}</option>
                       {projects.map((project) => (
                         <option key={project.id} value={project.id}>
-                          {project.repository}
+                          {projectDisplayName(project)}
                         </option>
                       ))}
                     </Select>
@@ -562,6 +603,9 @@ export function Home() {
                       value={profileId}
                       onChange={(event) => {
                         setProfileId(event.target.value);
+                        writeWorkspaceSelection({
+                          profileId: event.target.value,
+                        });
                         resetRequestKey();
                       }}
                       disabled={profiles === null}
@@ -888,61 +932,125 @@ export function Home() {
             )}
           </Panel>
 
-          <Panel className="home-recent" data-testid="home-recent">
-            <div className="home-section-head">
-              <div className="home-section-title">
-                <span className="home-section-icon" aria-hidden="true">
-                  <History size={16} />
-                </span>
-                <h2>{t("home.recent.title")}</h2>
+          <div className="home-secondary-grid">
+            <Panel className="home-recent" data-testid="home-recent">
+              <div className="home-section-head">
+                <div className="home-section-title">
+                  <span className="home-section-icon" aria-hidden="true">
+                    <History size={16} />
+                  </span>
+                  <h2>{t("home.recent.title")}</h2>
+                </div>
+                <Link className="home-section-link" to="/lead">
+                  {t("home.recent.viewAll")}
+                  <ArrowRight size={13} aria-hidden="true" />
+                </Link>
               </div>
-            </div>
-            {recentRequests === null && !recentUnavailable && !recentError && (
-              <LoadingState label={t("home.recent.loading")} />
-            )}
-            {recentUnavailable && (
-              <p className="ui-callout ui-callout--info" role="status">
-                {t("home.recent.unavailable")}
-              </p>
-            )}
-            {recentError && (
-              <div className="ui-callout ui-callout--danger" role="alert">
-                <p>{recentError}</p>
-                <Button size="sm" onClick={() => void loadRecent()}>
-                  {t("home.recent.retry")}
-                </Button>
-              </div>
-            )}
-            {recentRequests !== null && recentRequests.length === 0 && (
-              <EmptyState
-                title={t("home.recent.emptyTitle")}
-                description={t("home.recent.emptyDescription")}
-              />
-            )}
-            {recentRequests !== null && recentRequests.length > 0 && (
-              <ul className="home-request-list">
-                {recentRequests.map((request) => (
-                  <li key={request.id}>
-                    <span className="home-request-icon" aria-hidden="true">
-                      <FileText size={16} />
-                    </span>
-                    <div className="home-request-copy">
-                      <Link to={`/requests/${encodeURIComponent(request.id)}`}>
-                        {request.objective}
-                      </Link>
-                      <span className="muted">
-                        {projectName(request.projectId, projects, t)} ·{" "}
-                        {formatDate(request.updatedAt)}
+              {recentRequests === null &&
+                !recentUnavailable &&
+                !recentError && (
+                  <LoadingState label={t("home.recent.loading")} />
+                )}
+              {recentUnavailable && (
+                <p className="ui-callout ui-callout--info" role="status">
+                  {t("home.recent.unavailable")}
+                </p>
+              )}
+              {recentError && (
+                <div className="ui-callout ui-callout--danger" role="alert">
+                  <p>{recentError}</p>
+                  <Button size="sm" onClick={() => void loadRecent()}>
+                    {t("home.recent.retry")}
+                  </Button>
+                </div>
+              )}
+              {recentRequests !== null && recentRequests.length === 0 && (
+                <EmptyState
+                  title={t("home.recent.emptyTitle")}
+                  description={t("home.recent.emptyDescription")}
+                />
+              )}
+              {recentRequests !== null && recentRequests.length > 0 && (
+                <ul className="home-request-list">
+                  {recentRequests.slice(0, 4).map((request) => (
+                    <li key={request.id}>
+                      <span className="home-request-icon" aria-hidden="true">
+                        <FileText size={16} />
                       </span>
-                    </div>
-                    <div className="home-request-badges">
-                      <IntakeStateBadge state={request.state} />
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Panel>
+                      <div className="home-request-copy">
+                        <Link
+                          to={`/requests/${encodeURIComponent(request.id)}`}
+                        >
+                          {request.objective}
+                        </Link>
+                        <span className="muted">
+                          {projectName(request.projectId, projects, t)} ·{" "}
+                          {formatDate(request.updatedAt)}
+                        </span>
+                      </div>
+                      <div className="home-request-badges">
+                        <IntakeStateBadge state={request.state} />
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Panel>
+            <Panel className="home-decisions" data-testid="home-decisions">
+              <div className="home-section-head">
+                <div className="home-section-title">
+                  <span className="home-section-icon" aria-hidden="true">
+                    <Inbox size={16} />
+                  </span>
+                  <h2>{t("home.decisions.title")}</h2>
+                </div>
+                <Link className="home-section-link" to="/inbox">
+                  {t("home.decisions.open")}
+                  <ArrowRight size={13} aria-hidden="true" />
+                </Link>
+              </div>
+              {overview === null ? (
+                <p className="muted">{t("home.active.unavailable")}</p>
+              ) : pendingDecisions.length === 0 ? (
+                <EmptyState
+                  title={t("home.decisions.noneTitle")}
+                  description={t("home.decisions.noneDescription")}
+                />
+              ) : (
+                <ul className="home-decision-list">
+                  {pendingDecisions.slice(0, 4).map((decision) => (
+                    <li key={decision.id}>
+                      <span
+                        className={`home-decision-dot ${
+                          decision.severity === "critical"
+                            ? "home-decision-dot--danger"
+                            : decision.severity === "attention"
+                              ? "home-decision-dot--attention"
+                              : ""
+                        }`}
+                        aria-hidden="true"
+                      />
+                      <div className="home-decision-copy">
+                        <Link to={decision.target}>{decision.title}</Link>
+                        <p>{decision.detail}</p>
+                      </div>
+                      <Badge
+                        tone={
+                          decision.severity === "critical"
+                            ? "danger"
+                            : decision.severity === "attention"
+                              ? "attention"
+                              : "info"
+                        }
+                      >
+                        {decision.severity}
+                      </Badge>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Panel>
+          </div>
         </div>
 
         <aside className="home-side" aria-label={t("home.side.aria")}>
@@ -953,61 +1061,6 @@ export function Home() {
             loading={threadLoading}
             error={threadError}
           />
-
-          <Panel className="home-decisions" data-testid="home-decisions">
-            <div className="home-section-head">
-              <div className="home-section-title">
-                <span className="home-section-icon" aria-hidden="true">
-                  <Inbox size={16} />
-                </span>
-                <h2>{t("home.decisions.title")}</h2>
-              </div>
-              <Link className="home-section-link" to="/inbox">
-                {t("home.decisions.open")}
-                <ArrowRight size={13} aria-hidden="true" />
-              </Link>
-            </div>
-            {overview === null ? (
-              <p className="muted">{t("home.active.unavailable")}</p>
-            ) : pendingDecisions.length === 0 ? (
-              <EmptyState
-                title={t("home.decisions.noneTitle")}
-                description={t("home.decisions.noneDescription")}
-              />
-            ) : (
-              <ul className="home-decision-list">
-                {pendingDecisions.slice(0, 4).map((decision) => (
-                  <li key={decision.id}>
-                    <span
-                      className={`home-decision-dot ${
-                        decision.severity === "critical"
-                          ? "home-decision-dot--danger"
-                          : decision.severity === "attention"
-                            ? "home-decision-dot--attention"
-                            : ""
-                      }`}
-                      aria-hidden="true"
-                    />
-                    <div className="home-decision-copy">
-                      <Link to={decision.target}>{decision.title}</Link>
-                      <p>{decision.detail}</p>
-                    </div>
-                    <Badge
-                      tone={
-                        decision.severity === "critical"
-                          ? "danger"
-                          : decision.severity === "attention"
-                            ? "attention"
-                            : "info"
-                      }
-                    >
-                      {decision.severity}
-                    </Badge>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Panel>
 
           <Panel className="home-status" data-testid="home-status">
             <div className="home-section-head">

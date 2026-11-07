@@ -110,7 +110,7 @@ try {
     .locator('tbody tr a[href^="#/campaigns/"]')
     .first()
     .click();
-  await page.getByRole("heading", { name: /^Campaign /, level: 1 }).waitFor();
+  await page.getByTestId("workflow-projection").waitFor();
   await page.getByRole("tab", { name: /WorkGraph/ }).click();
   await page.getByRole("heading", { name: /WorkGraph \(/ }).waitFor();
   const nodes = page.locator('[data-testid^="workgraph-node-"]');

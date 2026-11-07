@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { CancelCampaign } from "../CancelCampaign";
+import { CampaignPulse } from "../components/office/CampaignPulse";
 import { CandidateDiff } from "../components/office/CandidateDiff";
 import {
   CandidateIdentity,
@@ -577,10 +578,13 @@ export function CampaignDetail() {
   return (
     <div className="campaign-workspace">
       <PageHeader
-        title={t("campaignDetail.title", { id: shortId(campaign.id) })}
-        description={
-          action?.objective ?? t("campaignDetail.descriptionFallback")
+        title={
+          action?.objective ??
+          t("campaignDetail.title", { id: shortId(campaign.id) })
         }
+        description={t("campaignDetail.subtitle", {
+          id: shortId(campaign.id),
+        })}
         meta={
           <>
             <StatusBadge status={campaign.status} />
@@ -624,330 +628,909 @@ export function CampaignDetail() {
       )}
       {notice && <p className="notice">{notice}</p>}
 
-      <Panel className="campaign-summary">
-        <div className="campaign-summary-head">
-          <h2>{t("campaignDetail.summary.title")}</h2>
-          {attention.length === 0 ? (
-            <span className="muted">
-              {t("campaignDetail.summary.noAttention")}
-            </span>
-          ) : (
-            <StatusBadge
-              status="HUMAN_REQUIRED"
-              label={
-                attention.length === 1
-                  ? t("campaignDetail.summary.attentionOne", {
-                      count: attention.length,
-                    })
-                  : t("campaignDetail.summary.attention", {
-                      count: attention.length,
-                    })
-              }
-            />
-          )}
-        </div>
-        <dl className="overview-facts">
-          <div>
-            <dt>{t("campaignDetail.summary.project")}</dt>
-            <dd>
-              {project ? (
-                <Link to="/projects">{shortId(project.id)}</Link>
+      <div className="campaign-detail-layout">
+        <div className="campaign-detail-main">
+          <Panel className="campaign-summary">
+            <div className="campaign-summary-head">
+              <h2>{t("campaignDetail.summary.title")}</h2>
+              {attention.length === 0 ? (
+                <span className="muted">
+                  {t("campaignDetail.summary.noAttention")}
+                </span>
               ) : (
-                t("campaignDetail.workflow.notLinked")
+                <StatusBadge
+                  status="HUMAN_REQUIRED"
+                  label={
+                    attention.length === 1
+                      ? t("campaignDetail.summary.attentionOne", {
+                          count: attention.length,
+                        })
+                      : t("campaignDetail.summary.attention", {
+                          count: attention.length,
+                        })
+                  }
+                />
               )}
-            </dd>
-          </div>
-          <div>
-            <dt>{t("campaignDetail.summary.action")}</dt>
-            <dd>
-              <Link to={`/actions/${campaign.action_id}`}>
-                {shortId(campaign.action_id)}
-              </Link>
-            </dd>
-          </div>
-          <div>
-            <dt>{t("campaignDetail.summary.frozenPlan")}</dt>
-            <dd>
-              {lead?.plan
-                ? shortId(lead.plan.plan_hash, 12)
-                : t("campaignDetail.summary.notRecorded")}
-            </dd>
-          </div>
-          <div>
-            <dt>{t("campaignDetail.summary.authorization")}</dt>
-            <dd>
-              {authorization
-                ? authorization.riskClass
-                : t("campaignDetail.summary.notRecorded")}
-            </dd>
-          </div>
-          <div>
-            <dt>{t("campaignDetail.summary.latestRun")}</dt>
-            <dd>
-              {latestRun ? (
-                <>
-                  <code>{shortId(latestRun.id)}</code>{" "}
-                  <StatusBadge status={latestRun.status} />
-                </>
-              ) : (
-                t("campaignDetail.summary.none")
-              )}
-            </dd>
-          </div>
-          <div>
-            <dt>{t("campaignDetail.summary.latestAttempt")}</dt>
-            <dd>
-              {latestAttempt ? (
-                <>
-                  <code>{shortId(latestAttempt.id)}</code>{" "}
-                  <StatusBadge status={latestAttempt.status} />
-                </>
-              ) : (
-                t("campaignDetail.summary.none")
-              )}
-            </dd>
-          </div>
-          <div>
-            <dt>{t("campaignDetail.summary.latestCandidate")}</dt>
-            <dd>
-              {latestCandidate
-                ? shortId(latestCandidate.id)
-                : t("campaignDetail.summary.none")}
-            </dd>
-          </div>
-          <div>
-            <dt>{t("campaignDetail.summary.latestGate")}</dt>
-            <dd>
-              {latestGate ? (
-                <StatusBadge status={latestGate.outcome} />
-              ) : (
-                t("campaignDetail.pending")
-              )}
-            </dd>
-          </div>
-        </dl>
-        {attention.length > 0 && (
-          <div className="ui-callout ui-callout--attention" role="status">
-            <ul className="attention-list">
-              {attention.map((reason) => (
-                <li key={reason}>{reason}</li>
-              ))}
-            </ul>
-          </div>
-        )}
-      </Panel>
-
-      <Tabs
-        items={tabs}
-        value={tab}
-        onChange={selectTab}
-        label={t("campaignDetail.tabs.label")}
-      />
-
-      {tab === "overview" && (
-        <TabPanel id="overview">
-          <Panel>
-            <div className="section-heading">
-              <h2>{t("campaignDetail.overview.lifecycleTitle")}</h2>
-              <span className="muted">
-                {t("campaignDetail.overview.lifecycleHint")}
-              </span>
             </div>
-            <div className="table-responsive">
-              <table data-testid="workflow-projection">
-                <thead>
-                  <tr>
-                    <th>{t("campaignDetail.overview.stage")}</th>
-                    <th>{t("campaignDetail.overview.reference")}</th>
-                    <th>{t("campaignDetail.overview.coreState")}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {workflow.map((row) => (
-                    <tr key={row.stage}>
-                      <th scope="row">{row.stage}</th>
-                      <td data-label={t("campaignDetail.overview.reference")}>
-                        {row.reference}
-                      </td>
-                      <td data-label={t("campaignDetail.overview.coreState")}>
-                        {row.state}
-                      </td>
-                    </tr>
+            <dl className="overview-facts">
+              <div>
+                <dt>{t("campaignDetail.summary.project")}</dt>
+                <dd>
+                  {project ? (
+                    <Link to="/projects">{shortId(project.id)}</Link>
+                  ) : (
+                    t("campaignDetail.workflow.notLinked")
+                  )}
+                </dd>
+              </div>
+              <div>
+                <dt>{t("campaignDetail.summary.action")}</dt>
+                <dd>
+                  <Link to={`/actions/${campaign.action_id}`}>
+                    {shortId(campaign.action_id)}
+                  </Link>
+                </dd>
+              </div>
+              <div>
+                <dt>{t("campaignDetail.summary.frozenPlan")}</dt>
+                <dd>
+                  {lead?.plan
+                    ? shortId(lead.plan.plan_hash, 12)
+                    : t("campaignDetail.summary.notRecorded")}
+                </dd>
+              </div>
+              <div>
+                <dt>{t("campaignDetail.summary.authorization")}</dt>
+                <dd>
+                  {authorization
+                    ? authorization.riskClass
+                    : t("campaignDetail.summary.notRecorded")}
+                </dd>
+              </div>
+              <div>
+                <dt>{t("campaignDetail.summary.latestRun")}</dt>
+                <dd>
+                  {latestRun ? (
+                    <>
+                      <code>{shortId(latestRun.id)}</code>{" "}
+                      <StatusBadge status={latestRun.status} />
+                    </>
+                  ) : (
+                    t("campaignDetail.summary.none")
+                  )}
+                </dd>
+              </div>
+              <div>
+                <dt>{t("campaignDetail.summary.latestAttempt")}</dt>
+                <dd>
+                  {latestAttempt ? (
+                    <>
+                      <code>{shortId(latestAttempt.id)}</code>{" "}
+                      <StatusBadge status={latestAttempt.status} />
+                    </>
+                  ) : (
+                    t("campaignDetail.summary.none")
+                  )}
+                </dd>
+              </div>
+              <div>
+                <dt>{t("campaignDetail.summary.latestCandidate")}</dt>
+                <dd>
+                  {latestCandidate
+                    ? shortId(latestCandidate.id)
+                    : t("campaignDetail.summary.none")}
+                </dd>
+              </div>
+              <div>
+                <dt>{t("campaignDetail.summary.latestGate")}</dt>
+                <dd>
+                  {latestGate ? (
+                    <StatusBadge status={latestGate.outcome} />
+                  ) : (
+                    t("campaignDetail.pending")
+                  )}
+                </dd>
+              </div>
+            </dl>
+            {attention.length > 0 && (
+              <div className="ui-callout ui-callout--attention" role="status">
+                <ul className="attention-list">
+                  {attention.map((reason) => (
+                    <li key={reason}>{reason}</li>
                   ))}
-                </tbody>
-              </table>
-            </div>
-            {lead && lead.model_calls.length > 0 && (
-              <div data-testid="lead-model-call-provenance">
-                <h3>{t("campaignDetail.overview.leadModelCalls")}</h3>
-                <p className="muted">
-                  {lead.model_calls
-                    .map((call) =>
-                      t("campaignDetail.overview.leadModelCall", {
-                        route: `${call.provider}/${call.model}`,
-                        reservation: shortId(call.reservation_id),
-                        state: call.state,
-                        usage: call.usage_known
-                          ? t("campaignDetail.overview.callUsage", {
-                              input: call.input_tokens.toLocaleString(),
-                              output: call.output_tokens.toLocaleString(),
-                              total: call.total_tokens.toLocaleString(),
-                              cost: formatCostMicros(call.cost_micros),
-                            })
-                          : t("campaignDetail.overview.usageUnmeasured"),
-                      }),
-                    )
-                    .join(" · ")}
-                </p>
+                </ul>
               </div>
             )}
           </Panel>
-        </TabPanel>
-      )}
 
-      {tab === "workgraph" && (
-        <TabPanel id="workgraph">
-          <Panel>
-            <div className="section-heading">
-              <h2>
-                {detail.tasks.length === 1
-                  ? t("campaignDetail.workgraph.titleOne", {
-                      count: detail.tasks.length,
-                    })
-                  : t("campaignDetail.workgraph.title", {
-                      count: detail.tasks.length,
-                    })}
-              </h2>
-              <span className="muted">{summarizeCounts(taskCounts, t)}</span>
-            </div>
-            <WorkGraphPanel
-              tasks={detail.tasks}
-              campaignId={campaign.id}
-              selectedUnitId={selectedUnitId}
-              onSelectUnit={selectUnit}
-              sessions={sessions}
-              gates={gates}
-              receipts={receipts}
-              stale={Boolean(error)}
-              selectedUnitMissing={
-                Boolean(selectedUnitId) &&
-                !detail.tasks.some((task) => task.unit_id === selectedUnitId)
-              }
-            />
-          </Panel>
-        </TabPanel>
-      )}
+          <Tabs
+            items={tabs}
+            value={tab}
+            onChange={selectTab}
+            label={t("campaignDetail.tabs.label")}
+          />
 
-      {tab === "execution" && (
-        <TabPanel id="execution">
-          <Panel>
-            <div className="section-heading">
-              <h2>{t("campaignDetail.execution.title")}</h2>
-              <span className="muted">
-                {summarizeCounts(runCounts, t)} ·{" "}
-                {summarizeCounts(attemptCounts, t)}
-              </span>
-            </div>
-            {detail.runs.length === 0 ? (
-              <EmptyState
-                title={t("campaignDetail.execution.noRunsTitle")}
-                description={t("campaignDetail.execution.noRunsDescription")}
-              />
-            ) : (
-              <>
+          {tab === "overview" && (
+            <TabPanel id="overview">
+              <Panel>
+                <div className="section-heading">
+                  <h2>{t("campaignDetail.overview.lifecycleTitle")}</h2>
+                  <span className="muted">
+                    {t("campaignDetail.overview.lifecycleHint")}
+                  </span>
+                </div>
                 <div className="table-responsive">
-                  <table>
+                  <table data-testid="workflow-projection">
                     <thead>
                       <tr>
-                        <th>{t("campaignDetail.execution.table.run")}</th>
-                        <th>{t("campaignDetail.execution.table.status")}</th>
-                        <th>{t("campaignDetail.execution.table.attempts")}</th>
+                        <th>{t("campaignDetail.overview.stage")}</th>
+                        <th>{t("campaignDetail.overview.reference")}</th>
+                        <th>{t("campaignDetail.overview.coreState")}</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {detail.runs.map((run) => (
-                        <tr key={run.id}>
+                      {workflow.map((row) => (
+                        <tr key={row.stage}>
+                          <th scope="row">{row.stage}</th>
                           <td
-                            data-label={t("campaignDetail.execution.table.run")}
+                            data-label={t("campaignDetail.overview.reference")}
                           >
-                            <code>{shortId(run.id)}</code>
+                            {row.reference}
                           </td>
                           <td
-                            data-label={t(
-                              "campaignDetail.execution.table.status",
-                            )}
+                            data-label={t("campaignDetail.overview.coreState")}
                           >
-                            <StatusBadge status={run.status} />
-                          </td>
-                          <td
-                            data-label={t(
-                              "campaignDetail.execution.table.attempts",
-                            )}
-                          >
-                            {detail.attempts
-                              .filter((attempt) => attempt.run_id === run.id)
-                              .map(
-                                (attempt) =>
-                                  `${shortId(attempt.id)}:${attempt.status}`,
-                              )
-                              .join(", ") || "—"}
+                            {row.state}
                           </td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 </div>
-                <h3>
-                  {t("campaignDetail.execution.attemptsTitle", {
-                    count: detail.attempts.length,
-                  })}
-                </h3>
-                {detail.attempts.length === 0 ? (
+                {lead && lead.model_calls.length > 0 && (
+                  <div data-testid="lead-model-call-provenance">
+                    <h3>{t("campaignDetail.overview.leadModelCalls")}</h3>
+                    <p className="muted">
+                      {lead.model_calls
+                        .map((call) =>
+                          t("campaignDetail.overview.leadModelCall", {
+                            route: `${call.provider}/${call.model}`,
+                            reservation: shortId(call.reservation_id),
+                            state: call.state,
+                            usage: call.usage_known
+                              ? t("campaignDetail.overview.callUsage", {
+                                  input: call.input_tokens.toLocaleString(),
+                                  output: call.output_tokens.toLocaleString(),
+                                  total: call.total_tokens.toLocaleString(),
+                                  cost: formatCostMicros(call.cost_micros),
+                                })
+                              : t("campaignDetail.overview.usageUnmeasured"),
+                          }),
+                        )
+                        .join(" · ")}
+                    </p>
+                  </div>
+                )}
+              </Panel>
+            </TabPanel>
+          )}
+
+          {tab === "workgraph" && (
+            <TabPanel id="workgraph">
+              <Panel>
+                <div className="section-heading">
+                  <h2>
+                    {detail.tasks.length === 1
+                      ? t("campaignDetail.workgraph.titleOne", {
+                          count: detail.tasks.length,
+                        })
+                      : t("campaignDetail.workgraph.title", {
+                          count: detail.tasks.length,
+                        })}
+                  </h2>
+                  <span className="muted">
+                    {summarizeCounts(taskCounts, t)}
+                  </span>
+                </div>
+                <WorkGraphPanel
+                  tasks={detail.tasks}
+                  campaignId={campaign.id}
+                  selectedUnitId={selectedUnitId}
+                  onSelectUnit={selectUnit}
+                  sessions={sessions}
+                  gates={gates}
+                  receipts={receipts}
+                  stale={Boolean(error)}
+                  selectedUnitMissing={
+                    Boolean(selectedUnitId) &&
+                    !detail.tasks.some(
+                      (task) => task.unit_id === selectedUnitId,
+                    )
+                  }
+                />
+              </Panel>
+            </TabPanel>
+          )}
+
+          {tab === "execution" && (
+            <TabPanel id="execution">
+              <Panel>
+                <div className="section-heading">
+                  <h2>{t("campaignDetail.execution.title")}</h2>
+                  <span className="muted">
+                    {summarizeCounts(runCounts, t)} ·{" "}
+                    {summarizeCounts(attemptCounts, t)}
+                  </span>
+                </div>
+                {detail.runs.length === 0 ? (
+                  <EmptyState
+                    title={t("campaignDetail.execution.noRunsTitle")}
+                    description={t(
+                      "campaignDetail.execution.noRunsDescription",
+                    )}
+                  />
+                ) : (
+                  <>
+                    <div className="table-responsive">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>{t("campaignDetail.execution.table.run")}</th>
+                            <th>
+                              {t("campaignDetail.execution.table.status")}
+                            </th>
+                            <th>
+                              {t("campaignDetail.execution.table.attempts")}
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {detail.runs.map((run) => (
+                            <tr key={run.id}>
+                              <td
+                                data-label={t(
+                                  "campaignDetail.execution.table.run",
+                                )}
+                              >
+                                <code>{shortId(run.id)}</code>
+                              </td>
+                              <td
+                                data-label={t(
+                                  "campaignDetail.execution.table.status",
+                                )}
+                              >
+                                <StatusBadge status={run.status} />
+                              </td>
+                              <td
+                                data-label={t(
+                                  "campaignDetail.execution.table.attempts",
+                                )}
+                              >
+                                {detail.attempts
+                                  .filter(
+                                    (attempt) => attempt.run_id === run.id,
+                                  )
+                                  .map(
+                                    (attempt) =>
+                                      `${shortId(attempt.id)}:${attempt.status}`,
+                                  )
+                                  .join(", ") || "—"}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <h3>
+                      {t("campaignDetail.execution.attemptsTitle", {
+                        count: detail.attempts.length,
+                      })}
+                    </h3>
+                    {detail.attempts.length === 0 ? (
+                      <p className="muted">
+                        {t("campaignDetail.execution.noAttempts")}
+                      </p>
+                    ) : (
+                      <div className="table-responsive">
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>
+                                {t("campaignDetail.execution.table.attempt")}
+                              </th>
+                              <th>{t("campaignDetail.execution.table.run")}</th>
+                              <th>
+                                {t("campaignDetail.execution.table.status")}
+                              </th>
+                              <th>
+                                {t("campaignDetail.execution.table.created")}
+                              </th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {detail.attempts.map((attempt) => (
+                              <tr key={attempt.id}>
+                                <td
+                                  data-label={t(
+                                    "campaignDetail.execution.table.attempt",
+                                  )}
+                                >
+                                  <code>{shortId(attempt.id)}</code>
+                                </td>
+                                <td
+                                  data-label={t(
+                                    "campaignDetail.execution.table.run",
+                                  )}
+                                >
+                                  <code>{shortId(attempt.run_id)}</code>
+                                </td>
+                                <td
+                                  data-label={t(
+                                    "campaignDetail.execution.table.status",
+                                  )}
+                                >
+                                  <StatusBadge status={attempt.status} />
+                                </td>
+                                <td
+                                  className="muted"
+                                  data-label={t(
+                                    "campaignDetail.execution.table.created",
+                                  )}
+                                >
+                                  {formatTimestamp(attempt.created_at)}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </>
+                )}
+              </Panel>
+              <Panel>
+                <div className="section-heading">
+                  <h2>{t("campaignDetail.execution.sessionsTitle")}</h2>
+                  <span className="muted">
+                    {t("campaignDetail.execution.sessionsHint")}
+                  </span>
+                </div>
+                <ParticipantSessionList
+                  sessions={sessions}
+                  emptyTitle={t("campaignDetail.execution.sessionsEmptyTitle")}
+                  emptyDescription={t(
+                    "campaignDetail.execution.sessionsEmptyDescription",
+                  )}
+                />
+              </Panel>
+            </TabPanel>
+          )}
+
+          {tab === "candidates" && (
+            <TabPanel id="candidates">
+              {detail.candidates.length === 0 ? (
+                <EmptyState
+                  title={t("campaignDetail.candidates.emptyTitle")}
+                  description={t("campaignDetail.candidates.emptyDescription")}
+                />
+              ) : (
+                detail.candidates.map((candidate) => {
+                  const gate = gates[candidate.id] ?? null;
+                  return (
+                    <Panel key={candidate.id} data-testid="candidate-panel">
+                      <div className="session-card-head">
+                        <h2>
+                          {t("campaignDetail.candidateHeading", {
+                            id: shortId(candidate.id),
+                          })}
+                        </h2>
+                        {gate ? (
+                          <StatusBadge status={gate.outcome} />
+                        ) : (
+                          <StatusBadge
+                            status="PENDING"
+                            label={t("campaignDetail.candidates.gatePending")}
+                          />
+                        )}
+                      </div>
+                      <CandidateIdentity candidate={candidate} />
+                      <CandidateDiff
+                        campaignId={campaign.id}
+                        candidateId={candidate.id}
+                      />
+                      {project && (
+                        <CandidatePullRequest
+                          campaignId={campaign.id}
+                          candidateId={candidate.id}
+                          projectId={project.id}
+                          candidateCommitSha={candidate.commit_sha}
+                        />
+                      )}
+                      <div className="campaign-actions">
+                        <Button size="sm" onClick={() => selectTab("evidence")}>
+                          {t("campaignDetail.candidates.viewEvidence")}
+                        </Button>
+                        <Button size="sm" onClick={() => selectTab("gate")}>
+                          {t("campaignDetail.candidates.viewGate")}
+                        </Button>
+                      </div>
+                    </Panel>
+                  );
+                })
+              )}
+            </TabPanel>
+          )}
+
+          {tab === "evidence" && (
+            <TabPanel id="evidence">
+              {detail.candidates.length === 0 ? (
+                <EmptyState
+                  title={t("campaignDetail.evidence.emptyTitle")}
+                  description={t("campaignDetail.evidence.emptyDescription")}
+                />
+              ) : (
+                detail.candidates.map((candidate) => {
+                  const candidateReceipts = receipts[candidate.id] ?? [];
+                  return (
+                    <Panel key={candidate.id}>
+                      <div className="section-heading">
+                        <h2>
+                          {t("campaignDetail.candidateHeading", {
+                            id: shortId(candidate.id),
+                          })}
+                        </h2>
+                        <span className="muted">
+                          {t("campaignDetail.evidence.independent")}
+                        </span>
+                      </div>
+                      <ReceiptEvidenceTable receipts={candidateReceipts} />
+                      <ReceiptModelProvenance receipts={candidateReceipts} />
+                      <h3>{t("campaignDetail.evidence.reviewFindings")}</h3>
+                      <ReviewFindings receipts={candidateReceipts} />
+                    </Panel>
+                  );
+                })
+              )}
+            </TabPanel>
+          )}
+
+          {tab === "gate" && (
+            <TabPanel id="gate">
+              {detail.candidates.length === 0 ? (
+                <EmptyState
+                  title={t("campaignDetail.gate.emptyTitle")}
+                  description={t("campaignDetail.gate.emptyDescription")}
+                />
+              ) : (
+                detail.candidates.map((candidate) => (
+                  <Panel key={candidate.id}>
+                    <div className="section-heading">
+                      <h2>
+                        {t("campaignDetail.candidateHeading", {
+                          id: shortId(candidate.id),
+                        })}
+                      </h2>
+                      <StatusBadge
+                        status={gates[candidate.id]?.outcome ?? "PENDING"}
+                      />
+                    </div>
+                    <QualityGatePanel
+                      gate={gates[candidate.id] ?? null}
+                      candidateId={candidate.id}
+                    />
+                  </Panel>
+                ))
+              )}
+            </TabPanel>
+          )}
+
+          {tab === "budget" && (
+            <TabPanel id="budget">
+              <Panel>
+                <div className="section-heading">
+                  <h2>{t("campaignDetail.budget.title")}</h2>
+                  <span className="muted">
+                    {t("campaignDetail.budget.hint")}
+                  </span>
+                </div>
+                {authorization ? (
+                  <>
+                    <p>
+                      {authorization.authorizationId} ·{" "}
+                      {authorization.riskClass} ·{" "}
+                      {executionModeLabel(authorization.executionMode, t)} ·{" "}
+                      {t("campaignDetail.budget.actor", {
+                        actor: authorization.actor,
+                      })}
+                    </p>
+                    <p className="muted">{authorization.rationale}</p>
+                    <dl className="detail">
+                      <BudgetRow
+                        label={t("campaignDetail.budget.execution")}
+                        value={executionModeLabel(
+                          authorization.executionMode,
+                          t,
+                        )}
+                      />
+                      <BudgetRow
+                        label={t("campaignDetail.budget.schemaVersion")}
+                        value={String(authorization.schemaVersion)}
+                      />
+                      <BudgetRow
+                        label={t("campaignDetail.budget.route")}
+                        value={
+                          authorization.executionMode === "FIXTURE"
+                            ? authorization.provider || authorization.model
+                              ? t("campaignDetail.budget.fixtureRoute", {
+                                  provider: authorization.provider,
+                                  model: authorization.model,
+                                  mode:
+                                    authorization.providerMode ||
+                                    t("campaignDetail.budget.modeNotSet"),
+                                })
+                              : t("campaignDetail.budget.fixtureNoProvider")
+                            : authorization.provider || authorization.model
+                              ? t("campaignDetail.budget.providerRoute", {
+                                  provider: authorization.provider,
+                                  model: authorization.model,
+                                  mode:
+                                    authorization.providerMode ||
+                                    t("campaignDetail.budget.modeNotSet"),
+                                })
+                              : t("campaignDetail.budget.providerNoRoute")
+                        }
+                      />
+                      <BudgetRow
+                        label={t("campaignDetail.budget.delegation")}
+                        value={authorization.delegationId || t("common.notSet")}
+                      />
+                      <BudgetRow
+                        label={t("campaignDetail.budget.authorizedPaths")}
+                        value={formatStringList(
+                          authorization.authorizedPaths,
+                          t,
+                        )}
+                      />
+                      <BudgetRow
+                        label={t("campaignDetail.budget.allowedTools")}
+                        value={formatStringList(authorization.allowedTools, t)}
+                      />
+                      {authorization.policy && (
+                        <>
+                          <BudgetRow
+                            label={t("campaignDetail.budget.policyId")}
+                            value={authorization.policy.policyId}
+                          />
+                          <BudgetRow
+                            label={t("campaignDetail.budget.monetaryEnvelope")}
+                            value={authorization.policy.monetaryEnvelopeId}
+                          />
+                          <BudgetRow
+                            label={t("campaignDetail.budget.scopeHash")}
+                            value={shortId(
+                              authorization.policy.scopeSha256,
+                              16,
+                            )}
+                          />
+                        </>
+                      )}
+                      <BudgetRow
+                        label={t("campaignDetail.budget.attempts")}
+                        value={t("campaignDetail.budget.observedAttempts", {
+                          count: detail.attempts.length,
+                        })}
+                      />
+                      <BudgetRow
+                        label={t("campaignDetail.budget.sessions")}
+                        value={t("campaignDetail.budget.observedSessions", {
+                          count: sessions.length,
+                        })}
+                      />
+                      <BudgetRow
+                        label={t("campaignDetail.budget.turnRecords")}
+                        value={t("campaignDetail.budget.turnRecordsObserved", {
+                          count: turnRecords,
+                        })}
+                      />
+                      <BudgetRow
+                        label={t("campaignDetail.budget.inputTokens")}
+                        value={t("campaignDetail.budget.tokensMeasured", {
+                          count: totalInput.toLocaleString(),
+                        })}
+                      />
+                      <BudgetRow
+                        label={t("campaignDetail.budget.outputTokens")}
+                        value={t("campaignDetail.budget.tokensMeasured", {
+                          count: totalOutput.toLocaleString(),
+                        })}
+                      />
+                      <BudgetRow
+                        label={t("campaignDetail.budget.cost")}
+                        value={t("campaignDetail.budget.costMeasured", {
+                          amount: formatCostMicros(totalCost),
+                        })}
+                      />
+                      <BudgetRow
+                        label={t("campaignDetail.budget.unmeasuredSessions")}
+                        value={t("campaignDetail.budget.unmeasuredOf", {
+                          count: unmeasuredSessions.length,
+                          total: sessions.length,
+                        })}
+                      />
+                      <BudgetRow
+                        label={t("campaignDetail.budget.unmeasuredBound")}
+                        value={t("campaignDetail.budget.unmeasuredBoundValue", {
+                          amount: formatCostMicros(unmeasuredBound),
+                        })}
+                      />
+                    </dl>
+                    {authorization.schemaVersion === 2 &&
+                      authorization.policy && (
+                        <section
+                          aria-label={t("campaignDetail.budget.operationsAria")}
+                        >
+                          <h3>{t("campaignDetail.budget.operationsTitle")}</h3>
+                          <dl className="detail">
+                            <BudgetRow
+                              label={t(
+                                "campaignDetail.budget.modelRequestTimeout",
+                              )}
+                              value={t("campaignDetail.budget.seconds", {
+                                count:
+                                  authorization.policy.operations
+                                    .modelRequestTimeoutSecs,
+                              })}
+                            />
+                            <BudgetRow
+                              label={t("campaignDetail.budget.toolCallTimeout")}
+                              value={t("campaignDetail.budget.seconds", {
+                                count:
+                                  authorization.policy.operations
+                                    .toolCallTimeoutSecs,
+                              })}
+                            />
+                            <BudgetRow
+                              label={t("campaignDetail.budget.maxRequestBytes")}
+                              value={t("campaignDetail.budget.bytes", {
+                                count:
+                                  authorization.policy.operations.maxRequestBytes.toLocaleString(),
+                              })}
+                            />
+                            <BudgetRow
+                              label={t(
+                                "campaignDetail.budget.maxResponseBytes",
+                              )}
+                              value={t("campaignDetail.budget.bytes", {
+                                count:
+                                  authorization.policy.operations.maxResponseBytes.toLocaleString(),
+                              })}
+                            />
+                            <BudgetRow
+                              label={t(
+                                "campaignDetail.budget.maxGenerationTokens",
+                              )}
+                              value={authorization.policy.operations.maxGenerationTokens.toLocaleString()}
+                            />
+                            <BudgetRow
+                              label={t("campaignDetail.budget.maxInFlight")}
+                              value={String(
+                                authorization.policy.operations
+                                  .maxInFlightOperations,
+                              )}
+                            />
+                          </dl>
+                          <h3>{t("campaignDetail.budget.progressTitle")}</h3>
+                          <dl className="detail">
+                            <BudgetRow
+                              label={t("campaignDetail.budget.diagnoseAfter")}
+                              value={String(
+                                authorization.policy.progress
+                                  .diagnoseAfterStagnantCheckpoints,
+                              )}
+                            />
+                            <BudgetRow
+                              label={t("campaignDetail.budget.escalateAfter")}
+                              value={String(
+                                authorization.policy.progress
+                                  .escalateAfterUnsuccessfulReplans,
+                              )}
+                            />
+                            <BudgetRow
+                              label={t(
+                                "campaignDetail.budget.observationTimeout",
+                              )}
+                              value={t("campaignDetail.budget.seconds", {
+                                count:
+                                  authorization.policy.progress
+                                    .observationTimeoutSecs,
+                              })}
+                            />
+                            <BudgetRow
+                              label={t("campaignDetail.budget.autonomyTitle")}
+                              value={
+                                authorization.policy.progress.autonomy?.enabled
+                                  ? t("campaignDetail.budget.autonomyEnabled")
+                                  : t("campaignDetail.budget.autonomyDisabled")
+                              }
+                            />
+                            {authorization.policy.progress.autonomy
+                              ?.enabled && (
+                              <>
+                                <BudgetRow
+                                  label="R0"
+                                  value={t("campaignDetail.budget.autonomyR0", {
+                                    points:
+                                      authorization.policy.progress.autonomy
+                                        .repairPointBudgets[0],
+                                    cycles:
+                                      authorization.policy.progress.autonomy
+                                        .repairCycleBudgets[0],
+                                  })}
+                                />
+                                <BudgetRow
+                                  label="R1"
+                                  value={t("campaignDetail.budget.autonomyR1", {
+                                    points:
+                                      authorization.policy.progress.autonomy
+                                        .repairPointBudgets[1],
+                                    cycles:
+                                      authorization.policy.progress.autonomy
+                                        .repairCycleBudgets[1],
+                                  })}
+                                />
+                              </>
+                            )}
+                          </dl>
+                        </section>
+                      )}
+                    {authorization.schemaVersion === 2 &&
+                      !authorization.policy && (
+                        <p className="warning">
+                          {t("campaignDetail.budget.missingPolicy")}
+                        </p>
+                      )}
+                    {legacyCaps && (
+                      <section
+                        aria-label={t("campaignDetail.budget.legacyAria")}
+                      >
+                        <h3>{t("campaignDetail.budget.legacyTitle")}</h3>
+                        <p className="muted">
+                          {t("campaignDetail.budget.legacyHint")}
+                        </p>
+                        <dl className="detail">
+                          <BudgetRow
+                            label={t("campaignDetail.budget.attempts")}
+                            value={String(legacyCaps.maxAttempts)}
+                          />
+                          <BudgetRow
+                            label={t("campaignDetail.budget.sessions")}
+                            value={String(legacyCaps.maxSessions)}
+                          />
+                          <BudgetRow
+                            label={t("campaignDetail.budget.legacyTurns")}
+                            value={String(legacyCaps.maxTurns)}
+                          />
+                          <BudgetRow
+                            label={t("campaignDetail.budget.legacyInputTokens")}
+                            value={legacyCaps.maxInputTokens.toLocaleString()}
+                          />
+                          <BudgetRow
+                            label={t(
+                              "campaignDetail.budget.legacyOutputTokens",
+                            )}
+                            value={legacyCaps.maxOutputTokens.toLocaleString()}
+                          />
+                          <BudgetRow
+                            label={t("campaignDetail.budget.legacyCost")}
+                            value={
+                              legacyCaps.maxCostMicros > 0
+                                ? formatCostMicros(legacyCaps.maxCostMicros)
+                                : t("common.notSet")
+                            }
+                          />
+                          <BudgetRow
+                            label={t("campaignDetail.budget.deadline")}
+                            value={
+                              legacyCaps.deadlineSecs > 0
+                                ? `${legacyCaps.deadlineSecs}s`
+                                : t("common.notSet")
+                            }
+                          />
+                        </dl>
+                      </section>
+                    )}
+                    <p className="muted">{t("campaignDetail.budget.note")}</p>
+                    {overBudget.length > 0 && (
+                      <p className="warning">
+                        {t("campaignDetail.budget.overBudget", {
+                          items: overBudget.join(", "),
+                        })}
+                      </p>
+                    )}
+                  </>
+                ) : (
                   <p className="muted">
-                    {t("campaignDetail.execution.noAttempts")}
+                    {t("campaignDetail.budget.noAuthorization")}
                   </p>
+                )}
+              </Panel>
+              <Panel>
+                <div className="section-heading">
+                  <h2>{t("campaignDetail.budget.leadReservationsTitle")}</h2>
+                  <span className="muted">
+                    {t("campaignDetail.budget.leadReservationsHint")}
+                  </span>
+                </div>
+                {!lead || lead.model_calls.length === 0 ? (
+                  <EmptyState
+                    title={t("campaignDetail.budget.noLeadCallsTitle")}
+                    description={t(
+                      "campaignDetail.budget.noLeadCallsDescription",
+                    )}
+                  />
                 ) : (
                   <div className="table-responsive">
                     <table>
                       <thead>
                         <tr>
-                          <th>{t("campaignDetail.execution.table.attempt")}</th>
-                          <th>{t("campaignDetail.execution.table.run")}</th>
-                          <th>{t("campaignDetail.execution.table.status")}</th>
-                          <th>{t("campaignDetail.execution.table.created")}</th>
+                          <th>
+                            {t("campaignDetail.budget.table.reservation")}
+                          </th>
+                          <th>{t("campaignDetail.budget.table.role")}</th>
+                          <th>{t("campaignDetail.budget.table.route")}</th>
+                          <th>{t("campaignDetail.budget.table.state")}</th>
+                          <th>{t("campaignDetail.budget.table.usage")}</th>
+                          <th>{t("campaignDetail.budget.table.updated")}</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {detail.attempts.map((attempt) => (
-                          <tr key={attempt.id}>
+                        {lead.model_calls.map((call) => (
+                          <tr key={call.reservation_id}>
                             <td
                               data-label={t(
-                                "campaignDetail.execution.table.attempt",
+                                "campaignDetail.budget.table.reservation",
                               )}
                             >
-                              <code>{shortId(attempt.id)}</code>
+                              <code>{shortId(call.reservation_id)}</code>
+                            </td>
+                            <td
+                              data-label={t("campaignDetail.budget.table.role")}
+                            >
+                              {call.role}
                             </td>
                             <td
                               data-label={t(
-                                "campaignDetail.execution.table.run",
+                                "campaignDetail.budget.table.route",
                               )}
                             >
-                              <code>{shortId(attempt.run_id)}</code>
+                              {call.provider}/{call.model}
                             </td>
                             <td
                               data-label={t(
-                                "campaignDetail.execution.table.status",
+                                "campaignDetail.budget.table.state",
                               )}
                             >
-                              <StatusBadge status={attempt.status} />
+                              <StatusBadge status={call.state} />
+                            </td>
+                            <td
+                              data-label={t(
+                                "campaignDetail.budget.table.usage",
+                              )}
+                            >
+                              {call.usage_known
+                                ? t("campaignDetail.budget.callUsage", {
+                                    tokens: call.total_tokens.toLocaleString(),
+                                    cost: formatCostMicros(call.cost_micros),
+                                  })
+                                : "UNMEASURED"}
                             </td>
                             <td
                               className="muted"
                               data-label={t(
-                                "campaignDetail.execution.table.created",
+                                "campaignDetail.budget.table.updated",
                               )}
                             >
-                              {formatTimestamp(attempt.created_at)}
+                              {formatTimestamp(call.updated_at)}
                             </td>
                           </tr>
                         ))}
@@ -955,612 +1538,117 @@ export function CampaignDetail() {
                     </table>
                   </div>
                 )}
-              </>
-            )}
-          </Panel>
-          <Panel>
-            <div className="section-heading">
-              <h2>{t("campaignDetail.execution.sessionsTitle")}</h2>
-              <span className="muted">
-                {t("campaignDetail.execution.sessionsHint")}
-              </span>
-            </div>
-            <ParticipantSessionList
-              sessions={sessions}
-              emptyTitle={t("campaignDetail.execution.sessionsEmptyTitle")}
-              emptyDescription={t(
-                "campaignDetail.execution.sessionsEmptyDescription",
-              )}
-            />
-          </Panel>
-        </TabPanel>
-      )}
-
-      {tab === "candidates" && (
-        <TabPanel id="candidates">
-          {detail.candidates.length === 0 ? (
-            <EmptyState
-              title={t("campaignDetail.candidates.emptyTitle")}
-              description={t("campaignDetail.candidates.emptyDescription")}
-            />
-          ) : (
-            detail.candidates.map((candidate) => {
-              const gate = gates[candidate.id] ?? null;
-              return (
-                <Panel key={candidate.id} data-testid="candidate-panel">
-                  <div className="session-card-head">
-                    <h2>
-                      {t("campaignDetail.candidateHeading", {
-                        id: shortId(candidate.id),
-                      })}
-                    </h2>
-                    {gate ? (
-                      <StatusBadge status={gate.outcome} />
-                    ) : (
-                      <StatusBadge
-                        status="PENDING"
-                        label={t("campaignDetail.candidates.gatePending")}
-                      />
-                    )}
-                  </div>
-                  <CandidateIdentity candidate={candidate} />
-                  <CandidateDiff
-                    campaignId={campaign.id}
-                    candidateId={candidate.id}
-                  />
-                  {project && (
-                    <CandidatePullRequest
-                      campaignId={campaign.id}
-                      candidateId={candidate.id}
-                      projectId={project.id}
-                      candidateCommitSha={candidate.commit_sha}
-                    />
-                  )}
-                  <div className="campaign-actions">
-                    <Button size="sm" onClick={() => selectTab("evidence")}>
-                      {t("campaignDetail.candidates.viewEvidence")}
-                    </Button>
-                    <Button size="sm" onClick={() => selectTab("gate")}>
-                      {t("campaignDetail.candidates.viewGate")}
-                    </Button>
-                  </div>
-                </Panel>
-              );
-            })
-          )}
-        </TabPanel>
-      )}
-
-      {tab === "evidence" && (
-        <TabPanel id="evidence">
-          {detail.candidates.length === 0 ? (
-            <EmptyState
-              title={t("campaignDetail.evidence.emptyTitle")}
-              description={t("campaignDetail.evidence.emptyDescription")}
-            />
-          ) : (
-            detail.candidates.map((candidate) => {
-              const candidateReceipts = receipts[candidate.id] ?? [];
-              return (
-                <Panel key={candidate.id}>
-                  <div className="section-heading">
-                    <h2>
-                      {t("campaignDetail.candidateHeading", {
-                        id: shortId(candidate.id),
-                      })}
-                    </h2>
-                    <span className="muted">
-                      {t("campaignDetail.evidence.independent")}
-                    </span>
-                  </div>
-                  <ReceiptEvidenceTable receipts={candidateReceipts} />
-                  <ReceiptModelProvenance receipts={candidateReceipts} />
-                  <h3>{t("campaignDetail.evidence.reviewFindings")}</h3>
-                  <ReviewFindings receipts={candidateReceipts} />
-                </Panel>
-              );
-            })
-          )}
-        </TabPanel>
-      )}
-
-      {tab === "gate" && (
-        <TabPanel id="gate">
-          {detail.candidates.length === 0 ? (
-            <EmptyState
-              title={t("campaignDetail.gate.emptyTitle")}
-              description={t("campaignDetail.gate.emptyDescription")}
-            />
-          ) : (
-            detail.candidates.map((candidate) => (
-              <Panel key={candidate.id}>
-                <div className="section-heading">
-                  <h2>
-                    {t("campaignDetail.candidateHeading", {
-                      id: shortId(candidate.id),
-                    })}
-                  </h2>
-                  <StatusBadge
-                    status={gates[candidate.id]?.outcome ?? "PENDING"}
-                  />
-                </div>
-                <QualityGatePanel
-                  gate={gates[candidate.id] ?? null}
-                  candidateId={candidate.id}
-                />
               </Panel>
-            ))
+            </TabPanel>
           )}
-        </TabPanel>
-      )}
 
-      {tab === "budget" && (
-        <TabPanel id="budget">
-          <Panel>
-            <div className="section-heading">
-              <h2>{t("campaignDetail.budget.title")}</h2>
-              <span className="muted">{t("campaignDetail.budget.hint")}</span>
-            </div>
-            {authorization ? (
-              <>
+          {tab === "events" && (
+            <TabPanel id="events">
+              <Panel>
+                <div className="section-heading">
+                  <h2>{t("campaignDetail.events.cancelTitle")}</h2>
+                  <StatusBadge status={campaign.status} />
+                </div>
                 <p>
-                  {authorization.authorizationId} · {authorization.riskClass} ·{" "}
-                  {executionModeLabel(authorization.executionMode, t)} ·{" "}
-                  {t("campaignDetail.budget.actor", {
-                    actor: authorization.actor,
+                  {t("campaignDetail.events.campaignState")}{" "}
+                  <StatusBadge status={campaign.status} />
+                </p>
+                {cancelEvent ? (
+                  <p>
+                    <strong>{cancelEvent.kind}</strong> {cancelEvent.detail} ·{" "}
+                    <span className="muted">
+                      {formatTimestamp(cancelEvent.recorded_at)}
+                    </span>
+                  </p>
+                ) : (
+                  <p className="muted">{t("campaignDetail.events.noCancel")}</p>
+                )}
+                {leadBlocked && lead && (
+                  <p className="warning">
+                    {t("campaignDetail.events.leadBlocked", {
+                      id: shortId(lead.request.id),
+                      reason: lead.request.failure_reason ?? "",
+                    })}
+                  </p>
+                )}
+                {leadFailed && lead && (
+                  <p className="error">
+                    {t("campaignDetail.events.leadFailed", {
+                      id: shortId(lead.request.id),
+                      reason:
+                        lead.request.failure_reason ??
+                        t("campaignDetail.events.noFailureReason"),
+                    })}
+                  </p>
+                )}
+                <p>
+                  {t("campaignDetail.events.summary", {
+                    unresolved: unresolvedSessions.length,
+                    unconfirmed: unconfirmedTermination.length,
                   })}
                 </p>
-                <p className="muted">{authorization.rationale}</p>
-                <dl className="detail">
-                  <BudgetRow
-                    label={t("campaignDetail.budget.execution")}
-                    value={executionModeLabel(authorization.executionMode, t)}
-                  />
-                  <BudgetRow
-                    label={t("campaignDetail.budget.schemaVersion")}
-                    value={String(authorization.schemaVersion)}
-                  />
-                  <BudgetRow
-                    label={t("campaignDetail.budget.route")}
-                    value={
-                      authorization.executionMode === "FIXTURE"
-                        ? authorization.provider || authorization.model
-                          ? t("campaignDetail.budget.fixtureRoute", {
-                              provider: authorization.provider,
-                              model: authorization.model,
-                              mode:
-                                authorization.providerMode ||
-                                t("campaignDetail.budget.modeNotSet"),
-                            })
-                          : t("campaignDetail.budget.fixtureNoProvider")
-                        : authorization.provider || authorization.model
-                          ? t("campaignDetail.budget.providerRoute", {
-                              provider: authorization.provider,
-                              model: authorization.model,
-                              mode:
-                                authorization.providerMode ||
-                                t("campaignDetail.budget.modeNotSet"),
-                            })
-                          : t("campaignDetail.budget.providerNoRoute")
-                    }
-                  />
-                  <BudgetRow
-                    label={t("campaignDetail.budget.delegation")}
-                    value={authorization.delegationId || t("common.notSet")}
-                  />
-                  <BudgetRow
-                    label={t("campaignDetail.budget.authorizedPaths")}
-                    value={formatStringList(authorization.authorizedPaths, t)}
-                  />
-                  <BudgetRow
-                    label={t("campaignDetail.budget.allowedTools")}
-                    value={formatStringList(authorization.allowedTools, t)}
-                  />
-                  {authorization.policy && (
-                    <>
-                      <BudgetRow
-                        label={t("campaignDetail.budget.policyId")}
-                        value={authorization.policy.policyId}
-                      />
-                      <BudgetRow
-                        label={t("campaignDetail.budget.monetaryEnvelope")}
-                        value={authorization.policy.monetaryEnvelopeId}
-                      />
-                      <BudgetRow
-                        label={t("campaignDetail.budget.scopeHash")}
-                        value={shortId(authorization.policy.scopeSha256, 16)}
-                      />
-                    </>
-                  )}
-                  <BudgetRow
-                    label={t("campaignDetail.budget.attempts")}
-                    value={t("campaignDetail.budget.observedAttempts", {
-                      count: detail.attempts.length,
-                    })}
-                  />
-                  <BudgetRow
-                    label={t("campaignDetail.budget.sessions")}
-                    value={t("campaignDetail.budget.observedSessions", {
-                      count: sessions.length,
-                    })}
-                  />
-                  <BudgetRow
-                    label={t("campaignDetail.budget.turnRecords")}
-                    value={t("campaignDetail.budget.turnRecordsObserved", {
-                      count: turnRecords,
-                    })}
-                  />
-                  <BudgetRow
-                    label={t("campaignDetail.budget.inputTokens")}
-                    value={t("campaignDetail.budget.tokensMeasured", {
-                      count: totalInput.toLocaleString(),
-                    })}
-                  />
-                  <BudgetRow
-                    label={t("campaignDetail.budget.outputTokens")}
-                    value={t("campaignDetail.budget.tokensMeasured", {
-                      count: totalOutput.toLocaleString(),
-                    })}
-                  />
-                  <BudgetRow
-                    label={t("campaignDetail.budget.cost")}
-                    value={t("campaignDetail.budget.costMeasured", {
-                      amount: formatCostMicros(totalCost),
-                    })}
-                  />
-                  <BudgetRow
-                    label={t("campaignDetail.budget.unmeasuredSessions")}
-                    value={t("campaignDetail.budget.unmeasuredOf", {
-                      count: unmeasuredSessions.length,
-                      total: sessions.length,
-                    })}
-                  />
-                  <BudgetRow
-                    label={t("campaignDetail.budget.unmeasuredBound")}
-                    value={t("campaignDetail.budget.unmeasuredBoundValue", {
-                      amount: formatCostMicros(unmeasuredBound),
-                    })}
-                  />
-                </dl>
-                {authorization.schemaVersion === 2 && authorization.policy && (
-                  <section
-                    aria-label={t("campaignDetail.budget.operationsAria")}
-                  >
-                    <h3>{t("campaignDetail.budget.operationsTitle")}</h3>
-                    <dl className="detail">
-                      <BudgetRow
-                        label={t("campaignDetail.budget.modelRequestTimeout")}
-                        value={t("campaignDetail.budget.seconds", {
-                          count:
-                            authorization.policy.operations
-                              .modelRequestTimeoutSecs,
-                        })}
-                      />
-                      <BudgetRow
-                        label={t("campaignDetail.budget.toolCallTimeout")}
-                        value={t("campaignDetail.budget.seconds", {
-                          count:
-                            authorization.policy.operations.toolCallTimeoutSecs,
-                        })}
-                      />
-                      <BudgetRow
-                        label={t("campaignDetail.budget.maxRequestBytes")}
-                        value={t("campaignDetail.budget.bytes", {
-                          count:
-                            authorization.policy.operations.maxRequestBytes.toLocaleString(),
-                        })}
-                      />
-                      <BudgetRow
-                        label={t("campaignDetail.budget.maxResponseBytes")}
-                        value={t("campaignDetail.budget.bytes", {
-                          count:
-                            authorization.policy.operations.maxResponseBytes.toLocaleString(),
-                        })}
-                      />
-                      <BudgetRow
-                        label={t("campaignDetail.budget.maxGenerationTokens")}
-                        value={authorization.policy.operations.maxGenerationTokens.toLocaleString()}
-                      />
-                      <BudgetRow
-                        label={t("campaignDetail.budget.maxInFlight")}
-                        value={String(
-                          authorization.policy.operations.maxInFlightOperations,
-                        )}
-                      />
-                    </dl>
-                    <h3>{t("campaignDetail.budget.progressTitle")}</h3>
-                    <dl className="detail">
-                      <BudgetRow
-                        label={t("campaignDetail.budget.diagnoseAfter")}
-                        value={String(
-                          authorization.policy.progress
-                            .diagnoseAfterStagnantCheckpoints,
-                        )}
-                      />
-                      <BudgetRow
-                        label={t("campaignDetail.budget.escalateAfter")}
-                        value={String(
-                          authorization.policy.progress
-                            .escalateAfterUnsuccessfulReplans,
-                        )}
-                      />
-                      <BudgetRow
-                        label={t("campaignDetail.budget.observationTimeout")}
-                        value={t("campaignDetail.budget.seconds", {
-                          count:
-                            authorization.policy.progress
-                              .observationTimeoutSecs,
-                        })}
-                      />
-                      <BudgetRow
-                        label={t("campaignDetail.budget.autonomyTitle")}
-                        value={
-                          authorization.policy.progress.autonomy?.enabled
-                            ? t("campaignDetail.budget.autonomyEnabled")
-                            : t("campaignDetail.budget.autonomyDisabled")
-                        }
-                      />
-                      {authorization.policy.progress.autonomy?.enabled && (
-                        <>
-                          <BudgetRow
-                            label="R0"
-                            value={t("campaignDetail.budget.autonomyR0", {
-                              points:
-                                authorization.policy.progress.autonomy
-                                  .repairPointBudgets[0],
-                              cycles:
-                                authorization.policy.progress.autonomy
-                                  .repairCycleBudgets[0],
-                            })}
-                          />
-                          <BudgetRow
-                            label="R1"
-                            value={t("campaignDetail.budget.autonomyR1", {
-                              points:
-                                authorization.policy.progress.autonomy
-                                  .repairPointBudgets[1],
-                              cycles:
-                                authorization.policy.progress.autonomy
-                                  .repairCycleBudgets[1],
-                            })}
-                          />
-                        </>
-                      )}
-                    </dl>
-                  </section>
-                )}
-                {authorization.schemaVersion === 2 && !authorization.policy && (
+                {unconfirmedTermination.length > 0 && (
                   <p className="warning">
-                    {t("campaignDetail.budget.missingPolicy")}
+                    {t("campaignDetail.events.terminationWarning", {
+                      ids: unconfirmedTermination
+                        .map((session) => shortId(session.session_record_id))
+                        .join(", "),
+                    })}
                   </p>
                 )}
-                {legacyCaps && (
-                  <section aria-label={t("campaignDetail.budget.legacyAria")}>
-                    <h3>{t("campaignDetail.budget.legacyTitle")}</h3>
+                {campaign.status !== "CANCELLED" &&
+                  unresolvedSessions.length === 0 && (
                     <p className="muted">
-                      {t("campaignDetail.budget.legacyHint")}
+                      {t("campaignDetail.events.noUnresolved")}
                     </p>
-                    <dl className="detail">
-                      <BudgetRow
-                        label={t("campaignDetail.budget.attempts")}
-                        value={String(legacyCaps.maxAttempts)}
-                      />
-                      <BudgetRow
-                        label={t("campaignDetail.budget.sessions")}
-                        value={String(legacyCaps.maxSessions)}
-                      />
-                      <BudgetRow
-                        label={t("campaignDetail.budget.legacyTurns")}
-                        value={String(legacyCaps.maxTurns)}
-                      />
-                      <BudgetRow
-                        label={t("campaignDetail.budget.legacyInputTokens")}
-                        value={legacyCaps.maxInputTokens.toLocaleString()}
-                      />
-                      <BudgetRow
-                        label={t("campaignDetail.budget.legacyOutputTokens")}
-                        value={legacyCaps.maxOutputTokens.toLocaleString()}
-                      />
-                      <BudgetRow
-                        label={t("campaignDetail.budget.legacyCost")}
-                        value={
-                          legacyCaps.maxCostMicros > 0
-                            ? formatCostMicros(legacyCaps.maxCostMicros)
-                            : t("common.notSet")
-                        }
-                      />
-                      <BudgetRow
-                        label={t("campaignDetail.budget.deadline")}
-                        value={
-                          legacyCaps.deadlineSecs > 0
-                            ? `${legacyCaps.deadlineSecs}s`
-                            : t("common.notSet")
-                        }
-                      />
-                    </dl>
-                  </section>
-                )}
-                <p className="muted">{t("campaignDetail.budget.note")}</p>
-                {overBudget.length > 0 && (
-                  <p className="warning">
-                    {t("campaignDetail.budget.overBudget", {
-                      items: overBudget.join(", "),
+                  )}
+              </Panel>
+              <Panel>
+                <div className="section-heading">
+                  <h2>{t("campaignDetail.events.title")}</h2>
+                  <span className="muted">
+                    {t("campaignDetail.events.count", {
+                      count: detail.events.length,
                     })}
-                  </p>
+                  </span>
+                </div>
+                {detail.events.length === 0 ? (
+                  <EmptyState
+                    title={t("campaignDetail.events.emptyTitle")}
+                    description={t("campaignDetail.events.emptyDescription")}
+                  />
+                ) : (
+                  <ul className="events">
+                    {detail.events
+                      .slice()
+                      .reverse()
+                      .map((event) => (
+                        <li key={event.sequence}>
+                          <div className="event-head">
+                            <code>#{event.sequence}</code>
+                            <strong>{event.kind}</strong>
+                            <span className="muted">
+                              {shortId(event.subject_id)} ·{" "}
+                              {formatTimestamp(event.recorded_at)}
+                            </span>
+                          </div>
+                          <p className="event-detail">{event.detail}</p>
+                        </li>
+                      ))}
+                  </ul>
                 )}
-              </>
-            ) : (
-              <p className="muted">
-                {t("campaignDetail.budget.noAuthorization")}
-              </p>
-            )}
-          </Panel>
-          <Panel>
-            <div className="section-heading">
-              <h2>{t("campaignDetail.budget.leadReservationsTitle")}</h2>
-              <span className="muted">
-                {t("campaignDetail.budget.leadReservationsHint")}
-              </span>
-            </div>
-            {!lead || lead.model_calls.length === 0 ? (
-              <EmptyState
-                title={t("campaignDetail.budget.noLeadCallsTitle")}
-                description={t("campaignDetail.budget.noLeadCallsDescription")}
-              />
-            ) : (
-              <div className="table-responsive">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>{t("campaignDetail.budget.table.reservation")}</th>
-                      <th>{t("campaignDetail.budget.table.role")}</th>
-                      <th>{t("campaignDetail.budget.table.route")}</th>
-                      <th>{t("campaignDetail.budget.table.state")}</th>
-                      <th>{t("campaignDetail.budget.table.usage")}</th>
-                      <th>{t("campaignDetail.budget.table.updated")}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {lead.model_calls.map((call) => (
-                      <tr key={call.reservation_id}>
-                        <td
-                          data-label={t(
-                            "campaignDetail.budget.table.reservation",
-                          )}
-                        >
-                          <code>{shortId(call.reservation_id)}</code>
-                        </td>
-                        <td data-label={t("campaignDetail.budget.table.role")}>
-                          {call.role}
-                        </td>
-                        <td data-label={t("campaignDetail.budget.table.route")}>
-                          {call.provider}/{call.model}
-                        </td>
-                        <td data-label={t("campaignDetail.budget.table.state")}>
-                          <StatusBadge status={call.state} />
-                        </td>
-                        <td data-label={t("campaignDetail.budget.table.usage")}>
-                          {call.usage_known
-                            ? t("campaignDetail.budget.callUsage", {
-                                tokens: call.total_tokens.toLocaleString(),
-                                cost: formatCostMicros(call.cost_micros),
-                              })
-                            : "UNMEASURED"}
-                        </td>
-                        <td
-                          className="muted"
-                          data-label={t("campaignDetail.budget.table.updated")}
-                        >
-                          {formatTimestamp(call.updated_at)}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </Panel>
-        </TabPanel>
-      )}
-
-      {tab === "events" && (
-        <TabPanel id="events">
-          <Panel>
-            <div className="section-heading">
-              <h2>{t("campaignDetail.events.cancelTitle")}</h2>
-              <StatusBadge status={campaign.status} />
-            </div>
-            <p>
-              {t("campaignDetail.events.campaignState")}{" "}
-              <StatusBadge status={campaign.status} />
-            </p>
-            {cancelEvent ? (
-              <p>
-                <strong>{cancelEvent.kind}</strong> {cancelEvent.detail} ·{" "}
-                <span className="muted">
-                  {formatTimestamp(cancelEvent.recorded_at)}
-                </span>
-              </p>
-            ) : (
-              <p className="muted">{t("campaignDetail.events.noCancel")}</p>
-            )}
-            {leadBlocked && lead && (
-              <p className="warning">
-                {t("campaignDetail.events.leadBlocked", {
-                  id: shortId(lead.request.id),
-                  reason: lead.request.failure_reason ?? "",
-                })}
-              </p>
-            )}
-            {leadFailed && lead && (
-              <p className="error">
-                {t("campaignDetail.events.leadFailed", {
-                  id: shortId(lead.request.id),
-                  reason:
-                    lead.request.failure_reason ??
-                    t("campaignDetail.events.noFailureReason"),
-                })}
-              </p>
-            )}
-            <p>
-              {t("campaignDetail.events.summary", {
-                unresolved: unresolvedSessions.length,
-                unconfirmed: unconfirmedTermination.length,
-              })}
-            </p>
-            {unconfirmedTermination.length > 0 && (
-              <p className="warning">
-                {t("campaignDetail.events.terminationWarning", {
-                  ids: unconfirmedTermination
-                    .map((session) => shortId(session.session_record_id))
-                    .join(", "),
-                })}
-              </p>
-            )}
-            {campaign.status !== "CANCELLED" &&
-              unresolvedSessions.length === 0 && (
-                <p className="muted">
-                  {t("campaignDetail.events.noUnresolved")}
-                </p>
-              )}
-          </Panel>
-          <Panel>
-            <div className="section-heading">
-              <h2>{t("campaignDetail.events.title")}</h2>
-              <span className="muted">
-                {t("campaignDetail.events.count", {
-                  count: detail.events.length,
-                })}
-              </span>
-            </div>
-            {detail.events.length === 0 ? (
-              <EmptyState
-                title={t("campaignDetail.events.emptyTitle")}
-                description={t("campaignDetail.events.emptyDescription")}
-              />
-            ) : (
-              <ul className="events">
-                {detail.events
-                  .slice()
-                  .reverse()
-                  .map((event) => (
-                    <li key={event.sequence}>
-                      <div className="event-head">
-                        <code>#{event.sequence}</code>
-                        <strong>{event.kind}</strong>
-                        <span className="muted">
-                          {shortId(event.subject_id)} ·{" "}
-                          {formatTimestamp(event.recorded_at)}
-                        </span>
-                      </div>
-                      <p className="event-detail">{event.detail}</p>
-                    </li>
-                  ))}
-              </ul>
-            )}
-          </Panel>
-        </TabPanel>
-      )}
+              </Panel>
+            </TabPanel>
+          )}
+        </div>
+        <CampaignPulse
+          detail={detail}
+          gates={gates}
+          receipts={receipts}
+          sessions={sessions}
+          lead={lead}
+        />
+      </div>
     </div>
   );
 }

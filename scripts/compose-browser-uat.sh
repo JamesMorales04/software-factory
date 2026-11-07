@@ -146,16 +146,14 @@ if [[ "${FACTORY_UAT_SKIP_START:-0}" != "1" ]]; then
   # written to evidence. The browser UAT enrolls a separate device session.
   OPERATOR_TOKEN="$(podman exec "$CORE" cat /config/operator.token)"
   for _ in $(seq 1 60); do
-    if podman exec "$CORE" curl -fsS \
-      -H "Authorization: Bearer $OPERATOR_TOKEN" \
-      http://127.0.0.1:8765/workers 2>/dev/null | grep -q 'compose-worker'; then
+    if curl -fsS -H "Authorization: Bearer $OPERATOR_TOKEN" \
+      "$BASE/core-api/workers" 2>/dev/null | grep -q 'compose-worker'; then
       break
     fi
     sleep 1
   done
-  if ! podman exec "$CORE" curl -fsS \
-    -H "Authorization: Bearer $OPERATOR_TOKEN" \
-    http://127.0.0.1:8765/workers 2>/dev/null | grep -q 'compose-worker'; then
+  if ! curl -fsS -H "Authorization: Bearer $OPERATOR_TOKEN" \
+    "$BASE/core-api/workers" 2>/dev/null | grep -q 'compose-worker'; then
     log "Worker did not register"
     exit 1
   fi

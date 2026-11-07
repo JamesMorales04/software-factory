@@ -2148,6 +2148,7 @@ capabilities:
   evidence:
     deterministic:
     - docs/evidence/office-command-center-slice1-2026-10-27.json
+    - docs/evidence/office-ui-standard-2026-11-06.json
     live_agent: []
     uat: []
     deployment: []
@@ -2181,14 +2182,22 @@ capabilities:
     - docs/architecture/decisions/ADR-0025-container-native-and-office-parity.md
     contract:
     - docs/product/office-design-system.md
+    - docs/product/office-ui-standard.md
     - docs/product/office-parity.json
     source:
     - .agents/skills/factory-office-design/SKILL.md
+    - office/src/styles/tokens.css
+    - office/src/components/AppShell.tsx
+    - office/src/components/WorkspaceContextBar.tsx
+    - office/src/components/office/CampaignPulse.tsx
+    - office/src/views/Home.tsx
+    - office/src/workspace.ts
     - .agents/skills/office-feature-parity/SKILL.md
     - .github/scripts/check-office-parity.py
     test:
     - .github/scripts/test_check_office_parity.py
     - .github/scripts/test_check_pr_architecture_impact.py
+    - office/e2e-browser/office-home-fixture.mjs
   acceptance:
     deterministic: The parity matrix and PR gates validate capability IDs against the registry real Office routes real Core APIs existing acceptance files with browser-test provenance and reject missing or placeholder declarations.
     real: Primary Office journeys are exercised in real Chromium against real Core state with truthful states keyboard access responsive layouts and evidence.
@@ -2200,8 +2209,9 @@ capabilities:
     deployment: []
     isolation: []
   limitations:
-  - This capability covers Office-first parity governance; design tokens, shared components, the application shell and the operational Overview/Decision Inbox workspace are implemented slices.
-  - The current Office still uses hash routes and polling; stable routes stream/replay, the visual Agent Office and the remaining module migrations are later slices.
+  - This capability covers Office-first parity governance; design tokens, shared components, the application shell, the 2026-11-06 Home/Campaign visual standard and the operational Overview/Decision Inbox workspace are implemented slices.
+  - The current Office still uses hash routes and polling; stable routes stream/replay, real browser acceptance of the 2026-11-06 visual standard, Owner visual sign-off and the remaining module migrations are later slices.
+  - Concept-image attachment and branch controls are not implemented because the Core intake contract has no such operations; decorative controls are forbidden.
   blockers:
   - Each Office module requires a real browser journey and Product Owner review before completion.
 - id: CAP-048

@@ -4,7 +4,6 @@ import {
   Bot,
   FolderGit2,
   Gauge,
-  House,
   Inbox,
   ListChecks,
   Megaphone,
@@ -13,6 +12,7 @@ import {
   Route,
   Settings,
   ShieldCheck,
+  Sparkles,
   Users,
 } from "lucide-react";
 import type { MessageKey, Translate } from "./i18n";
@@ -43,15 +43,9 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       {
         to: "/",
-        labelKey: "nav.home",
-        icon: House,
+        labelKey: "nav.newRequest",
+        icon: Sparkles,
         keywords: "home request compose objective start work intake",
-      },
-      {
-        to: "/projects",
-        labelKey: "nav.projects",
-        icon: FolderGit2,
-        keywords: "repositories imports configuration",
       },
       {
         to: "/campaigns",
@@ -60,21 +54,20 @@ export const NAV_GROUPS: NavGroup[] = [
         keywords: "runs attempts candidates gate quality",
       },
       {
+        to: "/projects",
+        labelKey: "nav.projects",
+        icon: FolderGit2,
+        keywords: "repositories imports configuration",
+      },
+      {
         to: "/issues",
         labelKey: "nav.issues",
         icon: ListChecks,
         keywords: "github issues sync repository labels triage backlog intake",
       },
       {
-        to: "/inbox",
-        labelKey: "nav.decisions",
-        icon: Inbox,
-        keywords:
-          "decision inbox approvals blocked unresolved usage needs action",
-      },
-      {
         to: "/agents",
-        labelKey: "nav.agents",
+        labelKey: "nav.agentOffice",
         icon: Bot,
         keywords:
           "agent office participants sessions implementer lead verifier reviewer worker tool events",
@@ -92,6 +85,13 @@ export const NAV_GROUPS: NavGroup[] = [
     labelKey: "nav.group.advanced",
     collapsible: true,
     items: [
+      {
+        to: "/inbox",
+        labelKey: "nav.decisions",
+        icon: Inbox,
+        keywords:
+          "decision inbox approvals blocked unresolved usage needs action",
+      },
       {
         to: "/overview",
         labelKey: "nav.overview",

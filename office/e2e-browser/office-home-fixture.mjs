@@ -6,14 +6,14 @@
 // components at desktop and narrow viewports. The injected banner makes the
 // fixture status explicit in every screenshot.
 import { spawn } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { chromium } from "playwright-core";
 
 const root = resolve(import.meta.dirname, "../..");
 const output = resolve(
   process.env.FACTORY_SCREENSHOT_DIR ||
-    join(root, "docs/evidence/office-home-simplification-2026-10-29"),
+    join(root, "docs/evidence/office-ui-standard-2026-11-06"),
 );
 const executablePath = process.env.CHROMIUM_EXE;
 const port = Number(process.env.FACTORY_FIXTURE_PORT || "5199");
@@ -412,11 +412,13 @@ const banner = `
   left: 0;
   right: 0;
   padding: 6px 12px;
+  box-sizing: border-box;
   background: #b45309;
   color: #ffffff;
   font: 600 12px/1.4 ui-sans-serif, system-ui, sans-serif;
   letter-spacing: 0.04em;
   text-align: center;
+  overflow-wrap: anywhere;
   pointer-events: none;
 `;
 
@@ -431,10 +433,87 @@ async function markFixture(page) {
   }, banner);
 }
 
-async function capture(page, path, width, height) {
+const layoutChecks = [];
+
+/**
+ * Record the rendered page width and every element that visually escapes the
+ * viewport. Body overflow is clipped by the shell, so document scroll width
+ * alone would not catch a clipped Campaign table or page action.
+ */
+async function layoutReport(page) {
+  return page.evaluate(() => {
+    const viewport = window.innerWidth;
+    const offenders = [];
+    for (const element of document.querySelectorAll("body *")) {
+      const rect = element.getBoundingClientRect();
+      if (rect.width === 0 && rect.height === 0) continue;
+      if (rect.right > viewport + 1 || rect.left < -1) {
+        const style = window.getComputedStyle(element);
+        if (style.position === "fixed" && style.zIndex === "2147483647") {
+          continue;
+        }
+        offenders.push({
+          tag: element.tagName.toLowerCase(),
+          className: String(element.className).slice(0, 120),
+          left: Math.round(rect.left),
+          right: Math.round(rect.right),
+        });
+      }
+    }
+    return {
+      viewport,
+      documentScrollWidth: document.documentElement.scrollWidth,
+      bodyScrollWidth: document.body.scrollWidth,
+      offenders: offenders.slice(0, 20),
+    };
+  });
+}
+
+async function recordLayout(page, name, width) {
+  await page.setViewportSize({ width, height: 1100 });
+  await page.waitForTimeout(250);
+  const report = await layoutReport(page);
+  layoutChecks.push({ name, ...report });
+}
+
+async function capture(page, path, width, height, name) {
   await page.setViewportSize({ width, height });
   await page.waitForTimeout(250);
+  const report = await layoutReport(page);
+  layoutChecks.push({ name, ...report });
   await page.screenshot({ path, fullPage: true });
+}
+
+function assertNoLayoutEscape() {
+  const reportPath = join(output, "layout-overflow-report.json");
+  const failures = layoutChecks.filter(
+    (check) =>
+      check.documentScrollWidth > check.viewport + 1 ||
+      check.bodyScrollWidth > check.viewport + 1 ||
+      check.offenders.length > 0,
+  );
+  writeFileSync(
+    reportPath,
+    `${JSON.stringify(
+      {
+        fixture_only: true,
+        note: "Mocked Core layout checks. Not product acceptance.",
+        checks: layoutChecks,
+        failures,
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  if (failures.length > 0) {
+    throw new Error(
+      `horizontal layout escape in ${failures.length} capture(s): ${JSON.stringify(
+        failures,
+        null,
+        2,
+      )}`,
+    );
+  }
 }
 
 let browser;
@@ -458,14 +537,16 @@ try {
 
   await page.goto(`${baseUrl}/#/`);
   await page.getByRole("heading", { name: "Home" }).waitFor();
-  await page.getByLabel("What should the Factory do?").waitFor();
+  await page.getByLabel("Your instruction to the Lead").waitFor();
   await page.getByLabel("Execution profile").selectOption("profile-balanced");
   await markFixture(page);
+  await recordLayout(page, "home", 1440);
   await page.screenshot({
     path: join(output, "home-1440.png"),
     fullPage: true,
   });
-  await capture(page, join(output, "home-390.png"), 390, 1200);
+  await recordLayout(page, "home", 834);
+  await capture(page, join(output, "home-390.png"), 390, 1200, "home");
 
   await page.goto(`${baseUrl}/#/settings?tab=profiles`);
   await page.setViewportSize({ width: 1440, height: 1100 });
@@ -473,11 +554,19 @@ try {
   await page.getByRole("button", { name: "Edit" }).first().click();
   await page.getByRole("heading", { name: "Edit Balanced" }).waitFor();
   await markFixture(page);
+  await recordLayout(page, "execution-profiles", 1440);
   await page.screenshot({
     path: join(output, "execution-profiles-1440.png"),
     fullPage: true,
   });
-  await capture(page, join(output, "execution-profiles-390.png"), 390, 1200);
+  await recordLayout(page, "execution-profiles", 834);
+  await capture(
+    page,
+    join(output, "execution-profiles-390.png"),
+    390,
+    1200,
+    "execution-profiles",
+  );
 
   await page.goto(`${baseUrl}/#/campaigns/campaign-1?tab=budget`);
   await page.setViewportSize({ width: 1440, height: 1100 });
@@ -487,11 +576,19 @@ try {
     })
     .waitFor();
   await markFixture(page);
+  await recordLayout(page, "campaign-detail", 1440);
   await page.screenshot({
-    path: join(output, "campaign-budget-v2-1440.png"),
+    path: join(output, "campaign-detail-1440.png"),
     fullPage: true,
   });
-  await capture(page, join(output, "campaign-budget-v2-390.png"), 390, 1200);
+  await recordLayout(page, "campaign-detail", 834);
+  await capture(
+    page,
+    join(output, "campaign-detail-390.png"),
+    390,
+    1200,
+    "campaign-detail",
+  );
 
   await page.goto(`${baseUrl}/#/requests/fixture-request`);
   await page.setViewportSize({ width: 1440, height: 1100 });
@@ -501,12 +598,21 @@ try {
     })
     .waitFor();
   await markFixture(page);
+  await recordLayout(page, "request-campaign-v2", 1440);
   await page.screenshot({
     path: join(output, "request-campaign-v2-1440.png"),
     fullPage: true,
   });
-  await capture(page, join(output, "request-campaign-v2-390.png"), 390, 1200);
+  await recordLayout(page, "request-campaign-v2", 834);
+  await capture(
+    page,
+    join(output, "request-campaign-v2-390.png"),
+    390,
+    1200,
+    "request-campaign-v2",
+  );
 
+  assertNoLayoutEscape();
   console.log(JSON.stringify({ ok: true, fixture_only: true, output }));
 } finally {
   if (browser) await browser.close();

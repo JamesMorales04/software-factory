@@ -9,6 +9,37 @@ import { AppShell } from "./AppShell";
 vi.mock("../coreApi", () => ({
   coreApi: {
     health: vi.fn().mockResolvedValue({ healthy: true, version: "test" }),
+    listProjects: vi.fn().mockResolvedValue([
+      {
+        id: "project-1",
+        repository: "acme/widgets",
+        base_commit: "a".repeat(40),
+        created_at: "2026-11-06T00:00:00Z",
+      },
+    ]),
+    listExecutionProfiles: vi.fn().mockResolvedValue({
+      profiles: [
+        {
+          id: "profile-1",
+          name: "Balanced",
+          executable: true,
+          globalDefault: true,
+          projectDefaults: [],
+          revision: 1,
+          revisionId: "revision-1",
+          contentHash: "b".repeat(64),
+          roles: {
+            lead: { provider: "opencode-go", model: "deepseek" },
+            implementer: { provider: "opencode-go", model: "deepseek" },
+            semanticReviewer: { provider: "codex", model: "gpt-6-luna" },
+          },
+          operations: {},
+          progress: {},
+          autoStart: { enabled: false, riskClasses: [] },
+          warnings: [],
+        },
+      ],
+    }),
   },
 }));
 
@@ -67,7 +98,9 @@ describe("AppShell", () => {
         .getAttribute("aria-current"),
     ).toBe("page");
     expect(
-      screen.getByRole("link", { name: "Home" }).getAttribute("aria-current"),
+      screen
+        .getByRole("link", { name: "New request" })
+        .getAttribute("aria-current"),
     ).toBeNull();
     expect(
       screen
@@ -79,11 +112,11 @@ describe("AppShell", () => {
   it("preserves every existing deep link in primary and advanced areas", () => {
     renderShell("/projects");
     const destinations: Array<[string, string]> = [
-      ["Home", "/"],
+      ["New request", "/"],
       ["Projects", "/projects"],
       ["Campaigns", "/campaigns"],
       ["Decisions", "/inbox"],
-      ["Agents", "/agents"],
+      ["Agent Office", "/agents"],
       ["Settings", "/settings"],
       ["Overview", "/overview"],
       ["Actions", "/actions"],
@@ -118,7 +151,9 @@ describe("AppShell", () => {
     renderShell("/requests/request-1");
     expect(screen.getByText("Request")).toBeDefined();
     expect(
-      screen.getByRole("link", { name: "Home" }).getAttribute("aria-current"),
+      screen
+        .getByRole("link", { name: "New request" })
+        .getAttribute("aria-current"),
     ).toBe("page");
   });
 
@@ -189,7 +224,7 @@ describe("AppShell", () => {
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
     await waitFor(() =>
       expect(document.activeElement).toBe(
-        screen.getByRole("link", { name: "Home" }),
+        screen.getByRole("link", { name: "New request" }),
       ),
     );
     await userEvent.click(
@@ -215,11 +250,11 @@ describe("AppShell", () => {
       screen.getByRole("button", { name: "Toggle navigation" }),
     );
     for (const name of [
-      "Home",
+      "New request",
       "Projects",
       "Campaigns",
       "Decisions",
-      "Agents",
+      "Agent Office",
       "Settings",
       "Overview",
       "Actions",
@@ -303,7 +338,7 @@ describe("AppShell", () => {
     );
     await waitFor(() => expect(document.documentElement.lang).toBe("es"));
     expect(localStorage.getItem(LOCALE_STORAGE_KEY)).toBe("es");
-    expect(screen.getByRole("link", { name: "Inicio" })).toBeDefined();
+    expect(screen.getByRole("link", { name: "Nueva solicitud" })).toBeDefined();
   });
 
   it("opens command navigation with the keyboard and selects a page", async () => {

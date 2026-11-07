@@ -10,7 +10,9 @@ import {
   Rows3,
   Rows4,
   Search,
+  Settings2,
   Sun,
+  UserRound,
   X,
 } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
@@ -28,6 +30,7 @@ import { CommandPalette } from "./CommandPalette";
 import { HealthBadge } from "./HealthBadge";
 import { IconButton } from "./ui/Button";
 import { Tooltip } from "./ui/Tooltip";
+import { WorkspaceContextBar } from "./WorkspaceContextBar";
 
 const SIDEBAR_KEY = "factory-office-sidebar";
 
@@ -74,7 +77,9 @@ function NavLinkItem({
   return (
     <Link
       to={item.to}
-      className={`nav-link ${active ? "nav-link--active" : ""}`}
+      className={`nav-link ${active ? "nav-link--active" : ""} ${
+        item.to === "/" ? "nav-link--new" : ""
+      }`}
       aria-current={active ? "page" : undefined}
       aria-label={label}
       title={label}
@@ -89,9 +94,11 @@ function NavLinkItem({
 export function AppShell({
   children,
   onLock,
+  deviceName = "",
 }: {
   children: ReactNode;
   onLock: () => void;
+  deviceName?: string;
 }) {
   const { theme, setTheme, density, setDensity } = useTheme();
   const { t } = useI18n();
@@ -300,6 +307,22 @@ export function AppShell({
             })}
           </nav>
           <div className="sidebar-footer">
+            <div className="sidebar-user">
+              <span className="sidebar-user-avatar" aria-hidden="true">
+                <UserRound size={16} />
+              </span>
+              <span className="sidebar-user-copy">
+                <strong>{deviceName || t("shell.owner")}</strong>
+                <span>{t("shell.ownerSession")}</span>
+              </span>
+              <IconButton
+                label={t("shell.lock")}
+                className="sidebar-user-lock"
+                onClick={onLock}
+              >
+                <Lock size={16} aria-hidden="true" />
+              </IconButton>
+            </div>
             <fieldset
               className="sidebar-preferences"
               aria-label={t("shell.preferences")}
@@ -355,11 +378,8 @@ export function AppShell({
                 <PanelLeftOpen size={19} aria-hidden="true" />
               )}
             </IconButton>
+            <WorkspaceContextBar />
             <div className="topbar-context">
-              <span className="topbar-crumb">Factory Office</span>
-              <span className="topbar-separator" aria-hidden="true">
-                /
-              </span>
               <span className="topbar-title">
                 {routeLabel(pathname, search, t)}
               </span>
@@ -379,6 +399,15 @@ export function AppShell({
                 </kbd>
               </button>
               <LanguageSwitcher variant="compact" />
+              <Tooltip label={t("shell.openSettings")}>
+                <Link
+                  className="ui-icon-button topbar-settings"
+                  to="/settings"
+                  aria-label={t("shell.openSettings")}
+                >
+                  <Settings2 size={17} aria-hidden="true" />
+                </Link>
+              </Tooltip>
               <Tooltip
                 label={t("shell.theme.switch", { theme: t(THEME_KEY[theme]) })}
               >
@@ -409,11 +438,6 @@ export function AppShell({
                   }
                 >
                   <DensityIcon size={17} aria-hidden="true" />
-                </IconButton>
-              </Tooltip>
-              <Tooltip label={t("shell.lock")}>
-                <IconButton label={t("shell.lock")} onClick={onLock}>
-                  <Lock size={17} aria-hidden="true" />
                 </IconButton>
               </Tooltip>
             </div>
