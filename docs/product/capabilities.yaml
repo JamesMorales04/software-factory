@@ -2206,7 +2206,9 @@ capabilities:
     deterministic:
     - docs/evidence/office-command-center-slice1-2026-10-27.json
     - docs/evidence/office-ui-standard-2026-11-06.json
+    - docs/evidence/autonomy-telemetry-2026-11-07.json
     - docs/evidence/compose-browser-uat-2026-11-06/compose-browser-uat.json
+    - docs/evidence/compose-browser-uat-2026-11-07/compose-browser-uat.json
     live_agent: []
     uat: []
     deployment: []

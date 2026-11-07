@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "record": "factory-autonomy-telemetry-and-cap-removal",
+  "date": "2026-11-07",
+  "base_commit": "c93190130552e430e765b8f45f6c10c24b3f741d",
+  "candidate_commit": "eb91fae16fcc783cb15e01ee21957fd936068066",
+  "status": "author-run implementation evidence; real deterministic Compose browser UAT PASS; live-model and independent acceptance NOT_TESTED",
+  "decision": "docs/architecture/decisions/ADR-0034-model-capability-telemetry-and-agent-scope.md",
+  "changes": [
+    "Subscription model/provider turns no longer enforce a fixed 4,096 output cap; the former reservation value is a finite telemetry sentinel, not an executor ceiling.",
+    "One-shot Lead/reviewer model calls no longer enforce a fixed 8,192 output cap or a total request timeout.",
+    "Provider egress accepts multiple bound requests; the former 2/8 request cap and the OpenCode maxRetries:0 suppression are removed.",
+    "Subscription provider cost is telemetry; billable monetary envelopes remain the money authority.",
+    "Legacy plan productivity fields are omitted from the model-facing schema, and Office no longer renders fixed token/time/retry/provider-cost controls.",
+    "The plan may propose a narrower path/tool scope inside the frozen outer boundary; Core validates and freezes it.",
+    "Native Codex status/login no longer require gpt-6-luna as a global reviewer constant; the frozen profile route supplies the selected model.",
+    "Historical V1 cap fields are read-only/archived and no longer active Office controls."
+  ],
+  "checks": [
+    {
+      "name": "Rust format",
+      "pass": true,
+      "detail": "cargo fmt --all -- --check"
+    },
+    {
+      "name": "Rust clippy",
+      "pass": true,
+      "detail": "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings"
+    },
+    {
+      "name": "Rust workspace tests",
+      "pass": true,
+      "detail": "cargo test --workspace --locked --features test-support; local host OpenCode executable tests were skipped because the installed host binary exits before readiness; the pinned container OpenCode path is exercised by Compose UAT"
+    },
+    {
+      "name": "Office tests",
+      "pass": true,
+      "detail": "41 files / 295 tests"
+    },
+    {
+      "name": "Office typecheck, lint and build",
+      "pass": true,
+      "detail": "npm run typecheck; npm run lint; npm run build"
+    },
+    {
+      "name": "Office fixture layout",
+      "pass": true,
+      "detail": "1440/834/390 responsive guard, zero layout escapes; refreshed screenshots"
+    },
+    {
+      "name": "Office browser journey",
+      "pass": true,
+      "detail": "cargo xtask e2e office"
+    },
+    {
+      "name": "Unified-intake browser journey",
+      "pass": true,
+      "detail": "cargo xtask e2e intake"
+    },
+    {
+      "name": "Deterministic Compose browser UAT",
+      "pass": true,
+      "detail": "PASS at eb91fae16fcc783cb15e01ee21957fd936068066; real rootless Compose Core HTTP API and real Chromium; deterministic provider fixture; see docs/evidence/compose-browser-uat-2026-11-07"
+    }
+  ],
+  "limitations": [
+    "Live provider inference remains NOT_TESTED; the Compose UAT uses the deterministic provider/model fixture.",
+    "Independent acceptance, SEC-01 isolation and Product Owner visual sign-off remain NOT_TESTED.",
+    "Historical V1/V2 database columns remain decodable for evidence; active Office controls and active V2 execution no longer enforce their productivity values.",
+    "The local host OpenCode executable tests were skipped after the installed binary exited before readiness; the container OpenCode UAT path passed."
+  ]
+}

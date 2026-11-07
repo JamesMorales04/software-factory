@@ -1,6 +1,7 @@
 # Factory Office UI standard
 
-**Status:** Normative internal standard, version 1.0, 2026-11-06. The visual
+**Status:** Normative internal standard, version 1.1, 2026-11-07 (ADR-0034
+removes fixed model productivity caps from active Office surfaces). The visual
 direction was requested by the Product Owner on 2026-11-06; formal visual
 sign-off of the running revision remains recorded separately.
 **Visual direction:** Product Owner-provided reference pack in
