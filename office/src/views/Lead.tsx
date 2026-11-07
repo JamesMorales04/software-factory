@@ -737,22 +737,6 @@ export function Lead() {
                         {shortId(selectedProposal.baseRevision, 12)}
                       </code>
                     </dd>
-                    <dt>{t("lead.proposal.budget")}</dt>
-                    <dd>
-                      {t("lead.proposal.budgetValue", {
-                        attempts: selectedProposal.budget.maxAttempts,
-                        timeout: selectedProposal.budget.timeoutSecs,
-                        repairCycles: selectedProposal.maxRepairCycles,
-                        sessions: selectedProposal.maxSessions,
-                      })}
-                    </dd>
-                    <dt>{t("lead.proposal.parallel")}</dt>
-                    <dd>
-                      {t("lead.proposal.parallelValue", {
-                        parallel: selectedProposal.maxParallel,
-                        wallClock: selectedProposal.maxWallClockSecs,
-                      })}
-                    </dd>
                     <dt>{t("lead.proposal.assumptions")}</dt>
                     <dd>{list(selectedProposal.assumptions, t)}</dd>
                     <dt>{t("lead.proposal.risks")}</dt>

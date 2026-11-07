@@ -12,6 +12,13 @@
 #
 # See docs/engineering/container-native-engineering.md.
 
+# podman-compose 1.5+ defaults to placing the project in a pod. A pod cannot be
+# combined with the `userns_mode: keep-id` mapping this trusted dev container
+# needs for host-owned workspace files. Keep the pre-1.5 network-based
+# behaviour; the installed product topology is defined by compose.yaml.
+x-podman:
+  in_pod: false
+
 services:
   dev:
     build:

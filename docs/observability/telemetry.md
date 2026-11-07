@@ -32,6 +32,8 @@ Instrument HTTP and Core/Worker operations with parent/child spans and context p
 
 Begin with actual counters/histograms for Action outcomes, active/queued Runs, stage duration/errors, Worker wait/recovery time, retry/repair/first-pass rate, observed token/turn/cost usage with `KNOWN/PARTIAL/UNKNOWN` coverage, and resource consumption when available. Do not fabricate telemetry for unimplemented subsystems.
 
+Token count, elapsed model time, request/retry count and subscription-notional cost are **telemetry**, not automatic productivity failures (ADR-0034). They are recorded per provider/model/role with provenance and exposed in Office as observed usage. The deterministic no-progress breaker is the automatic stop; billable routes retain the operator monetary envelope. Technical liveness, broker byte/connection, argv, memory and lease/grant guards remain and must be labelled as safety bounds, not budgets.
+
 Avoid high-cardinality metric labels: `actionId`, `runId` and `sessionId` belong in trace/log correlation, not generic aggregated metric tags. Correlate structured logs to trace/span IDs. Prefer standard structured logging for Go until its logging SDK path is tested.
 
 ## Native OTLP log export

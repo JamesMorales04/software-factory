@@ -24,8 +24,7 @@ use uuid::Uuid;
 
 use crate::{
     codex_auth::{
-        APP_SERVER_PROVIDER, CodexAuthError, CodexHome, REVIEW_MODEL, require_chatgpt,
-        require_review_model,
+        APP_SERVER_PROVIDER, CodexAuthError, CodexHome, require_chatgpt, require_review_model,
     },
     device_session::sha256_hex,
     protocol::{
@@ -266,12 +265,6 @@ pub async fn login(home: &CodexHome, device_code: bool) -> Result<Value, CodexRe
         .await
         .map_err(|error| CodexReviewError::Protocol(error.to_string()))?;
     let account = require_chatgpt(&account_value)?;
-    let models = process
-        .rpc
-        .request("model/list", json!({}))
-        .await
-        .map_err(|error| CodexReviewError::Protocol(error.to_string()))?;
-    require_review_model(&models, REVIEW_MODEL)?;
     Ok(json!({"authenticated": true, "account": account}))
 }
 
@@ -284,12 +277,6 @@ pub async fn status(home: &CodexHome) -> Result<Value, CodexReviewError> {
         .await
         .map_err(|error| CodexReviewError::Protocol(error.to_string()))?;
     let account = crate::codex_auth::parse_account_response(&account_value)?;
-    let models = process
-        .rpc
-        .request("model/list", json!({}))
-        .await
-        .map_err(|error| CodexReviewError::Protocol(error.to_string()))?;
-    let model_ok = require_review_model(&models, REVIEW_MODEL).is_ok();
     Ok(json!({
         "account": match account {
             crate::codex_auth::AccountState::LoggedOut => json!({"type":"loggedOut"}),
@@ -297,9 +284,9 @@ pub async fn status(home: &CodexHome) -> Result<Value, CodexReviewError> {
             crate::codex_auth::AccountState::ApiKey => json!({"type":"apiKey"}),
             crate::codex_auth::AccountState::Unsupported(kind) => json!({"type":"unsupported","kind":kind}),
         },
-        "reviewModel": REVIEW_MODEL,
-        "reviewModelAvailable": model_ok,
-        "configurationReady": matches!(crate::codex_auth::parse_account_response(&account_value)?, crate::codex_auth::AccountState::ChatGpt(_)) && model_ok,
+        "reviewModel": Value::Null,
+        "reviewModelAvailable": Value::Null,
+        "configurationReady": matches!(crate::codex_auth::parse_account_response(&account_value)?, crate::codex_auth::AccountState::ChatGpt(_)),
         "modelAccessVerified": false,
         "modelAccess": "NOT_VERIFIED",
     }))
@@ -1183,6 +1170,7 @@ fn build_finding(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::codex_auth::REVIEW_MODEL;
 
     #[test]
     fn review_text_requires_explicit_clean_marker_or_priority_findings() {

@@ -27,11 +27,6 @@ use crate::provider_catalog;
 use crate::provider_secrets::ProviderSecretKey;
 
 pub const DEFAULT_MODEL_TIMEOUT_SECS: u64 = 60;
-/// Upper bound for one Core-owned model HTTP request. The execution profile
-/// carries the same 300-second ceiling for a model request, so a deployment
-/// timeout above this value must be rejected rather than silently clamped.
-pub const MAX_MODEL_TIMEOUT_SECS: u64 = 300;
-
 /// Deployment-wide Core caps. A profile or provider can narrow these, never
 /// widen them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,7 +163,7 @@ impl<'a> RoleGatewayFactory<'a> {
             database,
             master_key,
             caps,
-            timeout: timeout.min(Duration::from_secs(MAX_MODEL_TIMEOUT_SECS)),
+            timeout,
             allow_loopback_http,
             test_upstream_hosts,
         }

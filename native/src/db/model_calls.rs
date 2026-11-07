@@ -366,7 +366,7 @@ type DispatchReservationRow = (
     String,
     String,
 );
-const MAX_CALL_OUTPUT_TOKENS: u64 = 8192;
+
 const RESERVATION_LIFETIME_MS: i64 = 120_000;
 /// Subscription cost is telemetry. This bound exists only to keep SQLite and
 /// aggregation arithmetic finite; it is not a spending cap.
@@ -501,41 +501,45 @@ impl Database {
             // V2 uses a per-request technical token bound, never cumulative
             // lifetime role/scope allowances. The bound must fit the frozen
             // quote envelope or the request is refused before any effect.
-            if input.estimated_input_tokens > input.policy.max_input_tokens
-                || input.requested_output_tokens > input.policy.max_output_tokens
-            {
+            if input.estimated_input_tokens > input.policy.max_input_tokens {
                 return Err(Error::Forbidden(
                     "model call request exceeds its technical policy".into(),
                 ));
             }
-            if input.estimated_input_tokens > quote.input_tokens
-                || input.requested_output_tokens > quote.output_tokens
-            {
+            if input.estimated_input_tokens > quote.input_tokens {
+                return Err(Error::Forbidden(
+                    "model call request exceeds its frozen token quote".into(),
+                ));
+            }
+            // A zero requested output means "provider default" on the
+            // subscription path. Billable calls still reserve the frozen
+            // monetary quote, so use its output envelope for settlement.
+            let output = if input.requested_output_tokens == 0 {
+                quote.output_tokens
+            } else {
+                input.requested_output_tokens
+            };
+            if output > quote.output_tokens {
                 return Err(Error::Forbidden(
                     "model call request exceeds its frozen token quote".into(),
                 ));
             }
             (
                 input.estimated_input_tokens,
-                input.requested_output_tokens,
+                output,
                 quote.upper_bound_micros,
             )
         } else if matches!(funding, ModelCallFunding::Subscription) {
-            // Subscription model calls have no monetary ledger and no
-            // cumulative role token allowance. Enforce only the per-request
-            // technical policy; cost is recorded as telemetry.
-            if input.estimated_input_tokens > input.policy.max_input_tokens
-                || input.requested_output_tokens > input.policy.max_output_tokens
-            {
-                return Err(Error::Forbidden(
-                    "model call request exceeds its technical policy".into(),
-                ));
-            }
+            // Subscription model calls have no monetary ledger, no cumulative
+            // role token allowance and no fixed output/token policy ceiling.
+            // Model/provider capability plus the request body bound decide what
+            // can be sent; observed usage remains telemetry.
+            // The legacy reservation columns still need finite values; the
+            // sentinel is never enforced.
+            let uncapped = crate::execution_policy::UNCAPPED_TOKENS;
             (
-                input.policy.max_input_tokens,
-                input
-                    .requested_output_tokens
-                    .min(input.policy.max_output_tokens),
+                uncapped,
+                uncapped,
                 UsdMicros::new(SUBSCRIPTION_COST_BOUND)
                     .map_err(|_| Error::Invalid("model call cost reservation"))?,
             )
@@ -549,7 +553,11 @@ impl Database {
                 return Err(Error::Forbidden("model call budget is exhausted".into()));
             }
             let max_input = remaining_input;
-            let max_output = input.requested_output_tokens.min(remaining_output);
+            let max_output = if input.requested_output_tokens == 0 {
+                remaining_output
+            } else {
+                input.requested_output_tokens.min(remaining_output)
+            };
             if max_output == 0 {
                 return Err(Error::Forbidden("model call budget is exhausted".into()));
             }
@@ -1603,13 +1611,7 @@ fn validate_model_call_authorization(input: &NewModelCallAuthorization) -> Resul
     if !is_sha256(&input.request_sha256) {
         return Err(Error::Invalid("model call request digest"));
     }
-    if input.estimated_input_tokens == 0
-        || input.estimated_input_tokens > 1_000_000
-        || input.requested_output_tokens == 0
-        || input.requested_output_tokens > MAX_CALL_OUTPUT_TOKENS
-        || input.estimated_cost_micros == 0
-        || input.estimated_cost_micros > 10_000_000
-    {
+    if input.estimated_input_tokens == 0 || input.estimated_cost_micros == 0 {
         return Err(Error::Invalid("model call budget request"));
     }
     if input.policy.max_input_tokens == 0

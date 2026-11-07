@@ -194,7 +194,7 @@ Every long-lived task has:
 - Treat cancellation as a state transition with possible external effects. A cancellation request is not proof that a provider turn or container stopped; reconcile before retry.
 - Use monotonic generations or fencing tokens to reject stale execution results. Never let a late report overwrite a canceled, expired or newer attempt.
 - Avoid `select!` bias surprises: make cancellation and timeout precedence explicit and tested.
-- Timeouts on all external interactions. Record whether a timeout means unknown external state, not automatic failure.
+- Bound liveness of external interactions, but do not treat elapsed time or token spend as productivity authority. Record whether a stalled/unknown interaction means unknown external state, not automatic failure; progress supervision decides continuation.
 
 ## 9. Resource and process lifecycle
 

@@ -350,9 +350,9 @@ describe("CampaignDetail", () => {
     expect(screen.getByText("Schema version")).toBeDefined();
     expect(screen.getByText("policy-1")).toBeDefined();
     expect(screen.getByText("envelope-1")).toBeDefined();
-    expect(screen.getByText("Model request timeout")).toBeDefined();
-    expect(screen.getAllByText("300 s").length).toBeGreaterThanOrEqual(2);
-    expect(screen.getAllByText("2,097,152 bytes").length).toBe(2);
+    expect(screen.queryByText("Model request timeout")).toBeNull();
+    expect(screen.queryByText("Technical operation limits (V2)")).toBeNull();
+    expect(screen.queryByText("Max generation tokens")).toBeNull();
     expect(screen.getByText("Progress supervision")).toBeDefined();
     expect(
       screen.getByText("Diagnose after stagnant checkpoints"),
@@ -361,7 +361,7 @@ describe("CampaignDetail", () => {
     expect(screen.getAllByText("none").length).toBeGreaterThanOrEqual(2);
   });
 
-  it("renders only the legacy V1 cap evidence when the authorization is historical", async () => {
+  it("does not expose historical V1 productivity caps", async () => {
     mocks.getCampaignDetail.mockResolvedValue({
       ...detail,
       authorization: legacyAuthorization,
@@ -370,9 +370,8 @@ describe("CampaignDetail", () => {
     await screen.findByRole("heading", {
       name: "Authorization, budget and observed usage",
     });
-    expect(screen.getByText("Historical V1 cap evidence")).toBeDefined();
-    expect(screen.getByText("Max turns (V1)")).toBeDefined();
-    expect(screen.getByText("6")).toBeDefined();
+    expect(screen.queryByText("Historical V1 cap evidence")).toBeNull();
+    expect(screen.queryByText("Max turns (V1)")).toBeNull();
     expect(screen.queryByText("Technical operation limits (V2)")).toBeNull();
   });
 

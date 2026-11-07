@@ -593,12 +593,11 @@ describe("ExecutionProfiles", () => {
       name: "Perfiles de ejecución (0)",
     });
     await userEvent.click(screen.getByRole("button", { name: "Nuevo perfil" }));
-    expect(
-      screen.getByText("Límites técnicos avanzados de operación"),
-    ).toBeDefined();
+    expect(screen.getByText("Progreso y autonomía")).toBeDefined();
     expect(screen.getByLabelText("Nombre")).toBeDefined();
     expect(screen.queryByLabelText(/Máximo de intentos/)).toBeNull();
     expect(screen.queryByLabelText(/Máximo de turnos/)).toBeNull();
+    expect(screen.queryByLabelText(/Tiempo máximo de solicitud/)).toBeNull();
     expect(screen.queryByLabelText(/fecha límite de la Campaña/)).toBeNull();
   });
 });

@@ -1025,20 +1025,13 @@ async fn start_provider_runtime(
 ) -> Result<ProviderRuntime, Box<dyn std::error::Error>> {
     let provider = assignment.provider.as_str();
     let model = assignment.model.as_str();
-    let operations = assignment
+    let _policy = assignment
         .execution_policy
         .as_ref()
         .and_then(FrozenExecutionPolicy::v2)
-        .map(|policy| policy.operations)
         .ok_or("provider runtime requires Execution Policy V2")?;
-    let request_timeout_secs = u64::from(operations.model_request_timeout_secs.get());
-    // A finite technical egress batch for this provider session. It does not
-    // bound Campaign lifetime: continuation is driven by durable progress and a
-    // new attempt opens a new bridge.
-    let max_requests = usize::try_from(operations.max_generation_tokens.get())
-        .unwrap_or(1)
-        .saturating_mul(4)
-        .max(64);
+    // Request count is telemetry and binding, not a per-turn productivity cap.
+    let max_requests = 0;
     let allowed_tools = assignment.allowed_tools.as_slice();
     let mode = env::var("FACTORY_PROVIDER_SANDBOX").unwrap_or_default();
     match mode.as_str() {
@@ -1154,7 +1147,7 @@ async fn start_provider_runtime(
                 .ok()
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(64 * 1024 * 1024);
-            let lifetime = Duration::from_secs(request_timeout_secs.saturating_add(30).min(3600));
+            let lifetime = Duration::ZERO;
             let (egress, egress_bridge) = match env::var("FACTORY_PROVIDER_UPSTREAM_URL") {
                 Ok(upstream) => {
                     let credential =
@@ -1452,7 +1445,7 @@ async fn start_provider_runtime(
                 }
                 (None, env)
             };
-            let lifetime = Duration::from_secs(request_timeout_secs.saturating_add(30).min(3600));
+            let lifetime = Duration::ZERO;
             let sandbox = ContainerProviderSandbox::start(ContainerSandboxConfig {
                 session_dir: session_dir.to_path_buf(),
                 broker_base: env::var("FACTORY_RUNTIME_BROKER_URL")
@@ -1563,8 +1556,8 @@ fn opencode_sandbox_config(
     provider: &str,
     model: &str,
     egress_token: &str,
-    context_limit: u64,
-    output_limit: u64,
+    _context_limit: u64,
+    _output_limit: u64,
 ) -> serde_json::Value {
     json!({
         "$schema": "https://opencode.ai/config.json",
@@ -1574,16 +1567,11 @@ fn opencode_sandbox_config(
                 "name": format!("Factory {provider}"),
                 "options": {
                     "baseURL": "http://127.0.0.1:18080/v1",
-                    "apiKey": egress_token,
-                    // Factory authorizes exactly one provider request per
-                    // turn. OpenCode's own retry would consume a second
-                    // request and mask the first upstream outcome.
-                    "maxRetries": 0
+                    "apiKey": egress_token
                 },
                 "models": {
                     model: {
-                        "name": model,
-                        "limit": {"context": context_limit, "output": output_limit}
+                        "name": model
                     }
                 }
             }
@@ -1987,9 +1975,7 @@ async fn run_provider_tool_loop(
     context: &ProviderContext<'_>,
 ) -> Result<ProviderRun, Box<dyn std::error::Error>> {
     let directory = context.directory.to_owned();
-    let http = factory_native::runtime::opencode_http_client(Duration::from_secs(u64::from(
-        operation_limits(context).model_request_timeout_secs.get(),
-    )))?;
+    let http = factory_native::runtime::opencode_http_client(Duration::ZERO)?;
     let event_response = factory_native::runtime::open_opencode_event_stream(
         &http,
         context.base_url,
@@ -2149,21 +2135,18 @@ async fn run_provider_tool_loop(
             }
             return Err(error.into());
         }
-        let terminal = match tokio::time::timeout(
-            Duration::from_secs(u64::from(
-                operation_limits(context).model_request_timeout_secs.get(),
-            )),
-            factory_native::runtime::wait_for_opencode_prompt_terminal(
-                &mut event_stream,
-                &mut parser,
-                &session_id,
-                false,
-            ),
+        // No total model-request deadline. The provider may take as long as
+        // it needs; latency and progress are telemetry.
+        let terminal = match factory_native::runtime::wait_for_opencode_prompt_terminal(
+            &mut event_stream,
+            &mut parser,
+            &session_id,
+            false,
         )
         .await
         {
-            Ok(Ok(terminal)) => terminal,
-            Ok(Err(error)) => {
+            Ok(terminal) => terminal,
+            Err(error) => {
                 if let Some(turn) = &turn {
                     release_provider_turn(context, &turn.reservation_id).await;
                 }
@@ -2182,26 +2165,6 @@ async fn run_provider_tool_loop(
                     return Ok(run);
                 }
                 return Err(error.into());
-            }
-            Err(_) => {
-                if let Some(turn) = &turn {
-                    release_provider_turn(context, &turn.reservation_id).await;
-                }
-                if written
-                    && let Some(run) = finalize_written_provider_work(
-                        context,
-                        &http,
-                        &handle,
-                        &session_id,
-                        &last_message_id,
-                        usage,
-                        "provider deadline exceeded",
-                    )
-                    .await?
-                {
-                    return Ok(run);
-                }
-                return Err("provider deadline exceeded".into());
             }
         };
         let message = match &terminal {
@@ -2997,8 +2960,6 @@ async fn run_codex_tool_loop(
     }
     let mut prompt = prompt_text;
     let operations = operation_limits(context);
-    let request_timeout =
-        Duration::from_secs(u64::from(operations.model_request_timeout_secs.get()));
     let tool_timeout = Duration::from_secs(u64::from(operations.tool_call_timeout_secs.get()));
     let mut usage = ProviderUsage::default();
     let mut usage_before = factory_native::protocol::TokenUsageBreakdown {
@@ -3048,10 +3009,8 @@ async fn run_codex_tool_loop(
                 }
                 return Err("provider cancellation was requested".into());
             }
-            let turn_deadline = tokio::time::Instant::now() + request_timeout;
-            let started = match tokio::time::timeout(
-                request_timeout,
-                rpc.start_turn(TurnStartParams {
+            let started = match rpc
+                .start_turn(TurnStartParams {
                     thread_id: thread_id.clone(),
                     input: vec![UserInput::Text { text: prompt.clone() }],
                     approval_policy: factory_native::protocol::DenyApprovalPolicy::Never,
@@ -3059,22 +3018,15 @@ async fn run_codex_tool_loop(
                     model: Some(context.assignment.model.clone()),
                     effort: Some("medium".into()),
                     output_schema: None,
-                }),
-            )
-            .await
+                })
+                .await
             {
-                Ok(Ok(started)) => started,
-                Ok(Err(error)) => {
+                Ok(started) => started,
+                Err(error) => {
                     if let Some(turn) = &turn {
                         release_provider_turn(context, &turn.reservation_id).await;
                     }
                     return Err(error.into());
-                }
-                Err(_) => {
-                    if let Some(turn) = &turn {
-                        release_provider_turn(context, &turn.reservation_id).await;
-                    }
-                    return Err("Codex turn start deadline exceeded".into());
                 }
             };
             let turn_id = started.turn.id.clone();
@@ -3084,22 +3036,20 @@ async fn run_codex_tool_loop(
             tool_state.tool_calls = 0;
             let mut last_state_check = tokio::time::Instant::now();
             loop {
-                let poll_at = (tokio::time::Instant::now() + Duration::from_secs(1))
-                    .min(turn_deadline);
-                let event = match tokio::time::timeout_at(poll_at, rpc.next_event()).await {
+                // One-second polling is a cancellation/liveness check, not a
+                // total turn deadline. A healthy slow provider keeps running.
+                let event = match tokio::time::timeout(
+                    Duration::from_secs(1),
+                    rpc.next_event(),
+                )
+                .await
+                {
                     Ok(Ok(event)) => event,
                     Ok(Err(error)) => {
                         if let Some(turn) = &turn {
                             release_provider_turn(context, &turn.reservation_id).await;
                         }
                         return Err(error.into());
-                    }
-                    Err(_) if tokio::time::Instant::now() >= turn_deadline => {
-                        let _ = rpc.interrupt_turn(&thread_id, &turn_id).await;
-                        if let Some(turn) = &turn {
-                            release_provider_turn(context, &turn.reservation_id).await;
-                        }
-                        return Err("Codex provider deadline exceeded".into());
                     }
                     Err(_) => {
                         if provider_state(context).await? == "CANCEL_REQUESTED" {
@@ -3112,13 +3062,6 @@ async fn run_codex_tool_loop(
                         continue;
                     }
                 };
-                if tokio::time::Instant::now() >= turn_deadline {
-                    let _ = rpc.interrupt_turn(&thread_id, &turn_id).await;
-                    if let Some(turn) = &turn {
-                        release_provider_turn(context, &turn.reservation_id).await;
-                    }
-                    return Err("Codex turn operation timed out".into());
-                }
                 if last_state_check.elapsed() >= Duration::from_secs(1) {
                     last_state_check = tokio::time::Instant::now();
                     if provider_state(context).await? == "CANCEL_REQUESTED" {
@@ -3636,14 +3579,8 @@ async fn authorize_provider_turn(
     };
     let canonical = json!({"model": context.assignment.model, "input": prompt});
     let digest = request_digest(&canonical)?;
-    let max_requests = if context.assignment.provider == "codex" {
-        8
-    } else {
-        // The OpenCode runtime can retry an empty or stream-truncated first
-        // response. Both requests share this one Core turn reservation and its
-        // split output bound; this grants no additional authority or budget.
-        2
-    };
+    // Zero means "provider default / uncapped" for subscription routes. Every
+    // egress request is still bound to this Core reservation and recorded.
     let response = context
         .client
         .post(context.core.join("worker/provider_turn_authorize")?)
@@ -3652,9 +3589,9 @@ async fn authorize_provider_turn(
             "session_record_id": context.session_record_id,
             "worker_id": context.worker_id,
             "generation": context.assignment.lease.generation,
-            "requested_output_tokens": 4096,
+            "requested_output_tokens": 0,
             "request_sha256": digest,
-            "max_requests": max_requests
+            "max_requests": 0
         }))
         .send()
         .await?;
@@ -3679,7 +3616,6 @@ async fn authorize_provider_turn(
         requests: 0,
         max_requests: authorization.max_requests as usize,
         strict_request_digest: strict_request_digest(context.provider_kind),
-        binding: false,
         last_upstream_status: None,
         last_upstream_error: String::new(),
     });
@@ -3942,9 +3878,7 @@ async fn run_provider_patch(
             )
         }]
     });
-    let http = factory_native::runtime::opencode_http_client(Duration::from_secs(u64::from(
-        operation_limits(context).model_request_timeout_secs.get(),
-    )))?;
+    let http = factory_native::runtime::opencode_http_client(Duration::ZERO)?;
     let event_response = factory_native::runtime::open_opencode_event_stream(
         &http,
         context.base_url,
@@ -4026,31 +3960,20 @@ async fn run_provider_patch(
         }
         return Err(error.into());
     }
-    let terminal = match tokio::time::timeout(
-        Duration::from_secs(u64::from(
-            operation_limits(context).model_request_timeout_secs.get(),
-        )),
-        factory_native::runtime::wait_for_opencode_prompt_terminal(
-            &mut event_stream,
-            &mut parser,
-            &provider_session_id,
-            false,
-        ),
+    let terminal = match factory_native::runtime::wait_for_opencode_prompt_terminal(
+        &mut event_stream,
+        &mut parser,
+        &provider_session_id,
+        false,
     )
     .await
     {
-        Ok(Ok(terminal)) => terminal,
-        Ok(Err(error)) => {
+        Ok(terminal) => terminal,
+        Err(error) => {
             if let Some(turn) = &turn {
                 release_provider_turn(context, &turn.reservation_id).await;
             }
             return Err(error.into());
-        }
-        Err(_) => {
-            if let Some(turn) = &turn {
-                release_provider_turn(context, &turn.reservation_id).await;
-            }
-            return Err("provider deadline exceeded".into());
         }
     };
     let response = match &terminal {
@@ -4599,7 +4522,7 @@ mod tests {
     use super::opencode_sandbox_config;
 
     #[test]
-    fn opencode_provider_config_disables_internal_retries() {
+    fn opencode_provider_config_does_not_hardcode_retry_suppression() {
         let config = opencode_sandbox_config(
             "opencode-go",
             "deepseek-v4.1-flash",
@@ -4609,7 +4532,7 @@ mod tests {
         );
         assert_eq!(
             config.pointer("/provider/opencode-go/options/maxRetries"),
-            Some(&serde_json::Value::from(0))
+            None
         );
     }
 

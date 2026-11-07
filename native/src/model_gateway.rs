@@ -99,10 +99,15 @@ pub enum ModelGatewayError {
 impl ModelGateway {
     pub fn new(config: ModelGatewayConfig) -> Result<Self, ModelGatewayError> {
         validate_config(&config)?;
-        let client = reqwest::Client::builder()
-            .timeout(config.timeout)
+        let mut builder = reqwest::Client::builder()
             .no_proxy()
-            .redirect(reqwest::redirect::Policy::none())
+            .redirect(reqwest::redirect::Policy::none());
+        // A zero timeout is the explicit "no total request deadline" policy.
+        // Latency remains telemetry and progress supervision handles stalls.
+        if !config.timeout.is_zero() {
+            builder = builder.timeout(config.timeout);
+        }
+        let client = builder
             .build()
             .map_err(|_| ModelGatewayError::Invalid("model HTTP client".into()))?;
         Ok(Self { config, client })
@@ -186,16 +191,20 @@ impl ModelGateway {
                 "model call already has a dispatch intent; refusing a second send".into(),
             ));
         }
-        let body = json!({
+        let mut body = json!({
             "model": self.config.model,
             "temperature": 0,
-            "max_tokens": grant.max_output_tokens,
             "response_format": {"type": "json_object"},
             "messages": [
                 {"role": "system", "content": request.system_prompt},
                 {"role": "user", "content": request.user_prompt}
             ]
         });
+        if request.max_output_tokens > 0
+            && request.max_output_tokens < crate::execution_policy::UNCAPPED_TOKENS
+        {
+            body["max_tokens"] = serde_json::Value::from(request.max_output_tokens);
+        }
         let response = self
             .client
             .post(format!(
@@ -396,8 +405,6 @@ fn validate_config(config: &ModelGatewayConfig) -> Result<(), ModelGatewayError>
         || config.model.trim().is_empty()
         || config.input_micros_per_million == 0
         || config.output_micros_per_million == 0
-        || config.timeout.is_zero()
-        || config.timeout > Duration::from_secs(crate::model_routing::MAX_MODEL_TIMEOUT_SECS)
     {
         return Err(ModelGatewayError::Invalid(
             "provider, model, credential, rates or timeout".into(),
@@ -424,8 +431,6 @@ fn validate_request(request: &ModelCallRequest<'_>) -> Result<(), ModelGatewayEr
         || request.objective_id.trim().is_empty()
         || request.scope_id.trim().is_empty()
         || request.purpose.trim().is_empty()
-        || request.max_output_tokens == 0
-        || request.max_output_tokens > 8192
     {
         return Err(ModelGatewayError::Invalid("model call request".into()));
     }
@@ -617,15 +622,30 @@ mod tests {
     }
 
     #[test]
-    fn accepts_timeout_up_to_the_bounded_profile_ceiling() {
-        let mut ceiling = config("http://127.0.0.1:9000/v1");
-        ceiling.timeout = Duration::from_secs(crate::model_routing::MAX_MODEL_TIMEOUT_SECS);
-        assert!(ModelGateway::new(ceiling).is_ok());
+    fn accepts_zero_timeout_as_no_total_request_deadline() {
+        let mut unbounded = config("http://127.0.0.1:9000/v1");
+        unbounded.timeout = Duration::ZERO;
+        assert!(ModelGateway::new(unbounded).is_ok());
 
-        let mut beyond = config("http://127.0.0.1:9000/v1");
-        beyond.timeout =
-            Duration::from_secs(crate::model_routing::MAX_MODEL_TIMEOUT_SECS.saturating_add(1));
-        assert!(ModelGateway::new(beyond).is_err());
+        let mut long = config("http://127.0.0.1:9000/v1");
+        long.timeout = Duration::from_secs(24 * 60 * 60);
+        assert!(ModelGateway::new(long).is_ok());
+    }
+
+    #[test]
+    fn accepts_zero_output_as_model_native_default() {
+        let request = ModelCallRequest {
+            role: ModelCallRole::Evaluation,
+            principal_id: "operator",
+            project_id: "evaluation",
+            objective_id: "eval",
+            scope_id: "eval",
+            purpose: "evaluation",
+            system_prompt: "Return JSON.",
+            user_prompt: "prompt",
+            max_output_tokens: 0,
+        };
+        assert!(validate_request(&request).is_ok());
     }
 
     #[test]

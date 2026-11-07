@@ -834,12 +834,14 @@ pub fn opencode_http_client(timeout: Duration) -> Result<reqwest::Client, Error>
     // The confined provider bridge serves one HTTP request per bridged
     // connection. Disable idle connection reuse so a follow-up request opens a
     // fresh bridge connection instead of racing a half-closed upstream.
-    Ok(reqwest::Client::builder()
-        .timeout(timeout)
+    let mut builder = reqwest::Client::builder()
         .pool_max_idle_per_host(0)
         .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()?)
+        .redirect(reqwest::redirect::Policy::none());
+    if !timeout.is_zero() {
+        builder = builder.timeout(timeout);
+    }
+    Ok(builder.build()?)
 }
 
 pub async fn read_opencode_assistant_message(

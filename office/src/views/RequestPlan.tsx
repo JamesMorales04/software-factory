@@ -130,26 +130,6 @@ export function RequestPlan({
               </dd>
             </div>
             <div>
-              <dt>{t("request.plan.budget")}</dt>
-              <dd>
-                {t("request.plan.budgetValue", {
-                  attempts: proposal.budget.maxAttempts,
-                  timeout: proposal.budget.timeoutSecs,
-                })}
-              </dd>
-            </div>
-            <div>
-              <dt>{t("request.plan.bounds")}</dt>
-              <dd>
-                {t("request.plan.boundsValue", {
-                  sessions: proposal.maxSessions,
-                  parallel: proposal.maxParallel,
-                  wallClock: proposal.maxWallClockSecs,
-                  repairCycles: proposal.maxRepairCycles,
-                })}
-              </dd>
-            </div>
-            <div>
               <dt>{t("request.plan.checks")}</dt>
               <dd>
                 {t("request.plan.checksValue", {

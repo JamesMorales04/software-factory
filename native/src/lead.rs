@@ -667,8 +667,14 @@ pub struct ActionBinding {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct SpecBudget {
+    #[serde(default = "default_single_attempt", skip_serializing)]
+    #[schemars(skip)]
     pub max_attempts: u32,
     pub timeout_secs: u32,
+}
+
+fn default_single_attempt() -> u32 {
+    1
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -713,9 +719,15 @@ pub struct LeadPlanProposal {
     pub risk_class: RiskClass,
     pub budget: SpecBudget,
     pub route: ProviderRoute,
+    #[serde(default, skip_serializing)]
+    #[schemars(skip)]
     pub max_repair_cycles: u32,
+    #[serde(default, skip_serializing)]
+    #[schemars(skip)]
     pub max_wall_clock_secs: u32,
     pub max_parallel: u32,
+    #[serde(default, skip_serializing)]
+    #[schemars(skip)]
     pub max_sessions: u32,
     pub work_units: Vec<LeadWorkUnit>,
 }

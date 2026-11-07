@@ -40,12 +40,7 @@ fn assessment_prompt(request: &AssessmentRequest<'_>) -> Result<String, LeadErro
         }
     }
     let checks_are_frozen = !request.action_spec.checks.is_empty();
-    let timeout_secs = request.grant.max_timeout_secs.min(300);
-    // Legacy V1 productivity fields remain in the proposal evidence shape. V2
-    // does not enforce or replenish them, so Core records their absence instead
-    // of inventing turns, sessions or a Campaign wall clock.
-    let max_wall_clock_secs = 0;
-    let max_sessions = 0;
+    let timeout_secs = request.grant.max_timeout_secs;
     let description: String = request.objective.chars().take(500).collect();
     let unit = serde_json::json!({
         "id": "unit-1",
@@ -92,12 +87,9 @@ fn assessment_prompt(request: &AssessmentRequest<'_>) -> Result<String, LeadErro
             "negativeCases": negative_cases,
             "qualityProfile": request.project.quality_profile,
             "riskClass": "R0",
-            "budget": {"maxAttempts": 1, "timeoutSecs": timeout_secs},
+            "budget": {"timeoutSecs": timeout_secs},
             "route": request.grant.route,
-            "maxRepairCycles": 0,
-            "maxWallClockSecs": max_wall_clock_secs,
             "maxParallel": 1,
-            "maxSessions": max_sessions,
             "workUnits": [unit]
         }
     });
@@ -125,8 +117,8 @@ assumptions, uncertainty and the effort estimate. {checks_instruction} A change 
 a real estimated or unknown effort estimate. For status=estimated, unit must be \"person-hours\", \
 0 <= minPersonHours <= maxPersonHours, maxPersonHours >= 1, assumptions must be non-empty, and \
 unknownReason must be empty. Objective: {objective}. Project: {project_id}. Action: \
-{action_id}. Request: {request_id}. Allowed evidence refs: [\"repository-files\"]. Allowed paths: \
-{paths:?}. Capabilities: {capabilities:?}. Route: {route:?}. ActionSpec: {spec}. Model output is \
+{action_id}. Request: {request_id}. Allowed evidence refs: [\"repository-files\"]. Outer allowed paths (choose the smallest needed subset): \
+{paths:?}. Outer capabilities (choose the smallest needed subset): {capabilities:?}. Route: {route:?}. ActionSpec: {spec}. Model output is \
 advisory; Core validates and freezes it. Hard constraints: schemaRevision=1; echo projectId, actionId \
 and requestId exactly; evidenceRefs must be [\"repository-files\"]; proposal.projectId, actionId, \
 baseRevision, projectConfigHash and objective must match the provided context exactly; proposal.class \
@@ -135,10 +127,10 @@ Check executables must be available under the listed capabilities: generic-toolc
 rustc, python3, sh, grep, awk, sed, find, cat, printf, test and coreutils; node, npm and npx require \
 node-toolchain and are unavailable otherwise. The verifier runs checks in the frozen generic \
 toolchain image, so do not plan a node command when node-toolchain is not listed. \
-budget.maxAttempts=1 and budget.timeoutSecs={timeout_secs}; route must be {route:?}; maxRepairCycles=0; \
-maxWallClockSecs={max_wall_clock_secs}; maxParallel=1; maxSessions={max_sessions}; workUnits must \
-contain exactly one implementation unit with id \"unit-1\" and the exact allowedPaths and capabilities \
-shown; check ids must be unique.\n\nJSON Schema:\n{schema}\n\nValid example shape:\n{example}",
+budget.timeoutSecs={timeout_secs}; route must be {route:?}; maxParallel=1; \
+workUnits must contain exactly one implementation unit with id \"unit-1\"; its allowedPaths and \
+capabilities must be subsets of the outer lists shown and should reflect the plan reasoning; check ids \
+must be unique.\n\nJSON Schema:\n{schema}\n\nValid example shape:\n{example}",
         checks_instruction = checks_instruction,
         objective = request.objective,
         classes = request.grant.objective_classes,
@@ -151,8 +143,6 @@ shown; check ids must be unique.\n\nJSON Schema:\n{schema}\n\nValid example shap
         route = request.grant.route,
         spec = serde_json::to_string(request.action_spec).unwrap_or_default(),
         timeout_secs = timeout_secs,
-        max_wall_clock_secs = max_wall_clock_secs,
-        max_sessions = max_sessions,
         schema = schema,
         example = example,
     ))
@@ -183,7 +173,7 @@ pub async fn assess(
                 purpose: "lead_assessment",
                 system_prompt: "Return strict JSON only. Model output is advisory and grants no authority.",
                 user_prompt: &prompt,
-                max_output_tokens: 8_192,
+                max_output_tokens: 0,
             },
         )
         .await

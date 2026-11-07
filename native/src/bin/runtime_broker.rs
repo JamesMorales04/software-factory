@@ -39,7 +39,7 @@ const MAX_ARGV_BYTES: usize = 64 * 1024;
 const MAX_ENV_ITEMS: usize = 32;
 const MAX_ENV_BYTES: usize = 64 * 1024;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
-const MAX_EXECUTION_RUNTIME: Duration = Duration::from_secs(30 * 60);
+const MAX_EXECUTION_RUNTIME: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 const MAX_PROVIDER_RUNTIME: Duration = Duration::from_secs(60 * 60);
 const MANAGED_LABEL: &str = "io.software-factory.managed=true";
 const WORKSPACE_LABEL: &str = "io.software-factory.workspace";
@@ -1054,7 +1054,7 @@ async fn start_provider(
     if !valid_provider_session_subdir(&input.session_subdir) {
         return bad_request("invalid provider session directory");
     }
-    if !(1..=MAX_PROVIDER_RUNTIME.as_secs()).contains(&input.timeout_secs) {
+    if input.timeout_secs > MAX_PROVIDER_RUNTIME.as_secs() {
         return bad_request("provider timeout is outside the allowed bound");
     }
     if let Err(error) = validate_env(&input.env) {
@@ -1135,19 +1135,21 @@ async fn start_provider(
     let reaper = Arc::clone(&app);
     let reaper_container = input.container.clone();
     let reaper_seconds = input.timeout_secs;
-    tokio::spawn(async move {
-        time::sleep(Duration::from_secs(reaper_seconds)).await;
-        if let Ok(exists) = reaper
-            .podman_output(["container", "exists", reaper_container.as_str()])
-            .await
-            && exists.status.success()
-        {
-            tracing::warn!(container=%reaper_container, "provider container exceeded its lifetime; removing");
-            let _ = reaper
-                .podman_output(["rm", "--force", "--time=0", reaper_container.as_str()])
-                .await;
-        }
-    });
+    if reaper_seconds > 0 {
+        tokio::spawn(async move {
+            time::sleep(Duration::from_secs(reaper_seconds)).await;
+            if let Ok(exists) = reaper
+                .podman_output(["container", "exists", reaper_container.as_str()])
+                .await
+                && exists.status.success()
+            {
+                tracing::warn!(container=%reaper_container, "provider container exceeded its lifetime; removing");
+                let _ = reaper
+                    .podman_output(["rm", "--force", "--time=0", reaper_container.as_str()])
+                    .await;
+            }
+        });
+    }
     (
         StatusCode::CREATED,
         Json(json!({

@@ -307,53 +307,6 @@ function validateDraft(
       return `${t(role.labelKey)}: ${modelError}`;
     }
   }
-  const operationChecks: Array<[MessageKey, number, number, number]> = [
-    [
-      "execProfiles.operations.modelRequestTimeout",
-      draft.operations.modelRequestTimeoutSecs,
-      1,
-      3_600,
-    ],
-    [
-      "execProfiles.operations.toolCallTimeout",
-      draft.operations.toolCallTimeoutSecs,
-      1,
-      3_600,
-    ],
-    [
-      "execProfiles.operations.maxRequestBytes",
-      draft.operations.maxRequestBytes,
-      1,
-      64 * 1024 * 1024,
-    ],
-    [
-      "execProfiles.operations.maxResponseBytes",
-      draft.operations.maxResponseBytes,
-      1,
-      64 * 1024 * 1024,
-    ],
-    [
-      "execProfiles.operations.maxGenerationTokens",
-      draft.operations.maxGenerationTokens,
-      1,
-      1_000_000,
-    ],
-    [
-      "execProfiles.operations.maxInFlight",
-      draft.operations.maxInFlightOperations,
-      1,
-      32,
-    ],
-  ];
-  for (const [label, value, min, max] of operationChecks) {
-    if (!Number.isFinite(value) || value < min || value > max) {
-      return t("execProfiles.validation.operationRange", {
-        field: t(label),
-        min,
-        max,
-      });
-    }
-  }
   const progressChecks: Array<[MessageKey, number, number, number]> = [
     [
       "execProfiles.progress.diagnoseAfter",
@@ -366,12 +319,6 @@ function validateDraft(
       draft.progress.escalateAfterUnsuccessfulReplans,
       1,
       100,
-    ],
-    [
-      "execProfiles.progress.observationTimeout",
-      draft.progress.observationTimeoutSecs,
-      1,
-      3_600,
     ],
   ];
   for (const [label, value, min, max] of progressChecks) {
@@ -609,14 +556,6 @@ export function ExecutionProfiles() {
         },
       };
     });
-  }
-
-  function updateOperations(patch: Partial<ExecutionOperationLimits>) {
-    setDraft((current) =>
-      current
-        ? { ...current, operations: { ...current.operations, ...patch } }
-        : current,
-    );
   }
 
   function updateProgress(patch: Partial<ExecutionProgressPolicy>) {
@@ -1449,81 +1388,6 @@ export function ExecutionProfiles() {
             <details className="settings-advanced execution-profile-advanced">
               <summary>{t("execProfiles.advanced.title")}</summary>
               <p className="muted">{t("execProfiles.advanced.hint")}</p>
-              <div className="grid-2">
-                <Input
-                  label={t("execProfiles.operations.modelRequestTimeout")}
-                  type="number"
-                  min={1}
-                  max={3_600}
-                  value={draft.operations.modelRequestTimeoutSecs}
-                  help={t("execProfiles.operations.modelRequestTimeoutHelp")}
-                  onChange={(event) =>
-                    updateOperations({
-                      modelRequestTimeoutSecs: Number(event.target.value),
-                    })
-                  }
-                />
-                <Input
-                  label={t("execProfiles.operations.toolCallTimeout")}
-                  type="number"
-                  min={1}
-                  max={3_600}
-                  value={draft.operations.toolCallTimeoutSecs}
-                  onChange={(event) =>
-                    updateOperations({
-                      toolCallTimeoutSecs: Number(event.target.value),
-                    })
-                  }
-                />
-                <Input
-                  label={t("execProfiles.operations.maxRequestBytes")}
-                  type="number"
-                  min={1}
-                  max={64 * 1024 * 1024}
-                  value={draft.operations.maxRequestBytes}
-                  onChange={(event) =>
-                    updateOperations({
-                      maxRequestBytes: Number(event.target.value),
-                    })
-                  }
-                />
-                <Input
-                  label={t("execProfiles.operations.maxResponseBytes")}
-                  type="number"
-                  min={1}
-                  max={64 * 1024 * 1024}
-                  value={draft.operations.maxResponseBytes}
-                  onChange={(event) =>
-                    updateOperations({
-                      maxResponseBytes: Number(event.target.value),
-                    })
-                  }
-                />
-                <Input
-                  label={t("execProfiles.operations.maxGenerationTokens")}
-                  type="number"
-                  min={1}
-                  max={1_000_000}
-                  value={draft.operations.maxGenerationTokens}
-                  onChange={(event) =>
-                    updateOperations({
-                      maxGenerationTokens: Number(event.target.value),
-                    })
-                  }
-                />
-                <Input
-                  label={t("execProfiles.operations.maxInFlight")}
-                  type="number"
-                  min={1}
-                  max={32}
-                  value={draft.operations.maxInFlightOperations}
-                  onChange={(event) =>
-                    updateOperations({
-                      maxInFlightOperations: Number(event.target.value),
-                    })
-                  }
-                />
-              </div>
               <h4>{t("execProfiles.progress.title")}</h4>
               <p className="muted">{t("execProfiles.progress.hint")}</p>
               <div className="grid-2">
@@ -1552,18 +1416,6 @@ export function ExecutionProfiles() {
                       escalateAfterUnsuccessfulReplans: Number(
                         event.target.value,
                       ),
-                    })
-                  }
-                />
-                <Input
-                  label={t("execProfiles.progress.observationTimeout")}
-                  type="number"
-                  min={1}
-                  max={3_600}
-                  value={draft.progress.observationTimeoutSecs}
-                  onChange={(event) =>
-                    updateProgress({
-                      observationTimeoutSecs: Number(event.target.value),
                     })
                   }
                 />

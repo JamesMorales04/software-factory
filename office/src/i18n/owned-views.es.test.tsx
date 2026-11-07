@@ -502,16 +502,13 @@ describe("newly translated operational surfaces", () => {
     expect(screen.getByText("ACCEPTED")).toBeDefined();
   });
 
-  it("renders the Spanish Delegations form and table without translating IDs", async () => {
+  it("renders the read-only Spanish Delegations evidence without translating IDs", async () => {
     renderRoutes("/delegations", "/delegations", <Delegations />, "es");
     expect(
       await screen.findByRole("heading", { name: "Delegaciones" }),
     ).toBeDefined();
-    expect(screen.getByText("Nueva delegación")).toBeDefined();
+    expect(screen.queryByText("Nueva delegación")).toBeNull();
     expect(screen.getByText("Delegaciones (1)")).toBeDefined();
-    expect(
-      screen.getByText("Rutas permitidas (separadas por comas)"),
-    ).toBeDefined();
     expect(screen.getByText("HISTORICAL")).toBeDefined();
     expect(screen.queryByRole("button", { name: "Revocar" })).toBeNull();
     expect(screen.getByText("delegation-1")).toBeDefined();

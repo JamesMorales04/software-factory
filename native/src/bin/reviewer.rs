@@ -15,7 +15,7 @@ use std::{
 };
 
 use factory_native::{
-    codex_auth::{CodexHome, RECEIPT_PROVIDER, REVIEW_MODEL},
+    codex_auth::CodexHome,
     codex_review::{CodexReviewRequest, login, run_review, status},
     db::{CandidateInspection, QualityReceiptRecord, QualityRole, ReviewMechanism},
     quality::{EvidenceKind, ReceiptResult},
@@ -166,8 +166,7 @@ async fn review_mechanism(
         .get("maxOutputTokens")
         .and_then(serde_json::Value::as_u64)
         .and_then(|value| u32::try_from(value).ok())
-        .filter(|value| (128..=32_768).contains(value))
-        .unwrap_or(8192);
+        .unwrap_or(0);
     Ok(ReviewSelection {
         mechanism,
         provider: body
@@ -260,14 +259,13 @@ async fn run_candidate(
         .json()
         .await?;
     let action_spec_sha256 = inspection.action_spec_sha256.clone();
+    let frozen = review_mechanism(config, candidate_id).await?;
     let selection = match config.mechanism {
         Some(mechanism) => ReviewSelection {
             mechanism,
-            provider: RECEIPT_PROVIDER.into(),
-            model: REVIEW_MODEL.into(),
-            max_output_tokens: 8192,
+            ..frozen
         },
-        None => review_mechanism(config, candidate_id).await?,
+        None => frozen,
     };
     let outcome = match selection.mechanism {
         SemanticReviewMechanism::Deterministic => deterministic_outcome(inspection).await?,

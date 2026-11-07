@@ -1,6 +1,7 @@
 # Factory Office UI standard
 
-**Status:** Normative internal standard, version 1.0, 2026-11-06. The visual
+**Status:** Normative internal standard, version 1.1, 2026-11-07 (ADR-0034
+removes fixed model productivity caps from active Office surfaces). The visual
 direction was requested by the Product Owner on 2026-11-06; formal visual
 sign-off of the running revision remains recorded separately.
 **Visual direction:** Product Owner-provided reference pack in
@@ -215,9 +216,10 @@ candidate.
   source provenance and a keyboard/tap move equivalent. A board card links to
   the real issue detail; no drag-only workflow.
 - **Execution Profiles:** profile cards/table with provider/model matrix,
-  executable/draft state, warnings, activation, and the autonomy budgets.
+  executable/draft state, warnings, activation, and the autonomy point policy.
   Selecting a provider/model must use the configured Core catalog; never invent
-  a model id.
+  a model id. Do not render fixed token, time, retry or subscription-cost caps:
+  those are telemetry and model/provider capability (ADR-0034).
 - **Merge policy:** project-scoped or global policy from Core, with the
   effective policy and consequence shown before any change.
 
@@ -294,6 +296,10 @@ second component for one page.
 
 - Distinguish `UNKNOWN`, `NOT_TESTED`, `DISCONNECTED`, `STALE`, `BLOCKED`,
   `REPAIR_REQUIRED` and `ACCEPTED` explicitly.
+- Token, elapsed time, retry/request count and subscription-notional cost are
+  observed telemetry. Do not present them as productivity caps; the automatic
+  brake is the no-progress diagnosis breaker. Billable monetary envelopes,
+  leases, credentials, egress binding and the Quality Gate remain authority.
 - A disconnected view does not mean an agent stopped; show the last observation
   and recovery path.
 - Model output is advisory; only Core can authorize, accept or deliver.
