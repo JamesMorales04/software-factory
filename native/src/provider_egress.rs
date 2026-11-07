@@ -49,7 +49,6 @@ pub struct TurnPolicy {
     pub requests: usize,
     pub max_requests: usize,
     pub strict_request_digest: bool,
-    pub binding: bool,
     /// The first upstream response for this exact turn. Retries must not start
     /// a second inference; surfacing the first outcome lets the Worker classify
     /// a retryable upstream failure instead of reporting a synthetic budget

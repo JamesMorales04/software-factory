@@ -172,7 +172,6 @@ async fn broker_enforces_a_core_turn_policy_and_rewrites_output() {
         requests: 0,
         max_requests: 0,
         strict_request_digest: true,
-        binding: false,
         last_upstream_status: None,
         last_upstream_error: String::new(),
     })));
@@ -284,7 +283,6 @@ async fn broker_rejects_bodies_above_the_quote_token_byte_bound_before_send() {
         requests: 0,
         max_requests: 2,
         strict_request_digest: false,
-        binding: false,
         last_upstream_status: None,
         last_upstream_error: String::new(),
     })));
@@ -545,7 +543,6 @@ async fn broker_binds_the_actual_emitted_body_to_core_before_forwarding() {
         requests: 0,
         max_requests: 2,
         strict_request_digest: false,
-        binding: false,
         last_upstream_status: None,
         last_upstream_error: String::new(),
     })));

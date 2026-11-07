@@ -3616,7 +3616,6 @@ async fn authorize_provider_turn(
         requests: 0,
         max_requests: authorization.max_requests as usize,
         strict_request_digest: strict_request_digest(context.provider_kind),
-        binding: false,
         last_upstream_status: None,
         last_upstream_error: String::new(),
     });
