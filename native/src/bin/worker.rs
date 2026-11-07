@@ -2062,7 +2062,7 @@ async fn run_provider_tool_loop(
         "agent": "plan",
         "tools": opencode_disabled_tools(),
         "parts": [{"type": "text", "text": format!(
-            "You are a bounded engineering agent. You MUST change the authorized source: an empty final response is invalid. {} You may request only these tools: {}. Return ONE JSON object per turn. To change a file use {{\"type\":\"tool_request\",\"call_id\":\"unique\",\"tool\":\"write_file\",\"path\":\"relative/path\",\"content\":\"...full file...\"}}. To run a frozen check use {{\"type\":\"tool_request\",\"call_id\":\"unique\",\"tool\":\"run_command\",\"argv\":[\"program\",\"arg\"],\"timeout_secs\":30}}. To finish use {{\"type\":\"final\",\"files\":[],\"explanation\":\"what changed and why\"}}. The `files` array in a final response MUST be empty; never put paths or strings in it. Allowed paths: {}. Objective: {}. Frozen checks you may run with run_command (argv must match exactly): {}. Source context: {}",
+            "You are a bounded engineering agent. You MUST change the authorized source: an empty final response is invalid. {} You may request only these tools: {}. Return ONE JSON object per turn. To change a file use {{\"type\":\"tool_request\",\"call_id\":\"unique\",\"tool\":\"write_file\",\"path\":\"relative/path\",\"content\":\"...full file...\"}}. To run a frozen check use {{\"type\":\"tool_request\",\"call_id\":\"unique\",\"tool\":\"run_command\",\"argv\":[\"program\",\"arg\"],\"timeout_secs\":<the check timeoutSecs>}}. Use each frozen check's `timeoutSecs`, never a shorter value. To finish use {{\"type\":\"final\",\"files\":[],\"explanation\":\"what changed and why\"}}. The `files` array in a final response MUST be empty; never put paths or strings in it. Allowed paths: {}. Objective: {}. Frozen checks you may run with run_command (argv must match exactly): {}. Source context: {}",
             opencode_first_action_instruction(context.assignment.allowed_tools.as_slice()),
             context.assignment.allowed_tools.join(", "),
             context.assignment.action_spec.allowed_paths.join(", "),
@@ -2073,7 +2073,7 @@ async fn run_provider_tool_loop(
                     .action_spec
                     .checks
                     .iter()
-                    .map(|check| json!({"id": check.id, "command": check.command, "expectExit": check.expect_exit}))
+                    .map(|check| json!({"id": check.id, "command": check.command, "expectExit": check.expect_exit, "timeoutSecs": check.timeout_secs}))
                     .collect::<Vec<_>>()
             )?,
             serde_json::to_string(&source_context)?
