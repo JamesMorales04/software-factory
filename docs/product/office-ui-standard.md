@@ -248,6 +248,11 @@ Implemented in this revision:
   1440/834/390 px viewport at
   `office/e2e-browser/office-home-fixture.mjs`, with the report in
   `docs/evidence/office-ui-standard-2026-11-06/layout-overflow-report.json`;
+- a real Chromium/Compose journey covering enrollment, Project import, request
+  approval, Campaign, Agent Office, Budget and Gate states at 1440 and 390 px,
+  recorded in
+  [`compose-browser-uat-2026-11-06`](../evidence/compose-browser-uat-2026-11-06/README.md)
+  at candidate `bd90e990d31f7110c368b1253da813f729a729e6`;
 - this standard and the fixture screenshot baseline in
   `docs/evidence/office-ui-standard-2026-11-06/`.
 
@@ -260,8 +265,9 @@ Intentionally deferred until a real Core operation exists:
   current Campaign page exposes the recorded operating picture, plan/WorkGraph,
   execution, candidates/changes, evidence, quality gate, budget and events; the
   pulse supplies the agent summary. Do not fake a conversation.
-- Real browser acceptance and Product Owner visual sign-off for this revision.
-  Fixture screenshots are explicitly labeled and are not acceptance evidence.
+- Product Owner visual sign-off for this revision and live-provider inference.
+  The Compose UAT is real-browser evidence over a deterministic fixture
+  provider; it does not prove live-model behavior.
 
 Known deviations are design debt, not permission to invent state. Record them
 in the PR and the reliability/design backlog.

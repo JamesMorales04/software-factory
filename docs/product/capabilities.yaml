@@ -2204,13 +2204,16 @@ capabilities:
   evidence:
     deterministic:
     - docs/evidence/office-command-center-slice1-2026-10-27.json
+    - docs/evidence/office-ui-standard-2026-11-06.json
+    - docs/evidence/compose-browser-uat-2026-11-06/compose-browser-uat.json
     live_agent: []
     uat: []
     deployment: []
     isolation: []
   limitations:
   - This capability covers Office-first parity governance; design tokens, shared components, the application shell, the 2026-11-06 Home/Campaign visual standard and the operational Overview/Decision Inbox workspace are implemented slices.
-  - The current Office still uses hash routes and polling; stable routes stream/replay, real browser acceptance of the 2026-11-06 visual standard, Owner visual sign-off and the remaining module migrations are later slices.
+  - The 2026-11-06 deterministic Compose browser UAT passed at candidate bd90e99 with real Core HTTP API and real Chromium; live provider inference, independent acceptance, Owner visual sign-off and the remaining module migrations remain later slices.
+  - The current Office still uses hash routes and polling; stable routes stream/replay and the remaining module migrations are later slices.
   - Concept-image attachment and branch controls are not implemented because the Core intake contract has no such operations; decorative controls are forbidden.
   blockers:
   - Each Office module requires a real browser journey and Product Owner review before completion.

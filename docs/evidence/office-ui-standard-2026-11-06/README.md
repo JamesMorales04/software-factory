@@ -1,7 +1,9 @@
 # Factory Office UI standard — fixture visual baseline
 
-**Status:** author-run fixture baseline, 2026-11-06. **Not** live acceptance,
-Product Owner visual certification or a provider/Core fidelity claim.
+**Status:** author-run fixture baseline, 2026-11-06, paired with a deterministic
+Compose browser UAT (real Core HTTP API and Chromium, fixture provider). **Not**
+live-model acceptance, independent acceptance, Product Owner visual
+certification or an isolation claim.
 
 This folder records the first visual baseline for
 [the Factory Office UI standard](../../product/office-ui-standard.md). Every
@@ -20,6 +22,8 @@ Core responses and carries a visible `TEST FIXTURE` banner.
 
 The machine-readable manifest is
 [`office-ui-standard-2026-11-06.json`](../office-ui-standard-2026-11-06.json).
+Real Core/Compose browser evidence for the same candidate is recorded in
+[`compose-browser-uat-2026-11-06`](../compose-browser-uat-2026-11-06/README.md).
 
 ## Capture
 
