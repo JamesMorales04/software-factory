@@ -2,7 +2,7 @@
 
 **Result:** `PASS` — deterministic-fixture UAT, **not** live-model or independent
 acceptance.
-**Candidate:** `70ddab2bb3f432b633fc66eff52dfab0ad3e0e5f`
+**Candidate:** `a76f8f15e0f01eeb390764234bbdd28ce3efaa6a`
 **Date:** 2026-11-07
 **Record:** [`compose-browser-uat.json`](compose-browser-uat.json)
 

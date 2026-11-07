@@ -1,11 +1,11 @@
 {
   "schema": "factory.compose-browser-uat.v1",
   "result": "PASS",
-  "started_at": "2026-11-07T21:40:54.767Z",
-  "finished_at": "2026-11-07T21:41:29.146Z",
-  "candidate_sha": "70ddab2bb3f432b633fc66eff52dfab0ad3e0e5f",
+  "started_at": "2026-11-07T22:21:34.786Z",
+  "finished_at": "2026-11-07T22:22:09.708Z",
+  "candidate_sha": "a76f8f15e0f01eeb390764234bbdd28ce3efaa6a",
   "office_url": "http://127.0.0.1:8898",
-  "objective": "Add the deterministic Compose browser UAT candidate 1794087654767 and cover it with frozen checks.",
+  "objective": "Add the deterministic Compose browser UAT candidate 1794090094786 and cover it with frozen checks.",
   "runtime": {
     "compose_project": "software-factory-uat60",
     "compose_files": [
@@ -18,18 +18,18 @@
     "core_api_interception": false
   },
   "ids": {
-    "project": "c16786ff-ce62-4e4c-af20-ff48f0467d88",
-    "intake_request": "306504a7-afca-4e2e-ae95-10e3730e4a57",
-    "action": "20e4166c-31d6-4bc0-bc1d-90da14570c58",
-    "lead_request": "2d54242e-fe2f-40ac-afce-d42d7d36bd54",
-    "execution_profile": "a7bfe732-7343-4213-9269-b5444122b58b",
-    "campaign": "7cc546ba-dfcf-4182-9857-7ccd8e41f9d4",
-    "run": "c07ead4b-fa40-4032-8970-0cc51d4655a0",
-    "attempt": "0002c4bb-6ff1-4e0e-86ef-102257d62d98",
-    "candidate": "933893ed-bf22-4b8c-84f4-808ce36b7507",
-    "candidate_commit": "272bc889564660b2feb8440ca623f61daa970f57",
-    "verifier_receipt": "2672bc90-9bf2-41bd-ac12-e26d1803bf4c",
-    "reviewer_receipt": "b9a5dedc-4ad0-4b8f-b6f6-19094e803873",
+    "project": "48925911-ad7f-4b96-87a0-c141d1e9bb48",
+    "intake_request": "7e8f5555-ffea-4c9b-b06f-9cb7d349edd2",
+    "action": "a70d1c9c-d9b3-4917-be3e-37f792c465c1",
+    "lead_request": "7ea63c85-1db5-4f48-a069-b07b104bc3d7",
+    "execution_profile": "4ca0ad48-6f0a-4e33-816f-c1a564b6f565",
+    "campaign": "4aeaeaa4-a09e-4592-87c2-3589c6f7997e",
+    "run": "d6fcbd68-7ee6-4261-8fd5-6348db915ccc",
+    "attempt": "c81b0ae1-09c5-471f-9cc7-a4b624492201",
+    "candidate": "f72721b3-d7b0-44cb-b228-92f268193912",
+    "candidate_commit": "53e285b8efe1e59ea7f6f55666396ee2d4cef16d",
+    "verifier_receipt": "59e2522a-4950-4a8c-8190-1b3b3173ff81",
+    "reviewer_receipt": "3718a5c3-e0c8-448e-b2a9-ae15f7cfec10",
     "gate": "ACCEPTED"
   },
   "assertions": {
@@ -149,19 +149,21 @@
       "Failed to load resource: the server responded with a status of 404 (Not Found)",
       "Failed to load resource: the server responded with a status of 404 (Not Found)",
       "Failed to load resource: the server responded with a status of 404 (Not Found)",
+      "Failed to load resource: the server responded with a status of 404 (Not Found)",
       "Failed to load resource: the server responded with a status of 404 (Not Found)"
     ],
     "page_errors": [],
     "failed_requests": [],
     "http_404": [
-      "http://127.0.0.1:8898/core-api/quality/candidates/933893ed-bf22-4b8c-84f4-808ce36b7507/gate",
-      "http://127.0.0.1:8898/core-api/quality/candidates/933893ed-bf22-4b8c-84f4-808ce36b7507/gate",
-      "http://127.0.0.1:8898/core-api/quality/candidates/933893ed-bf22-4b8c-84f4-808ce36b7507/gate",
-      "http://127.0.0.1:8898/core-api/quality/candidates/933893ed-bf22-4b8c-84f4-808ce36b7507/gate",
-      "http://127.0.0.1:8898/core-api/quality/candidates/933893ed-bf22-4b8c-84f4-808ce36b7507/gate",
-      "http://127.0.0.1:8898/core-api/quality/candidates/933893ed-bf22-4b8c-84f4-808ce36b7507/gate"
+      "http://127.0.0.1:8898/core-api/quality/candidates/f72721b3-d7b0-44cb-b228-92f268193912/gate",
+      "http://127.0.0.1:8898/core-api/quality/candidates/f72721b3-d7b0-44cb-b228-92f268193912/gate",
+      "http://127.0.0.1:8898/core-api/quality/candidates/f72721b3-d7b0-44cb-b228-92f268193912/gate",
+      "http://127.0.0.1:8898/core-api/quality/candidates/f72721b3-d7b0-44cb-b228-92f268193912/gate",
+      "http://127.0.0.1:8898/core-api/quality/candidates/f72721b3-d7b0-44cb-b228-92f268193912/gate",
+      "http://127.0.0.1:8898/core-api/quality/candidates/f72721b3-d7b0-44cb-b228-92f268193912/gate",
+      "http://127.0.0.1:8898/core-api/quality/candidates/f72721b3-d7b0-44cb-b228-92f268193912/gate"
     ],
-    "expected_gate_polls": 6,
+    "expected_gate_polls": 7,
     "unexpected_404": [],
     "unexpected_console_errors": [],
     "budget_probe_page_errors": []
@@ -191,7 +193,7 @@
     "billable_gateway": "deterministic model fixture only",
     "paid_inference": false
   },
-  "plan_hash": "7ac4d7692847a4d14f0b85a252280b535e7abe6f3f6ed1ef79ca2856fed07dd8",
+  "plan_hash": "5a0263298a4f5afb3183637e637ea3f049b72e9b15ffdcde63fd1cf42beda636",
   "campaign_authorization": {
     "execution_mode": "TRUSTED_LOCAL_PROVIDER",
     "risk_class": "R0",
@@ -215,19 +217,19 @@
     "changed_paths": [
       "src/provider.txt"
     ],
-    "base_commit": "2760b482250961360d0d5e7aaaa683d1bccb3ce9",
-    "candidate_commit": "272bc889564660b2feb8440ca623f61daa970f57"
+    "base_commit": "dc5943148c88e75af4c75d3fa2e63c7a3f12aaee",
+    "candidate_commit": "53e285b8efe1e59ea7f6f55666396ee2d4cef16d"
   },
   "pr_projection": "UNBOUND_NO_GITHUB_WRITE",
   "agent_office": {
     "participant_count": 4,
     "avatar_labels": [
-      "Inspect Lead lead:2d54242e-fe2f-40ac-afce-d42d7d36bd54, status RUNNING, observation NOT EXPOSED",
-      "Inspect Implementer implementer:1262c04d-1d00-4d72-b378-48cfa5df6d77, status COMPLETED, observation FINAL",
-      "Inspect Verifier verifier:2672bc90-9bf2-41bd-ac12-e26d1803bf4c, status PASS, observation FINAL",
-      "Inspect Reviewer reviewer:b9a5dedc-4ad0-4b8f-b6f6-19094e803873, status PASS, observation FINAL"
+      "Inspect Lead lead:7ea63c85-1db5-4f48-a069-b07b104bc3d7, status RUNNING, observation NOT EXPOSED",
+      "Inspect Implementer implementer:6f838221-446c-437f-9957-4a39fefa6b75, status COMPLETED, observation FINAL",
+      "Inspect Verifier verifier:59e2522a-4950-4a8c-8190-1b3b3173ff81, status PASS, observation FINAL",
+      "Inspect Reviewer reviewer:3718a5c3-e0c8-448e-b2a9-ae15f7cfec10, status PASS, observation FINAL"
     ],
-    "campaign_filter": "7cc546ba-dfcf-4182-9857-7ccd8e41f9d4"
+    "campaign_filter": "4aeaeaa4-a09e-4592-87c2-3589c6f7997e"
   },
   "acceptance": "NOT_CLAIMED_FIXTURE_ONLY_UAT"
 }

@@ -3,7 +3,7 @@
   "record": "factory-autonomy-telemetry-and-cap-removal",
   "date": "2026-11-07",
   "base_commit": "c93190130552e430e765b8f45f6c10c24b3f741d",
-  "candidate_commit": "70ddab2bb3f432b633fc66eff52dfab0ad3e0e5f",
+  "candidate_commit": "a76f8f15e0f01eeb390764234bbdd28ce3efaa6a",
   "status": "author-run implementation evidence; real deterministic Compose browser UAT PASS; live-model and independent acceptance NOT_TESTED",
   "decision": "docs/architecture/decisions/ADR-0034-model-capability-telemetry-and-agent-scope.md",
   "changes": [
@@ -60,7 +60,7 @@
     {
       "name": "Deterministic Compose browser UAT",
       "pass": true,
-      "detail": "PASS at 70ddab2bb3f432b633fc66eff52dfab0ad3e0e5f; real rootless Compose Core HTTP API and real Chromium; deterministic provider fixture; see docs/evidence/compose-browser-uat-2026-11-07"
+      "detail": "PASS at a76f8f15e0f01eeb390764234bbdd28ce3efaa6a; real rootless Compose Core HTTP API and real Chromium; deterministic provider fixture; see docs/evidence/compose-browser-uat-2026-11-07"
     }
   ],
   "limitations": [

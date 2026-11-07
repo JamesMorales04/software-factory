@@ -91,3 +91,7 @@ propose the per-task scope inside a Core-validated outer boundary.
   caps and that a deterministic multi-request Campaign reaches the Gate.
 - Live-model acceptance remains a separate authorized run; this ADR does not
   itself certify a provider/model.
+- Exact-candidate deterministic evidence is recorded in
+  [autonomy-telemetry-2026-11-07.json](../../evidence/autonomy-telemetry-2026-11-07.json)
+  and the [Compose browser UAT](../../evidence/compose-browser-uat-2026-11-07/README.md)
+  at product candidate `a76f8f15e0f01eeb390764234bbdd28ce3efaa6a`.
