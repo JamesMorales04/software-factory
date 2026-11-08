@@ -2,7 +2,9 @@
 
 **Status:** developer-preview `TRUSTED_LOCAL` implementation, author-run.
 Not SEC-01 ISOLATED, not independently certified, not a deployment or Windows
-claim.
+claim. SEC-01-ISOLATED is out of scope for the current product under
+[ADR-0035](../architecture/decisions/ADR-0035-sec01-accepted-risk-scope.md);
+isolated execution remains fail-closed.
 
 ## Measured phase-zero environment (2026-10-26)
 
@@ -146,6 +148,9 @@ why the engine is trusted infrastructure and why SEC-01 remains blocked.
 ## Not claimed
 
 - SEC-01 ISOLATED certification, kernel confinement or credential confinement.
+  This is out of scope for the current product (ADR-0035), not a pending
+  certification task. The residual risks below are accepted for
+  `TRUSTED_LOCAL`; they are not certified safe for hostile code.
 - SELinux/AppArmor-labeled hosts or Windows/Podman Machine.
 - Cross-project filesystem isolation after engine/broker compromise.
 - Paid live provider UAT, live Codex container transport or ChatGPT OAuth.

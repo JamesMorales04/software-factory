@@ -55,12 +55,12 @@ portfolio; this ledger is the current status authority.
 
 | Gate | Status | Evidence / blocker |
 |---|---|---|
-| M1 Architecture | `PARTIAL` | One Rust Core/Worker/Supervisor/Office path; no legacy tracked implementation. OpenCode and Codex adapters are implemented; OpenCode has managed live acceptance. Native ChatGPT Codex auth and ISOLATED execution remain blocked. |
+| M1 Architecture | `PARTIAL` | One Rust Core/Worker/Supervisor/Office path; no legacy tracked implementation. OpenCode and Codex adapters are implemented; OpenCode has managed live acceptance. Native ChatGPT Codex auth remains blocked; `SEC-01-ISOLATED` is out of scope for the current `TRUSTED_LOCAL` product and remains fail-closed (ADR-0035). |
 | M2 PR #16 parity | `PARTIAL` | A1–A12 concepts substantially implemented; crash/browser multi-unit and paid failure-injection gaps remain |
 | M3 Repository hygiene | `PASS` | Zero tracked Go files; strict hygiene and architecture consistency pass on the current branch; all 44 CAP IDs preserved |
 | M4 Runtime | `PASS (author-run)` | Managed container build, `factory start`/`doctor`/`status`/`stop`, host Supervisor/Worker, Office HTTP, real OpenCode Lead/Implementer, rootless-Podman verifier, semantic Reviewer, `ACCEPTED`, restart persistence and clean stop. Evidence: [managed live UAT](../evidence/managed-live-uat-2026-10-26.md). |
 | M5 Functional execution | `PASS (author-run)` | R0/FIXTURE, model-backed Lead, source-aware OpenCode tool loop and Codex App Server deterministic adapter; managed external-project candidate reached `ACCEPTED`. Live Codex native ChatGPT auth remains blocked. |
-| M6 Security | `BLOCKED` | Provider credentials remain in trusted Core/Worker; bubblewrap and egress hardening are implemented. Native ChatGPT credential extraction/pass-through, running model-call revocation and human certification remain open. ISOLATED remains blocked. |
+| M6 Security | `PARTIAL (TRUSTED_LOCAL)` | Provider credentials remain in trusted Core/Worker; bubblewrap and egress hardening are implemented. Native ChatGPT credential extraction/pass-through, running model-call revocation and human certification remain open. `SEC-01-ISOLATED` is accepted as out of scope for the current product (ADR-0035); isolated dispatch remains fail-closed. |
 | M7 Quality | `PASS (author-run)` | Rootless-Podman verifier, mandatory deterministic Reviewer pre-check, live semantic Reviewer with measured provenance and deterministic `ACCEPTED` gate. No human certification. |
 | M8 Office | `PASS (author-run)` | Rust Office served from the managed Core and browser-observed with candidates, receipts, gate and runtime accounting. Two unexplained 404 console entries and non-terminal Campaign/Lead projection labels remain. |
 | M9 Testing | `PARTIAL` | Full workspace tests, strict Clippy/format, real-Chromium Office journey, CAP-014, observability, WorkGraph, cancellation/revocation/recovery/lease and provider tests pass locally; exact-head PR checks remain authoritative. |
@@ -207,7 +207,8 @@ certification.
   `factory start`; without it host execution could not start.
 
 Not claimed: live paid model quality, human security certification, SEC-01
-ISOLATED certification, Windows, deployment, or exact external spend.
+ISOLATED certification (out of scope for the current product, ADR-0035),
+Windows, deployment, or exact external spend.
 
 ## Lead live-start authorization (2026-10-26, uncommitted branch candidate)
 
@@ -428,6 +429,7 @@ See [container-native status](container-native-status.md),
 
 This iteration does **not** claim a paid provider UAT, live OpenCode-in-container
 inference, Codex API-key live inference, containerized Codex stdio, a completed
-Factory ChatGPT login, live Luna review, SEC-01 isolation, Windows, independent
+Factory ChatGPT login, live Luna review, SEC-01-ISOLATED (out of scope for the
+current product), Windows, independent
 security review or merge authorization. The historical host-managed acceptance
 remains provenance.

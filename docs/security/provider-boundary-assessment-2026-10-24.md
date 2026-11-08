@@ -5,7 +5,10 @@ updated after the independent model review in
 [independent-review-2026-10-25.md](independent-review-2026-10-25.md). It is not
 human security certification, not an isolation certificate and not
 authorization for live provider coding. TRUSTED_LOCAL_PROVIDER is never
-ISOLATED.
+ISOLATED. The current product scopes `SEC-01-ISOLATED` out under
+[ADR-0035](../architecture/decisions/ADR-0035-sec01-accepted-risk-scope.md);
+the residual findings and required work below remain the reopening criteria if
+isolated or untrusted execution is ever added.
 
 ## Scope and assets
 
