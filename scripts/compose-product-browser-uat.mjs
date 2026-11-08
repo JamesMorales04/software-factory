@@ -279,6 +279,22 @@ try {
   assert.deepEqual(projectConfig.allowedPaths, ["src"]);
   record.assertions.project_configuration = "PASS";
 
+  stage = "project-folder-browser";
+  await page.getByRole("link", { name: "Projects", exact: true }).click();
+  await page.getByRole("heading", { name: "Projects", level: 1 }).waitFor();
+  await page.getByRole("tab", { name: "Local repository" }).click();
+  await page.getByRole("button", { name: "Browse folders" }).click();
+  await page
+    .getByRole("region", { name: "Managed folder browser" })
+    .waitFor();
+  await page.getByRole("button", { name: "Use this folder" }).click();
+  const browsedPath = await page.getByTestId("project-local-path").inputValue();
+  assert.equal(browsedPath, "/projects");
+  record.assertions.project_folder_browser = "PASS";
+  await shot("project-folder-browser-1440.png");
+  await page.getByRole("link", { name: "Settings", exact: true }).click();
+  await page.getByRole("heading", { name: "Settings", level: 1 }).waitFor();
+
   stage = "provider-and-profile-setup";
   await core("PUT", "/settings/providers/opencode", {
     model: "deepseek-v4.1-flash",
