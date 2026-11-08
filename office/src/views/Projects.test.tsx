@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   getProjectImportOptions: vi.fn(),
   listGitHubRepositories: vi.fn(),
   importGitHubProject: vi.fn(),
+  browseProjectDirectories: vi.fn(),
 }));
 
 vi.mock("../coreApi", () => ({
@@ -129,6 +130,7 @@ describe("Projects onboarding and list states", () => {
       detail: "",
     });
     mocks.importGitHubProject.mockReset();
+    mocks.browseProjectDirectories.mockReset();
   });
 
   it("renders the Projects workspace in Spanish with card-labelled cells", async () => {
@@ -213,6 +215,44 @@ describe("Projects onboarding and list states", () => {
         }),
       ),
     );
+  });
+
+  it("browses managed folders and fills the selected local path", async () => {
+    mocks.browseProjectDirectories
+      .mockResolvedValueOnce({
+        root: "/projects",
+        path: "",
+        current_path: "/projects",
+        parent: null,
+        directories: [
+          {
+            name: "checkout",
+            path: "checkout",
+            absolute_path: "/projects/checkout",
+            is_git: true,
+          },
+        ],
+        truncated: false,
+      })
+      .mockResolvedValueOnce({
+        root: "/projects",
+        path: "checkout",
+        current_path: "/projects/checkout",
+        parent: "",
+        directories: [],
+        truncated: false,
+      });
+    const user = userEvent.setup();
+    renderProjects();
+
+    await screen.findByText("Proyectos registrados (1)");
+    await user.click(screen.getByRole("tab", { name: "Repositorio local" }));
+    await user.click(screen.getByRole("button", { name: "Explorar carpetas" }));
+    await user.click(await screen.findByRole("button", { name: /checkout/ }));
+    await user.click(screen.getByRole("button", { name: "Usar esta carpeta" }));
+    expect(
+      (screen.getByTestId("project-local-path") as HTMLInputElement).value,
+    ).toBe("/projects/checkout");
   });
 
   it("imports a local repository only with its explicit path and name", async () => {

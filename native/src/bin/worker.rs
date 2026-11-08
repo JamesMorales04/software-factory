@@ -289,12 +289,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .send()
                     .await?;
                 if !response.status().is_success() {
-                    return Err(format!(
+                    let message = format!(
                         "Core rejected candidate: {} {}",
                         response.status(),
                         response.text().await.unwrap_or_default()
+                    );
+                    // A policy rejection is terminal for this Attempt. Leaving
+                    // the lease and Run behind made the Worker restart loop
+                    // re-execute the same rejected candidate indefinitely.
+                    report_terminal_failure(
+                        &client,
+                        &core,
+                        &session_token,
+                        &worker_id,
+                        &assignment,
+                        "FAILED",
+                        &message,
                     )
-                    .into());
+                    .await?;
+                    eprintln!("sandbox candidate rejected: {message}");
+                    if once {
+                        return Ok(());
+                    }
+                    continue;
                 }
                 println!(
                     "sandbox candidate accepted for action {}",
@@ -314,26 +331,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     "FAILED"
                 };
-                let response = client
-                    .post(core.join("worker/report")?)
-                    .bearer_auth(&session_token)
-                    .json(&json!({
-                        "attempt_id": assignment.lease.attempt_id,
-                        "worker_id": worker_id,
-                        "generation": assignment.lease.generation,
-                        "receipt_id": Uuid::new_v4().to_string(),
-                        "result_sha256": sha256_hex(message.as_bytes()),
-                        "terminal_status": terminal_status
-                    }))
-                    .send()
-                    .await?;
-                if !response.status().is_success() {
-                    eprintln!(
-                        "Core refused failed-attempt report: {} {}",
-                        response.status(),
-                        response.text().await.unwrap_or_default()
-                    );
-                }
+                report_terminal_failure(
+                    &client,
+                    &core,
+                    &session_token,
+                    &worker_id,
+                    &assignment,
+                    terminal_status,
+                    &message,
+                )
+                .await?;
                 eprintln!("sandbox execution failed: {message}");
                 if once {
                     return Err(error);
@@ -344,6 +351,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Ok(());
         }
     }
+}
+
+async fn report_terminal_failure(
+    client: &reqwest::Client,
+    core: &reqwest::Url,
+    session_token: &str,
+    worker_id: &str,
+    assignment: &Assignment,
+    terminal_status: &str,
+    message: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let response = client
+        .post(core.join("worker/report")?)
+        .bearer_auth(session_token)
+        .json(&json!({
+            "attempt_id": assignment.lease.attempt_id,
+            "worker_id": worker_id,
+            "generation": assignment.lease.generation,
+            "receipt_id": Uuid::new_v4().to_string(),
+            "result_sha256": sha256_hex(message.as_bytes()),
+            "terminal_status": terminal_status
+        }))
+        .send()
+        .await?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "Core refused terminal report: {} {}",
+            response.status(),
+            response.text().await.unwrap_or_default()
+        )
+        .into());
+    }
+    Ok(())
 }
 
 async fn recover_provider_sessions(

@@ -71,6 +71,22 @@ export interface ProjectImportOptions {
   managed_storage_required: boolean;
 }
 
+export interface ProjectBrowseEntry {
+  name: string;
+  path: string;
+  absolute_path: string;
+  is_git: boolean;
+}
+
+export interface ProjectBrowseListing {
+  root: string;
+  path: string;
+  current_path: string;
+  parent: string | null;
+  directories: ProjectBrowseEntry[];
+  truncated: boolean;
+}
+
 export interface GitHubProjectImportRequest {
   owner: string;
   repo: string;
@@ -1713,8 +1729,9 @@ export interface UpdateProviderRequest {
   maxInputTokens: number;
   maxOutputTokens: number;
   maxCostMicros: number;
-  inputMicrosPerMillion: number;
-  outputMicrosPerMillion: number;
+  /** Retained for legacy metered routes; normal Office editing omits it. */
+  inputMicrosPerMillion?: number;
+  outputMicrosPerMillion?: number;
 }
 
 export interface ProviderTestResult extends ProviderModelCatalogEntry {
@@ -2911,6 +2928,10 @@ export const coreApi = {
     }),
   getProjectImportOptions: () =>
     request<ProjectImportOptions>("/projects/import/options"),
+  browseProjectDirectories: (path = "") =>
+    request<ProjectBrowseListing>(
+      `/projects/browse${path ? `?path=${encodeURIComponent(path)}` : ""}`,
+    ),
   importGitHubProject: (input: GitHubProjectImportRequest) =>
     request<GitHubProjectImportResult>("/projects/import/github", {
       method: "POST",

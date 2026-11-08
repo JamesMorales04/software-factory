@@ -80,8 +80,6 @@ function ProviderCard({
   const [maxInput, setMaxInput] = useState(provider.maxInputTokens);
   const [maxOutput, setMaxOutput] = useState(provider.maxOutputTokens);
   const [maxCost, setMaxCost] = useState(provider.maxCostMicros);
-  const [inputRate, setInputRate] = useState(provider.inputMicrosPerMillion);
-  const [outputRate, setOutputRate] = useState(provider.outputMicrosPerMillion);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -104,8 +102,6 @@ function ProviderCard({
     setMaxInput(provider.maxInputTokens);
     setMaxOutput(provider.maxOutputTokens);
     setMaxCost(provider.maxCostMicros);
-    setInputRate(provider.inputMicrosPerMillion);
-    setOutputRate(provider.outputMicrosPerMillion);
     setCatalog(provider.modelDiscovery);
     setModelFilter("");
   }, [provider]);
@@ -144,8 +140,6 @@ function ProviderCard({
         maxInputTokens: maxInput,
         maxOutputTokens: maxOutput,
         maxCostMicros: maxCost,
-        inputMicrosPerMillion: inputRate,
-        outputMicrosPerMillion: outputRate,
       });
       setCredential("");
       setNotice(t("settings.provider.saved"));
@@ -474,26 +468,6 @@ function ProviderCard({
               <dd>{formatTimestamp(provider.updatedAt)}</dd>
             </div>
           </dl>
-        </details>
-        <details className="settings-advanced">
-          <summary>{t("settings.provider.advanced")}</summary>
-          <div className="grid-2">
-            <Input
-              label={t("settings.provider.inputRate")}
-              type="number"
-              min={0}
-              value={inputRate}
-              onChange={(event) => setInputRate(Number(event.target.value))}
-            />
-            <Input
-              label={t("settings.provider.outputRate")}
-              type="number"
-              min={0}
-              value={outputRate}
-              onChange={(event) => setOutputRate(Number(event.target.value))}
-            />
-          </div>
-          <p className="muted">{t("settings.provider.advancedHint")}</p>
         </details>
         <div className="settings-checks">
           <Checkbox

@@ -165,8 +165,10 @@ describe("operational workspace", () => {
     await screen.findByRole("heading", { name: "Overview" });
     expect(screen.getByText("Unresolved model usage")).toBeDefined();
     expect(screen.getByText("ACCEPTED: 1")).toBeDefined();
-    expect(screen.getByText("Measured spend")).toBeDefined();
-    expect(screen.getByText("Unmeasured bound")).toBeDefined();
+    expect(screen.getByText("Measured tokens")).toBeDefined();
+    expect(screen.getAllByText(/Unmeasured sessions/).length).toBeGreaterThan(
+      0,
+    );
     expect(screen.getByText("candidat")).toBeDefined();
   });
 

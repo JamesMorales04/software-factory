@@ -1124,6 +1124,35 @@ impl Database {
         .await?;
         let (id, action_id, status, created_at) = row.ok_or(Error::NotFound)?;
         if status == "CANCELLED" {
+            // A retry of cancellation must not leave child Runs or Attempts in
+            // a non-terminal state from an older Core version or a partial
+            // repair. Fence them again before returning the idempotent result.
+            sqlx::query::query(
+                "UPDATE runs SET status='CANCELLED'
+                 WHERE campaign_id=?1 AND status NOT IN ('COMPLETED','FAILED','CANCELLED')",
+            )
+            .bind(&id)
+            .execute(&mut *transaction)
+            .await?;
+            sqlx::query::query(
+                "UPDATE attempts SET status='CANCELLED'
+                 WHERE status NOT IN ('COMPLETED','FAILED','CANCELLED')
+                   AND run_id IN (SELECT id FROM runs WHERE campaign_id=?1)",
+            )
+            .bind(&id)
+            .execute(&mut *transaction)
+            .await?;
+            sqlx::query::query(
+                "DELETE FROM worker_leases
+                 WHERE attempt_id IN (
+                   SELECT a.id FROM attempts a
+                   JOIN runs r ON r.id=a.run_id
+                   WHERE r.campaign_id=?1
+                 )",
+            )
+            .bind(&id)
+            .execute(&mut *transaction)
+            .await?;
             transaction.commit().await?;
             return Ok(Campaign {
                 id,
@@ -1142,14 +1171,14 @@ impl Database {
             .await?;
         sqlx::query::query(
             "UPDATE runs SET status='CANCELLED'
-             WHERE campaign_id=?1 AND status IN ('QUEUED','RUNNING')",
+             WHERE campaign_id=?1 AND status NOT IN ('COMPLETED','FAILED','CANCELLED')",
         )
         .bind(&id)
         .execute(&mut *transaction)
         .await?;
         sqlx::query::query(
             "UPDATE attempts SET status='CANCELLED'
-             WHERE status IN ('QUEUED','LEASED')
+             WHERE status NOT IN ('COMPLETED','FAILED','CANCELLED')
                AND run_id IN (SELECT id FROM runs WHERE campaign_id=?1)",
         )
         .bind(&id)
@@ -6211,13 +6240,15 @@ mod tests {
             .execute(&db.pool)
             .await
             .unwrap();
-        sqlx::query::query("INSERT INTO runs VALUES ('run-cancel','campaign-cancel','QUEUED',?1)")
-            .bind(&now)
-            .execute(&db.pool)
-            .await
-            .unwrap();
         sqlx::query::query(
-            "INSERT INTO attempts(id,run_id,status,created_at) VALUES ('attempt-cancel','run-cancel','LEASED',?1)",
+            "INSERT INTO runs VALUES ('run-cancel','campaign-cancel','REPAIR_REQUIRED',?1)",
+        )
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO attempts(id,run_id,status,created_at) VALUES ('attempt-cancel','run-cancel','CANDIDATE_READY',?1)",
         )
         .bind(&now)
         .execute(&db.pool)
@@ -6348,11 +6379,35 @@ mod tests {
         .unwrap();
         assert_eq!(provider_state, "CANCEL_REQUESTED");
 
+        // Simulate a legacy/partial cancellation that left a repaired child
+        // non-terminal; replaying cancellation must heal it.
+        sqlx::query::query("UPDATE runs SET status='REPAIR_REQUIRED' WHERE id='run-cancel'")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        sqlx::query::query(
+            "UPDATE attempts SET status='CANDIDATE_READY' WHERE id='attempt-cancel'",
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
         let again = db
             .cancel_campaign("campaign-cancel", "operator", "repeat")
             .await
             .unwrap();
         assert_eq!(again.status, "CANCELLED");
+        let (healed_run,): (String,) =
+            sqlx::query_as::query_as("SELECT status FROM runs WHERE id='run-cancel'")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(healed_run, "CANCELLED");
+        let (healed_attempt,): (String,) =
+            sqlx::query_as::query_as("SELECT status FROM attempts WHERE id='attempt-cancel'")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(healed_attempt, "CANCELLED");
         let (event_count,): (i64,) = sqlx::query_as::query_as(
             "SELECT COUNT(*) FROM events WHERE subject_id='campaign-cancel' AND kind='campaign.cancelled'",
         )

@@ -29,7 +29,7 @@ export const es: Catalog = {
   "nav.agentOffice": "Oficina de agentes",
   "nav.runs": "Ejecuciones",
   "nav.workers": "Trabajadores",
-  "nav.runtime": "Entorno de ejecución",
+  "nav.runtime": "Actividad y telemetría",
   "nav.settings": "Configuración",
   "nav.accessDevices": "Acceso y dispositivos",
   "nav.request": "Solicitud",
@@ -168,9 +168,6 @@ export const es: Catalog = {
   "home.policy.grantLifetime": "Vigencia de la concesión",
   "home.policy.grantLifetimeValue":
     "Válida {days} días · {parallel} operación de implementación concurrente",
-  "home.policy.inferenceEnvelope": "Envolvente de inferencia",
-  "home.policy.inferenceEnvelopeValue":
-    "{amount} USD para evaluación, implementación y revisión",
   "home.policy.technical":
     "Core también aplica tiempos máximos por operación, límites de solicitud y respuesta, límites de generación y supervisión determinista del progreso. Son límites técnicos de seguridad, no turnos, intentos, sesiones ni fechas límite de Campaña.",
   "home.policy.scopeMissing":
@@ -181,11 +178,6 @@ export const es: Catalog = {
   "home.policy.enable": "Habilitar ejecución gobernada",
   "home.policy.enabling": "Habilitando ejecución gobernada…",
   "home.validation.project": "Selecciona un Proyecto.",
-  "home.spend.label": "Autorización de inferencia (USD)",
-  "home.spend.help":
-    "Core la exige para llamadas facturables. Se detiene cuando se agota.",
-  "home.validation.authorization":
-    "Introduce un importe positivo en USD para la envolvente de inferencia.",
   "home.validation.objective":
     "Describe el resultado de ingeniería que quieres.",
   "home.request.error": "No se pudo enviar la solicitud.",
@@ -1157,7 +1149,10 @@ export const es: Catalog = {
   "issues.intake.badge.enabled": "HABILITADA",
   "issues.intake.badge.off": "DESACTIVADA",
   "issues.intake.description":
-    "Desactivada por defecto. Una política reconoce límites exactos de repositorio, autoría, etiquetas, perfil, rutas y presupuesto. Un lote reconoce instantáneas exactas de incidencias. Ninguno inicia una Campaña: la ejecución, la aprobación y el despacho al Worker siguen siendo operaciones explícitas e independientes.",
+    "Desactivada por defecto. Elige el repositorio y el perfil; las etiquetas deciden qué incidencias entran. Los límites técnicos quedan en Opciones avanzadas. Nada se ejecuta hasta que apruebes un plan.",
+  "issues.intake.advanced": "Opciones avanzadas",
+  "issues.intake.advancedHint":
+    "Autoría, rutas, capacidades, límites técnicos y caducidad. Los valores predeterminados son seguros para la mayoría de los Proyectos.",
   "issues.intake.cancel": "Cancelar",
   "issues.intake.error.load":
     "No se pudo cargar la política de admisión de incidencias.",
@@ -1708,6 +1703,16 @@ export const es: Catalog = {
     "Falló la importación del repositorio.",
   "projects.import.local.disabledTitle":
     "La importación local está deshabilitada",
+  "projects.browse.open": "Explorar carpetas",
+  "projects.browse.loading": "Cargando carpetas…",
+  "projects.browse.title": "Explorador de carpetas gestionadas",
+  "projects.browse.current": "Carpeta actual:",
+  "projects.browse.up": "Subir",
+  "projects.browse.select": "Usar esta carpeta",
+  "projects.browse.empty": "No hay subcarpetas.",
+  "projects.browse.error": "No se pudieron cargar las carpetas.",
+  "projects.browse.git": "Git",
+  "projects.browse.truncated": "Se muestran solo las primeras 500 carpetas.",
   "projects.import.local.path": "Ruta absoluta del repositorio local",
   "projects.import.local.submit": "Importar repositorio local",
   "projects.import.local.busy": "Importando…",
@@ -1843,7 +1848,7 @@ export const es: Catalog = {
   "workers.table.worker": "Trabajador",
   "workers.table.credentialUpdated": "Credencial actualizada",
 
-  "runtime.title": "Entorno de ejecución",
+  "runtime.title": "Actividad y telemetría",
   "runtime.description":
     "Proyecciones duraderas de Core para sesiones de proveedor, reservas de llamadas a modelos, limpieza y telemetría. Un registro ausente no demuestra que la limpieza haya tenido éxito.",
   "runtime.meta.coreHealthy": "Core en buen estado",
@@ -1863,19 +1868,18 @@ export const es: Catalog = {
   "runtime.tabs.modelCalls": "Llamadas a modelos",
   "runtime.tabs.diagnostics": "Diagnóstico",
   "runtime.metrics.summaryAria": "Resumen del entorno de ejecución",
-  "runtime.metrics.spend.label": "Gasto medido muestreado",
-  "runtime.metrics.spend.detail":
+  "runtime.metrics.tokens.label": "Tokens medidos",
+  "runtime.metrics.tokens.detail":
     "Sesiones con uso conocido más las últimas 200 llamadas a modelos; no es un total (sesiones: {sessions}, llamadas: {calls})",
-  "runtime.metrics.ceiling.label": "Techo reservado",
-  "runtime.metrics.ceiling.detail":
-    "Llamadas a modelos sin resolver: {calls} + turnos de proveedor abiertos: {turns}",
+  "runtime.metrics.completed.label": "Sesiones completadas",
+  "runtime.metrics.completed.detail": "De {total} sesiones registradas",
   "runtime.metrics.unresolved.label": "Llamadas sin resolver",
   "runtime.metrics.unresolved.detail": "Reservas de Core AMBIGUOUS o UNKNOWN",
   "runtime.metrics.openSessions.label": "Sesiones abiertas",
   "runtime.metrics.openSessions.detail":
     "Sesiones registradas: {total}; INTENT, ACTIVE, cancelación o huérfanas",
   "runtime.metrics.unmeasured.label": "Sesiones sin medición",
-  "runtime.metrics.unmeasured.detail": "Excluidas del gasto medido",
+  "runtime.metrics.unmeasured.detail": "Excluidas de los tokens medidos",
   "runtime.metrics.telemetry.label": "Telemetría",
   "runtime.metrics.telemetry.detail": "cursor {cursor} · {pending} pendientes",
   "runtime.availability.title": "Disponibilidad de servicios",
@@ -1885,7 +1889,7 @@ export const es: Catalog = {
   "runtime.availability.sessions": "Sesiones de proveedor",
   "runtime.availability.modelCalls": "Llamadas a modelos recientes",
   "runtime.availability.sampled": "Muestreadas: {count}",
-  "runtime.availability.openTurns": "Turnos de proveedor abiertos",
+  "runtime.availability.completedSessions": "Sesiones completadas",
   "runtime.availability.boundaryNote":
     "La API actual de Core no expone el estado del Supervisor ni del entorno de ejecución anidado. Office no infiere su salud a partir de un registro ausente, una vista desconectada o el estado de un proceso de Compose.",
   "runtime.states.title": "Estados de sesión",
@@ -1907,7 +1911,6 @@ export const es: Catalog = {
   "runtime.unresolved.emptyTitle": "No hay llamadas a modelos sin resolver",
   "runtime.unresolved.emptyDescription":
     "No hay ninguna reserva de Core AMBIGUOUS o UNKNOWN registrada.",
-  "runtime.unresolved.ceiling": "Techo {cost}",
   "runtime.sessions.title": "Sesiones de proveedor (mostradas: {count})",
   "runtime.sessions.hint":
     "Los recibos de limpieza son evidencia registrada, no prueba de aislamiento",
@@ -1945,10 +1948,9 @@ export const es: Catalog = {
   "runtime.calls.table.route": "Ruta",
   "runtime.calls.table.state": "Estado",
   "runtime.calls.table.usage": "Uso",
-  "runtime.calls.table.ceiling": "Techo",
   "runtime.calls.table.updated": "Actualizada",
   "runtime.calls.scope": "ámbito",
-  "runtime.calls.tokens": "{tokens} tokens / {cost}",
+  "runtime.calls.tokens": "{tokens} tokens",
   "runtime.calls.unresolvedTitle": "Reservas sin resolver ({count})",
   "runtime.calls.unresolvedHint":
     "La liberación es explícita y auditada por Core; no es automática",
@@ -2041,9 +2043,12 @@ export const es: Catalog = {
   "overview.metric.blockedSignalsDetail":
     "Acciones, Ejecuciones, Campañas o Puertas",
   "overview.metric.acceptedCandidates": "Candidatos aceptados",
+  "overview.footnote.telemetry":
+    "Los tokens, tiempos, reintentos y costes de suscripción son telemetría, no topes de productividad. Las cifras no son una factura.",
+
   "overview.metric.acceptedDetail": "{count} registrados",
-  "overview.metric.measuredSpend": "Gasto medido",
-  "overview.metric.measuredTokens": "{tokens} tokens medidos",
+  "overview.metric.measuredTokensLabel": "Tokens medidos",
+  "overview.metric.measuredTokensDetail": "Sesiones sin medición: {unmeasured}",
   "overview.metric.open": "Abrir",
   "overview.metric.openAria": "Abrir {label}",
   "overview.gate.title": "Resultados de la Puerta de calidad",
@@ -2053,7 +2058,6 @@ export const es: Catalog = {
     "Un candidato aparece aquí después de registrar la evidencia independiente del verificador y del revisor.",
   "overview.facts.unmeasuredSessions": "Sesiones no medidas",
   "overview.facts.unmeasuredModelCalls": "Llamadas a modelo no medidas",
-  "overview.facts.unmeasuredBound": "Límite no medido",
   "overview.facts.core": "Core",
   "overview.decisions.title": "Bandeja de decisiones",
   "overview.decisions.open": "Abrir Bandeja",
@@ -2934,15 +2938,6 @@ export const es: Catalog = {
   "settings.provider.manualModelHelp":
     "Core mantiene esta ruta sin verificar hasta que el proveedor anuncie el modelo exacto. Los usuarios normales pueden seleccionar arriba un modelo descubierto.",
   "settings.provider.connectionDetails": "Detalles de conexión",
-  "settings.provider.advanced": "Metadatos de precios",
-  "settings.provider.maxTurns": "Máximo de turnos",
-  "settings.provider.maxCost": "Coste máximo (micros)",
-  "settings.provider.maxInput": "Máximo de tokens de entrada",
-  "settings.provider.maxOutput": "Máximo de tokens de salida",
-  "settings.provider.inputRate": "Micros de entrada / millón",
-  "settings.provider.outputRate": "Micros de salida / millón",
-  "settings.provider.advancedHint":
-    "Las tarifas de entrada y salida solo se usan para telemetría de coste. No son límites de uso y una revisión de configuración del proveedor no reescribe los vínculos congelados de Campaña.",
   "settings.provider.enabledLabel": "Habilitado",
   "settings.provider.defaultLabel":
     "Ruta predeterminada para las llamadas a modelo de Core",

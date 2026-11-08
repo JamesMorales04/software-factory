@@ -21,7 +21,6 @@ import {
   type ModelCallRecord,
   type ObservabilityStatus,
   type ProviderSession,
-  type ProviderTurnBudget,
   type WorkerSummary,
 } from "../coreApi";
 import { shortId } from "../format";
@@ -87,7 +86,7 @@ function callCounts(calls: ModelCallRecord[]): Record<string, number> {
 }
 
 export function Runtime() {
-  const { t, formatDate, formatNumber, formatMicros } = useI18n();
+  const { t, formatDate, formatNumber } = useI18n();
   const [searchParams, setSearchParams] = useSearchParams();
   const tab = resolveTab(searchParams.get("tab"));
   const [sessions, setSessions] = useState<ProviderSession[]>([]);
@@ -98,7 +97,6 @@ export function Runtime() {
   const [settings, setSettings] = useState<FactorySettings | null>(null);
   const [health, setHealth] = useState<Health | null>(null);
   const [workers, setWorkers] = useState<WorkerSummary[]>([]);
-  const [turnBudget, setTurnBudget] = useState<ProviderTurnBudget | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [lastLoadedAt, setLastLoadedAt] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -126,7 +124,6 @@ export function Runtime() {
       unresolved,
       telemetry,
       runtimeSettings,
-      nextTurnBudget,
     ] = await Promise.all([
       coreApi.health(),
       coreApi.listWorkers(),
@@ -135,7 +132,6 @@ export function Runtime() {
       coreApi.listUnresolvedModelCalls(),
       coreApi.getObservability(),
       coreApi.getRuntimeSettings(),
-      coreApi.getProviderTurnBudget(),
     ]);
     setHealth(nextHealth);
     setWorkers(nextWorkers);
@@ -144,7 +140,6 @@ export function Runtime() {
     setUnresolvedCalls(unresolved);
     setObservability(telemetry);
     setSettings(runtimeSettings);
-    setTurnBudget(nextTurnBudget);
     setLastLoadedAt(new Date().toISOString());
     setLoaded(true);
     setError(null);
@@ -186,21 +181,12 @@ export function Runtime() {
   const measuredSessions = sessions.filter((session) => session.usage_known);
   const unmeasuredSessions = sessions.filter((session) => !session.usage_known);
   const measuredCalls = allCalls.filter((call) => call.usage_known);
-  const measuredSessionCost = measuredSessions.reduce(
-    (sum, session) => sum + session.cost_micros,
-    0,
-  );
-  const measuredCallCost = measuredCalls.reduce(
-    (sum, call) => sum + call.cost_micros,
-    0,
-  );
-  const modelReservationCeiling = unresolvedCalls.reduce(
-    (sum, call) => sum + call.max_cost_micros,
-    0,
-  );
-  const reservationCeiling =
-    modelReservationCeiling + (turnBudget?.ceiling_micros ?? 0);
-  const measuredCost = measuredSessionCost + measuredCallCost;
+  const measuredTokens =
+    measuredSessions.reduce((sum, session) => sum + session.total_tokens, 0) +
+    measuredCalls.reduce((sum, call) => sum + call.total_tokens, 0);
+  const completedSessions = sessions.filter(
+    (session) => session.state === "COMPLETED",
+  ).length;
 
   const sessionStates = ["all", ...Object.keys(sessionCounts(sessions)).sort()];
   const filteredSessions = sessions.filter((session) => {
@@ -325,21 +311,19 @@ export function Runtime() {
             aria-label={t("runtime.metrics.summaryAria")}
           >
             <Metric
-              label={t("runtime.metrics.spend.label")}
-              value={formatMicros(measuredCost)}
-              detail={t("runtime.metrics.spend.detail", {
+              label={t("runtime.metrics.tokens.label")}
+              value={formatNumber(measuredTokens)}
+              detail={t("runtime.metrics.tokens.detail", {
                 sessions: formatNumber(measuredSessions.length),
                 calls: formatNumber(measuredCalls.length),
               })}
             />
             <Metric
-              label={t("runtime.metrics.ceiling.label")}
-              value={formatMicros(reservationCeiling)}
-              detail={t("runtime.metrics.ceiling.detail", {
-                calls: formatNumber(unresolvedCalls.length),
-                turns: formatNumber(turnBudget?.reserved_turns ?? 0),
+              label={t("runtime.metrics.completed.label")}
+              value={formatNumber(completedSessions)}
+              detail={t("runtime.metrics.completed.detail", {
+                total: formatNumber(sessions.length),
               })}
-              tone="attention"
             />
             <Metric
               label={t("runtime.metrics.unresolved.label")}
@@ -404,8 +388,8 @@ export function Runtime() {
                   </dd>
                 </div>
                 <div>
-                  <dt>{t("runtime.availability.openTurns")}</dt>
-                  <dd>{formatNumber(turnBudget?.reserved_turns ?? 0)}</dd>
+                  <dt>{t("runtime.availability.completedSessions")}</dt>
+                  <dd>{formatNumber(completedSessions)}</dd>
                 </div>
               </dl>
               <div className="ui-callout ui-callout--info">
@@ -507,12 +491,7 @@ export function Runtime() {
                         {call.role} · {call.provider}/{call.model}
                       </span>
                       <StatusBadge status={call.state} />
-                      <p className="muted">
-                        {t("runtime.unresolved.ceiling", {
-                          cost: formatMicros(call.max_cost_micros),
-                        })}{" "}
-                        · {formatDate(call.updated_at)}
-                      </p>
+                      <p className="muted">{formatDate(call.updated_at)}</p>
                     </li>
                   ))}
                 </ul>
@@ -666,7 +645,6 @@ export function Runtime() {
                       <th>{t("runtime.calls.table.route")}</th>
                       <th>{t("runtime.calls.table.state")}</th>
                       <th>{t("runtime.calls.table.usage")}</th>
-                      <th>{t("runtime.calls.table.ceiling")}</th>
                       <th>{t("runtime.calls.table.updated")}</th>
                     </tr>
                   </thead>
@@ -696,12 +674,8 @@ export function Runtime() {
                           {call.usage_known
                             ? t("runtime.calls.tokens", {
                                 tokens: formatNumber(call.total_tokens),
-                                cost: formatMicros(call.cost_micros),
                               })
                             : "UNMEASURED"}
-                        </td>
-                        <td data-label={t("runtime.calls.table.ceiling")}>
-                          {formatMicros(call.max_cost_micros)}
                         </td>
                         <td
                           className="muted"
@@ -739,10 +713,7 @@ export function Runtime() {
                         {call.role}
                       </h3>
                       <span className="muted">
-                        {t("runtime.unresolved.ceiling", {
-                          cost: formatMicros(call.max_cost_micros),
-                        })}{" "}
-                        · {formatDate(call.updated_at)}
+                        {formatDate(call.updated_at)}
                       </span>
                     </div>
                     <p>

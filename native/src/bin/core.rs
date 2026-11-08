@@ -403,6 +403,12 @@ struct IntakeListQuery {
     offset: Option<usize>,
 }
 
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct ProjectDirectoryBrowseQuery {
+    path: Option<String>,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ApproveIntakeRequest {
@@ -907,6 +913,7 @@ fn office_api_router(app: Arc<App>) -> Router {
         )
         .route("/settings/providers/{provider}/audit", get(provider_audit))
         .route("/projects", get(projects).post(register_project))
+        .route("/projects/browse", get(browse_projects))
         .route(
             "/projects/{id}/config",
             get(project_config).put(update_project_config),
@@ -1080,6 +1087,7 @@ fn api_router(app: Arc<App>) -> Router {
         .route("/settings/providers/{provider}/audit", get(provider_audit))
         .route("/worker/provider_profile", get(worker_provider_profile))
         .route("/projects", get(projects).post(register_project))
+        .route("/projects/browse", get(browse_projects))
         .route(
             "/projects/{id}/config",
             get(project_config).put(update_project_config),
@@ -3596,6 +3604,41 @@ async fn github_repositories(
         "detail": listing.detail,
     }))
     .into_response()
+}
+
+async fn browse_projects(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Query(query): Query<ProjectDirectoryBrowseQuery>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Some(root) = app.projects_root.clone() else {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error":"managed project storage is not configured"})),
+        )
+            .into_response();
+    };
+    let relative = query.path.unwrap_or_default();
+    let result = tokio::task::spawn_blocking(move || {
+        factory_native::project_import::browse_directories(&root, &relative)
+    })
+    .await;
+    match result {
+        Ok(Ok(listing)) => Json(listing).into_response(),
+        Ok(Err(error)) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": error.to_string()})),
+        )
+            .into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error":"project browse task failed"})),
+        )
+            .into_response(),
+    }
 }
 
 async fn project_import_options(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
@@ -9911,13 +9954,20 @@ async fn approve_intake_request(
     };
     let billable = context.mechanism == "MODEL";
     let production = !cfg!(any(test, feature = "test-support"));
-    let monetary_envelope_id = if billable
-        && (production || input.subscription_admission_id.is_some())
-    {
+    let subscription_admission_id = match input.subscription_admission_id.clone() {
+        Some(admission_id) => Some(admission_id),
+        None => match app.db.active_subscription_admission_for_request(&id).await {
+            Ok(admission_id) => admission_id,
+            Err(error) => return api_error(error),
+        },
+    };
+    let monetary_envelope_id = if billable && (production || subscription_admission_id.is_some()) {
         // Subscription-only policy: MODEL approval requires an exact
         // Owner-confirmed admission created before assessment. The legacy
-        // billable envelope path is not accepted in production.
-        if input.subscription_admission_id.is_none() {
+        // billable envelope path is not accepted in production. Office may
+        // omit the id when exactly one active admission is bound to the
+        // request; the start transaction still consumes and validates it.
+        if subscription_admission_id.is_none() {
             return api_error(Error::IntakeConflict {
                 code: "SUBSCRIPTION_ADMISSION_REQUIRED",
                 message:
@@ -9987,7 +10037,7 @@ async fn approve_intake_request(
             factory_native::db::StartAuthority::Operator(approval),
             Some(&expected),
             Some(&authorization),
-            input.subscription_admission_id.as_deref(),
+            subscription_admission_id.as_deref(),
         )
         .await
     {

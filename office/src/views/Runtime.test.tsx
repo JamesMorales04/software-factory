@@ -93,17 +93,14 @@ describe("Runtime", () => {
       semanticReviewMaxOutputTokens: 8192,
       updatedAt: "2026-10-27T10:00:00Z",
     });
-    mocks.getProviderTurnBudget.mockReset().mockResolvedValue({
-      reserved_turns: 0,
-      ceiling_micros: 0,
-    });
     mocks.resolveModelCall.mockReset().mockResolvedValue(undefined);
   });
 
-  it("separates measured, reserved and unresolved runtime state", async () => {
+  it("separates measured, completed and unresolved runtime state", async () => {
     renderRuntime();
-    await screen.findByRole("heading", { name: "Runtime" });
-    expect(screen.getByText("Reserved ceiling")).toBeDefined();
+    await screen.findByRole("heading", { name: "Activity & telemetry" });
+    expect(screen.getByText("Measured tokens")).toBeDefined();
+    expect(screen.getAllByText("Completed sessions").length).toBeGreaterThan(0);
     expect(screen.getByText("Unresolved calls")).toBeDefined();
     expect(screen.getByText("Core healthy")).toBeDefined();
     expect(
@@ -118,10 +115,12 @@ describe("Runtime", () => {
   it("renders metrics and navigation in Spanish", async () => {
     renderRuntime("/runtime", "es");
     expect(
-      await screen.findByRole("heading", { name: "Entorno de ejecución" }),
+      await screen.findByRole("heading", { name: "Actividad y telemetría" }),
     ).toBeDefined();
-    expect(screen.getByText("Gasto medido muestreado")).toBeDefined();
-    expect(screen.getByText("Techo reservado")).toBeDefined();
+    expect(screen.getByText("Tokens medidos")).toBeDefined();
+    expect(screen.getAllByText("Sesiones completadas").length).toBeGreaterThan(
+      0,
+    );
     expect(screen.getByRole("tab", { name: /Sesiones/ })).toBeDefined();
     expect(
       screen.getByRole("link", { name: "Bandeja de decisiones" }),
@@ -147,12 +146,9 @@ describe("Runtime", () => {
     await screen.findByRole("heading", {
       name: "Unresolved reservations (1)",
     });
-    expect(
-      screen.getByText("ceiling 500,000µ", { exact: false }),
-    ).toBeDefined();
     const table = screen.getByRole("table");
     expect(table.closest(".table-responsive")).not.toBeNull();
-    expect(table.querySelectorAll("tbody td[data-label]").length).toBe(7);
+    expect(table.querySelectorAll("tbody td[data-label]").length).toBe(6);
     const reason = screen.getByLabelText("Release reason");
     const release = screen.getByRole("button", { name: "Release reservation" });
     expect(release.hasAttribute("disabled")).toBe(true);

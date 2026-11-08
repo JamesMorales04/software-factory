@@ -164,12 +164,12 @@ describe("Settings", () => {
     expect(
       screen.getByText(/No catalog endpoint has been evaluated/),
     ).toBeDefined();
-    await userEvent.click(screen.getByText("Pricing metadata"));
+    expect(screen.queryByText("Pricing metadata")).toBeNull();
     expect(screen.queryByLabelText("Max turns")).toBeNull();
     expect(screen.queryByLabelText("Max cost (micros)")).toBeNull();
-    expect(screen.getByLabelText("Input micros / million")).toBeDefined();
-    expect(screen.getByLabelText("Output micros / million")).toBeDefined();
-    await userEvent.click(screen.getByText("Configuration audit (1)"));
+    expect(screen.queryByLabelText("Input micros / million")).toBeNull();
+    expect(screen.queryByLabelText("Output micros / million")).toBeNull();
+    await userEvent.click(await screen.findByText("Configuration audit (1)"));
     expect(screen.getByText("route updated")).toBeDefined();
   });
 

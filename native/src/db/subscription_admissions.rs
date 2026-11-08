@@ -230,6 +230,28 @@ impl Database {
         }
     }
 
+    /// Resolve one still-active admission bound to this intake or Lead request.
+    /// Approval uses it only when the operator did not name an admission
+    /// explicitly; the start transaction revalidates and consumes the exact
+    /// row, so this lookup cannot widen authority.
+    pub async fn active_subscription_admission_for_request(
+        &self,
+        scope: &str,
+    ) -> Result<Option<String>, Error> {
+        let now_ms = Utc::now().timestamp_millis();
+        let row: Option<(String,)> = sqlx::query_as::query_as(
+            "SELECT admission_id FROM subscription_scope_admissions
+             WHERE (intake_request_id=?1 OR lead_request_id=?1)
+               AND state='ACTIVE' AND expires_at_ms>?2
+             ORDER BY created_at_ms DESC,admission_id DESC LIMIT 1",
+        )
+        .bind(scope)
+        .bind(now_ms)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|(id,)| id))
+    }
+
     pub async fn subscription_scope_admission(
         &self,
         admission_id: &str,

@@ -473,9 +473,6 @@ describe("Home", () => {
     expect(screen.getByLabelText("Proyecto")).toBeDefined();
     expect(screen.getByLabelText("Tu instrucción al Lead")).toBeDefined();
     expect(screen.getByLabelText("Perfil de ejecución")).toBeDefined();
-    expect(
-      screen.getByLabelText("Autorización de inferencia (USD)"),
-    ).toBeDefined();
     expect(screen.getByText(/Aprobación explícita obligatoria/)).toBeDefined();
     const recent = await screen.findByTestId("home-recent");
     expect(within(recent).getByText("Pendiente de aprobación")).toBeDefined();
@@ -513,122 +510,6 @@ describe("Home", () => {
     expect(mocks.createIntakeRequest).not.toHaveBeenCalled();
   });
 
-  it("requires a positive inference spend authorization and sends the edited amount", async () => {
-    renderHome();
-    await screen.findByLabelText("Project");
-    await userEvent.selectOptions(
-      screen.getByLabelText("Project"),
-      "project-1",
-    );
-    await userEvent.type(
-      screen.getByLabelText("Your instruction to the Lead"),
-      "Add an export endpoint.",
-    );
-    const spend = screen.getByLabelText("Inference authorization (USD)");
-    await userEvent.clear(spend);
-    await userEvent.click(screen.getByRole("button", { name: "Send to Lead" }));
-    expect(
-      await screen.findByText(
-        "Enter a positive USD amount for the inference envelope.",
-      ),
-    ).toBeDefined();
-    expect(document.activeElement?.id).toBe("home-spend");
-    expect(mocks.createIntakeRequest).not.toHaveBeenCalled();
-
-    await userEvent.type(spend, "10.50");
-    await userEvent.click(screen.getByRole("button", { name: "Send to Lead" }));
-    await waitFor(() => expect(mocks.createIntakeRequest).toHaveBeenCalled());
-    expect(mocks.createIntakeRequest).toHaveBeenCalledWith(
-      expect.objectContaining({ authorized_micros: 10_500_000 }),
-    );
-  });
-
-  it("requires a positive inference spend authorization", async () => {
-    renderHome();
-    await screen.findByLabelText("Project");
-    await userEvent.selectOptions(
-      screen.getByLabelText("Project"),
-      "project-1",
-    );
-    await userEvent.type(
-      screen.getByLabelText("Your instruction to the Lead"),
-      "Add an export endpoint.",
-    );
-    await userEvent.clear(
-      screen.getByLabelText("Inference authorization (USD)"),
-    );
-    await userEvent.click(screen.getByRole("button", { name: "Send to Lead" }));
-    expect(await screen.findByText(/positive USD amount/i)).toBeDefined();
-    expect(mocks.createIntakeRequest).not.toHaveBeenCalled();
-  });
-
-  it("rejects zero, negative and unsafe inference spend amounts", async () => {
-    renderHome();
-    await screen.findByLabelText("Project");
-    await userEvent.selectOptions(
-      screen.getByLabelText("Project"),
-      "project-1",
-    );
-    await userEvent.type(
-      screen.getByLabelText("Your instruction to the Lead"),
-      "Add an export endpoint.",
-    );
-    const spend = screen.getByLabelText("Inference authorization (USD)");
-    for (const invalid of ["0", "-1", "999999999999999"]) {
-      await userEvent.clear(spend);
-      await userEvent.type(spend, invalid);
-      await userEvent.click(
-        screen.getByRole("button", { name: "Send to Lead" }),
-      );
-      expect(await screen.findByText(/positive USD amount/i)).toBeDefined();
-      expect(mocks.createIntakeRequest).not.toHaveBeenCalled();
-    }
-  });
-
-  it("submits an edited spend authorization in integer micros", async () => {
-    renderHome();
-    await screen.findByLabelText("Project");
-    await userEvent.selectOptions(
-      screen.getByLabelText("Project"),
-      "project-1",
-    );
-    await userEvent.type(
-      screen.getByLabelText("Your instruction to the Lead"),
-      "Add an export endpoint.",
-    );
-    const spend = screen.getByLabelText("Inference authorization (USD)");
-    await userEvent.clear(spend);
-    await userEvent.type(spend, "12.50");
-    await userEvent.click(screen.getByRole("button", { name: "Send to Lead" }));
-    await waitFor(() => expect(mocks.createIntakeRequest).toHaveBeenCalled());
-    expect(mocks.createIntakeRequest).toHaveBeenCalledWith(
-      expect.objectContaining({ authorized_micros: 12_500_000 }),
-    );
-  });
-
-  it("rejects zero, negative and over-limit spend authorizations", async () => {
-    renderHome();
-    await screen.findByLabelText("Project");
-    await userEvent.selectOptions(
-      screen.getByLabelText("Project"),
-      "project-1",
-    );
-    await userEvent.type(
-      screen.getByLabelText("Your instruction to the Lead"),
-      "Add an export endpoint.",
-    );
-    const spend = screen.getByLabelText("Inference authorization (USD)");
-    for (const value of ["0", "-1", "99999999999999"]) {
-      await userEvent.clear(spend);
-      await userEvent.type(spend, value);
-      await userEvent.click(
-        screen.getByRole("button", { name: "Send to Lead" }),
-      );
-      expect(await screen.findByText(/positive USD amount/i)).toBeDefined();
-      expect(mocks.createIntakeRequest).not.toHaveBeenCalled();
-    }
-  });
-
   it("submits the selected Project and profile with explicit review-plan intent", async () => {
     renderHome();
     await screen.findByLabelText("Execution profile");
@@ -651,7 +532,6 @@ describe("Home", () => {
       execution_profile_id: "profile-1",
       mode: "REVIEW_PLAN",
       idempotency_key: "idem-test",
-      authorized_micros: 5_000_000,
     });
   });
 
@@ -722,7 +602,6 @@ describe("Home", () => {
       objective: "Add a CSV export endpoint.",
       mode: "REVIEW_PLAN",
       idempotency_key: "idem-test",
-      authorized_micros: 5_000_000,
     });
   });
 
@@ -966,7 +845,6 @@ describe("Home", () => {
       execution_profile_id: "profile-1",
       mode: "REVIEW_PLAN",
       idempotency_key: "idem-test",
-      authorized_micros: 5_000_000,
     });
   });
 });

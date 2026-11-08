@@ -129,6 +129,120 @@ pub fn approved_local_path(root: Option<&Path>, requested: &str) -> Result<PathB
     Ok(canonical)
 }
 
+/// One selectable directory below the operator-approved projects root.
+#[derive(Debug, Clone, Serialize)]
+pub struct BrowseDirectory {
+    pub name: String,
+    pub path: String,
+    pub absolute_path: String,
+    pub is_git: bool,
+}
+
+/// Bounded, read-only directory listing for the Office folder picker. It
+/// exposes directory names only, never file contents, and never follows a
+/// symlink out of the approved root.
+#[derive(Debug, Clone, Serialize)]
+pub struct BrowseListing {
+    pub root: String,
+    pub path: String,
+    pub current_path: String,
+    pub parent: Option<String>,
+    pub directories: Vec<BrowseDirectory>,
+    pub truncated: bool,
+}
+
+const MAX_BROWSE_ENTRIES: usize = 500;
+
+pub fn browse_directories(root: &Path, relative: &str) -> Result<BrowseListing, ImportError> {
+    if relative.len() > MAX_URL_BYTES
+        || relative.chars().any(char::is_control)
+        || relative.split('/').any(|part| part == "..")
+        || Path::new(relative).is_absolute()
+    {
+        return Err(ImportError::Invalid(
+            "browse path has an unsafe shape".into(),
+        ));
+    }
+    let canonical_root = root.canonicalize().map_err(|error| {
+        ImportError::Invalid(format!("managed projects root is unavailable: {error}"))
+    })?;
+    if !canonical_root.is_dir() {
+        return Err(ImportError::Invalid(
+            "managed projects root is not a directory".into(),
+        ));
+    }
+    let requested = if relative.is_empty() || relative == "." {
+        canonical_root.clone()
+    } else {
+        canonical_root.join(relative)
+    };
+    let canonical = requested
+        .canonicalize()
+        .map_err(|error| ImportError::Invalid(format!("browse path is unavailable: {error}")))?;
+    if !canonical.starts_with(&canonical_root) {
+        return Err(ImportError::Invalid(
+            "browse path is outside the managed projects root".into(),
+        ));
+    }
+    if !canonical.is_dir() {
+        return Err(ImportError::Invalid(
+            "browse path is not a directory".into(),
+        ));
+    }
+    let relative_path = canonical
+        .strip_prefix(&canonical_root)
+        .map_err(|_| ImportError::Invalid("browse path encoding".into()))?
+        .to_string_lossy()
+        .replace('\\', "/");
+    let parent = if relative_path.is_empty() {
+        None
+    } else {
+        Some(
+            Path::new(&relative_path)
+                .parent()
+                .map(|value| value.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_default(),
+        )
+    };
+    let mut directories = Vec::new();
+    for entry in std::fs::read_dir(&canonical)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        // Symlinked directories are deliberately skipped: resolving them here
+        // could escape the managed root even though the parent is canonical.
+        if !file_type.is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.is_empty() || name.len() > 255 || name.chars().any(char::is_control) {
+            continue;
+        }
+        let child_relative = if relative_path.is_empty() {
+            name.clone()
+        } else {
+            format!("{relative_path}/{name}")
+        };
+        let absolute = entry.path();
+        directories.push(BrowseDirectory {
+            name,
+            path: child_relative,
+            absolute_path: absolute.to_string_lossy().to_string(),
+            is_git: absolute.join(".git").exists(),
+        });
+    }
+    directories.sort_by(|left, right| left.name.cmp(&right.name));
+    let truncated = directories.len() > MAX_BROWSE_ENTRIES;
+    directories.truncate(MAX_BROWSE_ENTRIES);
+    Ok(BrowseListing {
+        root: canonical_root.to_string_lossy().to_string(),
+        path: relative_path,
+        current_path: canonical.to_string_lossy().to_string(),
+        parent,
+        directories,
+        truncated,
+    })
+}
+
 /// Validate a local repository path after Git resolves its actual top level.
 /// `approved_local_path` checks the requested directory; Git can still resolve
 /// a parent worktree outside the approved root if that directory is nested in
@@ -1404,6 +1518,34 @@ mod tests {
                 .iter()
                 .any(|(key, value)| { key == "GIT_CONFIG_VALUE_0" && value == "false" })
         );
+    }
+
+    #[test]
+    fn browse_lists_only_directories_inside_the_managed_root() {
+        let root = fixture_root("browse");
+        std::fs::create_dir_all(root.join("alpha/.git")).unwrap();
+        std::fs::create_dir_all(root.join("beta")).unwrap();
+        std::fs::write(root.join("note.txt"), "not a directory").unwrap();
+        let listing = browse_directories(&root, "").unwrap();
+        assert_eq!(listing.path, "");
+        assert_eq!(
+            listing
+                .directories
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha", "beta"]
+        );
+        assert!(listing.directories[0].is_git);
+        assert!(!listing.directories[1].is_git);
+        assert_eq!(listing.parent, None);
+
+        let nested = browse_directories(&root, "alpha").unwrap();
+        assert_eq!(nested.path, "alpha");
+        assert_eq!(nested.parent.as_deref(), Some(""));
+        assert!(browse_directories(&root, "../").is_err());
+        assert!(browse_directories(&root, "missing").is_err());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

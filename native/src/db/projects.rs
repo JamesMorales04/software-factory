@@ -602,7 +602,16 @@ impl Database {
         let mut actions = Vec::with_capacity(ids.len());
         for (id,) in ids {
             let mut connection = self.pool.acquire().await?;
-            actions.push(load_action(&mut connection, &id).await?);
+            match load_action(&mut connection, &id).await {
+                Ok(action) => actions.push(action),
+                // Historical rows can predate the frozen-spec table. They have
+                // no executable specification and must not poison the whole
+                // Office projection; direct lookup still reports NotFound.
+                Err(Error::NotFound) => {
+                    tracing::warn!(action_id = %id, "skipping Action without a frozen specification");
+                }
+                Err(error) => return Err(error),
+            }
         }
         Ok(actions)
     }
@@ -787,8 +796,9 @@ async fn load_action(connection: &mut SqliteConnection, id: &str) -> Result<Acti
         "SELECT spec_json,spec_sha256 FROM action_specs WHERE action_id=?1",
     )
     .bind(&id)
-    .fetch_one(&mut *connection)
-    .await?;
+    .fetch_optional(&mut *connection)
+    .await?
+    .ok_or(Error::NotFound)?;
     if sha256_hex(spec_json.as_bytes()) != saved_digest {
         return Err(Error::Invalid("frozen ActionSpec digest mismatch"));
     }

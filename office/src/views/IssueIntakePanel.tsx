@@ -647,83 +647,91 @@ export function IssueIntakePanel({
               onChange={(event) => update("requiredLabels", event.target.value)}
               help={t("issues.intake.field.requiredLabelsHelp")}
             />
-            <Input
-              label={t("issues.intake.field.excludedLabels")}
-              value={form.excludedLabels}
-              onChange={(event) => update("excludedLabels", event.target.value)}
-            />
-            <Input
-              label={t("issues.intake.field.authorIds")}
-              value={form.authorIds}
-              onChange={(event) => update("authorIds", event.target.value)}
-              placeholder="1234, 5678"
-              help={t("issues.intake.field.authorIdsHelp")}
-            />
-            <fieldset className="issue-intake-associations">
-              <legend>{t("issues.intake.field.associations")}</legend>
-              {["OWNER", "MEMBER", "COLLABORATOR"].map((association) => (
-                <Checkbox
-                  key={association}
-                  label={association}
-                  checked={form.authorAssociations.includes(association)}
-                  onChange={(event) =>
-                    update(
-                      "authorAssociations",
-                      event.target.checked
-                        ? [...form.authorAssociations, association]
-                        : form.authorAssociations.filter(
-                            (item) => item !== association,
-                          ),
-                    )
-                  }
-                />
-              ))}
-            </fieldset>
-            <Input
-              label={t("issues.intake.field.paths")}
-              value={form.allowedPaths}
-              onChange={(event) => update("allowedPaths", event.target.value)}
-              help={t("issues.intake.field.pathsHelp")}
-            />
-            <Input
-              label={t("issues.intake.field.capabilities")}
-              value={form.capabilities}
-              onChange={(event) => update("capabilities", event.target.value)}
-              help={t("issues.intake.field.capabilitiesHelp")}
-            />
-            <Input
-              label={t("issues.intake.field.maxIssues")}
-              type="number"
-              min={1}
-              max={20}
-              value={form.maxIssues}
-              onChange={(event) => update("maxIssues", event.target.value)}
-            />
-            <Input
-              label={t("issues.intake.field.maxCostPerIssue")}
-              type="number"
-              min={1}
-              value={form.maxCostMicrosPerIssue}
-              onChange={(event) =>
-                update("maxCostMicrosPerIssue", event.target.value)
-              }
-            />
-            <Input
-              label={t("issues.intake.field.maxBatchCost")}
-              type="number"
-              min={1}
-              value={form.maxTotalCostMicros}
-              onChange={(event) =>
-                update("maxTotalCostMicros", event.target.value)
-              }
-            />
-            <Input
-              label={t("issues.intake.field.policyExpiry")}
-              type="datetime-local"
-              value={form.expiresAt}
-              onChange={(event) => update("expiresAt", event.target.value)}
-            />
           </div>
+          <details className="issue-intake-advanced">
+            <summary>{t("issues.intake.advanced")}</summary>
+            <p className="muted">{t("issues.intake.advancedHint")}</p>
+            <div className="issue-intake-grid">
+              <Input
+                label={t("issues.intake.field.excludedLabels")}
+                value={form.excludedLabels}
+                onChange={(event) =>
+                  update("excludedLabels", event.target.value)
+                }
+              />
+              <Input
+                label={t("issues.intake.field.authorIds")}
+                value={form.authorIds}
+                onChange={(event) => update("authorIds", event.target.value)}
+                placeholder="1234, 5678"
+                help={t("issues.intake.field.authorIdsHelp")}
+              />
+              <fieldset className="issue-intake-associations">
+                <legend>{t("issues.intake.field.associations")}</legend>
+                {["OWNER", "MEMBER", "COLLABORATOR"].map((association) => (
+                  <Checkbox
+                    key={association}
+                    label={association}
+                    checked={form.authorAssociations.includes(association)}
+                    onChange={(event) =>
+                      update(
+                        "authorAssociations",
+                        event.target.checked
+                          ? [...form.authorAssociations, association]
+                          : form.authorAssociations.filter(
+                              (item) => item !== association,
+                            ),
+                      )
+                    }
+                  />
+                ))}
+              </fieldset>
+              <Input
+                label={t("issues.intake.field.paths")}
+                value={form.allowedPaths}
+                onChange={(event) => update("allowedPaths", event.target.value)}
+                help={t("issues.intake.field.pathsHelp")}
+              />
+              <Input
+                label={t("issues.intake.field.capabilities")}
+                value={form.capabilities}
+                onChange={(event) => update("capabilities", event.target.value)}
+                help={t("issues.intake.field.capabilitiesHelp")}
+              />
+              <Input
+                label={t("issues.intake.field.maxIssues")}
+                type="number"
+                min={1}
+                max={20}
+                value={form.maxIssues}
+                onChange={(event) => update("maxIssues", event.target.value)}
+              />
+              <Input
+                label={t("issues.intake.field.maxCostPerIssue")}
+                type="number"
+                min={1}
+                value={form.maxCostMicrosPerIssue}
+                onChange={(event) =>
+                  update("maxCostMicrosPerIssue", event.target.value)
+                }
+              />
+              <Input
+                label={t("issues.intake.field.maxBatchCost")}
+                type="number"
+                min={1}
+                value={form.maxTotalCostMicros}
+                onChange={(event) =>
+                  update("maxTotalCostMicros", event.target.value)
+                }
+              />
+              <Input
+                label={t("issues.intake.field.policyExpiry")}
+                type="datetime-local"
+                value={form.expiresAt}
+                onChange={(event) => update("expiresAt", event.target.value)}
+              />
+            </div>
+          </details>
           <Textarea
             label={t("issues.intake.field.reason")}
             value={form.reason}

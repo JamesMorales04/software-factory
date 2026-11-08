@@ -489,7 +489,7 @@ describe("newly translated operational surfaces", () => {
       await screen.findByRole("heading", { name: "Resumen" }),
     ).toBeDefined();
     expect(screen.getByText("Campañas autorizadas")).toBeDefined();
-    expect(screen.getByText("Gasto medido")).toBeDefined();
+    expect(screen.getByText("Tokens medidos")).toBeDefined();
     expect(
       screen.getByText("Resultados de la Puerta de calidad"),
     ).toBeDefined();
