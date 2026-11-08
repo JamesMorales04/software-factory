@@ -16,6 +16,11 @@ in
 [managed-live-uat-2026-10-26.md](../evidence/managed-live-uat-2026-10-26.md)
 and its manifest is
 [managed-live-uat-certification-manifest.json](../evidence/managed-live-uat-certification-manifest.json).
+The 2026-11-08 author-run live OpenCode Go Campaign (Lead output 5,106 tokens,
+candidate `79f4efb`, real MODEL reviewer, Gate `ACCEPTED`) is recorded in
+[live-provider-uat-2026-11-08.json](../evidence/live-provider-uat-2026-11-08.json)
+with its
+[certification manifest](../evidence/live-provider-uat-certification-manifest.json).
 
 The historical manifest versions remain archived for provenance. A future Rust
 validator must read capabilities from the source record for the frozen

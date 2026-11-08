@@ -189,7 +189,7 @@ RUST
   git clone -q --bare "$source" "$server/repo.git"
   git -C "$server/repo.git" update-server-info
   chmod -R a+rX "$GIT_DIR"
-  export FACTORY_RP_UAT_GIT_DIR="$GIT_DIR"
+  export FACTORY_RP_UAT_GIT_DIR="$GIT_DIR/server"
 }
 
 prepare() {
@@ -200,7 +200,7 @@ prepare() {
   create_git_fixture
   export FACTORY_PORT="$PORT"
   export PODMAN_COMPOSE_PROVIDER="$PROVIDER"
-  export FACTORY_RP_UAT_GIT_DIR="$GIT_DIR"
+  export FACTORY_RP_UAT_GIT_DIR="$GIT_DIR/server"
 
   log "== starting disposable Compose project $PROJECT on $BASE"
   compose down -v >/dev/null 2>&1 || true

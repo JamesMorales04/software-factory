@@ -38,7 +38,14 @@ pub struct Snapshot {
 }
 
 /// Snapshot every regular file and directory under `root`, excluding Git
-/// metadata. Symbolic links, hard links, devices, FIFOs and sockets fail closed.
+/// metadata and generated Cargo `target/` state. Symbolic links, hard links,
+/// devices, FIFOs and sockets fail closed.
+///
+/// `target/` is a build cache, not candidate source. Cargo creates hardlinks
+/// under `target/debug/incremental`, which Podman volume export preserves as
+/// tar hardlinks. Copying those artifacts back into the source worktree both
+/// bloats the archive and can fail the link-free archive policy after a
+/// perfectly healthy frozen check.
 pub fn snapshot(root: &Path) -> Result<Snapshot, ArchiveError> {
     let root = root.canonicalize()?;
     if !root.is_dir() {
@@ -78,7 +85,7 @@ fn append_directory(
     children.sort_by_key(|entry| entry.file_name());
     for child in children {
         let name = child.file_name();
-        if name == ".git" {
+        if name == ".git" || name == "target" {
             continue;
         }
         let path = child.path();
@@ -175,6 +182,9 @@ pub fn extract(bytes: &[u8], destination: &Path) -> Result<usize, ArchiveError> 
         }
         let path = entry.path()?.into_owned();
         validate_relative(&path)?;
+        if is_generated_workspace_path(&path) {
+            continue;
+        }
         let entry_type = entry.header().entry_type();
         if entry_type.is_symlink() || entry_type.is_hard_link() {
             return Err(ArchiveError::Invalid(format!(
@@ -221,6 +231,16 @@ pub fn extract(bytes: &[u8], destination: &Path) -> Result<usize, ArchiveError> 
         set_mode(&target, if mode == 0 { 0o644 } else { mode })?;
     }
     Ok(count)
+}
+
+/// Generated build state is not workspace source. It is safe to ignore only at
+/// the repository root; a source directory intentionally named `target` must
+/// remain visible to the archive policy.
+fn is_generated_workspace_path(path: &Path) -> bool {
+    matches!(
+        path.components().next(),
+        Some(Component::Normal(name)) if name == "target"
+    )
 }
 
 fn validate_relative(path: &Path) -> Result<(), ArchiveError> {
@@ -301,6 +321,8 @@ mod tests {
         fs::create_dir(source.0.join("src")).unwrap();
         fs::write(source.0.join("src/main.rs"), "fn main() {}\n").unwrap();
         fs::write(source.0.join(".git"), "gitdir: elsewhere\n").unwrap();
+        fs::create_dir(source.0.join("target")).unwrap();
+        fs::write(source.0.join("target/generated"), "not source\n").unwrap();
         fs::write(source.0.join("executable"), "#!/bin/sh\n").unwrap();
         set_mode(&source.0.join("executable"), 0o755).unwrap();
         let snapshot = snapshot(&source.0).unwrap();
@@ -315,6 +337,32 @@ mod tests {
             "fn main() {}\n"
         );
         assert!(!destination.join(".git").exists());
+        assert!(!destination.join("target").exists());
+    }
+
+    #[test]
+    fn ignores_cargo_target_hardlinks_from_podman_volume_export() {
+        let output = Temp::new();
+        let destination = output.0.join("stage");
+        let mut builder = Builder::new(Vec::new());
+        let mut header = Header::new_gnu();
+        header.set_entry_type(EntryType::Link);
+        header.set_size(0);
+        header.set_mode(0o644);
+        header
+            .set_link_name("target/debug/incremental/metadata.rmeta")
+            .unwrap();
+        header.set_cksum();
+        builder
+            .append_data(
+                &mut header,
+                "target/debug/incremental/linked.rmeta",
+                std::io::empty(),
+            )
+            .unwrap();
+        let bytes = builder.into_inner().unwrap();
+        assert_eq!(extract(&bytes, &destination).unwrap(), 1);
+        assert!(!destination.join("target").exists());
     }
 
     #[test]
@@ -339,6 +387,21 @@ mod tests {
         header.set_cksum();
         builder
             .append_data(&mut header, "link", std::io::empty())
+            .unwrap();
+        let bytes = builder.into_inner().unwrap();
+        assert!(extract(&bytes, &destination).is_err());
+
+        let output = Temp::new();
+        let destination = output.0.join("stage");
+        let mut builder = Builder::new(Vec::new());
+        let mut header = Header::new_gnu();
+        header.set_entry_type(EntryType::Link);
+        header.set_size(0);
+        header.set_mode(0o644);
+        header.set_link_name("src/existing.rs").unwrap();
+        header.set_cksum();
+        builder
+            .append_data(&mut header, "src/linked.rs", std::io::empty())
             .unwrap();
         let bytes = builder.into_inner().unwrap();
         assert!(extract(&bytes, &destination).is_err());
