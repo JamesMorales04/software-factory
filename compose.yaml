@@ -204,7 +204,7 @@ services:
       FACTORY_REVIEWER_TOKEN_FILE: /config/reviewer.token
       FACTORY_ATTEMPT_GRANT_KEY_FILE: /config/attempt-grant.key
       FACTORY_LEAD_FIXTURE_ASSESSOR: ${FACTORY_LEAD_FIXTURE_ASSESSOR:-0}
-      FACTORY_ENABLE_AUTONOMOUS_START: "0"
+      FACTORY_ENABLE_AUTONOMOUS_START: "1"
       FACTORY_ENABLE_CODEX_REVIEW: "0"
     networks:
       factory-control:

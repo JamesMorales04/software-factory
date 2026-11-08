@@ -424,6 +424,7 @@ Decision: `approved`
 - CAP-052 — Provider and runtime Settings workspace (approved, in_progress)
 - CAP-054 — Personal Access and Device Sessions (approved, in_progress)
 - CAP-055 — Provider-agnostic reviewer selection and bounded autonomy (proposed, in_progress)
+- CAP-056 — Owner-granted autonomous R0 intake (approved, in_progress)
 
 ### Deliverables
 

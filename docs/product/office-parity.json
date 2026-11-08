@@ -264,7 +264,7 @@
     "CAP-049": {
       "name": "Requests and Decision Inbox",
       "user_facing": true,
-      "job": "Start and follow operator requests with human-readable state, see authoritative Core work that needs a decision, and act only through explicit Core operations.",
+      "job": "Start and follow operator requests, including owner-granted R0 autopilot, with human-readable state, see authoritative Core work that needs a decision, and act only through explicit Core operations.",
       "routes": [
         "/",
         "/requests",
@@ -291,11 +291,12 @@
       "user_actions": [
         "start a request, follow its human-readable state and filter the request list by Project or state",
         "inspect decisions, blocked work, unresolved usage and recent events and deep-link each item to its exact Project, Campaign, request, candidate or runtime object",
-        "confirm the request-scoped subscription admission when the subscription route is used",
+        "enable one autonomous R0 policy and subscription confirmation, then select that profile and let the Lead assess, freeze and start without per-request approval",
         "approve an exact frozen intake plan only with its plan hash and profile revision, an explicit rationale and confirmation",
         "resolve an AMBIGUOUS or UNKNOWN Core model call with an explicit operator reason",
         "withdraw a frozen Lead request or cancel a Campaign with a reason and proportionate confirmation",
-        "open the exact request workspace, Campaign, Project or runtime object without exposing removed pages"
+        "open the exact request workspace, Campaign, Project or runtime object without exposing removed pages",
+        "cancel an autonomous request or Campaign through the authoritative Core boundary"
       ],
       "states": [
         "loading",
@@ -315,9 +316,11 @@
         "office/e2e-browser/rust-journey.mjs",
         "scripts/compose-office-smoke.mjs",
         "office/src/views/DecisionInbox.test.tsx",
+        "office/src/views/RequestWorkspace.test.tsx",
+        "office/src/views/Home.test.tsx",
         "native/src/bin/core.rs"
       ],
-      "notes": "Requests and decisions are operator-authenticated Core projections; the client does not synthesize state. Removed routes redirect to the closest current workspace, unknown routes return Home, and copied path URLs without a hash redirect for browser navigation. The request list and Decision Inbox filter by Project. The Inbox exposes exact-revision intake approval, model-call resolution, Lead withdrawal, Campaign cancellation and navigation; every action revalidates the current decision revision, requires proportionate confirmation and is disabled while Core is unreachable. Full-scope Campaign authorization is not posted from the Inbox. Gate repair and provider-session termination remain outside the Inbox because no operator mutation is exposed. A real Chromium run against Compose exercised the request list, Inbox, filters and deep links; see docs/evidence/office-autonomy-ux-2026-11-08/manifest.json. It is implementer evidence, not independent acceptance. No SSE or live-stream claim."
+      "notes": "Requests and decisions are operator-authenticated Core projections; the client does not synthesize state. Removed routes redirect to the closest current workspace, unknown routes return Home, and copied path URLs without a hash redirect for browser navigation. The request list and Decision Inbox filter by Project. A V2 profile whose auto_start policy enables R0 is an autopilot profile: the owner grants the autonomous policy and subscription confirmation once, then Core owns assessment, freeze and start for subsequent requests without per-request UI approval. Manual profiles keep the exact plan approval flow. The Inbox exposes exact-revision intake approval, model-call resolution, Lead withdrawal, Campaign cancellation and navigation; every action revalidates the current decision revision, requires proportionate confirmation and is disabled while Core is unreachable. Full-scope Campaign authorization is not posted from the Inbox. Autonomous Gate repair and provider-session termination remain outside the Inbox. A real Chromium run against Compose exercised the request list, Inbox, filters, deep links and the autonomous R0 path; see docs/evidence/office-autonomy-ux-2026-11-08/manifest.json and docs/evidence/autopilot-r0-2026-11-08/manifest.json. It is implementer evidence, not independent acceptance. No SSE or live-stream claim."
     },
     "CAP-050": {
       "name": "Campaign operational workspace",
@@ -658,6 +661,51 @@
         "office/e2e-browser/rust-journey.mjs"
       ],
       "notes": "The frozen Execution Profile route is authoritative; Office does not invent a fallback provider. Findings are advisory model output, but Core recomputes canonical points, critical-zero, risk budgets and independence before recording a repair decision. R2/R3, critical findings, unknown risk and exhausted budgets are human stops. Autonomy is default-off and preserves historical policy hashes. The repair authorization is evidence, not an automatic attempt or delivery authority."
+    },
+    "CAP-056": {
+      "name": "Owner-granted autonomous R0 intake",
+      "user_facing": true,
+      "job": "Enable one bounded R0 autopilot policy, then send an objective and let the Lead assess, freeze and start while watching truthful state and retaining cancellation authority.",
+      "routes": [
+        "/",
+        "/requests/:requestId",
+        "/campaigns/:campaignId"
+      ],
+      "core_api": [
+        "POST /projects/{id}/execution-policy",
+        "POST /intake/requests",
+        "GET /intake/requests/{id}",
+        "POST /intake/requests/{id}/cancel",
+        "GET /campaigns/{id}"
+      ],
+      "user_actions": [
+        "select an R0 autopilot profile and see that the Lead will assess, freeze and start without per-request approval",
+        "grant the exact autonomous policy and subscription confirmation once for a Project/profile revision",
+        "send an objective in AUTONOMOUS mode and follow assessment, execution and Gate state",
+        "cancel the request through the authoritative Core boundary"
+      ],
+      "states": [
+        "loading",
+        "empty",
+        "error",
+        "offline",
+        "autopilot-policy-required",
+        "autopilot-running",
+        "blocked",
+        "failed",
+        "completed",
+        "accepted",
+        "not-tested"
+      ],
+      "acceptance": [
+        "office/src/views/Home.test.tsx",
+        "office/src/views/RequestWorkspace.test.tsx",
+        "native/src/db/intake.rs",
+        "docs/evidence/autopilot-r0-2026-11-08/manifest.json",
+        "office/e2e-browser/rust-journey.mjs",
+        "docs/evidence/autopilot-r0-hardening-2026-11-08/manifest.json"
+      ],
+      "notes": "A V2 execution profile whose auto_start policy includes R0 becomes an autopilot profile in Home. The owner grants the autonomous policy and subscription confirmation once; Core then creates the request-scoped subscription admission and runs assessment, plan freeze and StartAuthority::Autonomous. The runner is idempotent, resumes unfinished autonomous requests after restart and records a truthful Blocked state on failure. Manual profiles keep the existing assessment and exact plan approval flow. Autonomous repair, delivery and R1+ remain operator-only. The live run is implementer evidence, not independent acceptance; no SSE or live-stream claim."
     }
   },
   "deferred": [

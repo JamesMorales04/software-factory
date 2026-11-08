@@ -1514,6 +1514,8 @@ export interface ExecutionPolicyRequest {
   expected_revision_hash: string;
   project_config_hash: string;
   acknowledge: true;
+  autonomous?: boolean;
+  subscription_confirmed?: boolean;
   idempotency_key: string;
 }
 
@@ -1527,6 +1529,8 @@ export interface ExecutionPolicyGrant {
   profile_hash: string;
   project_config_hash: string;
   acknowledged: boolean;
+  autonomous: boolean;
+  subscription_confirmed: boolean;
   idempotency_key: string;
   created_at: string;
 }

@@ -95,6 +95,8 @@ pub struct ExecutionPolicyGrantRecord {
     pub profile_hash: String,
     pub project_config_hash: String,
     pub acknowledged: bool,
+    pub autonomous: bool,
+    pub subscription_confirmed: bool,
     pub idempotency_key: String,
     pub created_at: String,
 }
@@ -107,6 +109,8 @@ pub struct NewExecutionPolicyGrant<'a> {
     pub expected_revision_hash: &'a str,
     pub project_config_hash: &'a str,
     pub acknowledge: bool,
+    pub autonomous: bool,
+    pub subscription_confirmed: bool,
     pub idempotency_key: &'a str,
     pub principal_id: &'a str,
     pub principal_label: Option<&'a str>,
@@ -217,8 +221,22 @@ impl Database {
             principal_id,
             &profile,
             &config,
+            mode,
         )
         .await?;
+        if mode == IntakeMode::Autonomous {
+            let policy = load_execution_policy_grant(&mut transaction, &grant.id).await?;
+            let subscription_route = profile.content.roles.lead.provider == "opencode-go"
+                || profile.content.roles.implementer.provider == "opencode-go";
+            if !policy.autonomous || (subscription_route && !policy.subscription_confirmed) {
+                return Err(Error::IntakeConflict {
+                    code: "AUTONOMOUS_POLICY_REQUIRED",
+                    message:
+                        "autonomous intake requires the owner-granted autonomous R0 policy, with the subscription confirmation when the profile uses the subscription route"
+                            .into(),
+                });
+            }
+        }
         let record = create_intake_request_in_tx(
             &mut transaction,
             project_id,
@@ -492,6 +510,17 @@ impl Database {
                 ),
             });
         }
+        if input.autonomous
+            && !(profile.auto_start.enabled
+                && profile.auto_start.risk_classes.contains(&RiskClass::R0))
+        {
+            return Err(Error::IntakeConflict {
+                code: "AUTONOMOUS_PROFILE_REQUIRED",
+                message:
+                    "autonomous execution requires the frozen profile to enable auto-start for R0"
+                        .into(),
+            });
+        }
         if let Some((delegation, grant)) = find_reusable_execution_policy_grant_in_tx(
             &mut transaction,
             &input,
@@ -529,8 +558,12 @@ impl Database {
             allowed_paths: config.allowed_paths.clone(),
             capabilities: config.capabilities.clone(),
             risk_classes: terms.risk_classes.clone(),
-            autonomous_start: terms.autonomous_start,
-            autonomous_risk_classes: Vec::new(),
+            autonomous_start: terms.autonomous_start && input.autonomous,
+            autonomous_risk_classes: if terms.autonomous_start && input.autonomous {
+                vec![RiskClass::R0]
+            } else {
+                Vec::new()
+            },
             route: crate::lead::ProviderRoute {
                 provider: profile.roles.implementer.provider.clone(),
                 model: profile.roles.implementer.model.clone(),
@@ -562,6 +595,8 @@ impl Database {
             profile_hash: profile_hash.0.clone(),
             project_config_hash: input.project_config_hash.into(),
             acknowledged: true,
+            autonomous: input.autonomous,
+            subscription_confirmed: input.subscription_confirmed,
             idempotency_key: input.idempotency_key.into(),
             created_at: now.clone(),
         };
@@ -569,8 +604,8 @@ impl Database {
             "INSERT INTO execution_policy_grants
              (delegation_id,project_id,principal_id,profile_id,profile_revision_id,
               profile_revision,profile_hash,project_config_hash,acknowledged,idempotency_key,created_at,
-              schema_version)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,1,?9,?10,2)",
+              schema_version,autonomous,subscription_confirmed)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,1,?9,?10,2,?11,?12)",
         )
         .bind(&grant.delegation_id)
         .bind(&grant.project_id)
@@ -582,6 +617,8 @@ impl Database {
         .bind(&grant.project_config_hash)
         .bind(&grant.idempotency_key)
         .bind(&grant.created_at)
+        .bind(i64::from(input.autonomous))
+        .bind(i64::from(input.subscription_confirmed))
         .execute(&mut *transaction)
         .await?;
         sqlx::query::query("INSERT INTO idempotency VALUES (?1,?2,?3,?4)")
@@ -598,8 +635,12 @@ impl Database {
             "execution_policy_granted",
             input.principal_id,
             &format!(
-                "project={} delegation={} config={} acknowledged=true",
-                grant.project_id, grant.delegation_id, grant.project_config_hash
+                "project={} delegation={} config={} acknowledged=true autonomous={} subscription_confirmed={}",
+                grant.project_id,
+                grant.delegation_id,
+                grant.project_config_hash,
+                grant.autonomous,
+                grant.subscription_confirmed
             ),
             &now,
         )
@@ -610,8 +651,13 @@ impl Database {
             &delegation.id,
             "execution_policy.granted",
             &format!(
-                "project={} profile={} revision={} actor={} non_autonomous=true",
-                grant.project_id, grant.profile_id, grant.profile_revision, actor
+                "project={} profile={} revision={} actor={} autonomous={} subscription_confirmed={}",
+                grant.project_id,
+                grant.profile_id,
+                grant.profile_revision,
+                actor,
+                grant.autonomous,
+                grant.subscription_confirmed
             ),
         )
         .await?;
@@ -1067,6 +1113,7 @@ async fn find_matching_execution_policy_grant_in_tx(
     principal_id: &str,
     profile: &ResolvedIntakeProfile,
     config: &crate::lead::ProjectConfig,
+    mode: IntakeMode,
 ) -> Result<StandingDelegationV2, Error> {
     let rows = sqlx::query::query(
         "SELECT delegation_id FROM execution_policy_grants
@@ -1087,29 +1134,52 @@ async fn find_matching_execution_policy_grant_in_tx(
         if grant.revoked_at.is_some() || grant.expires_at <= Utc::now() {
             continue;
         }
-        if !delegation_matches_policy_scope(&grant, profile, config) {
+        if !delegation_matches_policy_scope(&grant, profile, config, mode) {
             continue;
         }
         // Cumulative usage is diagnosis telemetry, never an admission ceiling.
         let _usage = load_delegation_usage(connection, &grant.id).await?;
         return Ok(grant);
     }
-    Err(Error::IntakeConflict {
-        code: IntakeAuthorizationReason::ExecutionPolicyRequired.as_str(),
-        message:
-            "no active non-autonomous execution policy matches this Project and exact profile revision; enable governed execution explicitly"
-                .into(),
-    })
+    match mode {
+        IntakeMode::ReviewPlan => Err(Error::IntakeConflict {
+            code: IntakeAuthorizationReason::ExecutionPolicyRequired.as_str(),
+            message:
+                "no active non-autonomous execution policy matches this Project and exact profile revision; enable governed execution explicitly"
+                    .into(),
+        }),
+        IntakeMode::Autonomous => Err(Error::IntakeConflict {
+            code: "AUTONOMOUS_POLICY_REQUIRED",
+            message:
+                "no active autonomous R0 execution policy matches this Project and exact profile revision; grant the autonomous policy explicitly"
+                    .into(),
+        }),
+    }
 }
 
 fn delegation_matches_policy_scope(
     grant: &StandingDelegationV2,
     profile: &ResolvedIntakeProfile,
     config: &crate::lead::ProjectConfig,
+    mode: IntakeMode,
 ) -> bool {
+    let autonomy_matches = match mode {
+        IntakeMode::ReviewPlan => {
+            !grant.autonomous_start && grant.autonomous_risk_classes.is_empty()
+        }
+        IntakeMode::Autonomous => {
+            grant.autonomous_start
+                && grant.autonomous_risk_classes.contains(&RiskClass::R0)
+                && profile.content.auto_start.enabled
+                && profile
+                    .content
+                    .auto_start
+                    .risk_classes
+                    .contains(&RiskClass::R0)
+        }
+    };
     grant.risk_classes == vec![RiskClass::R0]
-        && !grant.autonomous_start
-        && grant.autonomous_risk_classes.is_empty()
+        && autonomy_matches
         && grant.route.provider == profile.content.roles.implementer.provider
         && grant.route.model == profile.content.roles.implementer.model
         && grant.route.mode == "build"
@@ -1130,6 +1200,7 @@ async fn find_reusable_execution_policy_grant_in_tx(
         "SELECT delegation_id FROM execution_policy_grants
          WHERE project_id=?1 AND principal_id=?2 AND profile_id=?3
            AND profile_revision_id=?4 AND profile_hash=?5 AND project_config_hash=?6
+           AND autonomous=?7 AND subscription_confirmed=?8
          ORDER BY created_at DESC,delegation_id DESC",
     )
     .bind(input.project_id)
@@ -1138,6 +1209,8 @@ async fn find_reusable_execution_policy_grant_in_tx(
     .bind(revision_id)
     .bind(profile_hash)
     .bind(input.project_config_hash)
+    .bind(i64::from(input.autonomous))
+    .bind(i64::from(input.subscription_confirmed))
     .fetch_all(&mut *connection)
     .await?;
     for row in rows {
@@ -1268,7 +1341,7 @@ async fn load_intake_approval_context(
                 message: "the frozen plan is not ready for explicit approval".into(),
             });
         }
-        if !delegation_matches_frozen_profile(&grant, &profile) {
+        if !delegation_matches_frozen_profile(&grant, &profile, intake.mode) {
             return Err(Error::IntakeConflict {
                 code: IntakeAuthorizationReason::ExecutionPolicyScopeChanged.as_str(),
                 message: "the delegation route or R0 scope no longer matches the frozen profile"
@@ -1403,10 +1476,21 @@ async fn load_intake_approval_context(
 fn delegation_matches_frozen_profile(
     grant: &StandingDelegationV2,
     profile: &ExecutionProfileContent,
+    mode: IntakeMode,
 ) -> bool {
+    let autonomy_matches = match mode {
+        IntakeMode::ReviewPlan => {
+            !grant.autonomous_start && grant.autonomous_risk_classes.is_empty()
+        }
+        IntakeMode::Autonomous => {
+            grant.autonomous_start
+                && grant.autonomous_risk_classes.contains(&RiskClass::R0)
+                && profile.auto_start.enabled
+                && profile.auto_start.risk_classes.contains(&RiskClass::R0)
+        }
+    };
     grant.risk_classes == vec![RiskClass::R0]
-        && !grant.autonomous_start
-        && grant.autonomous_risk_classes.is_empty()
+        && autonomy_matches
         && grant.route.provider == profile.roles.implementer.provider
         && grant.route.model == profile.roles.implementer.model
         && grant.route.mode == "build"
@@ -1507,6 +1591,12 @@ fn validate_execution_policy_input(input: &NewExecutionPolicyGrant<'_>) -> Resul
             message: "explicit acknowledgement is required to grant execution policy".into(),
         });
     }
+    if input.subscription_confirmed && !input.autonomous {
+        return Err(Error::IntakeConflict {
+            code: "SUBSCRIPTION_CONFIRMATION_NOT_APPLICABLE",
+            message: "subscription confirmation requires autonomous R0 execution".into(),
+        });
+    }
     if input.project_id.trim().is_empty()
         || input.project_id.len() > 128
         || input.profile_id.trim().is_empty()
@@ -1530,7 +1620,7 @@ fn validate_execution_policy_input(input: &NewExecutionPolicyGrant<'_>) -> Resul
 fn execution_policy_digest(input: &NewExecutionPolicyGrant<'_>) -> String {
     sha256_hex(
         serde_json::to_string(&(
-            "execution-policy-v1",
+            "execution-policy-v2",
             input.project_id,
             input.profile_id,
             input.expected_revision,
@@ -1538,6 +1628,8 @@ fn execution_policy_digest(input: &NewExecutionPolicyGrant<'_>) -> String {
             input.project_config_hash,
             input.acknowledge,
             input.principal_id,
+            input.autonomous,
+            input.subscription_confirmed,
         ))
         .expect("execution policy digest serializes")
         .as_bytes(),
@@ -1678,7 +1770,7 @@ pub(super) async fn load_execution_policy_grant(
     let row = sqlx::query::query(
         "SELECT delegation_id,project_id,principal_id,profile_id,profile_revision_id,
                 profile_revision,profile_hash,project_config_hash,acknowledged,idempotency_key,
-                created_at
+                created_at,autonomous,subscription_confirmed
          FROM execution_policy_grants WHERE delegation_id=?1",
     )
     .bind(delegation_id)
@@ -1687,6 +1779,8 @@ pub(super) async fn load_execution_policy_grant(
     .ok_or(Error::NotFound)?;
     let revision: i64 = row.try_get("profile_revision")?;
     let acknowledged: i64 = row.try_get("acknowledged")?;
+    let autonomous: i64 = row.try_get("autonomous")?;
+    let subscription_confirmed: i64 = row.try_get("subscription_confirmed")?;
     Ok(ExecutionPolicyGrantRecord {
         delegation_id: row.try_get("delegation_id")?,
         project_id: row.try_get("project_id")?,
@@ -1698,6 +1792,8 @@ pub(super) async fn load_execution_policy_grant(
         profile_hash: row.try_get("profile_hash")?,
         project_config_hash: row.try_get("project_config_hash")?,
         acknowledged: acknowledged == 1,
+        autonomous: autonomous == 1,
+        subscription_confirmed: subscription_confirmed == 1,
         idempotency_key: row.try_get("idempotency_key")?,
         created_at: row.try_get("created_at")?,
     })
@@ -1856,6 +1952,8 @@ mod tests {
             expected_revision_hash: &profile.content_hash,
             project_config_hash: &config.config_hash,
             acknowledge: true,
+            autonomous: false,
+            subscription_confirmed: false,
             idempotency_key: "policy-key",
             principal_id: "operator-token",
             principal_label: None,
@@ -2100,6 +2198,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn autonomous_policy_grants_r0_autonomy_and_accepts_autonomous_request() {
+        let (path, db, profile, config) = fixture().await;
+        let _ = profile;
+        let mut content = profile_content("Autopilot");
+        content.auto_start = AutoStartPolicy {
+            enabled: true,
+            risk_classes: vec![RiskClass::R0],
+        };
+        let profile = db
+            .create_execution_profile(&content, "owner")
+            .await
+            .unwrap();
+        let grant = db
+            .create_execution_policy_grant(NewExecutionPolicyGrant {
+                project_id: "project",
+                profile_id: &profile.id,
+                expected_revision: profile.revision,
+                expected_revision_hash: &profile.content_hash,
+                project_config_hash: &config.config_hash,
+                acknowledge: true,
+                autonomous: true,
+                subscription_confirmed: true,
+                idempotency_key: "autopilot-policy",
+                principal_id: "operator-token",
+                principal_label: None,
+            })
+            .await
+            .unwrap();
+        assert!(grant.grant.autonomous);
+        assert!(grant.grant.subscription_confirmed);
+        assert!(grant.delegation.autonomous_start);
+        assert_eq!(
+            grant.delegation.autonomous_risk_classes,
+            vec![RiskClass::R0]
+        );
+        let (request, created) = db
+            .create_intake_request(
+                "project",
+                "autonomous R0 request",
+                Some(&profile.id),
+                IntakeMode::Autonomous,
+                "autopilot-request",
+                "operator-token",
+            )
+            .await
+            .unwrap();
+        assert!(created);
+        assert_eq!(request.mode, IntakeMode::Autonomous);
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
     async fn policy_grant_is_acknowledged_non_autonomous_and_revocation_fences_creation() {
         let (path, db, profile, config) = fixture().await;
         let error = db
@@ -2110,6 +2261,8 @@ mod tests {
                 expected_revision_hash: &profile.content_hash,
                 project_config_hash: &config.config_hash,
                 acknowledge: false,
+                autonomous: false,
+                subscription_confirmed: false,
                 idempotency_key: "no-ack",
                 principal_id: "operator-token",
                 principal_label: None,
@@ -2133,6 +2286,8 @@ mod tests {
                 expected_revision_hash: &profile.content_hash,
                 project_config_hash: &config.config_hash,
                 acknowledge: true,
+                autonomous: false,
+                subscription_confirmed: false,
                 idempotency_key: "policy-key",
                 principal_id: "operator-token",
                 principal_label: None,
@@ -2172,6 +2327,8 @@ mod tests {
                 expected_revision_hash: &profile.content_hash,
                 project_config_hash: &config.config_hash,
                 acknowledge: true,
+                autonomous: false,
+                subscription_confirmed: false,
                 idempotency_key: "policy-key-2",
                 principal_id: "operator-token",
                 principal_label: None,
@@ -2224,6 +2381,8 @@ mod tests {
                 expected_revision_hash: &updated.content_hash,
                 project_config_hash: &config.config_hash,
                 acknowledge: true,
+                autonomous: false,
+                subscription_confirmed: false,
                 idempotency_key: "policy-key-v2",
                 principal_id: "operator-token",
                 principal_label: None,
@@ -2376,6 +2535,8 @@ mod tests {
             expected_revision_hash: &profile.content_hash,
             project_config_hash: &config.config_hash,
             acknowledge: true,
+            autonomous: false,
+            subscription_confirmed: false,
             idempotency_key: "policy-operation-limited",
             principal_id: "operator-token",
             principal_label: None,

@@ -54,7 +54,8 @@ pub fn execution_policy_terms(profile: &ExecutionProfileContent) -> IntakeExecut
             ObjectiveClass::Refactor,
         ],
         risk_classes: vec![RiskClass::R0],
-        autonomous_start: false,
+        autonomous_start: profile.auto_start.enabled
+            && profile.auto_start.risk_classes.contains(&RiskClass::R0),
         validity_days: EXECUTION_POLICY_VALIDITY_DAYS,
         max_parallel: EXECUTION_POLICY_MAX_PARALLEL,
         max_timeout_secs: profile.operations.tool_call_timeout_secs.get(),
@@ -215,9 +216,9 @@ pub fn validate_execution_scope(
     grant: &StandingDelegationV2,
     behavior: &IntakeMode,
 ) -> Result<IntakeExecutionScope, IntakeScopeError> {
-    // Autonomous submission mode is not a start authority. It is accepted as
-    // an operator intent label only; this derivation is always the explicit
-    // operator path.
+    // Autonomous submission mode never widens this derivation. It remains an
+    // intent label; the start transaction separately requires
+    // StartAuthority::Autonomous and the autonomous R0 grant binding.
     let _ = behavior;
     if proposal.risk_class != RiskClass::R0 || !grant.risk_classes.contains(&RiskClass::R0) {
         return Err(IntakeScopeError::NotR0);
