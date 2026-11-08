@@ -769,36 +769,34 @@ try {
   const requestId = page.url().match(/#\/requests\/([^/?]+)/)?.[1];
   assert.ok(requestId, "request id in URL");
 
-  let subscriptionAdmissionId = null;
+  const intake = await coreApi(
+    `/intake/requests/${encodeURIComponent(requestId)}`,
+  );
+  assert.ok(intake.leadRequestId, "Lead request id for test admission");
   if (!live) {
-    const intake = await coreApi(
-      `/intake/requests/${encodeURIComponent(requestId)}`,
-    );
-    assert.ok(intake.leadRequestId, "Lead request id for test admission");
     await admitTestSubscriptionScope(requestId);
     await admitTestSubscriptionScope(intake.leadRequestId);
-  } else {
-    const now = Date.now();
-    const admission = await coreApi(
-      `/intake/requests/${encodeURIComponent(requestId)}/subscription-admission`,
-      {
-        method: "POST",
-        body: JSON.stringify({
-          assumption_id: `wave3-live-${requestId}`,
-          confirmed_by: "Product Owner",
-          confirmed_at_ms: now,
-          valid_until_ms: now + 24 * 60 * 60 * 1000,
-          extra_usage_disabled: true,
-          statement:
-            "Product Owner confirms OpenCode Go Extra Usage is disabled in the web Console",
-          test_profile_id: "wave3-real-model-2026-11",
-          idempotency_key: `wave3-live-admission-${requestId}`,
-        }),
-      },
-    );
-    subscriptionAdmissionId = admission.admissionId;
-    assert.ok(subscriptionAdmissionId, "subscription admission id");
   }
+  const now = Date.now();
+  const admission = await coreApi(
+    `/intake/requests/${encodeURIComponent(requestId)}/subscription-admission`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        assumption_id: `wave3-${live ? "live" : "e2e"}-${requestId}`,
+        confirmed_by: "Product Owner",
+        confirmed_at_ms: now,
+        valid_until_ms: now + 24 * 60 * 60 * 1000,
+        extra_usage_disabled: true,
+        statement:
+          "Product Owner confirms OpenCode Go Extra Usage is disabled in the web Console",
+        test_profile_id: "wave3-real-model-2026-11",
+        idempotency_key: `wave3-${live ? "live" : "e2e"}-admission-${requestId}`,
+      }),
+    },
+  );
+  const subscriptionAdmissionId = admission.admissionId;
+  assert.ok(subscriptionAdmissionId, "subscription admission id");
 
   await page.getByRole("button", { name: "Run assessment" }).click();
   try {
