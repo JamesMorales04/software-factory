@@ -103,7 +103,7 @@ function latestConversation(
   );
 }
 
-function profileRunsAutopilot(
+function profileDeclaresAutopilot(
   profile:
     | {
         autoStart?: {
@@ -116,6 +116,27 @@ function profileRunsAutopilot(
   return (
     profile?.autoStart?.enabled === true &&
     profile.autoStart.riskClasses.includes("R0")
+  );
+}
+
+function profileRunsAutopilot(
+  profile:
+    | {
+        autoStart?: {
+          enabled: boolean;
+          riskClasses: Array<string>;
+        } | null;
+        roles?: {
+          lead?: { provider: string } | null;
+          implementer?: { provider: string } | null;
+        } | null;
+      }
+    | undefined,
+): boolean {
+  return (
+    profileDeclaresAutopilot(profile) &&
+    profile?.roles?.lead?.provider === "opencode-go" &&
+    profile?.roles?.implementer?.provider === "opencode-go"
   );
 }
 
@@ -330,6 +351,8 @@ export function Home() {
 
   const selectedProfile = profiles?.find((profile) => profile.id === profileId);
   const autopilotSelected = profileRunsAutopilot(selectedProfile);
+  const autopilotUnsupported =
+    profileDeclaresAutopilot(selectedProfile) && !autopilotSelected;
   const policyAutopilot = policySetup?.pending.mode === "AUTONOMOUS";
   const profileUnavailable = selectedProfile?.executable === false;
   const profileDefaultLabel = selectedProfile
@@ -674,6 +697,11 @@ export function Home() {
                     {t("home.autopilot.hint")}
                   </p>
                 )}
+                {autopilotUnsupported && (
+                  <p className="ui-callout ui-callout--attention" role="status">
+                    {t("home.autopilot.unsupported")}
+                  </p>
+                )}
 
                 {profilesUnavailable && (
                   <p className="ui-callout ui-callout--info" role="status">
@@ -776,16 +804,12 @@ export function Home() {
                     role="status"
                   >
                     <h3>
-                      {profileRunsAutopilot(
-                        policySetup.scope.profile ?? undefined,
-                      )
+                      {policyAutopilot
                         ? t("home.policy.autopilotTitle")
                         : t("home.policy.title")}
                     </h3>
                     <p>
-                      {profileRunsAutopilot(
-                        policySetup.scope.profile ?? undefined,
-                      )
+                      {policyAutopilot
                         ? t("home.policy.autopilotDescription")
                         : t("home.policy.description")}
                     </p>

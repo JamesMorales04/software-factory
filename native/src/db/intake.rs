@@ -226,13 +226,14 @@ impl Database {
         .await?;
         if mode == IntakeMode::Autonomous {
             let policy = load_execution_policy_grant(&mut transaction, &grant.id).await?;
-            let subscription_route = profile.content.roles.lead.provider == "opencode-go"
-                || profile.content.roles.implementer.provider == "opencode-go";
-            if !policy.autonomous || (subscription_route && !policy.subscription_confirmed) {
+            if !policy.autonomous
+                || !policy.subscription_confirmed
+                || !crate::intake::autonomous_subscription_profile(&profile.content)
+            {
                 return Err(Error::IntakeConflict {
                     code: "AUTONOMOUS_POLICY_REQUIRED",
                     message:
-                        "autonomous intake requires the owner-granted autonomous R0 policy, with the subscription confirmation when the profile uses the subscription route"
+                        "autonomous intake requires the owner-granted autonomous R0 policy with subscription confirmation and OpenCode Go subscription routes for the Lead and implementer"
                             .into(),
                 });
             }
@@ -296,6 +297,28 @@ impl Database {
             "SELECT id FROM intake_requests ORDER BY created_at DESC,id DESC LIMIT ?1",
         )
         .bind(INTAKE_LIST_SCAN_LIMIT)
+        .fetch_all(&mut *connection)
+        .await?;
+        let mut records = Vec::with_capacity(rows.len());
+        for row in rows {
+            let id: String = row.try_get("id")?;
+            records.push(load_intake_request(&mut connection, &id).await?);
+        }
+        Ok(records)
+    }
+
+    /// Every unfinished autonomous request, oldest first. Startup recovery
+    /// must not inherit the newest-500 list cap: an older interrupted request
+    /// would otherwise remain visibly stuck forever.
+    pub async fn unfinished_autonomous_intake_requests(
+        &self,
+    ) -> Result<Vec<IntakeRequestRecord>, Error> {
+        let mut connection = self.pool.acquire().await?;
+        let rows = sqlx::query::query(
+            "SELECT id FROM intake_requests
+             WHERE mode='AUTONOMOUS' AND campaign_id IS NULL
+             ORDER BY created_at ASC,id ASC",
+        )
         .fetch_all(&mut *connection)
         .await?;
         let mut records = Vec::with_capacity(rows.len());
@@ -518,6 +541,22 @@ impl Database {
                 code: "AUTONOMOUS_PROFILE_REQUIRED",
                 message:
                     "autonomous execution requires the frozen profile to enable auto-start for R0"
+                        .into(),
+            });
+        }
+        if input.autonomous && !crate::intake::autonomous_subscription_profile(&profile) {
+            return Err(Error::IntakeConflict {
+                code: "AUTONOMOUS_PROFILE_REQUIRED",
+                message:
+                    "autonomous execution currently requires OpenCode Go subscription routes for both the Lead and the implementer"
+                        .into(),
+            });
+        }
+        if input.autonomous && !input.subscription_confirmed {
+            return Err(Error::IntakeConflict {
+                code: "SUBSCRIPTION_CONFIRMATION_REQUIRED",
+                message:
+                    "autonomous execution requires the one-time subscription Extra Usage confirmation"
                         .into(),
             });
         }
@@ -2246,6 +2285,106 @@ mod tests {
             .unwrap();
         assert!(created);
         assert_eq!(request.mode, IntakeMode::Autonomous);
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn unfinished_autonomous_requests_exclude_review_plan_work() {
+        let (path, db, _profile, config) = fixture().await;
+        let mut content = profile_content("Autopilot");
+        content.auto_start = AutoStartPolicy {
+            enabled: true,
+            risk_classes: vec![RiskClass::R0],
+        };
+        let profile = db
+            .create_execution_profile(&content, "owner")
+            .await
+            .unwrap();
+        db.create_execution_policy_grant(NewExecutionPolicyGrant {
+            project_id: "project",
+            profile_id: &profile.id,
+            expected_revision: profile.revision,
+            expected_revision_hash: &profile.content_hash,
+            project_config_hash: &config.config_hash,
+            acknowledge: true,
+            autonomous: true,
+            subscription_confirmed: true,
+            idempotency_key: "autopilot-unfinished",
+            principal_id: "operator-token",
+            principal_label: None,
+        })
+        .await
+        .unwrap();
+        let (autonomous, _) = db
+            .create_intake_request(
+                "project",
+                "autonomous work",
+                Some(&profile.id),
+                IntakeMode::Autonomous,
+                "autonomous-unfinished",
+                "operator-token",
+            )
+            .await
+            .unwrap();
+        let _ = create_policy(&db, &profile, &config).await;
+        let (review, _) = db
+            .create_intake_request(
+                "project",
+                "review work",
+                Some(&profile.id),
+                IntakeMode::ReviewPlan,
+                "review-unfinished",
+                "operator-token",
+            )
+            .await
+            .unwrap();
+        let unfinished = db.unfinished_autonomous_intake_requests().await.unwrap();
+        assert_eq!(unfinished.len(), 1);
+        assert_eq!(unfinished[0].id, autonomous.id);
+        assert_ne!(unfinished[0].id, review.id);
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn autonomous_grant_rejects_non_subscription_routes() {
+        let (path, db, _profile, config) = fixture().await;
+        configure_provider(&db, "opencode", "opencode", "deepseek-v4.1-flash").await;
+        let mut content = profile_content("API key route");
+        content.auto_start = AutoStartPolicy {
+            enabled: true,
+            risk_classes: vec![RiskClass::R0],
+        };
+        content.roles.lead.provider = "opencode".into();
+        content.roles.implementer.provider = "opencode".into();
+        let profile = db
+            .create_execution_profile(&content, "owner")
+            .await
+            .unwrap();
+        let error = db
+            .create_execution_policy_grant(NewExecutionPolicyGrant {
+                project_id: "project",
+                profile_id: &profile.id,
+                expected_revision: profile.revision,
+                expected_revision_hash: &profile.content_hash,
+                project_config_hash: &config.config_hash,
+                acknowledge: true,
+                autonomous: true,
+                subscription_confirmed: true,
+                idempotency_key: "api-key-autopilot",
+                principal_id: "operator-token",
+                principal_label: None,
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            Error::IntakeConflict {
+                code: "AUTONOMOUS_PROFILE_REQUIRED",
+                ..
+            }
+        ));
         db.close().await;
         let _ = std::fs::remove_file(path);
     }

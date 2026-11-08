@@ -154,6 +154,8 @@ export const es: Catalog = {
   "home.objective.placeholder":
     "Describe qué quieres construir, corregir o mejorar…",
   "home.profile.label": "Perfil de ejecución",
+  "home.autopilot.unsupported":
+    "Este perfil declara inicio automático R0, pero la ejecución autónoma requiere actualmente rutas de suscripción OpenCode Go para el Lead y el implementador. El envío usará revisión manual del plan.",
   "home.autopilot.hint":
     "Este perfil ejecuta solicitudes R0 automáticamente: el Lead evalúa, congela e inicia sin aprobación por solicitud.",
   "home.profile.routes": "Detalle de rutas",

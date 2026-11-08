@@ -46,6 +46,15 @@ pub struct IntakeExecutionPolicyTerms {
 /// Derive the exact bounded grant terms from one profile revision. The
 /// execution-policy writer and the `EXECUTION_POLICY_REQUIRED` projection both
 /// use this function so the acknowledgement cannot disagree with the grant.
+/// Autonomous execution is currently limited to the OpenCode Go subscription
+/// route. Both the Lead assessment and the implementer must be admitted by the
+/// same owner-confirmed subscription scope; another provider has no automatic
+/// per-request inference envelope in this product.
+pub fn autonomous_subscription_profile(profile: &ExecutionProfileContent) -> bool {
+    profile.roles.lead.provider == "opencode-go"
+        && profile.roles.implementer.provider == "opencode-go"
+}
+
 pub fn execution_policy_terms(profile: &ExecutionProfileContent) -> IntakeExecutionPolicyTerms {
     IntakeExecutionPolicyTerms {
         objective_classes: vec![
@@ -415,6 +424,17 @@ mod tests {
         };
         grant.content_hash = grant.compute_content_hash();
         grant
+    }
+
+    #[test]
+    fn autonomous_subscription_profile_requires_both_subscription_routes() {
+        let mut profile = profile();
+        assert!(autonomous_subscription_profile(&profile));
+        profile.roles.lead.provider = "opencode".into();
+        assert!(!autonomous_subscription_profile(&profile));
+        profile.roles.lead = route();
+        profile.roles.implementer.provider = "codex".into();
+        assert!(!autonomous_subscription_profile(&profile));
     }
 
     #[test]

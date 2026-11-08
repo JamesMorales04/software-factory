@@ -151,6 +151,8 @@ export const en = {
   "home.objective.placeholder":
     "Describe what you want to build, fix or improve…",
   "home.profile.label": "Execution profile",
+  "home.autopilot.unsupported":
+    "This profile declares R0 auto-start, but autonomous execution currently requires OpenCode Go subscription routes for both the Lead and the implementer. Sending will use manual plan review.",
   "home.autopilot.hint":
     "This profile runs R0 requests automatically: the Lead assesses, freezes and starts without per-request approval.",
   "home.profile.routes": "Route detail",

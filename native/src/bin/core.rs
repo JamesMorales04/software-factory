@@ -52,6 +52,10 @@ struct App {
     github_sync: tokio::sync::Mutex<()>,
     attempt_grant_key: Vec<u8>,
     observability: factory_native::observability::ExporterHandle,
+    /// Single-flight guard for the Core-owned autopilot runner. It prevents a
+    /// create-time spawn and a restart resume from assessing or starting the
+    /// same request twice. Durable start idempotency remains the final fence.
+    autopilot_in_flight: tokio::sync::Mutex<std::collections::HashSet<String>>,
 }
 
 const SESSION_COOKIE: &str = "factory_session";
@@ -709,6 +713,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         github_sync: tokio::sync::Mutex::new(()),
         attempt_grant_key: attempt_grant_key.into_bytes(),
         observability,
+        autopilot_in_flight: tokio::sync::Mutex::new(std::collections::HashSet::new()),
     });
     {
         let app_for_autopilot = Arc::clone(&app);
@@ -9509,6 +9514,18 @@ async fn autonomous_start_intake(app: &Arc<App>, id: &str) -> Result<(), Error> 
 }
 
 async fn run_autopilot(app: &Arc<App>, id: &str) -> Result<(), Error> {
+    {
+        let mut in_flight = app.autopilot_in_flight.lock().await;
+        if !in_flight.insert(id.to_owned()) {
+            return Ok(());
+        }
+    }
+    let result = run_autopilot_inner(app, id).await;
+    app.autopilot_in_flight.lock().await.remove(id);
+    result
+}
+
+async fn run_autopilot_inner(app: &Arc<App>, id: &str) -> Result<(), Error> {
     let record = app.db.intake_request(id).await?;
     if record.mode != factory_native::intake::IntakeMode::Autonomous {
         return Ok(());
@@ -9518,21 +9535,19 @@ async fn run_autopilot(app: &Arc<App>, id: &str) -> Result<(), Error> {
         .db
         .execution_profile_revision(&record.profile_id, &record.profile_revision_id)
         .await?;
-    let subscription_route = profile.content.v2().is_some_and(|content| {
-        content.roles.lead.provider == "opencode-go"
-            || content.roles.implementer.provider == "opencode-go"
-    });
-    if !policy.autonomous || (subscription_route && !policy.subscription_confirmed) {
+    let subscription_profile = profile
+        .content
+        .v2()
+        .is_some_and(factory_native::intake::autonomous_subscription_profile);
+    if !policy.autonomous || !policy.subscription_confirmed || !subscription_profile {
         return Err(Error::IntakeConflict {
             code: "AUTONOMOUS_POLICY_REQUIRED",
             message:
-                "autonomous intake requires the owner-granted autonomous R0 policy, with the subscription confirmation when the profile uses the subscription route"
+                "autonomous intake requires the owner-granted autonomous R0 policy with subscription confirmation and OpenCode Go subscription routes for the Lead and implementer"
                     .into(),
         });
     }
-    if subscription_route {
-        ensure_autopilot_subscription_admission(app, id).await?;
-    }
+    ensure_autopilot_subscription_admission(app, id).await?;
     let response = assess_intake_request(
         State(Arc::clone(app)),
         internal_operator_headers(app),
@@ -9553,16 +9568,25 @@ async fn run_autopilot(app: &Arc<App>, id: &str) -> Result<(), Error> {
     autonomous_start_intake(app, id).await
 }
 
+async fn fail_autopilot(app: &Arc<App>, id: &str, error: &Error) {
+    tracing::warn!(%error, request_id = %id, "autopilot failed");
+    if let Ok(record) = app.db.intake_request(id).await
+        && record.campaign_id.is_none()
+    {
+        let _ = app
+            .db
+            .block_lead_request(&record.lead_request_id, &format!("autopilot: {error}"))
+            .await;
+    }
+}
+
 async fn resume_autopilot_requests(app: &Arc<App>) {
-    let Ok(records) = app.db.intake_requests().await else {
+    let Ok(records) = app.db.unfinished_autonomous_intake_requests().await else {
         return;
     };
     for record in records {
-        if record.mode == factory_native::intake::IntakeMode::Autonomous
-            && record.campaign_id.is_none()
-            && let Err(error) = run_autopilot(app, &record.id).await
-        {
-            tracing::warn!(%error, request_id = %record.id, "autopilot resume failed");
+        if let Err(error) = run_autopilot(app, &record.id).await {
+            fail_autopilot(app, &record.id, &error).await;
         }
     }
 }
@@ -9641,18 +9665,7 @@ async fn create_intake_request(
                 let request_id = record.id.clone();
                 tokio::spawn(async move {
                     if let Err(error) = run_autopilot(&app_for_autopilot, &request_id).await {
-                        tracing::warn!(%error, request_id = %request_id, "autopilot failed");
-                        if let Ok(record) = app_for_autopilot.db.intake_request(&request_id).await
-                            && record.campaign_id.is_none()
-                        {
-                            let _ = app_for_autopilot
-                                .db
-                                .block_lead_request(
-                                    &record.lead_request_id,
-                                    &format!("autopilot: {error}"),
-                                )
-                                .await;
-                        }
+                        fail_autopilot(&app_for_autopilot, &request_id, &error).await;
                     }
                 });
             }
@@ -10032,12 +10045,21 @@ async fn create_intake_subscription_admission(
             "subscription acceptance requires a V2 execution profile".into(),
         ));
     };
-    let gateway = match app.current_model_gateway().await {
-        Some(gateway) => gateway,
-        None => {
-            return api_error(Error::Conflict(
-                "subscription acceptance requires a configured model gateway",
-            ));
+    // Bind the admission to the frozen profile Lead route, not the deployment
+    // default. A profile can select a different Lead provider/model than the
+    // default gateway, and the assessment must be covered by the exact route.
+    let gateway = match app.intake_assess_gateway(&profile).await {
+        Ok(gateway) => gateway,
+        Err(route_error) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "error": route_error.to_string(),
+                    "code": "ASSESSMENT_UNAVAILABLE",
+                    "routeCode": route_error.code(),
+                })),
+            )
+                .into_response();
         }
     };
     let assessment_provider = gateway.provider().to_owned();
@@ -10097,14 +10119,29 @@ async fn create_intake_subscription_admission(
             transport: implementer_transport.to_owned(),
         },
     ];
-    if let Some(reviewer_transport) = test_transport_for_provider(&assessment_provider)
-        && assessment_provider == "opencode-go"
-    {
+    let reviewer = &content.roles.semantic_reviewer;
+    if reviewer.provider == "opencode-go" {
+        let Some(reviewer_transport) = test_transport_for_provider(&reviewer.provider) else {
+            return api_error(Error::Forbidden(
+                "semantic reviewer provider is outside the automated acceptance allowlist".into(),
+            ));
+        };
+        let reviewer_settings = match app.db.provider_settings(&reviewer.provider).await {
+            Ok(settings) if settings.enabled && !settings.credential_ciphertext.is_empty() => {
+                settings
+            }
+            Ok(_) => {
+                return api_error(Error::Forbidden(
+                    "semantic reviewer provider is not configured and enabled".into(),
+                ));
+            }
+            Err(error) => return api_error(error),
+        };
         routes.push(factory_native::subscription_admission::TestRouteBinding {
             role: factory_native::subscription_admission::TestModelRole::SemanticReviewer,
-            provider: assessment_provider.clone(),
-            model: assessment_model.clone(),
-            settings_revision: format!("model-gateway:{assessment_provider}:{assessment_model}"),
+            provider: reviewer.provider.clone(),
+            model: reviewer.model.clone(),
+            settings_revision: reviewer_settings.revision.to_string(),
             transport: reviewer_transport.to_owned(),
         });
     }
@@ -11319,6 +11356,7 @@ mod tests {
             }),
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
             observability: factory_native::observability::ExporterHandle::disabled(),
+            autopilot_in_flight: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         };
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -11415,6 +11453,7 @@ mod tests {
             }),
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
             observability: factory_native::observability::ExporterHandle::disabled(),
+            autopilot_in_flight: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         });
         let router = build_router(app);
         for uri in [
@@ -11627,6 +11666,7 @@ mod tests {
             }),
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
             observability: factory_native::observability::ExporterHandle::disabled(),
+            autopilot_in_flight: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         });
         let router = build_router(app);
 
@@ -11818,6 +11858,7 @@ mod tests {
             }),
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
             observability: factory_native::observability::ExporterHandle::disabled(),
+            autopilot_in_flight: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         });
         let router = build_router(Arc::clone(&app));
         let mut execution_grant = factory_native::lead::StandingDelegationV2 {
@@ -11993,6 +12034,7 @@ mod tests {
             }),
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
             observability: factory_native::observability::ExporterHandle::disabled(),
+            autopilot_in_flight: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         });
         let router = build_router(app);
         let request = axum::http::Request::builder()
@@ -12060,6 +12102,7 @@ mod tests {
             }),
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
             observability: factory_native::observability::ExporterHandle::disabled(),
+            autopilot_in_flight: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         })
     }
 
@@ -12106,6 +12149,7 @@ mod tests {
             }),
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
             observability: factory_native::observability::ExporterHandle::disabled(),
+            autopilot_in_flight: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         });
         let router = build_router(app.clone());
         let wrong_code = router
@@ -13196,6 +13240,7 @@ mod tests {
             }),
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
             observability: factory_native::observability::ExporterHandle::disabled(),
+            autopilot_in_flight: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         };
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -13247,6 +13292,7 @@ mod tests {
             }),
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
             observability: factory_native::observability::ExporterHandle::disabled(),
+            autopilot_in_flight: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         });
         let router = build_router(Arc::clone(&app));
         let disabled_model_call = axum::http::Request::builder()
@@ -13406,6 +13452,7 @@ mod tests {
             }),
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
             observability: factory_native::observability::ExporterHandle::disabled(),
+            autopilot_in_flight: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         });
         let router = build_router(app);
 
@@ -13640,6 +13687,7 @@ mod tests {
             }),
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
             observability: factory_native::observability::ExporterHandle::disabled(),
+            autopilot_in_flight: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         });
         let router = build_router(app);
         let authorized = |method: &str, uri: &str, body: Option<Value>| {
@@ -14478,6 +14526,7 @@ mod tests {
             }),
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
             observability: factory_native::observability::ExporterHandle::disabled(),
+            autopilot_in_flight: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         });
         let router = build_router(app.clone());
         let approve_uri = format!("/lead/requests/{request_id}/approve");

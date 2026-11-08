@@ -2694,7 +2694,7 @@ capabilities:
 - id: CAP-056
   name: Owner-granted autonomous R0 intake
   category: Product mode
-  purpose: An owner enables one bounded R0 autopilot policy, then the Lead assesses, freezes and starts eligible requests without per-request approval while Core remains the authority
+  purpose: An owner enables one bounded R0 autopilot policy on OpenCode Go subscription routes, then the Lead assesses, freezes and starts eligible requests without per-request approval while Core remains the authority
   product_objective: Autonomous product development
   decision_status: approved
   implementation_status: in_progress
@@ -2748,7 +2748,7 @@ capabilities:
   - The live autopilot run is an implementer browser self-test with the real OpenCode Go provider; independent verifier acceptance and Product Owner UAT remain pending.
   - Autonomous Gate repair remains disabled. A blocked, failed or repair-required result needs an operator action or a new authorized request against a Project that contains the rejected candidate; a request from the base commit is not an in-place repair.
   - The Issues auto-start is browser-side; this capability covers Core-owned unified-intake autopilot only.
-  - The policy is limited to R0, one frozen profile revision, fixed paths/capabilities/route/operations/progress and the configured expiry.
+  - The policy is limited to R0, one frozen profile revision, fixed paths/capabilities/route/operations/progress and the configured expiry. The current product supports autonomous execution only when the Lead and implementer both use the OpenCode Go subscription route; other profiles stay on manual review.
   - TRUSTED_LOCAL is broad local access; no isolation or security certification is claimed.
   blockers:
   - Independent live acceptance, autonomous repair and the independent security review remain open.

@@ -244,10 +244,18 @@
       "expected": "New labels, live regions and focus order are accessible.",
       "result": "NOT_TESTED",
       "evidence": "Keyboard and label checks passed; a full screen-reader/contrast audit was not performed."
+    },
+    {
+      "id": "A21",
+      "surface": "Home / unsupported autopilot profile",
+      "control_or_state": "A profile declares R0 auto-start but its routes are not OpenCode Go subscription routes",
+      "expected": "Home warns that autonomous execution is unsupported for this route and sends the request as manual REVIEW_PLAN.",
+      "result": "PASS",
+      "evidence": "Home.test.tsx; the browser matrix did not create such a provider profile in the live stack."
     }
   ],
   "checks": {
-    "deterministic": "PASS \u2014 cargo fmt --check, strict Clippy, 565 lib tests, 37 Core bin tests, 4 reviewer bin tests and 269 Office component tests; office-parity and architecture governance checks pass. Host cargo test --all-features also ran the provider_sandbox integration tests, where two failed because the host OpenCode executable exited before readiness; the canonical container suite remains authoritative.",
+    "deterministic": "PASS \u2014 cargo fmt --check, strict Clippy, 568 lib tests, 37 Core bin tests, 14 worker bin tests, 4 reviewer bin tests and 270 Office component tests; office-parity and architecture governance checks pass. Host cargo test --all-features also ran the provider_sandbox integration tests, where two failed because the host OpenCode executable exited before readiness; the canonical container suite remains authoritative.",
     "browser": "PASS for the changed Home/Request/Campaign controls and states enumerated above; NOT_TESTED rows are explicit.",
     "accepted_after_hardening": false
   },
@@ -258,7 +266,8 @@
     "Python bytecode could be committed under allowed src/tests paths; provider sandboxes now set PYTHONDONTWRITEBYTECODE=1.",
     "A reviewer client timeout shorter than the model-request bound left reservations RESERVED and produced an infinite rejected-receipt loop; the client timeout is 360 s and failed receipts carry the frozen route.",
     "REPAIR_REQUIRED, HUMAN_REQUIRED and NOT_TESTED gates were projected as Executing; they now project as Blocked with truthful detail.",
-    "The delegation audit event said non-autonomous for autonomous grants; it now reflects the actual autonomy scope."
+    "The delegation audit event said non-autonomous for autonomous grants; it now reflects the actual autonomy scope.",
+    "Added a process-local single-flight guard around the autopilot runner so a create-time spawn and a restart resume cannot assess or start the same request concurrently."
   ],
   "limitations": [
     "This is implementer browser self-test evidence, not independent verifier or Product Owner acceptance.",
@@ -271,5 +280,32 @@
     "No isolation or security certification is claimed. TRUSTED_LOCAL remains broad local access.",
     "Two host provider_sandbox integration tests failed because the host OpenCode executable exited before readiness. They are not evidence about the Compose provider path; the container suite remains authoritative."
   ],
-  "candidate_note": "Code and evidence commit. A later docs-only commit may update manifest metadata; the exact code candidate for these observations is this SHA."
+  "candidate_note": "Code and evidence commit. A later docs-only commit may update manifest metadata; the exact code candidate for these observations is this SHA.",
+  "codex_review": {
+    "reviewer": "codex/gpt-6-luna, read-only worktree checkout of the branch",
+    "blocking_findings": 0,
+    "findings": [
+      {
+        "severity": "medium",
+        "summary": "The subscription admission bound the Lead route to the deployment default gateway rather than the frozen profile Lead route.",
+        "disposition": "The admission handler now resolves the exact frozen Lead gateway and includes the frozen semantic reviewer route when it is OpenCode Go."
+      },
+      {
+        "severity": "medium",
+        "summary": "Autonomous profiles on non-subscription routes had no automatic inference-envelope path and would fail after submission.",
+        "disposition": "Autonomous grants, requests and the Home autopilot selector now require OpenCode Go subscription routes for both the Lead and implementer. Other profiles show an explicit warning and fall back to manual plan review."
+      },
+      {
+        "severity": "medium",
+        "summary": "Restart recovery could leave an interrupted request visibly ASSESSING and skipped unfinished autonomous work older than the newest-500 list cap.",
+        "disposition": "Recovery now queries every unfinished autonomous request and blocks a failed resume with the Core reason, instead of logging and leaving it stuck. A process-local single-flight guard also prevents create-time and resume runners from duplicating one request."
+      }
+    ]
+  },
+  "admission_route_smoke": {
+    "request": "f6bd26d0-2a78-4493-80c8-fe4b7c65d111",
+    "campaign": "5166cd73-8f1e-4244-a32b-5322a2a27dcd",
+    "observed": "The request reached Executing after Core created the subscription admission from the frozen Lead route, then the operator cancelled the Campaign and the request projected Cancelled.",
+    "result": "PASS"
+  }
 }

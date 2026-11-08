@@ -564,6 +564,40 @@ describe("Home", () => {
     );
   });
 
+  it("falls back to manual review for an unsupported autonomous route", async () => {
+    mocks.listExecutionProfiles.mockResolvedValue({
+      profiles: [
+        {
+          ...profile,
+          roles: {
+            lead: { ...roleRoute, provider: "opencode" },
+            implementer: { ...roleRoute, provider: "opencode" },
+            semanticReviewer: { ...roleRoute, provider: "opencode" },
+          },
+          autoStart: { enabled: true, riskClasses: ["R0"] },
+        },
+      ],
+      supportedRoutes: [],
+    });
+    renderHome();
+    await screen.findByLabelText("Execution profile");
+    await userEvent.selectOptions(
+      screen.getByLabelText("Execution profile"),
+      "profile-1",
+    );
+    expect(
+      screen.getByText(/autonomous execution currently requires OpenCode Go/),
+    ).toBeDefined();
+    await userEvent.type(
+      screen.getByLabelText("Your instruction to the Lead"),
+      "Add a CSV export endpoint.",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Send to Lead" }));
+    expect(mocks.createIntakeRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ mode: "REVIEW_PLAN" }),
+    );
+  });
+
   it("disables duplicate submission while Core creates the request", async () => {
     let resolveCreate: ((value: IntakeRequestProjection) => void) | undefined;
     mocks.createIntakeRequest.mockReturnValue(

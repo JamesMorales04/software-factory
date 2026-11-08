@@ -128,6 +128,9 @@ Known gaps:
 - Issues auto-start is browser-side and stops when Office closes. A Core-owned
   autonomous issue scheduler remains unimplemented; the unified-intake
   autopilot is Core-owned.
+- Autonomous intake currently requires OpenCode Go subscription routes for both
+  the Lead and the implementer. A profile that declares R0 auto-start on another
+  route shows a warning and uses manual plan review instead of starting.
 - The computer-folder picker copies the folder into managed storage; there is
   no native desktop bridge or direct host-path mount into the container.
 - GitHub App/OAuth installation onboarding is not implemented. The supported

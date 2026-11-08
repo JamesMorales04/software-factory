@@ -26,8 +26,11 @@ assessment and plan remain advisory evidence.
 
 1. **Owner-granted autonomous policy.** An execution-policy grant can be created
    with `autonomous=true` only when the exact frozen profile enables
-   `auto_start` for `R0`. The grant records `subscription_confirmed=true` only
-   when the owner confirms the subscription billing assumption once.
+   `auto_start` for `R0`. In the current product the Lead and implementer must
+   both use the OpenCode Go subscription route; another provider has no
+   automatic per-request inference envelope. The grant records
+   `subscription_confirmed=true` only when the owner confirms the subscription
+   billing assumption once.
 2. **No per-request subscription confirmation.** On the subscription route Core
    creates the request-scoped admission from the durable owner confirmation and
    the exact frozen profile/provider/settings revision. The Request workspace
@@ -85,6 +88,9 @@ assessment and plan remain advisory evidence.
   Project based on that candidate or an explicit delivery step.
 - The profile's `auto_start` declaration and the grant's `autonomous` bit are
   separate. Neither alone starts work.
+- Autonomous execution is subscription-only in this slice. A profile that
+  declares R0 auto-start on another route falls back to manual plan review; it
+  is not silently started and it is not treated as an error.
 - `TRUSTED_LOCAL` remains broad local access and is not isolation or
   certification.
 
