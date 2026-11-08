@@ -1,5 +1,11 @@
 # Isolation, credentials and trust boundaries
 
+**Current product disposition (2026-11-08):** The developer-preview product is
+`TRUSTED_LOCAL` only. `SEC-01-ISOLATED` is out of scope for this product under
+[ADR-0035](../architecture/decisions/ADR-0035-sec01-accepted-risk-scope.md);
+`ISOLATED` dispatch remains fail-closed and no isolation claim is made. This is
+an accepted residual risk, not a certification.
+
 **Agreed:** sandbox by default; host access only through an explicit, audited, scoped exception — except in owner-authorized TRUSTED_LOCAL mode, where broad local access is explicitly accepted with documented risks (see [ADR-0009](../architecture/decisions/ADR-0009-trusted-local-execution.md) and [trusted-local policy](trusted-local.md)). **Rust execution boundary:** the Supervisor snapshots a per-Attempt worktree into a Podman named volume and never passes a host workspace pathname to the runtime; path replacement fails closed. The trusted Worker holds the long-lived provider credential; the deterministic provider runs in a bubblewrap namespace with a private session directory and no host HOME/repository/runtime socket or unrestricted external network. Supervisor allocation requires a Core-signed Attempt grant; each mutating workspace operation additionally requires a short-lived Core-signed operation grant bound to the live lease, generation and frozen scope. Optional provider egress uses a per-run authenticated OpenAI-compatible broker with a pinned public destination, injected credential and bounded requests/responses. Rootless Podman is still not certified isolation, and credential confinement is **not certified**. Live provider coding with tools and ISOLATED execution stay fail-closed. See the [provider boundary assessment](provider-boundary-assessment-2026-10-24.md), [ADR-0022](../architecture/decisions/ADR-0022-source-aware-provider-plan-mediation.md), [SEC-01 results](../evidence/history/security/SEC-01-results-2026-10-18.md) and [migration closure](../implementation/native-rust-closure.md).
 
 ## Execution modes
@@ -8,7 +14,7 @@
 |---|---|---|
 | TRUSTED_LOCAL | Owner-authorized local execution with broad host access within user privileges. Accepted risk, not a boundary. | SEC-01-STRICT not required; historical FAIL/NOT TESTED findings remain valid observations but do not block this mode. |
 | TRUSTED_LOCAL_PROVIDER | Authorized provider execution: the long-lived credential stays in the trusted Worker; the deterministic provider runs in a bubblewrap namespace with a private session directory, no host HOME/repository/runtime socket and no unrestricted external network; optional egress is confined to the authenticated broker; tools are mediated by the Worker and executed only by the Supervisor. | Candidate boundary only; not certified isolation or credential confinement. A narrow egress broker is implemented and fixture-tested, but real provider configuration and live provider coding remain fail-closed. |
-| ISOLATED | Execution claiming an OS-enforced boundary between credentials and untrusted tools. | SEC-01-ISOLATED available-only-where-verified against actually tested paths; never inferred from a single fixture PASS. |
+| ISOLATED | Execution claiming an OS-enforced boundary between credentials and untrusted tools. | Out of scope for the current product per ADR-0035; dispatch remains fail-closed. A future isolated product requires a new ADR and full certification. |
 | RESTRICTED | Credential-free synthetic or disposable-fixture execution (current F1-S2 scope). | Broker-certification obligations (mandatory mediation of all native paths) apply here and to ISOLATED; they do not gate TRUSTED_LOCAL. |
 
 Rules:
@@ -16,6 +22,7 @@ Rules:
 - Never call TRUSTED_LOCAL isolated, sandboxed, certified, or proof of credential confinement.
 - Never present historical FAIL/NOT TESTED results as PASS in any mode.
 - ISOLATED guarantees are narrow and evidence-bound: state exactly which topology, provider/runtime, image digest, and boundary checks were tested.
+- The current product must never advertise ISOLATED as available. The absence of a certification is recorded as an accepted risk, not hidden.
 - Silent mode downgrade is forbidden: moving a Run or session from ISOLATED to LOCAL (including TRUSTED_LOCAL) requires explicit owner authorization recorded with actor, reason, and scope. A Podman or broker failure fails closed; it never silently becomes TRUSTED_LOCAL.
 
 ## Authority

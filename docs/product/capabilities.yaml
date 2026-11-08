@@ -464,7 +464,7 @@ capabilities:
     live_agent: verified
     uat: not_tested
     deployment: not_tested
-    isolation: blocked
+    isolation: not_tested
   owner: Core
   dependencies:
   - CAP-001
@@ -474,6 +474,7 @@ capabilities:
     adr:
     - docs/architecture/decisions/ADR-0012-project-registry-and-capabilities.md
     - docs/architecture/decisions/ADR-0022-source-aware-provider-plan-mediation.md
+    - docs/architecture/decisions/ADR-0035-sec01-accepted-risk-scope.md
     contract:
     - docs/contracts/run-worker-s2.md
     source:
@@ -503,8 +504,9 @@ capabilities:
     test-only GPT-6 Luna proxy record. A reviewer-only native Codex App Server `review/start` transport and
     dedicated ChatGPT credential volume are implemented behind `FACTORY_ENABLE_CODEX_REVIEW=1`; real ChatGPT
     login, live Luna review and ISOLATED dispatch remain NOT_TESTED.
+  - SEC-01-ISOLATED is out of scope for the current TRUSTED_LOCAL product (ADR-0035); no isolation is claimed and
+    isolated dispatch remains fail-closed.
   blockers:
-  - SEC-01 isolation remains paused; TRUSTED_LOCAL has broad host access.
   - Real ChatGPT login, live Luna review and the Office authentication-status surface remain pending; the current
     bootstrap is the reviewer CLI/Compose flow.
 - id: CAP-005
@@ -651,7 +653,7 @@ capabilities:
     live_agent: not_tested
     uat: not_tested
     deployment: not_tested
-    isolation: blocked
+    isolation: not_tested
   owner: Core
   dependencies:
   - CAP-001
@@ -659,6 +661,7 @@ capabilities:
   refs:
     adr:
     - docs/architecture/decisions/ADR-0012-project-registry-and-capabilities.md
+    - docs/architecture/decisions/ADR-0035-sec01-accepted-risk-scope.md
     contract:
     - docs/contracts/multi-project-s4c.md
     source:
@@ -679,9 +682,10 @@ capabilities:
     uat: []
     deployment: []
     isolation: []
-  limitations: []
-  blockers:
-  - SEC-01 isolation remains paused; TRUSTED_LOCAL has broad host access.
+  limitations:
+  - SEC-01-ISOLATED is out of scope for the current TRUSTED_LOCAL product (ADR-0035); no isolation is claimed and
+    isolated dispatch remains fail-closed.
+  blockers: []
 - id: CAP-009
   name: Factory-managed browser capability
   category: Runtime
@@ -694,7 +698,7 @@ capabilities:
     live_agent: not_tested
     uat: not_tested
     deployment: not_tested
-    isolation: blocked
+    isolation: not_tested
   owner: Core
   dependencies:
   - CAP-004
@@ -703,6 +707,7 @@ capabilities:
   refs:
     adr:
     - docs/architecture/decisions/ADR-0012-project-registry-and-capabilities.md
+    - docs/architecture/decisions/ADR-0035-sec01-accepted-risk-scope.md
     contract:
     - docs/contracts/browser-test-server-s4c06.md
     source:
@@ -724,8 +729,9 @@ capabilities:
   limitations:
   - Standalone managed test server and real Chromium check are implemented; frozen Project-config and Worker/Core wiring remain.
   - TRUSTED_LOCAL control-plane policy only; a server can still ignore HOST/PORT. Not OS isolation.
-  blockers:
-  - SEC-01 isolation remains paused; TRUSTED_LOCAL has broad host access.
+  - SEC-01-ISOLATED is out of scope for the current TRUSTED_LOCAL product (ADR-0035); no isolation is claimed and
+    isolated dispatch remains fail-closed.
+  blockers: []
 - id: CAP-010
   name: Bounded deterministic recovery
   category: Execution

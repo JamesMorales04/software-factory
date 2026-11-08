@@ -1,6 +1,6 @@
 # TRUSTED_LOCAL operational policy
 
-**Status:** Agreed owner policy per [ADR-0009](../architecture/decisions/ADR-0009-trusted-local-execution.md). TRUSTED_LOCAL is owner-authorized local execution with broad host access. It is **not** a sandbox, not isolated, and not certified. Historical SEC-01 FAIL/NOT TESTED findings remain valid observations; they do not block this mode.
+**Status:** Agreed owner policy per [ADR-0009](../architecture/decisions/ADR-0009-trusted-local-execution.md). TRUSTED_LOCAL is owner-authorized local execution with broad host access. It is **not** a sandbox, not isolated, and not certified. Historical SEC-01 FAIL/NOT TESTED findings remain valid observations; they do not block this mode. `SEC-01-ISOLATED` is out of scope for the current product under [ADR-0035](../architecture/decisions/ADR-0035-sec01-accepted-risk-scope.md); isolated execution remains fail-closed.
 
 ## Scope
 
