@@ -1,13 +1,13 @@
 {
   "schema": "factory.compose-browser-uat.v1",
   "result": "PASS",
-  "started_at": "2026-11-08T06:29:17.986Z",
-  "finished_at": "2026-11-08T06:29:52.495Z",
-  "candidate_sha": "cd6e55d0217304046faa2029fdfaf1177526b9ac",
+  "started_at": "2026-11-08T06:35:47.357Z",
+  "finished_at": "2026-11-08T06:36:22.414Z",
+  "candidate_sha": "f5e99da820b04efbd4768eac2baf4d49fba7736d",
   "office_url": "http://127.0.0.1:8898",
-  "objective": "Add the deterministic Compose browser UAT candidate 1794119357986 and cover it with frozen checks.",
+  "objective": "Add the deterministic Compose browser UAT candidate 1794119747357 and cover it with frozen checks.",
   "runtime": {
-    "compose_project": "software-factory-uat-20261108c",
+    "compose_project": "software-factory-uat-20261108d",
     "compose_files": [
       "compose.yaml",
       "compose.e2e.yaml"
@@ -18,24 +18,25 @@
     "core_api_interception": false
   },
   "ids": {
-    "project": "c0005d9b-4c35-46ab-9d31-4db3e3bad918",
-    "intake_request": "420d025a-3bbd-4dd3-8c5e-1005222873fe",
-    "action": "a49d237d-1745-48ec-94c6-4e7f921041fc",
-    "lead_request": "532ecb02-4338-41b4-a5d2-e1472fdf7678",
-    "execution_profile": "09bfa6c2-ec11-414a-8f59-87b161bcab25",
-    "campaign": "0bd4d991-2255-4cc1-8ecb-538d6123518b",
-    "run": "84057fd8-71af-421b-b63c-2a455b0b7d2d",
-    "attempt": "28f33640-59fe-4c35-b610-6c7fe2aa511e",
-    "candidate": "4c5b3b9a-2190-4990-b79b-ea0583663c8a",
-    "candidate_commit": "e6096c8f5f75e68a9dac3435b475678750941e49",
-    "verifier_receipt": "4fb164d1-0faf-43dc-b3e8-60403c6786e1",
-    "reviewer_receipt": "21aa4ecd-1ae2-480b-8ec0-4ecfbb807b3a",
+    "project": "025b24ff-3222-4fd0-8f53-61d404a425b7",
+    "intake_request": "c86b2624-e3dd-4419-8210-fe153b3ffcf5",
+    "action": "052c7998-ba85-4f90-872e-660d3405fdd3",
+    "lead_request": "3a804bfc-b7c3-4bf8-9c4c-a3fccb5c60fc",
+    "execution_profile": "17c9e9dc-d49b-41b1-9768-6d6d091287ce",
+    "campaign": "8f11c7c0-5eac-46c7-b41a-656e61c82c76",
+    "run": "e1b981cb-9f17-4a6c-987b-637417e8cff6",
+    "attempt": "bf7f9042-ad69-46a4-8598-f4109b420e48",
+    "candidate": "40f2a004-dba4-494f-9549-10b6661c1c3d",
+    "candidate_commit": "650eb04c75af792cc7aa22f3a9540f4760dd4edb",
+    "verifier_receipt": "558d2ee3-8480-4dcf-b631-29d05409a4a7",
+    "reviewer_receipt": "88b3fcb2-d929-43de-8049-3299bcc8810e",
     "gate": "ACCEPTED"
   },
   "assertions": {
     "owner_enrollment": "PASS",
     "project_import": "PASS",
     "project_configuration": "PASS",
+    "project_folder_browser": "PASS",
     "provider_and_profile_setup": "PASS",
     "home_request_creation": "PASS",
     "subscription_dispatch_admission": "PASS",
@@ -57,6 +58,10 @@
     {
       "name": "home-first-run-1440.png",
       "path": "/home/james/Escritorio/Development/software-factory/docs/evidence/compose-browser-uat-2026-11-08/home-first-run-1440.png"
+    },
+    {
+      "name": "project-folder-browser-1440.png",
+      "path": "/home/james/Escritorio/Development/software-factory/docs/evidence/compose-browser-uat-2026-11-08/project-folder-browser-1440.png"
     },
     {
       "name": "home-1440.png",
@@ -155,12 +160,12 @@
     "page_errors": [],
     "failed_requests": [],
     "http_404": [
-      "http://127.0.0.1:8898/core-api/quality/candidates/4c5b3b9a-2190-4990-b79b-ea0583663c8a/gate",
-      "http://127.0.0.1:8898/core-api/quality/candidates/4c5b3b9a-2190-4990-b79b-ea0583663c8a/gate",
-      "http://127.0.0.1:8898/core-api/quality/candidates/4c5b3b9a-2190-4990-b79b-ea0583663c8a/gate",
-      "http://127.0.0.1:8898/core-api/quality/candidates/4c5b3b9a-2190-4990-b79b-ea0583663c8a/gate",
-      "http://127.0.0.1:8898/core-api/quality/candidates/4c5b3b9a-2190-4990-b79b-ea0583663c8a/gate",
-      "http://127.0.0.1:8898/core-api/quality/candidates/4c5b3b9a-2190-4990-b79b-ea0583663c8a/gate"
+      "http://127.0.0.1:8898/core-api/quality/candidates/40f2a004-dba4-494f-9549-10b6661c1c3d/gate",
+      "http://127.0.0.1:8898/core-api/quality/candidates/40f2a004-dba4-494f-9549-10b6661c1c3d/gate",
+      "http://127.0.0.1:8898/core-api/quality/candidates/40f2a004-dba4-494f-9549-10b6661c1c3d/gate",
+      "http://127.0.0.1:8898/core-api/quality/candidates/40f2a004-dba4-494f-9549-10b6661c1c3d/gate",
+      "http://127.0.0.1:8898/core-api/quality/candidates/40f2a004-dba4-494f-9549-10b6661c1c3d/gate",
+      "http://127.0.0.1:8898/core-api/quality/candidates/40f2a004-dba4-494f-9549-10b6661c1c3d/gate"
     ],
     "expected_gate_polls": 6,
     "unexpected_404": [],
@@ -170,8 +175,8 @@
   "findings": [],
   "commands": [
     "PODMAN_COMPOSE_PROVIDER=/usr/bin/podman-compose FACTORY_UAT_KEEP=1 CHROMIUM_EXE=<chromium> ./scripts/compose-browser-uat.sh",
-    "podman compose -p software-factory-uat-20261108c -f compose.yaml -f compose.e2e.yaml up -d --build",
-    "podman exec software-factory-uat-20261108c_core_1 /usr/local/bin/factory-core issue-bootstrap-code",
+    "podman compose -p software-factory-uat-20261108d -f compose.yaml -f compose.e2e.yaml up -d --build",
+    "podman exec software-factory-uat-20261108d_core_1 /usr/local/bin/factory-core issue-bootstrap-code",
     "FACTORY_OFFICE_URL=http://127.0.0.1:8898 FACTORY_BOOTSTRAP_CODE=<one-time-code> CHROMIUM_EXE=<chromium> FACTORY_EVIDENCE_DIR=<evidence-dir> FACTORY_MODEL_CONTEXT=<run-root>/model/context.json node scripts/compose-product-browser-uat.mjs"
   ],
   "boundary": {
@@ -193,7 +198,7 @@
     "billable_gateway": "deterministic model fixture only",
     "paid_inference": false
   },
-  "plan_hash": "2cbf1904ffcb554b31e9de542192918530813d5d2fa1b6ea44a6728c442b90d3",
+  "plan_hash": "62fbe3a9300a1c0f47ee40b17efb21ca9ebc20d4cb788389c6e5028c2f94e19f",
   "campaign_authorization": {
     "execution_mode": "TRUSTED_LOCAL_PROVIDER",
     "risk_class": "R0",
@@ -217,19 +222,19 @@
     "changed_paths": [
       "src/provider.txt"
     ],
-    "base_commit": "21694816317adc54bb5711a67dc0e09bf703773e",
-    "candidate_commit": "e6096c8f5f75e68a9dac3435b475678750941e49"
+    "base_commit": "06134a76f172c0cb21fc623aef47373f5668433d",
+    "candidate_commit": "650eb04c75af792cc7aa22f3a9540f4760dd4edb"
   },
   "pr_projection": "UNBOUND_NO_GITHUB_WRITE",
   "agent_office": {
     "participant_count": 4,
     "avatar_labels": [
-      "Inspect Lead lead:532ecb02-4338-41b4-a5d2-e1472fdf7678, status RUNNING, observation NOT EXPOSED",
-      "Inspect Implementer implementer:de582407-560f-4bcd-834d-a12436ef2387, status COMPLETED, observation FINAL",
-      "Inspect Verifier verifier:4fb164d1-0faf-43dc-b3e8-60403c6786e1, status PASS, observation FINAL",
-      "Inspect Reviewer reviewer:21aa4ecd-1ae2-480b-8ec0-4ecfbb807b3a, status PASS, observation FINAL"
+      "Inspect Lead lead:3a804bfc-b7c3-4bf8-9c4c-a3fccb5c60fc, status RUNNING, observation NOT EXPOSED",
+      "Inspect Implementer implementer:2cc5e16f-c080-47c4-b02a-9673dda38946, status COMPLETED, observation FINAL",
+      "Inspect Verifier verifier:558d2ee3-8480-4dcf-b631-29d05409a4a7, status PASS, observation FINAL",
+      "Inspect Reviewer reviewer:88b3fcb2-d929-43de-8049-3299bcc8810e, status PASS, observation FINAL"
     ],
-    "campaign_filter": "0bd4d991-2255-4cc1-8ecb-538d6123518b"
+    "campaign_filter": "8f11c7c0-5eac-46c7-b41a-656e61c82c76"
   },
   "acceptance": "NOT_CLAIMED_FIXTURE_ONLY_UAT"
 }

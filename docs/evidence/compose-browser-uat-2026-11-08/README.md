@@ -2,7 +2,7 @@
 
 **Result:** `PASS` — deterministic-fixture UAT, **not** live-model or independent
 acceptance.
-**Candidate:** `cd6e55d0217304046faa2029fdfaf1177526b9ac`
+**Candidate:** `f5e99da820b04efbd4768eac2baf4d49fba7736d`
 **Date:** 2026-11-08
 **Record:** [`compose-browser-uat.json`](compose-browser-uat.json)
 
@@ -25,6 +25,7 @@ image. The production image does not contain the test-support endpoint.
 ## Passed journey
 
 - first-run Owner enrollment, Project import/configuration and provider/profile setup;
+- the Projects managed-folder browser against the real `/projects` volume;
 - a subscription Owner admission created through the real Core endpoint, followed
   by a browser-created intake request, frozen plan and explicit UI approval;
 - Worker claim, deterministic fixture candidate, verifier/reviewer receipts and
@@ -47,6 +48,8 @@ exists; these are explicit pending-state probes, not failures.
   historical Actions without frozen specifications.
 - Activity & telemetry renders tokens and session state rather than a monetary
   reserved ceiling.
+- The Projects folder browser lists only directories inside the managed root and
+  fills the selected local import path.
 
 ## What this run does not validate
 
