@@ -570,66 +570,6 @@
   }
 }
 
-/* Workspace defaults in the top bar. They set the Project and Execution
-   Profile for new requests; Core remains the authorization authority. */
-.workspace-context {
-  display: flex;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  align-items: center;
-  gap: var(--space-2);
-  min-width: 0;
-}
-
-.workspace-context-field {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.workspace-context-label {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--shell-text-muted);
-  font-size: 0.625rem;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  line-height: 1.2;
-  text-transform: uppercase;
-}
-
-.workspace-context-select {
-  min-width: 150px;
-  max-width: 210px;
-  height: 32px;
-  padding: 0 26px 0 9px;
-  border: 1px solid rgb(255 255 255 / 0.14);
-  border-radius: var(--radius-sm);
-  background: rgb(255 255 255 / 0.07);
-  color: var(--shell-text);
-  font: inherit;
-  font-size: var(--text-xs);
-  text-overflow: ellipsis;
-}
-
-.workspace-context-select:hover:not(:disabled) {
-  border-color: rgb(255 255 255 / 0.26);
-  background: rgb(255 255 255 / 0.1);
-}
-
-.workspace-context-select:focus-visible {
-  outline: 2px solid var(--focus-inverse);
-  outline-offset: 2px;
-}
-
-.workspace-context-select:disabled {
-  color: var(--shell-text-muted);
-  opacity: 0.78;
-}
-
 .topbar-settings {
   color: var(--shell-text-muted);
 }
@@ -733,15 +673,6 @@
 }
 
 @media (max-width: 1280px) {
-  .workspace-context-label {
-    display: none;
-  }
-
-  .workspace-context-select {
-    min-width: 118px;
-    max-width: 150px;
-  }
-
   .topbar-crumb,
   .topbar-separator {
     display: none;
@@ -749,10 +680,6 @@
 }
 
 @media (max-width: 1000px) {
-  .workspace-context {
-    display: none;
-  }
-
   /* A desktop collapse preference must not hide the owner card or lock inside
      the mobile drawer. */
   .app-shell--collapsed .sidebar-user-copy {

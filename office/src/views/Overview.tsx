@@ -15,7 +15,7 @@ import {
   type DecisionItem,
   type OfficeOverview,
 } from "../coreApi";
-import { formatCostMicros, formatTimestamp, shortId } from "../format";
+import { formatTimestamp, shortId } from "../format";
 import { useI18n } from "../i18n";
 
 function toneForGate(outcome: string) {
@@ -108,9 +108,6 @@ export function Overview() {
 
   const gateEntries = Object.entries(data.gate_outcomes);
   const accepted = data.gate_outcomes.ACCEPTED ?? 0;
-  const measuredCost =
-    data.budget.measured_session_cost_micros +
-    data.budget.measured_model_cost_micros;
   const measuredTokens =
     data.budget.measured_session_tokens + data.budget.measured_model_tokens;
 
@@ -216,15 +213,15 @@ export function Overview() {
           })}
         />
         <Metric
-          label={t("overview.metric.measuredSpend")}
-          value={formatCostMicros(measuredCost)}
-          detail={t("overview.metric.measuredTokens", {
-            tokens: formatNumber(measuredTokens),
+          label={t("overview.metric.measuredTokensLabel")}
+          value={formatNumber(measuredTokens)}
+          detail={t("overview.metric.measuredTokensDetail", {
+            unmeasured: formatNumber(data.budget.unmeasured_sessions),
           })}
           to="/runtime"
           openLabel={t("overview.metric.open")}
           openAria={t("overview.metric.openAria", {
-            label: t("overview.metric.measuredSpend"),
+            label: t("overview.metric.measuredTokensLabel"),
           })}
         />
       </section>
@@ -259,12 +256,6 @@ export function Overview() {
               <dd>{data.budget.unmeasured_model_calls}</dd>
             </div>
             <div>
-              <dt>{t("overview.facts.unmeasuredBound")}</dt>
-              <dd>
-                {formatCostMicros(data.budget.unmeasured_bound_cost_micros)}
-              </dd>
-            </div>
-            <div>
               <dt>{t("overview.facts.core")}</dt>
               <dd>
                 <Badge tone={data.runtime.core_healthy ? "success" : "danger"}>
@@ -273,7 +264,9 @@ export function Overview() {
               </dd>
             </div>
           </dl>
-          <p className="muted overview-footnote">{data.budget.note}</p>
+          <p className="muted overview-footnote">
+            {t("overview.footnote.telemetry")}
+          </p>
         </Panel>
 
         <Panel className="overview-panel">

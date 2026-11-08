@@ -343,7 +343,9 @@ describe("IssueIntakePanel", () => {
   it("renders enabled policy state without claiming execution authority", () => {
     renderPanel();
     expect(screen.getByText("ENABLED")).toBeTruthy();
-    expect(screen.getByText(/Neither starts a Campaign/)).toBeTruthy();
+    expect(
+      screen.getByText(/Nothing runs until you approve a plan/),
+    ).toBeTruthy();
     expect(screen.getByText(/not granted by this policy/)).toBeTruthy();
     expect(
       screen.getByRole("button", { name: "Acknowledge finite batch" }),

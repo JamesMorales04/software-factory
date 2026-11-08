@@ -82,18 +82,12 @@ export function decisionActions(item: DecisionItem): DecisionAction[] {
 }
 
 function BudgetFacts({ budget }: { budget: DecisionBudget }) {
-  const { t, formatMicros } = useI18n();
+  const { t } = useI18n();
   const facts: Array<[MessageKey, string]> = [];
   if (budget.usage_known !== undefined) {
     facts.push([
       "decisions.budget.usage",
       budget.usage_known ? t("decisions.measured") : t("decisions.unmeasured"),
-    ]);
-  }
-  if (budget.cost_micros !== undefined) {
-    facts.push([
-      "decisions.budget.recordedCost",
-      formatMicros(budget.cost_micros),
     ]);
   }
   if (facts.length === 0) {

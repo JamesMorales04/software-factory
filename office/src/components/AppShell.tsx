@@ -30,7 +30,6 @@ import { CommandPalette } from "./CommandPalette";
 import { HealthBadge } from "./HealthBadge";
 import { IconButton } from "./ui/Button";
 import { Tooltip } from "./ui/Tooltip";
-import { WorkspaceContextBar } from "./WorkspaceContextBar";
 
 const SIDEBAR_KEY = "factory-office-sidebar";
 
@@ -378,9 +377,6 @@ export function AppShell({
                 <PanelLeftOpen size={19} aria-hidden="true" />
               )}
             </IconButton>
-            {/* Re-read Core catalogs on navigation so a newly imported Project
-                or created profile cannot leave stale top-bar defaults. */}
-            <WorkspaceContextBar key={pathname} />
             <div className="topbar-context">
               <span className="topbar-title">
                 {routeLabel(pathname, search, t)}

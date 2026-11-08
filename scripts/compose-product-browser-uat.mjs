@@ -279,6 +279,22 @@ try {
   assert.deepEqual(projectConfig.allowedPaths, ["src"]);
   record.assertions.project_configuration = "PASS";
 
+  stage = "project-folder-browser";
+  await page.getByRole("link", { name: "Projects", exact: true }).click();
+  await page.getByRole("heading", { name: "Projects", level: 1 }).waitFor();
+  await page.getByRole("tab", { name: "Local repository" }).click();
+  await page.getByRole("button", { name: "Browse folders" }).click();
+  await page
+    .getByRole("region", { name: "Managed folder browser" })
+    .waitFor();
+  await page.getByRole("button", { name: "Use this folder" }).click();
+  const browsedPath = await page.getByTestId("project-local-path").inputValue();
+  assert.equal(browsedPath, "/projects");
+  record.assertions.project_folder_browser = "PASS";
+  await shot("project-folder-browser-1440.png");
+  await page.getByRole("link", { name: "Settings", exact: true }).click();
+  await page.getByRole("heading", { name: "Settings", level: 1 }).waitFor();
+
   stage = "provider-and-profile-setup";
   await core("PUT", "/settings/providers/opencode", {
     model: "deepseek-v4.1-flash",
@@ -364,7 +380,6 @@ try {
   await page.getByRole("heading", { name: "Home", level: 1 }).waitFor();
   await page.locator("#home-project").selectOption(projectId);
   await page.locator("#home-objective").fill(objective);
-  await page.locator("#home-spend").fill("5.00");
   await page.locator("#home-profile").selectOption(profile.id);
   await capturePair("home");
   await page.getByRole("button", { name: "Send to Lead" }).click();
@@ -391,9 +406,31 @@ try {
     });
   }
   record.assertions.subscription_dispatch_admission = "PASS";
+
+  stage = "subscription-owner-admission";
+  const admissionNow = Date.now();
+  const admission = await core(
+    "POST",
+    `/intake/requests/${intakeId}/subscription-admission`,
+    {
+      assumption_id: `compose-browser-uat-${admissionNow}`,
+      confirmed_by: "Compose browser UAT operator",
+      confirmed_at_ms: admissionNow - 1_000,
+      valid_until_ms: admissionNow + 24 * 60 * 60 * 1_000,
+      extra_usage_disabled: true,
+      statement:
+        "Owner confirms the OpenCode Go subscription with Extra Usage disabled for this deterministic Compose browser UAT.",
+      test_profile_id: "wave3-real-model-2026-11",
+      idempotency_key: `compose-browser-uat-admission-${intakeId}`,
+    },
+  );
+  record.ids.subscription_admission = admission.admission_id;
+  record.assertions.subscription_owner_admission = "PASS";
+
   record.spend = {
-    requested_usd: "5.00",
-    authorized_micros: 5_000_000,
+    requested_usd: null,
+    authorized_micros: null,
+    billing: "subscription route; no per-request monetary authorization",
     billable_gateway: "deterministic model fixture only",
     paid_inference: false,
   };

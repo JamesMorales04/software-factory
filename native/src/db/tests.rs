@@ -530,6 +530,34 @@ async fn frozen_spec_is_immutable_and_remains_human_required() {
 }
 
 #[tokio::test]
+async fn action_list_skips_historical_rows_without_a_frozen_spec() {
+    let (path, db) = temp_db("factory-action-orphan-spec").await;
+    insert_project(&db, "project", "/fixture", "base").await;
+    let valid = db
+        .create_action(
+            "project",
+            "valid action",
+            "opencode",
+            "provider/model",
+            "valid-key",
+        )
+        .await
+        .unwrap();
+    sqlx::query::query(
+        "INSERT INTO actions VALUES ('legacy','project','legacy action','opencode','provider/model','R0','HUMAN_REQUIRED','digest','now')",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let listed = db.actions().await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, valid.id);
+    assert!(matches!(db.action("legacy").await, Err(Error::NotFound)));
+    db.close().await;
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
 async fn campaign_is_durable_but_requires_authorization_for_a_run() {
     let (path, db) = temp_db("factory-campaign").await;
     insert_project(&db, "project", "/fixture", "base").await;

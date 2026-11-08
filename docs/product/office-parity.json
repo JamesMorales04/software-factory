@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-11-07T15:45:00Z",
+  "updated_at": "2026-11-08T05:00:00Z",
   "route_base_note": "Current Office uses hash routes. The design-foundation slice moves to a stable /office browser base while preserving these logical routes.",
   "capabilities": {
     "CAP-011": {
@@ -32,6 +32,7 @@
         "GET /health",
         "GET /projects",
         "POST /projects",
+        "GET /projects/browse",
         "GET /projects/{id}/config",
         "PUT /projects/{id}/config",
         "GET /actions",
@@ -245,7 +246,6 @@
         "office/src/views/IssueIntakePanel.test.tsx",
         "office/src/views/Home.test.tsx",
         "office/src/views/Home.styles.test.ts",
-        "office/src/components/WorkspaceContextBar.test.tsx",
         "office/src/components/office/CampaignPulse.test.tsx",
         "office/src/workspace.test.ts",
         "office/e2e-browser/office-conversation-home.mjs",
@@ -516,6 +516,7 @@
         "DELETE /settings/providers/{provider}/credential",
         "GET /projects",
         "POST /projects",
+        "GET /projects/browse",
         "GET /projects/{id}/config",
         "PUT /projects/{id}/config",
         "GET /actions",

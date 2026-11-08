@@ -103,9 +103,12 @@ minimum.
   3. **Projects** (`/projects`).
   4. **Issues** (`/issues`).
   5. **Agent Office** (`/agents`).
-  6. **Settings** (`/settings`).
-- **Advanced** disclosure: Decisions, Overview, Actions, Lead, Delegations,
-  Runs, Workers, Runtime and Access & Devices. The disclosure is keyboard
+  6. **Activity & telemetry** (`/runtime`) — sessions, model calls, workers,
+     runtime diagnostics and operational evidence.
+  7. **Settings** (`/settings`).
+- **Advanced** disclosure: Decisions, Overview, Actions and Access & Devices.
+  Lead, Delegations, Runs and Workers remain stable deep-linkable evidence
+  routes but are not primary daily destinations. The disclosure is keyboard
   operable and remains open when an advanced route is active.
 - Primary group labels are visually hidden; the navigation still has an
   accessible name and grouped semantics.
@@ -116,13 +119,11 @@ minimum.
 
 ### 5.2 Top bar
 
-- Height **60 px**, navy, sticky, with a visible health state, workspace
-  defaults, page context and global actions.
-- Workspace defaults:
-  - **Project** selector populated from Core Projects.
-  - **Quality profile** selector populated from Execution Profiles.
-  - These select the default Project and profile for new requests. They are not
-    an authorization boundary; Core still authorizes every request.
+- Height **60 px**, navy, sticky, with a visible health state, page context and
+  global actions.
+- Do not repeat Project or Execution Profile selectors in the top bar. The Home
+  composer owns the defaults for a new request, and Core remains the
+  authorization boundary for every operation.
 - Page context: the current route title. The Factory Office brand lives in the
   sidebar rail; the top bar does not repeat it. Keep the title text used by
   existing tests and deep-link labels.
@@ -149,9 +150,9 @@ Required composition:
 2. A large instruction textarea labeled to the Lead.
 3. A compact row of suggestion chips (`Fix a GitHub issue`, `Improve
    performance`, `Add an integration`, `Refactor a module`, `Add tests`).
-4. Context controls: Project, Quality/Execution Profile and the explicitly
-   required Core inference authorization amount. Do not hide a required
-   authorization behind a decorative button.
+4. Context controls: Project and Execution Profile. A subscription route does
+   not ask the owner for a per-request monetary amount; any billable envelope
+   belongs only to an exact metered route and must be shown truthfully there.
 5. One obvious **Send to Lead** action with a send icon and keyboard hint.
 6. Secondary two-column surface: **Recent work** and **Needs your attention**
    (the pending-decision list).
@@ -372,7 +373,7 @@ assets.
 |---|---|
 | Tokens, themes, density | `office/src/styles/tokens.css`, `office/src/theme.tsx` |
 | Shell, sidebar, top bar | `office/src/components/AppShell.tsx`, `office/src/styles/layout.css` |
-| Workspace context | `office/src/components/WorkspaceContextBar.tsx`, `office/src/workspace.ts` |
+| Workspace context | Home composer Project/Profile selectors, `office/src/workspace.ts` |
 | Navigation contract | `office/src/navigation.ts` |
 | Home | `office/src/views/Home.tsx`, `office/src/views/HomeThread.tsx`, `office/src/styles/home.css` |
 | Campaign detail and pulse | `office/src/views/CampaignDetail.tsx`, `office/src/components/office/CampaignPulse.tsx`, `office/src/styles/views.css` |

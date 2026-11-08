@@ -27,7 +27,7 @@ export const en = {
   "nav.agentOffice": "Agent Office",
   "nav.runs": "Runs",
   "nav.workers": "Workers",
-  "nav.runtime": "Runtime",
+  "nav.runtime": "Activity & telemetry",
   "nav.settings": "Settings",
   "nav.accessDevices": "Access & Devices",
   "nav.request": "Request",
@@ -163,9 +163,6 @@ export const en = {
   "home.policy.grantLifetime": "Grant lifetime",
   "home.policy.grantLifetimeValue":
     "Valid {days} days · {parallel} concurrent implementation operation",
-  "home.policy.inferenceEnvelope": "Inference envelope",
-  "home.policy.inferenceEnvelopeValue":
-    "USD {amount} for assessment, implementation and review",
   "home.policy.technical":
     "Core also enforces per-operation timeouts, request/response bounds, generation limits and deterministic progress supervision. These are technical safety limits, not turn, attempt, session or campaign deadlines.",
   "home.policy.scopeMissing":
@@ -176,11 +173,6 @@ export const en = {
   "home.policy.enable": "Enable governed execution",
   "home.policy.enabling": "Enabling governed execution…",
   "home.validation.project": "Select a Project.",
-  "home.spend.label": "Inference authorization (USD)",
-  "home.spend.help":
-    "Required by Core for billable model calls. It stops when exhausted.",
-  "home.validation.authorization":
-    "Enter a positive USD amount for the inference envelope.",
   "home.validation.objective": "Describe the engineering outcome you want.",
   "home.request.error": "The request could not be submitted.",
   "home.request.endpointUnavailable":
@@ -1120,7 +1112,10 @@ export const en = {
   "issues.intake.badge.enabled": "ENABLED",
   "issues.intake.badge.off": "OFF",
   "issues.intake.description":
-    "Default off. A policy acknowledges exact repository, author, label, profile, path and budget bounds. A batch acknowledges exact issue snapshots. Neither starts a Campaign: execution, approval and Worker dispatch remain separate explicit operations.",
+    "Default off. Choose the repository and profile; labels decide which issues enter. Technical limits stay under Advanced options. Nothing runs until you approve a plan.",
+  "issues.intake.advanced": "Advanced options",
+  "issues.intake.advancedHint":
+    "Authorship, paths, capabilities, technical limits and expiry. The defaults are safe for most Projects.",
   "issues.intake.cancel": "Cancel",
   "issues.intake.error.load": "Failed to load the issue-intake policy.",
   "issues.intake.editPolicy": "Edit and re-acknowledge",
@@ -1644,6 +1639,16 @@ export const en = {
     "Authorized repositories could not be loaded.",
   "projects.import.github.errorConnect": "Repository import failed.",
   "projects.import.local.disabledTitle": "Local import is disabled",
+  "projects.browse.open": "Browse folders",
+  "projects.browse.loading": "Loading folders…",
+  "projects.browse.title": "Managed folder browser",
+  "projects.browse.current": "Current folder:",
+  "projects.browse.up": "Up",
+  "projects.browse.select": "Use this folder",
+  "projects.browse.empty": "No subfolders.",
+  "projects.browse.error": "Folders could not be loaded.",
+  "projects.browse.git": "Git",
+  "projects.browse.truncated": "Only the first 500 folders are shown.",
   "projects.import.local.path": "Absolute local repository path",
   "projects.import.local.submit": "Import local repository",
   "projects.import.local.busy": "Importing…",
@@ -1776,7 +1781,7 @@ export const en = {
   "workers.table.worker": "Worker",
   "workers.table.credentialUpdated": "Credential updated",
 
-  "runtime.title": "Runtime",
+  "runtime.title": "Activity & telemetry",
   "runtime.description":
     "Durable Core projections for provider sessions, model-call reservations, cleanup and telemetry. A missing record is not proof of successful cleanup.",
   "runtime.meta.coreHealthy": "Core healthy",
@@ -1795,19 +1800,18 @@ export const en = {
   "runtime.tabs.modelCalls": "Model calls",
   "runtime.tabs.diagnostics": "Diagnostics",
   "runtime.metrics.summaryAria": "Runtime summary",
-  "runtime.metrics.spend.label": "Sampled measured spend",
-  "runtime.metrics.spend.detail":
+  "runtime.metrics.tokens.label": "Measured tokens",
+  "runtime.metrics.tokens.detail":
     "Usage-known sessions plus latest 200 model calls; not a total ({sessions} sessions, {calls} calls)",
-  "runtime.metrics.ceiling.label": "Reserved ceiling",
-  "runtime.metrics.ceiling.detail":
-    "{calls} unresolved model call(s) + {turns} open provider turn(s)",
+  "runtime.metrics.completed.label": "Completed sessions",
+  "runtime.metrics.completed.detail": "Of {total} recorded sessions",
   "runtime.metrics.unresolved.label": "Unresolved calls",
   "runtime.metrics.unresolved.detail": "AMBIGUOUS or UNKNOWN Core reservations",
   "runtime.metrics.openSessions.label": "Open sessions",
   "runtime.metrics.openSessions.detail":
     "{total} session(s) recorded; INTENT, ACTIVE, cancellation or orphaned",
   "runtime.metrics.unmeasured.label": "Unmeasured sessions",
-  "runtime.metrics.unmeasured.detail": "Excluded from measured spend",
+  "runtime.metrics.unmeasured.detail": "Excluded from measured tokens",
   "runtime.metrics.telemetry.label": "Telemetry",
   "runtime.metrics.telemetry.detail": "cursor {cursor} · {pending} pending",
   "runtime.availability.title": "Service availability",
@@ -1817,7 +1821,7 @@ export const en = {
   "runtime.availability.sessions": "Provider sessions",
   "runtime.availability.modelCalls": "Recent model calls",
   "runtime.availability.sampled": "{count} sampled",
-  "runtime.availability.openTurns": "Open provider turns",
+  "runtime.availability.completedSessions": "Completed sessions",
   "runtime.availability.boundaryNote":
     "Supervisor and nested runtime state are not exposed by the current Core API. Office does not infer their health from a missing record, a disconnected view or Compose process state.",
   "runtime.states.title": "Session states",
@@ -1838,7 +1842,6 @@ export const en = {
   "runtime.unresolved.emptyTitle": "No unresolved model calls",
   "runtime.unresolved.emptyDescription":
     "No AMBIGUOUS or UNKNOWN Core reservation is recorded.",
-  "runtime.unresolved.ceiling": "Ceiling {cost}",
   "runtime.sessions.title": "Provider sessions ({count} shown)",
   "runtime.sessions.hint":
     "Cleanup receipts are recorded evidence, not isolation proof",
@@ -1875,10 +1878,9 @@ export const en = {
   "runtime.calls.table.route": "Route",
   "runtime.calls.table.state": "State",
   "runtime.calls.table.usage": "Usage",
-  "runtime.calls.table.ceiling": "Ceiling",
   "runtime.calls.table.updated": "Updated",
   "runtime.calls.scope": "scope",
-  "runtime.calls.tokens": "{tokens} tokens / {cost}",
+  "runtime.calls.tokens": "{tokens} tokens",
   "runtime.calls.unresolvedTitle": "Unresolved reservations ({count})",
   "runtime.calls.unresolvedHint":
     "Releasing is explicit and audited by Core; it is not automatic",
@@ -1966,9 +1968,12 @@ export const en = {
   "overview.metric.blockedSignals": "Blocked signals",
   "overview.metric.blockedSignalsDetail": "Actions, Runs, Campaigns or Gates",
   "overview.metric.acceptedCandidates": "Accepted candidates",
+  "overview.footnote.telemetry":
+    "Tokens, time, retries and subscription cost are telemetry, not productivity caps. These figures are not an invoice.",
+
   "overview.metric.acceptedDetail": "{count} recorded",
-  "overview.metric.measuredSpend": "Measured spend",
-  "overview.metric.measuredTokens": "{tokens} measured tokens",
+  "overview.metric.measuredTokensLabel": "Measured tokens",
+  "overview.metric.measuredTokensDetail": "Unmeasured sessions: {unmeasured}",
   "overview.metric.open": "Open",
   "overview.metric.openAria": "Open {label}",
   "overview.gate.title": "Quality Gate outcomes",
@@ -1978,7 +1983,6 @@ export const en = {
     "A candidate appears here after independent verifier and reviewer evidence is recorded.",
   "overview.facts.unmeasuredSessions": "Unmeasured sessions",
   "overview.facts.unmeasuredModelCalls": "Unmeasured model calls",
-  "overview.facts.unmeasuredBound": "Unmeasured bound",
   "overview.facts.core": "Core",
   "overview.decisions.title": "Decision Inbox",
   "overview.decisions.open": "Open Inbox",
@@ -2825,15 +2829,6 @@ export const en = {
   "settings.provider.manualModelHelp":
     "Core keeps this route unverified until the provider advertises the exact model. Ordinary users can select a discovered model above instead.",
   "settings.provider.connectionDetails": "Connection details",
-  "settings.provider.advanced": "Pricing metadata",
-  "settings.provider.maxTurns": "Max turns",
-  "settings.provider.maxCost": "Max cost (micros)",
-  "settings.provider.maxInput": "Max input tokens",
-  "settings.provider.maxOutput": "Max output tokens",
-  "settings.provider.inputRate": "Input micros / million",
-  "settings.provider.outputRate": "Output micros / million",
-  "settings.provider.advancedHint":
-    "Input and output rates are used for cost telemetry only. They are not usage caps, and frozen Campaign bindings are not rewritten by a provider settings revision.",
   "settings.provider.enabledLabel": "Enabled",
   "settings.provider.defaultLabel": "Default route for Core model calls",
   "settings.provider.saving": "Saving…",

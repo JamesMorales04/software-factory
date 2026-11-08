@@ -1,0 +1,240 @@
+{
+  "schema": "factory.compose-browser-uat.v1",
+  "result": "PASS",
+  "started_at": "2026-11-08T06:35:47.357Z",
+  "finished_at": "2026-11-08T06:36:22.414Z",
+  "candidate_sha": "f5e99da820b04efbd4768eac2baf4d49fba7736d",
+  "office_url": "http://127.0.0.1:8898",
+  "objective": "Add the deterministic Compose browser UAT candidate 1794119747357 and cover it with frozen checks.",
+  "runtime": {
+    "compose_project": "software-factory-uat-20261108d",
+    "compose_files": [
+      "compose.yaml",
+      "compose.e2e.yaml"
+    ],
+    "provider_kind": "fixture",
+    "paid_inference": false,
+    "deterministic_model_gateway": "http://model-fixture:8080/v1",
+    "core_api_interception": false
+  },
+  "ids": {
+    "project": "025b24ff-3222-4fd0-8f53-61d404a425b7",
+    "intake_request": "c86b2624-e3dd-4419-8210-fe153b3ffcf5",
+    "action": "052c7998-ba85-4f90-872e-660d3405fdd3",
+    "lead_request": "3a804bfc-b7c3-4bf8-9c4c-a3fccb5c60fc",
+    "execution_profile": "17c9e9dc-d49b-41b1-9768-6d6d091287ce",
+    "campaign": "8f11c7c0-5eac-46c7-b41a-656e61c82c76",
+    "run": "e1b981cb-9f17-4a6c-987b-637417e8cff6",
+    "attempt": "bf7f9042-ad69-46a4-8598-f4109b420e48",
+    "candidate": "40f2a004-dba4-494f-9549-10b6661c1c3d",
+    "candidate_commit": "650eb04c75af792cc7aa22f3a9540f4760dd4edb",
+    "verifier_receipt": "558d2ee3-8480-4dcf-b631-29d05409a4a7",
+    "reviewer_receipt": "88b3fcb2-d929-43de-8049-3299bcc8810e",
+    "gate": "ACCEPTED"
+  },
+  "assertions": {
+    "owner_enrollment": "PASS",
+    "project_import": "PASS",
+    "project_configuration": "PASS",
+    "project_folder_browser": "PASS",
+    "provider_and_profile_setup": "PASS",
+    "home_request_creation": "PASS",
+    "subscription_dispatch_admission": "PASS",
+    "subscription_owner_admission": "PASS",
+    "assessment": "PASS",
+    "plan_approval_and_campaign_start": "PASS",
+    "fixture_worker_session": "PASS",
+    "worker_fixture_execution": "PASS",
+    "independent_receipts": "PASS",
+    "deterministic_quality_gate": "PASS",
+    "candidate_lineage": "PASS",
+    "candidate_diff_projection": "PASS",
+    "github_pr_projection_unbound": "PASS",
+    "agent_observability": "PASS",
+    "no_unexpected_browser_errors": true,
+    "campaign_budget_projection": "PASS"
+  },
+  "screenshots": [
+    {
+      "name": "home-first-run-1440.png",
+      "path": "/home/james/Escritorio/Development/software-factory/docs/evidence/compose-browser-uat-2026-11-08/home-first-run-1440.png"
+    },
+    {
+      "name": "project-folder-browser-1440.png",
+      "path": "/home/james/Escritorio/Development/software-factory/docs/evidence/compose-browser-uat-2026-11-08/project-folder-browser-1440.png"
+    },
+    {
+      "name": "home-1440.png",
+      "path": "/home/james/Escritorio/Development/software-factory/docs/evidence/compose-browser-uat-2026-11-08/home-1440.png"
+    },
+    {
+      "name": "home-390.png",
+      "path": "/home/james/Escritorio/Development/software-factory/docs/evidence/compose-browser-uat-2026-11-08/home-390.png"
+    },
+    {
+      "name": "request-created-1440.png",
+      "path": "/home/james/Escritorio/Development/software-factory/docs/evidence/compose-browser-uat-2026-11-08/request-created-1440.png"
+    },
+    {
+      "name": "request-assessment-1440.png",
+      "path": "/home/james/Escritorio/Development/software-factory/docs/evidence/compose-browser-uat-2026-11-08/request-assessment-1440.png"
+    },
+    {
+      "name": "request-assessment-390.png",
+      "path": "/home/james/Escritorio/Development/software-factory/docs/evidence/compose-browser-uat-2026-11-08/request-assessment-390.png"
+    },
+    {
+      "name": "request-completed-1440.png",
+      "path": "/home/james/Escritorio/Development/software-factory/docs/evidence/compose-browser-uat-2026-11-08/request-completed-1440.png"
+    },
+    {
+      "name": "request-completed-390.png",
+      "path": "/home/james/Escritorio/Development/software-factory/docs/evidence/compose-browser-uat-2026-11-08/request-completed-390.png"
+    },
+    {
+      "name": "campaign-overview-1440.png",
+      "path": "/home/james/Escritorio/Development/software-factory/docs/evidence/compose-browser-uat-2026-11-08/campaign-overview-1440.png"
+    },
+    {
+      "name": "campaign-overview-390.png",
+      "path": "/home/james/Escritorio/Development/software-factory/docs/evidence/compose-browser-uat-2026-11-08/campaign-overview-390.png"
+    },
+    {
+      "name": "campaign-candidates-1440.png",
+      "path": "/home/james/Escritorio/Development/software-factory/docs/evidence/compose-browser-uat-2026-11-08/campaign-candidates-1440.png"
+    },
+    {
+      "name": "campaign-candidates-390.png",
+      "path": "/home/james/Escritorio/Development/software-factory/docs/evidence/compose-browser-uat-2026-11-08/campaign-candidates-390.png"
+    },
+    {
+      "name": "campaign-evidence-1440.png",
+      "path": "/home/james/Escritorio/Development/software-factory/docs/evidence/compose-browser-uat-2026-11-08/campaign-evidence-1440.png"
+    },
+    {
+      "name": "campaign-evidence-390.png",
+      "path": "/home/james/Escritorio/Development/software-factory/docs/evidence/compose-browser-uat-2026-11-08/campaign-evidence-390.png"
+    },
+    {
+      "name": "campaign-gate-1440.png",
+      "path": "/home/james/Escritorio/Development/software-factory/docs/evidence/compose-browser-uat-2026-11-08/campaign-gate-1440.png"
+    },
+    {
+      "name": "campaign-gate-390.png",
+      "path": "/home/james/Escritorio/Development/software-factory/docs/evidence/compose-browser-uat-2026-11-08/campaign-gate-390.png"
+    },
+    {
+      "name": "agent-office-1440.png",
+      "path": "/home/james/Escritorio/Development/software-factory/docs/evidence/compose-browser-uat-2026-11-08/agent-office-1440.png"
+    },
+    {
+      "name": "agent-office-390.png",
+      "path": "/home/james/Escritorio/Development/software-factory/docs/evidence/compose-browser-uat-2026-11-08/agent-office-390.png"
+    },
+    {
+      "name": "home-completed-1440.png",
+      "path": "/home/james/Escritorio/Development/software-factory/docs/evidence/compose-browser-uat-2026-11-08/home-completed-1440.png"
+    },
+    {
+      "name": "home-completed-390.png",
+      "path": "/home/james/Escritorio/Development/software-factory/docs/evidence/compose-browser-uat-2026-11-08/home-completed-390.png"
+    },
+    {
+      "name": "campaign-budget-1440.png",
+      "path": "/home/james/Escritorio/Development/software-factory/docs/evidence/compose-browser-uat-2026-11-08/campaign-budget-1440.png"
+    },
+    {
+      "name": "campaign-budget-390.png",
+      "path": "/home/james/Escritorio/Development/software-factory/docs/evidence/compose-browser-uat-2026-11-08/campaign-budget-390.png"
+    }
+  ],
+  "console": {
+    "errors": [
+      "Failed to load resource: the server responded with a status of 404 (Not Found)",
+      "Failed to load resource: the server responded with a status of 404 (Not Found)",
+      "Failed to load resource: the server responded with a status of 404 (Not Found)",
+      "Failed to load resource: the server responded with a status of 404 (Not Found)",
+      "Failed to load resource: the server responded with a status of 404 (Not Found)",
+      "Failed to load resource: the server responded with a status of 404 (Not Found)"
+    ],
+    "page_errors": [],
+    "failed_requests": [],
+    "http_404": [
+      "http://127.0.0.1:8898/core-api/quality/candidates/40f2a004-dba4-494f-9549-10b6661c1c3d/gate",
+      "http://127.0.0.1:8898/core-api/quality/candidates/40f2a004-dba4-494f-9549-10b6661c1c3d/gate",
+      "http://127.0.0.1:8898/core-api/quality/candidates/40f2a004-dba4-494f-9549-10b6661c1c3d/gate",
+      "http://127.0.0.1:8898/core-api/quality/candidates/40f2a004-dba4-494f-9549-10b6661c1c3d/gate",
+      "http://127.0.0.1:8898/core-api/quality/candidates/40f2a004-dba4-494f-9549-10b6661c1c3d/gate",
+      "http://127.0.0.1:8898/core-api/quality/candidates/40f2a004-dba4-494f-9549-10b6661c1c3d/gate"
+    ],
+    "expected_gate_polls": 6,
+    "unexpected_404": [],
+    "unexpected_console_errors": [],
+    "budget_probe_page_errors": []
+  },
+  "findings": [],
+  "commands": [
+    "PODMAN_COMPOSE_PROVIDER=/usr/bin/podman-compose FACTORY_UAT_KEEP=1 CHROMIUM_EXE=<chromium> ./scripts/compose-browser-uat.sh",
+    "podman compose -p software-factory-uat-20261108d -f compose.yaml -f compose.e2e.yaml up -d --build",
+    "podman exec software-factory-uat-20261108d_core_1 /usr/local/bin/factory-core issue-bootstrap-code",
+    "FACTORY_OFFICE_URL=http://127.0.0.1:8898 FACTORY_BOOTSTRAP_CODE=<one-time-code> CHROMIUM_EXE=<chromium> FACTORY_EVIDENCE_DIR=<evidence-dir> FACTORY_MODEL_CONTEXT=<run-root>/model/context.json node scripts/compose-product-browser-uat.mjs"
+  ],
+  "boundary": {
+    "real_core_http_api": true,
+    "real_chromium": true,
+    "intercepted_core_api": false,
+    "deterministic_fixture_provider": true,
+    "deterministic_model_fixture": true,
+    "live_provider_inference": "NOT_TESTED",
+    "github_pr_created_or_merged": false,
+    "github_pr_projection": "UNBOUND_NOT_TESTED",
+    "independent_acceptance": "NOT_TESTED",
+    "isolation": "NOT_CLAIMED"
+  },
+  "spend": {
+    "requested_usd": null,
+    "authorized_micros": null,
+    "billing": "subscription route; no per-request monetary authorization",
+    "billable_gateway": "deterministic model fixture only",
+    "paid_inference": false
+  },
+  "plan_hash": "62fbe3a9300a1c0f47ee40b17efb21ca9ebc20d4cb788389c6e5028c2f94e19f",
+  "campaign_authorization": {
+    "execution_mode": "TRUSTED_LOCAL_PROVIDER",
+    "risk_class": "R0",
+    "provider": "opencode-go",
+    "model": "deepseek-v4.1-flash",
+    "actor": "Wave 3 Compose Browser UAT"
+  },
+  "worker_execution": {
+    "worker_id": "compose-worker",
+    "attempt_generation": 1,
+    "provider_session_id": "ses_fixture",
+    "session_state": "COMPLETED",
+    "cleanup_receipt": "session_delete_verified_absent",
+    "usage": {
+      "input_tokens": 40,
+      "output_tokens": 80,
+      "cost_micros": 400
+    }
+  },
+  "candidate_diff": {
+    "changed_paths": [
+      "src/provider.txt"
+    ],
+    "base_commit": "06134a76f172c0cb21fc623aef47373f5668433d",
+    "candidate_commit": "650eb04c75af792cc7aa22f3a9540f4760dd4edb"
+  },
+  "pr_projection": "UNBOUND_NO_GITHUB_WRITE",
+  "agent_office": {
+    "participant_count": 4,
+    "avatar_labels": [
+      "Inspect Lead lead:3a804bfc-b7c3-4bf8-9c4c-a3fccb5c60fc, status RUNNING, observation NOT EXPOSED",
+      "Inspect Implementer implementer:2cc5e16f-c080-47c4-b02a-9673dda38946, status COMPLETED, observation FINAL",
+      "Inspect Verifier verifier:558d2ee3-8480-4dcf-b631-29d05409a4a7, status PASS, observation FINAL",
+      "Inspect Reviewer reviewer:88b3fcb2-d929-43de-8049-3299bcc8810e, status PASS, observation FINAL"
+    ],
+    "campaign_filter": "8f11c7c0-5eac-46c7-b41a-656e61c82c76"
+  },
+  "acceptance": "NOT_CLAIMED_FIXTURE_ONLY_UAT"
+}

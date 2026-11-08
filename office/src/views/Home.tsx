@@ -10,13 +10,12 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
-  Wallet,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Badge } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
-import { Checkbox, Input, Select, Textarea } from "../components/ui/Field";
+import { Checkbox, Select, Textarea } from "../components/ui/Field";
 import { EmptyState, LoadingState, Panel } from "../components/ui/Surface";
 import {
   CoreApiError,
@@ -129,11 +128,9 @@ export function Home() {
   const [projectId, setProjectId] = useState(initialWorkspace.projectId);
   const [profileId, setProfileId] = useState(initialWorkspace.profileId);
   const [objective, setObjective] = useState("");
-  const [spendUsd, setSpendUsd] = useState("5.00");
   const [fieldErrors, setFieldErrors] = useState<{
     project?: string;
     objective?: string;
-    spend?: string;
   }>({});
   const [formError, setFormError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -403,28 +400,17 @@ export function Home() {
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     const trimmed = objective.trim();
-    const nextErrors: { project?: string; objective?: string; spend?: string } =
-      {};
-    const spendMicros = Math.round(Number(spendUsd) * 1_000_000);
+    const nextErrors: { project?: string; objective?: string } = {};
     if (projectId === "") nextErrors.project = t("home.validation.project");
     if (trimmed === "") {
       nextErrors.objective = t("home.validation.objective");
     }
-    if (
-      !Number.isSafeInteger(spendMicros) ||
-      spendMicros <= 0 ||
-      spendMicros > 9_000_000_000_000
-    ) {
-      nextErrors.spend = t("home.validation.authorization");
-    }
     setFieldErrors(nextErrors);
-    if (nextErrors.project || nextErrors.objective || nextErrors.spend) {
+    if (nextErrors.project || nextErrors.objective) {
       if (nextErrors.project) {
         document.getElementById("home-project")?.focus();
-      } else if (nextErrors.objective) {
-        document.getElementById("home-objective")?.focus();
       } else {
-        document.getElementById("home-spend")?.focus();
+        document.getElementById("home-objective")?.focus();
       }
       return;
     }
@@ -440,7 +426,6 @@ export function Home() {
       ...(profileId === "" ? {} : { execution_profile_id: profileId }),
       mode: "REVIEW_PLAN",
       idempotency_key: requestKey.current,
-      authorized_micros: Math.round(Number(spendUsd) * 1_000_000),
     };
     await submitRequest(input);
   }
@@ -630,31 +615,6 @@ export function Home() {
                         </option>
                       ))}
                     </Select>
-
-                    <Input
-                      id="home-spend"
-                      className="home-spend-input"
-                      label={
-                        <>
-                          <Wallet size={13} aria-hidden="true" />
-                          {t("home.spend.label")}
-                        </>
-                      }
-                      type="number"
-                      min="0.01"
-                      step="0.01"
-                      value={spendUsd}
-                      onChange={(event) => {
-                        setSpendUsd(event.target.value);
-                        setFieldErrors((current) => ({
-                          ...current,
-                          spend: undefined,
-                        }));
-                        resetRequestKey();
-                      }}
-                      error={fieldErrors.spend}
-                      required
-                    />
                   </div>
                   <Button
                     type="submit"
@@ -670,8 +630,6 @@ export function Home() {
                     {!busy && <Send size={17} aria-hidden="true" />}
                   </Button>
                 </div>
-
-                <p className="home-spend-note">{t("home.spend.help")}</p>
 
                 {profilesUnavailable && (
                   <p className="ui-callout ui-callout--info" role="status">
@@ -862,17 +820,6 @@ export function Home() {
                               </dd>
                             </div>
                           )}
-                          <div>
-                            <dt>{t("home.policy.inferenceEnvelope")}</dt>
-                            <dd>
-                              {t("home.policy.inferenceEnvelopeValue", {
-                                amount: (
-                                  (policySetup.pending.authorized_micros ?? 0) /
-                                  1_000_000
-                                ).toFixed(2),
-                              })}
-                            </dd>
-                          </div>
                         </dl>
                         <p className="muted home-policy-technical">
                           {t("home.policy.technical")}

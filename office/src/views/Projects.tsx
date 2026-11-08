@@ -9,6 +9,7 @@ import {
   type GitHubRepository,
   newIdempotencyKey,
   type Project,
+  type ProjectBrowseListing,
   type ProjectConfig,
   type ProjectImportOptions,
 } from "../coreApi";
@@ -65,7 +66,7 @@ export function Projects() {
   );
   const [repositoryQuery, setRepositoryQuery] = useState("");
   const [repositoryBusy, setRepositoryBusy] = useState(false);
-  const [repositoryAttempted, setRepositoryAttempted] = useState(false);
+  const repositoryRequested = useRef(false);
   const [repositoryError, setRepositoryError] = useState<string | null>(null);
   const [repositoryDetail, setRepositoryDetail] = useState("");
   const [importing, setImporting] = useState<string | null>(null);
@@ -73,6 +74,10 @@ export function Projects() {
 
   const [localPath, setLocalPath] = useState("");
   const [localName, setLocalName] = useState("");
+  const [browse, setBrowse] = useState<ProjectBrowseListing | null>(null);
+  const [browseOpen, setBrowseOpen] = useState(false);
+  const [browseBusy, setBrowseBusy] = useState(false);
+  const [browseError, setBrowseError] = useState<string | null>(null);
   const [url, setUrl] = useState("");
   const [urlName, setUrlName] = useState("");
 
@@ -127,41 +132,21 @@ export function Projects() {
     };
   }, [t]);
 
+  // Load the connected account's repositories once when the GitHub tab is
+  // first opened. The previous effect invalidated its own request when
+  // `repositoryBusy` changed, leaving the UI on "loading" forever.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the ref makes this a one-shot bootstrap.
   useEffect(() => {
     if (
       tab !== "github" ||
       !options?.github.connected ||
-      repositories !== null ||
-      repositoryBusy ||
-      repositoryAttempted
+      repositoryRequested.current
     ) {
       return;
     }
-    let activeRequest = true;
-    setRepositoryAttempted(true);
-    setRepositoryBusy(true);
-    setRepositoryError(null);
-    void coreApi
-      .listGitHubRepositories()
-      .then((listing) => {
-        if (!activeRequest) return;
-        setRepositories(listing.repositories);
-        setRepositoryDetail(listing.detail);
-      })
-      .catch((cause) => {
-        if (activeRequest) {
-          setRepositoryError(
-            errorMessage(cause, t("projects.import.github.error")),
-          );
-        }
-      })
-      .finally(() => {
-        if (activeRequest) setRepositoryBusy(false);
-      });
-    return () => {
-      activeRequest = false;
-    };
-  }, [tab, options, repositories, repositoryBusy, repositoryAttempted, t]);
+    repositoryRequested.current = true;
+    void loadRepositories();
+  }, [tab, options?.github.connected]);
 
   async function loadRepositories(event?: React.FormEvent) {
     event?.preventDefault();
@@ -187,6 +172,27 @@ export function Projects() {
     } finally {
       setRepositoryBusy(false);
     }
+  }
+
+  async function browseDirectories(path = "") {
+    setBrowseOpen(true);
+    setBrowseBusy(true);
+    setBrowseError(null);
+    try {
+      setBrowse(await coreApi.browseProjectDirectories(path));
+    } catch (cause) {
+      setBrowseError(errorMessage(cause, t("projects.browse.error")));
+    } finally {
+      setBrowseBusy(false);
+    }
+  }
+
+  function selectBrowsedDirectory() {
+    if (browse) {
+      setLocalPath(browse.current_path);
+      attemptKey.current = newIdempotencyKey();
+    }
+    setBrowseOpen(false);
   }
 
   async function connectRepository(repository: GitHubRepository) {
@@ -528,6 +534,87 @@ export function Projects() {
                     required
                   />
                 </label>
+                <div className="project-browse-actions">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => void browseDirectories()}
+                    disabled={browseBusy}
+                  >
+                    {browseBusy
+                      ? t("projects.browse.loading")
+                      : t("projects.browse.open")}
+                  </Button>
+                </div>
+                {browseOpen && (
+                  <section
+                    className="project-browser"
+                    aria-label={t("projects.browse.title")}
+                  >
+                    <div className="project-browser-head">
+                      <span>
+                        {t("projects.browse.current")}{" "}
+                        <code>{browse?.path || "/"}</code>
+                      </span>
+                      <div className="row">
+                        {browse?.parent !== null && (
+                          <Button
+                            type="button"
+                            variant="quiet"
+                            size="sm"
+                            onClick={() =>
+                              void browseDirectories(browse?.parent ?? "")
+                            }
+                            disabled={browseBusy}
+                          >
+                            {t("projects.browse.up")}
+                          </Button>
+                        )}
+                        <Button
+                          type="button"
+                          variant="primary"
+                          size="sm"
+                          onClick={selectBrowsedDirectory}
+                          disabled={browse === null}
+                        >
+                          {t("projects.browse.select")}
+                        </Button>
+                      </div>
+                    </div>
+                    {browseError && (
+                      <p className="error" role="alert">
+                        {browseError}
+                      </p>
+                    )}
+                    {browse !== null && browse.directories.length === 0 ? (
+                      <p className="muted">{t("projects.browse.empty")}</p>
+                    ) : (
+                      <ul className="project-browser-list">
+                        {(browse?.directories ?? []).map((entry) => (
+                          <li key={entry.path}>
+                            <button
+                              type="button"
+                              className="project-browser-entry"
+                              onClick={() => void browseDirectories(entry.path)}
+                              disabled={browseBusy}
+                            >
+                              <span>{entry.name}</span>
+                              {entry.is_git && (
+                                <Badge tone="info">
+                                  {t("projects.browse.git")}
+                                </Badge>
+                              )}
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {browse?.truncated && (
+                      <p className="muted">{t("projects.browse.truncated")}</p>
+                    )}
+                  </section>
+                )}
                 <label>
                   {t("projects.import.name")}
                   <input

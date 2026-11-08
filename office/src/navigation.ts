@@ -8,12 +8,8 @@ import {
   ListChecks,
   Megaphone,
   MonitorSmartphone,
-  Play,
-  Route,
   Settings,
-  ShieldCheck,
   Sparkles,
-  Users,
 } from "lucide-react";
 import type { MessageKey, Translate } from "./i18n";
 
@@ -73,6 +69,13 @@ export const NAV_GROUPS: NavGroup[] = [
           "agent office participants sessions implementer lead verifier reviewer worker tool events",
       },
       {
+        to: "/runtime",
+        labelKey: "nav.runtime",
+        icon: Activity,
+        keywords:
+          "telemetry logs sessions model calls workers runs diagnostics usage tokens",
+      },
+      {
         to: "/settings",
         labelKey: "nav.settings",
         icon: Settings,
@@ -103,36 +106,6 @@ export const NAV_GROUPS: NavGroup[] = [
         labelKey: "nav.actions",
         icon: ListChecks,
         keywords: "objectives specs checks risk frozen action",
-      },
-      {
-        to: "/lead",
-        labelKey: "nav.lead",
-        icon: Route,
-        keywords: "assessment plan freeze authorize legacy",
-      },
-      {
-        to: "/delegations",
-        labelKey: "nav.delegations",
-        icon: ShieldCheck,
-        keywords: "scoped grants budgets revoke",
-      },
-      {
-        to: "/runs",
-        labelKey: "nav.runs",
-        icon: Play,
-        keywords: "attempts queue execution",
-      },
-      {
-        to: "/workers",
-        labelKey: "nav.workers",
-        icon: Users,
-        keywords: "registered credentials",
-      },
-      {
-        to: "/runtime",
-        labelKey: "nav.runtime",
-        icon: Activity,
-        keywords: "provider sessions model calls telemetry cleanup",
       },
       {
         to: "/settings?tab=access",
@@ -197,6 +170,10 @@ export function routeLabel(
   if (pathname.startsWith("/campaigns/")) return t("nav.campaignDetail");
   if (pathname.startsWith("/actions/")) return t("nav.actionDetail");
   if (pathname.startsWith("/agents/")) return t("nav.agentParticipant");
+  if (pathname === "/lead") return t("nav.lead");
+  if (pathname === "/delegations") return t("nav.delegations");
+  if (pathname === "/runs") return t("nav.runs");
+  if (pathname === "/workers") return t("nav.workers");
   if (pathname === "/settings" && matchesQuery(search, "tab=access")) {
     return t("nav.accessDevices");
   }

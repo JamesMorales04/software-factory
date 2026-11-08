@@ -2193,11 +2193,11 @@ capabilities:
     - docs/product/office-design-system.md
     - docs/product/office-ui-standard.md
     - docs/product/office-parity.json
+    - docs/product/office-ux-architecture-audit-2026-11-08.md
     source:
     - .agents/skills/factory-office-design/SKILL.md
     - office/src/styles/tokens.css
     - office/src/components/AppShell.tsx
-    - office/src/components/WorkspaceContextBar.tsx
     - office/src/components/office/CampaignPulse.tsx
     - office/src/views/Home.tsx
     - office/src/workspace.ts
@@ -2217,13 +2217,15 @@ capabilities:
     - docs/evidence/autonomy-telemetry-2026-11-07.json
     - docs/evidence/compose-browser-uat-2026-11-06/compose-browser-uat.json
     - docs/evidence/compose-browser-uat-2026-11-07/compose-browser-uat.json
+    - docs/evidence/compose-browser-uat-2026-11-08/compose-browser-uat.json
     live_agent: []
     uat: []
     deployment: []
     isolation: []
   limitations:
   - This capability covers Office-first parity governance; design tokens, shared components, the application shell, the 2026-11-06 Home/Campaign visual standard and the operational Overview/Decision Inbox workspace are implemented slices.
-  - Fixed Office model productivity caps (token, model time, retry count, subscription cost) were removed under ADR-0034; their former controls are no longer rendered and legacy values are read-only evidence.
+  - Fixed Office model productivity caps (token, model time, retry count, subscription cost) were removed under ADR-0034; their former controls are no longer rendered. Some legacy provider/profile schema fields remain and are being audited rather than silently reinterpreted; see the Office UX/architecture audit.
+  - Office can consume an existing exact Owner-confirmed subscription admission for MODEL approval, but creating that admission is still API-assisted; the owner-facing confirmation flow is planned.
   - The 2026-11-07 deterministic Compose browser UAT passed at product candidate a76f8f15e0f01eeb390764234bbdd28ce3efaa6a with real Core HTTP API and real Chromium. Live provider inference, independent acceptance, Owner visual sign-off and the remaining module migrations remain later slices.
   - The current Office still uses hash routes and polling; stable routes stream/replay and the remaining module migrations are later slices.
   - Concept-image attachment and branch controls are not implemented because the Core intake contract has no such operations; decorative controls are forbidden.

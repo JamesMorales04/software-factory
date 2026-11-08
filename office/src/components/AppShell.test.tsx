@@ -120,11 +120,7 @@ describe("AppShell", () => {
       ["Settings", "/settings"],
       ["Overview", "/overview"],
       ["Actions", "/actions"],
-      ["Lead", "/lead"],
-      ["Delegations", "/delegations"],
-      ["Runs", "/runs"],
-      ["Workers", "/workers"],
-      ["Runtime", "/runtime"],
+      ["Activity & telemetry", "/runtime"],
       ["Access & Devices", "/settings?tab=access"],
     ];
     for (const [name, href] of destinations) {
@@ -258,11 +254,7 @@ describe("AppShell", () => {
       "Settings",
       "Overview",
       "Actions",
-      "Lead",
-      "Delegations",
-      "Runs",
-      "Workers",
-      "Runtime",
+      "Activity & telemetry",
       "Access & Devices",
     ]) {
       expect(screen.getByRole("link", { name })).toBeDefined();

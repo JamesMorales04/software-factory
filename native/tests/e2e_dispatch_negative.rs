@@ -810,8 +810,8 @@ async fn candidate_outside_frozen_allowed_paths_is_rejected_without_record() {
     let log =
         std::fs::read_to_string(root.path().join("worker-worker-scope.log")).unwrap_or_default();
     assert!(
-        !status.success(),
-        "Worker unexpectedly succeeded; log:\n{log}"
+        status.success(),
+        "Worker should report a terminal failure and exit cleanly; log:\n{log}"
     );
 
     let attempts: Value = operator(
@@ -827,7 +827,7 @@ async fn candidate_outside_frozen_allowed_paths_is_rejected_without_record() {
     let attempts = attempts.as_array().unwrap();
     assert_eq!(attempts.len(), 1);
     assert_eq!(attempts[0]["id"], fixture.attempt_id);
-    assert_eq!(attempts[0]["status"], "LEASED");
+    assert_eq!(attempts[0]["status"], "FAILED");
 
     let candidates: Value = operator(
         &client,

@@ -21,6 +21,24 @@
   gap: 0.85rem;
 }
 
+.issue-intake-advanced {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 0.75rem 0.9rem;
+  background: var(--surface-sunken);
+}
+
+.issue-intake-advanced > summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.issue-intake-advanced[open] {
+  display: grid;
+  gap: 0.75rem;
+}
+
 .issue-intake-associations {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
