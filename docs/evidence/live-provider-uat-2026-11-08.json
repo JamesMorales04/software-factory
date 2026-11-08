@@ -1,0 +1,227 @@
+{
+  "schema": "factory.live-provider-uat.v1",
+  "recorded_at": "2026-11-08T00:28:48.594967+00:00",
+  "product_head": "7a6df99881093585e879711d4f55f09295ea5c36",
+  "archive_fix_commit": "a7e9e40b0bd7eac6b002b867c57d9b72ea3077c2",
+  "provider": "opencode-go",
+  "model": "deepseek-v4.1-flash",
+  "environment": {
+    "compose_project": "software-factory",
+    "office_url": "http://127.0.0.1:8893",
+    "provider_kind": "opencode",
+    "fixture_used": false,
+    "live_provider_inference": true,
+    "provider_settings_revision": 6
+  },
+  "project_id": "1242036d-9564-4157-922a-7183ffe588e9",
+  "project_base_commit": "8a603c6dc9d3fec943f77eac41898861e0890ab2",
+  "action_id": "a26d4710-5b38-4fd8-9792-f321411da937",
+  "intake_request_id": "a3639dce-34fc-40f7-976a-ee7d4101819c",
+  "lead_request_id": "a516f6f6-0939-4235-b476-67e2fb48e24f",
+  "campaign_id": "3cf475f8-9f1e-475d-8f1c-b830355327bd",
+  "campaign_status": "AUTHORIZED",
+  "run": [
+    {
+      "campaign_id": "3cf475f8-9f1e-475d-8f1c-b830355327bd",
+      "created_at": "2026-11-08T00:26:32.031642964+00:00",
+      "id": "c11854c4-19e0-432a-bb6c-0d39b48ed9b9",
+      "status": "ACCEPTED"
+    }
+  ],
+  "attempts": [
+    {
+      "created_at": "2026-11-08T00:26:32.031642964+00:00",
+      "id": "093ddf9c-d1ec-4277-a03b-f4d10c43024b",
+      "run_id": "c11854c4-19e0-432a-bb6c-0d39b48ed9b9",
+      "status": "CANDIDATE_READY"
+    }
+  ],
+  "candidate": {
+    "action_spec_sha256": "cc6d35a8a2ab58d78beb974edb154fe8d4d9988680ca648ad2521746ade2a5e2",
+    "attempt_id": "093ddf9c-d1ec-4277-a03b-f4d10c43024b",
+    "commit_sha": "79f4efbca927c70d33a6bd700ce27cca7dad9b60",
+    "created_at": "2026-11-08T00:27:43.081224319+00:00",
+    "id": "23ba7723-fbff-4860-89a6-009b29f3291c",
+    "implementer_id": "compose-worker",
+    "integration": false,
+    "lineage": [],
+    "tree_sha": "262155054dea3a00afb6f9802c4b1863a7bb351a"
+  },
+  "gate": {
+    "candidate_id": "23ba7723-fbff-4860-89a6-009b29f3291c",
+    "decided_at": "2026-11-08T00:28:05.348042946+00:00",
+    "outcome": "ACCEPTED",
+    "reasons": [
+      "independent executed evidence accepts exact candidate"
+    ]
+  },
+  "receipts": [
+    {
+      "receipt_id": "a5f753bb-f269-4807-a1f7-37c254fcee65",
+      "candidate_id": "23ba7723-fbff-4860-89a6-009b29f3291c",
+      "role": "reviewer",
+      "principal_id": "reviewer-process",
+      "action_spec_sha256": "cc6d35a8a2ab58d78beb974edb154fe8d4d9988680ca648ad2521746ade2a5e2",
+      "commit_sha": "79f4efbca927c70d33a6bd700ce27cca7dad9b60",
+      "tree_sha": "262155054dea3a00afb6f9802c4b1863a7bb351a",
+      "result": "PASS",
+      "evidence": "EXECUTED",
+      "findings": [],
+      "mechanism": "MODEL",
+      "model_provider": "opencode-go",
+      "model_name": "deepseek-v4.1-flash",
+      "model_reservation_id": "5aeefe19-6048-48c4-827f-69a45978b859",
+      "model_request_sha256": "49581953d55aa4902671907fce838135de42ce45824e48662bc2ef5901f36611",
+      "input_tokens": 2389,
+      "output_tokens": 1656,
+      "total_tokens": 4045,
+      "cost_micros": 1353,
+      "usage_known": true,
+      "received_at": "2026-11-08T00:28:05.347364315+00:00"
+    },
+    {
+      "receipt_id": "a5d5ed0a-9a6f-432b-8ba5-95a05748a44e",
+      "candidate_id": "23ba7723-fbff-4860-89a6-009b29f3291c",
+      "role": "verifier",
+      "principal_id": "verifier-process",
+      "action_spec_sha256": "cc6d35a8a2ab58d78beb974edb154fe8d4d9988680ca648ad2521746ade2a5e2",
+      "commit_sha": "79f4efbca927c70d33a6bd700ce27cca7dad9b60",
+      "tree_sha": "262155054dea3a00afb6f9802c4b1863a7bb351a",
+      "result": "PASS",
+      "evidence": "EXECUTED",
+      "findings": [],
+      "mechanism": "DETERMINISTIC",
+      "model_provider": "",
+      "model_name": "",
+      "model_reservation_id": "",
+      "model_request_sha256": "",
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "total_tokens": 0,
+      "cost_micros": 0,
+      "usage_known": false,
+      "received_at": "2026-11-08T00:27:55.511973631+00:00"
+    }
+  ],
+  "diff": "{\"error\":\"database error: no rows returned by a query that expected to return at least one row\"}",
+  "diff_status": 500,
+  "provider_sessions": [
+    {
+      "session_record_id": "e0dad722-1213-48b1-a3dc-9dc055c5fc7f",
+      "attempt_id": "093ddf9c-d1ec-4277-a03b-f4d10c43024b",
+      "worker_id": "compose-worker",
+      "generation": 1,
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "provider_mode": "build",
+      "state": "COMPLETED",
+      "provider_session_id": "ses_e47731775ffeh76ZA1WasJMBa9",
+      "provider_directory": "/provider-sessions/e6502b68-28d0-40c9-92bc-c29a16ce4b48",
+      "turn_id": "msg_1b88dc4b90026dDql2Xriyj8n1",
+      "input_tokens": 7171,
+      "output_tokens": 1290,
+      "total_tokens": 44438,
+      "cost_micros": 2880,
+      "usage_known": true,
+      "cleanup_receipt": "session_delete_verified_absent",
+      "error": "",
+      "created_at": "2026-11-08T00:26:32.475703388+00:00",
+      "updated_at": "2026-11-08T00:27:43.073092104+00:00"
+    }
+  ],
+  "model_calls": [
+    {
+      "reservation_id": "5aeefe19-6048-48c4-827f-69a45978b859",
+      "role": "semantic_reviewer",
+      "principal_id": "reviewer-process",
+      "project_id": "1242036d-9564-4157-922a-7183ffe588e9",
+      "objective_id": "23ba7723-fbff-4860-89a6-009b29f3291c",
+      "scope_id": "23ba7723-fbff-4860-89a6-009b29f3291c",
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "purpose": "semantic_review",
+      "request_sha256": "49581953d55aa4902671907fce838135de42ce45824e48662bc2ef5901f36611",
+      "input_tokens": 2389,
+      "output_tokens": 1656,
+      "total_tokens": 4045,
+      "cost_micros": 1353,
+      "max_cost_micros": 2305843009213693951,
+      "usage_known": true,
+      "state": "SETTLED",
+      "error": "",
+      "created_at": "2026-11-08T00:27:55.801825237+00:00",
+      "updated_at": "2026-11-08T00:28:05.343962406+00:00"
+    },
+    {
+      "reservation_id": "83323aba-fca8-4cca-85b0-156b6c5c08c7",
+      "role": "lead",
+      "principal_id": "operator-token",
+      "project_id": "1242036d-9564-4157-922a-7183ffe588e9",
+      "objective_id": "a516f6f6-0939-4235-b476-67e2fb48e24f",
+      "scope_id": "d4b2eea7-873b-42d8-b304-afc8eca95aba",
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "purpose": "lead_assessment",
+      "request_sha256": "e7d7f47a1a2a3778b293d4676a2bf28a52ff7b08141bdf9945fe93f2870aa9b2",
+      "input_tokens": 2780,
+      "output_tokens": 5106,
+      "total_tokens": 7886,
+      "cost_micros": 3481,
+      "max_cost_micros": 2305843009213693951,
+      "usage_known": true,
+      "state": "SETTLED",
+      "error": "",
+      "created_at": "2026-11-08T00:25:44.139444723+00:00",
+      "updated_at": "2026-11-08T00:26:32.019297376+00:00"
+    }
+  ],
+  "not_claimed": [
+    "independent acceptance",
+    "SEC-01 isolation",
+    "deployment",
+    "Windows",
+    "Product Owner visual sign-off",
+    "GitHub delivery"
+  ],
+  "boundary": {
+    "real_core_http_api": true,
+    "real_provider_inference": true,
+    "deterministic_fixture_provider": false,
+    "independent_acceptance": "NOT_TESTED",
+    "isolation": "NOT_CLAIMED"
+  },
+  "record": "live-provider-uat-2026-11-08",
+  "date": "2026-11-08",
+  "status": "author-run real-provider E2E PASS; independent acceptance and isolation NOT_TESTED",
+  "fixes": {
+    "workspace_archive_target": "a7e9e40b0bd7eac6b002b867c57d9b72ea3077c2",
+    "role_gateway_deadline": "7a6df99881093585e879711d4f55f09295ea5c36",
+    "real_provider_fixture_mount": "7a6df99881093585e879711d4f55f09295ea5c36"
+  },
+  "checks": [
+    {
+      "name": "Lead assessment",
+      "detail": "SETTLED real OpenCode Go call; input 2780, output 5106, total 7886, cost 3481 micros, usage known"
+    },
+    {
+      "name": "Implementer provider session",
+      "detail": "COMPLETED; input 7171, output 1290, total 44438, cost 2880 micros, cleanup session_delete_verified_absent"
+    },
+    {
+      "name": "Frozen checks",
+      "detail": "cargo build/test/functional checks executed through the Supervisor; generated target/ no longer breaks workspace archives"
+    },
+    {
+      "name": "Independent verifier",
+      "detail": "DETERMINISTIC EXECUTED PASS"
+    },
+    {
+      "name": "Semantic reviewer",
+      "detail": "real OpenCode Go MODEL call SETTLED; input 2389, output 1656, total 4045, cost 1353 micros; PASS"
+    },
+    {
+      "name": "Quality Gate",
+      "detail": "ACCEPTED for candidate 79f4efbca927c70d33a6bd700ce27cca7dad9b60"
+    }
+  ]
+}

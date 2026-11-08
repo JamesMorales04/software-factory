@@ -95,3 +95,9 @@ propose the per-task scope inside a Core-validated outer boundary.
   [autonomy-telemetry-2026-11-07.json](../../evidence/autonomy-telemetry-2026-11-07.json)
   and the [Compose browser UAT](../../evidence/compose-browser-uat-2026-11-07/README.md)
   at product candidate `a76f8f15e0f01eeb390764234bbdd28ce3efaa6a`.
+- Author-run live OpenCode Go evidence at product head
+  `7a6df99881093585e879711d4f55f09295ea5c36` is recorded in
+  [live-provider-uat-2026-11-08.json](../../evidence/live-provider-uat-2026-11-08.json):
+  a Lead call produced 5,106 output tokens, the implementer wrote a candidate,
+  the semantic reviewer made a real MODEL call, and the Gate returned
+  `ACCEPTED`. Independent acceptance and isolation remain `NOT_TESTED`.

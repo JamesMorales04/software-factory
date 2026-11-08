@@ -936,7 +936,7 @@ capabilities:
   implementation_status: in_progress
   verification:
     deterministic: verified
-    live_agent: not_tested
+    live_agent: verified
     uat: not_tested
     deployment: not_tested
     isolation: not_tested
@@ -961,11 +961,13 @@ capabilities:
     - docs/evidence/native-rust-final-closure-2026-10-25.json
     - docs/evidence/native-rust-s4d-deterministic-2026-10-24.json
 
-    live_agent: []
+    live_agent:
+    - docs/evidence/live-provider-uat-certification-manifest.json
     uat: []
     deployment: []
     isolation: []
-  limitations: []
+  limitations:
+  - The live evidence is author-run against real OpenCode Go, not independent acceptance; isolation and deployment remain NOT_TESTED.
   blockers: []
 - id: CAP-015
   name: Frozen executable planning
