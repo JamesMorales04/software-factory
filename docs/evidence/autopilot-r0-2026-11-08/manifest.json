@@ -4,7 +4,7 @@
   "result": "PASS",
   "kind": "implementer-browser-self-test",
   "captured_at": "2026-11-08T20:00:00Z",
-  "candidate": "2989304ea59c9e1b1f6fcf689d5c1f337394828e",
+  "candidate": "77680db9d69d2efa8bbb11e5fbacb1cf036f2ca5",
   "environment": {
     "runtime": "rootless Podman Compose developer-preview stack",
     "office": "http://127.0.0.1:8893",
