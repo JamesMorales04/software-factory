@@ -2217,6 +2217,7 @@ capabilities:
     - docs/evidence/autonomy-telemetry-2026-11-07.json
     - docs/evidence/compose-browser-uat-2026-11-06/compose-browser-uat.json
     - docs/evidence/compose-browser-uat-2026-11-07/compose-browser-uat.json
+    - docs/evidence/compose-browser-uat-2026-11-08/compose-browser-uat.json
     live_agent: []
     uat: []
     deployment: []
