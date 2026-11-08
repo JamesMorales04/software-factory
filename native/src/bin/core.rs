@@ -1349,17 +1349,11 @@ impl App {
             model: route.model.clone(),
             detail,
         })?;
-        let timeout = std::time::Duration::from_secs(
-            env_u64(
-                "FACTORY_MODEL_TIMEOUT_SECS",
-                factory_native::model_routing::DEFAULT_MODEL_TIMEOUT_SECS,
-            )
-            .map_err(|detail| RouteError::Invalid {
-                provider: route.provider.clone(),
-                model: route.model.clone(),
-                detail: detail.to_string(),
-            })?,
-        );
+        // A role-scoped model call has no total request deadline. Latency is
+        // telemetry; progress supervision and explicit cancellation are the
+        // operational stops. The old 60-second default here rejected healthy
+        // long Lead assessments after dispatch.
+        let timeout = std::time::Duration::ZERO;
         let allow_loopback_http =
             env::var("FACTORY_ALLOW_TEST_UPSTREAM").ok().as_deref() == Some("1");
         RoleGatewayFactory::new(
