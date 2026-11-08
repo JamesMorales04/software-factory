@@ -39,7 +39,19 @@ try {
   }
   await page.getByRole("heading", { name: /Overview|Factory Office/i }).first().waitFor({ timeout: 15000 });
 
-  const nav = ["Settings", "Delegations", "Projects", "Actions", "Lead", "Campaigns"];
+  const nav = [
+    "New request",
+    "Campaigns",
+    "Projects",
+    "Issues",
+    "Agent Office",
+    "Activity & telemetry",
+    "Settings",
+    "Decisions",
+    "Overview",
+    "Actions",
+    "Access & Devices",
+  ];
   for (const label of nav) {
     await page.getByRole("link", { name: label, exact: true }).waitFor({ timeout: 5000 });
   }
@@ -72,7 +84,7 @@ try {
     throw new Error(`Action creation failed: ${pageError}`);
   }
 
-  await page.getByRole("link", { name: "Delegations", exact: true }).click();
+  await page.goto(`${base}/#/delegations`);
   await page.getByRole("heading", { name: "Delegations", exact: true }).waitFor();
   await page.getByRole("button", { name: "Create delegation" }).waitFor();
 

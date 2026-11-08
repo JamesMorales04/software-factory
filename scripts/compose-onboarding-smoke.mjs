@@ -54,7 +54,7 @@ try {
   await page.getByRole("button", { name: "Create Action" }).click();
   await page.getByText(/Created Action/).waitFor({ timeout: 15000 });
 
-  await page.getByRole("link", { name: "Delegations", exact: true }).click();
+  await page.goto(`${base}/#/delegations`);
   await page.getByRole("button", { name: "Create delegation" }).click();
   await page.getByText(/Delegation .* created/).waitFor({ timeout: 15000 });
 

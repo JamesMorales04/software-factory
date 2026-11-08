@@ -376,7 +376,7 @@ try {
     .click();
   await page.getByRole("button", { name: "Queue Run" }).first().click();
 
-  await page.getByRole("link", { name: "Runs", exact: true }).click();
+  await page.goto(`${viteUrl}/#/runs`);
   await page.getByRole("heading", { name: "Runs", exact: true }).waitFor();
   await page.getByRole("button", { name: "Queue Attempt" }).first().click();
   await page.getByText("All Attempts (1)").waitFor();
@@ -433,7 +433,7 @@ try {
     (run) => run.campaign_id === fixtureCampaign.id,
   );
   assert.ok(fixtureRun, "the fixture Campaign must have a Run");
-  await page.getByRole("link", { name: "Runs", exact: true }).click();
+  await page.goto(`${viteUrl}/#/runs`);
   await page.getByRole("heading", { name: "Runs", exact: true }).waitFor();
   const fixtureRunRow = page.getByRole("row", {
     name: new RegExp(fixtureRun.id.slice(0, 8)),
@@ -559,12 +559,14 @@ try {
     .getByRole("heading", { name: "Rust Office fixture journey" })
     .waitFor();
 
-  await page.getByRole("link", { name: "Workers", exact: true }).click();
+  await page.goto(`${viteUrl}/#/workers`);
   await page.getByRole("heading", { name: "Workers", exact: true }).waitFor();
   await page.getByText("office-e2e-worker").waitFor();
 
-  await page.getByRole("link", { name: "Runtime", exact: true }).click();
-  await page.getByRole("heading", { name: "Runtime", exact: true }).waitFor();
+  await page.goto(`${viteUrl}/#/runtime`);
+  await page
+    .getByRole("heading", { name: "Activity & telemetry", exact: true })
+    .waitFor();
   await page.getByRole("tab", { name: /Sessions/ }).click();
   await page
     .getByRole("heading", { name: "Provider sessions (0 shown)" })
@@ -787,7 +789,7 @@ try {
   assert.equal(_leadPolicy.grant.profile_hash, _leadProfile.contentHash);
   assert.equal(_leadPolicy.grant.project_config_hash, _leadConfig.configHash);
   const _leadDelegation = _leadPolicy.delegation;
-  await page.getByRole("link", { name: "Lead", exact: true }).click();
+  await page.goto(`${viteUrl}/#/lead`);
   await page.getByRole("heading", { name: "Lead", exact: true }).waitFor();
   await page.getByTestId("lead-project").selectOption(_leadProject.id);
   await page.getByTestId("lead-action").selectOption(_leadAction.id);
@@ -896,10 +898,10 @@ try {
     );
   }
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.getByRole("link", { name: "Lead", exact: true }).click();
+  await page.goto(`${viteUrl}/#/lead`);
   await page.getByRole("heading", { name: "Lead", exact: true }).waitFor();
 
-  await page.getByRole("link", { name: "Lead", exact: true }).click();
+  await page.goto(`${viteUrl}/#/lead`);
   await page.getByRole("heading", { name: "Lead", exact: true }).waitFor();
 
   await page.reload();
