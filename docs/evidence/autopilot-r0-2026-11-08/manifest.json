@@ -4,7 +4,7 @@
   "result": "PASS",
   "kind": "implementer-browser-self-test",
   "captured_at": "2026-11-08T20:00:00Z",
-  "candidate": "branch factory/autonomous-intake-20261108; final commit SHA is recorded in the pull request",
+  "candidate": "2989304ea59c9e1b1f6fcf689d5c1f337394828e",
   "environment": {
     "runtime": "rootless Podman Compose developer-preview stack",
     "office": "http://127.0.0.1:8893",
@@ -168,5 +168,6 @@
     "No isolation or security certification is claimed. TRUSTED_LOCAL remains broad local access."
   ],
   "hardening_evidence": "docs/evidence/autopilot-r0-hardening-2026-11-08/manifest.json",
-  "hardening_note": "Later live runs found and fixed pycache scope creep, reviewer timeout/provenance, truthful repair projection and autonomous-policy error copy. Those runs ended REPAIR_REQUIRED or NOT_TESTED on real quality or provider failures; see the hardening manifest."
+  "hardening_note": "Later live runs found and fixed pycache scope creep, reviewer timeout/provenance, truthful repair projection and autonomous-policy error copy. Those runs ended REPAIR_REQUIRED or NOT_TESTED on real quality or provider failures; see the hardening manifest.",
+  "candidate_note": "Code and evidence commit. A later docs-only commit may update manifest metadata; the exact code candidate for these observations is this SHA."
 }

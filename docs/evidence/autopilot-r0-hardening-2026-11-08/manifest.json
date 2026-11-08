@@ -4,7 +4,7 @@
   "result": "PARTIAL",
   "kind": "implementer-browser-self-test",
   "captured_at": "2026-11-08T22:15:00Z",
-  "candidate": "branch factory/autonomous-intake-20261108; final commit SHA is recorded in the pull request after the evidence commit",
+  "candidate": "2989304ea59c9e1b1f6fcf689d5c1f337394828e",
   "environment": {
     "runtime": "rootless Podman Compose developer-preview stack",
     "office": "http://127.0.0.1:8893",
@@ -270,5 +270,6 @@
     "The folder import used a documented showDirectoryPicker stub at the real upload boundary; it is not a native OS picker test.",
     "No isolation or security certification is claimed. TRUSTED_LOCAL remains broad local access.",
     "Two host provider_sandbox integration tests failed because the host OpenCode executable exited before readiness. They are not evidence about the Compose provider path; the container suite remains authoritative."
-  ]
+  ],
+  "candidate_note": "Code and evidence commit. A later docs-only commit may update manifest metadata; the exact code candidate for these observations is this SHA."
 }
