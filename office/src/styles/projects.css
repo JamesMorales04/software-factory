@@ -80,60 +80,6 @@
   max-width: 420px;
 }
 
-.project-browse-actions {
-  display: flex;
-  justify-content: flex-start;
-}
-
-.project-browser {
-  display: grid;
-  gap: var(--space-3);
-  padding: var(--space-3);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--surface-sunken);
-}
-
-.project-browser-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-}
-
-.project-browser-list {
-  display: grid;
-  gap: var(--space-1);
-  max-height: 280px;
-  margin: 0;
-  padding: 0;
-  overflow: auto;
-  list-style: none;
-}
-
-.project-browser-entry {
-  display: flex;
-  width: 100%;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--text);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.project-browser-entry:hover:not(:disabled),
-.project-browser-entry:focus-visible {
-  border-color: var(--border-strong);
-  background: var(--surface-raised);
-}
-
 .project-repository-list {
   display: grid;
   gap: var(--space-2);

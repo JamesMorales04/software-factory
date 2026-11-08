@@ -37,20 +37,18 @@ try {
     await page.locator('.gate input[type="password"]').fill(token);
     await page.getByRole("button", { name: "Unlock" }).click();
   }
-  await page.getByRole("heading", { name: /Overview|Factory Office/i }).first().waitFor({ timeout: 15000 });
+  await page.getByRole("heading", { name: "Home", level: 1 }).waitFor({ timeout: 15000 });
 
   const nav = [
     "New request",
+    "Requests",
+    "Decisions",
     "Campaigns",
     "Projects",
     "Issues",
     "Agent Office",
     "Activity & telemetry",
     "Settings",
-    "Decisions",
-    "Overview",
-    "Actions",
-    "Access & Devices",
   ];
   for (const label of nav) {
     await page.getByRole("link", { name: label, exact: true }).waitFor({ timeout: 5000 });
@@ -68,25 +66,8 @@ try {
   await page.getByRole("button", { name: "Configure" }).first().click();
   await page.getByText(/Project configuration/).waitFor();
 
-  await page.getByRole("link", { name: "Actions", exact: true }).click();
-  await page.getByRole("heading", { name: "Actions", exact: true }).waitFor();
-  await page.getByText("Frozen checks").waitFor();
-  const commandInput = page.locator('input[value*="provider candidate"]').first();
-  await commandInput.waitFor();
-  const objective = `compose browser smoke ${Date.now()}`;
-  await page.getByTestId("action-objective").fill(objective);
-  await page.getByRole("button", { name: "Create Action" }).click();
-  try {
-    await page.getByText(/Created Action/).waitFor({ timeout: 15000 });
-  } catch (error) {
-    const pageError = await page.locator(".error").first().innerText().catch(() => "no error text");
-    await page.screenshot({ path: `${evidence}/action-failure.png`, fullPage: true });
-    throw new Error(`Action creation failed: ${pageError}`);
-  }
-
-  await page.goto(`${base}/#/delegations`);
-  await page.getByRole("heading", { name: "Delegations", exact: true }).waitFor();
-  await page.getByRole("button", { name: "Create delegation" }).waitFor();
+  await page.goto(`${base}/#/requests`);
+  await page.getByRole("heading", { name: "Requests", exact: true }).waitFor();
 
   await page.screenshot({ path: `${evidence}/office-settings.png`, fullPage: true });
   assert.deepEqual(consoleErrors, [], `console errors: ${consoleErrors.join(" | ")}`);

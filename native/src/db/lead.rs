@@ -1157,8 +1157,11 @@ impl Database {
             return Ok(Campaign {
                 id,
                 action_id,
-                status,
+                status: status.clone(),
                 created_at,
+                objective: None,
+                project_id: None,
+                effective_status: status,
             });
         }
         if matches!(status.as_str(), "COMPLETED" | "FAILED") {
@@ -1249,6 +1252,9 @@ impl Database {
             action_id,
             status: "CANCELLED".into(),
             created_at,
+            objective: None,
+            project_id: None,
+            effective_status: "CANCELLED".into(),
         })
     }
 
@@ -2229,6 +2235,9 @@ async fn start_lead_campaign_in_tx(
         action_id: request.action_id.clone(),
         status: "BLOCKED_AUTHORIZATION".into(),
         created_at: now.clone(),
+        objective: None,
+        project_id: None,
+        effective_status: "BLOCKED_AUTHORIZATION".into(),
     };
     sqlx::query::query("INSERT INTO campaigns VALUES (?1,?2,?3,?4)")
         .bind(&campaign.id)

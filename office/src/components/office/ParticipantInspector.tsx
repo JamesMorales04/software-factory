@@ -357,7 +357,11 @@ export function ParticipantInspector({
             <dt>{t("inspector.project")}</dt>
             <dd>
               {participant.project_id ? (
-                <Link to="/projects">{participant.project_id}</Link>
+                <Link
+                  to={`/projects/${encodeURIComponent(participant.project_id)}`}
+                >
+                  {shortId(participant.project_id, 12)}
+                </Link>
               ) : (
                 "NOT EXPOSED"
               )}
@@ -367,11 +371,7 @@ export function ParticipantInspector({
             <dt>{t("inspector.action")}</dt>
             <dd>
               {participant.action_id ? (
-                <Link
-                  to={`/actions/${encodeURIComponent(participant.action_id)}`}
-                >
-                  <code>{shortId(participant.action_id, 14)}</code>
-                </Link>
+                <code>{shortId(participant.action_id, 14)}</code>
               ) : (
                 "NOT EXPOSED"
               )}
@@ -439,7 +439,7 @@ export function ParticipantInspector({
             <dt>{t("inspector.worker")}</dt>
             <dd>
               {participant.worker_id ? (
-                <Link to="/workers">
+                <Link to="/runtime?tab=overview">
                   <code>{participant.worker_id}</code>
                 </Link>
               ) : (
@@ -451,9 +451,9 @@ export function ParticipantInspector({
             <dt>{t("inspector.leadRequest")}</dt>
             <dd>
               {participant.request_id ? (
-                <Link to="/lead">
+                <span>
                   <code>{shortId(participant.request_id, 18)}</code>
-                </Link>
+                </span>
               ) : (
                 "NOT APPLICABLE"
               )}

@@ -1,6 +1,4 @@
 import {
-  ChevronDown,
-  ChevronRight,
   Command,
   Lock,
   Monitor,
@@ -19,7 +17,6 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { LanguageSwitcher, type MessageKey, useI18n } from "../i18n";
 import {
-  isAdvancedRoute,
   isNavItemActive,
   NAV_GROUPS,
   type NavItem,
@@ -108,7 +105,6 @@ export function AppShell({
   );
   const [mobileOpen, setMobileOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(isMobileViewport);
-  const [advancedOpen, setAdvancedOpen] = useState(true);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const location = useLocation();
   const pathname = location.pathname;
@@ -116,15 +112,10 @@ export function AppShell({
   const studioView =
     pathname.startsWith("/agents") &&
     (new URLSearchParams(search).get("view") ?? "floor") === "floor";
-  const advancedActive = isAdvancedRoute(pathname, search);
 
   useEffect(() => {
     localStorage.setItem(SIDEBAR_KEY, collapsed ? "collapsed" : "expanded");
   }, [collapsed]);
-
-  useEffect(() => {
-    if (advancedActive) setAdvancedOpen(true);
-  }, [advancedActive]);
 
   useEffect(() => {
     if (typeof window.matchMedia !== "function") return;
@@ -246,64 +237,23 @@ export function AppShell({
             )}
           </div>
           <nav className="sidebar-nav" aria-label={t("shell.navigation")}>
-            {NAV_GROUPS.map((group) => {
-              const collapsible = group.collapsible === true;
-              const groupLabel = t(group.labelKey);
-              return (
-                <div className="nav-group" key={group.labelKey}>
-                  {collapsible ? (
-                    <>
-                      <button
-                        type="button"
-                        className="nav-group-toggle"
-                        aria-expanded={advancedOpen}
-                        aria-controls="nav-group-advanced"
-                        onClick={() => setAdvancedOpen((open) => !open)}
-                      >
-                        <span>{groupLabel}</span>
-                        {advancedOpen ? (
-                          <ChevronDown size={14} aria-hidden="true" />
-                        ) : (
-                          <ChevronRight size={14} aria-hidden="true" />
-                        )}
-                      </button>
-                      <div
-                        className="nav-group-items"
-                        id="nav-group-advanced"
-                        hidden={!advancedOpen}
-                      >
-                        {group.items.map((item) => (
-                          <NavLinkItem
-                            key={item.to}
-                            item={item}
-                            label={t(item.labelKey)}
-                            pathname={pathname}
-                            search={search}
-                            onNavigate={() => setMobileOpen(false)}
-                          />
-                        ))}
-                      </div>
-                    </>
-                  ) : (
-                    <>
-                      <p className="nav-group-label">{groupLabel}</p>
-                      <div className="nav-group-items">
-                        {group.items.map((item) => (
-                          <NavLinkItem
-                            key={item.to}
-                            item={item}
-                            label={t(item.labelKey)}
-                            pathname={pathname}
-                            search={search}
-                            onNavigate={() => setMobileOpen(false)}
-                          />
-                        ))}
-                      </div>
-                    </>
-                  )}
+            {NAV_GROUPS.map((group) => (
+              <div className="nav-group" key={group.labelKey}>
+                <p className="nav-group-label">{t(group.labelKey)}</p>
+                <div className="nav-group-items">
+                  {group.items.map((item) => (
+                    <NavLinkItem
+                      key={item.to}
+                      item={item}
+                      label={t(item.labelKey)}
+                      pathname={pathname}
+                      search={search}
+                      onNavigate={() => setMobileOpen(false)}
+                    />
+                  ))}
                 </div>
-              );
-            })}
+              </div>
+            ))}
           </nav>
           <div className="sidebar-footer">
             <div className="sidebar-user">

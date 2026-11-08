@@ -42,7 +42,7 @@ try {
     .getByLabel("One-time owner confirmation")
     .fill(bootstrapCode);
   await page.getByRole("button", { name: "Enroll this device" }).click();
-  await page.getByRole("heading", { name: "Overview", level: 1 }).waitFor();
+  await page.getByRole("heading", { name: "Home", level: 1 }).waitFor();
 
   await page.getByRole("link", { name: "Agent Office", exact: true }).click();
   await page

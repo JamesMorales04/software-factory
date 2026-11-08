@@ -1,8 +1,3 @@
-import {
-  DEFAULT_OPERATION_LIMITS,
-  DEFAULT_PROGRESS_POLICY,
-} from "./executionDefaults";
-
 export type CheckKind =
   | "format"
   | "lint"
@@ -69,22 +64,6 @@ export interface ProjectImportOptions {
     detail: string;
   };
   managed_storage_required: boolean;
-}
-
-export interface ProjectBrowseEntry {
-  name: string;
-  path: string;
-  absolute_path: string;
-  is_git: boolean;
-}
-
-export interface ProjectBrowseListing {
-  root: string;
-  path: string;
-  current_path: string;
-  parent: string | null;
-  directories: ProjectBrowseEntry[];
-  truncated: boolean;
 }
 
 export interface GitHubProjectImportRequest {
@@ -300,6 +279,9 @@ export interface Campaign {
   action_id: string;
   status: string;
   created_at: string;
+  objective?: string | null;
+  project_id?: string | null;
+  effective_status?: string;
 }
 
 export interface Run {
@@ -314,11 +296,6 @@ export interface Attempt {
   run_id: string;
   status: string;
   created_at: string;
-}
-
-export interface ProviderTurnBudget {
-  reserved_turns: number;
-  ceiling_micros: number;
 }
 
 export interface WorkerSummary {
@@ -1038,6 +1015,7 @@ export interface DecisionAction {
 
 export interface DecisionProject {
   id: string;
+  name?: string | null;
   repository?: string | null;
   identity?: string | null;
 }
@@ -1045,6 +1023,9 @@ export interface DecisionProject {
 export interface DecisionCampaign {
   id: string;
   status: string;
+  effective_status?: string;
+  objective?: string | null;
+  project_id?: string | null;
   target: string;
 }
 
@@ -1461,8 +1442,6 @@ export interface NewIntakeRequest {
   execution_profile_id?: string;
   mode: IntakeMode;
   idempotency_key: string;
-  /** Explicit operator monetary authorization for assessment and execution. */
-  authorized_micros?: number;
 }
 
 export interface ApproveIntakeRequest {
@@ -1591,8 +1570,6 @@ export interface NewCampaignAuthorization {
   operations: ExecutionOperationLimits;
   progress: ExecutionProgressPolicy;
   /** Explicit amount only for a direct Campaign; request-scoped Lead start omits it. */
-  authorizedMicros?: number;
-  monetaryEnvelopeId?: string;
 }
 
 export interface StartLeadCampaignResult {
@@ -1611,32 +1588,6 @@ export interface ApproveLeadRequestInput {
   profile_hash?: string;
   rationale: string;
   provider_authorization?: NewCampaignAuthorization;
-}
-
-function campaignAuthorizationWire(
-  input: NewCampaignAuthorization,
-): Record<string, unknown> {
-  return {
-    authorization_id: input.authorizationId,
-    risk_class: input.riskClass,
-    execution_mode: input.executionMode,
-    actor: input.actor,
-    rationale: input.rationale,
-    authorized_paths: input.authorizedPaths,
-    provider: input.provider,
-    model: input.model,
-    provider_mode: input.providerMode,
-    delegation_id: input.delegationId,
-    allowed_tools: input.allowedTools,
-    operations: input.operations,
-    progress: input.progress,
-    ...(input.authorizedMicros === undefined
-      ? {}
-      : { authorized_micros: input.authorizedMicros }),
-    ...(input.monetaryEnvelopeId === undefined
-      ? {}
-      : { monetary_envelope_id: input.monetaryEnvelopeId }),
-  };
 }
 
 export type ProviderDiscoveryStatus =
@@ -1710,12 +1661,6 @@ export interface ProviderView {
   credentialFingerprint: string;
   revision: number;
   updatedAt: string;
-  maxTurns: number;
-  maxInputTokens: number;
-  maxOutputTokens: number;
-  maxCostMicros: number;
-  inputMicrosPerMillion: number;
-  outputMicrosPerMillion: number;
   modelDiscovery: ProviderModelCatalogEntry | null;
 }
 
@@ -1725,13 +1670,6 @@ export interface UpdateProviderRequest {
   credential?: string;
   enabled: boolean;
   isDefault: boolean;
-  maxTurns: number;
-  maxInputTokens: number;
-  maxOutputTokens: number;
-  maxCostMicros: number;
-  /** Retained for legacy metered routes; normal Office editing omits it. */
-  inputMicrosPerMillion?: number;
-  outputMicrosPerMillion?: number;
 }
 
 export interface ProviderTestResult extends ProviderModelCatalogEntry {
@@ -1743,13 +1681,11 @@ export interface ProviderTestResult extends ProviderModelCatalogEntry {
 
 export interface FactorySettings {
   semanticReviewEnabled: boolean;
-  semanticReviewMaxOutputTokens: number;
   updatedAt: string;
 }
 
 export interface UpdateFactorySettings {
   semanticReviewEnabled: boolean;
-  semanticReviewMaxOutputTokens: number;
 }
 
 export interface ProviderAudit {
@@ -2244,7 +2180,7 @@ function messageFromBody(status: number, text: string): string {
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
-  if (init.body !== undefined) {
+  if (init.body !== undefined && !headers.has("content-type")) {
     headers.set("content-type", "application/json");
   }
   const method = (init.method ?? "GET").toUpperCase();
@@ -2639,12 +2575,6 @@ export interface IssueIntakePolicyRequest {
   capabilities: string[];
   max_issues: number;
   max_concurrent: number;
-  max_cost_micros_per_issue: number;
-  max_total_cost_micros: number;
-  max_attempts: number;
-  max_sessions: number;
-  max_turns: number;
-  max_wall_clock_secs: number;
   expires_at: string;
   acknowledge: boolean;
   reason: string;
@@ -2661,7 +2591,6 @@ export interface IssueIntakeBatchRequest {
     content_hash: string;
     updated_at: string;
   }>;
-  max_total_cost_micros: number;
   expires_at: string;
   acknowledge: boolean;
   reason: string;
@@ -2726,11 +2655,6 @@ export const coreApi = {
       `/settings/providers/${encodeURIComponent(provider)}`,
       { method: "PUT", body: JSON.stringify(input) },
     ),
-  testProvider: (provider: string) =>
-    request<ProviderTestResult>(
-      `/settings/providers/${encodeURIComponent(provider)}/test`,
-      { method: "POST" },
-    ),
   listProviderModels: (provider: string) =>
     request<ProviderModelDiscovery>(
       `/settings/providers/${encodeURIComponent(provider)}/models`,
@@ -2778,18 +2702,8 @@ export const coreApi = {
     request<ResolvedExecutionProfile>(
       `/projects/${encodeURIComponent(projectId)}/execution-profile`,
     ),
-  createDelegation: (input: NewDelegationRequest) =>
-    request<StandingDelegation>("/delegations", {
-      method: "POST",
-      body: JSON.stringify(input),
-    }),
   getDelegation: (id: string) =>
     request<DelegationDetail>(`/delegations/${encodeURIComponent(id)}`),
-  revokeDelegation: (id: string) =>
-    request<StandingDelegation>(`/delegations/${encodeURIComponent(id)}`, {
-      method: "POST",
-      body: JSON.stringify({}),
-    }),
   getProjectConfig: (projectId: string) =>
     request<ProjectConfig>(`/projects/${encodeURIComponent(projectId)}/config`),
   listProjectRefs: (projectId: string) =>
@@ -2827,49 +2741,6 @@ export const coreApi = {
   listLeadRequests: () => request<LeadRequestRecord[]>("/lead/requests"),
   getLeadRequest: (id: string) =>
     request<LeadRequestProjection>(`/lead/requests/${encodeURIComponent(id)}`),
-  createLeadRequest: (input: NewLeadRequest) =>
-    request<LeadRequestRecord>("/lead/requests", {
-      method: "POST",
-      body: JSON.stringify(input),
-    }),
-  assessLeadRequest: (id: string) =>
-    request<Record<string, unknown>>(
-      `/lead/requests/${encodeURIComponent(id)}/assess`,
-      { method: "POST" },
-    ),
-  freezeLeadRequest: (id: string) =>
-    request<Record<string, unknown>>(
-      `/lead/requests/${encodeURIComponent(id)}/freeze`,
-      { method: "POST" },
-    ),
-  approveLeadRequest: (id: string, input: ApproveLeadRequestInput) =>
-    request<StartLeadCampaignResult>(
-      `/lead/requests/${encodeURIComponent(id)}/approve`,
-      {
-        method: "POST",
-        body: JSON.stringify({
-          expected_request_hash: input.expected_request_hash,
-          expected_plan_hash: input.expected_plan_hash,
-          expected_spec_sha256: input.expected_spec_sha256,
-          expected_config_hash: input.expected_config_hash,
-          expected_delegation_hash: input.expected_delegation_hash,
-          ...(input.profile_revision_id === undefined
-            ? {}
-            : { profile_revision_id: input.profile_revision_id }),
-          ...(input.profile_hash === undefined
-            ? {}
-            : { profile_hash: input.profile_hash }),
-          rationale: input.rationale,
-          ...(input.provider_authorization === undefined
-            ? {}
-            : {
-                provider_authorization: campaignAuthorizationWire(
-                  input.provider_authorization,
-                ),
-              }),
-        }),
-      },
-    ),
   withdrawLeadRequest: (id: string, reason: string) =>
     request<LeadWithdrawalRecord>(
       `/lead/requests/${encodeURIComponent(id)}/withdraw`,
@@ -2901,6 +2772,23 @@ export const coreApi = {
       `/intake/requests/${encodeURIComponent(id)}/assess`,
       { method: "POST" },
     ),
+  createIntakeSubscriptionAdmission: (
+    id: string,
+    input: {
+      assumption_id: string;
+      confirmed_by: string;
+      confirmed_at_ms: number;
+      valid_until_ms: number;
+      extra_usage_disabled: boolean;
+      statement: string;
+      test_profile_id: string;
+      idempotency_key: string;
+    },
+  ) =>
+    request<{ admissionId: string; state: string }>(
+      `/intake/requests/${encodeURIComponent(id)}/subscription-admission`,
+      { method: "POST", body: JSON.stringify(input) },
+    ),
   approveIntakeRequest: (id: string, input: ApproveIntakeRequest) =>
     request<IntakeRequestProjection>(
       `/intake/requests/${encodeURIComponent(id)}/approve`,
@@ -2928,10 +2816,21 @@ export const coreApi = {
     }),
   getProjectImportOptions: () =>
     request<ProjectImportOptions>("/projects/import/options"),
-  browseProjectDirectories: (path = "") =>
-    request<ProjectBrowseListing>(
-      `/projects/browse${path ? `?path=${encodeURIComponent(path)}` : ""}`,
-    ),
+  importProjectArchive: (
+    name: string,
+    idempotencyKey: string,
+    archive: Uint8Array,
+  ) => {
+    const params = new URLSearchParams({
+      name,
+      idempotency_key: idempotencyKey,
+    });
+    return request<Project>(`/projects/import/archive?${params.toString()}`, {
+      method: "POST",
+      headers: { "content-type": "application/zip" },
+      body: new Blob([archive as BlobPart]),
+    });
+  },
   importGitHubProject: (input: GitHubProjectImportRequest) =>
     request<GitHubProjectImportResult>("/projects/import/github", {
       method: "POST",
@@ -2951,11 +2850,6 @@ export const coreApi = {
       { method: "POST" },
     ),
   listActions: () => request<Action[]>("/actions"),
-  createAction: (input: NewActionRequest) =>
-    request<Action>("/actions", {
-      method: "POST",
-      body: JSON.stringify(input),
-    }),
   listCampaigns: () => request<Campaign[]>("/campaigns"),
   getCampaignDetail: (id: string) =>
     request<CampaignDetail>(`/campaigns/${encodeURIComponent(id)}`),
@@ -3042,60 +2936,17 @@ export const coreApi = {
       `/campaigns/${encodeURIComponent(campaignId)}/candidates/${encodeURIComponent(candidateId)}/pull-request/merge`,
       { method: "POST", body: JSON.stringify(input) },
     ),
-  createCampaign: (input: NewCampaignRequest) =>
-    request<Campaign>("/campaigns", {
-      method: "POST",
-      body: JSON.stringify(input),
-    }),
   cancelCampaign: (campaignId: string, reason: string) =>
     request<Campaign>(`/campaigns/${encodeURIComponent(campaignId)}/cancel`, {
       method: "POST",
       body: JSON.stringify({ reason }),
     }),
-  authorizeFixtureCampaign: (campaignId: string) => {
-    const authorization: NewCampaignAuthorization = {
-      authorizationId: `office-${campaignId}`,
-      riskClass: "R0",
-      executionMode: "FIXTURE",
-      actor: "office-operator",
-      rationale: "deterministic fixture journey from Office",
-      authorizedPaths: ["src"],
-      provider: "",
-      model: "",
-      providerMode: "",
-      delegationId: "",
-      allowedTools: [],
-      operations: { ...DEFAULT_OPERATION_LIMITS },
-      progress: { ...DEFAULT_PROGRESS_POLICY },
-    };
-    return request<CampaignAuthorization>(
-      `/campaigns/${encodeURIComponent(campaignId)}/authorize`,
-      {
-        method: "POST",
-        body: JSON.stringify(campaignAuthorizationWire(authorization)),
-      },
-    );
-  },
-  createCampaignRun: (campaignId: string) =>
-    request<Run>(`/campaigns/${encodeURIComponent(campaignId)}/runs`, {
-      method: "POST",
-    }),
-  createRunAttempt: (runId: string) =>
-    request<Attempt>(`/runs/${encodeURIComponent(runId)}/attempts`, {
-      method: "POST",
-    }),
-  listRuns: () => request<Run[]>("/runs"),
-  listAttempts: () => request<Attempt[]>("/attempts"),
-  listCandidates: () => request<Candidate[]>("/candidates"),
-  listEvents: () => request<FactoryEvent[]>("/events"),
   listWorkers: () => request<WorkerSummary[]>("/workers"),
   listProviderSessions: () => request<ProviderSession[]>("/provider/sessions"),
   listModelCalls: (limit = 100) =>
     request<ModelCallRecord[]>(`/model/calls?limit=${limit}`),
   listUnresolvedModelCalls: () =>
     request<ModelCallRecord[]>("/model/calls/unresolved"),
-  getProviderTurnBudget: () =>
-    request<ProviderTurnBudget>("/provider/turn_reservations/budget"),
   getObservability: () => request<ObservabilityStatus>("/observability"),
   getOverview: () => request<OfficeOverview>("/office/overview"),
   getGitHubConnection: () =>
@@ -3104,10 +2955,6 @@ export const coreApi = {
     request<GitHubConnectionState>("/integrations/github", {
       method: "PUT",
       body: JSON.stringify({ token }),
-    }),
-  disconnectGitHub: () =>
-    request<GitHubConnectionState>("/integrations/github", {
-      method: "DELETE",
     }),
   listGitHubRepositories: (query = "") => {
     const params = new URLSearchParams();
@@ -3122,7 +2969,6 @@ export const coreApi = {
     input: {
       owner: string;
       repo: string;
-      default_branch: string;
       repository_github_id?: number | null;
     },
   ) =>
@@ -3151,10 +2997,6 @@ export const coreApi = {
       `/projects/${encodeURIComponent(projectId)}/issues${suffix ? `?${suffix}` : ""}`,
     );
   },
-  getProjectIssue: (projectId: string, number: number) =>
-    request<GitHubIssueDetail>(
-      `/projects/${encodeURIComponent(projectId)}/issues/${number}`,
-    ),
   getIssueIntake: (projectId: string) =>
     request<IssueIntakeState>(
       `/projects/${encodeURIComponent(projectId)}/issue-intake`,
@@ -3167,14 +3009,6 @@ export const coreApi = {
       `/projects/${encodeURIComponent(projectId)}/issue-intake/policy`,
       { method: "PUT", body: JSON.stringify(input) },
     ),
-  disableIssueIntakePolicy: (
-    projectId: string,
-    input: { reason: string; idempotency_key: string },
-  ) =>
-    request<{ policy: IssueIntakePolicy; created: boolean }>(
-      `/projects/${encodeURIComponent(projectId)}/issue-intake/policy/disable`,
-      { method: "POST", body: JSON.stringify(input) },
-    ),
   createIssueIntakeBatch: (projectId: string, input: IssueIntakeBatchRequest) =>
     request<{
       batch: IssueIntakeBatch;
@@ -3184,15 +3018,6 @@ export const coreApi = {
       method: "POST",
       body: JSON.stringify(input),
     }),
-  revokeIssueIntakeBatch: (
-    projectId: string,
-    batchId: string,
-    input: { reason: string },
-  ) =>
-    request<{ batch: IssueIntakeBatch }>(
-      `/projects/${encodeURIComponent(projectId)}/issue-intake/batches/${encodeURIComponent(batchId)}/revoke`,
-      { method: "POST", body: JSON.stringify(input) },
-    ),
   dispatchIssueIntake: (projectId: string, batchId?: string) =>
     request<IssueIntakeDispatchResult>(
       `/projects/${encodeURIComponent(projectId)}/issue-intake/queue/dispatch`,

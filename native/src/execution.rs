@@ -984,6 +984,27 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
         })
     }
 
+    /// Restore workspace paths outside the verified allowed scope after a
+    /// validation command. Core remains the candidate-scope authority; this
+    /// prevents incidental build artifacts from becoming candidate edits.
+    pub async fn discard_outside_scope(
+        &self,
+        workspace_id: &str,
+        allowed_paths: &[String],
+    ) -> Result<usize, ExecutionError> {
+        validate_workspace_id(workspace_id)?;
+        let _write = self.lock.lock().await;
+        let record = self.find_by_id(workspace_id)?;
+        if record.status != WorkspaceStatus::Allocated {
+            return Ok(0);
+        }
+        let workspace = self.open_existing(&record)?;
+        workspace.verify_identity((record.worktree_device, record.worktree_inode))?;
+        let discarded = workspace.discard_changes_outside(allowed_paths)?;
+        workspace.verify_identity((record.worktree_device, record.worktree_inode))?;
+        Ok(discarded)
+    }
+
     pub async fn finalize_workspace(
         &self,
         workspace_id: &str,

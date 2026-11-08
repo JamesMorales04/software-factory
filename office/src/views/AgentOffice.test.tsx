@@ -13,6 +13,7 @@ import { AgentOffice } from "./AgentOffice";
 const mocks = vi.hoisted(() => ({
   listParticipants: vi.fn(),
   listCampaigns: vi.fn(),
+  listActions: vi.fn(),
   listProjects: vi.fn(),
   listToolEvents: vi.fn(),
 }));
@@ -296,6 +297,16 @@ describe("AgentOffice", () => {
         created_at: "2026-10-27T09:00:00Z",
       },
     ]);
+    mocks.listActions.mockReset().mockResolvedValue([
+      {
+        id: "action-1",
+        project_id: "project-1",
+        objective: "Harden the participant projection",
+        status: "AUTHORIZED",
+        risk: "R0",
+        created_at: "2026-10-27T08:30:00Z",
+      },
+    ]);
     mocks.listProjects.mockReset().mockResolvedValue([
       {
         id: "project-1",
@@ -367,7 +378,7 @@ describe("AgentOffice", () => {
     ).toContain("/agents/implementer:session-1");
     expect(screen.getByText("Quality evidence")).toBeDefined();
     expect(screen.getByText("campaign-1")).toBeDefined();
-    expect(screen.getByText("ACCEPTED")).toBeDefined();
+    expect(screen.getByText("Accepted")).toBeDefined();
     const events = await screen.findByTestId("tool-event-table");
     expect(events.textContent).toContain("write_file");
     expect(events.textContent).toContain("tool requested");
@@ -504,9 +515,9 @@ describe("AgentOffice", () => {
     renderOffice(`/agents/${encodeURIComponent(implementer.participant_id)}`);
     await screen.findByTestId("participant-inspector");
     const inspector = screen.getByTestId("participant-inspector");
-    expect(within(inspector).getAllByText("ACTIVE").length).toBeGreaterThan(0);
-    expect(within(inspector).queryByText("COMPLETED")).toBeNull();
-    expect(within(inspector).getAllByText("CURRENT").length).toBeGreaterThan(0);
+    expect(within(inspector).getAllByText("Active").length).toBeGreaterThan(0);
+    expect(within(inspector).queryByText("Completed")).toBeNull();
+    expect(within(inspector).getAllByText("Current").length).toBeGreaterThan(0);
   });
 
   it("does not inject a deep-linked participant outside the active filters", async () => {

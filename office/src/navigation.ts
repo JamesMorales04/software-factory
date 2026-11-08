@@ -2,12 +2,11 @@ import type { LucideIcon } from "lucide-react";
 import {
   Activity,
   Bot,
+  ClipboardList,
   FolderGit2,
-  Gauge,
   Inbox,
   ListChecks,
   Megaphone,
-  MonitorSmartphone,
   Settings,
   Sparkles,
 } from "lucide-react";
@@ -23,7 +22,6 @@ export interface NavItem {
 export interface NavGroup {
   labelKey: MessageKey;
   items: NavItem[];
-  collapsible?: boolean;
 }
 
 /**
@@ -44,10 +42,23 @@ export const NAV_GROUPS: NavGroup[] = [
         keywords: "home request compose objective start work intake",
       },
       {
+        to: "/requests",
+        labelKey: "nav.requests",
+        icon: ClipboardList,
+        keywords: "requests history status objectives",
+      },
+      {
+        to: "/inbox",
+        labelKey: "nav.decisions",
+        icon: Inbox,
+        keywords:
+          "decision inbox approvals blocked unresolved usage needs action",
+      },
+      {
         to: "/campaigns",
         labelKey: "nav.campaigns",
         icon: Megaphone,
-        keywords: "runs attempts candidates gate quality",
+        keywords: "work campaigns runs attempts candidates gate quality",
       },
       {
         to: "/projects",
@@ -84,38 +95,6 @@ export const NAV_GROUPS: NavGroup[] = [
       },
     ],
   },
-  {
-    labelKey: "nav.group.advanced",
-    collapsible: true,
-    items: [
-      {
-        to: "/inbox",
-        labelKey: "nav.decisions",
-        icon: Inbox,
-        keywords:
-          "decision inbox approvals blocked unresolved usage needs action",
-      },
-      {
-        to: "/overview",
-        labelKey: "nav.overview",
-        icon: Gauge,
-        keywords: "overview health activity events status metrics operations",
-      },
-      {
-        to: "/actions",
-        labelKey: "nav.actions",
-        icon: ListChecks,
-        keywords: "objectives specs checks risk frozen action",
-      },
-      {
-        to: "/settings?tab=access",
-        labelKey: "nav.accessDevices",
-        icon: MonitorSmartphone,
-        keywords:
-          "access devices sessions pairing tailscale remote trust revoke",
-      },
-    ],
-  },
 ];
 
 export const NAV_ITEMS = NAV_GROUPS.flatMap((group) => group.items);
@@ -141,21 +120,10 @@ export function isNavItemActive(
   if (targetQuery !== "") {
     return pathname === targetPath && matchesQuery(search, targetQuery);
   }
-  if (item.to === "/settings" && matchesQuery(search, "tab=access")) {
-    return false;
-  }
   if (targetPath === "/") {
-    return pathname === "/" || pathname.startsWith("/requests/");
+    return pathname === "/";
   }
   return pathname === targetPath || pathname.startsWith(`${targetPath}/`);
-}
-
-export function isAdvancedRoute(pathname: string, search = ""): boolean {
-  const advanced = NAV_GROUPS.find((group) => group.collapsible);
-  return (
-    advanced?.items.some((item) => isNavItemActive(item, pathname, search)) ??
-    false
-  );
 }
 
 export function routeLabel(
@@ -168,12 +136,7 @@ export function routeLabel(
     return t("nav.projectFiles");
   if (pathname.startsWith("/projects/")) return t("nav.projectDetail");
   if (pathname.startsWith("/campaigns/")) return t("nav.campaignDetail");
-  if (pathname.startsWith("/actions/")) return t("nav.actionDetail");
   if (pathname.startsWith("/agents/")) return t("nav.agentParticipant");
-  if (pathname === "/lead") return t("nav.lead");
-  if (pathname === "/delegations") return t("nav.delegations");
-  if (pathname === "/runs") return t("nav.runs");
-  if (pathname === "/workers") return t("nav.workers");
   if (pathname === "/settings" && matchesQuery(search, "tab=access")) {
     return t("nav.accessDevices");
   }

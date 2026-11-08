@@ -142,12 +142,6 @@ const providerBase = {
   credentialFingerprint: "fingerprint",
   revision: 2,
   updatedAt: "2026-10-27T10:00:00Z",
-  maxTurns: 4,
-  maxInputTokens: 100000,
-  maxOutputTokens: 12000,
-  maxCostMicros: 500000,
-  inputMicrosPerMillion: 1000,
-  outputMicrosPerMillion: 2000,
   modelDiscovery: null,
 } satisfies ProviderView;
 

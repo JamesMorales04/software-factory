@@ -438,7 +438,10 @@ export function AgentOffice() {
               )
               .map((campaign) => (
                 <option value={campaign.id} key={campaign.id}>
-                  {shortId(campaign.id, 12)} · {campaign.status}
+                  {campaign.objective ??
+                    t("agentOffice.filters.untitledCampaign", {
+                      id: shortId(campaign.id, 8),
+                    })}
                 </option>
               ))}
           </Select>

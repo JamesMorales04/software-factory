@@ -16,7 +16,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    io::Read,
+    io::{Cursor, Read, Write},
     path::{Path, PathBuf},
     process::Stdio,
     time::Duration,
@@ -129,38 +129,26 @@ pub fn approved_local_path(root: Option<&Path>, requested: &str) -> Result<PathB
     Ok(canonical)
 }
 
-/// One selectable directory below the operator-approved projects root.
-#[derive(Debug, Clone, Serialize)]
-pub struct BrowseDirectory {
-    pub name: String,
-    pub path: String,
-    pub absolute_path: String,
-    pub is_git: bool,
-}
+const MAX_ARCHIVE_BYTES: usize = 512 * 1024 * 1024;
+const MAX_ARCHIVE_ENTRIES: usize = 20_000;
+const MAX_ARCHIVE_FILE_BYTES: u64 = 64 * 1024 * 1024;
 
-/// Bounded, read-only directory listing for the Office folder picker. It
-/// exposes directory names only, never file contents, and never follows a
-/// symlink out of the approved root.
-#[derive(Debug, Clone, Serialize)]
-pub struct BrowseListing {
-    pub root: String,
-    pub path: String,
-    pub current_path: String,
-    pub parent: Option<String>,
-    pub directories: Vec<BrowseDirectory>,
-    pub truncated: bool,
-}
-
-const MAX_BROWSE_ENTRIES: usize = 500;
-
-pub fn browse_directories(root: &Path, relative: &str) -> Result<BrowseListing, ImportError> {
-    if relative.len() > MAX_URL_BYTES
-        || relative.chars().any(char::is_control)
-        || relative.split('/').any(|part| part == "..")
-        || Path::new(relative).is_absolute()
-    {
+/// Import a folder uploaded by the browser as a ZIP archive. The archive is
+/// extracted into a fresh directory inside the managed root; path traversal,
+/// symlinks and oversized entries are rejected. A Git repository is initialized
+/// when the uploaded folder does not already contain one.
+pub fn import_archive(
+    root: &Path,
+    display_name: &str,
+    idempotency_key: &str,
+    bytes: &[u8],
+) -> Result<PathBuf, ImportError> {
+    if bytes.is_empty() || bytes.len() > MAX_ARCHIVE_BYTES {
+        return Err(ImportError::Invalid("uploaded project archive size".into()));
+    }
+    if idempotency_key.trim().is_empty() {
         return Err(ImportError::Invalid(
-            "browse path has an unsafe shape".into(),
+            "project archive idempotency key".into(),
         ));
     }
     let canonical_root = root.canonicalize().map_err(|error| {
@@ -171,76 +159,155 @@ pub fn browse_directories(root: &Path, relative: &str) -> Result<BrowseListing, 
             "managed projects root is not a directory".into(),
         ));
     }
-    let requested = if relative.is_empty() || relative == "." {
-        canonical_root.clone()
+    let safe_name = display_name
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .chars()
+        .take(80)
+        .collect::<String>();
+    let base = if safe_name.is_empty() {
+        "imported-project".to_owned()
     } else {
-        canonical_root.join(relative)
+        safe_name
     };
-    let canonical = requested
-        .canonicalize()
-        .map_err(|error| ImportError::Invalid(format!("browse path is unavailable: {error}")))?;
-    if !canonical.starts_with(&canonical_root) {
-        return Err(ImportError::Invalid(
-            "browse path is outside the managed projects root".into(),
-        ));
-    }
-    if !canonical.is_dir() {
-        return Err(ImportError::Invalid(
-            "browse path is not a directory".into(),
-        ));
-    }
-    let relative_path = canonical
-        .strip_prefix(&canonical_root)
-        .map_err(|_| ImportError::Invalid("browse path encoding".into()))?
-        .to_string_lossy()
-        .replace('\\', "/");
-    let parent = if relative_path.is_empty() {
-        None
-    } else {
-        Some(
-            Path::new(&relative_path)
-                .parent()
-                .map(|value| value.to_string_lossy().replace('\\', "/"))
-                .unwrap_or_default(),
-        )
-    };
-    let mut directories = Vec::new();
-    for entry in std::fs::read_dir(&canonical)? {
+    // The target is deterministic for one idempotency key and archive digest so
+    // a transport retry replays the same Project registration. Reusing the key
+    // for different bytes is refused before extraction or registration.
+    let key_hash = crate::device_session::sha256_hex(idempotency_key);
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let content_hash = format!("{:x}", hasher.finalize());
+    let target_name = format!("{base}-{}-{}", &key_hash[..12], content_hash);
+    let target = canonical_root.join(&target_name);
+    let key_marker = format!("-{}-", &key_hash[..12]);
+    let mut existing = None;
+    for entry in std::fs::read_dir(&canonical_root)? {
         let entry = entry?;
-        let file_type = entry.file_type()?;
-        // Symlinked directories are deliberately skipped: resolving them here
-        // could escape the managed root even though the parent is canonical.
-        if !file_type.is_dir() {
-            continue;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if let Some((_, suffix)) = name.split_once(&key_marker)
+            && suffix.len() == 64
+            && suffix.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            if existing.is_some() {
+                return Err(ImportError::Invalid(
+                    "project archive idempotency key matches multiple targets".into(),
+                ));
+            }
+            existing = Some(name.into_owned());
         }
-        let name = entry.file_name().to_string_lossy().to_string();
-        if name.is_empty() || name.len() > 255 || name.chars().any(char::is_control) {
-            continue;
-        }
-        let child_relative = if relative_path.is_empty() {
-            name.clone()
-        } else {
-            format!("{relative_path}/{name}")
-        };
-        let absolute = entry.path();
-        directories.push(BrowseDirectory {
-            name,
-            path: child_relative,
-            absolute_path: absolute.to_string_lossy().to_string(),
-            is_git: absolute.join(".git").exists(),
-        });
     }
-    directories.sort_by(|left, right| left.name.cmp(&right.name));
-    let truncated = directories.len() > MAX_BROWSE_ENTRIES;
-    directories.truncate(MAX_BROWSE_ENTRIES);
-    Ok(BrowseListing {
-        root: canonical_root.to_string_lossy().to_string(),
-        path: relative_path,
-        current_path: canonical.to_string_lossy().to_string(),
-        parent,
-        directories,
-        truncated,
-    })
+    if let Some(name) = existing {
+        if name != target_name {
+            return Err(ImportError::Invalid(
+                "project archive idempotency key was reused with different content or name".into(),
+            ));
+        }
+        return approved_local_repository(Some(&canonical_root), &target.to_string_lossy());
+    }
+    let target = canonical_root.join(&target_name);
+    match std::fs::create_dir(&target) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            return approved_local_repository(Some(&canonical_root), &target.to_string_lossy());
+        }
+        Err(error) => return Err(error.into()),
+    }
+    let extracted = (|| -> Result<(), ImportError> {
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
+            .map_err(|error| ImportError::Discovery(format!("ZIP archive is invalid: {error}")))?;
+        if archive.len() > MAX_ARCHIVE_ENTRIES {
+            return Err(ImportError::Invalid(
+                "uploaded project archive contains too many entries".into(),
+            ));
+        }
+        let mut total = 0u64;
+        for index in 0..archive.len() {
+            let mut entry = archive.by_index(index).map_err(|error| {
+                ImportError::Discovery(format!("ZIP entry is invalid: {error}"))
+            })?;
+            let Some(relative) = entry.enclosed_name() else {
+                return Err(ImportError::Invalid(
+                    "uploaded project archive contains an unsafe path".into(),
+                ));
+            };
+            let mode = entry.unix_mode().unwrap_or(0);
+            if mode & 0o170000 == 0o120000 {
+                return Err(ImportError::Invalid(
+                    "uploaded project archive contains a symlink".into(),
+                ));
+            }
+            let destination = target.join(&relative);
+            if entry.is_dir() {
+                std::fs::create_dir_all(&destination)?;
+                continue;
+            }
+            if entry.size() > MAX_ARCHIVE_FILE_BYTES {
+                return Err(ImportError::Invalid(
+                    "uploaded project archive contains an oversized file".into(),
+                ));
+            }
+            total = total.saturating_add(entry.size());
+            if total > MAX_ARCHIVE_BYTES as u64 {
+                return Err(ImportError::Invalid(
+                    "uploaded project archive expands beyond the size limit".into(),
+                ));
+            }
+            if let Some(parent) = destination.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let mut file = std::fs::File::create(&destination)?;
+            std::io::copy(&mut entry, &mut file)?;
+            file.flush()?;
+        }
+        if !target.join(".git").is_dir() {
+            initialize_git_repository(&target)?;
+        }
+        Ok(())
+    })();
+    if let Err(error) = extracted {
+        let _ = std::fs::remove_dir_all(&target);
+        return Err(error);
+    }
+    let approved = approved_local_repository(Some(&canonical_root), &target.to_string_lossy());
+    if approved.is_err() {
+        let _ = std::fs::remove_dir_all(&target);
+    }
+    approved
+}
+
+fn initialize_git_repository(path: &Path) -> Result<(), ImportError> {
+    let run = |args: &[&str]| -> Result<(), ImportError> {
+        let output = std::process::Command::new("git")
+            .args(["-C", &path.to_string_lossy()])
+            .args(args)
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("GIT_AUTHOR_NAME", "Factory Import")
+            .env("GIT_AUTHOR_EMAIL", "factory-import@localhost")
+            .env("GIT_COMMITTER_NAME", "Factory Import")
+            .env("GIT_COMMITTER_EMAIL", "factory-import@localhost")
+            .output()
+            .map_err(|error| ImportError::Git(format!("Git initialization failed: {error}")))?;
+        if !output.status.success() {
+            return Err(ImportError::Git(
+                String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            ));
+        }
+        Ok(())
+    };
+    run(&["init", "-q"])?;
+    run(&["add", "-A"])?;
+    run(&["commit", "-qm", "Import local project folder"])?;
+    Ok(())
 }
 
 /// Validate a local repository path after Git resolves its actual top level.
@@ -1521,30 +1588,46 @@ mod tests {
     }
 
     #[test]
-    fn browse_lists_only_directories_inside_the_managed_root() {
-        let root = fixture_root("browse");
-        std::fs::create_dir_all(root.join("alpha/.git")).unwrap();
-        std::fs::create_dir_all(root.join("beta")).unwrap();
-        std::fs::write(root.join("note.txt"), "not a directory").unwrap();
-        let listing = browse_directories(&root, "").unwrap();
-        assert_eq!(listing.path, "");
+    fn imports_an_uploaded_folder_archive_and_initializes_git() {
+        let root = fixture_root("archive-import");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut buffer = Cursor::new(Vec::new());
+        {
+            let mut writer = zip::ZipWriter::new(&mut buffer);
+            writer
+                .start_file("src/lib.rs", zip::write::SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(b"pub fn imported() {}\n").unwrap();
+            writer.finish().unwrap();
+        }
+        let bytes = buffer.into_inner();
+        let imported = import_archive(&root, "My Project", "archive-test-key", &bytes).unwrap();
+        assert!(imported.starts_with(root.canonicalize().unwrap()));
         assert_eq!(
-            listing
-                .directories
-                .iter()
-                .map(|entry| entry.name.as_str())
-                .collect::<Vec<_>>(),
-            vec!["alpha", "beta"]
+            std::fs::read_to_string(imported.join("src/lib.rs")).unwrap(),
+            "pub fn imported() {}\n"
         );
-        assert!(listing.directories[0].is_git);
-        assert!(!listing.directories[1].is_git);
-        assert_eq!(listing.parent, None);
-
-        let nested = browse_directories(&root, "alpha").unwrap();
-        assert_eq!(nested.path, "alpha");
-        assert_eq!(nested.parent.as_deref(), Some(""));
-        assert!(browse_directories(&root, "../").is_err());
-        assert!(browse_directories(&root, "missing").is_err());
+        assert!(imported.join(".git").is_dir());
+        let replay = import_archive(&root, "My Project", "archive-test-key", &bytes).unwrap();
+        assert_eq!(replay, imported);
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+        let conflict = import_archive(
+            &root,
+            "My Project",
+            "archive-test-key",
+            b"different archive bytes",
+        )
+        .unwrap_err();
+        assert!(
+            conflict
+                .to_string()
+                .contains("reused with different content or name")
+        );
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+        let before = std::fs::read_dir(&root).unwrap().count();
+        let error = import_archive(&root, "Broken", "broken-key", b"not a zip").unwrap_err();
+        assert!(error.to_string().contains("ZIP archive is invalid"));
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), before);
         let _ = std::fs::remove_dir_all(root);
     }
 

@@ -242,7 +242,7 @@ impl EgressConfig {
             token,
             session_id: uuid::Uuid::new_v4().simple().to_string(),
             timeout: Duration::ZERO,
-            max_requests: 8,
+            max_requests: 0,
             allowed_model: None,
             upstream_tools: Vec::new(),
             turn_policy: None,
@@ -385,11 +385,7 @@ async fn handle(
         write_status(&mut stream, 413, "request is too large").await?;
         return Ok(());
     }
-    let previous = requests.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    if config.max_requests > 0 && previous >= config.max_requests {
-        write_status(&mut stream, 429, "request budget exhausted").await?;
-        return Ok(());
-    }
+    let _previous = requests.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let mut body = body;
     let mut bound_turn: Option<(String, String, u64, u32)> = None;
     if let Some(policy) = &config.turn_policy {
@@ -406,10 +402,8 @@ async fn handle(
                     let turn = guard.as_mut().expect("checked");
                     let expired = turn.expires_at_ms > 0
                         && chrono::Utc::now().timestamp_millis() >= turn.expires_at_ms;
-                    let requests_exhausted =
-                        turn.max_requests > 0 && turn.requests >= turn.max_requests;
-                    if expired || requests_exhausted {
-                        Err((429, "request budget exhausted".to_string()))
+                    if expired {
+                        Err((429, "provider turn expired".to_string()))
                     } else {
                         match serde_json::from_slice::<serde_json::Value>(&body) {
                             Err(_) => Err((400, "request body is not JSON".to_string())),

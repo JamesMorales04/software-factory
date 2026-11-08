@@ -149,7 +149,7 @@ describe("WorkGraphPanel", () => {
     expect(screen.getByTestId("workgraph-inspector")).toBeDefined();
     expect(screen.getByRole("heading", { name: /WorkUnit a/ })).toBeDefined();
     expect(
-      within(screen.getByTestId("workgraph-inspector")).getByText("ACCEPTED"),
+      within(screen.getByTestId("workgraph-inspector")).getByText("Accepted"),
     ).toBeDefined();
     expect(screen.getByText(/No verifier receipt is recorded/)).toBeDefined();
   });
@@ -236,8 +236,8 @@ describe("WorkGraphPanel", () => {
     );
     await userEvent.click(screen.getByTestId("workgraph-node-accepted"));
     const inspector = screen.getByTestId("workgraph-inspector");
-    expect(within(inspector).getByText("ACCEPTED")).toBeDefined();
-    expect(within(inspector).getAllByText("PASS")).toHaveLength(2);
+    expect(within(inspector).getByText("Accepted")).toBeDefined();
+    expect(within(inspector).getAllByText("Passed")).toHaveLength(2);
   });
 
   it("shows malformed graph and stale projection states but keeps the table", () => {

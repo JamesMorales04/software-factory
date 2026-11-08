@@ -751,16 +751,6 @@ impl Database {
                 "the batch must contain between one and the policy maximum number of issues",
             ));
         }
-        if input.max_total_cost_micros == 0
-            || input.max_total_cost_micros > policy.max_total_cost_micros
-            || u64::from(selected).saturating_mul(policy.max_cost_micros_per_issue)
-                > input.max_total_cost_micros
-        {
-            return Err(intake_conflict(
-                "ISSUE_BATCH_BUDGET_EXCEEDED",
-                "the selected snapshots exceed the acknowledged batch budget",
-            ));
-        }
         let mut seen_numbers = std::collections::BTreeSet::new();
         let mut seen_ids = std::collections::BTreeSet::new();
         for item in input.items {

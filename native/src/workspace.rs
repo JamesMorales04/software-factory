@@ -828,6 +828,77 @@ impl AttemptWorkspace {
     }
     /// Commit every staged and untracked change with fixed identity and dates,
     /// then return the exact candidate revision.
+    /// Discard tracked and untracked changes outside the authorized path
+    /// scope. Frozen checks are validation commands, not candidate edits; a
+    /// build tool that rewrites a lockfile must not contaminate the candidate.
+    /// Ignored build artifacts are left untouched.
+    pub fn discard_changes_outside(
+        &self,
+        allowed_paths: &[String],
+    ) -> Result<usize, WorkspaceError> {
+        self.verify_usable()?;
+        if allowed_paths.is_empty() {
+            return Err(WorkspaceError::Invalid(
+                "discarding changes requires an allowed path scope".into(),
+            ));
+        }
+        let mut discarded = 0usize;
+        let tracked = git(
+            &self.path,
+            [
+                OsStr::new("diff"),
+                OsStr::new("--name-only"),
+                OsStr::new("-z"),
+                OsStr::new("HEAD"),
+            ],
+        )?;
+        for path in String::from_utf8_lossy(&tracked.stdout)
+            .split('\0')
+            .filter(|path| !path.is_empty())
+        {
+            if path_covered(path, allowed_paths) || !is_safe_repository_path(path) {
+                continue;
+            }
+            if git(
+                &self.path,
+                [
+                    OsStr::new("checkout"),
+                    OsStr::new("HEAD"),
+                    OsStr::new("--"),
+                    OsStr::new(path),
+                ],
+            )
+            .is_err()
+            {
+                remove_worktree_path(&self.path.join(path))?;
+            }
+            discarded += 1;
+        }
+        let untracked = git(
+            &self.path,
+            [
+                OsStr::new("ls-files"),
+                OsStr::new("--others"),
+                OsStr::new("--exclude-standard"),
+                OsStr::new("-z"),
+            ],
+        )?;
+        for path in String::from_utf8_lossy(&untracked.stdout)
+            .split('\0')
+            .filter(|path| !path.is_empty())
+        {
+            if path_covered(path, allowed_paths) || !is_safe_repository_path(path) {
+                continue;
+            }
+            remove_worktree_path(&self.path.join(path))?;
+            discarded += 1;
+        }
+        if discarded > 0 {
+            self.verify_usable()?;
+        }
+        Ok(discarded)
+    }
+
     pub fn commit_all(&self, message: &str) -> Result<CandidateRevision, WorkspaceError> {
         self.verify_usable()?;
         let changes = git(
@@ -1090,6 +1161,25 @@ fn hardened_git() -> Command {
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_INDEX_FILE");
     command
+}
+
+fn remove_worktree_path(path: &Path) -> Result<(), WorkspaceError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || metadata.is_file() => {
+            fs::remove_file(path)?;
+        }
+        Ok(metadata) if metadata.is_dir() => {
+            fs::remove_dir_all(path)?;
+        }
+        Ok(_) => {
+            return Err(WorkspaceError::Invalid(
+                "worktree contains a special file".into(),
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
 }
 
 fn is_object_id(value: &str) -> bool {
@@ -1471,6 +1561,46 @@ mod tests {
             format!("{base}\n").as_bytes()
         );
         workspace.verify_identity(identity).unwrap();
+        workspace.cleanup().unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn discards_changes_outside_the_allowed_scope_before_candidate() {
+        let repo = TempRepo::new();
+        let base = repo.head();
+        let root = std::env::temp_dir().join(format!("factory-scope-{}", Uuid::new_v4()));
+        let allocator = WorkspaceAllocator::new(&repo.0, &root).unwrap();
+        let mut workspace = allocator.allocate("scope", &base).unwrap();
+        fs::create_dir_all(workspace.path().join("src")).unwrap();
+        fs::write(
+            workspace.path().join("src/allowed.txt"),
+            "allowed
+",
+        )
+        .unwrap();
+        fs::write(workspace.path().join("seed.txt"), "lockfile churn\n").unwrap();
+        fs::write(workspace.path().join("notes.txt"), "outside\n").unwrap();
+        let discarded = workspace
+            .discard_changes_outside(&["src".to_owned()])
+            .unwrap();
+        assert_eq!(discarded, 2);
+        assert_eq!(
+            fs::read_to_string(workspace.path().join("seed.txt")).unwrap(),
+            "base\n"
+        );
+        assert!(workspace.path().join("src/allowed.txt").exists());
+        assert!(!workspace.path().join("notes.txt").exists());
+        let candidate = workspace.commit_all("scoped candidate").unwrap();
+        let changed = git(
+            &repo.0,
+            ["diff", "--name-only", &base, &candidate.commit_sha],
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&changed.stdout).trim(),
+            "src/allowed.txt"
+        );
         workspace.cleanup().unwrap();
         let _ = fs::remove_dir_all(root);
     }

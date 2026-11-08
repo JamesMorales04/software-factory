@@ -189,6 +189,7 @@ pub struct GitHubRepositoryPermissions {
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct GitHubRepositoryDetail {
+    pub id: i64,
     pub full_name: String,
     pub private: bool,
     pub default_branch: String,
@@ -1032,6 +1033,7 @@ impl GitHubClient {
         let default_branch = raw.default_branch.unwrap_or_default();
         validate_default_branch(&default_branch)?;
         Ok(GitHubRepositoryDetail {
+            id: raw.id,
             full_name: raw.full_name,
             private: raw.private,
             default_branch,
@@ -1466,6 +1468,7 @@ struct RawRepository {
 
 #[derive(serde::Deserialize)]
 struct RawRepositoryDetail {
+    id: i64,
     full_name: String,
     #[serde(default)]
     private: bool,
@@ -2434,6 +2437,7 @@ mod tests {
                 .and_then(|value| value.to_str().ok())
                 .map(str::to_owned);
             axum::Json(serde_json::json!({
+                "id": 42,
                 "full_name": "acme/private-widgets",
                 "private": true,
                 "default_branch": "develop",
@@ -2465,6 +2469,7 @@ mod tests {
             .repository(TOKEN, "acme", "private-widgets")
             .await
             .unwrap();
+        assert_eq!(detail.id, 42);
         assert!(detail.private);
         assert_eq!(detail.default_branch, "develop");
         let permissions = detail.permissions.unwrap();

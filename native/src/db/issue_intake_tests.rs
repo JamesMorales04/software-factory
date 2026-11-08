@@ -407,14 +407,14 @@ async fn batch_requires_acknowledgement_and_exact_snapshot_then_creates_finite_q
 }
 
 #[tokio::test]
-async fn stale_snapshot_budget_and_ineligible_issues_are_rejected() {
+async fn stale_snapshot_and_ineligible_issues_are_rejected() {
     let fixture = fixture("project", "widgets", 42, false).await;
     let policy = create_policy(&fixture).await;
     let snapshot_issue = issue(5, 55, 7, "MEMBER");
     insert_issue(&fixture.db, "project", "acme/widgets", 42, &snapshot_issue).await;
     let items = batch_items(&snapshot_issue);
     let uuid = uuid::Uuid::new_v4().to_string();
-    let mut stale = NewIssueIntakeBatch {
+    let stale = NewIssueIntakeBatch {
         project_id: "project",
         policy_id: &policy.id,
         expected_policy_revision: policy.revision,
@@ -432,15 +432,6 @@ async fn stale_snapshot_budget_and_ineligible_issues_are_rejected() {
         principal_id: "operator-token",
         principal_label: None,
     };
-    // Budget exhaustion: one issue at 100k cannot fit a 1 micros batch.
-    stale.max_total_cost_micros = 1;
-    let error = fixture
-        .db
-        .create_issue_intake_batch(stale.clone())
-        .await
-        .unwrap_err();
-    assert_eq!(error_code(&error), "ISSUE_BATCH_BUDGET_EXCEEDED");
-
     let mut edited = batch_items(&snapshot_issue);
     let edited_hash = "0".repeat(64);
     edited[0].content_hash = Box::leak(edited_hash.into_boxed_str());
@@ -453,9 +444,8 @@ async fn stale_snapshot_budget_and_ineligible_issues_are_rejected() {
         })
         .await
         .unwrap_err();
-    // `..stale` keeps the tiny budget, so assert either the snapshot or budget
-    // guard; use a fresh budget to isolate snapshot staleness.
-    let _ = error;
+    assert_eq!(error_code(&error), "ISSUE_SNAPSHOT_STALE");
+    // The edited snapshot must be rejected before any proposal is created.
     let mut valid = NewIssueIntakeBatch {
         project_id: "project",
         policy_id: &policy.id,

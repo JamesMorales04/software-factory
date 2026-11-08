@@ -1,3 +1,4 @@
+import { type MessageKey, useI18n } from "../../i18n";
 import { Badge, type BadgeTone } from "../ui/Badge";
 
 const SUCCESS = new Set([
@@ -75,6 +76,50 @@ export function statusTone(status: string): BadgeTone {
   return "neutral";
 }
 
+const LABEL_KEYS: Record<string, MessageKey> = {
+  ACCEPTED: "status.accepted",
+  ACTIVE: "status.active",
+  AMBIGUOUS: "status.ambiguous",
+  AUTHORIZED: "status.authorized",
+  BLOCKED: "status.blocked",
+  BLOCKED_AUTHORIZATION: "status.blockedAuthorization",
+  CANCEL_REQUESTED: "status.cancelRequested",
+  CANCELLED: "status.cancelled",
+  CANDIDATE_READY: "status.candidateReady",
+  CHANGES_REQUESTED: "status.changesRequested",
+  CLEANED: "status.cleaned",
+  COMPLETED: "status.completed",
+  CURRENT: "status.current",
+  DISABLED: "status.disabled",
+  ENABLED: "status.enabled",
+  FAILED: "status.failed",
+  HEALTHY: "status.healthy",
+  HUMAN_REQUIRED: "status.humanRequired",
+  INTENT: "status.intent",
+  LEASED: "status.leased",
+  NOT_TESTED: "status.notTested",
+  ORPHANED: "status.orphaned",
+  PASS: "status.pass",
+  PENDING: "status.pending",
+  QUEUED: "status.queued",
+  REPAIR_REQUIRED: "status.repairRequired",
+  RESERVED: "status.reserved",
+  RUNNING: "status.running",
+  SETTLED: "status.settled",
+  STALE: "status.stale",
+  UNKNOWN: "status.unknown",
+  UNMEASURED: "status.unmeasured",
+  UNHEALTHY: "status.unhealthy",
+};
+
+export function statusLabel(
+  status: string,
+  t: (key: MessageKey) => string,
+): string {
+  const key = LABEL_KEYS[status.toUpperCase()];
+  return key ? t(key) : status.replaceAll("_", " ").toLowerCase();
+}
+
 export function StatusBadge({
   status,
   className,
@@ -84,9 +129,10 @@ export function StatusBadge({
   className?: string;
   label?: string;
 }) {
+  const { t } = useI18n();
   return (
     <Badge tone={statusTone(status)} className={className}>
-      {label ?? status}
+      {label ?? statusLabel(status, t)}
     </Badge>
   );
 }

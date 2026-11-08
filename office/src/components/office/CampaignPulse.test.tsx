@@ -125,9 +125,9 @@ describe("CampaignPulse", () => {
     });
     expect(progress.getAttribute("aria-valuenow")).toBe("50");
     expect(screen.getByText("1 of 2 completed")).toBeDefined();
-    expect(screen.getByText("ACCEPTED")).toBeDefined();
-    expect(screen.getByText("CHANGES_REQUESTED")).toBeDefined();
-    expect(screen.getByText("PASS")).toBeDefined();
+    expect(screen.getByText("Accepted")).toBeDefined();
+    expect(screen.getByText("Changes requested")).toBeDefined();
+    expect(screen.getByText("Passed")).toBeDefined();
 
     const activity = screen.getByRole("list", { name: "Recent activity" });
     const entries = within(activity).getAllByRole("listitem");

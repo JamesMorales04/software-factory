@@ -11,9 +11,7 @@ use crate::execution_policy::{
     ExecutionPolicyV3, FundingPolicy, OwnerBillingAssumption, ProviderEntitlement,
     QuotaObservation, SubscriptionAdmissionBasis, SubscriptionBinding, SubscriptionRoute,
 };
-use crate::subscription_admission::{
-    TestModelRole, TestRouteBinding, WAVE3_TEST_PROFILE_ID, role_allowed, test_route,
-};
+use crate::subscription_admission::{TestModelRole, TestRouteBinding, role_allowed, test_route};
 use chrono::Utc;
 use sqlx::row::Row;
 use sqlx_sqlite::SqliteConnection;
@@ -91,7 +89,7 @@ fn receipt_digest(
 fn validate_write(input: &ScopeAdmissionWrite, now_ms: i64) -> Result<(), Error> {
     if input.intake_request_id.trim().is_empty()
         || input.lead_request_id.trim().is_empty()
-        || input.test_profile_id != WAVE3_TEST_PROFILE_ID
+        || input.test_profile_id.trim().is_empty()
         || input.execution_profile_id.trim().is_empty()
         || input.provider.trim().is_empty()
         || input.model.trim().is_empty()

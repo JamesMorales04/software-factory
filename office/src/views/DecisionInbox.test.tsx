@@ -7,6 +7,7 @@ import { DecisionInbox } from "./DecisionInbox";
 
 const mocks = vi.hoisted(() => ({
   getDecisions: vi.fn(),
+  listProjects: vi.fn(),
   resolveModelCall: vi.fn(),
   approveIntakeRequest: vi.fn(),
   cancelIntakeRequest: vi.fn(),
@@ -156,6 +157,7 @@ describe("Decision Inbox", () => {
       // The locale defaults to English when storage is unavailable.
     }
     document.documentElement.lang = "en";
+    mocks.listProjects.mockReset().mockResolvedValue([]);
     mocks.getDecisions.mockReset().mockResolvedValue({
       items: [intakeDecision()],
       as_of: "2026-10-28T10:00:01Z",

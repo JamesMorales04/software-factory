@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useState } from "react";
-import { Route, Routes, useLocation } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { AppShell } from "./components/AppShell";
 import { Button } from "./components/ui/Button";
 import type { AuthSession } from "./coreApi";
@@ -11,26 +11,20 @@ import {
   setupStatus,
 } from "./coreApi";
 import { useI18n } from "./i18n";
-import { ActionDetail } from "./views/ActionDetail";
-import { Actions } from "./views/Actions";
 import { AgentOffice } from "./views/AgentOffice";
 import { CampaignDetail } from "./views/CampaignDetail";
 import { Campaigns } from "./views/Campaigns";
 import { DecisionInbox } from "./views/DecisionInbox";
-import { Delegations } from "./views/Delegations";
 import { DevicePairClaim } from "./views/DevicePairClaim";
 import { Home } from "./views/Home";
 import { Issues } from "./views/Issues";
-import { Lead } from "./views/Lead";
-import { Overview } from "./views/Overview";
 import { ProjectDetail } from "./views/ProjectDetail";
 import { ProjectFiles } from "./views/ProjectFiles";
 import { Projects } from "./views/Projects";
+import { Requests } from "./views/Requests";
 import { RequestWorkspace } from "./views/RequestWorkspace";
-import { Runs } from "./views/Runs";
 import { Runtime } from "./views/Runtime";
 import { Settings } from "./views/Settings";
-import { Workers } from "./views/Workers";
 
 function BootstrapGate({
   onComplete,
@@ -234,29 +228,42 @@ export function App() {
       )}
       <Routes>
         <Route path="/" element={<Home />} />
+        <Route path="/requests" element={<Requests />} />
         <Route path="/requests/:requestId" element={<RequestWorkspace />} />
-        <Route path="/overview" element={<Overview />} />
         <Route path="/inbox" element={<DecisionInbox />} />
         <Route path="/projects" element={<Projects />} />
         <Route path="/projects/:projectId" element={<ProjectDetail />} />
         <Route path="/projects/:projectId/files" element={<ProjectFiles />} />
-        <Route path="/actions" element={<Actions />} />
-        <Route path="/actions/:actionId" element={<ActionDetail />} />
-        <Route path="/lead" element={<Lead />} />
-        <Route path="/delegations" element={<Delegations />} />
         <Route path="/campaigns" element={<Campaigns />} />
         <Route path="/issues" element={<Issues />} />
         <Route path="/campaigns/:campaignId" element={<CampaignDetail />} />
         <Route path="/agents" element={<AgentOffice />} />
         <Route path="/agents/:participantId" element={<AgentOffice />} />
-        <Route path="/runs" element={<Runs />} />
-        <Route path="/workers" element={<Workers />} />
         <Route path="/runtime" element={<Runtime />} />
         <Route path="/settings" element={<Settings />} />
         <Route
-          path="*"
-          element={<p className="error">{t("shell.unknownRoute")}</p>}
+          path="/overview"
+          element={<Navigate to="/runtime?tab=overview" replace />}
         />
+        <Route path="/actions" element={<Navigate to="/campaigns" replace />} />
+        <Route
+          path="/actions/:actionId"
+          element={<Navigate to="/campaigns" replace />}
+        />
+        <Route path="/lead" element={<Navigate to="/requests" replace />} />
+        <Route
+          path="/delegations"
+          element={<Navigate to="/settings?tab=profiles" replace />}
+        />
+        <Route
+          path="/runs"
+          element={<Navigate to="/runtime?tab=sessions" replace />}
+        />
+        <Route
+          path="/workers"
+          element={<Navigate to="/runtime?tab=overview" replace />}
+        />
+        <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </AppShell>
   );

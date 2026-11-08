@@ -239,28 +239,6 @@ export function parseGate(env, argv) {
     verificationMaxAgeSecs = parsed;
   }
 
-  const maxInputTokens = Number(env.FACTORY_REAL_PROVIDER_MAX_INPUT_TOKENS ?? "60000");
-  const maxOutputTokens = Number(env.FACTORY_REAL_PROVIDER_MAX_OUTPUT_TOKENS ?? "12000");
-  if (
-    !Number.isInteger(maxInputTokens) ||
-    maxInputTokens < 1 ||
-    maxInputTokens > 1_000_000 ||
-    !Number.isInteger(maxOutputTokens) ||
-    maxOutputTokens < 1 ||
-    maxOutputTokens > 100_000
-  ) {
-    throw refuse(
-      "TOKEN_CEILING_INVALID",
-      "FACTORY_REAL_PROVIDER_MAX_INPUT_TOKENS/MAX_OUTPUT_TOKENS are outside the supported bound",
-    );
-  }
-  const maxTurns = Number(env.FACTORY_REAL_PROVIDER_MAX_TURNS ?? "4");
-  if (!Number.isInteger(maxTurns) || maxTurns < 1 || maxTurns > 8) {
-    throw refuse(
-      "TURN_CEILING_INVALID",
-      "FACTORY_REAL_PROVIDER_MAX_TURNS must be an integer between 1 and 8",
-    );
-  }
 
   let planApproval = "";
   if (command === "execute") {
@@ -328,9 +306,6 @@ export function parseGate(env, argv) {
     subscriptionEvidenceFile,
     verificationMaxAgeSecs,
     timeoutMs: timeoutSecs * 1_000,
-    maxInputTokens,
-    maxOutputTokens,
-    maxTurns,
     planApproval,
     objective,
     repository,
@@ -1253,12 +1228,6 @@ export async function preflight(client, gate) {
     "PROVIDER_BASE_URL_MISMATCH",
     `${gate.provider} is configured for ${provider.baseUrl}, not the pinned Go route`,
   );
-  assert(
-    Number(provider.maxTurns) <= gate.maxTurns,
-    "PROVIDER_TURN_CEILING_EXCEEDED",
-    `${gate.provider} allows ${provider.maxTurns} turns, above the authorized ${gate.maxTurns}`,
-  );
-
   // Catalog discovery is a public read and performs no inference. It also
   // populates Core's process-local model cache, which the Worker assignment
   // requires before it will start a real provider session.
@@ -1304,11 +1273,6 @@ export async function preflight(client, gate) {
       isDefault: provider.isDefault === true,
       model: provider.model,
       baseUrl: provider.baseUrl,
-      maxTurns: provider.maxTurns,
-      maxInputTokens: provider.maxInputTokens,
-      maxOutputTokens: provider.maxOutputTokens,
-      maxCostMicros: provider.maxCostMicros,
-      maxCostMicrosSemantics: "PROVIDER_SETTINGS_OBSERVATION_NOT_A_SPEND_AUTHORIZATION",
       inputMicrosPerMillion: provider.inputMicrosPerMillion,
       outputMicrosPerMillion: provider.outputMicrosPerMillion,
       revision: provider.revision ?? null,
@@ -1328,7 +1292,6 @@ export async function preflight(client, gate) {
     },
     runtime: {
       semanticReviewEnabled: runtime.payload.semanticReviewEnabled === true,
-      semanticReviewMaxOutputTokens: runtime.payload.semanticReviewMaxOutputTokens,
     },
     workers: workers.payload.map((worker) => worker.worker_id ?? worker.workerId ?? "unknown"),
     subscription: {
@@ -1356,9 +1319,6 @@ function gateEcho(gate) {
     extra_usage: gate.extraUsage,
     positive_usd_authorization: "NOT_REQUIRED",
     spend_cap: "NOT_USED",
-    max_input_tokens: gate.maxInputTokens,
-    max_output_tokens: gate.maxOutputTokens,
-    max_turns: gate.maxTurns,
     provider: gate.provider,
     model: gate.model,
     base_url: gate.baseUrl,
@@ -1812,16 +1772,7 @@ function buildFundingUsageEvidence(
   );
   const totalInput = callInput + sessionInput;
   const totalOutput = callOutput + sessionOutput;
-  assert(
-    totalInput <= gate.maxInputTokens,
-    "INPUT_TOKEN_CEILING_EXCEEDED",
-    `reported input ${totalInput} exceeds the authorized ${gate.maxInputTokens}`,
-  );
-  assert(
-    totalOutput <= gate.maxOutputTokens,
-    "OUTPUT_TOKEN_CEILING_EXCEEDED",
-    `reported output ${totalOutput} exceeds the authorized ${gate.maxOutputTokens}`,
-  );
+
 
   const configuredRateMicros = [...leadCalls, ...reviewCalls].reduce(
     (total, call) => total + numeric(call.cost_micros),
@@ -1918,8 +1869,6 @@ function buildFundingUsageEvidence(
             (total, session) => total + numeric(session.total_tokens),
             0,
           ),
-        max_input_tokens: gate.maxInputTokens,
-        max_output_tokens: gate.maxOutputTokens,
       },
       list_rate_equivalent: {
         micros: listRateMicros,
@@ -2231,9 +2180,6 @@ async function finishExecution(client, gate, state, pre, startedAt, projection) 
         extra_usage: gate.extraUsage,
         positive_usd_authorization: "NOT_REQUIRED",
         spend_cap: "NOT_USED",
-        max_input_tokens: gate.maxInputTokens,
-        max_output_tokens: gate.maxOutputTokens,
-        max_turns: gate.maxTurns,
         provider: gate.provider,
         model: gate.model,
         plan_hash: state.plan_hash ?? gate.planHash,

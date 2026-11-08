@@ -54,28 +54,35 @@ export function RequestPlan({
               </dd>
             </div>
             <div>
-              <dt>{t("request.plan.configHash")}</dt>
-              <dd>
-                <code title={plan.config_hash}>{plan.config_hash}</code>
-              </dd>
-            </div>
-            <div>
-              <dt>{t("request.plan.delegationHash")}</dt>
-              <dd>
-                <code title={plan.delegation_hash}>{plan.delegation_hash}</code>
-              </dd>
-            </div>
-            <div>
-              <dt>{t("request.plan.proposal")}</dt>
-              <dd>
-                <code>{shortId(plan.proposal_id)}</code>
-              </dd>
-            </div>
-            <div>
               <dt>{t("request.plan.frozenAt")}</dt>
               <dd>{formatDate(plan.created_at)}</dd>
             </div>
           </dl>
+          <details className="request-technical-identity">
+            <summary>{t("request.plan.technical")}</summary>
+            <dl className="request-facts">
+              <div>
+                <dt>{t("request.plan.configHash")}</dt>
+                <dd>
+                  <code title={plan.config_hash}>{plan.config_hash}</code>
+                </dd>
+              </div>
+              <div>
+                <dt>{t("request.plan.delegationHash")}</dt>
+                <dd>
+                  <code title={plan.delegation_hash}>
+                    {plan.delegation_hash}
+                  </code>
+                </dd>
+              </div>
+              <div>
+                <dt>{t("request.plan.proposal")}</dt>
+                <dd>
+                  <code>{shortId(plan.proposal_id)}</code>
+                </dd>
+              </div>
+            </dl>
+          </details>
         </div>
       ) : proposal ? (
         <p className="ui-callout ui-callout--attention">

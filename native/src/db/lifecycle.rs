@@ -1,5 +1,15 @@
 use super::*;
 
+type CampaignRow = (
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    String,
+);
+
 use chrono::Utc;
 use sqlx_sqlite::SqliteConnection;
 use uuid::Uuid;
@@ -60,6 +70,9 @@ impl Database {
             action_id: action_id.into(),
             status: "BLOCKED_AUTHORIZATION".into(),
             created_at: Utc::now().to_rfc3339(),
+            objective: None,
+            project_id: None,
+            effective_status: "BLOCKED_AUTHORIZATION".into(),
         };
         sqlx::query::query("INSERT INTO campaigns VALUES (?1,?2,?3,?4)")
             .bind(&value.id)
@@ -224,19 +237,40 @@ impl Database {
     }
 
     pub async fn campaigns(&self) -> Result<Vec<Campaign>, Error> {
-        let rows: Vec<(String, String, String, String)> = sqlx::query_as::query_as(
-            "SELECT id,action_id,status,created_at FROM campaigns ORDER BY created_at,id",
+        let rows: Vec<CampaignRow> = sqlx::query_as::query_as(
+            "SELECT c.id,c.action_id,c.status,c.created_at,a.objective,a.project_id,
+                    CASE
+                      WHEN c.status IN ('CANCELLED','FAILED') THEN c.status
+                      WHEN EXISTS (SELECT 1 FROM runs ar WHERE ar.campaign_id=c.id AND ar.status IN ('PENDING','RUNNING')) THEN c.status
+                      ELSE COALESCE((
+                        SELECT gd.outcome FROM gate_decisions gd
+                        JOIN candidates ca ON ca.id=gd.candidate_id
+                        JOIN attempts at ON at.id=ca.attempt_id
+                        JOIN runs r ON r.id=at.run_id
+                        WHERE r.campaign_id=c.id
+                        ORDER BY gd.decided_at DESC LIMIT 1
+                      ), c.status)
+                    END
+                 FROM campaigns c LEFT JOIN actions a ON a.id=c.action_id
+                 ORDER BY c.created_at,c.id",
         )
         .fetch_all(&self.pool)
         .await?;
         Ok(rows
             .into_iter()
-            .map(|(id, action_id, status, created_at)| Campaign {
-                id,
-                action_id,
-                status,
-                created_at,
-            })
+            .map(
+                |(id, action_id, status, created_at, objective, project_id, effective_status)| {
+                    Campaign {
+                        id,
+                        action_id,
+                        status,
+                        created_at,
+                        objective,
+                        project_id,
+                        effective_status,
+                    }
+                },
+            )
             .collect())
     }
 
@@ -297,18 +331,35 @@ pub(super) async fn load_campaign(
     connection: &mut SqliteConnection,
     id: &str,
 ) -> Result<Campaign, Error> {
-    let row: Option<(String, String, String, String)> = sqlx::query_as::query_as(
-        "SELECT id,action_id,status,created_at FROM campaigns WHERE id=?1",
+    let row: Option<CampaignRow> = sqlx::query_as::query_as(
+        "SELECT c.id,c.action_id,c.status,c.created_at,a.objective,a.project_id,
+                CASE
+                  WHEN c.status IN ('CANCELLED','FAILED') THEN c.status
+                  WHEN EXISTS (SELECT 1 FROM runs ar WHERE ar.campaign_id=c.id AND ar.status IN ('PENDING','RUNNING')) THEN c.status
+                  ELSE COALESCE((
+                    SELECT gd.outcome FROM gate_decisions gd
+                    JOIN candidates ca ON ca.id=gd.candidate_id
+                    JOIN attempts at ON at.id=ca.attempt_id
+                    JOIN runs r ON r.id=at.run_id
+                    WHERE r.campaign_id=c.id
+                    ORDER BY gd.decided_at DESC LIMIT 1
+                  ), c.status)
+                END
+         FROM campaigns c LEFT JOIN actions a ON a.id=c.action_id WHERE c.id=?1",
     )
     .bind(id)
     .fetch_optional(connection)
     .await?;
-    let (id, action_id, status, created_at) = row.ok_or(Error::NotFound)?;
+    let (id, action_id, status, created_at, objective, project_id, effective_status) =
+        row.ok_or(Error::NotFound)?;
     Ok(Campaign {
         id,
         action_id,
         status,
         created_at,
+        objective,
+        project_id,
+        effective_status,
     })
 }
 

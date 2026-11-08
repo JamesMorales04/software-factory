@@ -43,12 +43,6 @@ const provider: ProviderView = {
   credentialFingerprint: "fingerprint",
   revision: 3,
   updatedAt: "2026-10-27T10:00:00Z",
-  maxTurns: 4,
-  maxInputTokens: 60000,
-  maxOutputTokens: 12000,
-  maxCostMicros: 500000,
-  inputMicrosPerMillion: 1000,
-  outputMicrosPerMillion: 2000,
   modelDiscovery: null,
 };
 
@@ -76,12 +70,10 @@ describe("Settings", () => {
     });
     mocks.getRuntimeSettings.mockReset().mockResolvedValue({
       semanticReviewEnabled: false,
-      semanticReviewMaxOutputTokens: 8192,
       updatedAt: "2026-10-27T10:00:00Z",
     });
     mocks.updateRuntimeSettings.mockReset().mockResolvedValue({
       semanticReviewEnabled: false,
-      semanticReviewMaxOutputTokens: 8192,
       updatedAt: "2026-10-27T10:00:00Z",
     });
     mocks.updateProvider.mockReset().mockResolvedValue(provider);
@@ -155,7 +147,7 @@ describe("Settings", () => {
     await screen.findByRole("heading", { name: "Settings" });
     expect(screen.getByText("Codex")).toBeDefined();
     expect(screen.getByText("ChatGPT OAuth")).toBeDefined();
-    expect(screen.getByText("BLOCKED")).toBeDefined();
+    expect(screen.getByText("Blocked")).toBeDefined();
     expect(screen.getAllByText("Model catalog").length).toBeGreaterThan(0);
     expect(screen.getByText("Credential")).toBeDefined();
     expect(screen.getByText("Coding inference")).toBeDefined();
@@ -366,7 +358,6 @@ describe("Settings", () => {
     await waitFor(() =>
       expect(mocks.updateRuntimeSettings).toHaveBeenCalledWith({
         semanticReviewEnabled: true,
-        semanticReviewMaxOutputTokens: 8192,
       }),
     );
   });

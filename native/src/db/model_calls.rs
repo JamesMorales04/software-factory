@@ -367,10 +367,9 @@ type DispatchReservationRow = (
     String,
 );
 
-const RESERVATION_LIFETIME_MS: i64 = 120_000;
 /// Subscription cost is telemetry. This bound exists only to keep SQLite and
 /// aggregation arithmetic finite; it is not a spending cap.
-const SUBSCRIPTION_COST_BOUND: u64 = (i64::MAX / 4) as u64;
+const SUBSCRIPTION_COST_BOUND: u64 = crate::execution_policy::UNCAPPED_COST_MICROS;
 
 impl Database {
     pub async fn authorize_model_call(
@@ -571,7 +570,10 @@ impl Database {
         let max_total = max_input.saturating_add(max_output);
         let request_sha256 = input.request_sha256.to_ascii_lowercase();
         let reservation_id = Uuid::new_v4().to_string();
-        let expires_at_ms = now_ms.saturating_add(RESERVATION_LIFETIME_MS);
+        // There is no total model-call deadline. Latency is telemetry; an
+        // unresolved reservation is surfaced explicitly instead of being
+        // expired by an unrelated dashboard poll.
+        let expires_at_ms = crate::execution_policy::UNCAPPED_EXPIRES_AT_MS;
         let now_text = now.to_rfc3339();
         let ledger_reservation_id =
             if let (Some(envelope_id), Some(quote)) = (&ledger_envelope_id, &pricing_quote) {
@@ -1614,12 +1616,17 @@ fn validate_model_call_authorization(input: &NewModelCallAuthorization) -> Resul
     if input.estimated_input_tokens == 0 || input.estimated_cost_micros == 0 {
         return Err(Error::Invalid("model call budget request"));
     }
-    if input.policy.max_input_tokens == 0
-        || input.policy.max_output_tokens == 0
-        || input.policy.max_cost_micros == 0
-        || input.policy.max_input_tokens > 10_000_000
-        || input.policy.max_output_tokens > 1_000_000
-        || input.policy.max_cost_micros > 100_000_000
+    let uncapped_input = input.policy.max_input_tokens == crate::execution_policy::UNCAPPED_TOKENS;
+    let uncapped_output =
+        input.policy.max_output_tokens == crate::execution_policy::UNCAPPED_TOKENS;
+    let uncapped_cost =
+        input.policy.max_cost_micros == crate::execution_policy::UNCAPPED_COST_MICROS;
+    if (!uncapped_input
+        && (input.policy.max_input_tokens == 0 || input.policy.max_input_tokens > 10_000_000))
+        || (!uncapped_output
+            && (input.policy.max_output_tokens == 0 || input.policy.max_output_tokens > 1_000_000))
+        || (!uncapped_cost
+            && (input.policy.max_cost_micros == 0 || input.policy.max_cost_micros > 100_000_000))
     {
         return Err(Error::Invalid("model call policy"));
     }

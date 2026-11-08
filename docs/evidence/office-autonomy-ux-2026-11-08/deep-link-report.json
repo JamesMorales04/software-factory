@@ -1,0 +1,145 @@
+{
+  "checks": [
+    {
+      "path": "/#/runtime",
+      "heading": "Activity & telemetry",
+      "url": "http://127.0.0.1:8893/#/runtime",
+      "ok": true
+    },
+    {
+      "path": "/#/runtime?tab=model-calls",
+      "heading": "Activity & telemetry",
+      "url": "http://127.0.0.1:8893/#/runtime?tab=model-calls",
+      "ok": true
+    },
+    {
+      "path": "/#/requests",
+      "heading": "Requests",
+      "url": "http://127.0.0.1:8893/#/requests",
+      "ok": true
+    },
+    {
+      "path": "/#/inbox",
+      "heading": "Decision Inbox",
+      "url": "http://127.0.0.1:8893/#/inbox",
+      "ok": true
+    },
+    {
+      "path": "/#/campaigns",
+      "heading": "Campaigns",
+      "url": "http://127.0.0.1:8893/#/campaigns",
+      "ok": true
+    },
+    {
+      "path": "/#/projects",
+      "heading": "Projects",
+      "url": "http://127.0.0.1:8893/#/projects",
+      "ok": true
+    },
+    {
+      "path": "/#/issues",
+      "heading": "Issues",
+      "url": "http://127.0.0.1:8893/#/issues",
+      "ok": true
+    },
+    {
+      "path": "/#/agents",
+      "heading": "Agent Office",
+      "url": "http://127.0.0.1:8893/#/agents",
+      "ok": true
+    },
+    {
+      "path": "/#/settings?tab=providers",
+      "heading": "Settings",
+      "url": "http://127.0.0.1:8893/#/settings?tab=providers",
+      "ok": true
+    },
+    {
+      "path": "/#/overview",
+      "heading": "Activity & telemetry",
+      "url": "http://127.0.0.1:8893/#/runtime?tab=overview",
+      "ok": true
+    },
+    {
+      "path": "/#/actions",
+      "heading": "Campaigns",
+      "url": "http://127.0.0.1:8893/#/campaigns",
+      "ok": true
+    },
+    {
+      "path": "/#/lead",
+      "heading": "Requests",
+      "url": "http://127.0.0.1:8893/#/requests",
+      "ok": true
+    },
+    {
+      "path": "/#/workers",
+      "heading": "Activity & telemetry",
+      "url": "http://127.0.0.1:8893/#/runtime?tab=overview",
+      "ok": true
+    },
+    {
+      "path": "/#/delegations",
+      "heading": "Settings",
+      "url": "http://127.0.0.1:8893/#/settings?tab=profiles",
+      "ok": true
+    },
+    {
+      "path": "/#/runs",
+      "heading": "Activity & telemetry",
+      "url": "http://127.0.0.1:8893/#/runtime?tab=sessions",
+      "ok": true
+    },
+    {
+      "path": "/#/unknown-route",
+      "heading": "Home",
+      "url": "http://127.0.0.1:8893/#/",
+      "ok": true
+    },
+    {
+      "path": "/campaigns",
+      "heading": "Campaigns",
+      "url": "http://127.0.0.1:8893/#/campaigns",
+      "ok": true
+    },
+    {
+      "path": "/projects/demo/files",
+      "heading": "(no h1)",
+      "url": "http://127.0.0.1:8893/#/projects/demo/files",
+      "ok": true
+    },
+    {
+      "path": "/#/requests?project=1242036d-9564-4157-922a-7183ffe588e9",
+      "heading": "Requests",
+      "ok": true
+    },
+    {
+      "path": "/#/campaigns?project=1242036d-9564-4157-922a-7183ffe588e9",
+      "heading": "Campaigns",
+      "ok": true
+    },
+    {
+      "path": "/#/issues?project=1242036d-9564-4157-922a-7183ffe588e9",
+      "heading": "Issues",
+      "ok": true
+    },
+    {
+      "path": "/#/inbox?project=1242036d-9564-4157-922a-7183ffe588e9",
+      "heading": "Decision Inbox",
+      "ok": true
+    },
+    {
+      "path": "/#/projects local tab",
+      "heading": "Projects",
+      "ok": true
+    }
+  ],
+  "boardOverflow": {
+    "scrollWidth": 1122,
+    "clientWidth": 1116
+  },
+  "firstDecision": "",
+  "telemetryText": "Activity & telemetry\n\nDurable Core projections for provider sessions, model-call reservations, cleanup and telemetry. A missing record is not proof of successful cleanup.\n\nCore healthy\nCore 0.1.0\nFetched Nov 8, 2026, 5:48 AM\nRegistered Workers: 4\nDecision Inbox\nSettings\nOverview\nSessions\n95\nModel calls\n44\nDiagnostics\n\nMeasured tokens\n\n3,769,981\n\nUsage-known sessions plus latest 200 model calls; not a total (87 sessions, 42 calls)\n\nCompleted sessions\n\n79\n\nOf 95 recorded sessions\n\nUnresolved calls",
+  "errors": [],
+  "bad": []
+}

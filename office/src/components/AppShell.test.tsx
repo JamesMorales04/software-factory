@@ -82,7 +82,6 @@ describe("AppShell", () => {
     renderShell();
     const projects = screen.getByRole("link", { name: "Projects" });
     expect(projects.getAttribute("aria-label")).toBe("Projects");
-    expect(screen.getByText("Advanced")).toBeDefined();
     await userEvent.click(
       screen.getByRole("button", { name: "Skip to main content" }),
     );
@@ -104,7 +103,7 @@ describe("AppShell", () => {
     ).toBeNull();
     expect(
       screen
-        .getByRole("link", { name: "Overview" })
+        .getByRole("link", { name: "Campaigns" })
         .getAttribute("aria-current"),
     ).toBeNull();
   });
@@ -113,15 +112,13 @@ describe("AppShell", () => {
     renderShell("/projects");
     const destinations: Array<[string, string]> = [
       ["New request", "/"],
+      ["Requests", "/requests"],
       ["Projects", "/projects"],
       ["Campaigns", "/campaigns"],
       ["Decisions", "/inbox"],
       ["Agent Office", "/agents"],
       ["Settings", "/settings"],
-      ["Overview", "/overview"],
-      ["Actions", "/actions"],
       ["Activity & telemetry", "/runtime"],
-      ["Access & Devices", "/settings?tab=access"],
     ];
     for (const [name, href] of destinations) {
       expect(screen.getByRole("link", { name }).getAttribute("href")).toBe(
@@ -130,25 +127,12 @@ describe("AppShell", () => {
     }
   });
 
-  it("exposes the advanced area as a named disclosure", async () => {
-    renderShell("/projects");
-    const toggle = screen.getByRole("button", { name: "Advanced" });
-    expect(toggle.getAttribute("aria-expanded")).toBe("true");
-    expect(screen.getByRole("link", { name: "Overview" })).toBeDefined();
-    await userEvent.click(toggle);
-    expect(toggle.getAttribute("aria-expanded")).toBe("false");
-    expect(screen.queryByRole("link", { name: "Overview" })).toBeNull();
-    await userEvent.click(toggle);
-    expect(toggle.getAttribute("aria-expanded")).toBe("true");
-    expect(screen.getByRole("link", { name: "Overview" })).toBeDefined();
-  });
-
   it("labels request workspaces, access routes and their owning section", () => {
     renderShell("/requests/request-1");
     expect(screen.getByText("Request")).toBeDefined();
     expect(
       screen
-        .getByRole("link", { name: "New request" })
+        .getByRole("link", { name: "Requests" })
         .getAttribute("aria-current"),
     ).toBe("page");
   });
@@ -160,14 +144,9 @@ describe("AppShell", () => {
     );
     expect(
       screen
-        .getByRole("link", { name: "Access & Devices" })
-        .getAttribute("aria-current"),
-    ).toBe("page");
-    expect(
-      screen
         .getByRole("link", { name: "Settings" })
         .getAttribute("aria-current"),
-    ).toBeNull();
+    ).toBe("page");
   });
 
   it("can collapse and expand the desktop sidebar without losing names", async () => {
@@ -247,15 +226,13 @@ describe("AppShell", () => {
     );
     for (const name of [
       "New request",
+      "Requests",
       "Projects",
       "Campaigns",
       "Decisions",
       "Agent Office",
       "Settings",
-      "Overview",
-      "Actions",
       "Activity & telemetry",
-      "Access & Devices",
     ]) {
       expect(screen.getByRole("link", { name })).toBeDefined();
     }

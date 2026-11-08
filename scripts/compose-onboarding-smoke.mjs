@@ -29,7 +29,7 @@ try {
   await page.getByText(/Factory first-run setup/i).waitFor({ timeout: 15000 });
   await page.locator('.gate input[type="password"]').fill(code);
   await page.getByRole("button", { name: "Enroll owner" }).click();
-  await page.getByRole("heading", { name: /Overview/i }).waitFor({ timeout: 15000 });
+  await page.getByRole("heading", { name: "Home", level: 1 }).waitFor({ timeout: 15000 });
 
   await page.getByRole("link", { name: "Settings", exact: true }).click();
   await page.getByRole("heading", { name: /Providers & Models/i }).waitFor();
@@ -48,15 +48,8 @@ try {
   await page.getByRole("button", { name: "Save project config" }).click();
   await page.getByText(/Project config revision/).waitFor({ timeout: 15000 });
 
-  await page.getByRole("link", { name: "Actions", exact: true }).click();
-  const objective = `onboarding smoke ${Date.now()}`;
-  await page.getByTestId("action-objective").fill(objective);
-  await page.getByRole("button", { name: "Create Action" }).click();
-  await page.getByText(/Created Action/).waitFor({ timeout: 15000 });
-
-  await page.goto(`${base}/#/delegations`);
-  await page.getByRole("button", { name: "Create delegation" }).click();
-  await page.getByText(/Delegation .* created/).waitFor({ timeout: 15000 });
+  await page.goto(`${base}/#/requests`);
+  await page.getByRole("heading", { name: "Requests", exact: true }).waitFor();
 
   await page.screenshot({ path: `${evidence}/onboarding-complete.png`, fullPage: true });
   assert.deepEqual(consoleErrors, [], `console errors: ${consoleErrors.join(" | ")}`);

@@ -1,429 +1,230 @@
-import { useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import { CancelCampaign } from "../CancelCampaign";
+import { Badge } from "../components/ui/Badge";
+import { Button } from "../components/ui/Button";
+import { Select } from "../components/ui/Field";
 import {
-  type Action,
-  type Attempt,
-  type Campaign,
-  type Candidate,
-  CoreApiError,
-  coreApi,
-  type Gate,
-  newIdempotencyKey,
-  type Run,
-} from "../coreApi";
-import { shortId } from "../format";
+  EmptyState,
+  ErrorState,
+  LoadingState,
+  PageHeader,
+  Panel,
+} from "../components/ui/Surface";
+import { type Campaign, CoreApiError, coreApi, type Project } from "../coreApi";
+import { formatTimestamp } from "../format";
 import { useI18n } from "../i18n";
+import { projectDisplayName } from "../workspace";
+import "./campaigns.css";
+
+const ACTIVE = new Set(["BLOCKED_AUTHORIZATION", "AUTHORIZED"]);
+
+function stateTone(
+  status: string,
+): "success" | "attention" | "danger" | "neutral" {
+  if (status === "AUTHORIZED") return "success";
+  if (status === "BLOCKED_AUTHORIZATION") return "attention";
+  if (status === "FAILED") return "danger";
+  return "neutral";
+}
+
+function stateLabelKey(status: string) {
+  switch (status) {
+    case "BLOCKED_AUTHORIZATION":
+      return "campaigns.state.blockedAuthorization" as const;
+    case "AUTHORIZED":
+      return "campaigns.state.authorized" as const;
+    case "CANCELLED":
+      return "campaigns.state.cancelled" as const;
+    case "FAILED":
+      return "campaigns.state.failed" as const;
+    case "ACCEPTED":
+      return "campaigns.state.accepted" as const;
+    case "REPAIR_REQUIRED":
+      return "campaigns.state.repairRequired" as const;
+    default:
+      return "campaigns.state.unknown" as const;
+  }
+}
 
 export function Campaigns() {
-  const { t, formatDate, formatNumber } = useI18n();
-  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
-  const [actions, setActions] = useState<Action[]>([]);
-  const [candidates, setCandidates] = useState<Candidate[]>([]);
-  const [attempts, setAttempts] = useState<Attempt[]>([]);
-  const [runs, setRuns] = useState<Run[]>([]);
-  const [gates, setGates] = useState<Record<string, Gate | null>>({});
-  const [actionId, setActionId] = useState("");
+  const { t, formatDate } = useI18n();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const projectId = searchParams.get("project") ?? "";
+  const [campaigns, setCampaigns] = useState<Campaign[] | null>(null);
+  const [projects, setProjects] = useState<Project[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const attemptKey = useRef(newIdempotencyKey());
+  const [lastLoadedAt, setLastLoadedAt] = useState<string | null>(null);
 
-  useEffect(() => {
-    let active = true;
-    async function load() {
-      try {
-        const [
-          nextCampaigns,
-          nextActions,
-          nextCandidates,
-          nextAttempts,
-          nextRuns,
-        ] = await Promise.all([
-          coreApi.listCampaigns(),
-          coreApi.listActions(),
-          coreApi.listCandidates(),
-          coreApi.listAttempts(),
-          coreApi.listRuns(),
-        ]);
-        const nextGates: Record<string, Gate | null> = {};
-        await Promise.all(
-          nextCandidates.map(async (candidate) => {
-            nextGates[candidate.id] = await coreApi.getGate(candidate.id);
-          }),
-        );
-        if (!active) {
-          return;
-        }
-        setCampaigns(nextCampaigns);
-        setActions(nextActions);
-        setCandidates(nextCandidates);
-        setAttempts(nextAttempts);
-        setRuns(nextRuns);
-        setGates(nextGates);
-        setActionId((current) => current || nextActions[0]?.id || "");
-      } catch (cause) {
-        if (active) {
-          setError(
-            cause instanceof CoreApiError
-              ? cause.message
-              : t("campaigns.error.load"),
-          );
-        }
-      }
+  const load = useCallback(async () => {
+    try {
+      const [nextCampaigns, nextProjects] = await Promise.all([
+        coreApi.listCampaigns(),
+        coreApi.listProjects(),
+      ]);
+      setCampaigns(nextCampaigns);
+      setProjects(nextProjects);
+      setError(null);
+      setLastLoadedAt(new Date().toISOString());
+    } catch (cause) {
+      setError(
+        cause instanceof CoreApiError
+          ? cause.message
+          : t("campaigns.error.load"),
+      );
     }
-    void load();
-    const timer = setInterval(() => void load(), 4000);
-    return () => {
-      active = false;
-      clearInterval(timer);
-    };
   }, [t]);
 
-  async function refresh() {
-    const [nextCampaigns, nextActions, nextCandidates, nextAttempts, nextRuns] =
-      await Promise.all([
-        coreApi.listCampaigns(),
-        coreApi.listActions(),
-        coreApi.listCandidates(),
-        coreApi.listAttempts(),
-        coreApi.listRuns(),
-      ]);
-    setCampaigns(nextCampaigns);
-    setActions(nextActions);
-    setCandidates(nextCandidates);
-    setAttempts(nextAttempts);
-    setRuns(nextRuns);
-    const nextGates: Record<string, Gate | null> = {};
-    await Promise.all(
-      nextCandidates.map(async (candidate) => {
-        nextGates[candidate.id] = await coreApi.getGate(candidate.id);
-      }),
+  useEffect(() => {
+    void load();
+    const timer = window.setInterval(() => void load(), 6000);
+    return () => window.clearInterval(timer);
+  }, [load]);
+
+  const projectById = useMemo(
+    () => new Map(projects.map((project) => [project.id, project])),
+    [projects],
+  );
+
+  const rows = (campaigns ?? [])
+    .map((campaign) => ({
+      campaign,
+      project: campaign.project_id
+        ? projectById.get(campaign.project_id)
+        : undefined,
+    }))
+    .filter((row) => !projectId || row.project?.id === projectId)
+    .sort((left, right) => {
+      const rightStatus =
+        right.campaign.effective_status ?? right.campaign.status;
+      const leftStatus = left.campaign.effective_status ?? left.campaign.status;
+      const activeDelta =
+        Number(ACTIVE.has(rightStatus)) - Number(ACTIVE.has(leftStatus));
+      return (
+        activeDelta ||
+        right.campaign.created_at.localeCompare(left.campaign.created_at)
+      );
+    });
+
+  function setProject(value: string) {
+    setSearchParams(
+      (current) => {
+        const next = new URLSearchParams(current);
+        if (value) next.set("project", value);
+        else next.delete("project");
+        return next;
+      },
+      { replace: true },
     );
-    setGates(nextGates);
-  }
-
-  async function onCreate(event: React.FormEvent) {
-    event.preventDefault();
-    setBusy(true);
-    setError(null);
-    setNotice(null);
-    try {
-      const campaign = await coreApi.createCampaign({
-        action_id: actionId,
-        idempotency_key: attemptKey.current,
-      });
-      attemptKey.current = newIdempotencyKey();
-      setNotice(
-        t("campaigns.notice.created", {
-          id: shortId(campaign.id),
-          status: campaign.status,
-        }),
-      );
-      await refresh();
-    } catch (cause) {
-      setError(
-        cause instanceof CoreApiError
-          ? cause.message
-          : t("campaigns.error.create"),
-      );
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function onAuthorize(campaign: Campaign) {
-    setBusy(true);
-    setError(null);
-    setNotice(null);
-    try {
-      const authorization = await coreApi.authorizeFixtureCampaign(campaign.id);
-      setNotice(
-        t("campaigns.notice.authorized", {
-          id: shortId(campaign.id),
-          risk: authorization.riskClass,
-          mode: authorization.executionMode,
-        }),
-      );
-      await refresh();
-    } catch (cause) {
-      setError(
-        cause instanceof CoreApiError
-          ? cause.message
-          : t("campaigns.error.authorize"),
-      );
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function onQueueRun(campaign: Campaign) {
-    setBusy(true);
-    setError(null);
-    setNotice(null);
-    try {
-      const run = await coreApi.createCampaignRun(campaign.id);
-      setNotice(t("campaigns.notice.queued", { id: shortId(run.id) }));
-      await refresh();
-    } catch (cause) {
-      setError(
-        cause instanceof CoreApiError
-          ? cause.message
-          : t("campaigns.error.queueRun"),
-      );
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function onCancelled(campaign: Campaign) {
-    setNotice(
-      t("campaigns.notice.cancelled", {
-        id: shortId(campaign.id),
-        status: campaign.status,
-      }),
-    );
-    setError(null);
-    try {
-      await refresh();
-    } catch (cause) {
-      setError(
-        cause instanceof CoreApiError
-          ? cause.message
-          : t("campaigns.error.refresh"),
-      );
-    }
-  }
-
-  const actionById = new Map(actions.map((action) => [action.id, action]));
-  const runByCampaign = new Map<string, Run>();
-  for (const run of runs) {
-    if (!runByCampaign.has(run.campaign_id)) {
-      runByCampaign.set(run.campaign_id, run);
-    }
-  }
-  const attemptById = new Map(attempts.map((attempt) => [attempt.id, attempt]));
-  const runById = new Map(runs.map((run) => [run.id, run]));
-
-  function campaignForCandidate(candidate: Candidate): string | undefined {
-    const attempt = attemptById.get(candidate.attempt_id);
-    return attempt ? runById.get(attempt.run_id)?.campaign_id : undefined;
   }
 
   return (
     <div className="campaigns-workspace">
-      <h2>{t("campaigns.title")}</h2>
-      <p className="muted">{t("campaigns.description")}</p>
-      {error && <p className="error">{error}</p>}
-      {notice && <p className="notice">{notice}</p>}
+      <PageHeader
+        title={t("campaigns.title")}
+        description={t("campaigns.descriptionSimplified")}
+        meta={
+          lastLoadedAt && (
+            <span>
+              {t("campaigns.updated", { date: formatTimestamp(lastLoadedAt) })}
+            </span>
+          )
+        }
+        actions={
+          <Link className="ui-button ui-button--primary ui-button--md" to="/">
+            {t("campaigns.newRequest")}
+          </Link>
+        }
+      />
 
-      {actions.length === 0 ? (
-        <p className="notice">
-          {t("campaigns.needAction")}{" "}
-          <Link to="/actions">{t("campaigns.openActions")}</Link>
-        </p>
-      ) : (
-        <form className="create" onSubmit={onCreate}>
-          <h3>{t("campaigns.create.title")}</h3>
-          <label>
-            {t("campaigns.action")}
-            <select
-              data-testid="campaign-action"
-              value={actionId}
-              onChange={(event) => {
-                setActionId(event.target.value);
-                attemptKey.current = newIdempotencyKey();
-              }}
-              required
-            >
-              {actions.map((action) => (
-                <option key={action.id} value={action.id}>
-                  {action.objective} ({shortId(action.id)})
-                </option>
-              ))}
-            </select>
-          </label>
-          <button type="submit" disabled={busy || actionId === ""}>
-            {busy ? t("campaigns.creating") : t("campaigns.create")}
-          </button>
-        </form>
+      <Panel className="campaigns-filter">
+        <Select
+          label={t("campaigns.filter.project")}
+          value={projectId}
+          onChange={(event) => setProject(event.target.value)}
+        >
+          <option value="">{t("campaigns.filter.allProjects")}</option>
+          {projects.map((project) => (
+            <option key={project.id} value={project.id}>
+              {projectDisplayName(project)}
+            </option>
+          ))}
+        </Select>
+      </Panel>
+
+      {error && (
+        <ErrorState
+          message={error}
+          action={
+            <Button onClick={() => void load()}>{t("common.retry")}</Button>
+          }
+        />
       )}
-
-      <h3>{t("campaigns.all", { count: formatNumber(campaigns.length) })}</h3>
-      {campaigns.length === 0 ? (
-        <p className="muted">{t("campaigns.empty")}</p>
-      ) : (
-        <div className="table-responsive">
-          <table aria-label={t("campaigns.table.label")}>
-            <thead>
-              <tr>
-                <th>{t("campaigns.table.campaign")}</th>
-                <th>{t("campaigns.table.action")}</th>
-                <th>{t("campaigns.table.status")}</th>
-                <th>{t("campaigns.table.run")}</th>
-                <th>{t("campaigns.table.created")}</th>
-                <th>{t("campaigns.table.control")}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {campaigns.map((campaign) => {
-                const action = actionById.get(campaign.action_id);
-                const run = runByCampaign.get(campaign.id);
-                return (
-                  <tr key={campaign.id}>
-                    <td data-label={t("campaigns.table.campaign")}>
-                      <Link to={`/campaigns/${campaign.id}`}>
-                        <code>{shortId(campaign.id)}</code>
-                      </Link>
-                    </td>
-                    <td data-label={t("campaigns.table.action")}>
-                      {action ? (
-                        action.objective
-                      ) : (
-                        <code>{shortId(campaign.action_id)}</code>
-                      )}
-                    </td>
-                    <td data-label={t("campaigns.table.status")}>
-                      <span className="pill">{campaign.status}</span>
-                    </td>
-                    <td data-label={t("campaigns.table.run")}>
-                      {run ? (
-                        <Link to="/runs">
-                          <code>{shortId(run.id)}</code>
-                        </Link>
-                      ) : (
-                        <span className="muted">—</span>
-                      )}
-                    </td>
-                    <td
-                      className="muted"
-                      data-label={t("campaigns.table.created")}
-                    >
-                      {formatDate(campaign.created_at)}
-                    </td>
-                    <td data-label={t("campaigns.table.control")}>
-                      {campaign.status === "BLOCKED_AUTHORIZATION" && (
-                        <button
-                          type="button"
-                          disabled={busy}
-                          onClick={() => void onAuthorize(campaign)}
-                        >
-                          {t("campaigns.authorize")}
-                        </button>
-                      )}
-                      {campaign.status === "AUTHORIZED" && !run && (
-                        <button
-                          type="button"
-                          disabled={busy}
-                          onClick={() => void onQueueRun(campaign)}
-                        >
-                          {t("campaigns.queueRun")}
-                        </button>
-                      )}
-                      {run && (
-                        <span className="muted">
-                          {t("campaigns.runStatus", { status: run.status })}
-                        </span>
-                      )}
-                      <CancelCampaign
-                        campaign={campaign}
-                        disabled={busy}
-                        onCancelled={onCancelled}
-                      />
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+      {!error && campaigns === null && (
+        <LoadingState label={t("campaigns.loading")} />
       )}
-
-      <h3>
-        {t("campaigns.candidates.title", {
-          count: formatNumber(candidates.length),
-        })}
-      </h3>
-      <p className="muted">{t("campaigns.candidates.description")}</p>
-      {candidates.length === 0 ? (
-        <p className="muted">{t("campaigns.candidates.empty")}</p>
-      ) : (
-        <div className="table-responsive">
-          <table
-            aria-label={t("campaigns.candidates.title", {
-              count: formatNumber(candidates.length),
-            })}
-          >
-            <thead>
-              <tr>
-                <th>{t("campaigns.table.candidate")}</th>
-                <th>{t("campaigns.table.commit")}</th>
-                <th>{t("campaigns.table.attempt")}</th>
-                <th>{t("campaigns.table.implementer")}</th>
-                <th>{t("campaigns.table.campaign")}</th>
-                <th>{t("campaigns.table.gate")}</th>
-                <th>{t("campaigns.table.reasons")}</th>
-                <th>{t("campaigns.table.recorded")}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {candidates.map((candidate) => {
-                const gate = gates[candidate.id];
-                const campaignId = campaignForCandidate(candidate);
-                return (
-                  <tr key={candidate.id}>
-                    <td data-label={t("campaigns.table.candidate")}>
-                      <code>{shortId(candidate.id)}</code>
-                    </td>
-                    <td data-label={t("campaigns.table.commit")}>
-                      <code title={candidate.commit_sha}>
-                        {shortId(candidate.commit_sha, 12)}
-                      </code>
-                    </td>
-                    <td data-label={t("campaigns.table.attempt")}>
-                      <code>{shortId(candidate.attempt_id)}</code>
-                    </td>
-                    <td data-label={t("campaigns.table.implementer")}>
-                      <code>{candidate.implementer_id}</code>
-                    </td>
-                    <td data-label={t("campaigns.table.campaign")}>
-                      {campaignId ? (
-                        <Link to={`/campaigns/${campaignId}`}>
-                          <code>{shortId(campaignId)}</code>
-                        </Link>
-                      ) : (
-                        <span className="muted">—</span>
-                      )}
-                    </td>
-                    <td data-label={t("campaigns.table.gate")}>
-                      {gate ? (
-                        <span
-                          className={`pill gate-${gate.outcome.toLowerCase()}`}
-                        >
-                          {gate.outcome}
-                        </span>
-                      ) : (
-                        <span className="muted">PENDING</span>
-                      )}
-                    </td>
-                    <td
-                      className="muted"
-                      data-label={t("campaigns.table.reasons")}
-                    >
-                      {gate?.reasons.join("; ") || "—"}
-                    </td>
-                    <td
-                      className="muted"
-                      data-label={t("campaigns.table.recorded")}
-                    >
-                      {formatDate(candidate.created_at)}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+      {!error && campaigns !== null && rows.length === 0 && (
+        <Panel>
+          <EmptyState
+            title={t("campaigns.emptyTitle")}
+            description={t("campaigns.emptyDescription")}
+            action={
+              <Link
+                className="ui-button ui-button--primary ui-button--md"
+                to="/"
+              >
+                {t("campaigns.startRequest")}
+              </Link>
+            }
+          />
+        </Panel>
+      )}
+      {!error && rows.length > 0 && (
+        <Panel className="campaigns-list">
+          {rows.map(({ campaign, project }) => (
+            <article className="campaign-row" key={campaign.id}>
+              <div className="campaign-row-main">
+                <div className="campaign-row-title">
+                  <Link to={`/campaigns/${campaign.id}`}>
+                    {campaign.objective ?? t("campaigns.untitled")}
+                  </Link>
+                  <Badge
+                    tone={stateTone(
+                      campaign.effective_status ?? campaign.status,
+                    )}
+                  >
+                    {t(
+                      stateLabelKey(
+                        campaign.effective_status ?? campaign.status,
+                      ),
+                    )}
+                  </Badge>
+                </div>
+                <p className="muted">
+                  {project
+                    ? projectDisplayName(project)
+                    : t("campaigns.unknownProject")}
+                  {" · "}
+                  {t("campaigns.updatedShort", {
+                    date: formatDate(campaign.created_at),
+                  })}
+                </p>
+              </div>
+              <div className="campaign-row-actions">
+                <Link
+                  className="ui-button ui-button--secondary ui-button--sm"
+                  to={`/campaigns/${campaign.id}`}
+                >
+                  {t("campaigns.open")}
+                </Link>
+                <CancelCampaign
+                  campaign={campaign}
+                  onCancelled={() => void load()}
+                />
+              </div>
+            </article>
+          ))}
+        </Panel>
       )}
     </div>
   );

@@ -1,3 +1,4 @@
+import { zipSync } from "fflate";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Badge } from "../components/ui/Badge";
@@ -9,7 +10,6 @@ import {
   type GitHubRepository,
   newIdempotencyKey,
   type Project,
-  type ProjectBrowseListing,
   type ProjectConfig,
   type ProjectImportOptions,
 } from "../coreApi";
@@ -72,12 +72,6 @@ export function Projects() {
   const [importing, setImporting] = useState<string | null>(null);
   const [repositoryName, setRepositoryName] = useState("");
 
-  const [localPath, setLocalPath] = useState("");
-  const [localName, setLocalName] = useState("");
-  const [browse, setBrowse] = useState<ProjectBrowseListing | null>(null);
-  const [browseOpen, setBrowseOpen] = useState(false);
-  const [browseBusy, setBrowseBusy] = useState(false);
-  const [browseError, setBrowseError] = useState<string | null>(null);
   const [url, setUrl] = useState("");
   const [urlName, setUrlName] = useState("");
 
@@ -174,27 +168,6 @@ export function Projects() {
     }
   }
 
-  async function browseDirectories(path = "") {
-    setBrowseOpen(true);
-    setBrowseBusy(true);
-    setBrowseError(null);
-    try {
-      setBrowse(await coreApi.browseProjectDirectories(path));
-    } catch (cause) {
-      setBrowseError(errorMessage(cause, t("projects.browse.error")));
-    } finally {
-      setBrowseBusy(false);
-    }
-  }
-
-  function selectBrowsedDirectory() {
-    if (browse) {
-      setLocalPath(browse.current_path);
-      attemptKey.current = newIdempotencyKey();
-    }
-    setBrowseOpen(false);
-  }
-
   async function connectRepository(repository: GitHubRepository) {
     const [owner, repo] = repository.full_name.split("/");
     setImporting(repository.full_name);
@@ -223,30 +196,81 @@ export function Projects() {
     }
   }
 
-  async function onRegisterLocal(event: React.FormEvent) {
-    event.preventDefault();
+  async function importComputerFolder() {
+    const picker = (
+      window as unknown as {
+        showDirectoryPicker?: (options?: {
+          mode?: "read" | "readwrite";
+        }) => Promise<FileSystemDirectoryHandle>;
+      }
+    ).showDirectoryPicker;
+    if (!picker) {
+      setError(t("projects.computer.unsupported"));
+      return;
+    }
     setBusy(true);
     setError(null);
     setNotice(null);
     try {
-      const project = await coreApi.registerProject({
-        repository: localPath.trim(),
-        name: localName.trim() || undefined,
-        idempotency_key: attemptKey.current,
-      });
-      attemptKey.current = newIdempotencyKey();
-      setLocalPath("");
-      setLocalName("");
-      await refresh();
-      setNotice(
-        t("projects.register.notice", {
-          id: shortId(project.id),
-          commit: shortId(project.base_commit, 12),
-        }),
+      const handle = await picker({ mode: "read" });
+      const files: Record<string, Uint8Array> = {};
+      const skipped = new Set([
+        "node_modules",
+        "target",
+        "dist",
+        "build",
+        ".next",
+        ".nuxt",
+        ".venv",
+        "venv",
+        "__pycache__",
+        ".turbo",
+        ".cache",
+      ]);
+      let total = 0;
+      let count = 0;
+      type BrowserEntry = {
+        kind: string;
+        getFile(): Promise<File>;
+        entries?(): AsyncIterableIterator<[string, BrowserEntry]>;
+      };
+      type BrowserDirectory = BrowserEntry & {
+        entries(): AsyncIterableIterator<[string, BrowserEntry]>;
+      };
+      async function walk(directory: BrowserDirectory, prefix: string) {
+        for await (const [name, entry] of directory.entries()) {
+          if (entry.kind === "directory" && skipped.has(name)) continue;
+          const relative = prefix ? `${prefix}/${name}` : name;
+          if (entry.kind === "file") {
+            const file = await entry.getFile();
+            if (file.size > 64 * 1024 * 1024) {
+              throw new Error(t("projects.computer.fileTooLarge", { name }));
+            }
+            total += file.size;
+            count += 1;
+            if (total > 512 * 1024 * 1024 || count > 20_000) {
+              throw new Error(t("projects.computer.tooLarge"));
+            }
+            files[relative] = new Uint8Array(await file.arrayBuffer());
+          } else if (entry.entries) {
+            await walk(entry as BrowserDirectory, relative);
+          }
+        }
+      }
+      await walk(handle as unknown as BrowserDirectory, "");
+      if (count === 0) {
+        throw new Error(t("projects.computer.emptyFolder"));
+      }
+      const project = await coreApi.importProjectArchive(
+        handle.name,
+        newIdempotencyKey(),
+        zipSync(files, { level: 6 }),
       );
+      await refresh();
       navigate(`/projects/${encodeURIComponent(project.id)}`);
     } catch (cause) {
-      setError(errorMessage(cause, t("projects.error.register")));
+      if (cause instanceof DOMException && cause.name === "AbortError") return;
+      setError(errorMessage(cause, t("projects.computer.error")));
     } finally {
       setBusy(false);
     }
@@ -517,123 +541,20 @@ export function Projects() {
                 <p>{options.local.detail}</p>
               </div>
             ) : (
-              <form className="create" onSubmit={onRegisterLocal}>
-                <p className="muted">{options.local.detail}</p>
-                <label>
-                  {t("projects.import.local.path")}
-                  <input
-                    data-testid="project-local-path"
-                    value={localPath}
-                    onChange={(event) => {
-                      setLocalPath(event.target.value);
-                      attemptKey.current = newIdempotencyKey();
-                    }}
-                    placeholder={
-                      options.local.managed_root ?? "/projects/checkout"
-                    }
-                    required
-                  />
-                </label>
-                <div className="project-browse-actions">
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => void browseDirectories()}
-                    disabled={browseBusy}
-                  >
-                    {browseBusy
-                      ? t("projects.browse.loading")
-                      : t("projects.browse.open")}
-                  </Button>
-                </div>
-                {browseOpen && (
-                  <section
-                    className="project-browser"
-                    aria-label={t("projects.browse.title")}
-                  >
-                    <div className="project-browser-head">
-                      <span>
-                        {t("projects.browse.current")}{" "}
-                        <code>{browse?.path || "/"}</code>
-                      </span>
-                      <div className="row">
-                        {browse?.parent !== null && (
-                          <Button
-                            type="button"
-                            variant="quiet"
-                            size="sm"
-                            onClick={() =>
-                              void browseDirectories(browse?.parent ?? "")
-                            }
-                            disabled={browseBusy}
-                          >
-                            {t("projects.browse.up")}
-                          </Button>
-                        )}
-                        <Button
-                          type="button"
-                          variant="primary"
-                          size="sm"
-                          onClick={selectBrowsedDirectory}
-                          disabled={browse === null}
-                        >
-                          {t("projects.browse.select")}
-                        </Button>
-                      </div>
-                    </div>
-                    {browseError && (
-                      <p className="error" role="alert">
-                        {browseError}
-                      </p>
-                    )}
-                    {browse !== null && browse.directories.length === 0 ? (
-                      <p className="muted">{t("projects.browse.empty")}</p>
-                    ) : (
-                      <ul className="project-browser-list">
-                        {(browse?.directories ?? []).map((entry) => (
-                          <li key={entry.path}>
-                            <button
-                              type="button"
-                              className="project-browser-entry"
-                              onClick={() => void browseDirectories(entry.path)}
-                              disabled={browseBusy}
-                            >
-                              <span>{entry.name}</span>
-                              {entry.is_git && (
-                                <Badge tone="info">
-                                  {t("projects.browse.git")}
-                                </Badge>
-                              )}
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                    {browse?.truncated && (
-                      <p className="muted">{t("projects.browse.truncated")}</p>
-                    )}
-                  </section>
-                )}
-                <label>
-                  {t("projects.import.name")}
-                  <input
-                    value={localName}
-                    onChange={(event) => setLocalName(event.target.value)}
-                    placeholder={t("projects.import.namePlaceholder")}
-                    maxLength={200}
-                  />
-                </label>
+              <div className="create project-computer-import">
+                <p className="muted">{t("projects.computer.description")}</p>
                 <Button
-                  type="submit"
+                  type="button"
                   variant="primary"
-                  disabled={busy || localPath.trim() === ""}
+                  onClick={() => void importComputerFolder()}
+                  disabled={busy}
                 >
                   {busy
-                    ? t("projects.import.local.busy")
-                    : t("projects.import.local.submit")}
+                    ? t("projects.computer.preparing")
+                    : t("projects.computer.select")}
                 </Button>
-              </form>
+                <p className="muted">{t("projects.computer.note")}</p>
+              </div>
             )}
           </section>
         )}

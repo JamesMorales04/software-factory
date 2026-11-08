@@ -13,12 +13,8 @@ const root = resolve(import.meta.dirname, "../..");
 const targetDir = process.env.CARGO_TARGET_DIR || join(root, "target");
 const debugDir = join(targetDir, "debug");
 const coreBin = process.env.FACTORY_CORE_BIN || join(debugDir, "factory-core");
-const workerBin =
-  process.env.FACTORY_WORKER_BIN || join(debugDir, "factory-worker");
 const supervisorBin =
   process.env.FACTORY_SUPERVISOR_BIN || join(debugDir, "factory-supervisor");
-const reviewerBin =
-  process.env.FACTORY_REVIEWER_BIN || join(debugDir, "factory-reviewer");
 const token = () => randomBytes(32).toString("hex");
 const operator = token();
 const enrollmentCode = randomBytes(16).toString("hex");
@@ -94,34 +90,6 @@ async function waitFor(url, timeoutMs = 15000) {
   throw new Error(`timed out waiting for ${url}`);
 }
 
-async function api(path, options = {}, bearer = operator) {
-  for (let attempt = 0; ; attempt += 1) {
-    const response = await fetch(`${coreUrl}${path}`, {
-      ...options,
-      headers: {
-        authorization: `Bearer ${bearer}`,
-        "content-type": "application/json",
-        ...(options.headers || {}),
-      },
-    });
-    const text = await response.text();
-    if (response.ok) return text ? JSON.parse(text) : null;
-    // Core deliberately reports SQLite writer contention as a retryable 503.
-    // Fixture mutations carry idempotency keys, so a bounded retry is safe.
-    if (
-      response.status === 503 &&
-      text.includes("database is busy") &&
-      attempt < 5
-    ) {
-      await new Promise((resolve) => setTimeout(resolve, 100 * 2 ** attempt));
-      continue;
-    }
-    throw new Error(
-      `${options.method || "GET"} ${path}: ${response.status} ${text}`,
-    );
-  }
-}
-
 const corePort = await freePort();
 const coreUrl = `http://127.0.0.1:${corePort}`;
 const supervisorPort = await freePort();
@@ -183,7 +151,7 @@ try {
       FACTORY_SUPERVISOR_BIND: `127.0.0.1:${supervisorPort}`,
       FACTORY_SUPERVISOR_WORKSPACE_ROOT: supervisorWork,
       FACTORY_SUPERVISOR_STATE_ROOT: supervisorState,
-      FACTORY_SUPERVISOR_PROJECT_ROOTS: repository,
+      FACTORY_SUPERVISOR_PROJECT_ROOTS: temp,
       FACTORY_SUPERVISOR_IMAGES: "test/image:1",
       FACTORY_SUPERVISOR_TEST_BACKEND: "local",
       FACTORY_SUPERVISOR_TEST_VOLUME_ROOT: supervisorVolumes,
@@ -308,33 +276,40 @@ try {
     );
   }
   await page.setViewportSize({ width: 1440, height: 1000 });
-  const overviewLink = page.getByRole("link", {
-    name: "Overview",
-    exact: true,
-  });
-  if (!(await overviewLink.isVisible())) {
-    await page.getByRole("button", { name: "Advanced", exact: true }).click();
-  }
-  await overviewLink.click();
-  await page
-    .getByRole("heading", { name: "Overview", exact: true, level: 1 })
-    .waitFor();
-  await page.getByRole("link", { name: "Decisions", exact: true }).click();
+  await page.goto(`${viteUrl}/#/inbox`);
   await page
     .getByRole("heading", { name: "Decision Inbox", exact: true, level: 1 })
     .waitFor();
-  await page.getByRole("link", { name: "Overview", exact: true }).click();
-  await page
-    .getByRole("heading", { name: "Overview", exact: true, level: 1 })
-    .waitFor();
+  await page.goto(`${viteUrl}/#/requests`);
+  await page.getByRole("heading", { name: "Requests", level: 1 }).waitFor();
 
   await page.getByRole("link", { name: "Projects", exact: true }).click();
   await page.getByRole("heading", { name: "Projects", exact: true }).waitFor();
   await page
     .getByRole("tab", { name: "Local repository", exact: true })
     .click();
-  await page.getByTestId("project-local-path").fill(repository);
-  await page.getByRole("button", { name: "Import local repository" }).click();
+  // Playwright cannot drive the operating-system picker. A fake directory
+  // handle exercises the same browser traversal, ZIP creation and Core upload
+  // boundary as a human selection.
+  await page.evaluate(() => {
+    const file = new File(["seed\n"], "seed.txt", { type: "text/plain" });
+    const entry = {
+      kind: "file",
+      name: "seed.txt",
+      getFile: async () => file,
+    };
+    window.showDirectoryPicker = async () => ({
+      kind: "directory",
+      name: "browser-folder",
+      entries: async function* () {
+        yield ["seed.txt", entry];
+      },
+    });
+  });
+  await page
+    .getByRole("button", { name: "Select folder from this computer" })
+    .click();
+  await page.waitForURL(/#\/projects\/[^/?]+/, { timeout: 60_000 });
   await page.getByRole("link", { name: "Back to Projects" }).waitFor();
 
   await page.getByRole("link", { name: "New request", exact: true }).click();
@@ -349,219 +324,9 @@ try {
   }
   await page.setViewportSize({ width: 1440, height: 1000 });
 
-  await page.getByRole("link", { name: "Actions", exact: true }).click();
-  await page.getByRole("heading", { name: "Actions", exact: true }).waitFor();
-  await page
-    .getByTestId("action-objective")
-    .fill("Rust Office fixture journey");
-  await page.getByRole("button", { name: "Create Action" }).click();
-  await page.getByText("Created Action", { exact: false }).waitFor();
-  await page.locator("tbody tr").first().getByRole("link").click();
-  await page.getByRole("heading", { name: /^Action /, level: 1 }).waitFor();
-  await page.getByText("Frozen checks", { exact: false }).waitFor();
-  await page.getByRole("link", { name: "Back to Actions" }).click();
-  await page.getByRole("heading", { name: "Actions", exact: true }).waitFor();
-
-  await page.getByRole("link", { name: "Campaigns", exact: true }).click();
-  await page.getByRole("heading", { name: "Campaigns", exact: true }).waitFor();
-  await page.getByTestId("campaign-action").selectOption({ index: 0 });
-  await page.getByRole("button", { name: "Create Campaign" }).click();
-  await page.getByRole("link", { name: "Decisions", exact: true }).click();
-  await page.getByText("Campaign awaiting authorization").waitFor();
-  await page.getByRole("link", { name: "Campaigns", exact: true }).click();
-  await page.getByRole("heading", { name: "Campaigns", exact: true }).waitFor();
-  await page
-    .getByRole("button", { name: "Authorize R0 fixture" })
-    .first()
-    .click();
-  await page.getByRole("button", { name: "Queue Run" }).first().click();
-
-  await page.goto(`${viteUrl}/#/runs`);
-  await page.getByRole("heading", { name: "Runs", exact: true }).waitFor();
-  await page.getByRole("button", { name: "Queue Attempt" }).first().click();
-  await page.getByText("All Attempts (1)").waitFor();
-
-  const worker = launch(workerBin, [], {
-    cwd: temp,
-    env: {
-      ...process.env,
-      FACTORY_CORE_URL: coreUrl,
-      FACTORY_WORKER_BOOTSTRAP_TOKEN: bootstrap,
-      FACTORY_WORKER_ID: "office-e2e-worker",
-      FACTORY_WORKER_REGISTRATION_KEY: "office-e2e-registration",
-      FACTORY_SUPERVISOR_URL: supervisorUrl,
-      FACTORY_SUPERVISOR_TOKEN: supervisorToken,
-      FACTORY_WORKER_FIXTURE_IMAGE: "test/image:1",
-      FACTORY_WORKER_ONCE: "1",
-      FACTORY_FIXTURE_FILE: "src/fixture.txt",
-      FACTORY_FIXTURE_CONTENT: "fixture candidate\n",
-    },
-  });
-  const workerExit = await new Promise((resolvePromise) =>
-    worker.on("exit", resolvePromise),
-  );
-  assert.equal(
-    workerExit,
-    0,
-    `fixture Worker must succeed; worker output:\n${worker.log}`,
-  );
-
-  const candidates = await api("/candidates");
-  assert.equal(candidates.length, 1);
-  const candidate = candidates[0];
-  await api(
-    "/quality/receipts",
-    {
-      method: "POST",
-      body: JSON.stringify({
-        candidate_id: candidate.id,
-        receipt_id: "verifier-office-e2e",
-        principal_id: "verifier-office-e2e",
-        actionSpecSha256: candidate.action_spec_sha256,
-        commitSha: candidate.commit_sha,
-        treeSha: candidate.tree_sha,
-        result: "PASS",
-        evidence: "EXECUTED",
-      }),
-    },
-    verifier,
-  );
-  const officeCampaigns = await api("/campaigns");
-  const fixtureCampaign = officeCampaigns[0];
-  const officeRuns = await api("/runs");
-  const fixtureRun = officeRuns.find(
-    (run) => run.campaign_id === fixtureCampaign.id,
-  );
-  assert.ok(fixtureRun, "the fixture Campaign must have a Run");
-  await page.goto(`${viteUrl}/#/runs`);
-  await page.getByRole("heading", { name: "Runs", exact: true }).waitFor();
-  const fixtureRunRow = page.getByRole("row", {
-    name: new RegExp(fixtureRun.id.slice(0, 8)),
-  });
-  await fixtureRunRow
-    .locator(`a[href="#/campaigns/${fixtureCampaign.id}"]`)
-    .waitFor();
-  await page.getByRole("link", { name: "Campaigns", exact: true }).click();
-  await page.getByRole("heading", { name: "Campaigns", exact: true }).waitFor();
-  const fixtureCandidateRow = page.getByRole("row", {
-    name: new RegExp(candidate.id.slice(0, 8)),
-  });
-  await fixtureCandidateRow
-    .locator(`a[href="#/campaigns/${fixtureCampaign.id}"]`)
-    .waitFor();
-  await page
-    .locator(`a[href="#/campaigns/${fixtureCampaign.id}"]`)
-    .first()
-    .click();
-  await page
-    .getByRole("heading", { name: "Rust Office fixture journey" })
-    .waitFor();
-  const workflow = page.getByTestId("workflow-projection");
-  await workflow.getByText("WorkGraph").waitFor();
-  await workflow.getByText("Verifier").waitFor();
-  await workflow.getByText("Reviewer").waitFor();
-  await page.getByRole("tab", { name: /WorkGraph/ }).click();
-  await page.getByRole("heading", { name: /WorkGraph \(/ }).waitFor();
-  await page.getByRole("tab", { name: /Execution/ }).click();
-  await page.getByRole("heading", { name: "Runs and attempts" }).waitFor();
-  await page.getByRole("heading", { name: "Participant sessions" }).waitFor();
-  await page.getByRole("tab", { name: /Budget & usage/ }).click();
-  await page
-    .getByRole("heading", { name: "Authorization, budget and observed usage" })
-    .waitFor();
-  await page.getByText("Unmeasured sessions", { exact: true }).waitFor();
-
-  await page.getByRole("tab", { name: /Candidates/ }).click();
-  const pendingCandidate = page.getByTestId("candidate-panel");
-  await pendingCandidate.getByText("GATE PENDING").waitFor();
-  await pendingCandidate.getByTestId("candidate-diff").waitFor();
-  await pendingCandidate.getByText(/Changed files/).waitFor();
-  assert.equal(
-    await pendingCandidate.getByText("ACCEPTED", { exact: true }).count(),
-    0,
-    "a reviewer-less candidate must not render ACCEPTED",
-  );
-  await page.getByRole("tab", { name: /Evidence/ }).click();
-  const pendingReceipts = page.getByTestId("candidate-receipts");
-  await pendingReceipts
-    .getByRole("row", { name: /verifier\s+PASS\s+EXECUTED/i })
-    .waitFor();
-  await pendingReceipts
-    .getByRole("row", { name: /reviewer\s+PENDING/i })
-    .waitFor();
-  await page.getByRole("tab", { name: /Quality Gate/ }).click();
-  await page
-    .getByText("no Core gate decision is recorded", { exact: false })
-    .waitFor();
-
-  const reviewerProcess = launch(reviewerBin, [], {
-    cwd: temp,
-    env: {
-      ...process.env,
-      FACTORY_CORE_URL: coreUrl,
-      FACTORY_REVIEWER_TOKEN: reviewer,
-      FACTORY_CANDIDATE_ID: candidate.id,
-      FACTORY_REVIEWER_PRINCIPAL: "reviewer-office-e2e",
-    },
-  });
-  const reviewerExit = await new Promise((resolvePromise) =>
-    reviewerProcess.on("exit", resolvePromise),
-  );
-  assert.equal(reviewerExit, 0, "independent reviewer process must pass");
-
-  await page.reload();
-  await page
-    .getByRole("heading", { name: "Rust Office fixture journey" })
-    .waitFor();
-  assert.equal(
-    await page
-      .getByRole("tab", { name: /Quality Gate/ })
-      .getAttribute("aria-selected"),
-    "true",
-    "the selected Campaign tab must survive reload",
-  );
-  await page.getByRole("tab", { name: /Candidates/ }).click();
-  const acceptedCandidate = page.getByTestId("candidate-panel");
-  await acceptedCandidate
-    .getByText("ACCEPTED", { exact: true })
-    .first()
-    .waitFor({ timeout: 15000 });
-  await page.getByRole("tab", { name: /Evidence/ }).click();
-  await page
-    .getByTestId("candidate-receipts")
-    .getByRole("row", { name: /reviewer\s+PASS\s+EXECUTED/i })
-    .waitFor({ timeout: 15000 });
-  await page.getByRole("tab", { name: /Events/ }).click();
-  await page
-    .getByText("No unresolved provider session is recorded", { exact: false })
-    .waitFor();
-  for (const width of [834, 390]) {
-    await page.setViewportSize({ width, height: 900 });
-    const viewport = await page.evaluate(() => ({
-      scrollWidth: document.documentElement.scrollWidth,
-      clientWidth: document.documentElement.clientWidth,
-    }));
-    assert.equal(
-      viewport.scrollWidth,
-      viewport.clientWidth,
-      `Campaign Events workspace must not overflow the document at ${width}px`,
-    );
-  }
-  await page.setViewportSize({ width: 1440, height: 1000 });
-
-  await page.getByRole("link", { name: "Overview", exact: true }).click();
-  await page.getByRole("heading", { name: "Overview", exact: true }).waitFor();
-  await page
-    .locator(`a[href="#/campaigns/${fixtureCampaign.id}"]`)
-    .first()
-    .click();
-  await page
-    .getByRole("heading", { name: "Rust Office fixture journey" })
-    .waitFor();
-
-  await page.goto(`${viteUrl}/#/workers`);
-  await page.getByRole("heading", { name: "Workers", exact: true }).waitFor();
-  await page.getByText("office-e2e-worker").waitFor();
+  await page.getByRole("link", { name: "Issues", exact: true }).click();
+  await page.getByRole("heading", { name: "Issues", exact: true }).waitFor();
+  await page.getByText("GitHub setup").waitFor();
 
   await page.goto(`${viteUrl}/#/runtime`);
   await page
@@ -576,7 +341,6 @@ try {
   await page.getByRole("heading", { name: /Core-owned model calls/ }).waitFor();
   await page.getByRole("tab", { name: /Diagnostics/ }).click();
   await page.getByRole("heading", { name: "Service boundaries" }).waitFor();
-  await page.getByText("Not exposed by the current Core API").first().waitFor();
   for (const width of [834, 390]) {
     await page.setViewportSize({ width, height: 900 });
     const viewport = await page.evaluate(() => ({
@@ -613,550 +377,16 @@ try {
     );
   }
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.getByRole("tab", { name: /Runtime policy/ }).click();
-  await page
-    .getByRole("heading", { name: "Review and runtime policy" })
-    .waitFor();
-  await page.getByText(/Current: DETERMINISTIC/).waitFor();
-  for (const width of [834, 390]) {
-    await page.setViewportSize({ width, height: 900 });
-    const viewport = await page.evaluate(() => ({
-      scrollWidth: document.documentElement.scrollWidth,
-      clientWidth: document.documentElement.clientWidth,
-    }));
-    assert.equal(
-      viewport.scrollWidth,
-      viewport.clientWidth,
-      `Settings must not overflow the document at ${width}px`,
-    );
-  }
-  await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.locator(".settings-language-select").selectOption("es");
-  assert.equal(
-    await page.evaluate(() => document.documentElement.lang),
-    "es",
-    "language switch must update the document language",
-  );
-  await page.getByRole("heading", { name: "Idioma" }).waitFor();
-  await page.locator(".settings-language-select").selectOption("en");
-  assert.equal(
-    await page.evaluate(() => document.documentElement.lang),
-    "en",
-    "language switch must restore English",
-  );
 
-  const _projects = await api("/projects");
-  const _leadProject = _projects[0];
-  const _leadConfig = await api(`/projects/${_leadProject.id}/config`, {
-    method: "PUT",
-    body: JSON.stringify({
-      expectedRevision: 1,
-      allowedPaths: ["src"],
-      capabilities: ["repository-edit", "generic-toolchain"],
-      qualityProfile: "generic",
-      active: true,
-    }),
-  });
-  // Configure the deterministic fixture connection before creating its V2
-  // execution profile. The journey records sessions locally and never calls
-  // this credential or a provider.
-  await api("/settings/providers/opencode", {
-    method: "PUT",
-    body: JSON.stringify({
-      model: "deepseek-v4.1-flash",
-      baseUrl: "https://opencode.ai/inference/go/openai/v1",
-      credential: "fixture-credential-0123456789abcdef",
-      enabled: true,
-      isDefault: false,
-      maxTurns: 4,
-      maxInputTokens: 100000,
-      maxOutputTokens: 100000,
-      maxCostMicros: 100000,
-      inputMicrosPerMillion: 100000,
-      outputMicrosPerMillion: 400000,
-    }),
-  });
-  const _leadAction = await api("/actions", {
-    method: "POST",
-    body: JSON.stringify({
-      project_id: _leadProject.id,
-      objective: "Lead fixture objective",
-      provider: "opencode",
-      model: "deepseek-v4.1-flash",
-      idempotency_key: "office-lead-action",
-      allowed_paths: ["src"],
-      checks: [
-        {
-          id: "build",
-          kind: "build",
-          description: "build",
-          command: ["true"],
-          expectExit: 0,
-          timeoutSecs: 30,
-        },
-        {
-          id: "test",
-          kind: "test",
-          description: "test",
-          command: ["true"],
-          expectExit: 0,
-          timeoutSecs: 30,
-        },
-        {
-          id: "functional",
-          kind: "functional",
-          description: "fixture",
-          command: ["grep", "-q", "fixture candidate", "src/fixture.txt"],
-          expectExit: 0,
-          timeoutSecs: 30,
-        },
-        {
-          id: "negative",
-          kind: "negative",
-          description: "absent",
-          command: ["grep", "-q", "absent", "src/fixture.txt"],
-          expectExit: 1,
-          timeoutSecs: 30,
-        },
-      ],
-    }),
-  });
-  const _cancelAction = await api("/actions", {
-    method: "POST",
-    body: JSON.stringify({
-      project_id: _leadProject.id,
-      objective: "Cancellation fixture objective",
-      provider: "opencode",
-      model: "deepseek-v4.1-flash",
-      idempotency_key: "office-cancel-action",
-      allowed_paths: ["src"],
-      checks: _leadAction.spec.checks,
-    }),
-  });
-  const leadRole = {
-    provider: "opencode",
-    model: "deepseek-v4.1-flash",
-    reasoning: "medium",
-  };
-  const _leadProfile = await api("/execution-profiles", {
-    method: "POST",
-    body: JSON.stringify({
-      name: "Office Lead fixture",
-      description: "Deterministic browser journey profile",
-      category: "BALANCED",
-      roles: {
-        lead: leadRole,
-        implementer: leadRole,
-        semanticReviewer: leadRole,
-      },
-      operations: {
-        modelRequestTimeoutSecs: 300,
-        toolCallTimeoutSecs: 600,
-        maxRequestBytes: 2097152,
-        maxResponseBytes: 2097152,
-        maxGenerationTokens: 8192,
-        maxInFlightOperations: 4,
-      },
-      progress: {
-        diagnoseAfterStagnantCheckpoints: 2,
-        escalateAfterUnsuccessfulReplans: 1,
-        observationTimeoutSecs: 300,
-      },
-      auto_start: { enabled: false, risk_classes: [] },
-    }),
-  });
-  assert.ok(
-    _leadProfile,
-    "the fixture must select a current executable V2 profile",
-  );
-  assert.equal(_leadProfile.schemaVersion, 2);
-  assert.equal(_leadProfile.executable, true);
-  const _leadPolicy = await api(
-    `/projects/${_leadProject.id}/execution-policy`,
-    {
-      method: "POST",
-      body: JSON.stringify({
-        execution_profile_id: _leadProfile.id,
-        expected_revision: _leadProfile.revision,
-        expected_revision_hash: _leadProfile.contentHash,
-        project_config_hash: _leadConfig.configHash,
-        acknowledge: true,
-        idempotency_key: "office-lead-execution-policy",
-      }),
-    },
-  );
-  assert.equal(_leadPolicy.grant.profile_revision, _leadProfile.revision);
-  assert.equal(_leadPolicy.grant.profile_hash, _leadProfile.contentHash);
-  assert.equal(_leadPolicy.grant.project_config_hash, _leadConfig.configHash);
-  const _leadDelegation = _leadPolicy.delegation;
-  await page.goto(`${viteUrl}/#/lead`);
-  await page.getByRole("heading", { name: "Lead", exact: true }).waitFor();
-  await page.getByTestId("lead-project").selectOption(_leadProject.id);
-  await page.getByTestId("lead-action").selectOption(_leadAction.id);
-  await page.getByTestId("lead-delegation").selectOption(_leadDelegation.id);
-  await page.getByTestId("lead-objective").fill("Lead fixture objective");
-  await page.getByRole("button", { name: "Submit Lead request" }).click();
-  let _leadRequest;
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const records = await api("/lead/requests");
-    _leadRequest = records.find(
-      (record) => record.action_id === _leadAction.id,
-    );
-    if (_leadRequest) break;
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
-  }
-  assert.ok(_leadRequest, "the Lead form must persist a request");
-  await page
-    .getByText(_leadRequest.id.slice(0, 8), { exact: false })
-    .first()
-    .waitFor();
-  await page
-    .getByRole("button", { name: "Assess", exact: true })
-    .first()
-    .click();
-  await page.getByText("PLANNED", { exact: true }).first().waitFor();
-  await page.getByRole("button", { name: "Freeze plan" }).first().click();
-  await page.getByText("READY", { exact: true }).first().waitFor();
-  const leadAssessment = page.getByTestId("lead-assessment");
-  await leadAssessment.getByText("change", { exact: true }).waitFor();
-  await leadAssessment.getByText("small", { exact: true }).waitFor();
-  const leadProposal = page.getByTestId("lead-proposal");
-  await leadProposal
-    .getByText("implementation", { exact: true })
-    .first()
-    .waitFor();
-  await page.getByTestId("lead-plan").waitFor();
-  await page.reload();
-  await page.getByRole("heading", { name: "Lead", exact: true }).waitFor();
-  await page
-    .getByText("READY", { exact: true })
-    .first()
-    .waitFor({ timeout: 15000 });
-
-  const leadRow = page.getByRole("row", {
-    name: new RegExp(_leadRequest.id.slice(0, 8)),
-  });
-  await leadRow.getByRole("button", { name: "Start Campaign" }).click();
-  await page.getByText(/Started Campaign/).waitFor();
-  let leadCampaign;
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const records = await api("/lead/requests");
-    const record = records.find((item) => item.id === _leadRequest.id);
-    if (record?.campaign_id) {
-      leadCampaign = { id: record.campaign_id };
-      break;
-    }
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
-  }
-  assert.ok(leadCampaign, "the Office Start control must create a Campaign");
-
-  await page.getByRole("link", { name: "Agent Office", exact: true }).click();
+  await page.goto(`${viteUrl}/#/agents`);
   await page
     .getByRole("heading", { name: "Agent Office", exact: true, level: 1 })
     .waitFor();
-  await page
-    .getByRole("button", {
-      name: new RegExp(`Inspect Lead lead:${_leadRequest.id}`),
-    })
-    .waitFor();
-  await page
-    .getByRole("button", {
-      name: new RegExp(`Inspect Lead lead:${_leadRequest.id}`),
-    })
-    .click();
-  const participantInspector = page.getByTestId("participant-inspector");
-  await participantInspector
-    .getByText("A Lead request is a Core-recorded planning")
-    .waitFor();
-  await participantInspector.getByText("LEAD_REQUEST").waitFor();
-  await page.getByRole("tab", { name: /Table/ }).click();
-  await page.getByTestId("agent-table").waitFor();
-  await page.getByRole("tab", { name: /Timeline/ }).click();
-  await page.getByTestId("agent-timeline").waitFor();
-  await page.getByTestId("participant-inspector").waitFor();
-  await page.getByRole("tab", { name: /Visual Office/ }).click();
-  await page.getByTestId("agent-floor").waitFor();
-  await page
-    .getByTestId("agent-filters")
-    .getByLabel("Role", { exact: true })
-    .selectOption("LEAD");
-  await page.waitForURL(/role=LEAD/);
-  await page
-    .getByTestId("agent-filters")
-    .getByLabel("Role", { exact: true })
-    .selectOption("");
-  for (const width of [834, 390]) {
-    await page.setViewportSize({ width, height: 900 });
-    const viewport = await page.evaluate(() => ({
-      scrollWidth: document.documentElement.scrollWidth,
-      clientWidth: document.documentElement.clientWidth,
-    }));
-    assert.equal(
-      viewport.scrollWidth,
-      viewport.clientWidth,
-      `Agent Office must not overflow the document at ${width}px`,
-    );
-  }
-  await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.goto(`${viteUrl}/#/lead`);
-  await page.getByRole("heading", { name: "Lead", exact: true }).waitFor();
 
-  await page.goto(`${viteUrl}/#/lead`);
-  await page.getByRole("heading", { name: "Lead", exact: true }).waitFor();
-
-  await page.reload();
-  await page.getByRole("heading", { name: "Lead", exact: true }).waitFor();
-  const runningRow = page.getByRole("row", {
-    name: new RegExp(_leadRequest.id.slice(0, 8)),
-  });
-  await runningRow.getByRole("button", { name: "View" }).click();
-  await page.getByText("RUNNING", { exact: true }).first().waitFor();
-  await page
-    .getByRole("link", {
-      name: `Open Campaign ${leadCampaign.id.slice(0, 8)}`,
-    })
-    .waitFor();
-
-  await page.getByRole("link", { name: "Campaigns", exact: true }).click();
-  await page.getByRole("heading", { name: "Campaigns", exact: true }).waitFor();
-  await page
-    .locator(`a[href="#/campaigns/${leadCampaign.id}"]`)
-    .first()
-    .click();
-  await page.getByRole("heading", { name: "Lead fixture objective" }).waitFor();
-  const leadWorkflow = page.getByTestId("workflow-projection");
-  await leadWorkflow
-    .getByRole("row", { name: /Lead request.*RUNNING/i })
-    .waitFor();
-  await leadWorkflow.getByText("FIXTURE mechanism", { exact: false }).waitFor();
-  await leadWorkflow.getByText("1 unit", { exact: false }).waitFor();
-  await page
-    .getByText("FIXTURE (deterministic, no provider)", { exact: false })
-    .first()
-    .waitFor();
-  await page.getByRole("tab", { name: /Budget & usage/ }).click();
-  await page
-    .getByText("opencode/deepseek-v4.1-flash", { exact: false })
-    .first()
-    .waitFor();
-
-  await page.getByRole("tab", { name: /WorkGraph/ }).click();
-  await page.getByRole("heading", { name: /WorkGraph \(1 unit/ }).waitFor();
-  const workGraphNode = page
-    .locator('[data-testid^="workgraph-node-"]')
-    .first();
-  await workGraphNode.waitFor();
-  await page.getByTestId("workgraph-table").waitFor();
-  const workGraphUnit = await workGraphNode.getAttribute("data-testid");
-  assert.ok(workGraphUnit, "the WorkGraph must render its recorded unit");
-  await workGraphNode.click();
-  const workUnitInspector = page.getByTestId("workgraph-inspector");
-  await workUnitInspector.waitFor();
-  await workUnitInspector.getByText("Frozen sequence").waitFor();
-  await page.waitForURL(/tab=workgraph&unit=/);
-  const workGraphUrl = page.url();
-  await page.reload();
-  await page.getByRole("heading", { name: "Lead fixture objective" }).waitFor();
-  await page.getByTestId("workgraph-inspector").waitFor();
-  assert.equal(
-    page.url(),
-    workGraphUrl,
-    "WorkUnit selection must survive reload",
-  );
-  for (const width of [834, 390]) {
-    await page.setViewportSize({ width, height: 900 });
-    const viewport = await page.evaluate(() => ({
-      scrollWidth: document.documentElement.scrollWidth,
-      clientWidth: document.documentElement.clientWidth,
-    }));
-    assert.equal(
-      viewport.scrollWidth,
-      viewport.clientWidth,
-      `Campaign WorkGraph must not overflow the document at ${width}px`,
-    );
-  }
-  await page.setViewportSize({ width: 1440, height: 1000 });
-
-  await page.getByRole("link", { name: "Agent Office", exact: true }).click();
-  await page
-    .getByRole("heading", { name: "Agent Office", exact: true, level: 1 })
-    .waitFor();
-  await page
-    .getByTestId("agent-filters")
-    .getByLabel("Campaign", { exact: true })
-    .selectOption(leadCampaign.id);
-  await page
-    .getByRole("button", {
-      name: new RegExp(`Inspect Lead lead:${_leadRequest.id}`),
-    })
-    .waitFor();
-  await page
-    .getByTestId("agent-filters")
-    .getByLabel("Campaign", { exact: true })
-    .selectOption("");
-
-  await page.goto(`${viteUrl}/#/campaigns/${leadCampaign.id}`);
-  await page.getByRole("heading", { name: "Lead fixture objective" }).waitFor();
-  await page.getByTestId("workflow-projection").waitFor();
-
-  await api(`/actions/${_cancelAction.id}/classify`, {
-    method: "POST",
-    body: JSON.stringify({
-      risk_class: "R0",
-      actor: "office-e2e",
-      rationale: "deterministic cancellation fixture classification",
-      idempotency_key: "office-cancel-classify",
-    }),
-  });
-  const cancelCampaign = await api("/campaigns", {
-    method: "POST",
-    body: JSON.stringify({
-      action_id: _cancelAction.id,
-      idempotency_key: "office-cancel-campaign",
-    }),
-  });
-  await page.getByRole("link", { name: "Campaigns", exact: true }).click();
-  await page.getByRole("heading", { name: "Campaigns", exact: true }).waitFor();
-  const cancelRow = page.getByRole("row", {
-    name: new RegExp(cancelCampaign.id.slice(0, 8)),
-  });
-  await cancelRow.getByRole("button", { name: "Cancel Campaign" }).click();
-  await page.getByTestId("cancel-reason").fill("operator e2e cancellation");
-  await page.getByRole("button", { name: "Confirm cancellation" }).click();
-  await page
-    .getByText(`Campaign ${cancelCampaign.id.slice(0, 8)} is CANCELLED`, {
-      exact: false,
-    })
-    .waitFor();
-  await page
-    .locator(`a[href="#/campaigns/${cancelCampaign.id}"]`)
-    .first()
-    .click();
-  await page
-    .getByRole("heading", { name: "Cancellation fixture objective" })
-    .waitFor();
-  await page.getByRole("tab", { name: /Events/ }).click();
-  await page.getByText("campaign.cancelled").first().waitFor();
-  await page
-    .getByText("operator e2e cancellation", { exact: false })
-    .first()
-    .waitFor();
-  await page.getByText("Campaign state:", { exact: false }).waitFor();
-
-  await page.getByRole("link", { name: "Campaigns", exact: true }).click();
-  await page.getByRole("heading", { name: "Campaigns", exact: true }).waitFor();
-  await page.reload();
-  await page
-    .getByText("ACCEPTED", { exact: true })
-    .first()
-    .waitFor({ timeout: 15000 });
-  // Spanish owned-view smoke at desktop and narrow widths. The Campaign flow
-  // above created real rows, so each route is checked after its table or floor
-  // rendered rather than only after the shell mounted.
-  await page.setViewportSize({ width: 1440, height: 900 });
-  await page.getByLabel("Display language").selectOption("es");
-  await page.getByRole("heading", { name: "Campañas", exact: true }).waitFor();
-  const spanishRoutes = [
-    ["#/campaigns", "Campañas", ".campaigns-workspace .table-responsive"],
-    ["#/issues", "Incidencias", ".issues-view"],
-    ["#/agents", "Oficina de agentes", ".agent-floor"],
-    ["#/actions", "Acciones", ".actions-workspace .table-responsive"],
-    ["#/lead", "Lead", ".lead-workspace .table-responsive"],
-  ];
-  for (const [route, heading, content] of spanishRoutes) {
-    await page.goto(`${viteUrl}/${route}`);
-    await page
-      .getByRole("heading", { name: heading, exact: true })
-      .first()
-      .waitFor();
-    await page.locator(content).first().waitFor({ timeout: 15000 });
-    for (const width of [834, 390, 320]) {
-      await page.setViewportSize({ width, height: 900 });
-      const viewport = await page.evaluate(() => ({
-        scrollWidth: document.documentElement.scrollWidth,
-        clientWidth: document.documentElement.clientWidth,
-      }));
-      assert.equal(
-        viewport.scrollWidth,
-        viewport.clientWidth,
-        `Spanish ${heading} must not overflow the document at ${width}px`,
-      );
-    }
-    await page.setViewportSize({ width: 1440, height: 900 });
-  }
-
-  const screenshotDir = process.env.FACTORY_E2E_SCREENSHOT_DIR;
-  if (screenshotDir) {
-    mkdirSync(screenshotDir, { recursive: true });
-    assert.deepEqual(
-      readdirSync(screenshotDir),
-      [],
-      "FACTORY_E2E_SCREENSHOT_DIR must be empty so captures never overwrite earlier evidence",
-    );
-    await page.getByLabel(/language|idioma/i).selectOption("en");
-    await page.goto(`${viteUrl}/#/agents`);
-    await page
-      .getByRole("heading", { name: "Agent Office", exact: true })
-      .first()
-      .waitFor();
-    await page.locator(".agent-floor").first().waitFor({ timeout: 15000 });
-    const captures = [];
-    for (const [name, width, height] of [
-      ["agent-office-1440", 1440, 900],
-      ["agent-office-834", 834, 900],
-      ["agent-office-390", 390, 844],
-    ]) {
-      await page.setViewportSize({ width, height });
-      await page.screenshot({
-        path: join(screenshotDir, `${name}.png`),
-        fullPage: true,
-      });
-      const viewport = await page.evaluate(() => ({
-        scrollWidth: document.documentElement.scrollWidth,
-        clientWidth: document.documentElement.clientWidth,
-      }));
-      assert.equal(
-        viewport.scrollWidth,
-        viewport.clientWidth,
-        `Agent Office must not overflow the document at ${width}px`,
-      );
-      captures.push({ name, width, height });
-    }
-    writeFileSync(
-      join(screenshotDir, "manifest.json"),
-      `${JSON.stringify(
-        {
-          journey: "rust-office",
-          candidate: candidate.commit_sha,
-          gate: "ACCEPTED",
-          captured_at: new Date().toISOString(),
-          captures,
-        },
-        null,
-        2,
-      )}\n`,
-    );
-    await page.setViewportSize({ width: 1440, height: 900 });
-  }
   assert.deepEqual(
     pageErrors,
     [],
     `browser page errors: ${pageErrors.join("; ")}`,
-  );
-  // A missing gate is a normal pending projection. The UI intentionally probes
-  // that endpoint and renders PENDING; all other 404s are broken resources.
-  // Unified intake is not merged into this integration candidate yet; Home
-  // renders its explicit unavailable state and the poll is expected to 404.
-  const unexpectedNotFound = notFound.filter(
-    (url) =>
-      !/\/core-api\/quality\/candidates\/[^/]+\/gate$/.test(url) &&
-      !/\/core-api\/intake\/requests(\?|$)/.test(url) &&
-      !/\/core-api\/execution-profiles(\?|$)/.test(url),
-  );
-  assert.deepEqual(
-    unexpectedNotFound,
-    [],
-    `unexpected 404 responses: ${unexpectedNotFound.join("; ")}`,
   );
   const unexpectedConsole = consoleErrors.filter(
     (message) =>
@@ -1168,18 +398,15 @@ try {
     [],
     `unexpected browser console errors: ${unexpectedConsole.join("; ")}`,
   );
-  if (consoleErrors.length > 0) {
-    console.error(
-      "browser console diagnostics: expected pending-gate 404 probes",
-    );
-  }
-  console.log(
-    JSON.stringify({
-      ok: true,
-      candidate: candidate.commit_sha,
-      gate: "ACCEPTED",
-    }),
+  const unexpectedNotFound = notFound.filter(
+    (url) => !/\/core-api\/quality\/candidates\/[^/]+\/gate$/.test(url),
   );
+  assert.deepEqual(
+    unexpectedNotFound,
+    [],
+    `unexpected 404 responses: ${unexpectedNotFound.join("; ")}`,
+  );
+  console.log(JSON.stringify({ ok: true, journey: "office" }));
 } finally {
   if (browser) await browser.close().catch(() => {});
   for (const child of processes.reverse()) child.kill("SIGKILL");

@@ -735,30 +735,15 @@ export function Home() {
                             <dd>
                               {policySetup.scope.profile.name ??
                                 t("home.policy.none")}{" "}
-                              r{policySetup.scope.profile.revision} ·{" "}
-                              <code
-                                title={policySetup.scope.profile.contentHash}
-                              >
-                                {shortId(
-                                  policySetup.scope.profile.contentHash,
-                                  12,
-                                )}
-                              </code>
+                              ·{" "}
+                              {t("home.policy.revision", {
+                                revision: policySetup.scope.profile.revision,
+                              })}
                             </dd>
                           </div>
                           <div>
                             <dt>{t("home.policy.project")}</dt>
-                            <dd>
-                              {policySetup.scope.project.repository} ·{" "}
-                              <code
-                                title={policySetup.scope.project.configHash}
-                              >
-                                {shortId(
-                                  policySetup.scope.project.configHash,
-                                  12,
-                                )}
-                              </code>
-                            </dd>
+                            <dd>{policySetup.scope.project.repository}</dd>
                           </div>
                           <div>
                             <dt>{t("home.policy.allowedPaths")}</dt>
@@ -888,7 +873,7 @@ export function Home() {
                   </span>
                   <h2>{t("home.recent.title")}</h2>
                 </div>
-                <Link className="home-section-link" to="/lead">
+                <Link className="home-section-link" to="/requests">
                   {t("home.recent.viewAll")}
                   <ArrowRight size={13} aria-hidden="true" />
                 </Link>
@@ -1080,7 +1065,6 @@ export function Home() {
                 )}
                 <div className="home-status-links">
                   <Link to="/runtime">{t("home.status.openRuntime")}</Link>
-                  <Link to="/overview">{t("home.status.openOverview")}</Link>
                 </div>
               </>
             )}

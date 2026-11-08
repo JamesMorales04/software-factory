@@ -655,12 +655,6 @@ try {
         liveConfig?.providerCredential ?? "fake-provider-credential-0123456789",
       enabled: true,
       isDefault: true,
-      maxTurns: 4,
-      maxInputTokens: 100000,
-      maxOutputTokens: 12000,
-      maxCostMicros: 500000,
-      inputMicrosPerMillion: 1000,
-      outputMicrosPerMillion: 2000,
     }),
   });
   if (leadProvider !== provider) {
@@ -672,12 +666,6 @@ try {
         credential: "fake-lead-provider-credential-0123456789",
         enabled: true,
         isDefault: false,
-        maxTurns: 4,
-        maxInputTokens: 100000,
-        maxOutputTokens: 12000,
-        maxCostMicros: 500000,
-        inputMicrosPerMillion: 1000,
-        outputMicrosPerMillion: 2000,
       }),
     });
   }
@@ -693,7 +681,6 @@ try {
       method: "PUT",
       body: JSON.stringify({
         semanticReviewEnabled: true,
-        semanticReviewMaxOutputTokens: 8192,
       }),
     });
   }
