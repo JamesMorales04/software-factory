@@ -87,7 +87,7 @@ pub struct ProviderTurnAuthorization {
 }
 
 fn default_max_requests() -> u32 {
-    1
+    0
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -669,13 +669,6 @@ impl Database {
                 "provider turn egress request sequence is not contiguous",
             ));
         }
-        // A zero max_requests is the uncapped subscription setting. Legacy or
-        // billable reservations may still carry a monetary/technical bound.
-        if max_requests > 0 && sequence >= max_requests {
-            return Err(Error::Forbidden(
-                "provider turn egress request budget is exhausted".into(),
-            ));
-        }
         if sequence == 0 && !actual_request_sha256.is_empty() {
             return Err(Error::Conflict("provider turn request is already bound"));
         }
@@ -1180,21 +1173,6 @@ impl Database {
         }
         transaction.commit().await?;
         Ok(())
-    }
-
-    /// Count and sum the ceilings of every currently open provider turn.
-    /// Unlike the bounded recent listing, this covers the full ledger.
-    pub async fn provider_turn_reservation_budget(&self) -> Result<(u64, u64), Error> {
-        let row: (i64, i64) = sqlx::query_as::query_as(
-            "SELECT COUNT(*),COALESCE(SUM(max_cost_micros),0)
-             FROM provider_turn_reservations WHERE state='RESERVED'",
-        )
-        .fetch_one(&self.pool)
-        .await?;
-        Ok((
-            u64::try_from(row.0).map_err(|_| Error::Invalid("provider turn count"))?,
-            u64::try_from(row.1).map_err(|_| Error::Invalid("provider turn reservation"))?,
-        ))
     }
 
     pub async fn provider_turn_reservations(

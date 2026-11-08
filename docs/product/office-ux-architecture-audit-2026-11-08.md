@@ -113,3 +113,75 @@ authority for that exact Campaign. Subscription usage is telemetry.
 This audit does not certify SEC-01 isolation, deployment, Windows, live paid
 model quality or independent acceptance. `TRUSTED_LOCAL` remains broad local
 access and is never described as isolated or sandboxed.
+
+## Delivery update — autonomy/UX slice (2026-11-08)
+
+This section records what changed after the findings above. It does not rewrite
+the original evidence.
+
+- Removed the Actions, Action Detail, Lead, Delegations, Runs, Workers and
+  Overview pages. Their old URLs redirect to Campaigns, Requests, Settings,
+  Runtime or Home; unknown routes return Home. Browser path URLs copied without
+  the hash redirect to the hash route before root API aliases can answer.
+- Added `/requests` with Project and state filters, human objectives, translated
+  states and no raw request/delegation/Lead IDs in the primary surface.
+- Made Campaigns read-only, added a Project filter, joined the owning Action's
+  objective/project into the Campaign projection, and derived an effective
+  lifecycle status from terminal Campaign state or the latest immutable Gate
+  outcome when no Run is active. An accepted Campaign now reads `Accepted`, not
+  `In progress`.
+- Rebuilt Issues as a five-column board (Ready, Queued, Working, Needs
+  attention, Done) with automatic stale sync, Project filter, issue detail and
+  one-click governed intake. Added an explicit auto-start toggle that starts one
+  ready issue at a time while Office is open. There is still no Core-owned
+  scheduler.
+- Replaced the managed-root folder browser with the operating system folder
+  picker (`showDirectoryPicker`). The selected folder is copied into managed
+  storage through a bounded Core ZIP import, Git is initialized when needed,
+  and dependency/build directories are skipped. A direct host-path mount is not
+  claimed.
+- Added an owner-facing subscription confirmation in the Request workspace.
+  Core accepts a request-scoped admission bounded to seven days instead of
+  requiring the former fixed Wave 3 test-profile literal.
+- Removed active productivity and monetary remnants: the semantic-review output
+  cap, the hidden 120-second model-call reservation deadline, the Codex
+  eight-tool-call cap, provider request-count enforcement, provider cap editing
+  and the issue-intake monetary/attempt/session/turn/wall-clock inputs. Legacy
+  database columns remain historical evidence; issue-intake V2 writes `0`
+  meaning uncapped and no longer rejects a batch on a cost ceiling.
+- Fixed a real execution failure found in the browser: frozen validation
+  commands such as `cargo test` can rewrite `Cargo.lock`. The Supervisor now
+  discards tracked and untracked changes outside the verified allowed paths
+  after each validation command, before candidate finalization. The same live
+  run then produced a candidate containing only the authorized new file and
+  reached `ACCEPTED`.
+- Real Chromium runs against Compose reached live OpenCode Go Lead inference,
+  a frozen plan, a governed Campaign, a real implementer candidate, independent
+  verifier and reviewer receipts, and both Gate outcomes:
+  - a candidate that changed behavior in `src/pricing.rs` was correctly held at
+    `REPAIR_REQUIRED` with `review requires changes` and
+    `autonomous repair is disabled`;
+  - a purely additive candidate (`src/live_inference_check.txt`) reached
+    `ACCEPTED` with a one-file, one-line diff.
+- Removed the remaining provider-settings token/cost clamp from model gateway
+  construction. Subscription model-call authorization already reserved uncapped
+  technical sentinels; persisted provider limits are now historical telemetry
+  inputs, not an execution ceiling.
+- Updated the maintained deterministic browser journeys to drive the new
+  operating-system folder picker and the current Core request schema. The old
+  managed-root browser controls and removed provider/runtime fields are gone.
+- The Issues board now requests open and closed snapshots, shows Done for closed
+  issues and completed linked requests, distinguishes a failed Project read from
+  an empty board, and discloses the 100-issue projection limit.
+- Archive import now uses a deterministic target for one idempotency key,
+  replays the same registration on retry, and removes the extraction directory
+  on every failure. A stubbed real-browser import created a managed Git Project
+  through the new picker and Core ZIP endpoint.
+- The browser runs found no console errors, no unexpected 404/5xx responses and
+  no horizontal overflow on the audited routes. Screenshots and JSON evidence
+  are recorded under `docs/evidence/office-autonomy-ux-2026-11-08/`.
+
+Remaining gaps: Core-owned autonomous issue scheduling, autonomous Gate repair,
+native desktop folder integration, Windows, GitHub App/OAuth onboarding, a true
+independent security review, independent acceptance and Owner visual sign-off.
+`TRUSTED_LOCAL` is never isolated or certified.

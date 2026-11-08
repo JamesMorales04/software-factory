@@ -18,7 +18,7 @@ const mocks = vi.hoisted(() => ({
   getProjectImportOptions: vi.fn(),
   listGitHubRepositories: vi.fn(),
   importGitHubProject: vi.fn(),
-  browseProjectDirectories: vi.fn(),
+  importProjectArchive: vi.fn(),
 }));
 
 vi.mock("../coreApi", () => ({
@@ -130,7 +130,7 @@ describe("Projects onboarding and list states", () => {
       detail: "",
     });
     mocks.importGitHubProject.mockReset();
-    mocks.browseProjectDirectories.mockReset();
+    mocks.importProjectArchive.mockReset();
   });
 
   it("renders the Projects workspace in Spanish with card-labelled cells", async () => {
@@ -217,69 +217,51 @@ describe("Projects onboarding and list states", () => {
     );
   });
 
-  it("browses managed folders and fills the selected local path", async () => {
-    mocks.browseProjectDirectories
-      .mockResolvedValueOnce({
-        root: "/projects",
-        path: "",
-        current_path: "/projects",
-        parent: null,
-        directories: [
-          {
-            name: "checkout",
-            path: "checkout",
-            absolute_path: "/projects/checkout",
-            is_git: true,
-          },
-        ],
-        truncated: false,
-      })
-      .mockResolvedValueOnce({
-        root: "/projects",
-        path: "checkout",
-        current_path: "/projects/checkout",
-        parent: "",
-        directories: [],
-        truncated: false,
-      });
+  it("imports a folder selected from this computer", async () => {
+    mocks.importProjectArchive.mockResolvedValue({
+      ...project,
+      id: "project-local",
+      source_kind: "local",
+    });
+    type Entry = {
+      kind: "file" | "directory";
+      name: string;
+      getFile: () => Promise<File>;
+      entries?: () => AsyncIterableIterator<[string, Entry]>;
+    };
+    const fileEntry: Entry = {
+      kind: "file",
+      name: "README.md",
+      getFile: async () =>
+        new File(["hello"], "README.md", { type: "text/plain" }),
+    };
+    const directory: Entry = {
+      kind: "directory",
+      name: "checkout",
+      getFile: async () => new File([], "checkout"),
+      entries: async function* () {
+        yield ["README.md", fileEntry];
+      },
+    };
+    vi.stubGlobal("showDirectoryPicker", vi.fn().mockResolvedValue(directory));
     const user = userEvent.setup();
     renderProjects();
 
     await screen.findByText("Proyectos registrados (1)");
     await user.click(screen.getByRole("tab", { name: "Repositorio local" }));
-    await user.click(screen.getByRole("button", { name: "Explorar carpetas" }));
-    await user.click(await screen.findByRole("button", { name: /checkout/ }));
-    await user.click(screen.getByRole("button", { name: "Usar esta carpeta" }));
-    expect(
-      (screen.getByTestId("project-local-path") as HTMLInputElement).value,
-    ).toBe("/projects/checkout");
-  });
-
-  it("imports a local repository only with its explicit path and name", async () => {
-    mocks.registerProject.mockResolvedValue(project);
-    const user = userEvent.setup();
-    renderProjects();
-
-    await screen.findByText("Proyectos registrados (1)");
-    await user.click(screen.getByRole("tab", { name: "Repositorio local" }));
-    await user.type(
-      screen.getByTestId("project-local-path"),
-      "/projects/checkout",
-    );
-    await user.type(
-      screen.getByLabelText("Nombre del proyecto (opcional)"),
-      "Checkout",
-    );
     await user.click(
-      screen.getByRole("button", { name: "Importar repositorio local" }),
-    );
-    await waitFor(() =>
-      expect(mocks.registerProject).toHaveBeenCalledWith({
-        repository: "/projects/checkout",
-        name: "Checkout",
-        idempotency_key: "idempotency-key",
+      screen.getByRole("button", {
+        name: "Seleccionar carpeta de este equipo",
       }),
     );
+    await waitFor(() =>
+      expect(mocks.importProjectArchive).toHaveBeenCalledWith(
+        "checkout",
+        "idempotency-key",
+        expect.any(Uint8Array),
+      ),
+    );
+    vi.unstubAllGlobals();
   });
 
   it("shows a Core error instead of a fabricated success", async () => {

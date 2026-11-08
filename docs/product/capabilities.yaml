@@ -825,7 +825,7 @@ capabilities:
     - office/src/components/office/AgentOfficeIsometric.test.tsx
     - office/src/components/office/officeAvatarAppearance.test.ts
     - office/src/components/office/officeSceneLayout.test.ts
-    - office/src/views/Issues.test.tsx
+    - office/src/views/Issues.board.test.tsx
     - native/src/db/participants.rs
     - native/src/github.rs
     - native/src/github_sync.rs
@@ -2218,16 +2218,17 @@ capabilities:
     - docs/evidence/compose-browser-uat-2026-11-06/compose-browser-uat.json
     - docs/evidence/compose-browser-uat-2026-11-07/compose-browser-uat.json
     - docs/evidence/compose-browser-uat-2026-11-08/compose-browser-uat.json
+    - docs/evidence/office-autonomy-ux-2026-11-08/manifest.json
     live_agent: []
     uat: []
     deployment: []
     isolation: []
   limitations:
-  - This capability covers Office-first parity governance; design tokens, shared components, the application shell, the 2026-11-06 Home/Campaign visual standard and the operational Overview/Decision Inbox workspace are implemented slices.
+  - This capability covers Office-first parity governance; design tokens, shared components, the application shell, the 2026-11-06 Home/Campaign visual standard and the Requests/Decision Inbox workspace are implemented slices.
   - Fixed Office model productivity caps (token, model time, retry count, subscription cost) were removed under ADR-0034; their former controls are no longer rendered. Some legacy provider/profile schema fields remain and are being audited rather than silently reinterpreted; see the Office UX/architecture audit.
-  - Office can consume an existing exact Owner-confirmed subscription admission for MODEL approval, but creating that admission is still API-assisted; the owner-facing confirmation flow is planned.
-  - The 2026-11-07 deterministic Compose browser UAT passed at product candidate a76f8f15e0f01eeb390764234bbdd28ce3efaa6a with real Core HTTP API and real Chromium. Live provider inference, independent acceptance, Owner visual sign-off and the remaining module migrations remain later slices.
-  - The current Office still uses hash routes and polling; stable routes stream/replay and the remaining module migrations are later slices.
+  - Office now records a request-scoped Owner-confirmed subscription admission from the Request workspace; the admission is bounded by Core's seven-day maximum validity.
+  - The 2026-11-08 implementer browser run against Compose reached live Lead inference, a frozen plan, a governed Campaign, a real candidate and an independent reviewer receipt that correctly returned CHANGES_REQUESTED for an out-of-scope behavior change. Independent acceptance and Owner visual sign-off remain outstanding.
+  - The current Office uses hash routes and polling; removed pages redirect, copied path URLs redirect for browser navigation, and stream/replay remains a later slice.
   - Concept-image attachment and branch controls are not implemented because the Core intake contract has no such operations; decorative controls are forbidden.
   blockers:
   - Each Office module requires a real browser journey and Product Owner review before completion.
@@ -2286,8 +2287,8 @@ capabilities:
     deployment: []
     isolation: []
   limitations:
-  - Storybook, visual regression, the full axe audit, the interactive WorkGraph, a full code-diff viewer and a visual Agent Office remain later slices.
-  - Provider connection tests read model discovery only; no live coding inference is authorized by these Office slices.
+  - Storybook, full visual-regression coverage and the complete axe audit remain later slices.
+  - Provider connection tests read model discovery only; a separate browser run exercised live coding inference, but it is implementer evidence, not acceptance.
   - The 2026-10-29 visual-polish slice propagates the new tokens and primitives only to the shell and Home; Projects, Campaigns, Settings and Agent Office keep their existing composition until their own slices.
   - Fixture Chromium screenshots at 1440/834/390/320 are style evidence only. Real Core/Compose browser acceptance and Product Owner visual acceptance remain NOT_TESTED.
   - The Home Lead thread is a compact projection of the existing Request workspace, not a new chat or approval API; fixture screenshots use mocked Core responses.
@@ -2297,9 +2298,9 @@ capabilities:
   - Product Owner visual acceptance of the shell and Home remains outstanding.
 
 - id: CAP-049
-  name: Operational Overview and Decision Inbox
+  name: Requests and Decision Inbox
   category: Product
-  purpose: Operators see authoritative Core state, decisions, blocked work, measured spend and the unmeasured reservation bound in one workspace
+  purpose: Operators start and follow requests and act on authoritative Core decisions with human-readable state and Project filters
   product_objective: Coherent engineering command center
   decision_status: approved
   implementation_status: in_progress
@@ -2323,29 +2324,32 @@ capabilities:
     - docs/product/factory-office.md
     source:
     - native/src/bin/core.rs
-    - office/src/views/Overview.tsx
+    - office/src/views/Requests.tsx
     - office/src/views/DecisionInbox.tsx
-    - office/src/views/ActionDetail.tsx
+    - office/src/views/Campaigns.tsx
     - office/src/coreApi.ts
     test:
-    - office/src/views/Overview.test.tsx
+    - office/src/views/Home.test.tsx
+    - office/src/views/DecisionInbox.test.tsx
     - office/e2e-browser/rust-journey.mjs
   acceptance:
-    deterministic: Overview and decisions require operator authentication, return Core snapshot shapes, and their views typecheck, lint, pass component tests and build inside the container-native workflow.
-    real: An authenticated browser journey reaches Overview, Decision Inbox and Action detail; decision items use real Core targets and only the model-call resolution action invokes a Core operation.
+    deterministic: Requests, Campaigns and decisions require operator authentication, return Core snapshot shapes, filter by Project, render human-readable states, and their views typecheck, lint, pass component tests and build inside the container-native workflow.
+    real: An authenticated browser journey reaches Requests, Campaigns and Decision Inbox, follows hash and copied path deep links, and renders Core-backed decisions with exact targets; removed routes redirect without dead ends.
   evidence:
     deterministic:
     - docs/evidence/office-operational-workspace-2026-10-27.json
+    - docs/evidence/office-autonomy-ux-2026-11-08/manifest.json
     live_agent: []
     uat: []
     deployment: []
     isolation: []
   limitations:
-  - Overview and Inbox poll Core; they do not claim SSE, replay or live streaming.
-  - Campaign authorization and Quality Gate repair remain on their existing module pages.
+  - Requests and Inbox poll Core; they do not claim SSE, replay or live streaming.
+  - Campaign authorization and Quality Gate repair remain on the Campaign workspace.
   - The Inbox exposes model-call resolution and navigation only; unresolved provider sessions are awareness-only because no operator termination API exists.
+  - Removed pages redirect to the closest current workspace; unknown routes return Home.
   blockers:
-  - Real browser acceptance and Product Owner review remain pending.
+  - Independent browser acceptance and Product Owner review remain pending.
 
 - id: CAP-050
   name: Campaign operational workspace
@@ -2395,8 +2399,8 @@ capabilities:
     - office/src/components/office/workGraphLayout.test.ts
     - office/e2e-browser/rust-journey.mjs
   acceptance:
-    deterministic: The tabbed Campaign workspace typechecks, lints, passes component tests and builds; the WorkGraph derives only recorded dependency facts, surfaces malformed data and preserves the authoritative table; candidate diff and GitHub PR routes require operator authentication; the diff projection returns only bounded, safe-path file patches with exact base/candidate/Gate identity; the PR projection uses the encrypted Core connection and fake-upstream tests cover checks, comments, review requests, typed permission blocks and pinned-head merge without auto-merge; V2 camelCase authorization fixtures and V1 legacy fixtures cover the Budget & usage and Request Campaign panels, including missing/empty arrays.
-    real: An authenticated Chromium journey opens a Campaign from the list, selects a WorkUnit in the visual graph and exact inspector, persists the WorkUnit selection across reload, inspects Budget, Candidates, Evidence, Gate and Events, and observes the accepted Gate only after independent evidence.
+    deterministic: The tabbed Campaign workspace typechecks, lints, passes component tests and builds; the WorkGraph derives only recorded dependency facts, surfaces malformed data and preserves the authoritative table; candidate diff and GitHub PR routes require operator authentication; the diff projection returns only bounded, safe-path file patches with exact base/candidate/Gate identity; the PR projection uses the encrypted Core connection and fake-upstream tests cover checks, comments, review requests, typed permission blocks and pinned-head merge without auto-merge; V2 camelCase authorization fixtures and V1 legacy fixtures cover the Usage & authorization and Request Campaign panels, including missing/empty arrays.
+    real: An authenticated Chromium journey opens a Campaign from the list, selects a WorkUnit in the visual graph and exact inspector, persists the WorkUnit selection across reload, inspects Usage, Candidates, Evidence, Gate and Events, and observes the accepted Gate only after independent evidence.
   evidence:
     deterministic:
     - docs/evidence/office-campaign-workspace-2026-10-27.json
@@ -2412,7 +2416,7 @@ capabilities:
   - GitHub pull request operations require a Project repository binding and an already pushed head branch; Core does not create or push branches.
   - Real GitHub API permissions, branch protection and a live merge are NOT_TESTED; the fake-upstream tests do not certify live behavior.
   - Campaign authorization and Gate repair remain on their existing module controls.
-  - Campaign and Request panels consume Core's camelCase V2 authorization record; V1 caps are historical only. Fixture Chromium screenshots cover the repaired budget/request panels; real Core/Compose browser acceptance remains NOT_TESTED.
+  - Campaign and Request panels consume Core's camelCase V2 authorization record; V1 caps are historical only. Fixture Chromium screenshots cover the repaired usage/request panels; real Core/Compose browser acceptance remains implementer-only.
   - Malformed graph data is surfaced as an inconsistency and never repaired in the browser.
   blockers:
   - Real browser acceptance, real GitHub acceptance and Product Owner review remain pending.

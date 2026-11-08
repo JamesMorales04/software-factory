@@ -509,6 +509,7 @@ async fn run_tool<B: factory_native::execution::VolumeBackend + 'static>(
     if !grant.checks.iter().any(|check| check == &input.argv) {
         return StatusCode::FORBIDDEN.into_response();
     }
+    let allowed_paths = grant.allowed_paths.clone();
     if !app.allowed_images.contains(&input.image) {
         return (
             StatusCode::BAD_REQUEST,
@@ -553,7 +554,14 @@ async fn run_tool<B: factory_native::execution::VolumeBackend + 'static>(
     };
     let fence = spawn_operation_fence(app.clone(), workspace_id.clone(), grant);
     let result = app.manager.run_tool(&workspace_id, &input).await;
+    let discarded = app
+        .manager
+        .discard_outside_scope(&workspace_id, &allowed_paths)
+        .await;
     fence.abort();
+    if let Err(error) = discarded {
+        return execution_error(error);
+    }
     match result {
         Ok(result) => (StatusCode::OK, Json(result)).into_response(),
         Err(error) => execution_error(error),

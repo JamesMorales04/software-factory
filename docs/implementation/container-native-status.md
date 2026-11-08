@@ -196,3 +196,23 @@ deployment. Live provider inference, verified subscription no-overage,
 ISOLATED execution, SEC-01, Windows and Owner visual acceptance remain
 `NOT_TESTED`. See the
 [Wave 3 closure checkpoint](wave3-closure-checkpoint-2026-11-03.md).
+
+## Autonomy/UX slice (2026-11-08)
+
+The developer-preview Compose stack was rebuilt and exercised in Chromium
+against real Core, Worker, Supervisor, verifier and reviewer services. Live
+OpenCode Go inference (`deepseek-v4.1-flash`) produced a frozen Lead plan and a
+governed Campaign. One candidate changed behavior outside the frozen objective
+and was correctly held at `REPAIR_REQUIRED`; a second, purely additive candidate
+(`src/live_inference_check.txt`, one added line) passed the independent verifier
+and reviewer and reached `ACCEPTED`. The Supervisor also discards changes outside
+the verified allowed paths after validation commands, so a `cargo test`-rewritten
+`Cargo.lock` cannot contaminate the candidate.
+
+This is implementer browser evidence, not independent acceptance. The detailed
+manifest, screenshots and deep-link report are in
+[office-autonomy-ux-2026-11-08](../evidence/office-autonomy-ux-2026-11-08/manifest.json).
+A Core-owned autonomous issue scheduler, autonomous Gate repair, direct host
+folder integration, Windows, GitHub App/OAuth onboarding, independent security
+review and production deployment remain open. `TRUSTED_LOCAL` is not isolated or
+certified.

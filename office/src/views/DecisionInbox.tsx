@@ -1,21 +1,32 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   DecisionCard,
   type DecisionRevalidation,
   type RevalidateDecision,
 } from "../components/office/DecisionCard";
 import { Button } from "../components/ui/Button";
+import { Select } from "../components/ui/Field";
 import {
   EmptyState,
   ErrorState,
   LoadingState,
   PageHeader,
 } from "../components/ui/Surface";
-import { CoreApiError, coreApi, type DecisionItem } from "../coreApi";
+import {
+  CoreApiError,
+  coreApi,
+  type DecisionItem,
+  type Project,
+} from "../coreApi";
 import { useI18n } from "../i18n";
+import { projectDisplayName } from "../workspace";
 
 export function DecisionInbox() {
   const { t, formatDate } = useI18n();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const projectId = searchParams.get("project") ?? "";
+  const [projects, setProjects] = useState<Project[]>([]);
   const [items, setItems] = useState<DecisionItem[] | null>(null);
   const [asOf, setAsOf] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -52,6 +63,13 @@ export function DecisionInbox() {
       }
     }
   }, [t]);
+
+  useEffect(() => {
+    void coreApi
+      .listProjects()
+      .then(setProjects)
+      .catch(() => setProjects([]));
+  }, []);
 
   useEffect(() => {
     void load();
@@ -128,8 +146,11 @@ export function DecisionInbox() {
     return <LoadingState label={t("decisions.loading")} />;
   }
 
-  const actionable = items.filter((item) => item.actionable);
-  const awareness = items.filter((item) => !item.actionable);
+  const scoped = projectId
+    ? items.filter((item) => item.project?.id === projectId)
+    : items;
+  const actionable = scoped.filter((item) => item.actionable);
+  const awareness = scoped.filter((item) => !item.actionable);
 
   return (
     <div className="decision-workspace">
@@ -137,13 +158,38 @@ export function DecisionInbox() {
         title={t("decisions.title")}
         description={t("decisions.description")}
         actions={
-          <Button
-            variant="secondary"
-            onClick={() => void refresh()}
-            disabled={refreshing}
-          >
-            {refreshing ? t("decisions.loading") : t("decisions.refresh")}
-          </Button>
+          <div className="row">
+            <Select
+              label={t("decisions.filter.project")}
+              value={projectId}
+              onChange={(event) => {
+                setSearchParams(
+                  (current) => {
+                    const next = new URLSearchParams(current);
+                    if (event.target.value)
+                      next.set("project", event.target.value);
+                    else next.delete("project");
+                    return next;
+                  },
+                  { replace: true },
+                );
+              }}
+            >
+              <option value="">{t("decisions.filter.allProjects")}</option>
+              {projects.map((project) => (
+                <option key={project.id} value={project.id}>
+                  {projectDisplayName(project)}
+                </option>
+              ))}
+            </Select>
+            <Button
+              variant="secondary"
+              onClick={() => void refresh()}
+              disabled={refreshing}
+            >
+              {refreshing ? t("decisions.loading") : t("decisions.refresh")}
+            </Button>
+          </div>
         }
         meta={
           <>

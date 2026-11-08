@@ -132,6 +132,13 @@ pub struct Campaign {
     pub action_id: String,
     pub status: String,
     pub created_at: String,
+    /// Human-readable objective joined from the owning Action.
+    pub objective: Option<String>,
+    /// Project scope joined from the owning Action.
+    pub project_id: Option<String>,
+    /// Lifecycle state an operator should see: terminal Campaign status or
+    /// the latest immutable Gate outcome when no Run is active.
+    pub effective_status: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

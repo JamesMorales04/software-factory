@@ -20,6 +20,7 @@ pub const MAX_USD_MICROS: u64 = i64::MAX as u64;
 /// aggregation arithmetic remain valid; no execution path enforces it as a
 /// productivity ceiling. New telemetry reports observed usage, not this value.
 pub const UNCAPPED_TOKENS: u64 = 100_000_000;
+pub const UNCAPPED_COST_MICROS: u64 = i64::MAX as u64 / 4;
 pub const UNCAPPED_EXPIRES_AT_MS: i64 = i64::MAX - 1;
 
 #[derive(Debug, Error, PartialEq, Eq)]

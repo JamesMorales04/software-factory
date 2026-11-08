@@ -548,20 +548,22 @@ export function DecisionCard({
           {project && (
             <div className="decision-context-item">
               <span>{t("decisions.project")}</span>
-              <code title={project.repository ?? project.id}>
-                {project.repository
-                  ? `${project.repository} · ${shortId(project.id)}`
-                  : shortId(project.id)}
-              </code>
+              <span title={project.repository ?? project.id}>
+                {project.name ||
+                  project.repository?.split("/").filter(Boolean).at(-1) ||
+                  project.id}
+              </span>
             </div>
           )}
           {campaign && (
             <div className="decision-context-item">
               <span>{t("decisions.campaign")}</span>
               <Link to={campaign.target}>
-                <code>{shortId(campaign.id)}</code>
+                {campaign.objective ?? shortId(campaign.id)}
               </Link>
-              <StatusBadge status={campaign.status} />
+              <StatusBadge
+                status={campaign.effective_status ?? campaign.status}
+              />
             </div>
           )}
           {risk && (

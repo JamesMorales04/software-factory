@@ -38,6 +38,7 @@ import {
 } from "../coreApi";
 import { formatCostMicros, formatTimestamp, shortId } from "../format";
 import { useI18n } from "../i18n";
+import { projectDisplayName } from "../workspace";
 
 interface LoadedCampaign {
   detail: CampaignDetailData;
@@ -355,14 +356,6 @@ export function CampaignDetail() {
     (sum, session) => sum + session.output_tokens,
     0,
   );
-  const totalCost = measuredSessions.reduce(
-    (sum, session) => sum + session.cost_micros,
-    0,
-  );
-  const unmeasuredBound = unmeasuredSessions.reduce(
-    (sum, session) => sum + session.cost_micros,
-    0,
-  );
   const turnRecords = sessions.filter(
     (session) => session.turn_id !== "",
   ).length;
@@ -556,16 +549,12 @@ export function CampaignDetail() {
           action?.objective ??
           t("campaignDetail.title", { id: shortId(campaign.id) })
         }
-        description={t("campaignDetail.subtitle", {
-          id: shortId(campaign.id),
-        })}
+        description={t("campaignDetail.subtitleSimplified")}
         meta={
           <>
-            <StatusBadge status={campaign.status} />
-            <span>
-              {t("campaignDetail.meta.action")}{" "}
-              <code>{shortId(campaign.action_id)}</code>
-            </span>
+            <StatusBadge
+              status={campaign.effective_status ?? campaign.status}
+            />
             <span>
               {authorization
                 ? executionModeLabel(authorization.executionMode, t)
@@ -631,26 +620,25 @@ export function CampaignDetail() {
                 <dt>{t("campaignDetail.summary.project")}</dt>
                 <dd>
                   {project ? (
-                    <Link to="/projects">{shortId(project.id)}</Link>
+                    <Link to={`/projects/${project.id}`}>
+                      {projectDisplayName(project)}
+                    </Link>
                   ) : (
                     t("campaignDetail.workflow.notLinked")
                   )}
                 </dd>
               </div>
               <div>
-                <dt>{t("campaignDetail.summary.action")}</dt>
-                <dd>
-                  <Link to={`/actions/${campaign.action_id}`}>
-                    {shortId(campaign.action_id)}
-                  </Link>
-                </dd>
-              </div>
-              <div>
                 <dt>{t("campaignDetail.summary.frozenPlan")}</dt>
                 <dd>
-                  {lead?.plan
-                    ? shortId(lead.plan.plan_hash, 12)
-                    : t("campaignDetail.summary.notRecorded")}
+                  {lead?.plan ? (
+                    <StatusBadge
+                      status="COMPLETED"
+                      label={t("campaignDetail.summary.frozen")}
+                    />
+                  ) : (
+                    t("campaignDetail.summary.notRecorded")
+                  )}
                 </dd>
               </div>
               <div>
@@ -665,10 +653,7 @@ export function CampaignDetail() {
                 <dt>{t("campaignDetail.summary.latestRun")}</dt>
                 <dd>
                   {latestRun ? (
-                    <>
-                      <code>{shortId(latestRun.id)}</code>{" "}
-                      <StatusBadge status={latestRun.status} />
-                    </>
+                    <StatusBadge status={latestRun.status} />
                   ) : (
                     t("campaignDetail.summary.none")
                   )}
@@ -678,10 +663,7 @@ export function CampaignDetail() {
                 <dt>{t("campaignDetail.summary.latestAttempt")}</dt>
                 <dd>
                   {latestAttempt ? (
-                    <>
-                      <code>{shortId(latestAttempt.id)}</code>{" "}
-                      <StatusBadge status={latestAttempt.status} />
-                    </>
+                    <StatusBadge status={latestAttempt.status} />
                   ) : (
                     t("campaignDetail.summary.none")
                   )}
@@ -690,9 +672,14 @@ export function CampaignDetail() {
               <div>
                 <dt>{t("campaignDetail.summary.latestCandidate")}</dt>
                 <dd>
-                  {latestCandidate
-                    ? shortId(latestCandidate.id)
-                    : t("campaignDetail.summary.none")}
+                  {latestCandidate ? (
+                    <StatusBadge
+                      status="CANDIDATE_READY"
+                      label={t("campaignDetail.summary.candidateReady")}
+                    />
+                  ) : (
+                    t("campaignDetail.summary.none")
+                  )}
                 </dd>
               </div>
               <div>
@@ -1175,10 +1162,15 @@ export function CampaignDetail() {
                             label={t("campaignDetail.budget.policyId")}
                             value={authorization.policy.policyId}
                           />
-                          <BudgetRow
-                            label={t("campaignDetail.budget.monetaryEnvelope")}
-                            value={authorization.policy.monetaryEnvelopeId}
-                          />
+                          {authorization.policy.monetaryEnvelopeId !==
+                            "urn:factory:no-billable-inference" && (
+                            <BudgetRow
+                              label={t(
+                                "campaignDetail.budget.monetaryEnvelope",
+                              )}
+                              value={authorization.policy.monetaryEnvelopeId}
+                            />
+                          )}
                           <BudgetRow
                             label={t("campaignDetail.budget.scopeHash")}
                             value={shortId(
@@ -1219,22 +1211,10 @@ export function CampaignDetail() {
                         })}
                       />
                       <BudgetRow
-                        label={t("campaignDetail.budget.cost")}
-                        value={t("campaignDetail.budget.costMeasured", {
-                          amount: formatCostMicros(totalCost),
-                        })}
-                      />
-                      <BudgetRow
                         label={t("campaignDetail.budget.unmeasuredSessions")}
                         value={t("campaignDetail.budget.unmeasuredOf", {
                           count: unmeasuredSessions.length,
                           total: sessions.length,
-                        })}
-                      />
-                      <BudgetRow
-                        label={t("campaignDetail.budget.unmeasuredBound")}
-                        value={t("campaignDetail.budget.unmeasuredBoundValue", {
-                          amount: formatCostMicros(unmeasuredBound),
                         })}
                       />
                     </dl>

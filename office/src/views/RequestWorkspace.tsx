@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
+import { StatusBadge } from "../components/office/StatusBadge";
 import { Badge } from "../components/ui/Badge";
 import { Button, buttonClass } from "../components/ui/Button";
 import { Checkbox, Textarea } from "../components/ui/Field";
@@ -51,6 +52,7 @@ export function RequestWorkspace() {
   const { requestId = "" } = useParams<{ requestId: string }>();
   const { t, formatDate, formatNumber } = useI18n();
   const [data, setData] = useState<IntakeRequestProjection | null>(null);
+  const [projectName, setProjectName] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
@@ -61,6 +63,7 @@ export function RequestWorkspace() {
   const [busy, setBusy] = useState<string | null>(null);
   const [rationale, setRationale] = useState("");
   const [approvedScope, setApprovedScope] = useState(false);
+  const [extraUsageConfirmed, setExtraUsageConfirmed] = useState(false);
   const [messageBody, setMessageBody] = useState("");
   const [cancelOpen, setCancelOpen] = useState(false);
   const [cancelReason, setCancelReason] = useState("");
@@ -71,6 +74,13 @@ export function RequestWorkspace() {
       try {
         const next = await coreApi.getIntakeRequest(requestId);
         setData(next);
+        void coreApi
+          .listProjects()
+          .then((projects) => {
+            const project = projects.find((item) => item.id === next.projectId);
+            if (project) setProjectName(project.name || project.repository);
+          })
+          .catch(() => undefined);
         setLoadError(null);
         setNotFound(false);
         setConnectionError(null);
@@ -203,6 +213,28 @@ export function RequestWorkspace() {
     );
   }
 
+  async function confirmSubscription() {
+    if (!data || !extraUsageConfirmed) return;
+    await runAction(
+      "subscription",
+      async () => {
+        const now = Date.now();
+        await coreApi.createIntakeSubscriptionAdmission(data.id, {
+          assumption_id: `owner-${data.id}-${now}`,
+          confirmed_by: "Product Owner",
+          confirmed_at_ms: now,
+          valid_until_ms: now + 24 * 60 * 60 * 1000,
+          extra_usage_disabled: true,
+          statement:
+            "I confirm OpenCode Go Extra Usage is disabled for this Factory subscription route.",
+          test_profile_id: "opencode-go-subscription",
+          idempotency_key: newIdempotencyKey(),
+        });
+      },
+      t("request.subscription.confirmed"),
+    );
+  }
+
   async function completeAssessment() {
     if (!data) return;
     await runAction(
@@ -288,7 +320,8 @@ export function RequestWorkspace() {
               /
             </span>
             <span>
-              {t("request.meta.project")} <code>{shortId(data.projectId)}</code>
+              {t("request.meta.project")}{" "}
+              {projectName ?? shortId(data.projectId)}
             </span>
             <span className="overview-meta-separator" aria-hidden="true">
               /
@@ -429,6 +462,29 @@ export function RequestWorkspace() {
                       ? t("request.next.assessing")
                       : t("request.next.assess")}
                   </Button>
+                  <details className="request-subscription">
+                    <summary>{t("request.subscription.title")}</summary>
+                    <p className="muted">{t("request.subscription.help")}</p>
+                    <Checkbox
+                      label={t("request.subscription.confirm")}
+                      checked={extraUsageConfirmed}
+                      onChange={(event) =>
+                        setExtraUsageConfirmed(event.target.checked)
+                      }
+                      disabled={busy !== null || offline}
+                    />
+                    <Button
+                      variant="secondary"
+                      disabled={
+                        busy !== null || offline || !extraUsageConfirmed
+                      }
+                      onClick={() => void confirmSubscription()}
+                    >
+                      {busy === "subscription"
+                        ? t("request.subscription.saving")
+                        : t("request.subscription.save")}
+                    </Button>
+                  </details>
                 </>
               )}
               {data.state === "ASSESSING" && (
@@ -624,7 +680,7 @@ export function RequestWorkspace() {
                       <Link
                         to={`/campaigns/${encodeURIComponent(data.campaignId)}`}
                       >
-                        <code>{shortId(data.campaignId)}</code>
+                        {t("request.campaign.open")}
                       </Link>
                     ) : (
                       <span className="muted">{t("request.notExposed")}</span>
@@ -634,9 +690,20 @@ export function RequestWorkspace() {
                 <div>
                   <dt>{t("request.campaign.status")}</dt>
                   <dd>
-                    {data.campaign?.campaign.status ??
-                      data.campaignStatus ??
-                      t("request.notExposed")}
+                    {data.campaign?.campaign.effective_status ||
+                    data.campaign?.campaign.status ||
+                    data.campaignStatus ? (
+                      <StatusBadge
+                        status={
+                          data.campaign?.campaign.effective_status ??
+                          data.campaign?.campaign.status ??
+                          data.campaignStatus ??
+                          "UNKNOWN"
+                        }
+                      />
+                    ) : (
+                      t("request.notExposed")
+                    )}
                   </dd>
                 </div>
                 <div>
@@ -747,41 +814,15 @@ export function RequestWorkspace() {
               </div>
               <div>
                 <dt>{t("request.details.project")}</dt>
-                <dd>
-                  <code>{shortId(data.projectId)}</code>
-                </dd>
+                <dd>{projectName ?? shortId(data.projectId)}</dd>
               </div>
               <div>
                 <dt>{t("request.details.profile")}</dt>
                 <dd>
-                  {data.profile.name} r{data.profile.revision}
-                  <div className="muted">
-                    <code title={data.profile.revisionId}>
-                      {shortId(data.profile.revisionId, 12)}
-                    </code>
-                  </div>
-                </dd>
-              </div>
-              <div>
-                <dt>{t("request.details.action")}</dt>
-                <dd>
-                  <Link to={`/actions/${encodeURIComponent(data.actionId)}`}>
-                    <code>{shortId(data.actionId)}</code>
-                  </Link>
-                </dd>
-              </div>
-              <div>
-                <dt>{t("request.details.delegation")}</dt>
-                <dd>
-                  <code>{shortId(data.delegationId)}</code>
-                </dd>
-              </div>
-              <div>
-                <dt>{t("request.details.leadRequest")}</dt>
-                <dd>
-                  <Link to="/lead">
-                    <code>{shortId(data.leadRequestId)}</code>
-                  </Link>
+                  {data.profile.name} ·{" "}
+                  {t("request.details.revision", {
+                    revision: data.profile.revision,
+                  })}
                 </dd>
               </div>
               <div>

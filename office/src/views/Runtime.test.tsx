@@ -14,7 +14,6 @@ const mocks = vi.hoisted(() => ({
   listUnresolvedModelCalls: vi.fn(),
   getObservability: vi.fn(),
   getRuntimeSettings: vi.fn(),
-  getProviderTurnBudget: vi.fn(),
   resolveModelCall: vi.fn(),
 }));
 
@@ -90,7 +89,6 @@ describe("Runtime", () => {
     });
     mocks.getRuntimeSettings.mockReset().mockResolvedValue({
       semanticReviewEnabled: false,
-      semanticReviewMaxOutputTokens: 8192,
       updatedAt: "2026-10-27T10:00:00Z",
     });
     mocks.resolveModelCall.mockReset().mockResolvedValue(undefined);

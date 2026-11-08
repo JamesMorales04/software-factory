@@ -29,16 +29,14 @@ filesystem editing.
 
 | Module | Required experience |
 |---|---|
-| Overview | Active Campaigns, running agents, pending decisions, blocked work, recent accepted candidates, gate outcomes, measured budget/spend, runtime health and meaningful events; every signal deep-links to the affected object |
-| Decision Inbox | Campaign authorization, budget/recovery requests where supported, blocked execution, manual review, unresolved usage/cleanup, conflicting requirements and delivery requests; actionable items separated from informational notifications; every button invokes an existing authenticated Core operation |
-| Actions | List, search, filter, create and detail; objective, frozen spec, Project, risk, scope, route, Lead assessment, WorkGraph, budget, campaigns, runs/attempts, candidates, evidence and delivery; progressive disclosure with expert controls |
-| Projects / Project Detail | Authorized public/private GitHub repository search and import through the existing encrypted connection, approved-root local import, explicit human name and source identity, Core-backed summary with origin/base revision/last activity/connection health/Campaigns/decisions/capabilities, and bounded manifest discovery whose advisory toolchain and check evidence never grants authority |
-| Campaigns / Campaign Detail | Authorization, execution and quality states kept distinct; WorkGraph, timeline, participants, attempts, integrations, candidates, diffs, receipts, gate, budgets and cleanup |
-| Agent Office | Actual recorded participants, roles, provider/model, assigned Action/Run, observable status, Worker/session linkage, authorized capabilities, bounded tool events, errors, usage and times; visual, table and timeline views over the same data |
-| Issues | Governed issue intake/board, relationships to Actions and Campaigns, filters, priority, accessible drag-and-drop and keyboard moves; GitHub synchronization only when implemented and labeled |
-| Docs | Repository-backed, versioned Markdown with project navigation, search, source provenance, history and governed editing; no parallel ungoverned architecture source |
-| Runtime & Settings | Providers/models, authentication, credentials/revocation, budgets, active sessions, Worker/Supervisor/container health, unresolved usage, cleanup/recovery, runtime policy and changes |
-| Application shell | Persistent collapsible sidebar, Project context, command/search navigation, page headers/breadcrumbs, Decision Inbox and runtime health entrypoints, account/lock and responsive layout |
+| Home / Requests | A conversation-first intake composer plus a Project-filtered request list with human objectives and translated states; every request opens a workspace that shows the assessment, frozen plan, exact approval, execution and failure state |
+| Decision Inbox | Core-backed work that needs an operator decision or awareness; Project filter, actionable items separated from notifications, exact confirmation for every mutation and no invented action |
+| Campaigns / Campaign Detail | Read-only human campaign list with Project filter; detail keeps lifecycle, WorkGraph, execution, candidates, evidence, Quality Gate, usage telemetry and events distinct, with explicit limitations instead of invented state |
+| Projects / Project Detail / Files | Import an authorized GitHub repository, select a folder from the operator's computer through the OS picker, or register a public Git URL; show human identity, base revision, Campaigns, decisions, discovery evidence and a bounded file browser |
+| Issues | Automatic GitHub issue synchronization, a Project-filtered kanban by real work state, click-to-start governed intake and an explicit auto-start mode while Office is open; issue text remains untrusted plain text |
+| Agent Office | Recorded participants, roles, provider/model, assigned Campaign, observable state, Worker/session linkage and bounded tool events; no simulated activity or hidden reasoning |
+| Runtime & Settings | Core health, Workers, provider sessions, model calls, unresolved reservations, cleanup, telemetry, provider/model connections, execution profiles, runtime policy and device access |
+| Application shell | Persistent collapsible sidebar, command/search navigation, page context, language/theme/density controls, Core health, Decision Inbox entrypoint and responsive layout |
 
 ## Truthfulness rules
 
@@ -63,135 +61,80 @@ filesystem editing.
 The current Office has a responsive command-center shell with grouped
 navigation, route context in the top bar, command navigation (`Ctrl/Cmd+K`),
 light/dark themes, comfortable/compact density, Core health visibility and a
-shared token/component foundation. Existing views are Overview, Decision
-Inbox, Projects, Actions/Action Detail, Lead, Delegations, Campaigns/Campaign
-Detail, Runs, Workers, Runtime and Settings. It uses Core snapshots and
-polling; it does not claim SSE/live streaming. Overview projects authoritative
-Core counts, Quality Gate outcomes, measured and unmeasured spend, accepted
-candidates, decisions, runtime health and recent events. Decision Inbox
-separates action-required items from informational events and aggregates
-blocked authorizations, frozen intake/Lead plans, Gate repair/human-review
-states, unresolved model usage, unresolved provider sessions and failed work.
-Its Core-backed actions are exact and confirmation-gated: approve an intake
-plan only with the frozen plan hash and profile revision, release an ambiguous
-model reservation, withdraw a frozen Lead request, or cancel a Campaign. Every
-action re-reads `/office/decisions` and refuses a changed or vanished item.
-Full-scope Campaign authorization and Gate repair are not posted from the
-Inbox; it links to the exact Campaign or Gate evidence and records the
-available limitation instead of inventing a mutation. Action Detail shows the frozen spec,
-checks and related Core records. Campaign Detail is a tabbed operational
-workspace with separate lifecycle, WorkGraph, execution/participant,
-candidate-revision, evidence, Quality Gate, budget/usage and events/recovery
-views. Campaign authorization is read from the camelCase V2 record
-(`schemaVersion`, `policy.operations`, `policy.progress`,
-`monetaryEnvelopeId`, route, risk and execution mode); V1 ceilings appear only
-as separate historical evidence when `legacy` is present. Candidate revisions expose a bounded Core file diff from the exact
-frozen base to the exact candidate commit/tree, including per-file status,
-additions/deletions and unified patches with explicit binary, large, non-file,
-truncated and unavailable states. The same workspace can read a bound GitHub
-pull request, its checks, comments and bounded PR diff, request review, open a
-PR only when the remote head matches the candidate commit, and merge only with
-explicit confirmation after a fresh PR/check read. GitHub credentials remain
-server-side; real GitHub acceptance remains open. Runtime is an operational console
-for Core health, registered Workers, filtered provider sessions, measured and
-unmeasured usage, model-call reservations, audited release, cleanup, telemetry
-and explicit unexposed services. Settings is a provider and policy workspace
-for route configuration, credential lifecycle, connection diagnostics, advanced
-limits, semantic-review policy and configuration audit. Agent Office projects
-recorded Lead, Implementer, Verifier, Reviewer and Worker participants into a
-visual office, table and timeline with a Core-backed inspector and bounded
-provider tool events. Campaign Detail now includes an interactive,
-dependency-aware WorkGraph with a keyboard-accessible node inspector while
-retaining the authoritative table. Issues has a read-only GitHub snapshot
-foundation: encrypted connection, Project repository binding, bounded sync and
-plain-text issue detail are implemented in the lane view; governed intake,
-board ordering, Action/Campaign relationships and issue writing remain
-unimplemented. The view is wired at `/issues`; real browser acceptance is
-pending. Projects now offers three Core-governed onboarding journeys: import an
-authorized GitHub repository through the existing encrypted connection,
-import a local repository only inside the operator-approved managed root, or
-register a public Git URL with an explicit human name. Project detail shows a
-Core summary, exact base revision, connection and issue-sync health, active
-Campaigns, pending decisions and persisted discovery evidence. GitHub App/OAuth
-installation onboarding is not implemented; fine-grained tokens do not report
-OAuth scopes, and Office does not imply installation-wide access. Home is now a
-conversation-first unified intake composer: one Project, one natural-language
-objective, one execution profile (with a readable route preview), one explicit
-USD inference authorization and one submit action create a durable intake
-request. Ordinary Home does not ask for turn, attempt, session, token,
-cost-micro or Campaign-deadline controls. Every request stops for explicit
-operator approval; the composer does not offer or imply automatic start. A 409
-`EXECUTION_POLICY_REQUIRED` surfaces an explicit "Enable governed execution"
-acknowledgement that shows the exact objective scope, grant lifetime and
-inference envelope, then creates a bounded, non-autonomous R0 policy before
-retrying the same request. The Request
-workspace derives its state from the authoritative Lead request, shows the
-frozen profile revision and plan hash, runs the bounded assessment, approves
-the exact frozen plan, appends pre-freeze operator messages and withdraws
-through the authoritative Lead boundary. It does not expose an intake-only
-terminal flag. Home also shows the latest non-terminal (or most recent completed)
-intake request as a compact Lead thread, refreshing its status from Core and
-linking back to that same Request workspace. It displays durable operator
-messages and Lead state details only; it does not simulate replies or activity.
-Execution profiles resolve each model-backed role independently:
-the frozen Lead route runs intake assessment, the frozen Semantic Reviewer
-route runs candidate review, and the implementer route remains the Campaign
-authorization route. The profile editor keeps provider/model/reasoning routes
-on the normal path; technical per-operation limits and progress supervision
-are optional advanced settings, and historical V1 caps are not carried into a
-new revision. Provider Settings expose authenticated provider model discovery
-through a searchable selector; base URL, manual model IDs, token/cost/rate
-limits and connection details are explicit advanced configuration, and an
-unavailable or unsupported catalog is shown as a typed state. A Codex App Server connection can implement a Campaign
-but cannot execute one-shot assessment or semantic review in this build. Docs
-and a stable `/office` deep-link base remain unimplemented.
+shared token/component foundation. The canonical routes are `/`, `/requests`,
+`/requests/:id`, `/inbox`, `/campaigns`, `/campaigns/:id`, `/projects`,
+`/projects/:id`, `/projects/:id/files`, `/issues`, `/agents`,
+`/agents/:id`, `/runtime`, `/settings` and `/pair`. Removed pages redirect to
+the closest current workspace; unknown routes return Home. Path-style URLs
+copied without the hash are redirected to the hash route for browser
+navigation requests.
+
+Home is a conversation-first unified intake composer: one Project, one
+natural-language objective and one execution profile create a durable intake
+request. It does not ask for monetary, token, turn, attempt, session or
+Campaign-deadline controls. When Core requires a non-autonomous execution
+policy, Home shows the exact scope, route, allowed paths, capabilities and
+grant lifetime for explicit acknowledgement, then retries the same request.
+The Request workspace derives its state from the authoritative Lead request,
+shows the frozen profile revision and plan hash, runs the bounded assessment,
+records a request-scoped subscription confirmation when the subscription route
+is used, approves the exact frozen plan, appends pre-freeze operator messages
+and withdraws through the authoritative Lead boundary.
+
+Campaigns is a read-only list with human objectives, translated states and a
+Project filter. Campaign Detail keeps lifecycle, WorkGraph, execution,
+candidates, evidence, Quality Gate and usage telemetry separate. Authorization
+is read from the V2 record; historical V1 caps are provenance, not current
+authority. The current product does not enforce model token, turn, attempt,
+session, wall-clock or subscription-cost productivity caps. Token, time, retry
+and subscription usage is telemetry, and the no-progress breaker is the
+automatic stop.
+
+Issues automatically synchronizes a bound GitHub repository, renders a
+five-column board (Ready, Queued, Working, Needs attention, Done) with a
+Project filter, and starts one governed work request from a ready issue. An
+explicit auto-start toggle starts one ready issue at a time while Office is
+open; it is a browser-side convenience, not a Core scheduler. Repository
+binding verifies and records the immutable GitHub repository ID on the server.
+Policy setup exposes labels, issue capacity and expiry; monetary, attempt,
+session, turn and wall-clock policy fields are not part of the active surface.
+
+Projects supports GitHub import through the encrypted connection, public Git
+URL registration and a computer-folder picker. Chromium's File System Access
+API opens the operating system picker, copies the selected folder into managed
+storage through the Core ZIP import boundary (with traversal, symlink and size
+protections), initializes Git when needed and registers the Project. This is a
+copy, not a direct host-path mount.
+
+Decision Inbox has a Project filter and separates actionable from
+informational items. Its mutations remain exact and confirmation-gated:
+intake-plan approval with the frozen hash/profile revision, model-call
+resolution, Lead withdrawal and Campaign cancellation. Runtime, Settings and
+Agent Office remain truthful Core projections; no view synthesizes agent
+activity or acceptance.
 
 Known gaps:
 
-- Project, Lead, Delegations, Campaign list, Runs and Workers still use the
-  legacy compatibility surface; they are migrated by module.
-- The WorkGraph visualizes recorded dependencies; it does not infer scheduling
-  progress, and malformed graph data is surfaced rather than repaired.
-- Candidate diff metadata does not include file bodies; there is no code-diff
-  viewer.
-- Discovered-only model IDs are executable only while the current Core process
-  holds that provider discovery result; discovery is not persisted.
-- Codex one-shot assessment and semantic review remain unsupported by design;
-  a Codex route for those roles stays a non-executable draft.
-- Campaign authorization labels can remain `AUTHORIZED` after a terminal Run;
-  the Run and gate are authoritative and must be displayed separately.
-- Decision Inbox actions are limited to Core operations with an exact decision revision: intake-plan approval, model-call resolution, Lead withdrawal and Campaign cancellation. Provider-session termination, Gate repair and full-scope Campaign authorization remain outside it; the Inbox links to the exact object and does not claim those mutations.
-- Unified intake assessment requires an authorized model gateway. Without one
-  Core returns a typed 503; it does not fabricate plan checks. A FIXTURE
-  assessment cannot derive executable checks for a draft Action by itself.
-- The execution-policy grant is conservative: R0 only, non-autonomous, no
-  repair cycles, one parallel unit, four requests and a 30-day expiry.
-  Aggregate token/cost/turn accounting across assessment plus implementation is
-  not implemented; approval intersects per-task profile/plan/delegation/Core
-  ceilings and records the limitation. Role-specific routing beyond the single
-  active default gateway is not implemented, so cross-provider profiles remain
-  non-executable.
-- A real browser acceptance run against Core/Compose for the unified intake
-  journey is pending; the current evidence is component tests plus Rust
-  DB/API tests.
-- Runtime shows Supervisor, nested Podman and broker state as not exposed; it
-  does not infer their health.
-- Agent Office is a read-only observability experience; no stop, model switch,
-  budget change or tool invocation is exposed.
-- Provider sessions remain bounded to the latest projection; very old sessions
-  are reached by Campaign scope or exact identity rather than a global sweep.
-- Provider connection tests read model discovery only; no live coding inference
-  is authorized by this slice.
-- No issue board, issue-to-Action/Campaign relationship, issue writing or
-  repository docs/wiki. The GitHub issue slice is read-only and requires a
-  Project repository binding plus an explicit sync.
-- Hash-only routes, no stable `/office` deep-link base.
-- The design foundation is implemented; Storybook, visual regression, full
-  automated accessibility and the remaining graph/board/diff components are not.
-- Polling only; no cursor/replay stream in the browser. A disconnected Agent
-  Office preserves and labels the last authoritative snapshot.
-- Limited filters and keyboard alternatives for the remaining legacy
-  operational views.
+- Auto-start is browser-side and stops when Office closes. A Core-owned
+  autonomous issue scheduler remains unimplemented.
+- The computer-folder picker copies the folder into managed storage; there is
+  no native desktop bridge or direct host-path mount into the container.
+- GitHub App/OAuth installation onboarding is not implemented. The supported
+  flow uses the existing encrypted token connection.
+- Codex one-shot assessment and semantic review remain unsupported; a Codex
+  route for those roles stays non-executable.
+- Autonomous repair is disabled. A Gate that requests changes remains
+  `REPAIR_REQUIRED` until an operator starts a new authorized request or
+  cancels the Campaign; the Inbox does not post a repair authorization.
+- Provider-session termination and full-scope Campaign authorization remain
+  outside the Inbox because no exact operator mutation is exposed there.
+- A true independent security review, Windows support, native ChatGPT OAuth and
+  deployment remain open. `TRUSTED_LOCAL` is never described as isolated or
+  certified.
+- Polling only; no cursor/replay stream in the browser. A disconnected view
+  preserves and labels the last authoritative snapshot.
+- Storybook, full visual-regression coverage and complete automated
+  accessibility certification are not implemented.
 
 ## Verification requirements
 

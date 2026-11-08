@@ -116,12 +116,6 @@ const provider = {
   credentialFingerprint: "fixture-fingerprint",
   revision: 2,
   updatedAt: "2026-10-27T10:00:00Z",
-  maxTurns: 4,
-  maxInputTokens: 60000,
-  maxOutputTokens: 12000,
-  maxCostMicros: 500000,
-  inputMicrosPerMillion: 150000,
-  outputMicrosPerMillion: 600000,
   modelDiscovery: {
     provider: "opencode-go",
     status: "AVAILABLE",
@@ -372,7 +366,6 @@ async function mockCore(route) {
   if (path === "/settings/runtime")
     return json(route, {
       semanticReviewEnabled: false,
-      semanticReviewMaxOutputTokens: 8192,
       updatedAt: "2026-10-29T10:00:00Z",
     });
   return json(route, { error: `unmocked fixture path ${path}` }, 404);

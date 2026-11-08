@@ -347,7 +347,11 @@ export function Runtime() {
             />
             <Metric
               label={t("runtime.metrics.telemetry.label")}
-              value={observability?.enabled ? "ENABLED" : "DISABLED"}
+              value={t(
+                observability?.enabled
+                  ? "runtime.telemetry.enabled"
+                  : "runtime.telemetry.disabled",
+              )}
               detail={t("runtime.metrics.telemetry.detail", {
                 cursor: formatNumber(observability?.cursor ?? 0),
                 pending: formatNumber(observability?.pending ?? 0),

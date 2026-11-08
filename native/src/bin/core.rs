@@ -4,16 +4,16 @@ use std::{
     future::IntoFuture,
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 use axum::{
     Json, Router,
     body::Bytes,
-    extract::{Extension, Path as AxumPath, Query, Request, State},
+    extract::{DefaultBodyLimit, Extension, Path as AxumPath, Query, Request, State},
     http::{HeaderMap, Method, StatusCode, header},
-    middleware::{Next, from_fn_with_state},
-    response::{IntoResponse, Response},
+    middleware::{Next, from_fn, from_fn_with_state},
+    response::{IntoResponse, Redirect, Response},
     routing::{any, delete, get, post},
 };
 use factory_native::lead::{LeadPlanProposal, LeadRequestState, StandingDelegation};
@@ -116,7 +116,7 @@ struct ProviderTurnAuthorize {
 }
 
 fn default_provider_turn_max_requests() -> u32 {
-    1
+    0
 }
 
 #[derive(Deserialize)]
@@ -403,12 +403,6 @@ struct IntakeListQuery {
     offset: Option<usize>,
 }
 
-#[derive(Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-struct ProjectDirectoryBrowseQuery {
-    path: Option<String>,
-}
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ApproveIntakeRequest {
@@ -472,6 +466,12 @@ struct ExecutionPolicyRequest {
     idempotency_key: String,
 }
 
+// The frozen 0033 schema keeps NOT NULL cost columns for historical evidence.
+// These sentinels satisfy its storage checks; no code path enforces them as a
+// monetary ceiling. A future migration may drop the columns entirely.
+const LEGACY_UNCAPPED_PER_ISSUE_MICROS: u64 = 1;
+const LEGACY_UNCAPPED_TOTAL_MICROS: u64 = i64::MAX as u64 / 4;
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct IssueIntakePolicyRequest {
@@ -490,12 +490,6 @@ struct IssueIntakePolicyRequest {
     capabilities: Vec<factory_native::lead::Capability>,
     max_issues: u32,
     max_concurrent: u32,
-    max_cost_micros_per_issue: u64,
-    max_total_cost_micros: u64,
-    max_attempts: u32,
-    max_sessions: u32,
-    max_turns: u32,
-    max_wall_clock_secs: u64,
     expires_at: String,
     acknowledge: bool,
     reason: String,
@@ -525,7 +519,6 @@ struct IssueIntakeBatchRequest {
     expected_policy_revision: u32,
     expected_policy_hash: String,
     items: Vec<IssueIntakeBatchItemRequest>,
-    max_total_cost_micros: u64,
     expires_at: String,
     acknowledge: bool,
     reason: String,
@@ -859,7 +852,9 @@ fn build_router(app: Arc<App>) -> Router {
             );
         }
     }
-    router.layer(from_fn_with_state(app, browser_auth))
+    router
+        .layer(from_fn_with_state(app, browser_auth))
+        .layer(from_fn(deep_link_redirect))
 }
 
 fn build_office_access_router(app: Arc<App>, office_directory: Option<PathBuf>) -> Router {
@@ -875,7 +870,9 @@ fn build_office_access_router(app: Arc<App>, office_directory: Option<PathBuf>) 
     } else {
         router = router.fallback(office_api_route_not_found);
     }
-    router.layer(from_fn_with_state(app, browser_auth))
+    router
+        .layer(from_fn_with_state(app, browser_auth))
+        .layer(from_fn(deep_link_redirect))
 }
 
 fn office_api_router(app: Arc<App>) -> Router {
@@ -913,7 +910,10 @@ fn office_api_router(app: Arc<App>) -> Router {
         )
         .route("/settings/providers/{provider}/audit", get(provider_audit))
         .route("/projects", get(projects).post(register_project))
-        .route("/projects/browse", get(browse_projects))
+        .route(
+            "/projects/import/archive",
+            post(import_project_archive).layer(DefaultBodyLimit::max(512 * 1024 * 1024)),
+        )
         .route(
             "/projects/{id}/config",
             get(project_config).put(update_project_config),
@@ -960,10 +960,6 @@ fn office_api_router(app: Arc<App>) -> Router {
         .route("/attempts", get(attempts))
         .route("/events", get(events))
         .route("/observability", get(observability_status))
-        .route(
-            "/provider/turn_reservations/budget",
-            get(provider_turn_reservation_budget),
-        )
         .route("/provider/sessions", get(provider_sessions))
         .route("/model/calls/unresolved", get(unresolved_model_calls))
         .route("/model/calls", get(model_calls))
@@ -1032,6 +1028,37 @@ fn office_api_router(app: Arc<App>) -> Router {
         .route("/quality/receipts", any(office_route_not_found))
 }
 
+/// Browser path URLs such as `/campaigns/<id>` are often copied without the
+/// hash. Redirect those navigation requests to the HashRouter equivalent before
+/// the root API aliases can answer with 401. JSON/API clients and static assets
+/// are never redirected.
+async fn deep_link_redirect(request: Request, next: Next) -> Response {
+    if request.method() != Method::GET {
+        return next.run(request).await;
+    }
+    let path = request.uri().path();
+    let accepts_html = request
+        .headers()
+        .get(header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.contains("text/html"));
+    let static_path = path == "/"
+        || path.starts_with("/assets/")
+        || path.starts_with("/manifest")
+        || path.starts_with("/factory-icon")
+        || path.ends_with(".html")
+        || path.starts_with("/core-api");
+    if !accepts_html || static_path {
+        return next.run(request).await;
+    }
+    let query = request
+        .uri()
+        .query()
+        .map(|value| format!("?{value}"))
+        .unwrap_or_default();
+    Redirect::temporary(&format!("/#{path}{query}")).into_response()
+}
+
 async fn office_route_not_found() -> StatusCode {
     StatusCode::NOT_FOUND
 }
@@ -1087,7 +1114,10 @@ fn api_router(app: Arc<App>) -> Router {
         .route("/settings/providers/{provider}/audit", get(provider_audit))
         .route("/worker/provider_profile", get(worker_provider_profile))
         .route("/projects", get(projects).post(register_project))
-        .route("/projects/browse", get(browse_projects))
+        .route(
+            "/projects/import/archive",
+            post(import_project_archive).layer(DefaultBodyLimit::max(512 * 1024 * 1024)),
+        )
         .route(
             "/projects/{id}/config",
             get(project_config).put(update_project_config),
@@ -1171,10 +1201,6 @@ fn api_router(app: Arc<App>) -> Router {
         .route(
             "/worker/provider_turn_bind",
             post(worker_provider_turn_bind),
-        )
-        .route(
-            "/provider/turn_reservations/budget",
-            get(provider_turn_reservation_budget),
         )
         .route(
             "/provider/turn_reservations/{id}/resolve",
@@ -1291,24 +1317,17 @@ impl App {
         let allow_loopback_http =
             env::var("FACTORY_ALLOW_TEST_UPSTREAM").ok().as_deref() == Some("1");
         let test_upstream_hosts = test_upstream_hosts();
-        let mut lead_policy =
-            policy_from_env("FACTORY_LEAD_MODEL", 128_000, 8_192, 300_000).ok()?;
-        let mut reviewer_policy =
+        let lead_policy = policy_from_env("FACTORY_LEAD_MODEL", 128_000, 8_192, 300_000).ok()?;
+        let reviewer_policy =
             policy_from_env("FACTORY_REVIEW_MODEL", 400_000, 8_192, 1_000_000).ok()?;
-        let mut evaluation_policy =
+        let evaluation_policy =
             policy_from_env("FACTORY_EVALUATION_MODEL", 400_000, 8_192, 2_000_000).ok()?;
-        let mut global_policy =
+        let global_policy =
             policy_from_env("FACTORY_MODEL_GLOBAL", 2_000_000, 100_000, 10_000_000).ok()?;
-        for policy in [
-            &mut lead_policy,
-            &mut reviewer_policy,
-            &mut evaluation_policy,
-            &mut global_policy,
-        ] {
-            policy.max_input_tokens = policy.max_input_tokens.min(settings.max_input_tokens);
-            policy.max_output_tokens = policy.max_output_tokens.min(settings.max_output_tokens);
-            policy.max_cost_micros = policy.max_cost_micros.min(settings.max_cost_micros);
-        }
+        // Persisted provider columns are historical telemetry inputs. The
+        // subscription model-call path does not enforce them as productivity
+        // or monetary ceilings; only the explicit per-request technical policy
+        // and the frozen quote remain authoritative.
         let config = factory_native::model_gateway::ModelGatewayConfig {
             base_url: settings.base_url,
             credential,
@@ -1974,25 +1993,6 @@ struct PendingQualityQuery {
     role: String,
 }
 
-fn default_max_turns() -> u32 {
-    4
-}
-fn default_max_input_tokens() -> u64 {
-    60_000
-}
-fn default_max_output_tokens() -> u64 {
-    12_000
-}
-fn default_max_cost_micros() -> u64 {
-    500_000
-}
-fn default_input_rate() -> u64 {
-    150_000
-}
-fn default_output_rate() -> u64 {
-    600_000
-}
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct ProviderSettingsInput {
@@ -2002,25 +2002,12 @@ struct ProviderSettingsInput {
     credential: Option<String>,
     enabled: bool,
     is_default: bool,
-    #[serde(default = "default_max_turns")]
-    max_turns: u32,
-    #[serde(default = "default_max_input_tokens")]
-    max_input_tokens: u64,
-    #[serde(default = "default_max_output_tokens")]
-    max_output_tokens: u64,
-    #[serde(default = "default_max_cost_micros")]
-    max_cost_micros: u64,
-    #[serde(default = "default_input_rate")]
-    input_micros_per_million: u64,
-    #[serde(default = "default_output_rate")]
-    output_micros_per_million: u64,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct RuntimeSettingsInput {
     semantic_review_enabled: bool,
-    semantic_review_max_output_tokens: u32,
 }
 
 #[derive(Deserialize)]
@@ -2053,11 +2040,7 @@ async fn update_runtime_settings(
     }
     match app
         .db
-        .update_factory_settings(
-            input.semantic_review_enabled,
-            input.semantic_review_max_output_tokens,
-            "office-operator",
-        )
+        .update_factory_settings(input.semantic_review_enabled, "office-operator")
         .await
     {
         Ok(settings) => Json(settings).into_response(),
@@ -2418,12 +2401,6 @@ fn provider_view(
         "credentialFingerprint": settings.map(|settings| settings.credential_fingerprint.clone()).unwrap_or_default(),
         "revision": settings.map(|settings| settings.revision).unwrap_or(0),
         "updatedAt": settings.map(|settings| settings.updated_at.clone()).unwrap_or_default(),
-        "maxTurns": settings.map(|settings| settings.max_turns).unwrap_or(default_max_turns()),
-        "maxInputTokens": settings.map(|settings| settings.max_input_tokens).unwrap_or(default_max_input_tokens()),
-        "maxOutputTokens": settings.map(|settings| settings.max_output_tokens).unwrap_or(default_max_output_tokens()),
-        "maxCostMicros": settings.map(|settings| settings.max_cost_micros).unwrap_or(default_max_cost_micros()),
-        "inputMicrosPerMillion": settings.map(|settings| settings.input_micros_per_million).unwrap_or(default_input_rate()),
-        "outputMicrosPerMillion": settings.map(|settings| settings.output_micros_per_million).unwrap_or(default_output_rate()),
     })
 }
 
@@ -2512,34 +2489,16 @@ async fn update_provider_settings(
         )
             .into_response();
     }
-    if let Err(error) = factory_native::provider_catalog::validate_model(&input.model)
-        .and_then(|()| {
+    if let Err(error) =
+        factory_native::provider_catalog::validate_model(&input.model).and_then(|()| {
             factory_native::provider_catalog::validate_base_url(
                 &input.base_url,
                 allow_loopback_http,
                 &test_upstream_hosts,
             )
         })
-        .and_then(|()| {
-            factory_native::provider_catalog::validate_budget(
-                input.max_turns,
-                input.max_input_tokens,
-                input.max_output_tokens,
-                input.max_cost_micros,
-            )
-        })
     {
         return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();
-    }
-    if input.input_micros_per_million > 10_000_000
-        || input.output_micros_per_million > 10_000_000
-        || (input.input_micros_per_million == 0 && input.output_micros_per_million == 0)
-    {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error":"provider rates are outside the supported bound"})),
-        )
-            .into_response();
     }
     let Some(master_key) = app.master_key.as_ref() else {
         return (
@@ -2601,12 +2560,27 @@ async fn update_provider_settings(
         credential_fingerprint: encrypted.fingerprint,
         enabled: input.enabled,
         is_default: input.is_default,
-        max_turns: input.max_turns,
-        max_input_tokens: input.max_input_tokens,
-        max_output_tokens: input.max_output_tokens,
-        max_cost_micros: input.max_cost_micros,
-        input_micros_per_million: input.input_micros_per_million,
-        output_micros_per_million: input.output_micros_per_million,
+        max_turns: existing.as_ref().map(|value| value.max_turns).unwrap_or(4),
+        max_input_tokens: existing
+            .as_ref()
+            .map(|value| value.max_input_tokens)
+            .unwrap_or(60_000),
+        max_output_tokens: existing
+            .as_ref()
+            .map(|value| value.max_output_tokens)
+            .unwrap_or(12_000),
+        max_cost_micros: existing
+            .as_ref()
+            .map(|value| value.max_cost_micros)
+            .unwrap_or(500_000),
+        input_micros_per_million: existing
+            .as_ref()
+            .map(|value| value.input_micros_per_million)
+            .unwrap_or(150_000),
+        output_micros_per_million: existing
+            .as_ref()
+            .map(|value| value.output_micros_per_million)
+            .unwrap_or(600_000),
     };
     let cache = app.db.provider_model_cache();
     match app
@@ -3316,7 +3290,6 @@ struct GitHubRepositoriesQuery {
 struct ProjectGitHubInput {
     owner: String,
     repo: String,
-    default_branch: String,
     #[serde(default)]
     repository_github_id: Option<i64>,
 }
@@ -3606,10 +3579,18 @@ async fn github_repositories(
     .into_response()
 }
 
-async fn browse_projects(
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProjectArchiveQuery {
+    name: Option<String>,
+    idempotency_key: String,
+}
+
+async fn import_project_archive(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
-    Query(query): Query<ProjectDirectoryBrowseQuery>,
+    Query(query): Query<ProjectArchiveQuery>,
+    body: Bytes,
 ) -> Response {
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
@@ -3621,23 +3602,59 @@ async fn browse_projects(
         )
             .into_response();
     };
-    let relative = query.path.unwrap_or_default();
-    let result = tokio::task::spawn_blocking(move || {
-        factory_native::project_import::browse_directories(&root, &relative)
+    if query.idempotency_key.trim().is_empty() || query.idempotency_key.len() > 256 {
+        return api_error(Error::Invalid("idempotency key"));
+    }
+    let name = query.name.unwrap_or_default();
+    let display_name = name.clone();
+    let idempotency_key = query.idempotency_key.clone();
+    let upload_key = idempotency_key.clone();
+    let bytes = body.to_vec();
+    // The lock lives inside the blocking task, not the request future. A
+    // client disconnect therefore cannot release the import namespace while
+    // extraction is still writing into it.
+    static ARCHIVE_IMPORT_LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
+    let imported = tokio::task::spawn_blocking(move || {
+        let lock = ARCHIVE_IMPORT_LOCK.get_or_init(|| std::sync::Mutex::new(()));
+        let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        factory_native::project_import::import_archive(&root, &display_name, &upload_key, &bytes)
     })
     .await;
-    match result {
-        Ok(Ok(listing)) => Json(listing).into_response(),
-        Ok(Err(error)) => (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": error.to_string()})),
-        )
-            .into_response(),
-        Err(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error":"project browse task failed"})),
-        )
-            .into_response(),
+    let path = match imported {
+        Ok(Ok(path)) => path,
+        Ok(Err(error)) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": error.to_string()})),
+            )
+                .into_response();
+        }
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error":"project archive task failed"})),
+            )
+                .into_response();
+        }
+    };
+    let source = factory_native::db::RegisterProjectSource {
+        name,
+        source_kind: "local".into(),
+        source_url: String::new(),
+        source_key: format!(
+            "upload:{}",
+            &factory_native::device_session::sha256_hex(&idempotency_key)[..16]
+        ),
+        source_visibility: String::new(),
+        default_branch: String::new(),
+    };
+    match app
+        .db
+        .register_project_with_source(&path, &source, &query.idempotency_key)
+        .await
+    {
+        Ok(project) => (StatusCode::CREATED, Json(project)).into_response(),
+        Err(error) => api_error(error),
     }
 }
 
@@ -3824,10 +3841,7 @@ async fn import_github_project(
                 owner: &input.owner,
                 repo: &input.repo,
                 default_branch: &repository.default_branch,
-                // The detail response used for import does not expose the
-                // immutable repository ID. Issue intake fails closed until the
-                // binding is refreshed through repository discovery.
-                repository_github_id: None,
+                repository_github_id: Some(repository.id),
             },
             "office-operator",
         )
@@ -4096,6 +4110,29 @@ async fn bind_project_github(
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
+    let credential = match load_github_credential(&app).await {
+        Ok(credential) => credential,
+        Err(response) => return response,
+    };
+    let repository = match app
+        .github
+        .repository(credential.token(), &input.owner, &input.repo)
+        .await
+    {
+        Ok(repository) => repository,
+        Err(error) => return github_upstream_error(error),
+    };
+    if let Some(requested) = input.repository_github_id
+        && requested != repository.id
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "the repository identity does not match the connected GitHub repository"
+            })),
+        )
+            .into_response();
+    }
     let binding = match app
         .db
         .bind_project_github(
@@ -4103,8 +4140,8 @@ async fn bind_project_github(
             factory_native::db::NewProjectGitHubBinding {
                 owner: &input.owner,
                 repo: &input.repo,
-                default_branch: &input.default_branch,
-                repository_github_id: input.repository_github_id,
+                default_branch: &repository.default_branch,
+                repository_github_id: Some(repository.id),
             },
             "office-operator",
         )
@@ -5169,7 +5206,7 @@ async fn configure_project_issue_intake(
         authenticated_operator(session.as_ref().map(|Extension(device)| device));
     match app
         .db
-        .create_issue_intake_policy(factory_native::db::NewIssueIntakePolicy {
+        .create_issue_intake_policy_v2(factory_native::db::NewIssueIntakePolicyV2 {
             project_id: &id,
             repository_full_name: &input.repository_full_name,
             repository_github_id: input.repository_github_id,
@@ -5186,12 +5223,8 @@ async fn configure_project_issue_intake(
             capabilities: &input.capabilities,
             max_issues: input.max_issues,
             max_concurrent: input.max_concurrent,
-            max_cost_micros_per_issue: input.max_cost_micros_per_issue,
-            max_total_cost_micros: input.max_total_cost_micros,
-            max_attempts: input.max_attempts,
-            max_sessions: input.max_sessions,
-            max_turns: input.max_turns,
-            max_wall_clock_secs: input.max_wall_clock_secs,
+            max_cost_micros_per_issue: LEGACY_UNCAPPED_PER_ISSUE_MICROS,
+            max_total_cost_micros: LEGACY_UNCAPPED_TOTAL_MICROS,
             expires_at: &input.expires_at,
             acknowledge: input.acknowledge,
             reason: &input.reason,
@@ -5280,7 +5313,7 @@ async fn create_project_issue_intake_batch(
             expected_policy_revision: input.expected_policy_revision,
             expected_policy_hash: &input.expected_policy_hash,
             items: &items,
-            max_total_cost_micros: input.max_total_cost_micros,
+            max_total_cost_micros: LEGACY_UNCAPPED_TOTAL_MICROS,
             expires_at: &input.expires_at,
             acknowledge: input.acknowledge,
             reason: &input.reason,
@@ -5690,6 +5723,7 @@ fn decision_project(project_id: Option<&str>, projects: &BTreeMap<&str, &Project
     match project_id.and_then(|project_id| projects.get(project_id).copied()) {
         Some(project) => json!({
             "id": project.id,
+            "name": project.name,
             "repository": project.repository,
             "identity": project.identity,
         }),
@@ -5702,6 +5736,9 @@ fn decision_campaign(campaign: Option<&Campaign>) -> Value {
         Some(campaign) => json!({
             "id": campaign.id,
             "status": campaign.status,
+            "effective_status": campaign.effective_status,
+            "objective": campaign.objective,
+            "project_id": campaign.project_id,
             "target": format!("/campaigns/{}", campaign.id),
         }),
         None => Value::Null,
@@ -6328,7 +6365,7 @@ impl<'a> DecisionProjection<'a> {
                 "actionable": true,
                 "title": "Frozen Lead plan ready",
                 "detail": "The frozen Lead plan is ready. Start requires the complete frozen binding and explicit authority in the Lead workspace; the Inbox does not post a partial approval.",
-                "target": "/lead",
+                "target": "/requests",
                 "subject_id": request.id,
                 "updated_at": request.updated_at,
                 "revision": decision_revision(&[
@@ -6402,6 +6439,17 @@ impl<'a> DecisionProjection<'a> {
                 GateOutcome::HumanRequired => "HUMAN_REQUIRED",
                 GateOutcome::NotTested => "NOT_TESTED",
             };
+            let outcome_label = match gate.outcome {
+                GateOutcome::Accepted => "accepted",
+                GateOutcome::RepairRequired => "repair required",
+                GateOutcome::Blocked => "blocked",
+                GateOutcome::HumanRequired => "human review required",
+                GateOutcome::NotTested => "not tested",
+            };
+            let subject = action
+                .map(|action| action.objective.as_str())
+                .filter(|objective| !objective.trim().is_empty())
+                .unwrap_or("this Campaign");
             let risk = action
                 .map(|action| {
                     json!({
@@ -6437,8 +6485,8 @@ impl<'a> DecisionProjection<'a> {
                 "kind": "quality.gate",
                 "severity": if matches!(gate.outcome, GateOutcome::HumanRequired | GateOutcome::Blocked) { "critical" } else { "attention" },
                 "actionable": true,
-                "title": format!("Quality Gate: {outcome}"),
-                "detail": format!("Candidate {} for Campaign {} needs operator attention. {}", candidate.id, if campaign_id.is_empty() { "unknown" } else { &campaign_id }, gate.reasons.join("; ")),
+                "title": format!("Quality Gate: {outcome_label}"),
+                "detail": format!("The candidate for {subject} needs operator attention: {}.", gate.reasons.join("; ")),
                 "target": target,
                 "subject_id": candidate.id,
                 "updated_at": gate.decided_at,
@@ -6455,7 +6503,7 @@ impl<'a> DecisionProjection<'a> {
                 ),
                 "campaign": decision_campaign(campaign_record),
                 "change": {
-                    "summary": format!("Candidate {} at commit {}.", candidate.id, candidate.commit_sha),
+                    "summary": format!("Candidate at commit {}.", candidate.commit_sha),
                     "paths": [],
                 },
                 "risk": risk,
@@ -6480,9 +6528,9 @@ impl<'a> DecisionProjection<'a> {
                 "kind": "model.usage-unresolved",
                 "severity": "critical",
                 "actionable": true,
-                "title": "Unresolved model reservation",
-                "detail": format!("{} model call {} is {}. The reservation remains unavailable for reuse until an operator releases it; it is not measured spend.", call.provider, call.reservation_id, call.state),
-                "target": "/runtime",
+                "title": "Model call needs resolution",
+                "detail": format!("A {} model call is {}. The reservation remains unavailable for reuse until an operator resolves it; it is not measured spend.", call.provider, call.state.to_lowercase().replace('_', " ")),
+                "target": "/runtime?tab=model-calls",
                 "subject_id": call.reservation_id,
                 "updated_at": call.updated_at,
                 "revision": decision_revision(&[
@@ -6495,7 +6543,7 @@ impl<'a> DecisionProjection<'a> {
                 "project": decision_project(Some(call.project_id.as_str()), &self.project_by_id),
                 "campaign": Value::Null,
                 "change": {
-                    "summary": format!("Reservation {} for {}.", call.reservation_id, call.purpose),
+                    "summary": format!("Model call for {}.", call.purpose),
                 },
                 "risk": {
                     "class": Value::Null,
@@ -6547,9 +6595,9 @@ impl<'a> DecisionProjection<'a> {
                 "kind": "provider.unresolved-session",
                 "severity": "attention",
                 "actionable": false,
-                "title": "Provider session requires monitoring",
-                "detail": format!("Provider session {} for Attempt {} is {}. External termination may be unconfirmed.", session.session_record_id, session.attempt_id, session.state),
-                "target": "/runtime",
+                "title": "Provider session needs monitoring",
+                "detail": format!("A {} session is {}. External termination may be unconfirmed.", session.provider, session.state.to_lowercase().replace('_', " ")),
+                "target": "/runtime?tab=sessions",
                 "subject_id": session.session_record_id,
                 "updated_at": session.updated_at,
                 "revision": decision_revision(&[
@@ -6564,7 +6612,7 @@ impl<'a> DecisionProjection<'a> {
                 ),
                 "campaign": decision_campaign(campaign_record),
                 "change": {
-                    "summary": format!("Provider session {} is {}.", session.session_record_id, session.state),
+                    "summary": format!("Provider session is {}.", session.state.to_lowercase().replace('_', " ")),
                 },
                 "risk": {
                     "class": Value::Null,
@@ -6607,7 +6655,7 @@ impl<'a> DecisionProjection<'a> {
                 "severity": "attention",
                 "actionable": false,
                 "title": "Run failed",
-                "detail": format!("Run {} for Campaign {} is {}.", run.id, if campaign_id.is_empty() { "unknown" } else { &campaign_id }, run.status),
+                "detail": format!("A run for {} was {}.", action.map(|action| action.objective.as_str()).filter(|objective| !objective.trim().is_empty()).unwrap_or("this Campaign"), run.status.to_lowercase().replace('_', " ")),
                 "target": if campaign_id.is_empty() { "/campaigns".to_owned() } else { format!("/campaigns/{campaign_id}") },
                 "subject_id": run.id,
                 "updated_at": run.created_at,
@@ -6623,7 +6671,7 @@ impl<'a> DecisionProjection<'a> {
                 ),
                 "campaign": decision_campaign(campaign_record),
                 "change": {
-                    "summary": format!("Run {} is {}.", run.id, run.status),
+                    "summary": format!("Run is {}.", run.status.to_lowercase().replace('_', " ")),
                 },
                 "risk": {
                     "class": Value::Null,
@@ -6657,9 +6705,9 @@ impl<'a> DecisionProjection<'a> {
                 "kind": "action.human-required",
                 "severity": "attention",
                 "actionable": false,
-                "title": "Action is HUMAN_REQUIRED",
-                "detail": format!("Action {} needs review outside the Inbox; no Inbox mutation is exposed.", action.id),
-                "target": format!("/actions/{}", action.id),
+                "title": "Action needs human review",
+                "detail": "An Action needs review outside the Inbox; open Campaigns to inspect it.",
+                "target": "/campaigns".to_owned(),
                 "subject_id": action.id,
                 "updated_at": action.created_at,
                 "revision": decision_revision(&[
@@ -7761,23 +7809,6 @@ async fn worker_provider_turn_bind(
         .await
     {
         Ok(binding) => (StatusCode::OK, Json(binding)).into_response(),
-        Err(error) => api_error(error),
-    }
-}
-
-async fn provider_turn_reservation_budget(
-    State(app): State<Arc<App>>,
-    headers: HeaderMap,
-) -> Response {
-    if !authorized(&headers, &app.operator_token) {
-        return StatusCode::UNAUTHORIZED.into_response();
-    }
-    match app.db.provider_turn_reservation_budget().await {
-        Ok((reserved_turns, ceiling_micros)) => Json(json!({
-            "reserved_turns": reserved_turns,
-            "ceiling_micros": ceiling_micros,
-        }))
-        .into_response(),
         Err(error) => api_error(error),
     }
 }
@@ -9603,7 +9634,7 @@ async fn assess_intake_request(
                 return api_error(Error::IntakeConflict {
                     code: "INFERENCE_AUTHORIZATION_REQUIRED",
                     message:
-                        "billable intake assessment requires an explicit operator-authorized monetary amount at request creation, or an exact Owner-confirmed subscription admission"
+                        "the subscription route requires an exact Owner-confirmed subscription admission before assessment"
                             .into(),
                 });
             }
@@ -9740,9 +9771,9 @@ async fn create_intake_subscription_admission(
             "Owner must confirm Extra Usage is disabled".into(),
         ));
     }
-    if input.test_profile_id != factory_native::subscription_admission::WAVE3_TEST_PROFILE_ID {
+    if input.test_profile_id.trim().is_empty() {
         return api_error(Error::Forbidden(
-            "subscription acceptance requires the Wave 3 test profile".into(),
+            "subscription admission requires an admission profile".into(),
         ));
     }
     let (principal_id, _) =
@@ -11158,7 +11189,6 @@ mod tests {
             "/campaigns/missing/candidates/missing/pull-request/diff?number=1",
             "/campaigns/missing/candidates/missing/pull-request/comments?number=1",
             "/model/calls/unresolved",
-            "/provider/turn_reservations/budget",
             "/integrations/github",
             "/integrations/github/repositories",
             "/projects/missing/issues",
@@ -11270,19 +11300,6 @@ mod tests {
             router.clone().oneshot(request).await.unwrap().status(),
             StatusCode::OK
         );
-        let request = axum::http::Request::builder()
-            .uri("/provider/turn_reservations/budget")
-            .header("authorization", "Bearer operator-token")
-            .body(axum::body::Body::empty())
-            .unwrap();
-        let response = router.clone().oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let turn_budget: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(turn_budget["reserved_turns"], 0);
-        assert_eq!(turn_budget["ceiling_micros"], 0);
         let _ = std::fs::remove_file(path);
     }
 
@@ -12269,7 +12286,6 @@ mod tests {
             "/core-api/attempts",
             "/core-api/events",
             "/core-api/observability",
-            "/core-api/provider/turn_reservations/budget",
             "/core-api/provider/sessions",
             "/core-api/model/calls",
             "/core-api/model/calls/unresolved",
@@ -13050,9 +13066,7 @@ mod tests {
             .uri("/settings/runtime")
             .header("authorization", "Bearer operator-token")
             .header("content-type", "application/json")
-            .body(axum::body::Body::from(
-                r#"{"semanticReviewEnabled":true,"semanticReviewMaxOutputTokens":2048}"#,
-            ))
+            .body(axum::body::Body::from(r#"{"semanticReviewEnabled":true}"#))
             .unwrap();
         assert_eq!(
             router.clone().oneshot(enable).await.unwrap().status(),
@@ -15203,7 +15217,6 @@ mod tests {
                 "/settings/runtime",
                 Some(json!({
                     "semanticReviewEnabled": true,
-                    "semanticReviewMaxOutputTokens": 8192,
                 })),
             )
             .await;
@@ -15385,7 +15398,6 @@ mod tests {
                 "/settings/runtime",
                 Some(json!({
                     "semanticReviewEnabled": true,
-                    "semanticReviewMaxOutputTokens": 8192,
                 })),
             )
             .await;
@@ -16327,12 +16339,6 @@ mod tests {
                 "capabilities": ["repository-edit"],
                 "max_issues": 3,
                 "max_concurrent": 1,
-                "max_cost_micros_per_issue": 100000,
-                "max_total_cost_micros": 300000,
-                "max_attempts": 2,
-                "max_sessions": 3,
-                "max_turns": 4,
-                "max_wall_clock_secs": 600,
                 "expires_at": (chrono::Utc::now() + chrono::Duration::days(7)).to_rfc3339(),
                 "acknowledge": true,
                 "reason": "API acknowledgement",
@@ -16357,7 +16363,6 @@ mod tests {
                     "content_hash": issue.content_hash(),
                     "updated_at": issue.updated_at,
                 }],
-                "max_total_cost_micros": 100000,
                 "expires_at": (chrono::Utc::now() + chrono::Duration::days(1)).to_rfc3339(),
                 "acknowledge": true,
                 "reason": "API exact batch",

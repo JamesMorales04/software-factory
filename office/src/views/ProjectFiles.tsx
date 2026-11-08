@@ -362,7 +362,11 @@ export function ProjectFiles() {
       <ErrorState
         title={t("projectFiles.staleTitle")}
         message={t("projectFiles.staleDescription")}
-        action={<Link to="/projects">{t("projectFiles.back")}</Link>}
+        action={
+          <Link to={projectId ? `/projects/${projectId}` : "/projects"}>
+            {t("projectFiles.back")}
+          </Link>
+        }
       />
     );
   }
@@ -425,7 +429,10 @@ export function ProjectFiles() {
           </>
         }
         actions={
-          <Link className="ui-button ui-button--secondary" to="/projects">
+          <Link
+            className="ui-button ui-button--secondary"
+            to={projectId ? `/projects/${projectId}` : "/projects"}
+          >
             {t("projectFiles.back")}
           </Link>
         }

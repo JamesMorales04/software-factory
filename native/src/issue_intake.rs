@@ -733,29 +733,18 @@ pub fn validate_policy_terms(
     if max_concurrent != 1 {
         return Err("ISSUE_POLICY_CONCURRENCY");
     }
-    // The issue batch keeps its own finite financial allocation and issue
-    // capacity (separate admission). It is not a Campaign budget.
-    if max_cost_micros_per_issue == 0
-        || max_total_cost_micros == 0
-        || max_cost_micros_per_issue > max_total_cost_micros
-        || max_cost_micros_per_issue > i64::MAX as u64
-        || max_total_cost_micros > i64::MAX as u64
-        || max_wall_clock_secs > i64::MAX as u64
-    {
-        return Err("ISSUE_POLICY_BUDGET");
-    }
-    // These columns remain in the frozen 0033 policy-revision schema for
-    // historical compatibility. They are batch metadata and are never frozen
-    // into a V2 delegation or treated as Campaign turns/attempts/sessions/
-    // deadline maxima. Only their storage bounds are checked.
-    if max_attempts == 0
-        || max_attempts > 5
-        || max_sessions == 0
-        || max_turns == 0
-        || max_wall_clock_secs == 0
-    {
-        return Err("ISSUE_POLICY_EXECUTION_BOUNDS");
-    }
+    // Monetary and per-run caps are not part of issue-intake authorization any
+    // more. The frozen columns remain readable historical metadata only; the
+    // batch is bounded by its issue count and expiry, and execution by the V2
+    // profile's technical operation limits and progress supervision.
+    let _ = (
+        max_cost_micros_per_issue,
+        max_total_cost_micros,
+        max_attempts,
+        max_sessions,
+        max_turns,
+        max_wall_clock_secs,
+    );
     // Technical bounds come from the frozen V2 profile. The batch's single
     // concurrent admission must fit the profile's declared capacity, and the
     // profile must carry real operation/progress policy for the delegation.

@@ -76,10 +76,6 @@ function ProviderCard({
   const [credential, setCredential] = useState("");
   const [enabled, setEnabled] = useState(provider.enabled);
   const [isDefault, setIsDefault] = useState(provider.isDefault);
-  const [maxTurns, setMaxTurns] = useState(provider.maxTurns);
-  const [maxInput, setMaxInput] = useState(provider.maxInputTokens);
-  const [maxOutput, setMaxOutput] = useState(provider.maxOutputTokens);
-  const [maxCost, setMaxCost] = useState(provider.maxCostMicros);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -98,10 +94,6 @@ function ProviderCard({
     setBaseUrl(provider.baseUrl);
     setEnabled(provider.enabled);
     setIsDefault(provider.isDefault);
-    setMaxTurns(provider.maxTurns);
-    setMaxInput(provider.maxInputTokens);
-    setMaxOutput(provider.maxOutputTokens);
-    setMaxCost(provider.maxCostMicros);
     setCatalog(provider.modelDiscovery);
     setModelFilter("");
   }, [provider]);
@@ -136,10 +128,6 @@ function ProviderCard({
         ...(credential === "" ? {} : { credential }),
         enabled,
         isDefault,
-        maxTurns,
-        maxInputTokens: maxInput,
-        maxOutputTokens: maxOutput,
-        maxCostMicros: maxCost,
       });
       setCredential("");
       setNotice(t("settings.provider.saved"));
@@ -577,7 +565,6 @@ export function Settings() {
   const [providers, setProviders] = useState<ProviderView[]>([]);
   const [runtime, setRuntime] = useState<FactorySettings | null>(null);
   const [reviewEnabled, setReviewEnabled] = useState(false);
-  const [reviewTokens, setReviewTokens] = useState(8192);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -598,7 +585,6 @@ export function Settings() {
       setProviders(providerResponse.providers);
       setRuntime(runtimeSettings);
       setReviewEnabled(runtimeSettings.semanticReviewEnabled);
-      setReviewTokens(runtimeSettings.semanticReviewMaxOutputTokens);
       setLastLoadedAt(new Date().toISOString());
       setLoaded(true);
       setError(null);
@@ -622,7 +608,6 @@ export function Settings() {
     try {
       const next = await coreApi.updateRuntimeSettings({
         semanticReviewEnabled: reviewEnabled,
-        semanticReviewMaxOutputTokens: reviewTokens,
       });
       setRuntime(next);
       setNotice(t("settings.runtime.saved"));

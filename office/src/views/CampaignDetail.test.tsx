@@ -195,10 +195,12 @@ describe("CampaignDetail", () => {
         .getByRole("tab", { name: /WorkGraph/ })
         .getAttribute("aria-selected"),
     ).toBe("true");
-    await userEvent.click(screen.getByRole("tab", { name: "Budget & usage" }));
+    await userEvent.click(
+      screen.getByRole("tab", { name: "Usage & authorization" }),
+    );
     expect(
       screen.getByRole("heading", {
-        name: "Authorization, budget and observed usage",
+        name: "Authorization and observed usage",
       }),
     ).toBeDefined();
     expect(screen.getByTestId("location").textContent).toBe("?tab=budget");
@@ -345,7 +347,7 @@ describe("CampaignDetail", () => {
     });
     renderCampaign("/campaigns/c1?tab=budget");
     await screen.findByRole("heading", {
-      name: "Authorization, budget and observed usage",
+      name: "Authorization and observed usage",
     });
     expect(screen.getByText("Schema version")).toBeDefined();
     expect(screen.getByText("policy-1")).toBeDefined();
@@ -368,7 +370,7 @@ describe("CampaignDetail", () => {
     });
     renderCampaign("/campaigns/c1?tab=budget");
     await screen.findByRole("heading", {
-      name: "Authorization, budget and observed usage",
+      name: "Authorization and observed usage",
     });
     expect(screen.queryByText("Historical V1 cap evidence")).toBeNull();
     expect(screen.queryByText("Max turns (V1)")).toBeNull();
@@ -387,7 +389,7 @@ describe("CampaignDetail", () => {
     });
     renderCampaign("/campaigns/c1?tab=budget");
     await screen.findByRole("heading", {
-      name: "Authorization, budget and observed usage",
+      name: "Authorization and observed usage",
     });
     expect(
       screen.getByText(

@@ -1,6 +1,7 @@
 import { ArrowLeft, RefreshCw, ScanSearch, Wrench } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
+import { StatusBadge } from "../components/office/StatusBadge";
 import { Badge, type BadgeTone } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
 import {
@@ -348,11 +349,11 @@ export function ProjectDetail() {
               {summary.campaigns.active.map((campaign) => (
                 <li key={campaign.id}>
                   <Link to={`/campaigns/${encodeURIComponent(campaign.id)}`}>
-                    <code>{shortId(campaign.id)}</code>
-                  </Link>{" "}
-                  <Badge tone="attention">{campaign.status}</Badge>
-                  <div className="muted project-clamp">
                     {campaign.objective}
+                  </Link>{" "}
+                  <StatusBadge status={campaign.status} />
+                  <div className="muted project-clamp">
+                    <code>{shortId(campaign.id)}</code>
                   </div>
                 </li>
               ))}

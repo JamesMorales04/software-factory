@@ -271,7 +271,6 @@ let server;
 let port;
 let requests;
 let healthMode = "ok";
-let providerMaxTurns = 4;
 
 const flow = {
   assessed: false,
@@ -362,8 +361,6 @@ function flowProposal() {
     quality_profile: "generic",
     risk_class: "R0",
     budget: {
-      maxInputTokens: 60000,
-      maxOutputTokens: 12000,
       maxCostMicros: 2000000,
       maxWallClockSecs: 5400,
     },
@@ -747,9 +744,6 @@ async function handleFakeCoreRequest(request, response) {
             isDefault: true,
             model: MODEL,
             baseUrl: "https://opencode.ai/inference/go/openai/v1",
-            maxTurns: providerMaxTurns,
-            maxInputTokens: 60000,
-            maxOutputTokens: 12000,
             maxCostMicros: 2000000,
             inputMicrosPerMillion: 150000,
             outputMicrosPerMillion: 600000,
@@ -1144,16 +1138,7 @@ test("dry-run preflight is read-only and records no inference", async () => {
   assert.equal(statSync(evidencePath).mode & 0o077, 0);
 });
 
-test("preflight refuses a provider turn budget above the authorization", async () => {
-  requests = [];
-  providerMaxTurns = 8;
-  healthMode = "ok";
-  const env = baseGate(port, { FACTORY_REAL_PROVIDER_DRY_RUN: "1" });
-  const result = await runDriver(["preflight"], env);
-  assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /PROVIDER_TURN_CEILING_EXCEEDED/);
-  providerMaxTurns = 4;
-});
+
 
 test("a Core error that echoes the operator token is redacted", async () => {
   requests = [];

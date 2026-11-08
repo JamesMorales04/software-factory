@@ -283,15 +283,34 @@ try {
   await page.getByRole("link", { name: "Projects", exact: true }).click();
   await page.getByRole("heading", { name: "Projects", level: 1 }).waitFor();
   await page.getByRole("tab", { name: "Local repository" }).click();
-  await page.getByRole("button", { name: "Browse folders" }).click();
+  await page.evaluate(() => {
+    const file = new File(["folder import\n"], "README.txt", {
+      type: "text/plain",
+    });
+    const entry = {
+      kind: "file",
+      name: "README.txt",
+      getFile: async () => file,
+    };
+    window.showDirectoryPicker = async () => ({
+      kind: "directory",
+      name: "compose-browser-folder",
+      entries: async function* () {
+        yield ["README.txt", entry];
+      },
+    });
+  });
   await page
-    .getByRole("region", { name: "Managed folder browser" })
-    .waitFor();
-  await page.getByRole("button", { name: "Use this folder" }).click();
-  const browsedPath = await page.getByTestId("project-local-path").inputValue();
-  assert.equal(browsedPath, "/projects");
+    .getByRole("button", { name: "Select folder from this computer" })
+    .click();
+  await page.waitForURL(/#\/projects\/[^/?]+/, { timeout: 120_000 });
+  const folderProjectId = page.url().match(/#\/projects\/([^/?]+)/)?.[1];
+  assert.ok(folderProjectId, "folder import must create a Project");
+  assert.notEqual(folderProjectId, projectId);
   record.assertions.project_folder_browser = "PASS";
-  await shot("project-folder-browser-1440.png");
+  await shot("project-folder-import-1440.png");
+  await page.goto(`${base}/#/projects`);
+  await page.getByRole("heading", { name: "Projects", level: 1 }).waitFor();
   await page.getByRole("link", { name: "Settings", exact: true }).click();
   await page.getByRole("heading", { name: "Settings", level: 1 }).waitFor();
 
@@ -302,12 +321,6 @@ try {
     credential: "compose-fixture-credential-0123456789",
     enabled: true,
     isDefault: false,
-    maxTurns: 4,
-    maxInputTokens: 20000,
-    maxOutputTokens: 8000,
-    maxCostMicros: 500000,
-    inputMicrosPerMillion: 1000,
-    outputMicrosPerMillion: 2000,
   });
   await core("PUT", "/settings/providers/opencode-go", {
     model: "deepseek-v4.1-flash",
@@ -315,16 +328,9 @@ try {
     credential: "compose-fixture-credential-0123456789",
     enabled: true,
     isDefault: true,
-    maxTurns: 4,
-    maxInputTokens: 100000,
-    maxOutputTokens: 12000,
-    maxCostMicros: 500000,
-    inputMicrosPerMillion: 1000,
-    outputMicrosPerMillion: 2000,
   });
   await core("PUT", "/settings/runtime", {
     semanticReviewEnabled: true,
-    semanticReviewMaxOutputTokens: 8192,
   });
   const role = {
     provider: "opencode-go",
@@ -420,11 +426,11 @@ try {
       extra_usage_disabled: true,
       statement:
         "Owner confirms the OpenCode Go subscription with Extra Usage disabled for this deterministic Compose browser UAT.",
-      test_profile_id: "wave3-real-model-2026-11",
+      test_profile_id: "opencode-go-subscription",
       idempotency_key: `compose-browser-uat-admission-${intakeId}`,
     },
   );
-  record.ids.subscription_admission = admission.admission_id;
+  record.ids.subscription_admission = admission.admissionId;
   record.assertions.subscription_owner_admission = "PASS";
 
   record.spend = {
@@ -819,6 +825,14 @@ try {
     record.assertions.campaign_budget_projection = "PASS";
   }
   record.console.budget_probe_page_errors = budgetPageErrors;
+
+  stage = "path-deep-link";
+  await page.goto(`${base}/campaigns`, { waitUntil: "domcontentloaded" });
+  await page.waitForURL(/#\/campaigns/, { timeout: 10_000 });
+  await page
+    .getByRole("heading", { name: "Campaigns", level: 1 })
+    .waitFor();
+  record.assertions.path_deep_link = "PASS";
 
   record.result = record.findings.length === 0 ? "PASS" : "PASS_WITH_FINDINGS";
   record.acceptance = "NOT_CLAIMED_FIXTURE_ONLY_UAT";

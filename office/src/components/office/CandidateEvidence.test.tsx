@@ -96,7 +96,7 @@ describe("CandidateEvidence", () => {
       </I18nProvider>,
     );
     expect(screen.getByText("Repair authorization")).toBeDefined();
-    expect(screen.getAllByText("HUMAN_REQUIRED").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Human required").length).toBeGreaterThan(0);
     expect(
       screen.getByText(/a critical finding always requires human review/),
     ).toBeDefined();

@@ -2705,7 +2705,6 @@ fn bounded_tool_text(value: &str) -> String {
 
 struct CodexToolState {
     call_ids: std::collections::BTreeSet<String>,
-    tool_calls: u32,
     written: bool,
 }
 
@@ -2722,10 +2721,6 @@ async fn execute_codex_tool(
 ) -> Result<(bool, String), Box<dyn std::error::Error>> {
     if call_id.trim().is_empty() || !tool_state.call_ids.insert(call_id.to_owned()) {
         return Ok((false, "duplicate or empty dynamic tool call id".into()));
-    }
-    tool_state.tool_calls = tool_state.tool_calls.saturating_add(1);
-    if tool_state.tool_calls > 8 {
-        return Ok((false, "dynamic tool call budget exhausted".into()));
     }
     let arguments = match arguments {
         Value::Object(_) => arguments.clone(),
@@ -3011,7 +3006,6 @@ async fn run_codex_tool_loop(
     };
     let mut tool_state = CodexToolState {
         call_ids: std::collections::BTreeSet::new(),
-        tool_calls: 0,
         written: false,
     };
     let mut last_turn_id = String::new();
@@ -3073,7 +3067,6 @@ async fn run_codex_tool_loop(
             last_turn_id = turn_id.clone();
             let mut final_text: Option<String> = None;
             let mut usage_after: Option<factory_native::protocol::TokenUsageBreakdown> = None;
-            tool_state.tool_calls = 0;
             let mut last_state_check = tokio::time::Instant::now();
             loop {
                 // One-second polling is a cancellation/liveness check, not a

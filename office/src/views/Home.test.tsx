@@ -809,7 +809,9 @@ describe("Home", () => {
         name: "Enable governed execution",
       }),
     ).toBeDefined();
-    expect(screen.getAllByText(/Balanced r3/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Balanced · Revision 3/).length).toBeGreaterThan(
+      0,
+    );
     expect(screen.getByText(/repository-edit/)).toBeDefined();
     expect(screen.getByText(/feature, maintenance, refactor/)).toBeDefined();
     expect(screen.getByText(/Valid 30 days/)).toBeDefined();

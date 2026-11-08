@@ -70,7 +70,7 @@ try {
     .getByRole("textbox", { name: "This device name" })
     .fill("E2E desktop");
   await desktop.getByRole("button", { name: "Enroll this device" }).click();
-  await desktop.getByRole("heading", { name: "Overview", level: 1 }).waitFor();
+  await desktop.getByRole("heading", { name: "Home", level: 1 }).waitFor();
 
   const pwa = await desktop.evaluate(async () => {
     if (!("serviceWorker" in navigator))
@@ -104,7 +104,7 @@ try {
   await assertNoTokenMaterial(desktop);
 
   await desktop.reload();
-  await desktop.getByRole("heading", { name: "Overview", level: 1 }).waitFor();
+  await desktop.getByRole("heading", { name: "Home", level: 1 }).waitFor();
   await desktop.getByRole("link", { name: "Settings", exact: true }).click();
   await desktop.getByRole("tab", { name: "Access & Devices" }).click();
   await desktop.getByRole("heading", { name: "Enrolled devices" }).waitFor();

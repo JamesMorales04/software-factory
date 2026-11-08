@@ -1,0 +1,93 @@
+{
+  "schema_version": 1,
+  "schema": "factory.office-autonomy-ux.v1",
+  "kind": "implementer-browser-self-test",
+  "result": "PASS",
+  "captured_at": "2026-11-08T11:50:00Z",
+  "candidate": "working-tree; exact commit recorded in the pull request after freeze",
+  "environment": {
+    "runtime": "rootless Podman Compose developer-preview stack",
+    "office": "http://127.0.0.1:8893",
+    "browser": "Chromium 1248 via Playwright, 1440x1000 viewport",
+    "provider": "OpenCode Go / deepseek-v4.1-flash",
+    "provider_mode": "subscription route with request-scoped Owner confirmation"
+  },
+  "checks": [
+    {
+      "id": "deep_links",
+      "pass": true
+    },
+    {
+      "id": "live_lead_inference",
+      "pass": true
+    },
+    {
+      "id": "governed_campaign_accepted",
+      "pass": true
+    },
+    {
+      "id": "repair_gate_held",
+      "pass": true
+    },
+    {
+      "id": "worker_scope_cleanup",
+      "pass": true
+    },
+    {
+      "id": "console_and_network",
+      "pass": true
+    },
+    {
+      "id": "computer_folder_import",
+      "pass": true
+    }
+  ],
+  "journeys": {
+    "deep_links": {
+      "result": "PASS",
+      "details": "Hash deep links, query tabs, Project filters, removed-route redirects, unknown-route fallback and copied path URLs without a hash all resolved. See deep-link-report.json."
+    },
+    "live_lead_inference": {
+      "result": "SETTLED",
+      "request_id": "89bc396a-1914-4fa7-9665-2a80922e9495",
+      "usage": "2818 input / 3424 output / 6242 total tokens",
+      "plan_hash": "eb5d746e72f796fd8b3a9209505d15c48219a14534f1f57037137e75dca08a22"
+    },
+    "governed_campaign_accepted": {
+      "result": "ACCEPTED",
+      "campaign_id": "8d9003fd-ac2c-49e2-a584-d847a84b26dc",
+      "candidate_id": "1aae25fc-66fa-47df-a6bb-18767c9aade0",
+      "candidate_commit": "b7a9f29bde04af4951bf45924c003cca82574158",
+      "changed_files": [
+        "src/live_inference_check.txt"
+      ],
+      "diff": "1 file changed, 1 insertion, 0 deletions"
+    },
+    "repair_gate": {
+      "result": "REPAIR_REQUIRED",
+      "campaign_id": "26325da8-1712-4fb1-ae89-645c2f3f1b9f",
+      "candidate_id": "4fc6b6b7-03f7-4605-9591-b5563bf4a764",
+      "candidate_commit": "e4156ca1799aa74eb27587a9875fea159248d33b",
+      "finding": "reviewer requested changes because the candidate also changed pricing behavior; autonomous repair is disabled"
+    },
+    "worker_scope_cleanup": {
+      "result": "PASS",
+      "details": "Validation commands rewrote Cargo.lock in an earlier run. After the Supervisor cleanup fix, the accepted candidate diff contained only the authorized new file."
+    },
+    "console_and_network": {
+      "result": "PASS",
+      "details": "No browser console errors, no unexpected 404/5xx responses and no horizontal document overflow on the audited routes."
+    },
+    "computer_folder_import": {
+      "result": "PASS",
+      "details": "A stubbed File System Access directory handle drove the actual browser traversal and ZIP upload. Core created a new managed Project with initialized Git; the project appeared in the Office Project selector."
+    }
+  },
+  "limitations": [
+    "This is implementer self-test evidence, not independent verifier acceptance.",
+    "The accepted and repair-required candidates are in a disposable local fixture Project, not a production repository.",
+    "Auto-start is browser-side while Office is open; no Core-owned scheduler is proven.",
+    "Computer-folder import copies into managed storage; it is not a direct host-path mount.",
+    "TRUSTED_LOCAL remains broad local access and is not isolated or certified."
+  ]
+}

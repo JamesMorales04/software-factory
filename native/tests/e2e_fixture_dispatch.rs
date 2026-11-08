@@ -1357,8 +1357,7 @@ async fn semantic_reviewer_model_and_codex_modes_bind_findings_provenance_and_re
         reqwest::Method::PUT,
         format!("{base_url}/settings/runtime"),
         Some(json!({
-            "semanticReviewEnabled": true,
-            "semanticReviewMaxOutputTokens": 8192
+            "semanticReviewEnabled": true
         })),
     )
     .await;

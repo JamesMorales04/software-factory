@@ -270,25 +270,23 @@ impl<'a> RoleGatewayFactory<'a> {
             });
         }
         let credential = self.decrypt_credential(&settings)?;
-        // The profile contributes one technical bound: generation tokens. It
-        // supplies no cumulative role token or monetary ceiling. Provider
-        // settings and Core deployment policy retain their request bounds.
-        let profile_policy = ModelCallPolicy {
-            max_input_tokens: settings.max_input_tokens,
+        // A V2 profile route is subscription-funded. Persisted provider token
+        // and cost columns are historical telemetry inputs, not an execution
+        // ceiling; the profile's generation bound is the only per-operation
+        // output policy. Legacy V1 billable routes keep their own path.
+        let _ = core_policy;
+        let policy = ModelCallPolicy {
+            max_input_tokens: crate::execution_policy::UNCAPPED_TOKENS,
             max_output_tokens: operations
                 .map(|limits| u64::from(limits.max_generation_tokens.get()))
-                .unwrap_or(settings.max_output_tokens),
-            max_cost_micros: settings.max_cost_micros,
+                .unwrap_or(crate::execution_policy::UNCAPPED_TOKENS),
+            max_cost_micros: crate::execution_policy::UNCAPPED_COST_MICROS,
         };
-        let policy = intersect_policies(
-            profile_policy,
-            ModelCallPolicy {
-                max_input_tokens: settings.max_input_tokens,
-                max_output_tokens: settings.max_output_tokens,
-                max_cost_micros: settings.max_cost_micros,
-            },
-            core_policy,
-        );
+        let global_policy = ModelCallPolicy {
+            max_input_tokens: crate::execution_policy::UNCAPPED_TOKENS,
+            max_output_tokens: crate::execution_policy::UNCAPPED_TOKENS,
+            max_cost_micros: crate::execution_policy::UNCAPPED_COST_MICROS,
+        };
         let config = ModelGatewayConfig {
             base_url: settings.base_url.clone(),
             credential,
@@ -300,7 +298,7 @@ impl<'a> RoleGatewayFactory<'a> {
             lead_policy: policy,
             reviewer_policy: policy,
             evaluation_policy: policy,
-            global_policy: self.caps.global,
+            global_policy,
             allow_loopback_http: self.allow_loopback_http,
             test_upstream_hosts: self.test_upstream_hosts.clone(),
             bound_role: Some(call_role),
@@ -617,14 +615,18 @@ mod integration_tests {
         assert_eq!(lead.provider(), "opencode-go");
         assert_eq!(lead.model(), "deepseek-v4.1-flash");
         assert_eq!(lead.bound_role(), Some(ModelCallRole::Lead));
-        // The frozen generation bound is intersected with the provider's.
+        // Low persisted provider caps no longer constrain a subscription route.
         assert_eq!(
             lead.role_policy(ModelCallRole::Lead).max_output_tokens,
-            4_096
+            8_192
+        );
+        assert_eq!(
+            lead.role_policy(ModelCallRole::Lead).max_input_tokens,
+            crate::execution_policy::UNCAPPED_TOKENS
         );
         assert_eq!(
             lead.role_policy(ModelCallRole::Lead).max_cost_micros,
-            300_000
+            crate::execution_policy::UNCAPPED_COST_MICROS
         );
         // The selected credential is exactly the one stored for this provider.
         let lead_settings = db.provider_settings("opencode-go").await.unwrap();
