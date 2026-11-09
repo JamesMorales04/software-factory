@@ -139,7 +139,7 @@ pub fn build_definition_of_done(
             &format!("doc-{}-{}", index + 1, slug.trim_matches('-')),
             CheckKind::Functional,
             &format!(
-                "Required documentation exists and has a heading: {}",
+                "Required documentation is a regular non-empty file with a heading: {}",
                 item.path
             ),
             &command,

@@ -65,7 +65,12 @@ impl CommandRunner for ProcessCommandRunner {
             .ok_or_else(|| "empty dependency command".to_string())?;
         // The broker network namespace and egress policy own registry
         // allowlisting. This process still scrubs the ambient environment so a
-        // provider, registry or cloud credential cannot leak into Cargo.
+        // provider, registry or cloud credential cannot leak into Cargo. The
+        // rustup home is retained so a pinned `cargo` proxy resolves its
+        // declared toolchain; the Cargo home is isolated from user credentials.
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
+        let rustup_home =
+            std::env::var("RUSTUP_HOME").unwrap_or_else(|_| format!("{home}/.rustup"));
         let output = Command::new(program)
             .args(args)
             .current_dir(cwd)
@@ -74,7 +79,8 @@ impl CommandRunner for ProcessCommandRunner {
                 "PATH",
                 std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into()),
             )
-            .env("HOME", std::env::temp_dir())
+            .env("HOME", home)
+            .env("RUSTUP_HOME", rustup_home)
             .env(
                 "CARGO_HOME",
                 std::env::temp_dir().join("factory-dependency-cargo-home"),
@@ -152,7 +158,8 @@ fn validate_commands(request: &DependencyAcquisitionRequest) -> Result<(), Depen
 fn hash_tree(root: &Path) -> Result<(String, usize), DependencyBrokerError> {
     let mut entries = Vec::new();
     let mut total_bytes = 0u64;
-    collect(root, root, &mut entries, &mut total_bytes)?;
+    let mut visited = 0usize;
+    collect(root, root, &mut entries, &mut total_bytes, &mut visited)?;
     entries.sort();
     let mut hasher = Sha256::new();
     let count = entries.len();
@@ -170,11 +177,13 @@ fn collect(
     directory: &Path,
     entries: &mut Vec<(String, Vec<u8>)>,
     total_bytes: &mut u64,
+    visited: &mut usize,
 ) -> Result<(), DependencyBrokerError> {
     let mut children = std::fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()?;
     children.sort_by_key(|entry| entry.file_name());
     for child in children {
-        if entries.len() >= MAX_VENDOR_ENTRIES {
+        *visited = visited.saturating_add(1);
+        if *visited > MAX_VENDOR_ENTRIES {
             return Err(DependencyBrokerError::VendorInvalid(
                 "vendor entry bound exceeded".into(),
             ));
@@ -188,7 +197,7 @@ fn collect(
             )));
         }
         if metadata.is_dir() {
-            collect(root, &path, entries, total_bytes)?;
+            collect(root, &path, entries, total_bytes, visited)?;
         } else if metadata.is_file() {
             if metadata.len() > MAX_VENDOR_FILE_BYTES {
                 return Err(DependencyBrokerError::VendorInvalid(

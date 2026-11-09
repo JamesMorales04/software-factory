@@ -892,40 +892,63 @@ impl Database {
         let now = Utc::now().to_rfc3339();
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin().await?;
-        let existing: Option<(String, String, String)> = sqlx::query_as::query_as(
-            "SELECT id,route,reviewer_principal FROM finding_dispositions
+        let existing: Option<FindingDispositionRow> = sqlx::query_as::query_as(
+            "SELECT id,request_id,candidate_id,finding_id,route,status,reviewer_principal,
+                    resolved_by,evidence_refs_json,owner_principal,owner_decision,created_at,updated_at
+             FROM finding_dispositions
              WHERE request_id=?1 AND finding_id=?2",
         )
         .bind(request_id)
         .bind(&disposition.finding_id)
         .fetch_optional(&mut *transaction)
         .await?;
-        let id = if let Some((id, route, reviewer_principal)) = existing {
-            if route != finding_route_code(disposition.route) {
+        let id = if let Some(existing_row) = existing {
+            let existing = finding_from_row(existing_row)?;
+            if existing.route != finding_route_code(disposition.route) {
                 return Err(Error::Conflict("finding disposition route is immutable"));
             }
             if !disposition.reviewer_principal.is_empty()
-                && reviewer_principal != disposition.reviewer_principal
+                && existing.reviewer_principal != disposition.reviewer_principal
             {
                 return Err(Error::Conflict(
                     "finding disposition reviewer identity is immutable",
                 ));
             }
-            sqlx::query::query(
+            if matches!(existing.status.as_str(), "RESOLVED" | "REFUTED") {
+                let same = existing.status == finding_status_code(disposition.status)
+                    && existing.resolved_by == disposition.resolved_by
+                    && existing.evidence_refs == disposition.evidence_refs
+                    && existing.owner_principal == disposition.owner_principal
+                    && existing.owner_decision == disposition.owner_decision;
+                if same {
+                    transaction.commit().await?;
+                    return Ok(existing);
+                }
+                return Err(Error::Conflict("a closed finding disposition is immutable"));
+            }
+            if disposition.status == crate::planning::FindingStatus::Open {
+                transaction.commit().await?;
+                return Ok(existing);
+            }
+            let updated = sqlx::query::query(
                 "UPDATE finding_dispositions
-                 SET status=?1,resolved_by=?2,evidence_refs_json=?3,owner_decision=?4,
-                     updated_at=?5
-                 WHERE id=?6",
+                 SET status=?1,resolved_by=?2,evidence_refs_json=?3,owner_principal=?4,
+                     owner_decision=?5,updated_at=?6
+                 WHERE id=?7 AND status='OPEN'",
             )
             .bind(finding_status_code(disposition.status))
             .bind(&disposition.resolved_by)
             .bind(&evidence_refs_json)
+            .bind(disposition.owner_principal.as_deref())
             .bind(disposition.owner_decision.as_deref())
             .bind(&now)
-            .bind(&id)
+            .bind(&existing.id)
             .execute(&mut *transaction)
             .await?;
-            id
+            if updated.rows_affected() != 1 {
+                return Err(Error::Conflict("finding disposition was already closed"));
+            }
+            existing.id
         } else {
             let id = uuid::Uuid::new_v4().to_string();
             sqlx::query::query(

@@ -70,7 +70,8 @@ pub fn build_skill_plan(
             .iter()
             .any(|pack| pack.technology.eq_ignore_ascii_case(technology) && pack.is_stale(now));
         match builtin_skill_pack(technology) {
-            Some(pack) => proposed.push(pack),
+            Some(pack) if !pack.is_stale(now) => proposed.push(pack),
+            Some(_) => return Err(SkillPlanError::Stale(technology.clone())),
             None if stale => return Err(SkillPlanError::Stale(technology.clone())),
             None => return Err(SkillPlanError::Missing(technology.clone())),
         }
@@ -397,6 +398,10 @@ mod tests {
             pack.validate().unwrap();
             assert!(!pack.source_urls.is_empty());
         }
+        assert!(matches!(
+            build_skill_plan(&rust_stack(), &[], "2028-01-01T00:00:00Z"),
+            Err(SkillPlanError::Stale(_))
+        ));
     }
 
     #[test]
