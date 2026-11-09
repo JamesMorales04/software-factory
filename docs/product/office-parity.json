@@ -1,6 +1,6 @@
 {
  "schema_version": 1,
- "updated_at": "2026-11-09T06:20:00Z",
+ "updated_at": "2026-11-09T07:05:00Z",
  "route_base_note": "Current Office uses hash routes. The design-foundation slice moves to a stable /office browser base while preserving these logical routes.",
  "capabilities": {
   "CAP-011": {
@@ -948,6 +948,83 @@
     "docs/evidence/knowledge-skills-2026-11-09/manifest.json"
    ],
    "notes": "The Explorer is deterministic and read-only. Context7 is reached over a fixed HTTPS MCP endpoint with no credentials and bounded responses. Core decides the gap and the trust gate; the fetched documentation cannot widen tools or authority."
+  },
+  "CAP-063": {
+   "name": "Dynamic participant composition and cheap operations",
+   "user_facing": true,
+   "job": "Inspect the deterministic participant plan, unit routing, reviewer count and the observation-only Cheap Ops interpretation of candidate receipts.",
+   "routes": [
+    "/director",
+    "/campaigns/:campaignId"
+   ],
+   "core_api": [
+    "GET /agentic/requests/{id}/participants",
+    "POST /agentic/requests/{id}/participants",
+    "GET /quality/candidates/{id}/interpretation"
+   ],
+   "user_actions": [
+    "record the participant plan",
+    "inspect unit specialization and provider/model routing",
+    "inspect the number of independent reviewers",
+    "interpret verifier and reviewer receipts without changing the Gate"
+   ],
+   "states": [
+    "loading",
+    "plan-recorded",
+    "no-plan",
+    "no-work-graph",
+    "multi-reviewer",
+    "observation-only",
+    "error",
+    "responsive"
+   ],
+   "acceptance": [
+    "office/src/views/Director.test.tsx",
+    "office/src/components/office/CheapOpsPanel.test.tsx",
+    "docs/evidence/dynamic-fleets-2026-11-09/manifest.json"
+   ],
+   "notes": "The plan is deterministic and cannot be widened by a model. Cheap Ops is OBSERVATION_ONLY: it restates receipts and the Gate but cannot accept, repair or fail a candidate."
+  },
+  "CAP-065": {
+   "name": "Owner charter and delegated autonomy",
+   "user_facing": true,
+   "job": "Create, inspect and revoke a durable owner charter, review reserved matters and resolve owner decisions with an option, evidence and rationale.",
+   "routes": [
+    "/charter"
+   ],
+   "core_api": [
+    "GET /agentic/charters",
+    "POST /agentic/charters",
+    "POST /agentic/charters/{id}/revoke",
+    "GET /agentic/decisions",
+    "POST /agentic/decisions",
+    "POST /agentic/decisions/{id}/resolve"
+   ],
+   "user_actions": [
+    "create a charter with separate execution, repair and delivery flags",
+    "choose risk appetite, domains, reserved matters and expiry",
+    "inspect active and revoked charters",
+    "revoke a charter with a reason",
+    "open and resolve a reserved owner decision"
+   ],
+   "states": [
+    "loading",
+    "empty",
+    "error",
+    "active",
+    "revoked",
+    "expired",
+    "pending-decision",
+    "approved",
+    "denied",
+    "owner-decision-required",
+    "responsive"
+   ],
+   "acceptance": [
+    "office/src/views/Charter.test.tsx",
+    "docs/evidence/owner-charter-2026-11-09/manifest.json"
+   ],
+   "notes": "Policy autonomy is never offered. Reserved matters remain owner decisions; the recommendation is advisory and the owner resolution is durable. Delivery autonomy is present as a separate flag but delivery effects are not implemented."
   }
  },
  "deferred": [

@@ -516,6 +516,51 @@ struct AgenticSkillRevokeRequest {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct NewOwnerCharterRequest {
+    project_id: String,
+    domains: Vec<String>,
+    risk_appetite: String,
+    #[serde(default)]
+    execution_autonomy: bool,
+    #[serde(default)]
+    repair_autonomy: bool,
+    #[serde(default)]
+    delivery_autonomy: bool,
+    reserved_matters: Vec<String>,
+    expires_at: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RevokeOwnerCharterRequest {
+    reason: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NewOwnerDecisionRequest {
+    project_id: String,
+    #[serde(default)]
+    request_id: Option<String>,
+    #[serde(default)]
+    campaign_id: Option<String>,
+    matter: String,
+    risk: String,
+    options: Vec<String>,
+    evidence: Value,
+    recommendation: String,
+    deadline: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ResolveOwnerDecisionRequest {
+    option: String,
+    rationale: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RepairCampaignRequest {
     #[serde(default)]
     confirm: bool,
@@ -1047,6 +1092,10 @@ fn office_api_router(app: Arc<App>) -> Router {
             get(get_agentic_plan).post(plan_agentic_request),
         )
         .route(
+            "/agentic/requests/{id}/participants",
+            get(get_agentic_participants).post(record_agentic_participants),
+        )
+        .route(
             "/agentic/requests/{id}/spec",
             get(get_agentic_spec).post(author_agentic_spec),
         )
@@ -1064,6 +1113,10 @@ fn office_api_router(app: Arc<App>) -> Router {
         )
         .route("/agentic/specs/board", get(agentic_spec_board))
         .route(
+            "/quality/candidates/{id}/interpretation",
+            get(candidate_cheap_ops),
+        )
+        .route(
             "/agentic/requests/{id}/knowledge",
             get(get_agentic_knowledge).post(research_agentic_knowledge),
         )
@@ -1080,6 +1133,22 @@ fn office_api_router(app: Arc<App>) -> Router {
         .route("/agentic/skills/{id}/promote", post(promote_agentic_skill))
         .route("/agentic/skills/{id}/review", post(review_agentic_skill))
         .route("/agentic/skills/{id}/revoke", post(revoke_agentic_skill))
+        .route(
+            "/agentic/charters",
+            get(agentic_charters).post(create_agentic_charter),
+        )
+        .route(
+            "/agentic/charters/{id}/revoke",
+            post(revoke_agentic_charter),
+        )
+        .route(
+            "/agentic/decisions",
+            get(agentic_owner_decisions).post(create_agentic_owner_decision),
+        )
+        .route(
+            "/agentic/decisions/{id}/resolve",
+            post(resolve_agentic_owner_decision),
+        )
         .route("/agentic/requests/{id}", get(agentic_request_detail))
         .route(
             "/provider/sessions/{session_record_id}/tool_events",
@@ -1302,6 +1371,10 @@ fn api_router(app: Arc<App>) -> Router {
             get(get_agentic_plan).post(plan_agentic_request),
         )
         .route(
+            "/agentic/requests/{id}/participants",
+            get(get_agentic_participants).post(record_agentic_participants),
+        )
+        .route(
             "/agentic/requests/{id}/spec",
             get(get_agentic_spec).post(author_agentic_spec),
         )
@@ -1319,6 +1392,10 @@ fn api_router(app: Arc<App>) -> Router {
         )
         .route("/agentic/specs/board", get(agentic_spec_board))
         .route(
+            "/quality/candidates/{id}/interpretation",
+            get(candidate_cheap_ops),
+        )
+        .route(
             "/agentic/requests/{id}/knowledge",
             get(get_agentic_knowledge).post(research_agentic_knowledge),
         )
@@ -1335,6 +1412,22 @@ fn api_router(app: Arc<App>) -> Router {
         .route("/agentic/skills/{id}/promote", post(promote_agentic_skill))
         .route("/agentic/skills/{id}/review", post(review_agentic_skill))
         .route("/agentic/skills/{id}/revoke", post(revoke_agentic_skill))
+        .route(
+            "/agentic/charters",
+            get(agentic_charters).post(create_agentic_charter),
+        )
+        .route(
+            "/agentic/charters/{id}/revoke",
+            post(revoke_agentic_charter),
+        )
+        .route(
+            "/agentic/decisions",
+            get(agentic_owner_decisions).post(create_agentic_owner_decision),
+        )
+        .route(
+            "/agentic/decisions/{id}/resolve",
+            post(resolve_agentic_owner_decision),
+        )
         .route("/agentic/requests/{id}", get(agentic_request_detail))
         .route(
             "/provider/sessions/{session_record_id}/tool_events",
@@ -4542,12 +4635,20 @@ async fn candidate_gate_identity(
     candidate_id: &str,
 ) -> Result<Option<serde_json::Value>, Response> {
     match app.db.gate_for_candidate(candidate_id).await {
-        Ok(Some(gate)) => Ok(Some(json!({
-            "candidate_id": gate.candidate_id,
-            "outcome": gate.outcome,
-            "reasons": gate.reasons,
-            "decided_at": gate.decided_at,
-        }))),
+        Ok(Some(gate)) => {
+            let reviewer_ids = app
+                .db
+                .gate_reviewer_ids(&gate.candidate_id)
+                .await
+                .unwrap_or_default();
+            Ok(Some(json!({
+                "candidate_id": gate.candidate_id,
+                "outcome": gate.outcome,
+                "reasons": gate.reasons,
+                "decided_at": gate.decided_at,
+                "reviewerReceiptIds": reviewer_ids,
+            })))
+        }
         Ok(None) => Ok(None),
         Err(error) => Err(api_error(error)),
     }
@@ -7559,6 +7660,11 @@ async fn candidate_diff(
         .iter()
         .map(|file| file.path.clone())
         .collect::<Vec<_>>();
+    let reviewer_ids = app
+        .db
+        .gate_reviewer_ids(&candidate.id)
+        .await
+        .unwrap_or_default();
     Json(json!({
         "candidate_id": candidate.id,
         "candidate": {
@@ -7577,6 +7683,7 @@ async fn candidate_diff(
             "outcome": gate.outcome,
             "reasons": gate.reasons,
             "decided_at": gate.decided_at,
+            "reviewerReceiptIds": reviewer_ids,
         })),
         "project_id": project.id,
         "campaign_id": campaign.id,
@@ -7712,13 +7819,35 @@ async fn repair_campaign(
         .as_ref()
         .map(|proposal| proposal.risk_class)
         .unwrap_or(factory_native::lead::RiskClass::R0);
+    let charter_present = app
+        .db
+        .active_agentic_charter(&intake.project_id)
+        .await
+        .ok()
+        .flatten()
+        .is_some();
     if matches!(
         risk,
         factory_native::lead::RiskClass::R2 | factory_native::lead::RiskClass::R3
-    ) {
+    ) && !charter_present
+    {
         return api_error(Error::Forbidden(
             "R2 and R3 repair requires an owner decision or a delegated owner charter".into(),
         ));
+    }
+    if charter_present
+        && let Err(response) = charter_owner_decision_gate(
+            &app,
+            &intake.project_id,
+            Some(&intake.id),
+            Some(&id),
+            &intake.objective,
+            risk,
+            "repair",
+        )
+        .await
+    {
+        return response;
     }
     let Some(content) = profile.content.v2() else {
         return api_error(Error::Forbidden(
@@ -9990,6 +10119,17 @@ async fn agentic_projection_for_request(
     use factory_native::agentic;
     let lead = app.db.lead_request(&record.lead_request_id).await?;
     let context = agentic_triage_context(app, record).await?;
+    let participant_from_graph = match app.db.agentic_work_graph(&record.id).await {
+        Ok(graph_record) => {
+            match serde_json::from_str::<factory_native::agentic::ValidatedWorkGraph>(
+                &graph_record.graph_json,
+            ) {
+                Ok(graph) => deterministic_participant_plan(app, record, &context, &graph).await,
+                Err(_) => None,
+            }
+        }
+        Err(_) => None,
+    };
     let proposal = context.proposal.as_ref();
     let work_units = proposal
         .map(|proposal| proposal.work_units.len())
@@ -10004,12 +10144,14 @@ async fn agentic_projection_for_request(
     let stack = context.stack.clone();
     let triage = context.triage;
     let semantic = context.semantic;
-    let participants = agentic::participant_plan(
-        triage.route,
-        assurance,
-        u32::try_from(work_units.max(1)).unwrap_or(u32::MAX),
-        &stack,
-    );
+    let participants = participant_from_graph.unwrap_or_else(|| {
+        agentic::participant_plan(
+            triage.route,
+            assurance,
+            u32::try_from(work_units.max(1)).unwrap_or(u32::MAX),
+            &stack,
+        )
+    });
     let specifications = proposal
         .map(|proposal| {
             proposal
@@ -10431,20 +10573,128 @@ JSON Schema:
         })
         .await
     {
-        Ok(record) => Json(json!({
-            "graph": record,
-            "validated": graph,
-            "provider": result.provider,
-            "model": result.model,
-            "usage": {
-                "inputTokens": result.input_tokens,
-                "outputTokens": result.output_tokens,
-                "totalTokens": result.total_tokens,
-                "costMicros": result.cost_micros,
-                "usageKnown": result.usage_known,
-            }
-        }))
-        .into_response(),
+        Ok(saved_graph) => {
+            let participants =
+                deterministic_participant_plan(&app, &record, &context, &graph).await;
+            let participant_record = match participants {
+                Some(plan) => app
+                    .db
+                    .save_agentic_participant_plan(&record.id, Some(&graph.graph_sha256), &plan)
+                    .await
+                    .ok(),
+                None => None,
+            };
+            Json(json!({
+                "graph": saved_graph,
+                "validated": graph,
+                "participantPlan": participant_record,
+                "provider": result.provider,
+                "model": result.model,
+                "usage": {
+                    "inputTokens": result.input_tokens,
+                    "outputTokens": result.output_tokens,
+                    "totalTokens": result.total_tokens,
+                    "costMicros": result.cost_micros,
+                    "usageKnown": result.usage_known,
+                }
+            }))
+            .into_response()
+        }
+        Err(error) => api_error(error),
+    }
+}
+
+async fn deterministic_participant_plan(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+    context: &AgenticTriageContext,
+    graph: &factory_native::agentic::ValidatedWorkGraph,
+) -> Option<factory_native::agentic::ParticipantPlan> {
+    let profile = app
+        .db
+        .execution_profile_revision(&record.profile_id, &record.profile_revision_id)
+        .await
+        .ok()?;
+    let content = profile.content.v2()?;
+    Some(factory_native::agentic::participant_plan_for_graph(
+        context.triage.route,
+        context.assurance(),
+        graph,
+        &context.stack,
+        &content.roles.implementer.provider,
+        &content.roles.implementer.model,
+        "",
+    ))
+}
+
+async fn get_agentic_participants(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    match app.db.agentic_participant_plan(&record.id).await {
+        Ok(record) => Json(json!({"plan": record})).into_response(),
+        Err(Error::NotFound) => Json(json!({"plan": null})).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn record_agentic_participants(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    let graph_record = match app.db.agentic_work_graph(&record.id).await {
+        Ok(graph) => graph,
+        Err(Error::NotFound) => {
+            return agentic_conflict(
+                "WORK_GRAPH_REQUIRED",
+                "a validated Planner WorkGraph is required before participant compilation",
+            );
+        }
+        Err(error) => return api_error(error),
+    };
+    let graph = match parse_graph_record(&graph_record) {
+        Ok(graph) => graph,
+        Err(response) => return *response,
+    };
+    let context = match agentic_triage_context(&app, &record).await {
+        Ok(context) => context,
+        Err(error) => return api_error(error),
+    };
+    let plan = match deterministic_participant_plan(&app, &record, &context, &graph).await {
+        Some(plan) => plan,
+        None => {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": "the frozen execution profile is not executable",
+                    "code": "PROFILE_NOT_EXECUTABLE",
+                })),
+            )
+                .into_response();
+        }
+    };
+    match app
+        .db
+        .save_agentic_participant_plan(&record.id, Some(&graph.graph_sha256), &plan)
+        .await
+    {
+        Ok(record) => Json(json!({"plan": record, "compiled": plan})).into_response(),
         Err(error) => api_error(error),
     }
 }
@@ -11504,6 +11754,362 @@ async fn revoke_agentic_skill(
     }
 }
 
+async fn candidate_cheap_ops(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if let Err(error) = app.db.candidate(&id).await {
+        return api_error(error);
+    }
+    let receipts = match app.db.quality_receipts(&id).await {
+        Ok(receipts) => receipts,
+        Err(error) => return api_error(error),
+    };
+    let gate = app.db.gate_for_candidate(&id).await.ok().flatten();
+    let observations = receipts
+        .iter()
+        .map(|receipt| factory_native::cheap_ops::ReceiptObservation {
+            role: receipt.role.as_str().into(),
+            principal_id: receipt.principal_id.clone(),
+            result: receipt.result.as_str().into(),
+            evidence: receipt.evidence.as_str().into(),
+        })
+        .collect::<Vec<_>>();
+    let report = factory_native::cheap_ops::interpret_receipts(
+        &observations,
+        gate.as_ref().map(|gate| match gate.outcome {
+            GateOutcome::Accepted => "ACCEPTED",
+            GateOutcome::RepairRequired => "REPAIR_REQUIRED",
+            GateOutcome::Blocked => "BLOCKED",
+            GateOutcome::HumanRequired => "HUMAN_REQUIRED",
+            GateOutcome::NotTested => "NOT_TESTED",
+        }),
+        gate.as_ref()
+            .map(|gate| gate.reasons.as_slice())
+            .unwrap_or(&[]),
+    );
+    Json(json!({
+        "candidateId": id,
+        "report": report,
+        "reviewerReceiptIds": app.db.gate_reviewer_ids(&id).await.unwrap_or_default(),
+    }))
+    .into_response()
+}
+
+async fn agentic_charters(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app
+        .db
+        .agentic_charters(query.get("project_id").map(String::as_str))
+        .await
+    {
+        Ok(charters) => Json(json!({"charters": charters})).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn create_agentic_charter(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    Json(input): Json<NewOwnerCharterRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let risk = match input.risk_appetite.as_str() {
+        "R0" => factory_native::lead::RiskClass::R0,
+        "R1" => factory_native::lead::RiskClass::R1,
+        "R2" => factory_native::lead::RiskClass::R2,
+        "R3" => factory_native::lead::RiskClass::R3,
+        _ => return api_error(Error::Invalid("charter risk appetite")),
+    };
+    let principal = operator_principal(session.as_ref().map(|Extension(device)| device));
+    match app
+        .db
+        .create_agentic_charter(&factory_native::db::NewAgenticCharter {
+            owner: &principal,
+            project_id: &input.project_id,
+            domains: &input.domains,
+            risk_appetite: risk,
+            execution_autonomy: input.execution_autonomy,
+            repair_autonomy: input.repair_autonomy,
+            delivery_autonomy: input.delivery_autonomy,
+            reserved_matters: &input.reserved_matters,
+            expires_at: &input.expires_at,
+        })
+        .await
+    {
+        Ok(charter) => Json(charter).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn revoke_agentic_charter(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<RevokeOwnerCharterRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.revoke_agentic_charter(&id, &input.reason).await {
+        Ok(charter) => Json(charter).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn agentic_owner_decisions(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let pending_only = query.get("status").map(String::as_str) == Some("PENDING");
+    match app
+        .db
+        .agentic_owner_decisions(query.get("project_id").map(String::as_str), pending_only)
+        .await
+    {
+        Ok(decisions) => Json(json!({"decisions": decisions})).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn create_agentic_owner_decision(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(input): Json<NewOwnerDecisionRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let risk = match input.risk.as_str() {
+        "R0" => factory_native::lead::RiskClass::R0,
+        "R1" => factory_native::lead::RiskClass::R1,
+        "R2" => factory_native::lead::RiskClass::R2,
+        "R3" => factory_native::lead::RiskClass::R3,
+        _ => return api_error(Error::Invalid("owner decision risk")),
+    };
+    match app
+        .db
+        .create_agentic_owner_decision(&factory_native::db::NewAgenticOwnerDecision {
+            project_id: &input.project_id,
+            request_id: input.request_id.as_deref(),
+            campaign_id: input.campaign_id.as_deref(),
+            matter: &input.matter,
+            risk,
+            options: &input.options,
+            evidence: &input.evidence,
+            recommendation: &input.recommendation,
+            deadline: &input.deadline,
+        })
+        .await
+    {
+        Ok(decision) => Json(decision).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn resolve_agentic_owner_decision(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<ResolveOwnerDecisionRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let principal = operator_principal(session.as_ref().map(|Extension(device)| device));
+    match app
+        .db
+        .resolve_agentic_owner_decision(&id, &input.option, &input.rationale, &principal)
+        .await
+    {
+        Ok(decision) => Json(decision).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+fn reserved_matter_triggered(objective: &str, reserved: &[String]) -> Option<String> {
+    let objective = objective.to_ascii_lowercase();
+    let keywords: &[(&str, &[&str])] = &[
+        (
+            "credentials",
+            &["credential", "secret", "api key", "password", "token"],
+        ),
+        ("isolation", &["isolation", "sandbox", "privileged"]),
+        ("production", &["production", "deploy", "release"]),
+        (
+            "destructive_migrations",
+            &["drop table", "destructive", "delete data", "migration"],
+        ),
+        (
+            "public_contracts",
+            &[
+                "public api",
+                "public contract",
+                "breaking change",
+                "schema change",
+            ],
+        ),
+        (
+            "security_exceptions",
+            &[
+                "security exception",
+                "bypass auth",
+                "disable authentication",
+            ],
+        ),
+        (
+            "policy_changes",
+            &["policy change", "charter change", "authorization change"],
+        ),
+        ("out_of_budget", &["over budget", "out of budget"]),
+        ("cross_project_effects", &["cross-project", "other project"]),
+        ("delivery", &["merge", "pull request", "deliver", "deploy"]),
+    ];
+    reserved.iter().find_map(|matter| {
+        let alternatives = keywords
+            .iter()
+            .find(|(name, _)| name == matter)
+            .map(|(_, words)| *words)
+            .unwrap_or(&[]);
+        if objective.contains(&matter.replace('_', " "))
+            || alternatives.iter().any(|word| objective.contains(word))
+        {
+            Some(matter.clone())
+        } else {
+            None
+        }
+    })
+}
+
+async fn charter_owner_decision_gate(
+    app: &Arc<App>,
+    project_id: &str,
+    request_id: Option<&str>,
+    campaign_id: Option<&str>,
+    objective: &str,
+    risk: factory_native::lead::RiskClass,
+    action: &str,
+) -> Result<Option<String>, Response> {
+    let Some(charter) = app
+        .db
+        .active_agentic_charter(project_id)
+        .await
+        .map_err(api_error)?
+    else {
+        return Ok(None);
+    };
+    if risk > charter.risk_appetite {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "request risk exceeds the owner charter appetite",
+                "code": "CHARTER_RISK_EXCEEDED",
+            })),
+        )
+            .into_response());
+    }
+    let delegated = match action {
+        "execution" => charter.execution_autonomy,
+        "repair" => charter.repair_autonomy,
+        "delivery" => charter.delivery_autonomy,
+        _ => false,
+    };
+    if !delegated {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "the owner charter does not delegate this action",
+                "code": "CHARTER_ACTION_NOT_DELEGATED",
+            })),
+        )
+            .into_response());
+    }
+    let Some(matter) = reserved_matter_triggered(objective, &charter.reserved_matters) else {
+        return Ok(None);
+    };
+    if let Some(request_id) = request_id {
+        let approved = app
+            .db
+            .agentic_owner_decisions(Some(project_id), false)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .any(|decision| {
+                decision.request_id.as_deref() == Some(request_id)
+                    && decision.matter == matter
+                    && decision.status == "APPROVED"
+                    && decision.selected_option.as_deref() == Some("APPROVE")
+            });
+        if approved {
+            return Ok(None);
+        }
+    }
+    let pending = app
+        .db
+        .agentic_owner_decisions(Some(project_id), true)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .find(|decision| {
+            decision.matter == matter
+                && decision.request_id.as_deref() == request_id
+                && decision.campaign_id.as_deref() == campaign_id
+        });
+    let decision = match pending {
+        Some(decision) => decision,
+        None => {
+            let deadline = (chrono::Utc::now() + chrono::Duration::hours(24)).to_rfc3339();
+            app.db
+                .create_agentic_owner_decision(&factory_native::db::NewAgenticOwnerDecision {
+                    project_id,
+                    request_id,
+                    campaign_id,
+                    matter: &matter,
+                    risk,
+                    options: &["APPROVE".into(), "DENY".into()],
+                    evidence: &json!({
+                        "objective": objective,
+                        "risk": format!("{risk:?}"),
+                        "action": action,
+                        "charterId": charter.id,
+                    }),
+                    recommendation: "DENY",
+                    deadline: &deadline,
+                })
+                .await
+                .map_err(api_error)?
+        }
+    };
+    Err((
+        StatusCode::CONFLICT,
+        Json(json!({
+            "error": "this reserved matter requires an owner decision",
+            "code": "OWNER_DECISION_REQUIRED",
+            "decisionId": decision.id,
+            "matter": matter,
+        })),
+    )
+        .into_response())
+}
+
 async fn assess_agentic_request(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
@@ -11896,6 +12502,33 @@ async fn autonomous_start_intake(app: &Arc<App>, id: &str) -> Result<(), Error> 
     let context = app.db.intake_start_context(id).await?;
     if context.lead.campaign_id.is_some() {
         return Ok(());
+    }
+    if let Ok(Some(charter)) = app
+        .db
+        .active_agentic_charter(&context.intake.project_id)
+        .await
+    {
+        let risk = app
+            .db
+            .lead_proposal(&context.lead.id)
+            .await
+            .ok()
+            .and_then(|record| {
+                serde_json::from_str::<factory_native::lead::LeadPlanProposal>(
+                    &record.proposal_json,
+                )
+                .ok()
+            })
+            .map(|proposal| proposal.risk_class)
+            .unwrap_or(factory_native::lead::RiskClass::R0);
+        let reserved =
+            reserved_matter_triggered(&context.lead.objective, &charter.reserved_matters);
+        if !charter.execution_autonomy || risk > charter.risk_appetite || reserved.is_some() {
+            return Err(Error::Forbidden(
+                "autonomous execution requires an explicit owner decision under the active charter"
+                    .into(),
+            ));
+        }
     }
     let billable = context.mechanism == "MODEL";
     let admission_id = if billable {
@@ -15819,8 +16452,45 @@ mod tests {
         let zeros = "0".repeat(64);
         let routes = [
             ("GET", "/agentic/specs/board", "{}".to_string()),
+            ("GET", "/agentic/charters", "{}".to_string()),
+            (
+                "POST",
+                "/agentic/charters",
+                r#"{"project_id":"missing","domains":["repository"],"risk_appetite":"R0","reserved_matters":["credentials"],"expires_at":"2030-01-01T00:00:00Z"}"#.to_string(),
+            ),
+            (
+                "POST",
+                "/agentic/charters/missing/revoke",
+                r#"{"reason":"test"}"#.to_string(),
+            ),
+            ("GET", "/agentic/decisions", "{}".to_string()),
+            (
+                "POST",
+                "/agentic/decisions",
+                r#"{"project_id":"missing","matter":"credentials","risk":"R2","options":["APPROVE","DENY"],"evidence":{},"recommendation":"DENY","deadline":"2030-01-01T00:00:00Z"}"#.to_string(),
+            ),
+            (
+                "POST",
+                "/agentic/decisions/missing/resolve",
+                r#"{"option":"APPROVE","rationale":"test"}"#.to_string(),
+            ),
+            (
+                "GET",
+                "/quality/candidates/missing/interpretation",
+                "{}".to_string(),
+            ),
             ("GET", "/agentic/requests/missing/plan", "{}".to_string()),
             ("POST", "/agentic/requests/missing/plan", "{}".to_string()),
+            (
+                "GET",
+                "/agentic/requests/missing/participants",
+                "{}".to_string(),
+            ),
+            (
+                "POST",
+                "/agentic/requests/missing/participants",
+                "{}".to_string(),
+            ),
             ("GET", "/agentic/requests/missing/spec", "{}".to_string()),
             ("POST", "/agentic/requests/missing/spec", "{}".to_string()),
             (

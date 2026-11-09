@@ -510,6 +510,18 @@ impl Database {
             .ok_or(Error::NotFound)
     }
 
+    /// Reviewer receipts aggregated into the immutable Gate decision.
+    pub async fn gate_reviewer_ids(&self, candidate_id: &str) -> Result<Vec<String>, Error> {
+        let rows: Vec<(String,)> = sqlx::query_as::query_as(
+            "SELECT reviewer_receipt_id FROM gate_decision_reviewers
+             WHERE candidate_id=?1 ORDER BY reviewer_receipt_id ASC",
+        )
+        .bind(candidate_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
+
     pub async fn candidate(&self, id: &str) -> Result<CandidateRecord, Error> {
         let mut connection = self.pool.acquire().await?;
         load_candidate(&mut connection, id).await
@@ -820,13 +832,21 @@ async fn ensure_receipt_available(
     role: QualityRole,
     input: &QualityReceiptInput,
 ) -> Result<(), Error> {
-    if load_receipt_by_role(connection, candidate_id, role)
-        .await?
-        .is_some()
-    {
-        return Err(Error::Conflict(
-            "candidate already has a receipt for this independent role",
-        ));
+    let existing = load_receipts_by_role(connection, candidate_id, role).await?;
+    match role {
+        QualityRole::Verifier if !existing.is_empty() => {
+            return Err(Error::Conflict("candidate already has a verifier receipt"));
+        }
+        QualityRole::Reviewer
+            if existing
+                .iter()
+                .any(|receipt| receipt.principal_id == input.principal_id) =>
+        {
+            return Err(Error::Conflict(
+                "candidate already has this reviewer's independent receipt",
+            ));
+        }
+        _ => {}
     }
     let other_role = match role {
         QualityRole::Verifier => QualityRole::Reviewer,
@@ -1179,6 +1199,31 @@ async fn reviewer_selection_for_candidate(
     reviewer_selection_for_candidate_in_tx(connection, candidate_id).await
 }
 
+async fn reviewer_requirement_for_candidate(
+    connection: &mut SqliteConnection,
+    candidate_id: &str,
+) -> Result<usize, Error> {
+    let required: Option<(i64,)> = sqlx::query_as::query_as(
+        "SELECT COALESCE(
+           (SELECT rr.reviewer_count FROM campaign_review_requirements rr
+            WHERE rr.campaign_id=c.id),
+           (SELECT pp.reviewer_count FROM intake_requests ir
+            JOIN agentic_participant_plans pp ON pp.request_id=ir.id
+            WHERE ir.campaign_id=c.id),
+           1)
+         FROM candidates cd
+         JOIN attempts a ON a.id=cd.attempt_id
+         JOIN runs r ON r.id=a.run_id
+         JOIN campaigns c ON c.id=r.campaign_id
+         WHERE cd.id=?1",
+    )
+    .bind(candidate_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    let required = required.map(|(value,)| value).unwrap_or(1);
+    Ok(usize::try_from(required).unwrap_or(1).max(1))
+}
+
 async fn decide_gate(
     connection: &mut SqliteConnection,
     candidate_id: &str,
@@ -1188,9 +1233,23 @@ async fn decide_gate(
     let Some(verifier) = verifier.as_ref() else {
         return Ok(None);
     };
-    let reviewer = load_receipt_by_role(connection, candidate_id, QualityRole::Reviewer).await?;
+    let reviewer_records =
+        load_receipts_by_role(connection, candidate_id, QualityRole::Reviewer).await?;
+    let required_reviewers = reviewer_requirement_for_candidate(connection, candidate_id).await?;
+    let reviewer_failed = reviewer_records.iter().any(|receipt| {
+        matches!(
+            receipt.result,
+            ReceiptResult::Fail | ReceiptResult::ChangesRequested
+        )
+    });
+
     let policy = load_gate_policy(connection, candidate_id).await?;
-    let mut decision = evaluate_quality_gate(
+    let reviewer_values = reviewer_records
+        .iter()
+        .map(to_reviewer_receipt)
+        .collect::<Vec<_>>();
+    let reviewer_refs = reviewer_values.iter().collect::<Vec<_>>();
+    let mut decision = crate::quality::evaluate_quality_gate_with_reviewers(
         &FrozenActionSpec {
             hash: candidate.action_spec_sha256.clone(),
         },
@@ -1201,10 +1260,24 @@ async fn decide_gate(
         },
         &candidate.implementer_id,
         Some(&to_verifier_receipt(verifier)),
-        reviewer.as_ref().map(to_reviewer_receipt).as_ref(),
+        &reviewer_refs,
         policy,
     );
-    if let Some(reviewer) = reviewer.as_ref() {
+    // A passing reviewer set waits until the deterministic plan's reviewer
+    // requirement is satisfied, so an incoming independent reviewer cannot be
+    // invalidated by an early Gate. A failing verifier or reviewer, malformed
+    // evidence or an unknown receipt still decides immediately.
+    if reviewer_records.len() < required_reviewers && !reviewer_failed {
+        let only_missing_reviewer = decision.outcome == GateOutcome::NotTested
+            && decision
+                .reasons
+                .iter()
+                .any(|reason| reason == "independent reviewer receipt is missing");
+        if decision.outcome == GateOutcome::Accepted || only_missing_reviewer {
+            return Ok(None);
+        }
+    }
+    for reviewer in &reviewer_records {
         // A critical finding is a hard human stop even if a malformed or
         // historical receipt also claimed PASS. A PASS with a blocking finding
         // is contradictory and can never accept the candidate.
@@ -1237,9 +1310,9 @@ async fn decide_gate(
     match reviewer_selection_for_candidate_in_tx(connection, candidate_id).await {
         Ok(ReviewerSelection::Deterministic) => {
             if decision.outcome == GateOutcome::Accepted
-                && reviewer
-                    .as_ref()
-                    .is_some_and(|receipt| receipt.mechanism.is_model_backed())
+                && reviewer_records
+                    .iter()
+                    .any(|receipt| receipt.mechanism.is_model_backed())
             {
                 decision = crate::quality::GateDecision {
                     outcome: GateOutcome::NotTested,
@@ -1252,9 +1325,9 @@ async fn decide_gate(
         }
         Ok(selection) => {
             if decision.outcome == GateOutcome::Accepted
-                && reviewer
-                    .as_ref()
-                    .is_some_and(|receipt| !receipt.mechanism.is_model_backed())
+                && reviewer_records
+                    .iter()
+                    .any(|receipt| !receipt.mechanism.is_model_backed())
             {
                 let expected = match selection {
                     ReviewerSelection::Chat { .. } => "MODEL",
@@ -1279,7 +1352,7 @@ async fn decide_gate(
         }
         Err(error) => return Err(error),
     }
-    if reviewer.is_none()
+    if reviewer_records.is_empty()
         && decision
             .reasons
             .iter()
@@ -1301,6 +1374,16 @@ async fn decide_gate(
         .bind(&gate.decided_at)
         .execute(&mut *connection)
         .await?;
+    for reviewer in &reviewer_records {
+        sqlx::query::query(
+            "INSERT OR IGNORE INTO gate_decision_reviewers (candidate_id,reviewer_receipt_id)
+             VALUES (?1,?2)",
+        )
+        .bind(&gate.candidate_id)
+        .bind(&reviewer.receipt_id)
+        .execute(&mut *connection)
+        .await?;
+    }
     record_event(
         connection,
         candidate_id,
@@ -1339,7 +1422,7 @@ async fn decide_gate(
         )
         .await?;
     }
-    if let Some(reviewer) = reviewer.as_ref() {
+    if let Some(reviewer) = reviewer_records.first() {
         record_gate_repair_authorization(connection, &gate, candidate, reviewer, verifier).await?;
     }
     Ok(Some(gate))
@@ -1629,23 +1712,35 @@ async fn load_receipt_by_id(
     row.as_ref().map(receipt_from_row).transpose()
 }
 
+async fn load_receipts_by_role(
+    connection: &mut SqliteConnection,
+    candidate_id: &str,
+    role: QualityRole,
+) -> Result<Vec<QualityReceiptRecord>, Error> {
+    let rows = sqlx::query::query(
+        "SELECT receipt_id,candidate_id,role,principal_id,action_spec_sha256,commit_sha,tree_sha,
+                result,evidence,findings_json,mechanism,model_provider,model_name,
+                model_reservation_id,model_request_sha256,input_tokens,output_tokens,
+                total_tokens,cost_micros,usage_known,received_at
+         FROM quality_receipts WHERE candidate_id=?1 AND role=?2
+         ORDER BY received_at ASC,receipt_id ASC",
+    )
+    .bind(candidate_id)
+    .bind(role.as_str())
+    .fetch_all(connection)
+    .await?;
+    rows.iter().map(receipt_from_row).collect()
+}
+
 async fn load_receipt_by_role(
     connection: &mut SqliteConnection,
     candidate_id: &str,
     role: QualityRole,
 ) -> Result<Option<QualityReceiptRecord>, Error> {
-    let row = sqlx::query::query(
-        "SELECT receipt_id,candidate_id,role,principal_id,action_spec_sha256,commit_sha,tree_sha,
-                result,evidence,findings_json,mechanism,model_provider,model_name,
-                model_reservation_id,model_request_sha256,input_tokens,output_tokens,
-                total_tokens,cost_micros,usage_known,received_at
-         FROM quality_receipts WHERE candidate_id=?1 AND role=?2",
-    )
-    .bind(candidate_id)
-    .bind(role.as_str())
-    .fetch_optional(connection)
-    .await?;
-    row.as_ref().map(receipt_from_row).transpose()
+    Ok(load_receipts_by_role(connection, candidate_id, role)
+        .await?
+        .into_iter()
+        .next())
 }
 
 fn receipt_matches(existing: &QualityReceiptRecord, input: &QualityReceiptInput) -> bool {

@@ -522,6 +522,21 @@ pub struct ParticipantPlan {
     pub assignments: Vec<AgentAssignment>,
     pub context_policy: ContextPolicy,
     pub reasons: Vec<String>,
+    #[serde(default)]
+    pub unit_assignments: Vec<AgentUnitAssignment>,
+    #[serde(default)]
+    pub reviewer_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentUnitAssignment {
+    pub unit_id: String,
+    pub specialization: String,
+    pub paths: Vec<String>,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub provider_mode: Option<String>,
 }
 
 fn assignment(role: &str, specialization: &str, count: u32, read_only: bool) -> AgentAssignment {
@@ -555,6 +570,11 @@ pub fn participant_plan(
         .cloned()
         .unwrap_or_else(|| "cross-cutting".into());
     let units = work_units.max(1);
+    let reviewers = if assurance >= Assurance::Elevated {
+        2
+    } else {
+        1
+    };
     let mut assignments = Vec::new();
     match route {
         ChangeRoute::NoAgent => {
@@ -563,7 +583,7 @@ pub fn participant_plan(
         ChangeRoute::Direct => {
             assignments.push(assignment("Implementer", &specialization, 1, false));
             assignments.push(assignment("Verifier", "deterministic", 1, true));
-            assignments.push(assignment("Reviewer", "cross-cutting", 1, true));
+            assignments.push(assignment("Reviewer", "cross-cutting", reviewers, true));
         }
         ChangeRoute::Delegated => {
             assignments.push(assignment("Operation Manager", "cross-cutting", 1, true));
@@ -577,7 +597,7 @@ pub fn participant_plan(
                 } else {
                     "cross-cutting"
                 },
-                1,
+                reviewers,
                 true,
             ));
             assignments.push(assignment("Cheap Ops", "test-interpretation", 1, true));
@@ -597,7 +617,7 @@ pub fn participant_plan(
                 } else {
                     "cross-cutting"
                 },
-                1,
+                reviewers,
                 true,
             ));
             assignments.push(assignment("Cheap Ops", "test-interpretation", 1, true));
@@ -606,7 +626,7 @@ pub fn participant_plan(
             assignments.push(assignment("Operation Manager", "cross-cutting", 1, true));
             assignments.push(assignment("Repairer", &specialization, 1, false));
             assignments.push(assignment("Verifier", "deterministic", 1, true));
-            assignments.push(assignment("Reviewer", "cross-cutting", 1, true));
+            assignments.push(assignment("Reviewer", "cross-cutting", reviewers, true));
         }
     }
     let mut reasons = vec![format!(
@@ -625,13 +645,85 @@ pub fn participant_plan(
             "{units} independent work units are compiled; shared paths remain serialized."
         ));
     }
+    if reviewers > 1 {
+        reasons.push(format!(
+            "{reviewers} independent reviewer receipts are required for assurance {assurance:?}."
+        ));
+    }
     ParticipantPlan {
         route,
         assurance,
         assignments,
         context_policy: ContextPolicy::default(),
         reasons,
+        unit_assignments: Vec::new(),
+        reviewer_count: reviewers,
     }
+}
+
+/// Compile the deterministic plan for an exact validated WorkGraph. Each
+/// independent unit is bound to one implementer specialization; the model
+/// route comes from the frozen profile and is identical for the same role.
+pub fn participant_plan_for_graph(
+    route: ChangeRoute,
+    assurance: Assurance,
+    graph: &ValidatedWorkGraph,
+    stack: &StackProfile,
+    provider: &str,
+    model: &str,
+    provider_mode: &str,
+) -> ParticipantPlan {
+    let units = u32::try_from(graph.units.len()).unwrap_or(u32::MAX);
+    let mut plan = participant_plan(route, assurance, units, stack);
+    plan.unit_assignments = graph
+        .units
+        .iter()
+        .map(|unit| AgentUnitAssignment {
+            unit_id: unit.id.clone(),
+            specialization: unit_specialization(unit, stack),
+            paths: unit.paths.clone(),
+            provider: Some(provider.to_owned()).filter(|value| !value.is_empty()),
+            model: Some(model.to_owned()).filter(|value| !value.is_empty()),
+            provider_mode: Some(provider_mode.to_owned()).filter(|value| !value.is_empty()),
+        })
+        .collect();
+    plan.reasons.push(format!(
+        "{} independent unit(s) are bound to their own implementer specialization; path conflicts were rejected by WorkGraph validation.",
+        plan.unit_assignments.len()
+    ));
+    plan
+}
+
+fn unit_specialization(unit: &PlannedWorkUnit, stack: &StackProfile) -> String {
+    for language in &stack.languages {
+        let extension = match language.as_str() {
+            "rust" => ".rs",
+            "typescript" => ".ts",
+            "javascript" => ".js",
+            "python" => ".py",
+            "go" => ".go",
+            _ => continue,
+        };
+        if unit.paths.iter().any(|path| {
+            path.ends_with(extension)
+                || path.ends_with(&format!("{extension}x"))
+                || path.ends_with(".tsx") && language == "typescript"
+        }) {
+            return language.clone();
+        }
+    }
+    if unit
+        .paths
+        .iter()
+        .all(|path| path.starts_with("docs") || path.ends_with(".md"))
+    {
+        return "documentation".into();
+    }
+    stack
+        .languages
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "cross-cutting".into())
 }
 
 /// A bounded handoff record. The summary is advisory; deterministic identity
@@ -1370,6 +1462,44 @@ mod tests {
         draft.requirements[0].acceptance.clear();
         assert!(compile_spec(&draft, 1).is_err());
         assert!(compile_spec(&spec_draft(), 0).is_err());
+    }
+
+    #[test]
+    fn graph_plan_binds_units_and_two_reviewers_for_elevated_assurance() {
+        let model = WorkGraphModel {
+            units: vec![
+                unit("model", &[], &["src/model.rs"]),
+                unit("api", &["model"], &["src/api.rs"]),
+            ],
+            assumptions: vec![],
+            risks: vec![],
+        };
+        let graph = validate_work_graph(&model, &["src".into()]).unwrap();
+        let stack = StackProfile {
+            languages: vec!["rust".into()],
+            ..StackProfile::default()
+        };
+        let plan = participant_plan_for_graph(
+            ChangeRoute::FormalSpec,
+            Assurance::Elevated,
+            &graph,
+            &stack,
+            "opencode",
+            "deepseek-v4.1-flash",
+            "build",
+        );
+        assert_eq!(plan.reviewer_count, 2);
+        assert_eq!(plan.unit_assignments.len(), 2);
+        assert_eq!(plan.unit_assignments[0].specialization, "rust");
+        assert_eq!(
+            plan.unit_assignments[1].model.as_deref(),
+            Some("deepseek-v4.1-flash")
+        );
+        assert!(
+            plan.assignments
+                .iter()
+                .any(|assignment| assignment.role == "Reviewer" && assignment.count == 2)
+        );
     }
 
     #[test]

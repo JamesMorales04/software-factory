@@ -6,6 +6,7 @@ pub mod attempt_grant;
 pub mod autonomy;
 pub mod browser;
 pub mod candidate_diff;
+pub mod cheap_ops;
 pub mod codex_auth;
 pub mod codex_review;
 pub mod context7;

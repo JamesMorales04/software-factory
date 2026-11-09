@@ -89,6 +89,7 @@ export function Director() {
   const [planBusy, setPlanBusy] = useState(false);
   const [planError, setPlanError] = useState<string | null>(null);
   const [planNotice, setPlanNotice] = useState<string | null>(null);
+  const [participantBusy, setParticipantBusy] = useState(false);
   const [spec, setSpec] = useState<AgenticSpecDetail | null>(null);
   const [specBusy, setSpecBusy] = useState<string | null>(null);
   const [specError, setSpecError] = useState<string | null>(null);
@@ -251,6 +252,22 @@ export function Director() {
       setPlanError(errorText(cause, t("director.plan.error")));
     } finally {
       setPlanBusy(false);
+    }
+  }
+
+  async function recordParticipants() {
+    if (!activeId) return;
+    setParticipantBusy(true);
+    setPlanError(null);
+    setPlanNotice(null);
+    try {
+      await coreApi.recordAgenticParticipants(activeId);
+      setDetail(await coreApi.getAgenticRequest(activeId));
+      setPlanNotice(t("director.participants.success"));
+    } catch (cause) {
+      setPlanError(errorText(cause, t("director.participants.error")));
+    } finally {
+      setParticipantBusy(false);
     }
   }
 
@@ -652,7 +669,27 @@ export function Director() {
                           <dt>{t("director.plan.order")}</dt>
                           <dd>{graph.topologicalOrder.join(" → ")}</dd>
                         </div>
+                        <div>
+                          <dt>{t("director.participants.reviewers")}</dt>
+                          <dd>{detail.participants.reviewerCount}</dd>
+                        </div>
                       </dl>
+                      {detail.participants.unitAssignments.length > 0 && (
+                        <div className="director-unit-routing">
+                          <h3>{t("director.participants.unitRouting")}</h3>
+                          <ul>
+                            {detail.participants.unitAssignments.map((unit) => (
+                              <li key={unit.unitId}>
+                                <code>{unit.unitId}</code> ·{" "}
+                                {unit.specialization}
+                                {unit.provider && unit.model
+                                  ? ` · ${unit.provider}/${unit.model}`
+                                  : ""}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
                       <ul className="specs-units">
                         {graph.units.map((unit) => (
                           <li key={unit.id}>
@@ -689,6 +726,17 @@ export function Director() {
                       {planBusy
                         ? t("director.plan.compiling")
                         : t("director.plan.compile")}
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      busy={participantBusy}
+                      disabled={participantBusy || !plan}
+                      onClick={() => void recordParticipants()}
+                    >
+                      {participantBusy
+                        ? t("director.participants.recording")
+                        : t("director.participants.record")}
                     </Button>
                   </div>
                   {Boolean(spec?.frozen || spec?.draft) && (

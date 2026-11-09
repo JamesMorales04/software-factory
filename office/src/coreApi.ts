@@ -370,7 +370,21 @@ export interface Gate {
   outcome: GateOutcome;
   reasons: string[];
   decided_at: string;
+  reviewerReceiptIds?: string[];
   repair_authorization?: RepairAuthorization | null;
+}
+
+export interface CheapOpsReport {
+  authority: string;
+  summary: string;
+  passed: number;
+  failed: number;
+  not_tested: number;
+  reviewer_count: number;
+  verifier_present: boolean;
+  gate_outcome: string | null;
+  gate_reasons: string[];
+  notes: string[];
 }
 
 export interface FactoryEvent {
@@ -1553,12 +1567,36 @@ export interface AgenticContextPolicy {
   requireProbeAfterHandoff: boolean;
 }
 
+export interface AgenticParticipantPlanRecord {
+  requestId: string;
+  graphSha256: string | null;
+  route: string;
+  assurance: string;
+  workUnits: number;
+  reviewerCount: number;
+  planJson: string;
+  planSha256: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AgenticUnitAssignment {
+  unitId: string;
+  specialization: string;
+  paths: string[];
+  provider: string | null;
+  model: string | null;
+  providerMode: string | null;
+}
+
 export interface AgenticParticipantPlan {
   route: AgenticRoute;
   assurance: AgenticAssurance;
   assignments: AgenticAssignment[];
   contextPolicy: AgenticContextPolicy;
   reasons: string[];
+  unitAssignments: AgenticUnitAssignment[];
+  reviewerCount: number;
 }
 
 export interface AgenticSpecification {
@@ -1817,6 +1855,44 @@ export interface AgenticSpecBoardCard {
   publication: AgenticSpecPublication | null;
   issues: AgenticSpecIssue[];
   units: AgenticWorkUnit[];
+}
+
+export interface AgenticCharterRecord {
+  id: string;
+  owner: string;
+  projectId: string;
+  domains: string[];
+  riskAppetite: "R0" | "R1" | "R2" | "R3";
+  executionAutonomy: boolean;
+  repairAutonomy: boolean;
+  deliveryAutonomy: boolean;
+  policyAutonomy: boolean;
+  reservedMatters: string[];
+  expiresAt: string;
+  revokedAt: string | null;
+  revocationReason: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AgenticOwnerDecision {
+  id: string;
+  projectId: string;
+  requestId: string | null;
+  campaignId: string | null;
+  matter: string;
+  risk: "R0" | "R1" | "R2" | "R3";
+  status: "PENDING" | "APPROVED" | "DENIED" | "EXPIRED";
+  options: string[];
+  evidence: unknown;
+  recommendation: string;
+  deadline: string;
+  selectedOption: string | null;
+  rationale: string | null;
+  resolvedBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+  resolvedAt: string | null;
 }
 
 export interface AgenticKnowledgeSource {
@@ -3165,6 +3241,17 @@ export const coreApi = {
     request<unknown>(`/agentic/requests/${encodeURIComponent(id)}/assess`, {
       method: "POST",
     }),
+  getAgenticParticipants: (id: string) =>
+    request<{ plan: AgenticParticipantPlanRecord | null }>(
+      `/agentic/requests/${encodeURIComponent(id)}/participants`,
+    ),
+  recordAgenticParticipants: (id: string) =>
+    request<{
+      plan: AgenticParticipantPlanRecord;
+      compiled: AgenticParticipantPlan;
+    }>(`/agentic/requests/${encodeURIComponent(id)}/participants`, {
+      method: "POST",
+    }),
   getAgenticPlan: (id: string) =>
     request<{ graph: AgenticWorkGraphRecord | null }>(
       `/agentic/requests/${encodeURIComponent(id)}/plan`,
@@ -3216,6 +3303,62 @@ export const coreApi = {
       { method: "POST" },
     ),
   getAgenticSpecBoard: () => request<AgenticSpecBoard>("/agentic/specs/board"),
+  listAgenticCharters: (projectId?: string) =>
+    request<{ charters: AgenticCharterRecord[] }>(
+      `/agentic/charters${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ""}`,
+    ),
+  createAgenticCharter: (input: {
+    project_id: string;
+    domains: string[];
+    risk_appetite: "R0" | "R1" | "R2" | "R3";
+    execution_autonomy: boolean;
+    repair_autonomy: boolean;
+    delivery_autonomy: boolean;
+    reserved_matters: string[];
+    expires_at: string;
+  }) =>
+    request<AgenticCharterRecord>("/agentic/charters", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  revokeAgenticCharter: (id: string, reason: string) =>
+    request<AgenticCharterRecord>(
+      `/agentic/charters/${encodeURIComponent(id)}/revoke`,
+      { method: "POST", body: JSON.stringify({ reason }) },
+    ),
+  listAgenticDecisions: (projectId?: string, status?: "PENDING") => {
+    const params = new URLSearchParams();
+    if (projectId) params.set("project_id", projectId);
+    if (status) params.set("status", status);
+    const query = params.toString();
+    return request<{ decisions: AgenticOwnerDecision[] }>(
+      `/agentic/decisions${query ? `?${query}` : ""}`,
+    );
+  },
+  createAgenticOwnerDecision: (input: {
+    project_id: string;
+    request_id?: string | null;
+    campaign_id?: string | null;
+    matter: string;
+    risk: "R0" | "R1" | "R2" | "R3";
+    options: string[];
+    evidence: unknown;
+    recommendation: string;
+    deadline: string;
+  }) =>
+    request<AgenticOwnerDecision>("/agentic/decisions", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  resolveAgenticOwnerDecision: (
+    id: string,
+    option: string,
+    rationale: string,
+  ) =>
+    request<AgenticOwnerDecision>(
+      `/agentic/decisions/${encodeURIComponent(id)}/resolve`,
+      { method: "POST", body: JSON.stringify({ option, rationale }) },
+    ),
   getAgenticKnowledge: (id: string) =>
     request<AgenticKnowledgeResponse>(
       `/agentic/requests/${encodeURIComponent(id)}/knowledge`,
@@ -3605,6 +3748,12 @@ export const coreApi = {
       method: "POST",
       body: JSON.stringify({ actor, reason }),
     }),
+  getCandidateInterpretation: (candidateId: string) =>
+    request<{
+      candidateId: string;
+      report: CheapOpsReport;
+      reviewerReceiptIds: string[];
+    }>(`/quality/candidates/${encodeURIComponent(candidateId)}/interpretation`),
   getCandidateReceipts: (candidateId: string) =>
     request<QualityReceipt[]>(
       `/quality/candidates/${encodeURIComponent(candidateId)}/receipts`,

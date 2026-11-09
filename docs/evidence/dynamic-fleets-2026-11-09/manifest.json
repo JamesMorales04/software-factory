@@ -1,0 +1,120 @@
+{
+  "schema": "factory.dynamic-fleets-charter.v1",
+  "schema_version": 1,
+  "result": "PARTIAL",
+  "kind": "implementer-browser-self-test",
+  "captured_at": "2026-11-09T07:00:00Z",
+  "candidate": "branch factory/agentic-flow-20261108; exact code commit is recorded in pull request #96",
+  "environment": {
+    "runtime": "rootless Podman Compose developer-preview stack",
+    "office": "http://127.0.0.1:8893",
+    "browser": "Chromium 1248 via Playwright"
+  },
+  "participant_plan": {
+    "request": "659636fa-7a7e-462b-b457-4c562a43b0dd",
+    "graph_sha256": "448f0889d486952dd1f6d6cb6db060e027fb9d8814fff3f67187d6a029a51802",
+    "route": "FORMAL_SPEC",
+    "assurance": "CRITICAL",
+    "work_units": 3,
+    "reviewer_count": 2,
+    "unit_routing": [
+      "ics-serialization → rust → opencode-go/deepseek-v4.1-flash",
+      "export-api-validation → rust → opencode-go/deepseek-v4.1-flash",
+      "export-regression-tests → rust → opencode-go/deepseek-v4.1-flash"
+    ],
+    "recorded": true
+  },
+  "gate_aggregation": {
+    "support": "multiple reviewer receipts with distinct principals and receipts; all must pass; one failure requires repair; a failing verifier decides immediately",
+    "live_two_reviewer_campaign": "NOT_TESTED",
+    "deterministic": "quality::tests and db::tests::multiple_independent_reviewers_are_aggregated_into_one_gate"
+  },
+  "cheap_ops": {
+    "candidate": "42dd71d7-a4c0-4bda-ab7a-202a65d0e239",
+    "authority": "OBSERVATION_ONLY",
+    "summary": "2 receipt(s): 2 pass, 0 fail/change, 0 not tested; 1 reviewer(s); verifier recorded.",
+    "gate_outcome": "ACCEPTED",
+    "authority_claim": "It restates receipts and the Gate; it never passes, fails, repairs or accepts."
+  },
+  "owner_charter": {
+    "id": "5e287870-b540-49ec-9253-80faeab6dd42",
+    "project": "141a32cc-d04c-498b-9826-7e204ced5cf1",
+    "risk_appetite": "R1",
+    "execution_autonomy": true,
+    "repair_autonomy": true,
+    "delivery_autonomy": false,
+    "policy_autonomy": false,
+    "reserved_matters": [
+      "credentials",
+      "isolation",
+      "production",
+      "destructive_migrations",
+      "public_contracts",
+      "security_exceptions",
+      "policy_changes",
+      "out_of_budget",
+      "cross_project_effects",
+      "delivery"
+    ],
+    "expires_at": "2026-12-09T23:59:59Z"
+  },
+  "owner_decision": {
+    "id": "bee1d2f1-83f5-4b9e-b700-82b82c2b7644",
+    "matter": "credentials",
+    "risk": "R2",
+    "recommendation": "DENY",
+    "status": "APPROVED",
+    "selected_option": "APPROVE",
+    "rationale": "Approved bounded credential rotation with no scope widening."
+  },
+  "ui_matrix": [
+    {
+      "id": "F1",
+      "surface": "/director / participant plan",
+      "control_or_state": "Record participant plan",
+      "expected": "Core records the deterministic plan with unit routing, provider/model and reviewer count.",
+      "result": "PASS",
+      "evidence": "participant-plan-1440.png"
+    },
+    {
+      "id": "F2",
+      "surface": "/campaigns/:id / Quality Gate",
+      "control_or_state": "Interpret evidence",
+      "expected": "Cheap Ops restates receipts and the authoritative Gate, labelled OBSERVATION_ONLY.",
+      "result": "PASS",
+      "evidence": "cheap-ops-1440.png"
+    },
+    {
+      "id": "F3",
+      "surface": "/charter",
+      "control_or_state": "Create charter",
+      "expected": "Execution and repair autonomy can be delegated separately; policy autonomy is absent; reserved matters are explicit.",
+      "result": "PASS",
+      "evidence": "charter-1440.png"
+    },
+    {
+      "id": "F4",
+      "surface": "/charter / pending decisions",
+      "control_or_state": "Open and resolve a reserved decision",
+      "expected": "A reserved matter opens a pending owner decision with a DENY recommendation; only an owner option and rationale resolve it.",
+      "result": "PASS",
+      "evidence": "charter-1440.png; decision bee1d2f1"
+    },
+    {
+      "id": "F5",
+      "surface": "/charter and /campaigns at 390 px",
+      "control_or_state": "Responsive charter and interpretation",
+      "expected": "No horizontal overflow.",
+      "result": "PASS",
+      "evidence": "cheap-ops-390.png; charter-390.png; scrollWidth=390/clientWidth=390"
+    }
+  ],
+  "console_errors": [],
+  "unexpected_http_errors": [],
+  "limitations": [
+    "This is implementer self-test evidence, not independent acceptance.",
+    "A live Campaign with two independent reviewer processes was not run in this slice; the Gate aggregation and wait-for-reviewer-count are deterministically tested.",
+    "The active charter reserves delivery and public contracts; a later autonomous delivery requires a new owner decision.",
+    "Charter enforcement currently delegates execution/repair and gates reserved repair/autonomous starts; delivery effects are not yet implemented."
+  ]
+}

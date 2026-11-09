@@ -3049,9 +3049,9 @@ capabilities:
   purpose: Compile the minimum sufficient implementers, reviewers and cheap operations interpreter from the task, stack, risk and evidence needs
   product_objective: Efficient reliable agent teams
   decision_status: proposed
-  implementation_status: not_implemented
+  implementation_status: in_progress
   verification:
-    deterministic: not_tested
+    deterministic: verified
     live_agent: not_tested
     uat: not_tested
     deployment: not_tested
@@ -3066,22 +3066,25 @@ capabilities:
   refs:
     adr:
     - docs/architecture/decisions/ADR-0037-agent-topology-context-and-composition.md
-    contract: []
-    source: []
-    test: []
+    contract:
+    - docs/contracts/agentic-flow.md
+    source: [native/src/agentic.rs, native/src/db/agentic_participants.rs, native/src/quality.rs, native/src/cheap_ops.rs, office/src/components/office/CheapOpsPanel.tsx]
+    test: [native/src/agentic.rs, native/src/db/tests.rs, native/src/quality.rs, native/src/cheap_ops.rs]
   acceptance:
     deterministic: AgentTopology freezes available roles, specializations, routes, tools and classes; ParticipantPlan is compiled from the WorkGraph, CandidateImpact, policies, skills and budgets; an implementer is assigned per independent unit; reviewers are read-only and independent; the same model family is allowed; no extra provider or dimension requirement is imposed in this phase; the cheap interpreter classifies test and command output without deciding pass or fail.
     real: A multi-stack browser operation compiles two or more implementers and independent reviewers, uses a cheap interpreter and records per-participant usage without self-acceptance.
   evidence:
-    deterministic: []
+    deterministic:
+    - docs/evidence/dynamic-fleets-2026-11-09/deterministic.json
     live_agent: []
     uat: []
     deployment: []
     isolation: []
   limitations:
-  - Reviewer count remains policy-driven; provider diversity is not required in this phase.
+  - Provider diversity is not required; the same model family is allowed.
+  - A live Campaign with two independent reviewer processes was not run in this slice.
   blockers:
-  - ParticipantPlan persistence, multi-reviewer aggregation and cheap interpreter remain pending.
+  - Real multi-unit Campaign, two-reviewer aggregation and per-unit execution state remain pending.
 
 - id: CAP-064
   name: Bounded repair orchestration
@@ -3130,9 +3133,9 @@ capabilities:
   purpose: Delegate routine R1-R3 execution by domain and effect while preserving reserved owner decisions and revocation
   product_objective: Owner-level control without per-request involvement
   decision_status: proposed
-  implementation_status: not_implemented
+  implementation_status: in_progress
   verification:
-    deterministic: not_tested
+    deterministic: verified
     live_agent: not_tested
     uat: not_tested
     deployment: not_tested
@@ -3146,22 +3149,25 @@ capabilities:
   refs:
     adr:
     - docs/architecture/decisions/ADR-0038-owner-charter-and-delegated-autonomy.md
-    contract: []
-    source: []
-    test: []
+    contract:
+    - docs/contracts/agentic-flow.md
+    source: [native/src/db/agentic_charter.rs, native/src/bin/core.rs, office/src/views/Charter.tsx]
+    test: [native/src/db/intake.rs, office/src/views/Charter.test.tsx]
   acceptance:
     deterministic: An owner charter is durable, versioned, scoped and revocable; reserved matters always require an authenticated owner decision or a specific delegated exception; execution, repair, delivery and policy autonomy are separate; expired, revoked, out-of-domain and over-budget delegations fail closed; model output cannot create or widen a charter.
     real: A browser journey grants a charter, executes routine R1/R2 work, returns a reserved OAuth/production decision to the owner and revokes the delegation.
   evidence:
-    deterministic: []
+    deterministic:
+    - docs/evidence/owner-charter-2026-11-09/deterministic.json
     live_agent: []
     uat: []
     deployment: []
     isolation: []
   limitations:
-  - R3 autonomy requires an explicit charter and independent security review; reserved effects remain owner-controlled.
+  - Delivery autonomy and delivery effects are not implemented; delivery remains reserved.
+  - R2/R3 autonomous execution stays owner-controlled. R1 autonomy is delegated only when explicit and no reserved matter triggers.
   blockers:
-  - Charter persistence, reserved-matter enforcement and Office decisions remain pending.
+  - Routine live R1/R2 execution under a charter and a revoked-charter live journey remain pending.
 
 - id: CAP-066
   name: Agent fleet observability and cost

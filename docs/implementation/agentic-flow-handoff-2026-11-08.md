@@ -135,25 +135,43 @@ commit
   implementer, 1440/390 with zero console errors and no overflow. Real
   participant use and promotion remain `NOT_TESTED`.
 
-### Phase 6 — Dynamic fleets and cheap operations
+### Phase 6 — Dynamic fleets and cheap operations (implemented)
 
-- AgentTopology and deterministic ParticipantPlan persistence.
-- Implementers per independent unit/specialization; conflict detection.
-- Multiple independent reviewer receipts and Gate aggregation.
-- Cheap output interpreter (tests/logs) without pass/fail authority.
-- Role-aware model router and per-participant usage/latency/cost.
-- Same model family is allowed; no mandatory provider/dimension diversity in
-  this phase.
+- `ParticipantPlan` now carries per-unit implementer routing with
+  specialization, provider/model and paths, plus an explicit reviewer count.
+  The plan is persisted in `agentic_participant_plans` and recorded at campaign
+  start in `campaign_review_requirements`.
+- Migration `0058_multi_reviewer_and_participant_plans.sql` rebuilds
+  `quality_receipts` to allow multiple reviewer principals per candidate.
+- The Quality Gate aggregates all reviewer receipts: all must bind the exact
+  candidate and pass; one failure requires repair; duplicate principals or
+  receipts are blocked; a passing set waits for the plan's reviewer count.
+- Cheap Ops interpreter (`cheap_ops.rs`) restates verifier/reviewer receipts and
+  the authoritative Gate as `OBSERVATION_ONLY`; it never passes, fails, repairs
+  or accepts.
+- Campaign detail exposes the Cheap Ops interpretation. Per-participant usage,
+  cost and route already come from the Office participant projection; latency
+  remains pending.
+- Evidence: `docs/evidence/dynamic-fleets-2026-11-09/`. A live two-reviewer
+  Campaign remains `NOT_TESTED`.
 
-### Phase 7 — Owner charter and R1–R3
+### Phase 7 — Owner charter and R1–R3 (implemented, delivery effects pending)
 
-- Durable owner charter, reserved matters, execution/repair/delivery/policy
-  autonomy separation, expiry/revocation.
-- Director/Operation Manager enforcement; owner decision UI with options,
-  evidence, recommendation and deadline.
-- R0/R1/R2/R3 tests; reserved effects stay owner-controlled.
+- Migration `0059_owner_charter_decisions.sql`, durable charters and owner
+  decisions.
+- Separate execution, repair and delivery autonomy; policy autonomy is never
+  delegable. Reserved matters, risk appetite, domains, expiry and revocation
+  are enforced.
+- `/charter` Office page: create/revoke charter, open reserved decision, inspect
+  evidence/recommendation/deadline and resolve with an owner option and
+  rationale.
+- Repair enforces the charter for R1+ and creates an owner decision for
+  reserved matters; autonomous starts are refused when the charter does not
+  delegate execution, the risk exceeds appetite or a reserved matter triggers.
+- Evidence: `docs/evidence/owner-charter-2026-11-09/`. Live routine R1/R2
+  execution under the charter and revocation remain pending.
 
-### Phase 8 — Real-model browser E2E
+### Phase 8 — Real-model browser E2E (next)
 
 - Full campaign through Office only, no API/command shortcut.
 - Real OpenCode Go `deepseek-v4.1-flash` for roles without a defined model.

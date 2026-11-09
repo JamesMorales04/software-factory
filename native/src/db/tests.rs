@@ -1300,6 +1300,61 @@ fn model_review_receipt(
 }
 
 #[tokio::test]
+async fn multiple_independent_reviewers_are_aggregated_into_one_gate() {
+    let fixture = candidate_fixture().await;
+    let (campaign_id,): (String,) = sqlx::query_as::query_as(
+        "SELECT r.campaign_id FROM candidates cd
+         JOIN attempts a ON a.id=cd.attempt_id
+         JOIN runs r ON r.id=a.run_id
+         WHERE cd.id=?1",
+    )
+    .bind(&fixture.candidate_id)
+    .fetch_one(&fixture.db.pool)
+    .await
+    .unwrap();
+    sqlx::query::query(
+        "INSERT INTO campaign_review_requirements (campaign_id,reviewer_count,created_at)
+         VALUES (?1,2,?2)",
+    )
+    .bind(&campaign_id)
+    .bind(Utc::now().to_rfc3339())
+    .execute(&fixture.db.pool)
+    .await
+    .unwrap();
+    let verifier = quality_receipt(&fixture, "verifier-multi", "verifier");
+    fixture
+        .db
+        .record_quality_receipt(&fixture.candidate_id, QualityRole::Verifier, &verifier)
+        .await
+        .unwrap();
+    let first = quality_receipt(&fixture, "reviewer-a", "reviewer-a");
+    let ingested = fixture
+        .db
+        .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &first)
+        .await
+        .unwrap();
+    assert!(
+        ingested.gate.is_none(),
+        "one of two reviewers must not decide the Gate"
+    );
+    let second = quality_receipt(&fixture, "reviewer-b", "reviewer-b");
+    let ingested = fixture
+        .db
+        .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &second)
+        .await
+        .unwrap();
+    assert_eq!(ingested.gate.unwrap().outcome, GateOutcome::Accepted);
+    let reviewers = fixture
+        .db
+        .gate_reviewer_ids(&fixture.candidate_id)
+        .await
+        .unwrap();
+    assert_eq!(reviewers.len(), 2);
+    fixture.db.close().await;
+    let _ = std::fs::remove_file(fixture.root.join("factory.sqlite"));
+}
+
+#[tokio::test]
 async fn codex_app_server_review_requires_exact_provenance_without_a_reservation() {
     let fixture = candidate_fixture().await;
     enable_semantic_review(

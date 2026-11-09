@@ -11,6 +11,7 @@ import {
   Megaphone,
   Network,
   Settings,
+  ShieldCheck,
   Sparkles,
 } from "lucide-react";
 import type { MessageKey, Translate } from "./i18n";
@@ -95,6 +96,13 @@ export const NAV_GROUPS: NavGroup[] = [
         icon: BookOpen,
         keywords:
           "skills knowledge context7 librarian explorer library docs temporary promotion license review revoke",
+      },
+      {
+        to: "/charter",
+        labelKey: "nav.charter",
+        icon: ShieldCheck,
+        keywords:
+          "charter owner autonomy reserved matters decisions risk appetite delegation expiry revoke",
       },
       {
         to: "/agents",

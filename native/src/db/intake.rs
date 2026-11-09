@@ -2403,6 +2403,29 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(saved.graph_sha256, graph.graph_sha256);
+        let stack = crate::agentic::StackProfile {
+            languages: vec!["rust".into()],
+            ..crate::agentic::StackProfile::default()
+        };
+        let plan = crate::agentic::participant_plan_for_graph(
+            crate::agentic::ChangeRoute::FormalSpec,
+            crate::agentic::Assurance::Elevated,
+            &graph,
+            &stack,
+            "opencode",
+            "deepseek-v4.1-flash",
+            "build",
+        );
+        let plan_record = db
+            .save_agentic_participant_plan(&request.id, Some(&graph.graph_sha256), &plan)
+            .await
+            .unwrap();
+        assert_eq!(plan_record.reviewer_count, 2);
+        assert_eq!(plan_record.work_units, 2);
+        assert_eq!(
+            plan_record.graph_sha256.as_deref(),
+            Some(graph.graph_sha256.as_str())
+        );
         let draft_model = crate::agentic::SpecDraftModel {
             summary: "Bounded validator".into(),
             requirements: vec![crate::agentic::SpecRequirementDraft {
@@ -2646,6 +2669,72 @@ mod tests {
             db.adopt_agentic_skill(&request.id, &skill.id, "implementer")
                 .await
                 .is_err()
+        );
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn owner_charter_and_reserved_decision_are_durable() {
+        let (path, db, _profile, _config) = fixture().await;
+        let expires_at = (chrono::Utc::now() + chrono::Duration::days(30)).to_rfc3339();
+        let domains = vec!["repository".to_string()];
+        let reserved = vec!["credentials".to_string(), "delivery".to_string()];
+        let charter = db
+            .create_agentic_charter(&crate::db::NewAgenticCharter {
+                owner: "owner",
+                project_id: "project",
+                domains: &domains,
+                risk_appetite: crate::lead::RiskClass::R1,
+                execution_autonomy: true,
+                repair_autonomy: true,
+                delivery_autonomy: false,
+                reserved_matters: &reserved,
+                expires_at: &expires_at,
+            })
+            .await
+            .unwrap();
+        assert_eq!(charter.risk_appetite, crate::lead::RiskClass::R1);
+        assert!(
+            db.active_agentic_charter("project")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        let deadline = (chrono::Utc::now() + chrono::Duration::hours(24)).to_rfc3339();
+        let options = vec!["APPROVE".to_string(), "DENY".to_string()];
+        let evidence = serde_json::json!({"objective": "rotate a credential"});
+        let decision = db
+            .create_agentic_owner_decision(&crate::db::NewAgenticOwnerDecision {
+                project_id: "project",
+                request_id: None,
+                campaign_id: None,
+                matter: "credentials",
+                risk: crate::lead::RiskClass::R2,
+                options: &options,
+                evidence: &evidence,
+                recommendation: "DENY",
+                deadline: &deadline,
+            })
+            .await
+            .unwrap();
+        assert_eq!(decision.status, "PENDING");
+        let resolved = db
+            .resolve_agentic_owner_decision(&decision.id, "APPROVE", "bounded rotation", "owner")
+            .await
+            .unwrap();
+        assert_eq!(resolved.status, "APPROVED");
+        assert_eq!(resolved.selected_option.as_deref(), Some("APPROVE"));
+        let revoked = db
+            .revoke_agentic_charter(&charter.id, "withdrawn")
+            .await
+            .unwrap();
+        assert!(revoked.revoked_at.is_some());
+        assert!(
+            db.active_agentic_charter("project")
+                .await
+                .unwrap()
+                .is_none()
         );
         db.close().await;
         let _ = std::fs::remove_file(path);

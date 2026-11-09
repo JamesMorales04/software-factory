@@ -1,0 +1,98 @@
+{
+  "schema": "factory.owner-charter.v1",
+  "schema_version": 1,
+  "result": "PASS",
+  "kind": "implementer-browser-self-test",
+  "captured_at": "2026-11-09T07:00:00Z",
+  "candidate": "branch factory/agentic-flow-20261108; exact code commit is recorded in pull request #96",
+  "environment": {
+    "runtime": "rootless Podman Compose developer-preview stack",
+    "office": "http://127.0.0.1:8893",
+    "browser": "Chromium 1248 via Playwright"
+  },
+  "scope": "Owner charter creation, separate execution/repair/delivery delegation, reserved matters, a pending reserved decision with a DENY recommendation and owner resolution. Revocation is covered by component and DB tests; delivery autonomy is not implemented.",
+  "charter": {
+    "id": "5e287870-b540-49ec-9253-80faeab6dd42",
+    "project": "141a32cc-d04c-498b-9826-7e204ced5cf1",
+    "domains": ["repository"],
+    "risk_appetite": "R1",
+    "execution_autonomy": true,
+    "repair_autonomy": true,
+    "delivery_autonomy": false,
+    "policy_autonomy": false,
+    "reserved_matters": [
+      "credentials",
+      "isolation",
+      "production",
+      "destructive_migrations",
+      "public_contracts",
+      "security_exceptions",
+      "policy_changes",
+      "out_of_budget",
+      "cross_project_effects",
+      "delivery"
+    ],
+    "expires_at": "2026-12-09T23:59:59Z"
+  },
+  "decision": {
+    "id": "bee1d2f1-83f5-4b9e-b700-82b82c2b7644",
+    "matter": "credentials",
+    "risk": "R2",
+    "options": ["APPROVE", "DENY"],
+    "recommendation": "DENY",
+    "status": "APPROVED",
+    "selected_option": "APPROVE",
+    "rationale": "Approved bounded credential rotation with no scope widening.",
+    "resolved_by": "device:9e72d781-110a-40de-8103-ded80d2909c4"
+  },
+  "ui_matrix": [
+    {
+      "id": "C1",
+      "surface": "/charter / create",
+      "control_or_state": "Create charter",
+      "expected": "Project, domains, risk appetite, separate autonomy flags, reserved matters and expiry are persisted by Core.",
+      "result": "PASS",
+      "evidence": "charter-1440.png"
+    },
+    {
+      "id": "C2",
+      "surface": "/charter / active",
+      "control_or_state": "Inspect active charter",
+      "expected": "The active charter shows risk, domains, expiry, separated flags and reserved matters; policy autonomy is never offered.",
+      "result": "PASS",
+      "evidence": "charter-1440.png"
+    },
+    {
+      "id": "C3",
+      "surface": "/charter / pending decision",
+      "control_or_state": "Open reserved decision",
+      "expected": "A reserved matter opens a PENDING decision with APPROVE/DENY options, evidence, a DENY recommendation and a deadline.",
+      "result": "PASS",
+      "evidence": "charter-1440.png"
+    },
+    {
+      "id": "C4",
+      "surface": "/charter / pending decision",
+      "control_or_state": "Resolve decision",
+      "expected": "Only an explicit option and owner rationale resolve the decision; the resolution is durable.",
+      "result": "PASS",
+      "evidence": "charter-1440.png; decision bee1d2f1"
+    },
+    {
+      "id": "C5",
+      "surface": "/charter at 390 px",
+      "control_or_state": "Responsive charter",
+      "expected": "No horizontal overflow and controls remain usable.",
+      "result": "PASS",
+      "evidence": "charter-390.png; scrollWidth=390/clientWidth=390"
+    }
+  ],
+  "console_errors": [],
+  "unexpected_http_errors": [],
+  "limitations": [
+    "This is implementer self-test evidence, not independent acceptance.",
+    "Charter revocation was exercised by component and DB tests, not in this browser run.",
+    "Delivery autonomy and delivery effects are not implemented; delivery remains reserved.",
+    "R2/R3 autonomous execution remains owner-controlled; R1 execution is delegated only when the charter explicitly enables it and no reserved matter is triggered."
+  ]
+}

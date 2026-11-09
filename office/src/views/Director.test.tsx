@@ -116,6 +116,17 @@ const detail: AgenticRequestDetail = {
       requireProbeAfterHandoff: true,
     },
     reasons: ["Formal spec requires Planner and Spec Manager."],
+    unitAssignments: [
+      {
+        unitId: "unit-1",
+        specialization: "rust",
+        paths: ["src/ics"],
+        provider: "opencode",
+        model: "deepseek-v4.1-flash",
+        providerMode: null,
+      },
+    ],
+    reviewerCount: 2,
   },
   specifications: [
     {

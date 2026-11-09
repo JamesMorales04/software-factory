@@ -10,7 +10,7 @@ use sqlx_sqlite::{
 use crate::lead::SpecCheck;
 use crate::quality::{
     AuthorizationStatus, EvidenceKind, FrozenActionSpec, GateOutcome, GatePolicy, ReceiptResult,
-    ReviewerReceipt, RiskStatus, VerifierReceipt, evaluate_quality_gate,
+    ReviewerReceipt, RiskStatus, VerifierReceipt,
 };
 use crate::workspace::verify_candidate_commit;
 
@@ -385,7 +385,7 @@ pub enum QualityRole {
 }
 
 impl QualityRole {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Verifier => "verifier",
             Self::Reviewer => "reviewer",
@@ -890,8 +890,10 @@ pub use authorization::{
     SubscriptionFundingRecord,
 };
 mod agentic_assessments;
+mod agentic_charter;
 mod agentic_knowledge;
 mod agentic_operations;
+mod agentic_participants;
 mod agentic_plans;
 mod delegations;
 mod device_sessions;
@@ -953,11 +955,16 @@ mod provider_sessions;
 mod provider_settings;
 mod subscription_admissions;
 pub use agentic_assessments::{AgenticAssessmentRecord, NewAgenticAssessment};
+pub use agentic_charter::{
+    AgenticCharterRecord, AgenticOwnerDecisionRecord, NewAgenticCharter, NewAgenticOwnerDecision,
+    RESERVED_MATTERS,
+};
 pub use agentic_knowledge::{
     AgenticKnowledgePackRecord, AgenticSkillAdoptionRecord, AgenticSkillRecord,
     AgenticSkillUseRecord, NewAgenticKnowledgePack, NewAgenticSkill,
 };
 pub use agentic_operations::AgenticOperationRecord;
+pub use agentic_participants::AgenticParticipantPlanRecord;
 pub use agentic_plans::{
     AgenticSpecIssueRecord, AgenticSpecPublicationRecord, AgenticSpecRecord,
     AgenticWorkGraphRecord, NewAgenticSpecDraft, NewAgenticSpecPublication, NewAgenticWorkGraph,
