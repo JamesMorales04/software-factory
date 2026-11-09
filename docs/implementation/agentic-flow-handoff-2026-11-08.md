@@ -257,3 +257,13 @@ cd office && npm run typecheck && npm run lint && npm test -- --run && npm run b
 
 Live stack: `http://127.0.0.1:8893`; Core image rebuilt with
 `podman compose -f compose.yaml up -d --build core`.
+
+## External CI blocker (2026-11-09)
+
+The Rust and container-dev CI jobs fail `cargo audit` on
+`RUSTSEC-2026-0459` (`libsqlite3-sys` 0.30.1 via sqlx 0.8.6/0.9.0,
+CVE-2026-119375, medium). sqlx 0.9.0 still pins 0.30.1, so upgrading the
+toolchain alone does not fix it; a patched sqlx/libsqlite3-sys or an explicit
+owner risk acceptance is required. This is an upstream dependency blocker, not
+a regression from the agentic-flow code. Do not merge by ignoring the advisory
+without an owner decision.
