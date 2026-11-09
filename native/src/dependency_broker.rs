@@ -58,11 +58,9 @@ pub struct DependencyAcquisitionEvidence {
 pub trait CommandRunner {
     fn run(&self, argv: &[String], cwd: &Path) -> Result<(), String>;
 
-    /// Run with a private Cargo home. Runners that do not model an environment
-    /// may use the default, which keeps the simple test seam.
-    fn run_in(&self, argv: &[String], cwd: &Path, _cargo_home: &Path) -> Result<(), String> {
-        self.run(argv, cwd)
-    }
+    /// Run with a private Cargo home. Acquisition never falls back to a shared
+    /// Cargo state; every implementation must honor the supplied directory.
+    fn run_in(&self, argv: &[String], cwd: &Path, cargo_home: &Path) -> Result<(), String>;
 }
 
 /// Trusted process runner. The broker must construct it from trusted
