@@ -259,15 +259,18 @@ cd office && npm run typecheck && npm run lint && npm test -- --run && npm run b
 Live stack: `http://127.0.0.1:8893`; Core image rebuilt with
 `podman compose -f compose.yaml up -d --build core`.
 
-## External CI blocker (2026-11-09)
+## External CI blocker and owner decision (2026-11-09)
 
 The Rust and container-dev CI jobs fail `cargo audit` on
 `RUSTSEC-2026-0459` (`libsqlite3-sys` 0.30.1 via sqlx 0.8.6/0.9.0,
-CVE-2026-119375, medium). sqlx 0.9.0 still pins 0.30.1, so upgrading the
-toolchain alone does not fix it; a patched sqlx/libsqlite3-sys or an explicit
-owner risk acceptance is required. This is an upstream dependency blocker, not
-a regression from the agentic-flow code. Do not merge by ignoring the advisory
-without an owner decision.
+CVE-2026-119375, medium). sqlx 0.9.0 still requires
+`libsqlite3-sys <0.38.0`; the patched 0.39.1 cannot be selected. The owner chose
+to wait for a patched sqlx release, keep the audit gate unsuppressed, document
+the known blocker and merge the agentic-flow PR. The decision and exit criteria
+are in
+[the RUSTSEC-2026-0459 decision](../security/RUSTSEC-2026-0459-sqlite-wait.md); it
+is tracked as REL-007 in the reliability debt register. This is a temporary
+dependency risk, not a code regression or a claim that bundled SQLite is safe.
 
 ## Independent verification (AI verifier, 2026-11-09)
 
