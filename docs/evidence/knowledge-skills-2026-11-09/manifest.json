@@ -1,113 +1,121 @@
 {
-  "schema": "factory.knowledge-skills.v1",
-  "schema_version": 1,
-  "result": "PARTIAL",
-  "kind": "implementer-browser-and-real-provider-self-test",
-  "captured_at": "2026-11-09T06:15:00Z",
-  "candidate": "branch factory/agentic-flow-20261108; exact code commit is recorded in pull request #96",
-  "environment": {
-    "runtime": "rootless Podman Compose developer-preview stack",
-    "office": "http://127.0.0.1:8893",
-    "browser": "Chromium 1248 via Playwright",
-    "knowledge_provider": "Context7 MCP (https://mcp.context7.com/mcp)",
-    "profile": "Wave 3 Minimal Acceptance revision 28"
-  },
-  "request": {
-    "id": "d0004d44-b66d-4f46-9aae-df0944e61aba",
-    "mode": "REVIEW_PLAN",
-    "objective": "Add timezone-aware ICS export using the chrono crate, with validation and regression tests."
-  },
-  "explorer": {
-    "manifests": ["Cargo.toml"],
-    "libraries": [],
-    "evidence_refs": ["Cargo.toml"],
-    "gap_reason": "chrono is named in the objective and absent from known repository manifests"
-  },
-  "context7": {
-    "library": "chrono",
-    "library_id": "/websites/rs_chrono",
-    "query": "timezone-aware date formatting for RFC 5545 export",
-    "source_url": "https://context7.com/websites/rs_chrono",
-    "reputation": "High",
-    "benchmark_score": 78.17,
-    "snippet_chars": 6105,
-    "pack_sha256": "d3818a2146073a9920532f1599cab372ce05a43eca7f03432e9ec55220f42d45",
-    "credentials_sent": false,
-    "external_effect": "read-only documentation fetch"
-  },
-  "skill": {
-    "id": "343eca10-8c00-46b6-80e5-53d24b6d51e5",
-    "name": "context7-chrono",
-    "scope": "RUN",
-    "status": "ACTIVE",
-    "tools": ["context-read", "repository-read"],
-    "license": "NOASSERTION",
-    "expires_at": "2026-11-16T06:09:57.402057510+00:00",
-    "provenance": "CONTEXT7_MCP:/websites/rs_chrono",
-    "adopted_for": "implementer",
-    "adoption_recorded": true
-  },
-  "promotion": {
-    "project": "NOT_TESTED live; deterministic promotion rules and DB transition are unit-tested",
-    "global": "NOT_TESTED live; requires an explicit owner decision",
-    "weekly_review": "NOT_TESTED live; next_review_at and overdue blocking are unit-tested"
-  },
-  "ui_matrix": [
-    {
-      "id": "K1",
-      "surface": "/director / Explorer",
-      "control_or_state": "Repository manifest inventory",
-      "expected": "Deterministic manifest evidence and libraries are visible; no model invents a manifest.",
-      "result": "PASS",
-      "evidence": "knowledge-context7-1440.png; Cargo.toml"
-    },
-    {
-      "id": "K2",
-      "surface": "/director / knowledge gap",
-      "control_or_state": "Research with Context7",
-      "expected": "Core requires an evidenced, unpinned library before the Librarian navigates; the real Context7 pack is recorded with a digest.",
-      "result": "PASS",
-      "evidence": "knowledge-context7-1440.png; pack d3818a21"
-    },
-    {
-      "id": "K3",
-      "surface": "/director / knowledge pack",
-      "control_or_state": "Inspect sources",
-      "expected": "The Context7 source, reputation, benchmark and bounded snippet are visible as read-only external evidence.",
-      "result": "PASS",
-      "evidence": "knowledge-context7-1440.png; 6105 chars"
-    },
-    {
-      "id": "K4",
-      "surface": "/director / temporary skill",
-      "control_or_state": "Adopt for this operation",
-      "expected": "A RUN-scoped, read-only skill is adopted and visible without granting new tools or authority.",
-      "result": "PASS",
-      "evidence": "knowledge-adopted-1440.png; adoption 343eca10"
-    },
-    {
-      "id": "K5",
-      "surface": "/skills",
-      "control_or_state": "Skill registry",
-      "expected": "The RUN skill, provenance, license, use counts, expiry and next review are visible.",
-      "result": "PASS",
-      "evidence": "skills-1440.png"
-    },
-    {
-      "id": "K6",
-      "surface": "/director and /skills at 390 px",
-      "control_or_state": "Responsive knowledge and registry",
-      "expected": "No horizontal overflow and controls remain usable.",
-      "result": "PASS",
-      "evidence": "knowledge-adopted-390.png; skills-390.png; scrollWidth=390/clientWidth=390"
-    }
+ "schema": "factory.knowledge-skills.v1",
+ "schema_version": 1,
+ "result": "PARTIAL",
+ "kind": "implementer-browser-and-real-provider-self-test",
+ "captured_at": "2026-11-09T06:15:00Z",
+ "candidate": "branch factory/agentic-flow-20261108; exact code commit is recorded in pull request #96",
+ "environment": {
+  "runtime": "rootless Podman Compose developer-preview stack",
+  "office": "http://127.0.0.1:8893",
+  "browser": "Chromium 1248 via Playwright",
+  "knowledge_provider": "Context7 MCP (https://mcp.context7.com/mcp)",
+  "profile": "Wave 3 Minimal Acceptance revision 28"
+ },
+ "request": {
+  "id": "d0004d44-b66d-4f46-9aae-df0944e61aba",
+  "mode": "REVIEW_PLAN",
+  "objective": "Add timezone-aware ICS export using the chrono crate, with validation and regression tests."
+ },
+ "explorer": {
+  "manifests": [
+   "Cargo.toml"
   ],
-  "console_errors": [],
-  "unexpected_http_errors": [],
-  "limitations": [
-    "This is implementer self-test evidence, not independent acceptance.",
-    "The temporary skill was adopted but not yet exercised by a real implementer Campaign; successful-use promotion remains NOT_TESTED live.",
-    "Context7 documentation is external evidence and may change; the recorded KnowledgePack digest is the durable identity.",
-    "A real GitHub or repository license review is still required before PROJECT promotion."
-  ]
+  "libraries": [],
+  "evidence_refs": [
+   "Cargo.toml"
+  ],
+  "gap_reason": "chrono is named in the objective and absent from known repository manifests"
+ },
+ "context7": {
+  "library": "chrono",
+  "library_id": "/websites/rs_chrono",
+  "query": "timezone-aware date formatting for RFC 5545 export",
+  "source_url": "https://context7.com/websites/rs_chrono",
+  "reputation": "High",
+  "benchmark_score": 78.17,
+  "snippet_chars": 6105,
+  "pack_sha256": "d3818a2146073a9920532f1599cab372ce05a43eca7f03432e9ec55220f42d45",
+  "credentials_sent": false,
+  "external_effect": "read-only documentation fetch"
+ },
+ "skill": {
+  "id": "343eca10-8c00-46b6-80e5-53d24b6d51e5",
+  "name": "context7-chrono",
+  "scope": "RUN",
+  "status": "ACTIVE",
+  "tools": [
+   "context-read",
+   "repository-read"
+  ],
+  "license": "NOASSERTION",
+  "expires_at": "2026-11-16T06:09:57.402057510+00:00",
+  "provenance": "CONTEXT7_MCP:/websites/rs_chrono",
+  "adopted_for": "implementer",
+  "adoption_recorded": true
+ },
+ "promotion": {
+  "project": "NOT_TESTED live; deterministic promotion rules and DB transition are unit-tested",
+  "global": "NOT_TESTED live; requires an explicit owner decision",
+  "weekly_review": "NOT_TESTED live; next_review_at and overdue blocking are unit-tested"
+ },
+ "ui_matrix": [
+  {
+   "id": "K1",
+   "surface": "/director / Explorer",
+   "control_or_state": "Repository manifest inventory",
+   "expected": "Deterministic manifest evidence and libraries are visible; no model invents a manifest.",
+   "result": "PASS",
+   "evidence": "knowledge-context7-1440.png; Cargo.toml"
+  },
+  {
+   "id": "K2",
+   "surface": "/director / knowledge gap",
+   "control_or_state": "Research with Context7",
+   "expected": "Core requires an evidenced, unpinned library before the Librarian navigates; the real Context7 pack is recorded with a digest.",
+   "result": "PASS",
+   "evidence": "knowledge-context7-1440.png; pack d3818a21"
+  },
+  {
+   "id": "K3",
+   "surface": "/director / knowledge pack",
+   "control_or_state": "Inspect sources",
+   "expected": "The Context7 source, reputation, benchmark and bounded snippet are visible as read-only external evidence.",
+   "result": "PASS",
+   "evidence": "knowledge-context7-1440.png; 6105 chars"
+  },
+  {
+   "id": "K4",
+   "surface": "/director / temporary skill",
+   "control_or_state": "Adopt for this operation",
+   "expected": "A RUN-scoped, read-only skill is adopted and visible without granting new tools or authority.",
+   "result": "PASS",
+   "evidence": "knowledge-adopted-1440.png; adoption 343eca10"
+  },
+  {
+   "id": "K5",
+   "surface": "/skills",
+   "control_or_state": "Skill registry",
+   "expected": "The RUN skill, provenance, license, use counts, expiry and next review are visible.",
+   "result": "PASS",
+   "evidence": "skills-1440.png"
+  },
+  {
+   "id": "K6",
+   "surface": "/director and /skills at 390 px",
+   "control_or_state": "Responsive knowledge and registry",
+   "expected": "No horizontal overflow and controls remain usable.",
+   "result": "PASS",
+   "evidence": "knowledge-adopted-390.png; skills-390.png; scrollWidth=390/clientWidth=390"
+  }
+ ],
+ "console_errors": [],
+ "unexpected_http_errors": [],
+ "limitations": [
+  "This is implementer self-test evidence, not independent acceptance.",
+  "The temporary skill was adopted but not yet exercised by a real implementer Campaign; successful-use promotion remains NOT_TESTED live.",
+  "Context7 documentation is external evidence and may change; the recorded KnowledgePack digest is the durable identity.",
+  "A real GitHub or repository license review is still required before PROJECT promotion."
+ ],
+ "candidate_sha": "11933a6b16c46a8b95561935807ff92c2f954b42"
 }

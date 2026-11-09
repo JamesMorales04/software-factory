@@ -202,6 +202,35 @@ commit
   Campaign, delivery effects, Windows and deployment. `TRUSTED_LOCAL` is not
   isolation or certification.
 
+### Independent review corrections (2026-11-09)
+
+An independent read-only review of the PR found High/Medium issues. The
+following were fixed on candidate `11933a6`:
+
+- Deterministic triage floors are now computed first; a semantic assessment is
+  merged into that decision and can only raise a floor.
+- A Change assessment without a proposal is rejected; only Informational/Audit
+  may project `ASSESSED` with no plan.
+- Reviewer receipt principals are bound to the authenticated reviewer role in
+  production; the queue retains a candidate until the plan's required reviewer
+  count is reached; the single-reviewer Compose topology caps a plan at one
+  reviewer to avoid an undispatchable second receipt.
+- Reserved matters are global for autonomous starts, charter domains are
+  enforced, and expired owner decisions cannot be resolved.
+- Skill use requires an existing adoption and a non-`NOASSERTION` license.
+- Repair base advancement validates candidate ancestry.
+- Spec freezing rejects a WorkGraph changed after draft authoring; WorkGraph
+  independent path overlap uses prefix semantics.
+- Review source context excludes secret-bearing content; Cheap Ops uses the
+  camelCase contract; the owner decision selector defaults to no option.
+- `ASSESSED` is accepted by the intake filter; documentation and evidence
+  references were corrected.
+
+Final real campaign on candidate `11933a6`: request `38a4c431`, campaign
+`4c01ce12`, candidate `386b7a56`, commit `37f9bc17`, Gate `ACCEPTED`,
+`src/lib.rs` (+32), reviewer usage 6463/2089 tokens. The earlier campaign
+`5a2be8ae` remains as the first accepted run before these corrections.
+
 ## Key invariants
 
 - Core owns authority, identity, budgets, leases, candidate truth, Gate and

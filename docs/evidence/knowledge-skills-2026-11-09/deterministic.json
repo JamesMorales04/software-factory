@@ -1,87 +1,88 @@
 {
-  "schema": "factory.deterministic-evidence.v1",
-  "schema_version": 1,
-  "result": "PASS",
-  "kind": "deterministic-test-evidence",
-  "captured_at": "2026-11-09T06:15:00Z",
-  "candidate": "branch factory/agentic-flow-20261108; exact code commit is recorded in pull request #96",
-  "scope": "Explorer manifest inventory, deterministic knowledge-gap gate, Context7 MCP JSON-RPC/SSE client, KnowledgePack identity, read-only skill trust gate, adoption, promotion, weekly review, revocation and Office skill projections.",
-  "checks": [
-    {
-      "id": "D1",
-      "name": "cargo fmt --check",
-      "pass": true,
-      "detail": "cargo fmt --manifest-path native/Cargo.toml --all -- --check"
-    },
-    {
-      "id": "D2",
-      "name": "strict Clippy",
-      "pass": true,
-      "detail": "cargo clippy --all-targets --all-features -- -D warnings"
-    },
-    {
-      "id": "D3",
-      "name": "Rust library tests",
-      "pass": true,
-      "detail": "cargo test --all-features --lib: 593 passed, 0 failed, 2 ignored"
-    },
-    {
-      "id": "D4",
-      "name": "Core binary tests",
-      "pass": true,
-      "detail": "cargo test --all-features --bin factory-core: 38 passed, 0 failed"
-    },
-    {
-      "id": "D5",
-      "name": "Office component tests",
-      "pass": true,
-      "detail": "vitest: 290 passed across 43 files"
-    },
-    {
-      "id": "D6",
-      "name": "knowledge gap gate",
-      "pass": true,
-      "detail": "knowledge::tests requires an evidenced and unpinned library, rejects arbitrary names and pinned versions, and detects unsafe names"
-    },
-    {
-      "id": "D7",
-      "name": "Context7 MCP client",
-      "pass": true,
-      "detail": "context7::tests exercises initialize, initialized notification, session header, SSE parsing, deterministic ranking and bounded docs against a local MCP server; non-HTTPS endpoints are rejected"
-    },
-    {
-      "id": "D8",
-      "name": "skill trust gate",
-      "pass": true,
-      "detail": "knowledge::tests rejects write tools, tool-pack exceeding skills, expired skills, invalid digest and empty compatibility; promotion requires two successes, license review and weekly review"
-    },
-    {
-      "id": "D9",
-      "name": "adoption and promotion persistence",
-      "pass": true,
-      "detail": "db::intake::tests::knowledge_skill_promotion_follows_the_trust_gate covers KnowledgePack, adoption, assignment delivery, PROMOTION_READY, license review, PROJECT promotion, weekly review, GLOBAL owner promotion, revocation and use records"
-    },
-    {
-      "id": "D10",
-      "name": "Office projections",
-      "pass": true,
-      "detail": "KnowledgePanel.test.tsx covers Explorer evidence, gap research, pack display, adoption and use evidence; Skills.test.tsx covers license review, weekly review, owner-gated GLOBAL promotion, revocation and empty state"
-    },
-    {
-      "id": "D11",
-      "name": "endpoint authorization",
-      "pass": true,
-      "detail": "the Core route test rejects unauthenticated knowledge, adoption, registry, use, license, promotion, review and revocation calls"
-    },
-    {
-      "id": "D12",
-      "name": "architecture and parity",
-      "pass": true,
-      "detail": "factory-architecture-check and check-office-parity pass after the capability updates"
-    }
-  ],
-  "limitations": [
-    "Deterministic evidence only; it does not certify live Context7 availability, live promotion or independent acceptance.",
-    "The Worker prompt includes adopted skills, but a full real campaign using the skill remains pending."
-  ]
+ "schema": "factory.deterministic-evidence.v1",
+ "schema_version": 1,
+ "result": "PASS",
+ "kind": "deterministic-test-evidence",
+ "captured_at": "2026-11-09T06:15:00Z",
+ "candidate": "branch factory/agentic-flow-20261108; exact code commit is recorded in pull request #96",
+ "scope": "Explorer manifest inventory, deterministic knowledge-gap gate, Context7 MCP JSON-RPC/SSE client, KnowledgePack identity, read-only skill trust gate, adoption, promotion, weekly review, revocation and Office skill projections.",
+ "checks": [
+  {
+   "id": "D1",
+   "name": "cargo fmt --check",
+   "pass": true,
+   "detail": "cargo fmt --manifest-path native/Cargo.toml --all -- --check"
+  },
+  {
+   "id": "D2",
+   "name": "strict Clippy",
+   "pass": true,
+   "detail": "cargo clippy --all-targets --all-features -- -D warnings"
+  },
+  {
+   "id": "D3",
+   "name": "Rust library tests",
+   "pass": true,
+   "detail": "cargo test --all-features --lib: 606 passed, 0 failed, 2 ignored"
+  },
+  {
+   "id": "D4",
+   "name": "Core binary tests",
+   "pass": true,
+   "detail": "cargo test --all-features --bin factory-core: 38 passed, 0 failed"
+  },
+  {
+   "id": "D5",
+   "name": "Office component tests",
+   "pass": true,
+   "detail": "vitest: 296 passed across 45 files"
+  },
+  {
+   "id": "D6",
+   "name": "knowledge gap gate",
+   "pass": true,
+   "detail": "knowledge::tests requires an evidenced and unpinned library, rejects arbitrary names and pinned versions, and detects unsafe names"
+  },
+  {
+   "id": "D7",
+   "name": "Context7 MCP client",
+   "pass": true,
+   "detail": "context7::tests exercises initialize, initialized notification, session header, SSE parsing, deterministic ranking and bounded docs against a local MCP server; non-HTTPS endpoints are rejected"
+  },
+  {
+   "id": "D8",
+   "name": "skill trust gate",
+   "pass": true,
+   "detail": "knowledge::tests rejects write tools, tool-pack exceeding skills, expired skills, invalid digest and empty compatibility; promotion requires two successes, license review and weekly review"
+  },
+  {
+   "id": "D9",
+   "name": "adoption and promotion persistence",
+   "pass": true,
+   "detail": "db::intake::tests::knowledge_skill_promotion_follows_the_trust_gate covers KnowledgePack, adoption, assignment delivery, PROMOTION_READY, license review, PROJECT promotion, weekly review, GLOBAL owner promotion, revocation and use records"
+  },
+  {
+   "id": "D10",
+   "name": "Office projections",
+   "pass": true,
+   "detail": "KnowledgePanel.test.tsx covers Explorer evidence, gap research, pack display, adoption and use evidence; Skills.test.tsx covers license review, weekly review, owner-gated GLOBAL promotion, revocation and empty state"
+  },
+  {
+   "id": "D11",
+   "name": "endpoint authorization",
+   "pass": true,
+   "detail": "the Core route test rejects unauthenticated knowledge, adoption, registry, use, license, promotion, review and revocation calls"
+  },
+  {
+   "id": "D12",
+   "name": "architecture and parity",
+   "pass": true,
+   "detail": "factory-architecture-check and check-office-parity pass after the capability updates"
+  }
+ ],
+ "limitations": [
+  "Deterministic evidence only; it does not certify live Context7 availability, live promotion or independent acceptance.",
+  "The Worker prompt includes adopted skills, but a full real campaign using the skill remains pending."
+ ],
+ "candidate_sha": "11933a6b16c46a8b95561935807ff92c2f954b42"
 }
