@@ -3,7 +3,7 @@
  "schema_version": 1,
  "result": "PARTIAL",
  "kind": "implementer-browser-self-test",
- "captured_at": "2026-11-09T07:00:00Z",
+ "captured_at": "2026-11-09T10:05:00Z",
  "candidate": "branch factory/agentic-flow-20261108; exact code commit is recorded in pull request #96",
  "environment": {
   "runtime": "rootless Podman Compose developer-preview stack",
@@ -22,7 +22,8 @@
    "export-api-validation \u2192 rust \u2192 opencode-go/deepseek-v4.1-flash",
    "export-regression-tests \u2192 rust \u2192 opencode-go/deepseek-v4.1-flash"
   ],
-  "recorded": true
+  "recorded": true,
+  "assurance_note": "Persisted plan assurance CRITICAL; the current projection may recompute a different assurance after later floor changes."
  },
  "gate_aggregation": {
   "support": "multiple reviewer receipts with distinct principals and receipts; all must pass; one failure requires repair; a failing verifier decides immediately",
@@ -115,7 +116,8 @@
   "This is implementer self-test evidence, not independent acceptance.",
   "A live Campaign with two independent reviewer processes was not run in this slice; the Gate aggregation and wait-for-reviewer-count are deterministically tested.",
   "The active charter reserves delivery and public contracts; a later autonomous delivery requires a new owner decision.",
-  "Charter enforcement currently delegates execution/repair and gates reserved repair/autonomous starts; delivery effects are not yet implemented."
+  "Charter enforcement currently delegates execution/repair and gates reserved repair/autonomous starts; delivery effects are not yet implemented.",
+  "The current Compose topology provisions one reviewer identity; Core caps a compiled plan at one reviewer so an undispatchable second receipt is not required. Multi-reviewer aggregation is deterministically tested with a manually configured requirement."
  ],
  "candidate_sha": "11933a6b16c46a8b95561935807ff92c2f954b42"
 }

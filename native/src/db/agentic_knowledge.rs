@@ -488,6 +488,14 @@ impl Database {
         if evidence.trim().is_empty() || evidence.len() > 2_000 {
             return Err(Error::Invalid("skill use evidence"));
         }
+        let skill_record = self.agentic_skill(skill_id).await?;
+        if skill_record.license.eq_ignore_ascii_case("NOASSERTION")
+            || skill_record.license_reviewed_at.is_none()
+        {
+            return Err(Error::Conflict(
+                "skill license must be reviewed before the skill is used",
+            ));
+        }
         let adopted: Option<(String,)> = sqlx::query_as::query_as(
             "SELECT skill_id FROM agentic_skill_adoptions WHERE request_id=?1 AND skill_id=?2",
         )

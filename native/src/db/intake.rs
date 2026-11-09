@@ -2683,6 +2683,17 @@ mod tests {
             assignment_skills[0].tools,
             vec!["context-read", "repository-read"]
         );
+        assert!(
+            db.record_agentic_skill_use(&skill.id, &request.id, "SUCCESS", "unlicensed")
+                .await
+                .is_err(),
+            "a NOASSERTION skill cannot be used before license review"
+        );
+        let skill = db
+            .review_agentic_skill_license(&skill.id, "owner", "MIT")
+            .await
+            .unwrap();
+        assert_eq!(skill.scope, "RUN");
         let skill = db
             .record_agentic_skill_use(
                 &skill.id,
@@ -2699,12 +2710,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(skill.success_count, 2);
-        assert_eq!(skill.status, "PROMOTION_READY");
-        assert_eq!(skill.scope, "RUN");
-        let skill = db
-            .review_agentic_skill_license(&skill.id, "owner", "MIT")
-            .await
-            .unwrap();
         assert_eq!(skill.scope, "PROJECT");
         assert_eq!(skill.status, "ACTIVE");
         let skill = db.review_agentic_skill(&skill.id, "owner").await.unwrap();

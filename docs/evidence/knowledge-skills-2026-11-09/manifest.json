@@ -3,7 +3,7 @@
  "schema_version": 1,
  "result": "PARTIAL",
  "kind": "implementer-browser-and-real-provider-self-test",
- "captured_at": "2026-11-09T06:15:00Z",
+ "captured_at": "2026-11-09T10:05:00Z",
  "candidate": "branch factory/agentic-flow-20261108; exact code commit is recorded in pull request #96",
  "environment": {
   "runtime": "rootless Podman Compose developer-preview stack",
@@ -52,7 +52,8 @@
   "expires_at": "2026-11-16T06:09:57.402057510+00:00",
   "provenance": "CONTEXT7_MCP:/websites/rs_chrono",
   "adopted_for": "implementer",
-  "adoption_recorded": true
+  "adoption_recorded": true,
+  "license_note": "NOASSERTION is allowed for adoption only; a reviewed license is required before any recorded use."
  },
  "promotion": {
   "project": "NOT_TESTED live; deterministic promotion rules and DB transition are unit-tested",
@@ -115,7 +116,8 @@
   "This is implementer self-test evidence, not independent acceptance.",
   "The temporary skill was adopted but not yet exercised by a real implementer Campaign; successful-use promotion remains NOT_TESTED live.",
   "Context7 documentation is external evidence and may change; the recorded KnowledgePack digest is the durable identity.",
-  "A real GitHub or repository license review is still required before PROJECT promotion."
+  "A real GitHub or repository license review is still required before PROJECT promotion.",
+  "The temporary skill is adopted but not used; the license must be reviewed before use, and promotion remains NOT_TESTED live."
  ],
  "candidate_sha": "11933a6b16c46a8b95561935807ff92c2f954b42"
 }

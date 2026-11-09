@@ -3,7 +3,7 @@
  "schema_version": 1,
  "result": "PASS",
  "kind": "implementer-browser-self-test",
- "captured_at": "2026-11-09T07:00:00Z",
+ "captured_at": "2026-11-09T10:05:00Z",
  "candidate": "branch factory/agentic-flow-20261108; exact code commit is recorded in pull request #96",
  "environment": {
   "runtime": "rootless Podman Compose developer-preview stack",
@@ -34,7 +34,8 @@
    "cross_project_effects",
    "delivery"
   ],
-  "expires_at": "2026-12-09T23:59:59Z"
+  "expires_at": "2026-12-09T23:59:59Z",
+  "status": "REVOKED at 2026-11-09T06:55:09Z after the E2E replacement; the decision bee1d2f1 was opened and resolved while this charter was active."
  },
  "decision": {
   "id": "bee1d2f1-83f5-4b9e-b700-82b82c2b7644",
@@ -98,7 +99,10 @@
   "This is implementer self-test evidence, not independent acceptance.",
   "Charter revocation was exercised by component and DB tests, not in this browser run.",
   "Delivery autonomy and delivery effects are not implemented; delivery remains reserved.",
-  "R2/R3 autonomous execution remains owner-controlled; R1 execution is delegated only when the charter explicitly enables it and no reserved matter is triggered."
+  "R2/R3 autonomous execution remains owner-controlled; R1 execution is delegated only when the charter explicitly enables it and no reserved matter is triggered.",
+  "The manifest lists the revoked charter used for the decision; the active replacement charter is identified separately."
  ],
- "candidate_sha": "11933a6b16c46a8b95561935807ff92c2f954b42"
+ "candidate_sha": "11933a6b16c46a8b95561935807ff92c2f954b42",
+ "active_charter_id": "5003310e-e744-429c-ad79-b156f8a01f14",
+ "active_charter_note": "Active replacement charter created for the final autonomous campaign: R1, execution/repair autonomy, reserved credentials/production/delivery."
 }

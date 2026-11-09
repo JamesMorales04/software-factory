@@ -4,9 +4,8 @@
 **PR:** #96 (draft)
 **Base:** `main` at `8a677216638ef4b0f106d3a381e1d46ff19b5dde` (PR #95
 merged)
-**Code candidate:** `0e74ee7398eadc752cd205308591f09d27c5f7b4`
-**Docs head:** `cca51e74134b43376c9249ac77c691aab6f8dc4f` plus this handoff
-commit
+**Code candidate:** `11933a6b16c46a8b95561935807ff92c2f954b42`
+**Docs/evidence head:** `9961113dde0f724b5bb28eb32a3fb2022a56e7ca` plus the verification updates
 
 ## What is complete
 
@@ -216,8 +215,10 @@ following were fixed on candidate `11933a6`:
   count is reached; the single-reviewer Compose topology caps a plan at one
   reviewer to avoid an undispatchable second receipt.
 - Reserved matters are global for autonomous starts, charter domains are
-  enforced, and expired owner decisions cannot be resolved.
-- Skill use requires an existing adoption and a non-`NOASSERTION` license.
+  enforced for autonomous starts and repair, and expired owner decisions cannot
+  be resolved.
+- Skill use requires an existing adoption and a reviewed non-`NOASSERTION`
+  license.
 - Repair base advancement validates candidate ancestry.
 - Spec freezing rejects a WorkGraph changed after draft authoring; WorkGraph
   independent path overlap uses prefix semantics.
@@ -267,3 +268,38 @@ toolchain alone does not fix it; a patched sqlx/libsqlite3-sys or an explicit
 owner risk acceptance is required. This is an upstream dependency blocker, not
 a regression from the agentic-flow code. Do not merge by ignoring the advisory
 without an owner decision.
+
+## Independent verification (AI verifier, 2026-11-09)
+
+A fresh independent verifier session checked commit `9961113` from a clean
+worktree and the live stack without mutations. Build, lint, 606 lib tests, 38
+Core bin tests, Office 296 tests, architecture/parity and the final live E2E
+identities passed. The verifier found three HIGH projection/trust defects and
+several evidence inconsistencies:
+
+- Skill use did not require a reviewed non-`NOASSERTION` license. Fixed: a use
+  now fails before license review; the DB test records the review first.
+- Informational/audit Lead assessments still projected as CHANGE/FORMAL_SPEC in
+  the Director because the triage context ignored the assessment intent. Fixed:
+  the Lead intent (and semantic request kind) now sets the explicit
+  informational/audit signals before deterministic triage; ambiguity is not
+  fabricated for those intents.
+- Charter domains were not checked by autonomous starts. Fixed: autonomous
+  starts require the `repository` domain.
+- Lead participants on an accepted Campaign still showed `RUNNING`. Fixed: the
+  participant projection now uses the derived Lead request projection and marks
+  terminal states FINAL.
+- The owner-decision selector still displayed the first option. Fixed: the value
+  no longer falls back to `options[0]`.
+- Evidence route/assertion/assurance/charter/timestamp inconsistencies were
+  corrected: final route DIRECT, 21 assertions, persisted-plan assurance noted,
+  active/revoked charter identities separated, captured_at corrected.
+- The multi-reviewer plan cap is intentional for the current single-reviewer
+  Compose topology; multi-reviewer aggregation remains deterministically tested
+  but a live two-reviewer Campaign is still pending.
+
+The independent verifier did not re-run Playwright; screenshots were inspected
+and the live API identities were queried. This remains an AI verification, not
+independent human certification. The external RUSTSEC-2026-0459 advisory still
+blocks merge unless the owner accepts the risk or a patched sqlx/libsqlite3-sys
+is adopted.

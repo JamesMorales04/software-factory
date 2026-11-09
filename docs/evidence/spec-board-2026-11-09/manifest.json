@@ -3,7 +3,7 @@
  "schema_version": 1,
  "result": "PARTIAL",
  "kind": "implementer-browser-and-real-model-self-test",
- "captured_at": "2026-11-09T05:55:00Z",
+ "captured_at": "2026-11-09T10:05:00Z",
  "candidate": "branch factory/agentic-flow-20261108; exact code commit is recorded in pull request #96",
  "environment": {
   "runtime": "rootless Podman Compose developer-preview stack",
@@ -35,7 +35,8 @@
   "requirements": 6,
   "assertions": {
    "acceptance": 12,
-   "negative": 8
+   "negative": 9,
+   "total": 21
   },
   "provider": "opencode-go",
   "model": "deepseek-v4.1-flash",
@@ -47,7 +48,8 @@
    "usage_known": true
   },
   "revision_history": "Revision 1 was frozen first; a second real Spec Manager call authored revision 2, which was frozen and superseded revision 1 without mutating it.",
-  "traceability": "REQ-001..REQ-006 each compile deterministic ASR-* assertion and CHK-* check identities"
+  "traceability": "REQ-001..REQ-006 each compile deterministic ASR-* assertion and CHK-* check identities",
+  "assurance_note": "The persisted plan record was CRITICAL when written; the current projection recomputes ELEVATED after later floor changes. The persisted plan digest remains authoritative for the recorded plan."
  },
  "publication": {
   "provider": "LOCAL",

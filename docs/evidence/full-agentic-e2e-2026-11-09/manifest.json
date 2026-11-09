@@ -3,7 +3,7 @@
  "schema_version": 1,
  "result": "PARTIAL",
  "kind": "implementer-browser-and-real-model-self-test",
- "captured_at": "2026-11-09T07:40:00Z",
+ "captured_at": "2026-11-09T10:05:00Z",
  "candidate": "branch factory/agentic-flow-20261108; exact code commit is recorded in pull request #96",
  "environment": {
   "runtime": "rootless Podman Compose developer-preview stack",
@@ -16,7 +16,7 @@
   "campaign": "4c01ce12-dd5d-4cc1-9d1c-fd742047ec29",
   "objective": "Add a `previous_leap_year(year: i32) -> i32` helper that returns the previous leap year strictly before the given year, with unit tests.",
   "mode": "AUTONOMOUS",
-  "route": "DELEGATED",
+  "route": "DIRECT",
   "risk": "R0",
   "provider_model": "opencode-go/deepseek-v4.1-flash",
   "candidate": "386b7a56-210d-4ac2-a3e2-13fd2d3a0994",
@@ -145,7 +145,7 @@
    "id": "E2",
    "surface": "Campaign / Overview",
    "control_or_state": "Accepted campaign",
-   "expected": "Campaign shows Accepted and the exact candidate/Gate identity.",
+   "expected": "Campaign shows Accepted and the exact candidate/Gate identity; the request route is DIRECT for the bounded single-unit change.",
    "result": "PASS",
    "evidence": "final-campaign-accepted-1440.png"
   },
@@ -197,7 +197,9 @@
   "The live Campaign used one independent reviewer process. Multi-reviewer aggregation is deterministically tested and waits for the plan's reviewer count, but a live two-reviewer Campaign was not run.",
   "GitHub spec publication, skill use/promotion inside a Campaign and delivery effects remain NOT_TESTED.",
   "The first blocked Campaign and the informational no-plan path are retained as deviation evidence.",
-  "The independent-review fixes addressed High findings; live two-reviewer topology, GitHub publication, skill use/promotion in a Campaign and delivery effects remain NOT_TESTED."
+  "The independent-review fixes addressed High findings; live two-reviewer topology, GitHub publication, skill use/promotion in a Campaign and delivery effects remain NOT_TESTED.",
+  "The live request projection reports route DIRECT for the accepted single-unit campaign; the manifest previously recorded DELEGATED incorrectly and has been corrected.",
+  "Skill 343eca10 is NOASSERTION and may be adopted but cannot be used until an owner records a reviewed license."
  ],
  "candidate_sha": "11933a6b16c46a8b95561935807ff92c2f954b42"
 }

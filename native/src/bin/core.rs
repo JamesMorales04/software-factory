@@ -10107,6 +10107,34 @@ async fn agentic_triage_context(
                 .collect()
         })
         .unwrap_or(fallback_paths);
+    let semantic = app
+        .db
+        .agentic_assessment(&record.id)
+        .await
+        .ok()
+        .and_then(|record| {
+            serde_json::from_str::<agentic::AgenticTriageModel>(&record.response_json)
+                .ok()
+                .map(|model| (record, model))
+        });
+    let lead_intent = app
+        .db
+        .lead_assessment(&record.lead_request_id)
+        .await
+        .ok()
+        .and_then(|record| {
+            serde_json::from_str::<factory_native::lead::LeadAssessment>(&record.assessment_json)
+                .ok()
+        })
+        .map(|assessment| assessment.intent);
+    let explicit_informational = lead_intent == Some(factory_native::lead::Intent::Informational)
+        || semantic
+            .as_ref()
+            .is_some_and(|(_, model)| model.request_kind == agentic::RequestKind::Informational);
+    let explicit_audit = lead_intent == Some(factory_native::lead::Intent::Audit)
+        || semantic
+            .as_ref()
+            .is_some_and(|(_, model)| model.request_kind == agentic::RequestKind::Audit);
     let deterministic_signals = agentic::TriageSignals {
         objective: record.objective.clone(),
         files: paths,
@@ -10122,27 +10150,17 @@ async fn agentic_triage_context(
         } else {
             None
         },
-        ambiguous: proposal.is_none(),
+        ambiguous: proposal.is_none() && !explicit_informational && !explicit_audit,
         architecture_uncertainty: false,
         cross_module: work_units > 1,
         public_contract: false,
         data_or_schema: false,
         security_boundary: false,
-        explicit_informational: false,
-        explicit_audit: false,
+        explicit_informational,
+        explicit_audit,
         explicit_repair: false,
     };
     let deterministic_stack = agentic_stack_for_project(app, &record.project_id).await;
-    let semantic = app
-        .db
-        .agentic_assessment(&record.id)
-        .await
-        .ok()
-        .and_then(|record| {
-            serde_json::from_str::<agentic::AgenticTriageModel>(&record.response_json)
-                .ok()
-                .map(|model| (record, model))
-        });
     // Deterministic floors are computed first. A semantic assessment may raise
     // them, but never replace the deterministic signals or lower a floor.
     let deterministic_decision = agentic::triage(&deterministic_signals);
@@ -12622,6 +12640,11 @@ async fn autonomous_start_intake(app: &Arc<App>, id: &str) -> Result<(), Error> 
             .unwrap_or(factory_native::lead::RiskClass::R0);
         let reserved =
             reserved_matter_triggered(&context.lead.objective, &charter.reserved_matters);
+        if !charter.domains.iter().any(|domain| domain == "repository") {
+            return Err(Error::Forbidden(
+                "the owner charter does not cover the repository execution domain".into(),
+            ));
+        }
         if !charter.execution_autonomy || risk > charter.risk_appetite || reserved.is_some() {
             return Err(Error::Forbidden(
                 "autonomous execution requires an explicit owner decision under the active charter"
