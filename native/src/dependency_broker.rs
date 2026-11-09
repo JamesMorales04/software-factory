@@ -56,31 +56,53 @@ pub trait CommandRunner {
     fn run(&self, argv: &[String], cwd: &Path) -> Result<(), String>;
 }
 
-pub struct ProcessCommandRunner;
+/// Trusted process runner. The broker must construct it from trusted
+/// configuration: `cargo` is an absolute approved binary and `rustup_home` is
+/// the pinned toolchain home. No ambient PATH or rustup selection is reused.
+pub struct ProcessCommandRunner {
+    cargo: PathBuf,
+    rustup_home: PathBuf,
+}
+
+impl ProcessCommandRunner {
+    pub fn new(cargo: PathBuf, rustup_home: PathBuf) -> Result<Self, DependencyBrokerError> {
+        if !cargo.is_absolute() || !cargo.is_file() {
+            return Err(DependencyBrokerError::Invalid(
+                "cargo binary must be an absolute existing file".into(),
+            ));
+        }
+        if !rustup_home.is_absolute() || !rustup_home.is_dir() {
+            return Err(DependencyBrokerError::Invalid(
+                "rustup home must be an absolute existing directory".into(),
+            ));
+        }
+        Ok(Self { cargo, rustup_home })
+    }
+}
 
 impl CommandRunner for ProcessCommandRunner {
     fn run(&self, argv: &[String], cwd: &Path) -> Result<(), String> {
         let (program, args) = argv
             .split_first()
             .ok_or_else(|| "empty dependency command".to_string())?;
+        if program != "cargo" {
+            return Err("the dependency broker only runs the approved cargo binary".into());
+        }
         // The broker network namespace and egress policy own registry
         // allowlisting. This process still scrubs the ambient environment so a
-        // provider, registry or cloud credential cannot leak into Cargo. The
-        // rustup home is retained so a pinned `cargo` proxy resolves its
-        // declared toolchain; the Cargo home is isolated from user credentials.
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
-        let rustup_home =
-            std::env::var("RUSTUP_HOME").unwrap_or_else(|_| format!("{home}/.rustup"));
-        let output = Command::new(program)
+        // provider, registry or cloud credential cannot leak into Cargo.
+        let path = self
+            .cargo
+            .parent()
+            .map(|parent| format!("{}:/usr/bin:/bin", parent.display()))
+            .unwrap_or_else(|| "/usr/bin:/bin".into());
+        let output = Command::new(&self.cargo)
             .args(args)
             .current_dir(cwd)
             .env_clear()
-            .env(
-                "PATH",
-                std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into()),
-            )
-            .env("HOME", home)
-            .env("RUSTUP_HOME", rustup_home)
+            .env("PATH", path)
+            .env("HOME", std::env::temp_dir())
+            .env("RUSTUP_HOME", &self.rustup_home)
             .env(
                 "CARGO_HOME",
                 std::env::temp_dir().join("factory-dependency-cargo-home"),
@@ -88,7 +110,7 @@ impl CommandRunner for ProcessCommandRunner {
             .env("CARGO_NET_OFFLINE", "false")
             .env("CARGO_TERM_COLOR", "never")
             .output()
-            .map_err(|error| format!("{program}: {error}"))?;
+            .map_err(|error| format!("{}: {error}", self.cargo.display()))?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(format!(
