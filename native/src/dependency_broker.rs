@@ -91,9 +91,12 @@ impl ProcessCommandRunner {
 
 impl CommandRunner for ProcessCommandRunner {
     fn run(&self, argv: &[String], cwd: &Path) -> Result<(), String> {
-        let cargo_home = std::env::temp_dir().join("factory-dependency-cargo-home");
+        let cargo_home =
+            std::env::temp_dir().join(format!("factory-cargo-home-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&cargo_home).map_err(|error| format!("cargo home: {error}"))?;
-        self.run_in(argv, cwd, &cargo_home)
+        let result = self.run_in(argv, cwd, &cargo_home);
+        let _ = std::fs::remove_dir_all(&cargo_home);
+        result
     }
 
     fn run_in(&self, argv: &[String], cwd: &Path, cargo_home: &Path) -> Result<(), String> {
@@ -146,6 +149,14 @@ impl CommandRunner for ProcessCommandRunner {
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err("cargo command exceeded its timeout".into());
+            }
+            for path in [&stdout_path, &stderr_path] {
+                let size = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
+                if size > MAX_COMMAND_OUTPUT_BYTES {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err("cargo command output exceeded its bound".into());
+                }
             }
             std::thread::sleep(Duration::from_millis(100));
         };
