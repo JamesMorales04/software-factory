@@ -51,6 +51,26 @@ The contract already allows a model to propose a stack
 ([agentic flow contract](../contracts/agentic-flow.md)). The implementation
 does not yet make that a first-class, validated planning artifact.
 
+## Owner decisions (2026-11-09)
+
+The Product Owner resolved the open planning choices:
+
+1. Every reviewer finding blocks acceptance and must be resolved
+   automatically; there is no silent warning debt.
+2. Changing the stack of an existing repository requires explicit owner
+   approval.
+3. Dependency acquisition supports both a digest-pinned vendor/cache and a
+   brokered fetch; the project plan chooses one or both.
+4. A plan review is mandatory for every lane, including `DIRECT`.
+5. Documentation is quality-first: the minimum set that actually protects the
+   built product, not a fixed file count.
+6. The Lead becomes a thin assessor. The Planner runs in every flow; the Spec
+   Manager always runs for `FORMAL_SPEC`.
+7. OpenSpec is the repository-facing specification projection for every change,
+   while Core remains the authority.
+8. Reviewer roles must reflect architecture, code quality, security and testing,
+   not one generic review.
+
 ## Decision
 
 1. **Right-size planning by route, not by one prompt.**
@@ -58,8 +78,9 @@ does not yet make that a first-class, validated planning artifact.
    `DIRECT` (bounded, existing stack, small), `DELEGATED` (multi-unit but no
    formal contract), `FORMAL_SPEC` (greenfield, large, ambiguous, public
    contract, data/schema, security boundary, missing architecture docs, or
-   stack choice), and `REPAIR` (exact candidate). The lane selects the planning
-   artifacts and approval depth. `FORMAL_SPEC` cannot be silently downgraded.
+   stack choice), and `REPAIR` (exact candidate). Every lane produces a plan
+   and passes plan review; the lane changes depth and approval, not whether a
+   plan exists. `FORMAL_SPEC` cannot be silently downgraded.
 
 2. **Spec first; technology second.**
    A formal plan starts with observable behavior, user journeys, interfaces,
@@ -70,7 +91,8 @@ does not yet make that a first-class, validated planning artifact.
 
 3. **Stack selection is an explicit, evidence-based decision.**
    Precedence is: explicit owner constraints, then the existing project stack
-   and conventions, then a model proposal validated by Core. The proposal
+   and conventions, then a model proposal validated by Core. Changing the stack
+   of an existing repository is a reserved owner decision. The proposal
    compares 2–3 realistic options against quality attributes (fit, security,
    maintainability, operability, ecosystem, cost, time to value, licensing,
    team/agent familiarity, exit cost). It records the selected option, rejected
@@ -78,13 +100,14 @@ does not yet make that a first-class, validated planning artifact.
    invent an unavailable technology or silently replace a user-selected or
    existing stack.
 
-4. **Capabilities and dependencies are part of the decision.**
+4. **Capabilities, dependencies and knowledge are part of the decision.**
    A selected stack is valid only if its toolchain, libraries and checks can run
-   in the frozen container topology. Missing dependency acquisition is an
-   explicit constraint or an owner decision, not an assumed capability. The
-   planner must choose between an approved offline cache/vendor path, a
-   brokered dependency-acquisition step, or a simpler stack that fits the
-   available capabilities.
+   in the frozen container topology. The Planner and Librarian inventory the
+   available capabilities, research candidate dependencies and skills, and
+   record license, maintenance, security and provenance evidence. The plan
+   supports both a digest-pinned vendor/cache and a brokered dependency fetch,
+   chosen per project. Missing dependency acquisition is an explicit constraint
+   or an owner decision, not an assumed capability.
 
 5. **Architecture is a first-class frozen artifact.**
    The architecture plan records context, components, boundaries, data,
@@ -117,12 +140,16 @@ does not yet make that a first-class, validated planning artifact.
    acceptance is separate. The Worker cannot finalize a unit or candidate until
    its checks pass; the Gate cannot accept without the required evidence.
 
-9. **Warnings are not silent acceptance.**
-   `critical` and `blocking` findings always stop acceptance. For
-   `FORMAL_SPEC` and `ELEVATED`/`CRITICAL` assurance, warnings also block unless
-   an authenticated owner accepts the exact warning, rationale and follow-up
-   debt. Accepted debt is recorded and projected to the issue/kanban. A model
-   or reviewer cannot accept its own warning.
+9. **Every reviewer finding blocks acceptance and is resolved automatically.**
+   `critical`, `blocking`, `warning` and `info` findings are all actionable:
+   acceptance requires zero open findings. The Gate routes each finding to a
+   deterministic Finding Router: code defects go to a Repairer; spec gaps,
+   ambiguity, architecture or stack issues go back to the Planner/Spec Manager
+   as a new revision; security findings add the Security Reviewer and, where
+   required, an owner decision. The campaign loops through bounded repair/replan
+   until the finding is resolved or the policy exhausts its budget; exhaustion
+   is an owner decision, never a silent acceptance. A model or reviewer cannot
+   waive its own finding.
 
 10. **Planning artifacts are durable and continuation is bounded.**
     The frozen plan, spec, stack/architecture decision and DoD are stored by
@@ -139,12 +166,50 @@ does not yet make that a first-class, validated planning artifact.
     right to widen the plan. Missing knowledge is researched and cited, not
     invented.
 
-12. **Office owns the human checkpoint.**
-    The owner sees the plan before implementation for `FORMAL_SPEC` (or when a
-    policy requires it): goals, non-goals, stack options/decision, architecture,
-    WorkGraph, docs plan, skills, checks, DoD and risks. The owner can amend or
-    reject; Core freezes the exact revision. The default remains autonomous
-    where the owner has authorized it, but no model output becomes authority.
+12. **Office owns the plan-review checkpoint for every lane.**
+    The owner sees the plan before implementation for every request, including
+    `DIRECT`: goals, non-goals, OpenSpec change, stack options/decision,
+    architecture (when applicable), WorkGraph, docs plan, skills, checks, DoD
+    and risks. The owner can amend or reject; Core freezes the exact revision.
+    Autonomous R0 may auto-approve under an explicit charter, but the plan is
+    still shown, reviewed by deterministic validators and frozen; no model
+    output becomes authority.
+
+13. **OpenSpec is the repository-facing specification projection.**
+    Every change gets an `openspec/changes/<change-id>/` folder with
+    `proposal.md`, `specs/`, `design.md` (when technical decisions exist) and
+    `tasks.md`. Core renders this projection deterministically from the frozen
+    typed plan/spec/stack/architecture/WorkGraph/DoD; it is idempotent,
+    revision-bound and never a second authority. `openspec/specs/` is updated on
+    convergence and completed changes are archived. `openspec validate` is a
+    deterministic check when the OpenSpec toolchain is available. The
+    implementer updates task checkboxes; Core validates the artifact and
+    evidence, not the checkbox alone.
+
+14. **Reviewer roles reflect the plan.**
+    The ParticipantPlan defines the required reviewer roles for the lane and
+    assurance: Functional, Architecture, Code Quality, Security, Testing and
+    Traceability, and Operability/Performance where applicable. Each role is a
+    separate read-only session with a role-specific prompt and evidence
+    requirements. The Gate requires every required role to return an executed
+    PASS with no open findings. The current single generic reviewer is a
+    temporary limitation, not the target topology.
+
+15. **Planner and Spec Manager are part of the normal lifecycle.**
+    The Lead is a thin assessor and request classifier. The Explorer inventories
+    the repository and docs; the Librarian researches knowledge, dependencies
+    and skills when there is a gap; the Planner runs in every flow; the Spec
+    Manager always runs for `FORMAL_SPEC`. The Director/Operation Manager are
+    orchestration projections, not additional model authorities. The Integrator
+    remains deterministic.
+
+16. **Planning and execution are durable, idempotent and replayable.**
+    The planning lifecycle is a durable state machine with explicit
+    checkpoints, idempotency keys, bounded retries and an outbox for external
+    projections (GitHub, OpenSpec, issues). A crash, provider failure or
+    compaction resumes from the last durable checkpoint. External effects are
+    reconciled before retry; duplicate dispatch, duplicate issues and duplicate
+    repairs are rejected by Core identity.
 
 ## Consequences
 
@@ -159,8 +224,13 @@ does not yet make that a first-class, validated planning artifact.
   inventory; otherwise stack choice is limited to what the sandbox can run.
 - The Office needs a plan-review surface and a truthful "planning" stage; a
   request cannot jump from assessment to execution without showing the frozen
-  artifacts.
-- Accepted warnings become explicit debt, not invisible quality loss.
+  artifacts. The review is mandatory for every lane.
+- OpenSpec becomes the durable repository-facing plan and spec projection; Core
+  still owns the frozen typed records and hashes.
+- Reviewer specialization adds independent role sessions and provisioning of
+  multiple reviewer identities; one generic reviewer is no longer sufficient.
+- Every finding blocks acceptance and is routed to repair or replanning; a
+  warning is never silently accepted.
 - Historical plans remain readable; new fields are additive and optional until
   the route requires them.
 
@@ -182,13 +252,17 @@ does not yet make that a first-class, validated planning artifact.
 ## Verification
 
 - Deterministic tests for route floors, stack precedence, capability fit, plan
-  depth, docs requirements, DoD, warning acceptance and dependency blockers.
+  depth, docs requirements, DoD, finding routing, automatic repair/replan,
+  OpenSpec projection and dependency blockers.
 - Golden fixtures: greenfield Rust CLI, greenfield service with dependencies,
   existing Rust service, Node/TypeScript UI, Python service, missing docs,
-  user-specified stack, large objective and warning-only candidate.
+  user-specified stack, large objective, warning-only candidate and
+  architecture/spec finding.
 - A real-model E2E campaign must show: frozen spec, 2–3 stack options or a
-  justified single option, ADR, multiple WorkUnits, docs update, DoD checks,
-  independent reviewer evidence and `ACCEPTED` only with complete evidence.
+  justified single option, ADR, multiple WorkUnits, docs update, OpenSpec
+  change, DoD checks, all required reviewer roles, automatic finding resolution
+  and `ACCEPTED` only with zero open findings.
 - Office per-option browser acceptance for the plan review, stack options,
-  docs, warnings and responsive/accessibility states.
+  OpenSpec artifacts, docs, reviewer roles, repair/replan and responsive/
+  accessibility states.
 - No behavior claim is made until the candidate-bound evidence exists.
