@@ -4,7 +4,7 @@
   "result": "PARTIAL",
   "kind": "implementer-browser-self-test",
   "captured_at": "2026-11-08T21:30:00Z",
-  "candidate": "branch factory/agentic-flow-20261108; exact code commit is recorded in the pull request",
+  "candidate": "514bfc1d049ba577b0eb3f6c503e23771197b8af",
   "environment": {
     "runtime": "rootless Podman Compose developer-preview stack",
     "office": "http://127.0.0.1:8893",
@@ -96,10 +96,10 @@
     }
   ],
   "checks": {
-    "browser": "PASS — 1440 and 390 px, zero console errors, zero unexpected 4xx/5xx, no horizontal overflow.",
-    "semantic_model": "PASS — real OpenCode Go deepseek-v4.1-flash call returned a schema-valid AgenticTriageModel; deterministic route/assurance floors were merged.",
-    "component": "PASS — Director.test.tsx covers populated, empty, error and semantic-triage states.",
-    "deterministic": "PASS — agentic domain tests cover triage floors, stack detection, participant composition, context policy, owner charter and model-floor merging."
+    "browser": "PASS \u2014 1440 and 390 px, zero console errors, zero unexpected 4xx/5xx, no horizontal overflow.",
+    "semantic_model": "PASS \u2014 real OpenCode Go deepseek-v4.1-flash call returned a schema-valid AgenticTriageModel; deterministic route/assurance floors were merged.",
+    "component": "PASS \u2014 Director.test.tsx covers populated, empty, error and semantic-triage states.",
+    "deterministic": "PASS \u2014 agentic domain tests cover triage floors, stack detection, participant composition, context policy, owner charter and model-floor merging."
   },
   "limitations": [
     "This is implementer evidence, not independent acceptance.",
