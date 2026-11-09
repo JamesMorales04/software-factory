@@ -1508,6 +1508,146 @@ export interface IntakeExecutionPolicyScope {
   } | null;
 }
 
+export type AgenticRequestKind =
+  | "INFORMATIONAL"
+  | "AUDIT"
+  | "CHANGE"
+  | "REPAIR";
+export type AgenticRoute =
+  | "NO_AGENT"
+  | "DIRECT"
+  | "DELEGATED"
+  | "FORMAL_SPEC"
+  | "REPAIR";
+export type AgenticAssurance = "NONE" | "STANDARD" | "ELEVATED" | "CRITICAL";
+
+export interface AgenticStackProfile {
+  languages: string[];
+  frameworks: string[];
+  runtimes: string[];
+  packageManagers: string[];
+  buildTools: string[];
+  data: string[];
+  testFrameworks: string[];
+  browser: string[];
+  infra: string[];
+  securitySensitive: string[];
+  conventions: string[];
+  evidenceRefs: string[];
+  confidence: string;
+  unknowns: string[];
+}
+
+export interface AgenticAssignment {
+  role: string;
+  specialization: string;
+  count: number;
+  readOnly: boolean;
+  toolPack: string[];
+}
+
+export interface AgenticContextPolicy {
+  compactAtPercent: number;
+  maxConsecutiveCompactions: number;
+  handoffAtStableMilestone: boolean;
+  requireProbeAfterHandoff: boolean;
+}
+
+export interface AgenticParticipantPlan {
+  route: AgenticRoute;
+  assurance: AgenticAssurance;
+  assignments: AgenticAssignment[];
+  contextPolicy: AgenticContextPolicy;
+  reasons: string[];
+}
+
+export interface AgenticSpecification {
+  id: string;
+  description: string;
+  kind: string;
+  allowedPaths: string[];
+  capabilities: string[];
+  dependsOn: string[];
+  status: string;
+}
+
+export interface AgenticTriage {
+  requestKind: AgenticRequestKind;
+  route: AgenticRoute;
+  assurance: AgenticAssurance;
+  mechanism: string;
+  reasons: string[];
+  unknowns: string[];
+}
+
+export interface AgenticPortfolioEntry {
+  id: string;
+  projectId: string;
+  objective: string;
+  mode: string;
+  state: string;
+  route: AgenticRoute;
+  assurance: AgenticAssurance;
+  requestKind: AgenticRequestKind;
+  workUnits: number;
+  participantCount: number;
+  stackLanguages: string[];
+  updatedAt: string;
+}
+
+export interface AgenticSemanticAssessment {
+  provider: string;
+  model: string;
+  createdAt: string;
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    costMicros: number;
+    usageKnown: boolean;
+  };
+  recommendation: {
+    requestKind: AgenticRequestKind;
+    route: AgenticRoute;
+    assurance: AgenticAssurance;
+    skillNeeds: string[];
+    unknowns: string[];
+  };
+}
+
+export interface AgenticRequestDetail {
+  request: {
+    id: string;
+    projectId: string;
+    objective: string;
+    mode: string;
+    state: string;
+    profile: { id: string; revision: number; name: string };
+    createdAt: string;
+    updatedAt: string;
+  };
+  lead: {
+    state: string;
+    campaignId: string | null;
+    failureReason: string | null;
+  };
+  triage: AgenticTriage;
+  stack: AgenticStackProfile;
+  participants: AgenticParticipantPlan;
+  specifications: AgenticSpecification[];
+  plan: null | {
+    id: string;
+    planHash: string;
+    configHash: string;
+    createdAt: string;
+  };
+  context: {
+    handoffs: unknown[];
+    note: string;
+  };
+  semantic: AgenticSemanticAssessment | null;
+}
+
 export interface ExecutionPolicyRequest {
   execution_profile_id: string;
   expected_revision: number;
@@ -2749,6 +2889,16 @@ export const coreApi = {
     request<LeadWithdrawalRecord>(
       `/lead/requests/${encodeURIComponent(id)}/withdraw`,
       { method: "POST", body: JSON.stringify({ reason }) },
+    ),
+  assessAgenticRequest: (id: string) =>
+    request<unknown>(`/agentic/requests/${encodeURIComponent(id)}/assess`, {
+      method: "POST",
+    }),
+  listAgenticPortfolio: () =>
+    request<AgenticPortfolioEntry[]>("/agentic/portfolio"),
+  getAgenticRequest: (id: string) =>
+    request<AgenticRequestDetail>(
+      `/agentic/requests/${encodeURIComponent(id)}`,
     ),
   listIntakeRequests: (filters: IntakeRequestFilters = {}) => {
     const params = new URLSearchParams();

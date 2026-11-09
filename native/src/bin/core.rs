@@ -956,6 +956,12 @@ fn office_api_router(app: Arc<App>) -> Router {
         .route("/office/overview", get(office_overview))
         .route("/office/decisions", get(office_decisions))
         .route("/office/participants", get(office_participants))
+        .route("/agentic/portfolio", get(agentic_portfolio))
+        .route(
+            "/agentic/requests/{id}/assess",
+            post(assess_agentic_request),
+        )
+        .route("/agentic/requests/{id}", get(agentic_request_detail))
         .route(
             "/provider/sessions/{session_record_id}/tool_events",
             get(provider_session_tool_events),
@@ -1161,6 +1167,12 @@ fn api_router(app: Arc<App>) -> Router {
         .route("/office/overview", get(office_overview))
         .route("/office/decisions", get(office_decisions))
         .route("/office/participants", get(office_participants))
+        .route("/agentic/portfolio", get(agentic_portfolio))
+        .route(
+            "/agentic/requests/{id}/assess",
+            post(assess_agentic_request),
+        )
+        .route("/agentic/requests/{id}", get(agentic_request_detail))
         .route(
             "/provider/sessions/{session_record_id}/tool_events",
             get(provider_session_tool_events),
@@ -9399,6 +9411,544 @@ async fn get_intake_request(
         Err(error) => return api_error(error),
     };
     match intake_request_value(&app, &record, true).await {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgenticPortfolioEntry {
+    id: String,
+    project_id: String,
+    objective: String,
+    mode: String,
+    state: String,
+    route: factory_native::agentic::ChangeRoute,
+    assurance: factory_native::agentic::Assurance,
+    request_kind: factory_native::agentic::RequestKind,
+    work_units: usize,
+    participant_count: u32,
+    stack_languages: Vec<String>,
+    updated_at: String,
+}
+
+fn assurance_for_risk(risk: factory_native::lead::RiskClass) -> factory_native::agentic::Assurance {
+    use factory_native::agentic::Assurance;
+    use factory_native::lead::RiskClass;
+    match risk {
+        RiskClass::R0 => Assurance::None,
+        RiskClass::R1 => Assurance::Standard,
+        RiskClass::R2 => Assurance::Elevated,
+        RiskClass::R3 => Assurance::Critical,
+    }
+}
+
+async fn agentic_stack_for_project(
+    app: &App,
+    project_id: &str,
+) -> factory_native::agentic::StackProfile {
+    let Ok(config) = app.db.project_config(project_id).await else {
+        return factory_native::agentic::StackProfile::default();
+    };
+    let Some(projects_root) = app.projects_root.as_ref() else {
+        return factory_native::agentic::StackProfile::default();
+    };
+    let Ok(root) = projects_root.canonicalize() else {
+        return factory_native::agentic::StackProfile::default();
+    };
+    let Ok(repository) = std::path::PathBuf::from(&config.repository).canonicalize() else {
+        return factory_native::agentic::StackProfile::default();
+    };
+    if !repository.starts_with(&root) {
+        return factory_native::agentic::StackProfile::default();
+    }
+    factory_native::agentic::detect_stack(&repository)
+}
+
+async fn agentic_projection_for_request(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+) -> Result<serde_json::Value, Error> {
+    use factory_native::agentic;
+    let lead = app.db.lead_request(&record.lead_request_id).await?;
+    let proposal = app
+        .db
+        .lead_proposal(&record.lead_request_id)
+        .await
+        .ok()
+        .and_then(|record| {
+            serde_json::from_str::<factory_native::lead::LeadPlanProposal>(&record.proposal_json)
+                .ok()
+        });
+    let plan = app.db.frozen_lead_plan(&record.lead_request_id).await.ok();
+    let tasks = if let Some(campaign_id) = &record.campaign_id {
+        app.db.campaign_tasks(campaign_id).await.unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let work_units = proposal
+        .as_ref()
+        .map(|proposal| proposal.work_units.len())
+        .unwrap_or(0);
+    let risk = proposal
+        .as_ref()
+        .map(|proposal| proposal.risk_class)
+        .unwrap_or(factory_native::lead::RiskClass::R0);
+    let fallback_paths = app
+        .db
+        .project_config(&record.project_id)
+        .await
+        .map(|config| config.allowed_paths)
+        .unwrap_or_default();
+    let paths: Vec<String> = proposal
+        .as_ref()
+        .map(|proposal| {
+            proposal
+                .work_units
+                .iter()
+                .flat_map(|unit| unit.allowed_paths.iter().cloned())
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect()
+        })
+        .unwrap_or(fallback_paths);
+    let deterministic_signals = agentic::TriageSignals {
+        objective: record.objective.clone(),
+        files: paths,
+        domains: Vec::new(),
+        risk: match risk {
+            factory_native::lead::RiskClass::R0 => "low",
+            factory_native::lead::RiskClass::R1 => "medium",
+            _ => "high",
+        }
+        .into(),
+        expected_work_units: if work_units > 0 {
+            Some(u32::try_from(work_units).unwrap_or(u32::MAX))
+        } else {
+            None
+        },
+        ambiguous: proposal.is_none(),
+        architecture_uncertainty: false,
+        cross_module: work_units > 1,
+        public_contract: false,
+        data_or_schema: false,
+        security_boundary: false,
+        explicit_informational: false,
+        explicit_audit: false,
+        explicit_repair: false,
+    };
+    let deterministic_stack = agentic_stack_for_project(app, &record.project_id).await;
+    let semantic = app
+        .db
+        .agentic_assessment(&record.id)
+        .await
+        .ok()
+        .and_then(|record| {
+            serde_json::from_str::<agentic::AgenticTriageModel>(&record.response_json)
+                .ok()
+                .map(|model| (record, model))
+        });
+    let (signals, stack) = match &semantic {
+        Some((_, model)) => (model.signals(&record.objective), model.stack.clone()),
+        None => (deterministic_signals, deterministic_stack),
+    };
+    let triage = match &semantic {
+        Some((_, model)) => agentic::merge_model_decision(agentic::triage(&signals), model),
+        None => agentic::triage(&signals),
+    };
+    let participants = agentic::participant_plan(
+        triage.route,
+        triage.assurance.max(assurance_for_risk(risk)),
+        u32::try_from(work_units.max(1)).unwrap_or(u32::MAX),
+        &stack,
+    );
+    let specifications = proposal
+        .as_ref()
+        .map(|proposal| {
+            proposal
+                .work_units
+                .iter()
+                .map(|unit| {
+                    let status = tasks
+                        .iter()
+                        .find(|task| task.unit_id == unit.id)
+                        .map(|task| task.status.clone())
+                        .unwrap_or_else(|| "PLANNED".into());
+                    serde_json::json!({
+                        "id": unit.id,
+                        "description": unit.description,
+                        "kind": format!("{:?}", unit.kind),
+                        "allowedPaths": unit.allowed_paths,
+                        "capabilities": unit.capabilities,
+                        "dependsOn": unit.depends_on,
+                        "status": status,
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    Ok(serde_json::json!({
+        "request": {
+            "id": record.id,
+            "projectId": record.project_id,
+            "objective": record.objective,
+            "mode": record.mode,
+            "state": app.db.lead_request_projection(&record.lead_request_id).await?,
+            "profile": {
+                "id": record.profile_id,
+                "revision": record.profile_revision,
+                "name": record.profile_name,
+            },
+            "createdAt": record.created_at,
+            "updatedAt": record.updated_at,
+        },
+        "lead": {
+            "state": lead.state,
+            "campaignId": lead.campaign_id,
+            "failureReason": lead.failure_reason,
+        },
+        "triage": triage,
+        "stack": stack,
+        "participants": participants,
+        "specifications": specifications,
+        "plan": plan.map(|plan| serde_json::json!({
+            "id": plan.id,
+            "planHash": plan.plan_hash,
+            "configHash": plan.config_hash,
+            "createdAt": plan.created_at,
+        })),
+        "context": {
+            "handoffs": [],
+            "note": "Handoff records appear here after the context handler is enabled for this operation."
+        },
+        "semantic": semantic.as_ref().map(|(record, model)| serde_json::json!({
+            "provider": record.provider,
+            "model": record.model,
+            "createdAt": record.created_at,
+            "usage": {
+                "inputTokens": record.input_tokens,
+                "outputTokens": record.output_tokens,
+                "totalTokens": record.total_tokens,
+                "costMicros": record.cost_micros,
+                "usageKnown": record.usage_known,
+            },
+            "recommendation": {
+                "requestKind": model.request_kind,
+                "route": model.route,
+                "assurance": model.assurance,
+                "skillNeeds": model.skill_needs,
+                "unknowns": model.unknowns,
+            }
+        }))
+    }))
+}
+
+async fn assess_agentic_request(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => {
+            tracing::warn!(%id, %error, "agentic assess request not found");
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": format!("agentic intake lookup failed: {id}")})),
+            )
+                .into_response();
+        }
+    };
+    let profile = match app
+        .db
+        .execution_profile_revision(&record.profile_id, &record.profile_revision_id)
+        .await
+    {
+        Ok(profile) => profile,
+        Err(error) => {
+            tracing::warn!(%id, %error, profile_id = %record.profile_id, revision_id = %record.profile_revision_id, "agentic profile lookup failed");
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": format!("agentic profile lookup failed: {id}")})),
+            )
+                .into_response();
+        }
+    };
+    let grant = match app.db.standing_delegation_v2(&record.delegation_id).await {
+        Ok(grant) => grant,
+        Err(error) => return api_error(error),
+    };
+    let gateway = match app.intake_assess_gateway(&profile).await {
+        Ok(gateway) => gateway,
+        Err(route_error) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "error": route_error.to_string(),
+                    "code": "ASSESSMENT_UNAVAILABLE",
+                    "routeCode": route_error.code(),
+                })),
+            )
+                .into_response();
+        }
+    };
+    let stack = agentic_stack_for_project(&app, &record.project_id).await;
+    let config = app.db.project_config(&record.project_id).await.ok();
+    let lead = app.db.lead_request(&record.lead_request_id).await.ok();
+    let proposal = app
+        .db
+        .lead_proposal(&record.lead_request_id)
+        .await
+        .ok()
+        .and_then(|record| {
+            serde_json::from_str::<factory_native::lead::LeadPlanProposal>(&record.proposal_json)
+                .ok()
+        });
+    let schema = factory_native::model_output::agentic_triage_schema();
+    let schema_sha256 = factory_native::model_output::agentic_triage_schema_sha256();
+    let system_prompt = format!(
+        "You are the bounded Software Factory Semantic Assessor. Return ONLY one JSON object that validates against the JSON Schema below. Do not add prose, markdown, comments or unknown fields. You are read-only: you cannot use tools, write files, grant authority, choose tools or accept work. Determine the request kind, the recommended route, the assurance recommendation, the technology StackProfile, concrete file scope, risk signals, expected work units, knowledge/skill needs and explicit unknowns. Use deterministic evidence where supplied; do not invent a technology or a file. If a value is unknown, leave it empty or record it in unknowns. The StackProfile is advisory; Core applies deterministic route and assurance floors. The request kind must be INFORMATIONAL, AUDIT, CHANGE or REPAIR. Routes are NO_AGENT, DIRECT, DELEGATED, FORMAL_SPEC or REPAIR. Assurance is NONE, STANDARD, ELEVATED or CRITICAL.\n\nJSON Schema:\n{schema}"
+    );
+    let user_prompt = serde_json::json!({
+        "objective": record.objective,
+        "projectId": record.project_id,
+        "projectConfig": config.as_ref().map(|config| serde_json::json!({
+            "repository": config.repository,
+            "baseCommit": config.base_commit,
+            "allowedPaths": config.allowed_paths,
+            "capabilities": config.capabilities,
+            "qualityProfile": config.quality_profile,
+        })),
+        "deterministicStack": stack,
+        "lead": lead.as_ref().map(|lead| serde_json::json!({
+            "state": format!("{:?}", lead.state),
+            "failureReason": lead.failure_reason,
+            "campaignId": lead.campaign_id,
+        })),
+        "existingProposal": proposal.as_ref().map(|proposal| serde_json::json!({
+            "class": format!("{:?}", proposal.class),
+            "riskClass": proposal.risk_class,
+            "workUnits": proposal.work_units.iter().map(|unit| serde_json::json!({
+                "id": unit.id,
+                "description": unit.description,
+                "allowedPaths": unit.allowed_paths,
+                "capabilities": unit.capabilities,
+            })).collect::<Vec<_>>(),
+            "assumptions": proposal.assumptions,
+            "risks": proposal.risks,
+        })),
+    })
+    .to_string();
+    let principal_id = grant.principal_id.clone();
+    let result = match gateway
+        .call(
+            &app.db,
+            factory_native::model_gateway::ModelCallRequest {
+                role: factory_native::db::ModelCallRole::Lead,
+                principal_id: &principal_id,
+                project_id: &record.project_id,
+                objective_id: &record.lead_request_id,
+                scope_id: &record.delegation_id,
+                purpose: "agentic_triage",
+                system_prompt: &system_prompt,
+                user_prompt: &user_prompt,
+                max_output_tokens: 4_096,
+            },
+        )
+        .await
+    {
+        Ok(result) => result,
+        Err(factory_native::model_gateway::ModelGatewayError::Database(error)) => {
+            return match error {
+                Error::SubscriptionFunding(refusal) => (
+                    StatusCode::CONFLICT,
+                    Json(json!({
+                        "error": refusal.to_string(),
+                        "code": refusal.code(),
+                    })),
+                )
+                    .into_response(),
+                Error::Withdrawn => (
+                    StatusCode::CONFLICT,
+                    Json(json!({
+                        "error": "the request was withdrawn; semantic triage is unavailable",
+                        "code": "REQUEST_WITHDRAWN",
+                    })),
+                )
+                    .into_response(),
+                other => api_error(other),
+            };
+        }
+        Err(factory_native::model_gateway::ModelGatewayError::Invalid(message)) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": message, "code": "AGENTIC_TRIAGE_INVALID"})),
+            )
+                .into_response();
+        }
+        Err(error) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({
+                    "error": error.to_string(),
+                    "code": "AGENTIC_TRIAGE_FAILED",
+                })),
+            )
+                .into_response();
+        }
+    };
+    let assessment =
+        match factory_native::model_output::decode_agentic_triage(result.content.as_bytes()) {
+            Ok(assessment) => assessment,
+            Err(error) => {
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(json!({
+                        "error": error.to_string(),
+                        "code": "AGENTIC_TRIAGE_OUTPUT_INVALID",
+                    })),
+                )
+                    .into_response();
+            }
+        };
+    let decision = factory_native::agentic::merge_model_decision(
+        factory_native::agentic::triage(&assessment.signals(&record.objective)),
+        &assessment,
+    );
+    if let Err(error) = app
+        .db
+        .save_agentic_assessment(&factory_native::db::NewAgenticAssessment {
+            request_id: &record.id,
+            response_json: &result.content,
+            schema_sha256: &schema_sha256,
+            provider: &result.provider,
+            model: &result.model,
+            request_sha256: &result.request_sha256,
+            input_tokens: result.input_tokens,
+            output_tokens: result.output_tokens,
+            total_tokens: result.total_tokens,
+            cost_micros: result.cost_micros,
+            usage_known: result.usage_known,
+        })
+        .await
+    {
+        return api_error(error);
+    }
+    Json(json!({
+        "assessment": assessment,
+        "decision": decision,
+        "provider": result.provider,
+        "model": result.model,
+        "usage": {
+            "inputTokens": result.input_tokens,
+            "outputTokens": result.output_tokens,
+            "totalTokens": result.total_tokens,
+            "costMicros": result.cost_micros,
+            "usageKnown": result.usage_known,
+        }
+    }))
+    .into_response()
+}
+
+async fn agentic_portfolio(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let records = match app.db.intake_requests().await {
+        Ok(records) => records,
+        Err(error) => return api_error(error),
+    };
+    let mut entries = Vec::new();
+    for record in records.into_iter().take(50) {
+        let lead = match app.db.lead_request(&record.lead_request_id).await {
+            Ok(lead) => lead,
+            Err(_) => continue,
+        };
+        let proposal = app
+            .db
+            .lead_proposal(&record.lead_request_id)
+            .await
+            .ok()
+            .and_then(|record| {
+                serde_json::from_str::<factory_native::lead::LeadPlanProposal>(
+                    &record.proposal_json,
+                )
+                .ok()
+            });
+        let work_units = proposal.as_ref().map(|p| p.work_units.len()).unwrap_or(0);
+        let risk = proposal
+            .as_ref()
+            .map(|p| p.risk_class)
+            .unwrap_or(factory_native::lead::RiskClass::R0);
+        let stack = agentic_stack_for_project(&app, &record.project_id).await;
+        let signals = factory_native::agentic::TriageSignals {
+            objective: record.objective.clone(),
+            files: Vec::new(),
+            domains: Vec::new(),
+            risk: "low".into(),
+            expected_work_units: if work_units > 0 {
+                Some(u32::try_from(work_units).unwrap_or(u32::MAX))
+            } else {
+                None
+            },
+            ambiguous: proposal.is_none(),
+            architecture_uncertainty: false,
+            cross_module: work_units > 1,
+            public_contract: false,
+            data_or_schema: false,
+            security_boundary: false,
+            explicit_informational: false,
+            explicit_audit: false,
+            explicit_repair: false,
+        };
+        let triage = factory_native::agentic::triage(&signals);
+        let participants = factory_native::agentic::participant_plan(
+            triage.route,
+            triage.assurance.max(assurance_for_risk(risk)),
+            u32::try_from(work_units.max(1)).unwrap_or(u32::MAX),
+            &stack,
+        );
+        let state = app
+            .db
+            .lead_request_projection(&record.lead_request_id)
+            .await
+            .map(|state| format!("{state:?}"))
+            .unwrap_or_else(|_| format!("{:?}", lead.state));
+        entries.push(AgenticPortfolioEntry {
+            id: record.id,
+            project_id: record.project_id,
+            objective: record.objective,
+            mode: format!("{:?}", record.mode),
+            state,
+            route: triage.route,
+            assurance: triage.assurance.max(assurance_for_risk(risk)),
+            request_kind: triage.request_kind,
+            work_units,
+            participant_count: participants.assignments.iter().map(|a| a.count).sum(),
+            stack_languages: stack.languages,
+            updated_at: record.updated_at,
+        });
+    }
+    Json(entries).into_response()
+}
+
+async fn agentic_request_detail(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    match agentic_projection_for_request(&app, &record).await {
         Ok(value) => Json(value).into_response(),
         Err(error) => api_error(error),
     }

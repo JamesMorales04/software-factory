@@ -16,6 +16,7 @@ import { CampaignDetail } from "./views/CampaignDetail";
 import { Campaigns } from "./views/Campaigns";
 import { DecisionInbox } from "./views/DecisionInbox";
 import { DevicePairClaim } from "./views/DevicePairClaim";
+import { Director } from "./views/Director";
 import { Home } from "./views/Home";
 import { Issues } from "./views/Issues";
 import { ProjectDetail } from "./views/ProjectDetail";
@@ -229,6 +230,7 @@ export function App() {
       <Routes>
         <Route path="/" element={<Home />} />
         <Route path="/requests" element={<Requests />} />
+        <Route path="/director" element={<Director />} />
         <Route path="/requests/:requestId" element={<RequestWorkspace />} />
         <Route path="/inbox" element={<DecisionInbox />} />
         <Route path="/projects" element={<Projects />} />

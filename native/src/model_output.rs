@@ -37,6 +37,33 @@ pub fn lead_assessment_schema_sha256() -> String {
         .collect()
 }
 
+pub fn agentic_triage_schema() -> Value {
+    serde_json::to_value(schema_for!(crate::agentic::AgenticTriageModel))
+        .expect("generated agentic triage schema is serializable")
+}
+
+pub fn agentic_triage_schema_sha256() -> String {
+    let bytes = serde_json::to_vec(&agentic_triage_schema())
+        .expect("generated agentic triage schema is serializable");
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+pub fn decode_agentic_triage(
+    raw: &[u8],
+) -> Result<crate::agentic::AgenticTriageModel, ModelOutputError> {
+    let value: Value = serde_json::from_slice(raw)?;
+    let schema = agentic_triage_schema();
+    let validator = jsonschema::validator_for(&schema)
+        .map_err(|error| ModelOutputError::Schema(error.to_string()))?;
+    validator
+        .validate(&value)
+        .map_err(|error| ModelOutputError::Schema(error.to_string()))?;
+    serde_json::from_value(value).map_err(ModelOutputError::Json)
+}
+
 pub fn semantic_review_schema() -> Value {
     serde_json::to_value(schema_for!(SemanticReview))
         .expect("generated semantic review schema is serializable")

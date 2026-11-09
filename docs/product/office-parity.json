@@ -706,6 +706,42 @@
         "docs/evidence/autopilot-r0-hardening-2026-11-08/manifest.json"
       ],
       "notes": "A V2 execution profile whose auto_start policy includes R0 becomes an autopilot profile in Home. The owner grants the autonomous policy and subscription confirmation once; Core then creates the request-scoped subscription admission and runs assessment, plan freeze and StartAuthority::Autonomous. The runner is idempotent, resumes unfinished autonomous requests after restart and records a truthful Blocked state on failure. Manual profiles keep the existing assessment and exact plan approval flow. Autonomous repair, delivery and R1+ remain operator-only. The live run is implementer evidence, not independent acceptance; no SSE or live-stream claim."
+    },
+    "CAP-059": {
+      "name": "Director and Operation Manager",
+      "user_facing": true,
+      "job": "Inspect an owner-level portfolio, the frozen route and assurance, the technology profile, the deterministic participant plan and the recorded semantic assessment before or during execution.",
+      "routes": [
+        "/director"
+      ],
+      "core_api": [
+        "GET /agentic/portfolio",
+        "GET /agentic/requests/{id}",
+        "POST /agentic/requests/{id}/assess"
+      ],
+      "user_actions": [
+        "load the owner portfolio and inspect an operation",
+        "inspect route, assurance, StackProfile and the deterministic ParticipantPlan",
+        "run a bounded semantic triage with real provider inference and inspect the measured usage",
+        "retry a failed portfolio or detail load"
+      ],
+      "states": [
+        "loading",
+        "empty",
+        "error",
+        "offline",
+        "deterministic-only",
+        "semantic-recorded",
+        "no-admission",
+        "retry",
+        "responsive"
+      ],
+      "acceptance": [
+        "office/src/views/Director.test.tsx",
+        "docs/evidence/director-projection-2026-11-08/manifest.json",
+        "office/e2e-browser/rust-journey.mjs"
+      ],
+      "notes": "Projection slice only. Core returns the portfolio from intake requests, a deterministic StackProfile and ParticipantPlan, and an optional persisted semantic triage. The real model call is browser-triggered and requires an active request-scoped subscription admission. Operation Manager runtime, concurrency, worktree scheduling, repair, Executor/Librarian/skills and dynamic fleets remain pending. The Director page never grants authority or accepts work."
     }
   },
   "deferred": [

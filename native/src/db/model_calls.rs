@@ -1410,7 +1410,11 @@ impl Database {
                         "Lead model call is not bound to the request delegation".into(),
                     ));
                 }
-                if state != "ASSESSING" {
+                // The agentic triage is a bounded read-only semantic assessment
+                // of an existing request. It does not advance the Lead lifecycle
+                // and may run outside ASSESSING; the Lead assessment itself
+                // remains restricted to an assessing request.
+                if state != "ASSESSING" && input.purpose != "agentic_triage" {
                     return Err(Error::Forbidden(
                         "Lead model call requires an assessing request".into(),
                     ));

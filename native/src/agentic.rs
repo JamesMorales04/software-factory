@@ -1,0 +1,914 @@
+//! Typed agentic-flow domain boundary.
+//!
+//! Everything here is advisory or deterministic policy. Core authorization,
+//! budgets, leases, candidate identity and the Quality Gate remain separate.
+//! A model may propose a triage, stack interpretation, plan or specification;
+//! it cannot select tools, widen scope, accept a candidate or grant authority.
+
+use std::collections::BTreeSet;
+use std::path::Path;
+
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+/// The owner-facing classification of a request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum RequestKind {
+    Informational,
+    Audit,
+    Change,
+    Repair,
+}
+
+/// The implementation route. Request kind and route are separate facts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ChangeRoute {
+    NoAgent,
+    Direct,
+    Delegated,
+    FormalSpec,
+    Repair,
+}
+
+/// The assurance floor, independent of the implementation route.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum Assurance {
+    None,
+    Standard,
+    Elevated,
+    Critical,
+}
+
+/// Observable signals from the request, project and bounded semantic assessor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TriageSignals {
+    pub objective: String,
+    #[serde(default)]
+    pub files: Vec<String>,
+    #[serde(default)]
+    pub domains: Vec<String>,
+    #[serde(default)]
+    pub risk: String,
+    #[serde(default)]
+    pub expected_work_units: Option<u32>,
+    #[serde(default)]
+    pub ambiguous: bool,
+    #[serde(default)]
+    pub architecture_uncertainty: bool,
+    #[serde(default)]
+    pub cross_module: bool,
+    #[serde(default)]
+    pub public_contract: bool,
+    #[serde(default)]
+    pub data_or_schema: bool,
+    #[serde(default)]
+    pub security_boundary: bool,
+    #[serde(default)]
+    pub explicit_informational: bool,
+    #[serde(default)]
+    pub explicit_audit: bool,
+    #[serde(default)]
+    pub explicit_repair: bool,
+}
+
+/// A deterministic triage decision. The semantic assessor may raise signals;
+/// this function applies non-weakening floors.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TriageDecision {
+    pub request_kind: RequestKind,
+    pub route: ChangeRoute,
+    pub assurance: Assurance,
+    pub mechanism: String,
+    pub reasons: Vec<String>,
+    pub unknowns: Vec<String>,
+}
+
+pub fn triage(signals: &TriageSignals) -> TriageDecision {
+    let mut reasons = Vec::new();
+    if signals.explicit_informational {
+        return TriageDecision {
+            request_kind: RequestKind::Informational,
+            route: ChangeRoute::NoAgent,
+            assurance: Assurance::None,
+            mechanism: "HYBRID".into(),
+            reasons: vec![
+                "The owner explicitly requested explanation or lookup without mutation.".into(),
+            ],
+            unknowns: Vec::new(),
+        };
+    }
+    if signals.explicit_audit {
+        return TriageDecision {
+            request_kind: RequestKind::Audit,
+            route: ChangeRoute::Direct,
+            assurance: audit_assurance(signals),
+            mechanism: "HYBRID".into(),
+            reasons: vec!["The request is a read-only engineering audit.".into()],
+            unknowns: Vec::new(),
+        };
+    }
+    if signals.explicit_repair {
+        return TriageDecision {
+            request_kind: RequestKind::Repair,
+            route: ChangeRoute::Repair,
+            assurance: repair_assurance(signals),
+            mechanism: "DETERMINISTIC".into(),
+            reasons: vec![
+                "The request targets an exact rejected candidate and requires a RepairPacket."
+                    .into(),
+            ],
+            unknowns: vec![
+                "The exact candidate and finding packet must be supplied by Core.".into(),
+            ],
+        };
+    }
+
+    let concrete_files: Vec<&str> = signals
+        .files
+        .iter()
+        .map(String::as_str)
+        .filter(|path| {
+            !path.contains('*') && !path.contains('?') && !path.contains('[') && !path.contains('{')
+        })
+        .collect();
+    if concrete_files.is_empty() && !signals.files.is_empty() {
+        reasons.push("The supplied scope contains wildcard or non-concrete paths.".into());
+    }
+    if signals.files.len() > 5 {
+        reasons.push("The scope spans more than five files and needs delegated planning.".into());
+    }
+    if signals.cross_module {
+        reasons.push("The work crosses module boundaries.".into());
+    }
+    if signals.expected_work_units.is_some_and(|units| units > 1) {
+        reasons.push("The expected work has more than one independent unit.".into());
+    }
+    if signals.ambiguous || signals.architecture_uncertainty {
+        reasons
+            .push("The semantic assessment reports ambiguity or architectural uncertainty.".into());
+    }
+    if signals.public_contract {
+        reasons.push("The change affects a public contract.".into());
+    }
+    if signals.data_or_schema {
+        reasons.push("The change affects data or schema.".into());
+    }
+    if signals.security_boundary {
+        reasons.push("The change crosses a security boundary.".into());
+    }
+    if signals.risk.eq_ignore_ascii_case("high") {
+        reasons.push("The assessed risk is high.".into());
+    }
+
+    let route = if signals.public_contract
+        || signals.data_or_schema
+        || signals.ambiguous
+        || signals.architecture_uncertainty
+        || signals.cross_module
+        || signals.files.len() > 5
+        || signals.expected_work_units.is_some_and(|units| units > 1)
+    {
+        ChangeRoute::FormalSpec
+    } else if signals.files.is_empty()
+        || concrete_files.len() != signals.files.len()
+        || signals.security_boundary
+    {
+        ChangeRoute::Delegated
+    } else {
+        ChangeRoute::Direct
+    };
+
+    let assurance =
+        if signals.security_boundary || signals.public_contract || signals.data_or_schema {
+            Assurance::Critical
+        } else if signals.risk.eq_ignore_ascii_case("high") || signals.cross_module {
+            Assurance::Elevated
+        } else if signals.risk.eq_ignore_ascii_case("medium") {
+            Assurance::Standard
+        } else {
+            Assurance::None
+        };
+
+    if reasons.is_empty() {
+        reasons.push("The request is bounded and suitable for direct execution.".into());
+    }
+    TriageDecision {
+        request_kind: RequestKind::Change,
+        route,
+        assurance,
+        mechanism: "HYBRID".into(),
+        reasons,
+        unknowns: Vec::new(),
+    }
+}
+
+fn route_rank(route: ChangeRoute) -> u8 {
+    match route {
+        ChangeRoute::NoAgent => 0,
+        ChangeRoute::Direct => 1,
+        ChangeRoute::Delegated => 2,
+        ChangeRoute::FormalSpec => 3,
+        ChangeRoute::Repair => 4,
+    }
+}
+
+/// Merge a semantic recommendation with the deterministic decision. The model
+/// may raise assurance or route strength; it can never lower the deterministic
+/// floor.
+pub fn merge_model_decision(
+    decision: TriageDecision,
+    model: &AgenticTriageModel,
+) -> TriageDecision {
+    let mut merged = decision;
+    merged.assurance = merged.assurance.max(model.assurance);
+    if route_rank(model.route) > route_rank(merged.route) {
+        merged.route = model.route;
+    }
+    merged.mechanism = "HYBRID".into();
+    if !model.unknowns.is_empty() {
+        merged.unknowns.extend(model.unknowns.clone());
+        merged.unknowns.sort();
+        merged.unknowns.dedup();
+    }
+    merged
+}
+
+fn audit_assurance(signals: &TriageSignals) -> Assurance {
+    if signals.security_boundary || signals.public_contract || signals.data_or_schema {
+        Assurance::Elevated
+    } else {
+        Assurance::Standard
+    }
+}
+
+fn repair_assurance(signals: &TriageSignals) -> Assurance {
+    if signals.security_boundary || signals.public_contract || signals.data_or_schema {
+        Assurance::Critical
+    } else if signals.risk.eq_ignore_ascii_case("high") {
+        Assurance::Elevated
+    } else {
+        Assurance::Standard
+    }
+}
+
+/// A typed semantic triage proposal. The model may recommend a route and
+/// assurance, but Core applies the deterministic floors in `triage`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgenticTriageModel {
+    pub request_kind: RequestKind,
+    pub route: ChangeRoute,
+    pub assurance: Assurance,
+    pub stack: StackProfile,
+    #[serde(default)]
+    pub files: Vec<String>,
+    #[serde(default)]
+    pub domains: Vec<String>,
+    #[serde(default)]
+    pub risk: String,
+    #[serde(default)]
+    pub expected_work_units: Option<u32>,
+    #[serde(default)]
+    pub ambiguous: bool,
+    #[serde(default)]
+    pub architecture_uncertainty: bool,
+    #[serde(default)]
+    pub cross_module: bool,
+    #[serde(default)]
+    pub public_contract: bool,
+    #[serde(default)]
+    pub data_or_schema: bool,
+    #[serde(default)]
+    pub security_boundary: bool,
+    #[serde(default)]
+    pub skill_needs: Vec<String>,
+    #[serde(default)]
+    pub unknowns: Vec<String>,
+}
+
+impl AgenticTriageModel {
+    pub fn signals(&self, objective: &str) -> TriageSignals {
+        TriageSignals {
+            objective: objective.into(),
+            files: self.files.clone(),
+            domains: self.domains.clone(),
+            risk: self.risk.clone(),
+            expected_work_units: self.expected_work_units,
+            ambiguous: self.ambiguous,
+            architecture_uncertainty: self.architecture_uncertainty,
+            cross_module: self.cross_module,
+            public_contract: self.public_contract,
+            data_or_schema: self.data_or_schema,
+            security_boundary: self.security_boundary,
+            explicit_informational: self.request_kind == RequestKind::Informational,
+            explicit_audit: self.request_kind == RequestKind::Audit,
+            explicit_repair: self.request_kind == RequestKind::Repair,
+        }
+    }
+}
+
+/// A bounded technology profile. Deterministic evidence is recorded alongside
+/// model interpretation; unknowns remain explicit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", default)]
+pub struct StackProfile {
+    pub languages: Vec<String>,
+    pub frameworks: Vec<String>,
+    pub runtimes: Vec<String>,
+    pub package_managers: Vec<String>,
+    pub build_tools: Vec<String>,
+    pub data: Vec<String>,
+    pub test_frameworks: Vec<String>,
+    pub browser: Vec<String>,
+    pub infra: Vec<String>,
+    pub security_sensitive: Vec<String>,
+    pub conventions: Vec<String>,
+    pub evidence_refs: Vec<String>,
+    pub confidence: String,
+    pub unknowns: Vec<String>,
+}
+
+impl Default for StackProfile {
+    fn default() -> Self {
+        Self {
+            languages: Vec::new(),
+            frameworks: Vec::new(),
+            runtimes: Vec::new(),
+            package_managers: Vec::new(),
+            build_tools: Vec::new(),
+            data: Vec::new(),
+            test_frameworks: Vec::new(),
+            browser: Vec::new(),
+            infra: Vec::new(),
+            security_sensitive: Vec::new(),
+            conventions: Vec::new(),
+            evidence_refs: Vec::new(),
+            confidence: "low".into(),
+            unknowns: Vec::new(),
+        }
+    }
+}
+
+impl StackProfile {
+    fn push_unique(target: &mut Vec<String>, value: &str) {
+        if !target.iter().any(|item| item == value) {
+            target.push(value.to_owned());
+        }
+    }
+
+    fn finish(mut self) -> Self {
+        self.languages.sort();
+        self.frameworks.sort();
+        self.runtimes.sort();
+        self.package_managers.sort();
+        self.build_tools.sort();
+        self.data.sort();
+        self.test_frameworks.sort();
+        self.browser.sort();
+        self.infra.sort();
+        self.security_sensitive.sort();
+        self.conventions.sort();
+        self.evidence_refs.sort();
+        self.unknowns.sort();
+        self.confidence = if self.evidence_refs.is_empty() {
+            "low".into()
+        } else if self.unknowns.is_empty() {
+            "high".into()
+        } else {
+            "medium".into()
+        };
+        self
+    }
+}
+
+/// Deterministic manifest and file evidence. The semantic assessor may add
+/// interpretation, but this function never invents a technology.
+pub fn detect_stack(root: &Path) -> StackProfile {
+    let mut stack = StackProfile::default();
+    let mut inspect = |relative: &str| -> Option<String> {
+        let path = root.join(relative);
+        if path.is_file() {
+            StackProfile::push_unique(&mut stack.evidence_refs, relative);
+            std::fs::read_to_string(&path).ok()
+        } else {
+            None
+        }
+    };
+
+    if let Some(cargo) = inspect("Cargo.toml") {
+        StackProfile::push_unique(&mut stack.languages, "rust");
+        StackProfile::push_unique(&mut stack.package_managers, "cargo");
+        StackProfile::push_unique(&mut stack.build_tools, "cargo");
+        for (needle, value) in [
+            ("axum", "axum"),
+            ("actix-web", "actix-web"),
+            ("rocket", "rocket"),
+            ("sqlx", "sqlx"),
+            ("diesel", "diesel"),
+            ("tokio", "tokio"),
+        ] {
+            if cargo.contains(needle) {
+                StackProfile::push_unique(&mut stack.frameworks, value);
+            }
+        }
+    }
+    if let Some(package) = inspect("package.json") {
+        StackProfile::push_unique(&mut stack.languages, "typescript");
+        StackProfile::push_unique(&mut stack.runtimes, "node");
+        StackProfile::push_unique(&mut stack.package_managers, "npm");
+        for (needle, value) in [
+            ("react", "react"),
+            ("vite", "vite"),
+            ("next", "next"),
+            ("vitest", "vitest"),
+            ("jest", "jest"),
+            ("@playwright/test", "playwright"),
+        ] {
+            if package.contains(needle) {
+                match value {
+                    "vitest" | "jest" => {
+                        StackProfile::push_unique(&mut stack.test_frameworks, value)
+                    }
+                    "playwright" => {
+                        StackProfile::push_unique(&mut stack.test_frameworks, value);
+                        StackProfile::push_unique(&mut stack.browser, value);
+                    }
+                    _ => StackProfile::push_unique(&mut stack.frameworks, value),
+                }
+            }
+        }
+    }
+    if inspect("pyproject.toml").is_some() || inspect("requirements.txt").is_some() {
+        StackProfile::push_unique(&mut stack.languages, "python");
+        StackProfile::push_unique(&mut stack.runtimes, "python3");
+        StackProfile::push_unique(&mut stack.package_managers, "pip");
+    }
+    if inspect("go.mod").is_some() {
+        StackProfile::push_unique(&mut stack.languages, "go");
+        StackProfile::push_unique(&mut stack.package_managers, "go");
+        StackProfile::push_unique(&mut stack.build_tools, "go");
+    }
+    if inspect("compose.yaml").is_some() || inspect("compose.yml").is_some() {
+        StackProfile::push_unique(&mut stack.infra, "podman-compose");
+        StackProfile::push_unique(&mut stack.build_tools, "podman");
+    }
+    if inspect("Dockerfile").is_some() || inspect("Containerfile").is_some() {
+        StackProfile::push_unique(&mut stack.infra, "container");
+    }
+    if inspect("playwright.config.ts").is_some() || inspect("playwright.config.js").is_some() {
+        StackProfile::push_unique(&mut stack.test_frameworks, "playwright");
+        StackProfile::push_unique(&mut stack.browser, "playwright");
+    }
+    if inspect("migrations").is_some() {
+        StackProfile::push_unique(&mut stack.data, "migrations");
+    }
+    if root.join("migrations").is_dir() {
+        StackProfile::push_unique(&mut stack.data, "sqlite");
+        StackProfile::push_unique(&mut stack.data, "migrations");
+    }
+    stack.finish()
+}
+
+/// Deterministic participant plan. The model can propose decomposition, but
+/// this function decides how many roles are compiled and what they may do.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentAssignment {
+    pub role: String,
+    pub specialization: String,
+    pub count: u32,
+    pub read_only: bool,
+    pub tool_pack: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextPolicy {
+    pub compact_at_percent: u8,
+    pub max_consecutive_compactions: u8,
+    pub handoff_at_stable_milestone: bool,
+    pub require_probe_after_handoff: bool,
+}
+
+impl Default for ContextPolicy {
+    fn default() -> Self {
+        Self {
+            compact_at_percent: 70,
+            max_consecutive_compactions: 2,
+            handoff_at_stable_milestone: true,
+            require_probe_after_handoff: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParticipantPlan {
+    pub route: ChangeRoute,
+    pub assurance: Assurance,
+    pub assignments: Vec<AgentAssignment>,
+    pub context_policy: ContextPolicy,
+    pub reasons: Vec<String>,
+}
+
+fn assignment(role: &str, specialization: &str, count: u32, read_only: bool) -> AgentAssignment {
+    AgentAssignment {
+        role: role.into(),
+        specialization: specialization.into(),
+        count,
+        read_only,
+        tool_pack: if read_only {
+            vec!["repository-read".into(), "context-read".into()]
+        } else {
+            vec![
+                "repository-read".into(),
+                "repository-write".into(),
+                "command-execute".into(),
+                "context-read".into(),
+            ]
+        },
+    }
+}
+
+pub fn participant_plan(
+    route: ChangeRoute,
+    assurance: Assurance,
+    work_units: u32,
+    stack: &StackProfile,
+) -> ParticipantPlan {
+    let specialization = stack
+        .languages
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "cross-cutting".into());
+    let units = work_units.max(1);
+    let mut assignments = Vec::new();
+    match route {
+        ChangeRoute::NoAgent => {
+            assignments.push(assignment("Lead", "cross-cutting", 1, true));
+        }
+        ChangeRoute::Direct => {
+            assignments.push(assignment("Implementer", &specialization, 1, false));
+            assignments.push(assignment("Verifier", "deterministic", 1, true));
+            assignments.push(assignment("Reviewer", "cross-cutting", 1, true));
+        }
+        ChangeRoute::Delegated => {
+            assignments.push(assignment("Operation Manager", "cross-cutting", 1, true));
+            assignments.push(assignment("Implementer", &specialization, units, false));
+            assignments.push(assignment("Integrator", "integration", 1, false));
+            assignments.push(assignment("Verifier", "deterministic", 1, true));
+            assignments.push(assignment(
+                "Reviewer",
+                if assurance >= Assurance::Elevated {
+                    "high-assurance"
+                } else {
+                    "cross-cutting"
+                },
+                1,
+                true,
+            ));
+            assignments.push(assignment("Cheap Ops", "test-interpretation", 1, true));
+        }
+        ChangeRoute::FormalSpec => {
+            assignments.push(assignment("Operation Manager", "cross-cutting", 1, true));
+            assignments.push(assignment("Explorer", "repository-discovery", 1, true));
+            assignments.push(assignment("Planner", "decomposition", 1, true));
+            assignments.push(assignment("Spec Manager", "formal-specification", 1, true));
+            assignments.push(assignment("Implementer", &specialization, units, false));
+            assignments.push(assignment("Integrator", "integration", 1, false));
+            assignments.push(assignment("Verifier", "deterministic", 1, true));
+            assignments.push(assignment(
+                "Reviewer",
+                if assurance >= Assurance::Elevated {
+                    "high-assurance"
+                } else {
+                    "cross-cutting"
+                },
+                1,
+                true,
+            ));
+            assignments.push(assignment("Cheap Ops", "test-interpretation", 1, true));
+        }
+        ChangeRoute::Repair => {
+            assignments.push(assignment("Operation Manager", "cross-cutting", 1, true));
+            assignments.push(assignment("Repairer", &specialization, 1, false));
+            assignments.push(assignment("Verifier", "deterministic", 1, true));
+            assignments.push(assignment("Reviewer", "cross-cutting", 1, true));
+        }
+    }
+    let mut reasons = vec![format!(
+        "The deterministic composer selected {} assignment(s) for route {:?} and assurance {:?}.",
+        assignments.len(),
+        route,
+        assurance
+    )];
+    if matches!(route, ChangeRoute::FormalSpec) {
+        reasons.push(
+            "Formal spec requires Explorer, Planner and Spec Manager before implementation.".into(),
+        );
+    }
+    if units > 1 {
+        reasons.push(format!(
+            "{units} independent work units are compiled; shared paths remain serialized."
+        ));
+    }
+    ParticipantPlan {
+        route,
+        assurance,
+        assignments,
+        context_policy: ContextPolicy::default(),
+        reasons,
+    }
+}
+
+/// A bounded handoff record. The summary is advisory; deterministic identity
+/// and evidence references must be copied from Core records.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HandoffSummary {
+    pub objective: String,
+    pub acceptance_criteria: Vec<String>,
+    pub constraints: Vec<String>,
+    pub repo: String,
+    pub branch: String,
+    pub commit: String,
+    pub candidate_commit: Option<String>,
+    pub candidate_tree: Option<String>,
+    pub completed: Vec<String>,
+    pub in_progress: Vec<String>,
+    pub remaining: Vec<String>,
+    pub decisions: Vec<String>,
+    pub changed_files: Vec<String>,
+    pub checks_run: Vec<String>,
+    pub failed_attempts: Vec<String>,
+    pub risks: Vec<String>,
+    pub next_actions: Vec<String>,
+    pub evidence_refs: Vec<String>,
+    pub facts: Vec<String>,
+    pub hypotheses: Vec<String>,
+    pub unverified: Vec<String>,
+    pub budgets: Vec<String>,
+}
+
+impl HandoffSummary {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.objective.trim().is_empty() {
+            return Err("handoff objective is required".into());
+        }
+        if self.commit.trim().is_empty() {
+            return Err("handoff commit is required".into());
+        }
+        if self.next_actions.is_empty() {
+            return Err("handoff must name at least one next action".into());
+        }
+        if self.evidence_refs.is_empty() {
+            return Err("handoff must reference durable evidence".into());
+        }
+        Ok(())
+    }
+}
+
+/// Owner charter. Execution, repair, delivery and policy autonomy are separate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OwnerCharter {
+    pub id: String,
+    pub owner: String,
+    pub projects: Vec<String>,
+    pub domains: Vec<String>,
+    pub risk_appetite: Assurance,
+    pub execution_autonomy: bool,
+    pub repair_autonomy: bool,
+    pub delivery_autonomy: bool,
+    pub policy_autonomy: bool,
+    pub reserved_matters: BTreeSet<String>,
+    pub expires_at: String,
+    pub revoked_at: Option<String>,
+}
+
+impl OwnerCharter {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.id.trim().is_empty() || self.owner.trim().is_empty() {
+            return Err("charter id and owner are required".into());
+        }
+        if self.projects.is_empty() {
+            return Err("charter must name at least one project".into());
+        }
+        if self.policy_autonomy {
+            return Err("a charter cannot grant policy autonomy to a model or Director".into());
+        }
+        if self.reserved_matters.is_empty() {
+            return Err("charter must declare reserved matters".into());
+        }
+        if self.expires_at.trim().is_empty() {
+            return Err("charter expiry is required".into());
+        }
+        Ok(())
+    }
+
+    pub fn covers(&self, project: &str, domain: &str, risk: Assurance, now: &str) -> bool {
+        if self.revoked_at.is_some() || now >= self.expires_at.as_str() {
+            return false;
+        }
+        self.projects.iter().any(|item| item == project)
+            && self.domains.iter().any(|item| item == domain)
+            && risk <= self.risk_appetite
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn temp_dir() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("factory-agentic-{}", uuid::Uuid::new_v4()))
+    }
+
+    fn signals() -> TriageSignals {
+        TriageSignals {
+            objective: "Add a bounded endpoint".into(),
+            files: vec!["src/lib.rs".into()],
+            domains: vec!["api".into()],
+            risk: "low".into(),
+            expected_work_units: None,
+            ambiguous: false,
+            architecture_uncertainty: false,
+            cross_module: false,
+            public_contract: false,
+            data_or_schema: false,
+            security_boundary: false,
+            explicit_informational: false,
+            explicit_audit: false,
+            explicit_repair: false,
+        }
+    }
+
+    #[test]
+    fn informational_and_audit_never_route_to_implementation() {
+        let mut value = signals();
+        value.explicit_informational = true;
+        let decision = triage(&value);
+        assert_eq!(decision.request_kind, RequestKind::Informational);
+        assert_eq!(decision.route, ChangeRoute::NoAgent);
+
+        value = signals();
+        value.explicit_audit = true;
+        let decision = triage(&value);
+        assert_eq!(decision.request_kind, RequestKind::Audit);
+        assert_eq!(decision.route, ChangeRoute::Direct);
+        assert_eq!(decision.assurance, Assurance::Standard);
+    }
+
+    #[test]
+    fn security_and_public_contract_raise_assurance_and_formal_spec() {
+        let mut value = signals();
+        value.security_boundary = true;
+        value.public_contract = true;
+        let decision = triage(&value);
+        assert_eq!(decision.route, ChangeRoute::FormalSpec);
+        assert_eq!(decision.assurance, Assurance::Critical);
+    }
+
+    #[test]
+    fn multi_unit_or_cross_module_requires_delegation() {
+        let mut value = signals();
+        value.expected_work_units = Some(3);
+        let decision = triage(&value);
+        assert_eq!(decision.route, ChangeRoute::FormalSpec);
+        value.expected_work_units = None;
+        value.cross_module = true;
+        let decision = triage(&value);
+        assert_eq!(decision.route, ChangeRoute::FormalSpec);
+    }
+
+    #[test]
+    fn direct_is_reserved_for_bounded_concrete_scope() {
+        let decision = triage(&signals());
+        assert_eq!(decision.route, ChangeRoute::Direct);
+        assert_eq!(decision.assurance, Assurance::None);
+    }
+
+    #[test]
+    fn stack_detection_uses_manifests_and_leaves_unknowns_explicit() {
+        let root = temp_dir();
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname=\"x\"\n[dependencies]\naxum=\"1\"\nsqlx=\"1\"\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("package.json"),
+            r#"{"dependencies":{"react":"1","vite":"1"},"devDependencies":{"vitest":"1","@playwright/test":"1"}}"#,
+        )
+        .unwrap();
+        fs::write(root.join("playwright.config.ts"), "export default {}").unwrap();
+        let stack = detect_stack(&root);
+        assert!(stack.languages.contains(&"rust".into()));
+        assert!(stack.languages.contains(&"typescript".into()));
+        assert!(stack.frameworks.contains(&"axum".into()));
+        assert!(stack.frameworks.contains(&"react".into()));
+        assert!(stack.test_frameworks.contains(&"vitest".into()));
+        assert!(stack.browser.contains(&"playwright".into()));
+        assert_eq!(stack.confidence, "high");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn model_recommendation_can_raise_but_not_lower_the_floor() {
+        let decision = triage(&signals());
+        let model = AgenticTriageModel {
+            request_kind: RequestKind::Change,
+            route: ChangeRoute::FormalSpec,
+            assurance: Assurance::Critical,
+            stack: StackProfile::default(),
+            files: vec!["src/lib.rs".into()],
+            domains: vec![],
+            risk: "low".into(),
+            expected_work_units: Some(1),
+            ambiguous: false,
+            architecture_uncertainty: false,
+            cross_module: false,
+            public_contract: false,
+            data_or_schema: false,
+            security_boundary: false,
+            skill_needs: vec![],
+            unknowns: vec!["version".into()],
+        };
+        let merged = merge_model_decision(decision, &model);
+        assert_eq!(merged.route, ChangeRoute::FormalSpec);
+        assert_eq!(merged.assurance, Assurance::Critical);
+        assert!(merged.unknowns.contains(&"version".into()));
+    }
+
+    #[test]
+    fn participant_composition_is_deterministic_and_minimal() {
+        let stack = StackProfile {
+            languages: vec!["rust".into()],
+            ..StackProfile::default()
+        };
+        let direct = participant_plan(ChangeRoute::Direct, Assurance::None, 1, &stack);
+        assert_eq!(direct.assignments.len(), 3);
+        assert!(direct.assignments.iter().any(|a| a.role == "Implementer"));
+        assert!(
+            direct
+                .assignments
+                .iter()
+                .filter(|a| a.role == "Reviewer")
+                .all(|a| a.read_only)
+        );
+        let formal = participant_plan(ChangeRoute::FormalSpec, Assurance::Elevated, 3, &stack);
+        assert!(formal.assignments.iter().any(|a| a.role == "Planner"));
+        assert!(formal.assignments.iter().any(|a| a.role == "Spec Manager"));
+        assert!(formal.assignments.iter().any(|a| a.count == 3));
+    }
+
+    #[test]
+    fn context_policy_is_bounded() {
+        let policy = ContextPolicy::default();
+        assert_eq!(policy.compact_at_percent, 70);
+        assert_eq!(policy.max_consecutive_compactions, 2);
+        assert!(policy.require_probe_after_handoff);
+    }
+
+    #[test]
+    fn charter_cannot_grant_policy_autonomy_or_outlive_expiry() {
+        let mut charter = OwnerCharter {
+            id: "charter".into(),
+            owner: "owner".into(),
+            projects: vec!["project".into()],
+            domains: vec!["repo".into()],
+            risk_appetite: Assurance::Elevated,
+            execution_autonomy: true,
+            repair_autonomy: true,
+            delivery_autonomy: false,
+            policy_autonomy: false,
+            reserved_matters: BTreeSet::from(["credentials".into()]),
+            expires_at: "2027-01-01T00:00:00Z".into(),
+            revoked_at: None,
+        };
+        assert!(charter.validate().is_ok());
+        assert!(charter.covers(
+            "project",
+            "repo",
+            Assurance::Elevated,
+            "2026-11-08T00:00:00Z"
+        ));
+        assert!(!charter.covers(
+            "project",
+            "repo",
+            Assurance::Critical,
+            "2026-11-08T00:00:00Z"
+        ));
+        charter.policy_autonomy = true;
+        assert!(charter.validate().is_err());
+    }
+}

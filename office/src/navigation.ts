@@ -7,6 +7,7 @@ import {
   Inbox,
   ListChecks,
   Megaphone,
+  Network,
   Settings,
   Sparkles,
 } from "lucide-react";
@@ -46,6 +47,13 @@ export const NAV_GROUPS: NavGroup[] = [
         labelKey: "nav.requests",
         icon: ClipboardList,
         keywords: "requests history status objectives",
+      },
+      {
+        to: "/director",
+        labelKey: "nav.director",
+        icon: Network,
+        keywords:
+          "director portfolio route assurance stack agents participants operation manager planning triage context handoff",
       },
       {
         to: "/inbox",
@@ -137,6 +145,7 @@ export function routeLabel(
   if (pathname.startsWith("/projects/")) return t("nav.projectDetail");
   if (pathname.startsWith("/campaigns/")) return t("nav.campaignDetail");
   if (pathname.startsWith("/agents/")) return t("nav.agentParticipant");
+  if (pathname === "/director") return t("nav.director");
   if (pathname === "/settings" && matchesQuery(search, "tab=access")) {
     return t("nav.accessDevices");
   }
