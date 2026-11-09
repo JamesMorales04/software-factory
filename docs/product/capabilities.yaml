@@ -3072,9 +3072,9 @@ capabilities:
   purpose: Repair a rejected candidate from its exact identity, invalidate stale evidence and revalidate through the deterministic Gate
   product_objective: Productive autonomous recovery
   decision_status: proposed
-  implementation_status: not_implemented
+  implementation_status: in_progress
   verification:
-    deterministic: not_tested
+    deterministic: verified
     live_agent: not_tested
     uat: not_tested
     deployment: not_tested
@@ -3096,13 +3096,14 @@ capabilities:
     deterministic: A RepairPacket binds the exact rejected candidate, findings, failed checks, allowed paths, risk and budget; the Repairer cannot widen scope; Core creates candidate C+1, invalidates C evidence and reruns affected checks plus the full Gate; R0 autonomous repair and at most one R1 cycle follow the policy; critical findings and R2/R3 reserved effects require the owner.
     real: A browser operation turns a real REPAIR_REQUIRED into an accepted candidate without starting from the base commit, or blocks with the exact reason.
   evidence:
-    deterministic: []
+    deterministic:
+    - docs/evidence/repair-from-candidate-2026-11-08/manifest.json
     live_agent: []
     uat: []
     deployment: []
     isolation: []
   limitations:
-  - Autonomous repair is disabled until the phase is implemented and independently accepted.
+  - The operator-confirmed repair path is implemented and exercised; autonomous Gate repair scheduling remains disabled. The implementation is an implementer self-test, not independent acceptance.
   blockers:
   - RepairPacket, Repairer execution and candidate-based workspace remain pending.
 

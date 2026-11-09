@@ -1595,6 +1595,17 @@ export interface AgenticPortfolioEntry {
   updatedAt: string;
 }
 
+export interface RepairCampaignResult {
+  requestId: string;
+  projectId: string;
+  candidateId: string;
+  baseCommit: string;
+  profileId: string;
+  mode: string;
+  grantDelegationId: string;
+  replayed: boolean;
+}
+
 export interface AgenticSemanticAssessment {
   provider: string;
   model: string;
@@ -3088,6 +3099,14 @@ export const coreApi = {
   ) =>
     request<CandidatePullRequestMergeResult>(
       `/campaigns/${encodeURIComponent(campaignId)}/candidates/${encodeURIComponent(candidateId)}/pull-request/merge`,
+      { method: "POST", body: JSON.stringify(input) },
+    ),
+  repairCampaign: (
+    campaignId: string,
+    input: { confirm: boolean; reason: string },
+  ) =>
+    request<RepairCampaignResult>(
+      `/campaigns/${encodeURIComponent(campaignId)}/repair`,
       { method: "POST", body: JSON.stringify(input) },
     ),
   cancelCampaign: (campaignId: string, reason: string) =>

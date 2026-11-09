@@ -455,6 +455,15 @@ struct IntakeMessageRequest {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct RepairCampaignRequest {
+    #[serde(default)]
+    confirm: bool,
+    #[serde(default)]
+    reason: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct CancelIntakeRequest {
     reason: String,
 }
@@ -973,6 +982,7 @@ fn office_api_router(app: Arc<App>) -> Router {
             get(candidate_diff),
         )
         .route("/campaigns/{id}/cancel", post(cancel_campaign))
+        .route("/campaigns/{id}/repair", post(repair_campaign))
         .route("/campaigns/{id}/authorization", get(campaign_authorization))
         .route("/campaigns/{id}/authorize", post(authorize_campaign))
         .route("/campaigns/{id}/runs", post(create_campaign_run))
@@ -1184,6 +1194,7 @@ fn api_router(app: Arc<App>) -> Router {
             get(candidate_diff),
         )
         .route("/campaigns/{id}/cancel", post(cancel_campaign))
+        .route("/campaigns/{id}/repair", post(repair_campaign))
         .route("/runs", get(runs))
         .route("/attempts", get(attempts))
         .route("/events", get(events))
@@ -7467,6 +7478,247 @@ fn candidate_diff_error(
         })),
     )
         .into_response()
+}
+
+async fn repair_campaign(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    body: Bytes,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let input = if body.is_empty() {
+        RepairCampaignRequest {
+            confirm: false,
+            reason: String::new(),
+        }
+    } else {
+        match serde_json::from_slice::<RepairCampaignRequest>(&body) {
+            Ok(input) => input,
+            Err(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error":"invalid repair payload"})),
+                )
+                    .into_response();
+            }
+        }
+    };
+    if !input.confirm {
+        return api_error(Error::Forbidden(
+            "repair requires explicit operator confirmation".into(),
+        ));
+    }
+    if input.reason.len() > 1_000 {
+        return api_error(Error::Invalid("repair reason"));
+    }
+    if let Err(error) = app.db.campaign(&id).await {
+        return api_error(error);
+    }
+    let candidate = match app.db.latest_candidate_for_campaign(&id).await {
+        Ok(candidate) => candidate,
+        Err(error) => return api_error(error),
+    };
+    let gate = match app.db.gate_for_candidate(&candidate.id).await {
+        Ok(Some(gate)) => gate,
+        Ok(None) => {
+            return api_error(Error::Conflict("repair requires a decided Quality Gate"));
+        }
+        Err(error) => return api_error(error),
+    };
+    if gate.outcome != factory_native::quality::GateOutcome::RepairRequired {
+        return api_error(Error::Conflict(
+            "repair is available only for REPAIR_REQUIRED candidates",
+        ));
+    }
+    let intake = match app.db.intake_request_for_campaign(&id).await {
+        Ok(intake) => intake,
+        Err(error) => return api_error(error),
+    };
+    let profile = match app
+        .db
+        .execution_profile_revision(&intake.profile_id, &intake.profile_revision_id)
+        .await
+    {
+        Ok(profile) => profile,
+        Err(error) => return api_error(error),
+    };
+    let proposal = app
+        .db
+        .lead_proposal(&intake.lead_request_id)
+        .await
+        .ok()
+        .and_then(|record| {
+            serde_json::from_str::<factory_native::lead::LeadPlanProposal>(&record.proposal_json)
+                .ok()
+        });
+    let risk = proposal
+        .as_ref()
+        .map(|proposal| proposal.risk_class)
+        .unwrap_or(factory_native::lead::RiskClass::R0);
+    if matches!(
+        risk,
+        factory_native::lead::RiskClass::R2 | factory_native::lead::RiskClass::R3
+    ) {
+        return api_error(Error::Forbidden(
+            "R2 and R3 repair requires an owner decision or a delegated owner charter".into(),
+        ));
+    }
+    let Some(content) = profile.content.v2() else {
+        return api_error(Error::Forbidden(
+            "repair requires a V2 execution profile".into(),
+        ));
+    };
+    if !factory_native::intake::autonomous_subscription_profile(content) {
+        return api_error(Error::Forbidden(
+            "repair currently requires OpenCode Go subscription Lead and implementer routes".into(),
+        ));
+    }
+    let config = match app.db.project_config(&intake.project_id).await {
+        Ok(config) => config,
+        Err(error) => return api_error(error),
+    };
+    let reviewer = app
+        .db
+        .quality_receipts(&candidate.id)
+        .await
+        .ok()
+        .and_then(|receipts| {
+            receipts
+                .into_iter()
+                .find(|receipt| receipt.role == factory_native::db::QualityRole::Reviewer)
+        });
+    let mut findings = Vec::new();
+    if let Some(reviewer) = &reviewer {
+        for finding in reviewer.findings.iter().take(6) {
+            if matches!(
+                finding.severity,
+                factory_native::review::FindingSeverity::Blocking
+                    | factory_native::review::FindingSeverity::Warning
+            ) {
+                findings.push(format!("{:?}: {}", finding.severity, finding.message));
+            }
+        }
+    }
+    if findings.is_empty() {
+        findings.extend(gate.reasons.iter().take(6).cloned());
+    }
+    findings.sort();
+    findings.dedup();
+    let reason = input.reason.trim();
+    let objective = format!(
+        "Repair the rejected candidate {}. Resolve these findings and preserve the frozen objective, allowed paths and quality policy: {}. The repair base is the candidate, not the Project base commit. Add regression coverage for every fixed behavior.{}",
+        candidate.commit_sha,
+        findings.join(" | "),
+        if reason.is_empty() {
+            String::new()
+        } else {
+            format!(" Operator context: {reason}.")
+        }
+    );
+    if objective.len() > 4_000 {
+        return api_error(Error::Invalid("repair objective is too long"));
+    }
+    if let Some(existing) = match app.db.repair_request_for_candidate(&candidate.id).await {
+        Ok(value) => value,
+        Err(error) => return api_error(error),
+    } {
+        return Json(json!({
+            "requestId": existing,
+            "projectId": intake.project_id,
+            "candidateId": candidate.id,
+            "baseCommit": candidate.commit_sha,
+            "profileId": intake.profile_id,
+            "mode": "AUTONOMOUS",
+            "replayed": true,
+        }))
+        .into_response();
+    }
+    let (principal_id, principal_label) =
+        authenticated_operator(session.as_ref().map(|Extension(device)| device));
+    let next_config = if config.base_commit == candidate.commit_sha {
+        config.clone()
+    } else {
+        match app
+            .db
+            .advance_project_base_for_repair(
+                &intake.project_id,
+                &candidate.commit_sha,
+                config.revision,
+            )
+            .await
+        {
+            Ok(config) => config,
+            Err(error) => return api_error(error),
+        }
+    };
+    let grant = match app
+        .db
+        .create_execution_policy_grant(factory_native::db::NewExecutionPolicyGrant {
+            project_id: &intake.project_id,
+            profile_id: &intake.profile_id,
+            expected_revision: profile.revision,
+            expected_revision_hash: &profile.content_hash,
+            project_config_hash: &next_config.config_hash,
+            acknowledge: true,
+            autonomous: true,
+            subscription_confirmed: true,
+            idempotency_key: &format!("repair-policy-base:{}", candidate.id),
+            principal_id: &principal_id,
+            principal_label: principal_label.as_deref(),
+        })
+        .await
+    {
+        Ok(grant) => grant,
+        Err(error) => return api_error(error),
+    };
+    let request_key = format!("repair-request:{}", candidate.id);
+    let (request, created) = match app
+        .db
+        .create_intake_request(
+            &intake.project_id,
+            &objective,
+            Some(&intake.profile_id),
+            factory_native::intake::IntakeMode::Autonomous,
+            &request_key,
+            &principal_id,
+        )
+        .await
+    {
+        Ok(value) => value,
+        Err(error) => return api_error(error),
+    };
+    let linked = match app.db.save_repair_request(&candidate.id, &request.id).await {
+        Ok(request_id) => request_id,
+        Err(error) => return api_error(error),
+    };
+    let should_start = match app.db.intake_request(&linked).await {
+        Ok(record) => record.campaign_id.is_none(),
+        Err(_) => false,
+    };
+    if linked == request.id && should_start {
+        let app_for_autopilot = Arc::clone(&app);
+        let request_id = request.id.clone();
+        tokio::spawn(async move {
+            if let Err(error) = run_autopilot(&app_for_autopilot, &request_id).await {
+                fail_autopilot(&app_for_autopilot, &request_id, &error).await;
+            }
+        });
+    }
+    Json(json!({
+        "requestId": linked,
+        "projectId": request.project_id,
+        "candidateId": candidate.id,
+        "baseCommit": candidate.commit_sha,
+        "profileId": request.profile_id,
+        "mode": "AUTONOMOUS",
+        "grantDelegationId": grant.delegation.id,
+        "replayed": !created || linked != request.id,
+    }))
+    .into_response()
 }
 
 async fn cancel_campaign(

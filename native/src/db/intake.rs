@@ -329,6 +329,19 @@ impl Database {
         Ok(records)
     }
 
+    pub async fn intake_request_for_campaign(
+        &self,
+        campaign_id: &str,
+    ) -> Result<IntakeRequestRecord, Error> {
+        let row: Option<(String,)> =
+            sqlx::query_as::query_as("SELECT id FROM intake_requests WHERE campaign_id=?1")
+                .bind(campaign_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        let (id,) = row.ok_or(Error::NotFound)?;
+        self.intake_request(&id).await
+    }
+
     pub async fn intake_messages(
         &self,
         request_id: &str,

@@ -432,6 +432,64 @@ impl Database {
         Ok(rows.into_iter().map(candidate_from_columns).collect())
     }
 
+    /// Latest candidate produced by a Campaign. Repair always starts from the
+    /// exact rejected candidate, never from the Project base commit.
+    pub async fn latest_candidate_for_campaign(
+        &self,
+        campaign_id: &str,
+    ) -> Result<CandidateRecord, Error> {
+        let row: Option<CandidateColumns> = sqlx::query_as::query_as(
+            "SELECT cd.id,cd.attempt_id,cd.action_spec_sha256,cd.commit_sha,cd.tree_sha,
+                    cd.implementer_id,cd.created_at,cd.integration,cd.lineage_json
+             FROM candidates cd
+             JOIN attempts a ON a.id=cd.attempt_id
+             JOIN runs r ON r.id=a.run_id
+             WHERE r.campaign_id=?1
+             ORDER BY cd.created_at DESC,cd.id DESC LIMIT 1",
+        )
+        .bind(campaign_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(candidate_from_columns).ok_or(Error::NotFound)
+    }
+
+    pub async fn repair_request_for_candidate(
+        &self,
+        candidate_id: &str,
+    ) -> Result<Option<String>, Error> {
+        let row: Option<(String,)> = sqlx::query_as::query_as(
+            "SELECT request_id FROM repair_requests WHERE candidate_id=?1",
+        )
+        .bind(candidate_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|(request_id,)| request_id))
+    }
+
+    pub async fn save_repair_request(
+        &self,
+        candidate_id: &str,
+        repair_request_id: &str,
+    ) -> Result<String, Error> {
+        if candidate_id.trim().is_empty() || repair_request_id.trim().is_empty() {
+            return Err(Error::Invalid("repair request link"));
+        }
+        let _write = self.write_lock.lock().await;
+        sqlx::query::query(
+            "INSERT INTO repair_requests(candidate_id,request_id,created_at)
+             VALUES (?1,?2,?3)
+             ON CONFLICT(candidate_id) DO NOTHING",
+        )
+        .bind(candidate_id)
+        .bind(repair_request_id)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&self.pool)
+        .await?;
+        self.repair_request_for_candidate(candidate_id)
+            .await?
+            .ok_or(Error::NotFound)
+    }
+
     pub async fn candidate(&self, id: &str) -> Result<CandidateRecord, Error> {
         let mut connection = self.pool.acquire().await?;
         load_candidate(&mut connection, id).await

@@ -3449,4 +3449,16 @@ export const es: Catalog = {
   "director.semantic.none": "Ninguna registrada",
   "director.semantic.empty":
     "No hay evaluación semántica registrada. La ruta, assurance y stack actuales son solo evidencia determinista.",
+  "request.repair.title": "Reparar desde este candidato",
+  "request.repair.badge": "REPAIR_REQUIRED",
+  "request.repair.description":
+    "Inicia una nueva solicitud gobernada desde el candidato rechazado exacto. Las reparaciones R0 y R1 están disponibles para el operador autenticado; R2 y R3 requieren decisión del propietario o un charter delegado. La base del Proyecto avanza a este candidato.",
+  "request.repair.open": "Reparar este candidato…",
+  "request.repair.reason": "Contexto del operador para la reparación",
+  "request.repair.confirm":
+    "Confirmo el candidato exacto, el avance de la base del Proyecto y el objetivo de reparación acotado.",
+  "request.repair.start": "Iniciar reparación",
+  "request.repair.starting": "Iniciando reparación…",
+  "request.repair.cancel": "Cancelar",
+  "request.repair.error": "No se pudo iniciar la reparación.",
 };

@@ -3319,6 +3319,18 @@ export const en = {
   "director.semantic.none": "None recorded",
   "director.semantic.empty":
     "No semantic assessment is recorded. The current route, assurance and stack are deterministic evidence only.",
+  "request.repair.title": "Repair from this candidate",
+  "request.repair.badge": "REPAIR_REQUIRED",
+  "request.repair.description":
+    "Start a new governed request from the exact rejected candidate. R0 and R1 repairs are available to the authenticated operator; R2 and R3 require an owner decision or delegated charter. The Project base advances to this candidate.",
+  "request.repair.open": "Repair this candidate…",
+  "request.repair.reason": "Operator context for the repair",
+  "request.repair.confirm":
+    "I confirm the exact candidate, the advanced Project base and the bounded repair objective.",
+  "request.repair.start": "Start repair",
+  "request.repair.starting": "Starting repair…",
+  "request.repair.cancel": "Cancel",
+  "request.repair.error": "The repair request could not be started.",
 } as const;
 
 export type MessageKey = keyof typeof en;

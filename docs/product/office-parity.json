@@ -742,6 +742,38 @@
         "office/e2e-browser/rust-journey.mjs"
       ],
       "notes": "Projection slice only. Core returns the portfolio from intake requests, a deterministic StackProfile and ParticipantPlan, and an optional persisted semantic triage. The real model call is browser-triggered and requires an active request-scoped subscription admission. Operation Manager runtime, concurrency, worktree scheduling, repair, Executor/Librarian/skills and dynamic fleets remain pending. The Director page never grants authority or accepts work."
+    },
+    "CAP-064": {
+      "name": "Bounded repair orchestration",
+      "user_facing": true,
+      "job": "Repair a rejected candidate from its exact identity, preserve scope and rerun the deterministic Gate, with explicit operator confirmation and R2/R3 owner gating.",
+      "routes": [
+        "/requests/:requestId"
+      ],
+      "core_api": [
+        "POST /campaigns/{id}/repair"
+      ],
+      "user_actions": [
+        "inspect a REPAIR_REQUIRED candidate and its exact finding",
+        "enter operator context and confirm the exact-candidate repair",
+        "start the repair request and follow it to the next Gate decision"
+      ],
+      "states": [
+        "repair-available",
+        "confirm-required",
+        "starting",
+        "replayed",
+        "request-created",
+        "blocked",
+        "accepted",
+        "responsive"
+      ],
+      "acceptance": [
+        "office/src/views/RequestWorkspace.test.tsx",
+        "docs/evidence/repair-from-candidate-2026-11-08/manifest.json",
+        "office/e2e-browser/rust-journey.mjs"
+      ],
+      "notes": "Operator-confirmed R0/R1 repair from the exact rejected candidate. Core creates a new authorized request, advances the Project base to that candidate, links the repair to the immutable Gate decision and reruns the full Gate. R2/R3 are refused pending owner charter enforcement. Automatic Gate repair and Operation Manager concurrency remain pending. The repair is a new request, not an in-place mutation of the rejected Campaign."
     }
   },
   "deferred": [

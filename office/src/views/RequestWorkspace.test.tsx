@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   approveIntakeRequest: vi.fn(),
   messageIntakeRequest: vi.fn(),
   cancelIntakeRequest: vi.fn(),
+  repairCampaign: vi.fn(),
 }));
 
 vi.mock("../coreApi", () => ({
@@ -215,6 +216,16 @@ describe("RequestWorkspace", () => {
     mocks.approveIntakeRequest.mockReset().mockResolvedValue(awaiting);
     mocks.messageIntakeRequest.mockReset().mockResolvedValue(awaiting);
     mocks.cancelIntakeRequest.mockReset().mockResolvedValue(awaiting);
+    mocks.repairCampaign.mockReset().mockResolvedValue({
+      requestId: "repair-1",
+      projectId: "project-1",
+      candidateId: "candidate-1",
+      baseCommit: "c".repeat(40),
+      profileId: "profile-1",
+      mode: "AUTONOMOUS",
+      grantDelegationId: "delegation-1",
+      replayed: false,
+    });
   });
 
   it("runs autonomous requests without manual assessment or approval controls", async () => {
@@ -409,6 +420,35 @@ describe("RequestWorkspace", () => {
       (screen.getByLabelText("Message the Factory") as HTMLTextAreaElement)
         .value,
     ).toBe("");
+  });
+
+  it("starts a bounded repair from the exact rejected candidate after confirmation", async () => {
+    mocks.getIntakeRequest.mockResolvedValue(
+      makeProjection({
+        campaignId: "campaign-1",
+        campaignStatus: "AUTHORIZED",
+        gateOutcome: "REPAIR_REQUIRED",
+      }),
+    );
+    renderRequest();
+    await screen.findByText("Keep the API backward compatible.");
+    await userEvent.click(
+      screen.getByRole("button", { name: "Repair this candidate…" }),
+    );
+    await userEvent.type(
+      screen.getByLabelText("Operator context for the repair"),
+      "Fix the date validator and keep the public API stable.",
+    );
+    await userEvent.click(
+      screen.getByRole("checkbox", {
+        name: /I confirm the exact candidate/,
+      }),
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Start repair" }));
+    expect(mocks.repairCampaign).toHaveBeenCalledWith("campaign-1", {
+      confirm: true,
+      reason: "Fix the date validator and keep the public API stable.",
+    });
   });
 
   it("does not accept amendments through the message composer after freeze", async () => {

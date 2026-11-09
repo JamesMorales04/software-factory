@@ -73,6 +73,56 @@ impl Database {
         Ok(next)
     }
 
+    /// Advance the Project base to the exact candidate under repair. The
+    /// candidate is already a Factory-authored commit; the new config revision
+    /// keeps the same scope and quality policy and records a new hash.
+    pub async fn advance_project_base_for_repair(
+        &self,
+        project_id: &str,
+        candidate_commit: &str,
+        expected_config_revision: u32,
+    ) -> Result<ProjectConfig, Error> {
+        if candidate_commit.len() != 40
+            || !candidate_commit
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(Error::Invalid("repair candidate commit"));
+        }
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin().await?;
+        let current = load_project_config(&mut transaction, project_id).await?;
+        if current.revision != expected_config_revision {
+            return Err(Error::Conflict("project config revision is stale"));
+        }
+        sqlx::query::query("UPDATE projects SET base_commit=?1 WHERE id=?2")
+            .bind(candidate_commit)
+            .bind(project_id)
+            .execute(&mut *transaction)
+            .await?;
+        let mut next = current;
+        next.revision = next
+            .revision
+            .checked_add(1)
+            .ok_or(Error::Constraint("project config revision overflow".into()))?;
+        next.base_commit = candidate_commit.into();
+        next.updated_at = Utc::now().to_rfc3339();
+        next.config_hash = next.compute_hash();
+        write_project_config(&mut transaction, &next).await?;
+        record_event(
+            &mut transaction,
+            project_id,
+            "project.config_updated",
+            &format!(
+                "repair_base_candidate={} revision={}",
+                candidate_commit, next.revision
+            ),
+        )
+        .await?;
+        transaction.commit().await?;
+        Ok(next)
+    }
+
     pub(super) async fn ensure_project_config(
         &self,
         transaction: &mut SqliteConnection,
@@ -228,6 +278,32 @@ mod tests {
             .unwrap();
         drop(connection);
         (path, db)
+    }
+
+    #[tokio::test]
+    async fn repair_base_advances_the_project_and_config_with_stale_fencing() {
+        let (path, db) = fixture().await;
+        let candidate = "c".repeat(40);
+        let advanced = db
+            .advance_project_base_for_repair("project", &candidate, 1)
+            .await
+            .unwrap();
+        assert_eq!(advanced.revision, 2);
+        assert_eq!(advanced.base_commit, candidate);
+        assert_eq!(advanced.config_hash, advanced.compute_hash());
+        let stored: (String,) =
+            sqlx::query_as::query_as("SELECT base_commit FROM projects WHERE id='project'")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(stored.0, candidate);
+        assert!(matches!(
+            db.advance_project_base_for_repair("project", &"d".repeat(40), 1)
+                .await,
+            Err(Error::Conflict(_))
+        ));
+        db.close().await;
+        let _ = std::fs::remove_file(path);
     }
 
     #[tokio::test]

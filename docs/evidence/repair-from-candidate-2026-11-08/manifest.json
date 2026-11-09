@@ -1,0 +1,102 @@
+{
+  "schema": "factory.repair-from-candidate.v1",
+  "schema_version": 1,
+  "result": "PASS",
+  "kind": "implementer-browser-and-real-model-self-test",
+  "captured_at": "2026-11-08T22:10:00Z",
+  "candidate": "branch factory/agentic-flow-20261108; exact code commit is recorded in pull request #96",
+  "environment": {
+    "runtime": "rootless Podman Compose developer-preview stack",
+    "office": "http://127.0.0.1:8893",
+    "browser": "Chromium 1248 via Playwright",
+    "provider": "OpenCode Go / deepseek-v4.1-flash"
+  },
+  "rejected_candidate": {
+    "campaign": "9f489f05-a34f-4511-8a75-4e1166accb44",
+    "candidate": "95260caf-48e8-4cd6-ae04-96e2c39bb704",
+    "commit": "dbbfa1d6eb62d2e354befef224d1de95f208265f",
+    "gate": "REPAIR_REQUIRED",
+    "finding": "validate_date accepted plus-prefixed non-YYYY-MM-DD components such as 2025-+1-01."
+  },
+  "repair": {
+    "request": "e24755c6-301c-49d0-914a-acf24bdb7942",
+    "campaign": "0a81b768-3349-4b4f-b415-f5678a2779e0",
+    "candidate": "42dd71d7-a4c0-4bda-ab7a-202a65d0e239",
+    "commit": "88ca73d72a09b53973e99bea3ad66db66d22b755",
+    "base_commit": "dbbfa1d6eb62d2e354befef224d1de95f208265f",
+    "gate": "ACCEPTED",
+    "changed_files": ["src/lib.rs", "tests/calendar_tests.rs"],
+    "behavior": "The date validator now requires ASCII digits in every component and a regression test rejects 2025-+1-01."
+  },
+  "ui_matrix": [
+    {
+      "id": "R1",
+      "surface": "Request workspace / REPAIR_REQUIRED",
+      "control_or_state": "Repair panel",
+      "expected": "The operator sees the exact-candidate repair action only for a decided REPAIR_REQUIRED campaign.",
+      "result": "PASS",
+      "evidence": "repair-panel-1440.png"
+    },
+    {
+      "id": "R2",
+      "surface": "Request workspace / repair form",
+      "control_or_state": "Operator context and exact-candidate confirmation",
+      "expected": "The repair cannot start without explicit confirmation; the reason is sent to Core.",
+      "result": "PASS",
+      "evidence": "RequestWorkspace.test.tsx; repair-panel-1440.png"
+    },
+    {
+      "id": "R3",
+      "surface": "Request workspace / repair submit",
+      "control_or_state": "Start repair",
+      "expected": "Core advances the Project base to the candidate, authorizes a new request and navigates to it.",
+      "result": "PASS",
+      "evidence": "repair-accepted-1440.png; request e24755c6"
+    },
+    {
+      "id": "R4",
+      "surface": "Repair request / completed",
+      "control_or_state": "Real repair campaign",
+      "expected": "The new candidate fixes the exact finding, adds regression coverage and reaches Gate ACCEPTED.",
+      "result": "PASS",
+      "evidence": "repair-accepted-1440.png; campaign 0a81b768; candidate 42dd71d7"
+    },
+    {
+      "id": "R5",
+      "surface": "Repair request at 390 px",
+      "control_or_state": "Responsive result",
+      "expected": "No horizontal overflow and the accepted state remains readable.",
+      "result": "PASS",
+      "evidence": "repair-accepted-390.png; scrollWidth=390, clientWidth=390"
+    },
+    {
+      "id": "R6",
+      "surface": "Repair flow",
+      "control_or_state": "R2/R3 repair",
+      "expected": "R2/R3 must require an owner decision or delegated charter.",
+      "result": "NOT_TESTED",
+      "evidence": "Core refuses R2/R3 in this endpoint; no owner-charter runtime exists yet."
+    },
+    {
+      "id": "R7",
+      "surface": "Repair flow",
+      "control_or_state": "Automatic Gate repair scheduling",
+      "expected": "A denied autonomous repair authorization does not auto-start; the operator must click repair.",
+      "result": "PASS",
+      "evidence": "Original repair_authorization decision DENIED (autonomy_disabled); the browser action created the repair request."
+    }
+  ],
+  "checks": {
+    "real_model": "PASS — the repair request used the frozen OpenCode Go profile and real deepseek-v4.1-flash inference.",
+    "browser": "PASS — panel, confirmation, submit and completed repair observed in Chromium; zero console errors and zero unexpected 4xx/5xx.",
+    "deterministic": "PASS — Project base advance and stale-revision fencing are covered by a DB test."
+  },
+  "limitations": [
+    "Implementer self-test, not independent acceptance.",
+    "R2/R3 repair remains owner-charter-gated and is refused by this endpoint.",
+    "The repair advances the Project base to the rejected candidate; subsequent requests start from that candidate. This is documented behavior, not an acceptance claim.",
+    "Autonomous Gate repair remains disabled; the operator explicitly initiates the repair.",
+    "Operation Manager, concurrent operation scheduling and the remaining agentic phases are not implemented in this slice.",
+    "TRUSTED_LOCAL is not isolation or certification."
+  ]
+}

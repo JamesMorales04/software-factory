@@ -34,6 +34,13 @@ commit
   measured usage.
 - Component tests and browser evidence at
   `docs/evidence/director-projection-2026-11-08/`.
+- **Phase 3 repair (operator-confirmed R0/R1):** `POST /campaigns/{id}/repair`
+  advances the Project base to the exact rejected candidate, creates a new
+  authorized autonomous request, links the immutable Gate decision, and reruns
+  the full Gate. Real browser repair of candidate `dbbfa1d6` fixed the date
+  validator and reached `ACCEPTED` at candidate `88ca73d7`; evidence is in
+  `docs/evidence/repair-from-candidate-2026-11-08/`. R2/R3 are refused pending
+  the owner charter.
 
 ## Live evidence
 
@@ -45,7 +52,7 @@ commit
 
 ## What remains
 
-### Phase 2 — Operation Manager and concurrency
+### Phase 2 — Operation Manager and concurrency (next)
 
 - Add durable `agentic_operations` linked to intake/lead/campaign.
 - Director per owner; Operation Manager per operation.
