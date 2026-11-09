@@ -152,13 +152,13 @@ impl Database {
                 (_, Some("REPAIR_REQUIRED" | "REJECTED")) => Some("FAILED"),
                 _ => None,
             };
-            if let Some(target) = target {
-                if target != operation.status {
-                    changed.push(
-                        self.set_agentic_operation_status(&operation.request_id, target)
-                            .await?,
-                    );
-                }
+            if let Some(target) = target
+                && target != operation.status
+            {
+                changed.push(
+                    self.set_agentic_operation_status(&operation.request_id, target)
+                        .await?,
+                );
             }
         }
         Ok(changed)
