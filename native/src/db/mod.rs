@@ -10,7 +10,7 @@ use sqlx_sqlite::{
 use crate::lead::SpecCheck;
 use crate::quality::{
     AuthorizationStatus, EvidenceKind, FrozenActionSpec, GateOutcome, GatePolicy, ReceiptResult,
-    ReviewerReceipt, RiskStatus, VerifierReceipt, evaluate_quality_gate,
+    ReviewerReceipt, RiskStatus, VerifierReceipt,
 };
 use crate::workspace::verify_candidate_commit;
 
@@ -158,6 +158,14 @@ pub struct Attempt {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AssignmentSkill {
+    pub id: String,
+    pub name: String,
+    pub instructions: String,
+    pub tools: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorkerAssignment {
     pub lease: WorkerLease,
     pub campaign_id: String,
@@ -187,6 +195,10 @@ pub struct WorkerAssignment {
     /// layer never invents or stores this capability.
     #[serde(default)]
     pub attempt_grant: String,
+    /// Read-only adopted skills. Core populates them from durable adoption
+    /// records at claim time; they cannot widen tools or authority.
+    #[serde(default)]
+    pub skills: Vec<AssignmentSkill>,
 }
 
 #[derive(Clone, Debug)]
@@ -373,7 +385,7 @@ pub enum QualityRole {
 }
 
 impl QualityRole {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Verifier => "verifier",
             Self::Reviewer => "reviewer",
@@ -877,6 +889,12 @@ pub use authorization::{
     CampaignAuthorizationRecord, NO_BILLABLE_ENVELOPE, NewCampaignAuthorization,
     SubscriptionFundingRecord,
 };
+mod agentic_assessments;
+mod agentic_charter;
+mod agentic_knowledge;
+mod agentic_operations;
+mod agentic_participants;
+mod agentic_plans;
 mod delegations;
 mod device_sessions;
 pub use device_sessions::{DeviceSessionRecord, NewDeviceSession};
@@ -936,6 +954,21 @@ pub use execution_receipts::{ExecutionCheckInput, ExecutionCheckReceiptRecord};
 mod provider_sessions;
 mod provider_settings;
 mod subscription_admissions;
+pub use agentic_assessments::{AgenticAssessmentRecord, NewAgenticAssessment};
+pub use agentic_charter::{
+    AgenticCharterRecord, AgenticOwnerDecisionRecord, NewAgenticCharter, NewAgenticOwnerDecision,
+    RESERVED_MATTERS,
+};
+pub use agentic_knowledge::{
+    AgenticKnowledgePackRecord, AgenticSkillAdoptionRecord, AgenticSkillRecord,
+    AgenticSkillUseRecord, NewAgenticKnowledgePack, NewAgenticSkill,
+};
+pub use agentic_operations::AgenticOperationRecord;
+pub use agentic_participants::AgenticParticipantPlanRecord;
+pub use agentic_plans::{
+    AgenticSpecIssueRecord, AgenticSpecPublicationRecord, AgenticSpecRecord,
+    AgenticWorkGraphRecord, NewAgenticSpecDraft, NewAgenticSpecPublication, NewAgenticWorkGraph,
+};
 pub use provider_settings::{ProviderSettingsAudit, ProviderSettingsRecord, ProviderSettingsWrite};
 pub use subscription_admissions::{ScopeAdmissionRecord, ScopeAdmissionWrite};
 mod runtime_settings;

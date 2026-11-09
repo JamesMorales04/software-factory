@@ -14,8 +14,10 @@ import { useI18n } from "./i18n";
 import { AgentOffice } from "./views/AgentOffice";
 import { CampaignDetail } from "./views/CampaignDetail";
 import { Campaigns } from "./views/Campaigns";
+import { Charter } from "./views/Charter";
 import { DecisionInbox } from "./views/DecisionInbox";
 import { DevicePairClaim } from "./views/DevicePairClaim";
+import { Director } from "./views/Director";
 import { Home } from "./views/Home";
 import { Issues } from "./views/Issues";
 import { ProjectDetail } from "./views/ProjectDetail";
@@ -25,6 +27,8 @@ import { Requests } from "./views/Requests";
 import { RequestWorkspace } from "./views/RequestWorkspace";
 import { Runtime } from "./views/Runtime";
 import { Settings } from "./views/Settings";
+import { Skills } from "./views/Skills";
+import { Specs } from "./views/Specs";
 
 function BootstrapGate({
   onComplete,
@@ -229,6 +233,7 @@ export function App() {
       <Routes>
         <Route path="/" element={<Home />} />
         <Route path="/requests" element={<Requests />} />
+        <Route path="/director" element={<Director />} />
         <Route path="/requests/:requestId" element={<RequestWorkspace />} />
         <Route path="/inbox" element={<DecisionInbox />} />
         <Route path="/projects" element={<Projects />} />
@@ -236,6 +241,9 @@ export function App() {
         <Route path="/projects/:projectId/files" element={<ProjectFiles />} />
         <Route path="/campaigns" element={<Campaigns />} />
         <Route path="/issues" element={<Issues />} />
+        <Route path="/specs" element={<Specs />} />
+        <Route path="/skills" element={<Skills />} />
+        <Route path="/charter" element={<Charter />} />
         <Route path="/campaigns/:campaignId" element={<CampaignDetail />} />
         <Route path="/agents" element={<AgentOffice />} />
         <Route path="/agents/:participantId" element={<AgentOffice />} />

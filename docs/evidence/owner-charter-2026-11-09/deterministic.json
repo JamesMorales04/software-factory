@@ -1,0 +1,52 @@
+{
+ "schema": "factory.deterministic-evidence.v1",
+ "schema_version": 1,
+ "result": "PASS",
+ "kind": "deterministic-test-evidence",
+ "captured_at": "2026-11-09T07:00:00Z",
+ "candidate": "branch factory/agentic-flow-20261108; exact code commit is recorded in pull request #96",
+ "scope": "Owner charter persistence, separate autonomy flags, reserved matters, expiry, revocation, owner decisions with options/evidence/recommendation/deadline and explicit resolution.",
+ "checks": [
+  {
+   "id": "D1",
+   "name": "strict Clippy and Rust tests",
+   "pass": true,
+   "detail": "cargo clippy -D warnings and cargo test --all-features --lib: 600 passed"
+  },
+  {
+   "id": "D2",
+   "name": "charter persistence",
+   "pass": true,
+   "detail": "db::intake::tests::owner_charter_and_reserved_decision_are_durable creates an R1 charter with execution/repair autonomy, reads it as active and revokes it"
+  },
+  {
+   "id": "D3",
+   "name": "reserved decision",
+   "pass": true,
+   "detail": "the same test creates a PENDING credentials decision with APPROVE/DENY options, DENY recommendation and deadline, then resolves it to APPROVED"
+  },
+  {
+   "id": "D4",
+   "name": "charter domain invariants",
+   "pass": true,
+   "detail": "OwnerCharter::validate rejects policy autonomy, empty reserved matters, expiry and scope; the DB validates reserved matter names and expiry"
+  },
+  {
+   "id": "D5",
+   "name": "Office projections",
+   "pass": true,
+   "detail": "Charter.test.tsx covers create, active list, open decision, resolve and revoke; Office typecheck and Biome lint pass"
+  },
+  {
+   "id": "D6",
+   "name": "endpoint authorization",
+   "pass": true,
+   "detail": "the Core route test rejects unauthenticated charter and decision calls"
+  }
+ ],
+ "limitations": [
+  "Only live charter creation, decision opening and resolution were browser-exercised; revocation and expiry are deterministic.",
+  "Delivery effects and autonomous R2/R3 execution remain owner-controlled and are not claimed."
+ ],
+ "candidate_sha": "29221072834c124d8dd1186eedbaf7c2a65f185a"
+}

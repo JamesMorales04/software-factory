@@ -315,9 +315,13 @@ impl Database {
     ) -> Result<Vec<IntakeRequestRecord>, Error> {
         let mut connection = self.pool.acquire().await?;
         let rows = sqlx::query::query(
-            "SELECT id FROM intake_requests
-             WHERE mode='AUTONOMOUS' AND campaign_id IS NULL
-             ORDER BY created_at ASC,id ASC",
+            "SELECT ir.id FROM intake_requests ir
+             JOIN lead_requests lr ON lr.id=ir.lead_request_id
+             LEFT JOIN lead_withdrawals lw ON lw.request_id=lr.id
+             WHERE ir.mode='AUTONOMOUS' AND ir.campaign_id IS NULL
+               AND lr.state NOT IN ('BLOCKED','FAILED')
+               AND lw.request_id IS NULL
+             ORDER BY ir.created_at ASC,ir.id ASC",
         )
         .fetch_all(&mut *connection)
         .await?;
@@ -327,6 +331,19 @@ impl Database {
             records.push(load_intake_request(&mut connection, &id).await?);
         }
         Ok(records)
+    }
+
+    pub async fn intake_request_for_campaign(
+        &self,
+        campaign_id: &str,
+    ) -> Result<IntakeRequestRecord, Error> {
+        let row: Option<(String,)> =
+            sqlx::query_as::query_as("SELECT id FROM intake_requests WHERE campaign_id=?1")
+                .bind(campaign_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        let (id,) = row.ok_or(Error::NotFound)?;
+        self.intake_request(&id).await
     }
 
     pub async fn intake_messages(
@@ -797,7 +814,9 @@ impl Database {
                 available: false,
                 reason: Some(IntakeAuthorizationReason::Withdrawn.as_str().into()),
             },
-            IntakeState::Blocked | IntakeState::Failed => IntakeAuthorizationState::not_required(),
+            IntakeState::Blocked | IntakeState::Failed | IntakeState::Assessed => {
+                IntakeAuthorizationState::not_required()
+            }
             IntakeState::Submitted | IntakeState::Assessing => {
                 IntakeAuthorizationState::blocked(IntakeAuthorizationReason::FrozenPlanRequired)
             }
@@ -893,6 +912,26 @@ pub(super) async fn create_intake_request_in_tx(
     .bind(&record.created_at)
     .execute(&mut *transaction)
     .await?;
+    sqlx::query::query(
+        "INSERT INTO agentic_operations
+         (id,request_id,project_id,director_id,operation_manager_id,priority,status,
+          worktree_policy,created_at,updated_at)
+         VALUES (?1,?2,?3,?4,?5,100,'QUEUED','PER_ATTEMPT',?6,?6)",
+    )
+    .bind(format!("operation-{}", record.id))
+    .bind(&record.id)
+    .bind(project_id)
+    .bind(format!("director:{}", grant.principal_id))
+    .bind(format!("operation-manager:{}", record.id))
+    .bind(&now)
+    .execute(&mut *transaction)
+    .await?;
+    if !matches!(mode, IntakeMode::Autonomous) {
+        sqlx::query::query("UPDATE agentic_operations SET status='OBSERVED' WHERE request_id=?1")
+            .bind(&record.id)
+            .execute(&mut *transaction)
+            .await?;
+    }
     let context_json = serde_json::to_string(&serde_json::json!({
         "schema":"factory-lead-execution-context-v1",
         "projectId":project_id,
@@ -2285,6 +2324,479 @@ mod tests {
             .unwrap();
         assert!(created);
         assert_eq!(request.mode, IntakeMode::Autonomous);
+        let operation = db.agentic_operation_for_request(&request.id).await.unwrap();
+        assert_eq!(operation.priority, 100);
+        assert_eq!(operation.status, "QUEUED");
+        assert_eq!(operation.worktree_policy, "PER_ATTEMPT");
+        let operation = db
+            .set_agentic_operation_priority(&request.id, 10)
+            .await
+            .unwrap();
+        assert_eq!(operation.priority, 10);
+        let operation = db
+            .set_agentic_operation_status(&request.id, "EXECUTING")
+            .await
+            .unwrap();
+        assert_eq!(operation.status, "EXECUTING");
+        let now = chrono::Utc::now().to_rfc3339();
+        let action_id: (String,) =
+            sqlx::query_as::query_as("SELECT action_id FROM intake_requests WHERE id=?1")
+                .bind(&request.id)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        sqlx::query::query(
+            "INSERT INTO campaigns(id,action_id,status,created_at)
+             VALUES ('operation-campaign',?1,'CANCELLED',?2)",
+        )
+        .bind(&action_id.0)
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "UPDATE intake_requests SET campaign_id='operation-campaign' WHERE id=?1",
+        )
+        .bind(&request.id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let changed = db.reconcile_agentic_operations().await.unwrap();
+        assert_eq!(changed.len(), 1);
+        assert_eq!(changed[0].status, "CANCELLED");
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn work_graph_and_spec_freeze_bind_exact_revisions() {
+        let (path, db, profile, config) = fixture().await;
+        let _ = config;
+        let policy = create_policy(&db, &profile, &config).await;
+        let _ = policy;
+        let request = create_request(&db, &profile, "spec-request").await;
+        let graph_model = crate::agentic::WorkGraphModel {
+            units: vec![
+                crate::agentic::PlannedWorkUnit {
+                    id: "model".into(),
+                    title: "Model".into(),
+                    objective: "Implement the validator".into(),
+                    depends_on: vec![],
+                    paths: vec!["src/model.rs".into()],
+                    acceptance: vec!["invalid input is rejected".into()],
+                },
+                crate::agentic::PlannedWorkUnit {
+                    id: "api".into(),
+                    title: "API".into(),
+                    objective: "Expose the validator".into(),
+                    depends_on: vec!["model".into()],
+                    paths: vec!["src/api.rs".into()],
+                    acceptance: vec!["the endpoint returns the result".into()],
+                },
+            ],
+            assumptions: vec![],
+            risks: vec![],
+        };
+        let graph = crate::agentic::validate_work_graph(&graph_model, &["src".into()]).unwrap();
+        let saved = db
+            .save_agentic_work_graph(&crate::db::NewAgenticWorkGraph {
+                request_id: &request.id,
+                graph: &graph,
+                provider: "opencode",
+                model: "deepseek-v4.1-flash",
+                schema_sha256: &"a".repeat(64),
+                request_sha256: &"b".repeat(64),
+                input_tokens: 10,
+                output_tokens: 5,
+                total_tokens: 15,
+                cost_micros: 1,
+                usage_known: true,
+            })
+            .await
+            .unwrap();
+        assert_eq!(saved.graph_sha256, graph.graph_sha256);
+        let stack = crate::agentic::StackProfile {
+            languages: vec!["rust".into()],
+            ..crate::agentic::StackProfile::default()
+        };
+        let plan = crate::agentic::participant_plan_for_graph(
+            crate::agentic::ChangeRoute::FormalSpec,
+            crate::agentic::Assurance::Elevated,
+            &graph,
+            &stack,
+            "opencode",
+            "deepseek-v4.1-flash",
+            "build",
+        );
+        let plan_record = db
+            .save_agentic_participant_plan(&request.id, Some(&graph.graph_sha256), &plan)
+            .await
+            .unwrap();
+        assert_eq!(plan_record.reviewer_count, 2);
+        assert_eq!(plan_record.work_units, 2);
+        assert_eq!(
+            plan_record.graph_sha256.as_deref(),
+            Some(graph.graph_sha256.as_str())
+        );
+        let draft_model = crate::agentic::SpecDraftModel {
+            summary: "Bounded validator".into(),
+            requirements: vec![crate::agentic::SpecRequirementDraft {
+                statement: "Invalid input is rejected.".into(),
+                acceptance: vec!["invalid input returns an error".into()],
+                negative: vec!["valid input is accepted".into()],
+            }],
+            assumptions: vec![],
+            risks: vec![],
+        };
+        let draft_json = serde_json::to_string(&draft_model).unwrap();
+        let draft = db
+            .save_agentic_spec_draft(&crate::db::NewAgenticSpecDraft {
+                request_id: &request.id,
+                draft_json: &draft_json,
+                graph_sha256: Some(&graph.graph_sha256),
+                provider: "opencode",
+                model: "deepseek-v4.1-flash",
+                schema_sha256: &"a".repeat(64),
+                request_sha256: &"b".repeat(64),
+                input_tokens: 10,
+                output_tokens: 5,
+                total_tokens: 15,
+                cost_micros: 1,
+                usage_known: true,
+            })
+            .await
+            .unwrap();
+        assert_eq!(draft.revision, 1);
+        let mut changed_graph_model = graph_model.clone();
+        changed_graph_model
+            .assumptions
+            .push("a later plan change".into());
+        let changed_graph =
+            crate::agentic::validate_work_graph(&changed_graph_model, &["src".into()]).unwrap();
+        db.save_agentic_work_graph(&crate::db::NewAgenticWorkGraph {
+            request_id: &request.id,
+            graph: &changed_graph,
+            provider: "opencode",
+            model: "deepseek-v4.1-flash",
+            schema_sha256: &"a".repeat(64),
+            request_sha256: &"b".repeat(64),
+            input_tokens: 10,
+            output_tokens: 5,
+            total_tokens: 15,
+            cost_micros: 1,
+            usage_known: true,
+        })
+        .await
+        .unwrap();
+        let frozen = crate::agentic::compile_spec(&draft_model, draft.revision).unwrap();
+        assert!(
+            db.freeze_agentic_spec(&draft.id, &frozen, &changed_graph)
+                .await
+                .is_err(),
+            "a changed WorkGraph must not freeze against an older draft"
+        );
+        db.save_agentic_work_graph(&crate::db::NewAgenticWorkGraph {
+            request_id: &request.id,
+            graph: &graph,
+            provider: "opencode",
+            model: "deepseek-v4.1-flash",
+            schema_sha256: &"a".repeat(64),
+            request_sha256: &"b".repeat(64),
+            input_tokens: 10,
+            output_tokens: 5,
+            total_tokens: 15,
+            cost_micros: 1,
+            usage_known: true,
+        })
+        .await
+        .unwrap();
+        let frozen_record = db
+            .freeze_agentic_spec(&draft.id, &frozen, &graph)
+            .await
+            .unwrap();
+        assert_eq!(frozen_record.state, "FROZEN");
+        assert_eq!(
+            frozen_record.spec_sha256.as_deref(),
+            Some(frozen.spec_sha256.as_str())
+        );
+        assert!(
+            db.save_agentic_work_graph(&crate::db::NewAgenticWorkGraph {
+                request_id: &request.id,
+                graph: &graph,
+                provider: "opencode",
+                model: "deepseek-v4.1-flash",
+                schema_sha256: &"a".repeat(64),
+                request_sha256: &"b".repeat(64),
+                input_tokens: 10,
+                output_tokens: 5,
+                total_tokens: 15,
+                cost_micros: 1,
+                usage_known: true,
+            })
+            .await
+            .is_err()
+        );
+        let second = db
+            .save_agentic_spec_draft(&crate::db::NewAgenticSpecDraft {
+                request_id: &request.id,
+                draft_json: &draft_json,
+                graph_sha256: Some(&graph.graph_sha256),
+                provider: "opencode",
+                model: "deepseek-v4.1-flash",
+                schema_sha256: &"a".repeat(64),
+                request_sha256: &"b".repeat(64),
+                input_tokens: 10,
+                output_tokens: 5,
+                total_tokens: 15,
+                cost_micros: 1,
+                usage_known: true,
+            })
+            .await
+            .unwrap();
+        assert_eq!(second.revision, 2);
+        assert_eq!(db.agentic_spec(&request.id).await.unwrap().revision, 1);
+        let second_frozen = crate::agentic::compile_spec(&draft_model, second.revision).unwrap();
+        db.freeze_agentic_spec(&second.id, &second_frozen, &graph)
+            .await
+            .unwrap();
+        let current = db.agentic_spec(&request.id).await.unwrap();
+        assert_eq!(current.revision, 2);
+        assert_eq!(
+            db.agentic_spec_by_id(&draft.id).await.unwrap().state,
+            "SUPERSEDED"
+        );
+        let publication = db
+            .upsert_agentic_spec_publication(&crate::db::NewAgenticSpecPublication {
+                spec_id: &current.id,
+                project_id: "project",
+                provider: "GITHUB",
+                repository: "acme/widgets",
+                status: "PUBLISHED",
+                drift_status: "IN_SYNC",
+                last_error: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(publication.status, "PUBLISHED");
+        let issue = db
+            .record_agentic_spec_issue(
+                &current.id,
+                "api",
+                "factory-spec:api",
+                Some(42),
+                Some("https://github.com/acme/widgets/issues/42"),
+                "PUBLISHED",
+            )
+            .await
+            .unwrap();
+        assert_eq!(issue.external_number, Some(42));
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn knowledge_skill_promotion_follows_the_trust_gate() {
+        let (path, db, profile, config) = fixture().await;
+        let policy = create_policy(&db, &profile, &config).await;
+        let _ = policy;
+        let request = create_request(&db, &profile, "skill-request").await;
+        let pack = crate::knowledge::KnowledgePack {
+            library: "chrono".into(),
+            library_id: "/chronotope/chrono".into(),
+            query: "timezone-aware ICS export".into(),
+            sources: vec![crate::knowledge::KnowledgeSource {
+                title: "Chrono — Context7".into(),
+                url: "https://context7.com/chronotope/chrono".into(),
+                kind: "CONTEXT7_MCP".into(),
+                snippet: "Use Utc::now().to_rfc3339().".into(),
+                reputation: Some("High".into()),
+                benchmark_score: Some(77.3),
+            }],
+            pack_sha256: String::new(),
+            fetched_at: "2026-11-09T00:00:00Z".into(),
+        }
+        .seal();
+        let saved = db
+            .save_agentic_knowledge_pack(&crate::db::NewAgenticKnowledgePack {
+                request_id: &request.id,
+                project_id: "project",
+                pack: &pack,
+                provider: "CONTEXT7_MCP",
+                source_url: "https://context7.com/chronotope/chrono",
+            })
+            .await
+            .unwrap();
+        assert_eq!(saved.pack_sha256, pack.pack_sha256);
+        let manifest = crate::knowledge::derive_skill_manifest(
+            &pack,
+            &["rust".into()],
+            "2026-11-09T00:00:00Z",
+            "2026-11-16T00:00:00Z",
+        )
+        .unwrap();
+        let skill = db
+            .create_agentic_skill(&crate::db::NewAgenticSkill {
+                project_id: "project",
+                request_id: &request.id,
+                manifest: &manifest,
+                manifest_sha256: &crate::knowledge::skill_manifest_sha256(&manifest),
+                status: "ACTIVE",
+            })
+            .await
+            .unwrap();
+        assert_eq!(skill.scope, "RUN");
+        assert_eq!(skill.status, "ACTIVE");
+        let adoption = db
+            .adopt_agentic_skill(&request.id, &skill.id, "implementer")
+            .await
+            .unwrap();
+        assert_eq!(adoption.role, "implementer");
+        let now = chrono::Utc::now().to_rfc3339();
+        let action_id: (String,) =
+            sqlx::query_as::query_as("SELECT action_id FROM intake_requests WHERE id=?1")
+                .bind(&request.id)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        sqlx::query::query(
+            "INSERT INTO campaigns(id,action_id,status,created_at)
+             VALUES ('skill-campaign',?1,'AUTHORIZED',?2)",
+        )
+        .bind(&action_id.0)
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query("UPDATE intake_requests SET campaign_id='skill-campaign' WHERE id=?1")
+            .bind(&request.id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let assignment_skills = db
+            .adopted_skills_for_campaign("skill-campaign")
+            .await
+            .unwrap();
+        assert_eq!(assignment_skills.len(), 1);
+        assert_eq!(assignment_skills[0].name, "context7-chrono");
+        assert!(assignment_skills[0].instructions.contains("Context7"));
+        assert_eq!(
+            assignment_skills[0].tools,
+            vec!["context-read", "repository-read"]
+        );
+        assert!(
+            db.record_agentic_skill_use(&skill.id, &request.id, "SUCCESS", "unlicensed")
+                .await
+                .is_err(),
+            "a NOASSERTION skill cannot be used before license review"
+        );
+        let skill = db
+            .review_agentic_skill_license(&skill.id, "owner", "MIT")
+            .await
+            .unwrap();
+        assert_eq!(skill.scope, "RUN");
+        let skill = db
+            .record_agentic_skill_use(
+                &skill.id,
+                &request.id,
+                "SUCCESS",
+                "candidate accepted after using the docs",
+            )
+            .await
+            .unwrap();
+        assert_eq!(skill.success_count, 1);
+        assert_eq!(skill.scope, "RUN");
+        let skill = db
+            .record_agentic_skill_use(&skill.id, &request.id, "SUCCESS", "second accepted use")
+            .await
+            .unwrap();
+        assert_eq!(skill.success_count, 2);
+        assert_eq!(skill.scope, "PROJECT");
+        assert_eq!(skill.status, "ACTIVE");
+        let skill = db.review_agentic_skill(&skill.id, "owner").await.unwrap();
+        assert!(skill.last_reviewed_at.is_some());
+        let skill = db
+            .promote_agentic_skill(&skill.id, "GLOBAL", "owner", true)
+            .await
+            .unwrap();
+        assert_eq!(skill.scope, "GLOBAL");
+        assert_eq!(skill.owner_approved_by.as_deref(), Some("owner"));
+        assert_eq!(db.agentic_skill_uses(&skill.id).await.unwrap().len(), 2);
+        let skill = db
+            .revoke_agentic_skill(&skill.id, "superseded")
+            .await
+            .unwrap();
+        assert_eq!(skill.status, "REVOKED");
+        assert!(
+            db.adopt_agentic_skill(&request.id, &skill.id, "implementer")
+                .await
+                .is_err()
+        );
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn owner_charter_and_reserved_decision_are_durable() {
+        let (path, db, _profile, _config) = fixture().await;
+        let expires_at = (chrono::Utc::now() + chrono::Duration::days(30)).to_rfc3339();
+        let domains = vec!["repository".to_string()];
+        let reserved = vec!["credentials".to_string(), "delivery".to_string()];
+        let charter = db
+            .create_agentic_charter(&crate::db::NewAgenticCharter {
+                owner: "owner",
+                project_id: "project",
+                domains: &domains,
+                risk_appetite: crate::lead::RiskClass::R1,
+                execution_autonomy: true,
+                repair_autonomy: true,
+                delivery_autonomy: false,
+                reserved_matters: &reserved,
+                expires_at: &expires_at,
+            })
+            .await
+            .unwrap();
+        assert_eq!(charter.risk_appetite, crate::lead::RiskClass::R1);
+        assert!(
+            db.active_agentic_charter("project")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        let deadline = (chrono::Utc::now() + chrono::Duration::hours(24)).to_rfc3339();
+        let options = vec!["APPROVE".to_string(), "DENY".to_string()];
+        let evidence = serde_json::json!({"objective": "rotate a credential"});
+        let decision = db
+            .create_agentic_owner_decision(&crate::db::NewAgenticOwnerDecision {
+                project_id: "project",
+                request_id: None,
+                campaign_id: None,
+                matter: "credentials",
+                risk: crate::lead::RiskClass::R2,
+                options: &options,
+                evidence: &evidence,
+                recommendation: "DENY",
+                deadline: &deadline,
+            })
+            .await
+            .unwrap();
+        assert_eq!(decision.status, "PENDING");
+        let resolved = db
+            .resolve_agentic_owner_decision(&decision.id, "APPROVE", "bounded rotation", "owner")
+            .await
+            .unwrap();
+        assert_eq!(resolved.status, "APPROVED");
+        assert_eq!(resolved.selected_option.as_deref(), Some("APPROVE"));
+        let revoked = db
+            .revoke_agentic_charter(&charter.id, "withdrawn")
+            .await
+            .unwrap();
+        assert!(revoked.revoked_at.is_some());
+        assert!(
+            db.active_agentic_charter("project")
+                .await
+                .unwrap()
+                .is_none()
+        );
         db.close().await;
         let _ = std::fs::remove_file(path);
     }
@@ -2339,10 +2851,31 @@ mod tests {
             )
             .await
             .unwrap();
+        let review_operation = db.agentic_operation_for_request(&review.id).await.unwrap();
+        assert_eq!(review_operation.status, "OBSERVED");
         let unfinished = db.unfinished_autonomous_intake_requests().await.unwrap();
         assert_eq!(unfinished.len(), 1);
         assert_eq!(unfinished[0].id, autonomous.id);
         assert_ne!(unfinished[0].id, review.id);
+        let lead_id: (String,) =
+            sqlx::query_as::query_as("SELECT lead_request_id FROM intake_requests WHERE id=?1")
+                .bind(&autonomous.id)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        db.set_agentic_operation_status(&autonomous.id, "EXECUTING")
+            .await
+            .unwrap();
+        sqlx::query::query("UPDATE lead_requests SET state='BLOCKED' WHERE id=?1")
+            .bind(&lead_id.0)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let changed = db.reconcile_agentic_operations().await.unwrap();
+        assert_eq!(changed.len(), 1);
+        assert_eq!(changed[0].status, "BLOCKED");
+        let unfinished = db.unfinished_autonomous_intake_requests().await.unwrap();
+        assert!(unfinished.is_empty());
         db.close().await;
         let _ = std::fs::remove_file(path);
     }

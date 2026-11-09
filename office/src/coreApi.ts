@@ -370,7 +370,21 @@ export interface Gate {
   outcome: GateOutcome;
   reasons: string[];
   decided_at: string;
+  reviewerReceiptIds?: string[];
   repair_authorization?: RepairAuthorization | null;
+}
+
+export interface CheapOpsReport {
+  authority: string;
+  summary: string;
+  passed: number;
+  failed: number;
+  notTested: number;
+  reviewerCount: number;
+  verifierPresent: boolean;
+  gateOutcome: string | null;
+  gateReasons: string[];
+  notes: string[];
 }
 
 export interface FactoryEvent {
@@ -1386,7 +1400,8 @@ export type IntakeState =
   | "BLOCKED"
   | "FAILED"
   | "COMPLETED"
-  | "CANCELLED";
+  | "CANCELLED"
+  | "ASSESSED";
 
 export interface IntakeProfileReference {
   id: string;
@@ -1506,6 +1521,466 @@ export interface IntakeExecutionPolicyScope {
     grantTerms: IntakeExecutionPolicyTerms | null;
     legacyV1?: ExecutionProfileLegacyV1 | null;
   } | null;
+}
+
+export type AgenticRequestKind =
+  | "INFORMATIONAL"
+  | "AUDIT"
+  | "CHANGE"
+  | "REPAIR";
+export type AgenticRoute =
+  | "NO_AGENT"
+  | "DIRECT"
+  | "DELEGATED"
+  | "FORMAL_SPEC"
+  | "REPAIR";
+export type AgenticAssurance = "NONE" | "STANDARD" | "ELEVATED" | "CRITICAL";
+
+export interface AgenticStackProfile {
+  languages: string[];
+  frameworks: string[];
+  runtimes: string[];
+  packageManagers: string[];
+  buildTools: string[];
+  data: string[];
+  testFrameworks: string[];
+  browser: string[];
+  infra: string[];
+  securitySensitive: string[];
+  conventions: string[];
+  evidenceRefs: string[];
+  confidence: string;
+  unknowns: string[];
+}
+
+export interface AgenticAssignment {
+  role: string;
+  specialization: string;
+  count: number;
+  readOnly: boolean;
+  toolPack: string[];
+}
+
+export interface AgenticContextPolicy {
+  compactAtPercent: number;
+  maxConsecutiveCompactions: number;
+  handoffAtStableMilestone: boolean;
+  requireProbeAfterHandoff: boolean;
+}
+
+export interface AgenticParticipantPlanRecord {
+  requestId: string;
+  graphSha256: string | null;
+  route: string;
+  assurance: string;
+  workUnits: number;
+  reviewerCount: number;
+  planJson: string;
+  planSha256: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AgenticUnitAssignment {
+  unitId: string;
+  specialization: string;
+  paths: string[];
+  provider: string | null;
+  model: string | null;
+  providerMode: string | null;
+}
+
+export interface AgenticParticipantPlan {
+  route: AgenticRoute;
+  assurance: AgenticAssurance;
+  assignments: AgenticAssignment[];
+  contextPolicy: AgenticContextPolicy;
+  reasons: string[];
+  unitAssignments: AgenticUnitAssignment[];
+  reviewerCount: number;
+}
+
+export interface AgenticSpecification {
+  id: string;
+  description: string;
+  kind: string;
+  allowedPaths: string[];
+  capabilities: string[];
+  dependsOn: string[];
+  status: string;
+}
+
+export interface AgenticTriage {
+  requestKind: AgenticRequestKind;
+  route: AgenticRoute;
+  assurance: AgenticAssurance;
+  mechanism: string;
+  reasons: string[];
+  unknowns: string[];
+}
+
+export interface AgenticPortfolioEntry {
+  id: string;
+  projectId: string;
+  objective: string;
+  mode: string;
+  state: string;
+  route: AgenticRoute;
+  assurance: AgenticAssurance;
+  requestKind: AgenticRequestKind;
+  workUnits: number;
+  participantCount: number;
+  stackLanguages: string[];
+  directorId: string;
+  operationManagerId: string;
+  priority: number;
+  operationStatus: string;
+  worktreePolicy: string;
+  updatedAt: string;
+}
+
+export interface RepairCampaignResult {
+  requestId: string;
+  projectId: string;
+  candidateId: string;
+  baseCommit: string;
+  profileId: string;
+  mode: string;
+  grantDelegationId: string;
+  replayed: boolean;
+}
+
+export interface AgenticUsage {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  costMicros: number;
+  usageKnown: boolean;
+}
+
+export interface AgenticSemanticAssessment {
+  provider: string;
+  model: string;
+  createdAt: string;
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    costMicros: number;
+    usageKnown: boolean;
+  };
+  recommendation: {
+    requestKind: AgenticRequestKind;
+    route: AgenticRoute;
+    assurance: AgenticAssurance;
+    skillNeeds: string[];
+    unknowns: string[];
+  };
+}
+
+export interface AgenticRequestDetail {
+  request: {
+    id: string;
+    projectId: string;
+    objective: string;
+    mode: string;
+    state: string;
+    profile: { id: string; revision: number; name: string };
+    createdAt: string;
+    updatedAt: string;
+  };
+  lead: {
+    state: string;
+    campaignId: string | null;
+    failureReason: string | null;
+  };
+  triage: AgenticTriage;
+  stack: AgenticStackProfile;
+  participants: AgenticParticipantPlan;
+  specifications: AgenticSpecification[];
+  plan: null | {
+    id: string;
+    planHash: string;
+    configHash: string;
+    createdAt: string;
+  };
+  operation: AgenticOperation | null;
+  context: {
+    handoffs: unknown[];
+    note: string;
+  };
+  semantic: AgenticSemanticAssessment | null;
+}
+
+export interface AgenticOperation {
+  id: string;
+  requestId: string;
+  projectId: string;
+  directorId: string;
+  operationManagerId: string;
+  priority: number;
+  status: string;
+  worktreePolicy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AgenticWorkUnit {
+  id: string;
+  title: string;
+  objective: string;
+  dependsOn: string[];
+  paths: string[];
+  acceptance: string[];
+}
+
+export interface AgenticWorkGraph {
+  units: AgenticWorkUnit[];
+  assumptions: string[];
+  risks: string[];
+  topologicalOrder: string[];
+  graphSha256: string;
+}
+
+export interface AgenticWorkGraphRecord {
+  requestId: string;
+  graphJson: string;
+  graphSha256: string;
+  topologicalOrderJson: string;
+  plannerProvider: string;
+  plannerModel: string;
+  schemaSha256: string;
+  requestSha256: string;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  costMicros: number;
+  usageKnown: boolean;
+  createdAt: string;
+}
+
+export interface AgenticFrozenAssertion {
+  id: string;
+  kind: "ACCEPTANCE" | "NEGATIVE";
+  statement: string;
+  checkId: string;
+}
+
+export interface AgenticFrozenRequirement {
+  id: string;
+  statement: string;
+  assertions: AgenticFrozenAssertion[];
+}
+
+export interface AgenticFrozenSpec {
+  revision: number;
+  summary: string;
+  requirements: AgenticFrozenRequirement[];
+  assumptions: string[];
+  risks: string[];
+  specSha256: string;
+}
+
+export interface AgenticSpecRecord {
+  id: string;
+  requestId: string;
+  revision: number;
+  state: "DRAFT" | "FROZEN" | "SUPERSEDED";
+  draftJson: string;
+  frozenJson: string | null;
+  specSha256: string | null;
+  graphJson: string | null;
+  graphSha256: string | null;
+  provider: string;
+  model: string;
+  schemaSha256: string;
+  requestSha256: string;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  costMicros: number;
+  usageKnown: boolean;
+  createdAt: string;
+  frozenAt: string | null;
+}
+
+export interface AgenticSpecPublication {
+  id: string;
+  specId: string;
+  projectId: string;
+  provider: "GITHUB" | "LOCAL";
+  repository: string;
+  status: "PENDING" | "PUBLISHED" | "FAILED" | "LOCAL";
+  driftStatus: "IN_SYNC" | "DRIFTED" | "UNKNOWN";
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AgenticSpecIssue {
+  specId: string;
+  unitId: string;
+  marker: string;
+  externalNumber: number | null;
+  externalUrl: string | null;
+  state: string;
+  updatedAt: string;
+}
+
+export interface AgenticSpecDetail {
+  frozen: { record: AgenticSpecRecord; spec: AgenticFrozenSpec | null } | null;
+  draft: {
+    record: AgenticSpecRecord;
+    preview: AgenticFrozenSpec | null;
+  } | null;
+  graph: AgenticWorkGraphRecord | null;
+  publication: AgenticSpecPublication | null;
+  issues: AgenticSpecIssue[];
+  githubBound: boolean;
+}
+
+export interface AgenticSpecBoardCard {
+  specId: string;
+  requestId: string;
+  projectId: string;
+  objective: string;
+  revision: number;
+  summary: string | null;
+  specSha256: string | null;
+  graphSha256: string | null;
+  frozenAt: string | null;
+  column: string;
+  campaignStatus: string | null;
+  gateOutcome: string | null;
+  operation: AgenticOperation | null;
+  publication: AgenticSpecPublication | null;
+  issues: AgenticSpecIssue[];
+  units: AgenticWorkUnit[];
+}
+
+export interface AgenticCharterRecord {
+  id: string;
+  owner: string;
+  projectId: string;
+  domains: string[];
+  riskAppetite: "R0" | "R1" | "R2" | "R3";
+  executionAutonomy: boolean;
+  repairAutonomy: boolean;
+  deliveryAutonomy: boolean;
+  policyAutonomy: boolean;
+  reservedMatters: string[];
+  expiresAt: string;
+  revokedAt: string | null;
+  revocationReason: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AgenticOwnerDecision {
+  id: string;
+  projectId: string;
+  requestId: string | null;
+  campaignId: string | null;
+  matter: string;
+  risk: "R0" | "R1" | "R2" | "R3";
+  status: "PENDING" | "APPROVED" | "DENIED" | "EXPIRED";
+  options: string[];
+  evidence: unknown;
+  recommendation: string;
+  deadline: string;
+  selectedOption: string | null;
+  rationale: string | null;
+  resolvedBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+  resolvedAt: string | null;
+}
+
+export interface AgenticKnowledgeSource {
+  title: string;
+  url: string;
+  kind: string;
+  snippet: string;
+  reputation?: string | null;
+  benchmarkScore?: number | null;
+}
+
+export interface AgenticKnowledgePack {
+  library: string;
+  libraryId: string;
+  query: string;
+  sources: AgenticKnowledgeSource[];
+  packSha256: string;
+  fetchedAt: string;
+}
+
+export interface AgenticKnowledgePackRecord {
+  id: string;
+  requestId: string;
+  projectId: string;
+  library: string;
+  libraryId: string;
+  query: string;
+  packJson: string;
+  packSha256: string;
+  provider: string;
+  sourceUrl: string;
+  fetchedAt: string;
+  createdAt: string;
+}
+
+export interface AgenticSkillRecord {
+  id: string;
+  projectId: string;
+  requestId: string | null;
+  name: string;
+  scope: "RUN" | "PROJECT" | "GLOBAL";
+  status: "CANDIDATE" | "ACTIVE" | "PROMOTION_READY" | "REVOKED" | "EXPIRED";
+  manifestJson: string;
+  manifestSha256: string;
+  provenance: string;
+  license: string;
+  licenseReviewedAt: string | null;
+  compatibilityJson: string;
+  successCount: number;
+  failureCount: number;
+  lastUsedAt: string | null;
+  promotedAt: string | null;
+  lastReviewedAt: string | null;
+  nextReviewAt: string | null;
+  revokedAt: string | null;
+  ownerApprovedBy: string | null;
+  expiresAt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AgenticSkillAdoption {
+  requestId: string;
+  skillId: string;
+  role: string;
+  adoptedAt: string;
+}
+
+export interface AgenticKnowledgeResponse {
+  pack: AgenticKnowledgePackRecord | null;
+  skills: AgenticSkillRecord[];
+  adoptions: AgenticSkillAdoption[];
+  inventory: {
+    manifests: string[];
+    libraries: { name: string; version: string | null; manifest: string }[];
+    evidenceRefs: string[];
+  } | null;
+}
+
+export interface AgenticSkillRegistryEntry {
+  skill: AgenticSkillRecord;
+  reviewDue: boolean;
+}
+
+export interface AgenticSpecBoard {
+  columns: string[];
+  specs: AgenticSpecBoardCard[];
 }
 
 export interface ExecutionPolicyRequest {
@@ -2750,6 +3225,215 @@ export const coreApi = {
       `/lead/requests/${encodeURIComponent(id)}/withdraw`,
       { method: "POST", body: JSON.stringify({ reason }) },
     ),
+  getAgenticScheduler: () =>
+    request<{
+      capacity: number;
+      active: number;
+      queued: number;
+      resourcePolicy: string;
+      worktreePolicy: string;
+    }>("/agentic/scheduler"),
+  setAgenticPriority: (id: string, priority: number) =>
+    request<AgenticOperation>(
+      `/agentic/requests/${encodeURIComponent(id)}/priority`,
+      { method: "POST", body: JSON.stringify({ priority }) },
+    ),
+  assessAgenticRequest: (id: string) =>
+    request<unknown>(`/agentic/requests/${encodeURIComponent(id)}/assess`, {
+      method: "POST",
+    }),
+  getAgenticParticipants: (id: string) =>
+    request<{ plan: AgenticParticipantPlanRecord | null }>(
+      `/agentic/requests/${encodeURIComponent(id)}/participants`,
+    ),
+  recordAgenticParticipants: (id: string) =>
+    request<{
+      plan: AgenticParticipantPlanRecord;
+      compiled: AgenticParticipantPlan;
+    }>(`/agentic/requests/${encodeURIComponent(id)}/participants`, {
+      method: "POST",
+    }),
+  getAgenticPlan: (id: string) =>
+    request<{ graph: AgenticWorkGraphRecord | null }>(
+      `/agentic/requests/${encodeURIComponent(id)}/plan`,
+    ),
+  planAgenticRequest: (id: string) =>
+    request<{
+      graph: AgenticWorkGraphRecord;
+      validated: AgenticWorkGraph;
+      provider: string;
+      model: string;
+      usage: AgenticUsage;
+    }>(`/agentic/requests/${encodeURIComponent(id)}/plan`, {
+      method: "POST",
+    }),
+  getAgenticSpec: (id: string) =>
+    request<AgenticSpecDetail>(
+      `/agentic/requests/${encodeURIComponent(id)}/spec`,
+    ),
+  authorAgenticSpec: (id: string) =>
+    request<{
+      spec: AgenticSpecRecord;
+      preview: AgenticFrozenSpec | null;
+      provider: string;
+      model: string;
+      usage: AgenticUsage;
+    }>(`/agentic/requests/${encodeURIComponent(id)}/spec`, {
+      method: "POST",
+    }),
+  freezeAgenticSpec: (id: string, expectedSpecSha256: string) =>
+    request<{ spec: AgenticSpecRecord; frozen: AgenticFrozenSpec }>(
+      `/agentic/requests/${encodeURIComponent(id)}/spec/freeze`,
+      {
+        method: "POST",
+        body: JSON.stringify({ expected_spec_sha256: expectedSpecSha256 }),
+      },
+    ),
+  publishAgenticSpec: (id: string, confirm: boolean, local = false) =>
+    request<{
+      publication: AgenticSpecPublication;
+      issues: AgenticSpecIssue[];
+      local?: boolean;
+    }>(`/agentic/requests/${encodeURIComponent(id)}/spec/publish`, {
+      method: "POST",
+      body: JSON.stringify({ confirm, local }),
+    }),
+  refreshAgenticSpec: (id: string) =>
+    request<{ publication: AgenticSpecPublication; inSync: boolean }>(
+      `/agentic/requests/${encodeURIComponent(id)}/spec/refresh`,
+      { method: "POST" },
+    ),
+  getAgenticSpecBoard: () => request<AgenticSpecBoard>("/agentic/specs/board"),
+  listAgenticCharters: (projectId?: string) =>
+    request<{ charters: AgenticCharterRecord[] }>(
+      `/agentic/charters${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ""}`,
+    ),
+  createAgenticCharter: (input: {
+    project_id: string;
+    domains: string[];
+    risk_appetite: "R0" | "R1" | "R2" | "R3";
+    execution_autonomy: boolean;
+    repair_autonomy: boolean;
+    delivery_autonomy: boolean;
+    reserved_matters: string[];
+    expires_at: string;
+  }) =>
+    request<AgenticCharterRecord>("/agentic/charters", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  revokeAgenticCharter: (id: string, reason: string) =>
+    request<AgenticCharterRecord>(
+      `/agentic/charters/${encodeURIComponent(id)}/revoke`,
+      { method: "POST", body: JSON.stringify({ reason }) },
+    ),
+  listAgenticDecisions: (projectId?: string, status?: "PENDING") => {
+    const params = new URLSearchParams();
+    if (projectId) params.set("project_id", projectId);
+    if (status) params.set("status", status);
+    const query = params.toString();
+    return request<{ decisions: AgenticOwnerDecision[] }>(
+      `/agentic/decisions${query ? `?${query}` : ""}`,
+    );
+  },
+  createAgenticOwnerDecision: (input: {
+    project_id: string;
+    request_id?: string | null;
+    campaign_id?: string | null;
+    matter: string;
+    risk: "R0" | "R1" | "R2" | "R3";
+    options: string[];
+    evidence: unknown;
+    recommendation: string;
+    deadline: string;
+  }) =>
+    request<AgenticOwnerDecision>("/agentic/decisions", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  resolveAgenticOwnerDecision: (
+    id: string,
+    option: string,
+    rationale: string,
+  ) =>
+    request<AgenticOwnerDecision>(
+      `/agentic/decisions/${encodeURIComponent(id)}/resolve`,
+      { method: "POST", body: JSON.stringify({ option, rationale }) },
+    ),
+  getAgenticKnowledge: (id: string) =>
+    request<AgenticKnowledgeResponse>(
+      `/agentic/requests/${encodeURIComponent(id)}/knowledge`,
+    ),
+  researchAgenticKnowledge: (id: string, library: string, query: string) =>
+    request<{
+      gap: {
+        library: string;
+        query: string;
+        reasons: string[];
+        manifestVersion: string | null;
+        evidenceRefs: string[];
+      };
+      pack: AgenticKnowledgePackRecord;
+      skill: AgenticSkillRecord;
+      inventory: AgenticKnowledgeResponse["inventory"];
+    }>(`/agentic/requests/${encodeURIComponent(id)}/knowledge`, {
+      method: "POST",
+      body: JSON.stringify({ library, query }),
+    }),
+  adoptAgenticSkill: (id: string, skillId: string) =>
+    request<AgenticSkillAdoption>(
+      `/agentic/requests/${encodeURIComponent(id)}/skills/${encodeURIComponent(skillId)}/adopt`,
+      { method: "POST" },
+    ),
+  listAgenticSkills: (projectId?: string) =>
+    request<{ skills: AgenticSkillRegistryEntry[] }>(
+      `/agentic/skills${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ""}`,
+    ),
+  recordAgenticSkillUse: (
+    skillId: string,
+    input: {
+      request_id: string;
+      outcome: "SUCCESS" | "FAILURE";
+      evidence: string;
+    },
+  ) =>
+    request<AgenticSkillRecord>(
+      `/agentic/skills/${encodeURIComponent(skillId)}/uses`,
+      { method: "POST", body: JSON.stringify(input) },
+    ),
+  reviewAgenticSkillLicense: (skillId: string, license: string) =>
+    request<AgenticSkillRecord>(
+      `/agentic/skills/${encodeURIComponent(skillId)}/license`,
+      { method: "POST", body: JSON.stringify({ license }) },
+    ),
+  promoteAgenticSkill: (
+    skillId: string,
+    input: {
+      scope: "PROJECT" | "GLOBAL";
+      owner_approved: boolean;
+      confirm: boolean;
+    },
+  ) =>
+    request<AgenticSkillRecord>(
+      `/agentic/skills/${encodeURIComponent(skillId)}/promote`,
+      { method: "POST", body: JSON.stringify(input) },
+    ),
+  reviewAgenticSkill: (skillId: string) =>
+    request<AgenticSkillRecord>(
+      `/agentic/skills/${encodeURIComponent(skillId)}/review`,
+      { method: "POST" },
+    ),
+  revokeAgenticSkill: (skillId: string, reason: string) =>
+    request<AgenticSkillRecord>(
+      `/agentic/skills/${encodeURIComponent(skillId)}/revoke`,
+      { method: "POST", body: JSON.stringify({ reason }) },
+    ),
+  listAgenticPortfolio: () =>
+    request<AgenticPortfolioEntry[]>("/agentic/portfolio"),
+  getAgenticRequest: (id: string) =>
+    request<AgenticRequestDetail>(
+      `/agentic/requests/${encodeURIComponent(id)}`,
+    ),
   listIntakeRequests: (filters: IntakeRequestFilters = {}) => {
     const params = new URLSearchParams();
     if (filters.state) params.set("state", filters.state);
@@ -2940,6 +3624,14 @@ export const coreApi = {
       `/campaigns/${encodeURIComponent(campaignId)}/candidates/${encodeURIComponent(candidateId)}/pull-request/merge`,
       { method: "POST", body: JSON.stringify(input) },
     ),
+  repairCampaign: (
+    campaignId: string,
+    input: { confirm: boolean; reason: string },
+  ) =>
+    request<RepairCampaignResult>(
+      `/campaigns/${encodeURIComponent(campaignId)}/repair`,
+      { method: "POST", body: JSON.stringify(input) },
+    ),
   cancelCampaign: (campaignId: string, reason: string) =>
     request<Campaign>(`/campaigns/${encodeURIComponent(campaignId)}/cancel`, {
       method: "POST",
@@ -3057,6 +3749,12 @@ export const coreApi = {
       method: "POST",
       body: JSON.stringify({ actor, reason }),
     }),
+  getCandidateInterpretation: (candidateId: string) =>
+    request<{
+      candidateId: string;
+      report: CheapOpsReport;
+      reviewerReceiptIds: string[];
+    }>(`/quality/candidates/${encodeURIComponent(candidateId)}/interpretation`),
   getCandidateReceipts: (candidateId: string) =>
     request<QualityReceipt[]>(
       `/quality/candidates/${encodeURIComponent(candidateId)}/receipts`,

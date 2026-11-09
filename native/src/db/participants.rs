@@ -732,8 +732,25 @@ impl Database {
             if !is_safe_identity(&id) {
                 continue;
             }
-            let state: String = row.try_get("state")?;
-            let status_known = LEAD_STATES.contains(&state.as_str());
+            let projected = self
+                .lead_request_projection(&id)
+                .await
+                .unwrap_or(crate::lead::LeadRequestProjectionState::Blocked);
+            let status = match projected {
+                crate::lead::LeadRequestProjectionState::Submitted => "SUBMITTED",
+                crate::lead::LeadRequestProjectionState::Assessing => "ASSESSING",
+                crate::lead::LeadRequestProjectionState::PlanReady => "PLANNED",
+                crate::lead::LeadRequestProjectionState::AwaitingApproval => "READY",
+                crate::lead::LeadRequestProjectionState::Executing => "RUNNING",
+                crate::lead::LeadRequestProjectionState::Completed => "COMPLETED",
+                crate::lead::LeadRequestProjectionState::Blocked => "BLOCKED",
+                crate::lead::LeadRequestProjectionState::Failed => "FAILED",
+                crate::lead::LeadRequestProjectionState::Withdrawn
+                | crate::lead::LeadRequestProjectionState::Cancelled => "CANCELLED",
+                crate::lead::LeadRequestProjectionState::Assessed => "ASSESSED",
+            };
+            let terminal = matches!(status, "COMPLETED" | "FAILED" | "CANCELLED" | "ASSESSED");
+            let status_known = LEAD_STATES.contains(&status) || terminal;
             let model_call_count: i64 = row.try_get("model_call_count")?;
             let model_call_state: Option<String> = row.try_get("model_call_state")?;
             let provider: Option<String> = row.try_get("provider")?;
@@ -786,10 +803,10 @@ impl Database {
                 observed_route: None,
                 route_provenance: "LEAD_MODEL_CALL_RESERVATION".into(),
                 session: None,
-                status: if status_known { state.clone() } else { "UNKNOWN".into() },
-                status_source: "LEAD_REQUEST".into(),
+                status: if status_known { status.into() } else { "UNKNOWN".into() },
+                status_source: "LEAD_REQUEST_PROJECTION".into(),
                 lease_state: "NOT_APPLICABLE".into(),
-                observation: if matches!(state.as_str(), "BLOCKED" | "FAILED") {
+                observation: if terminal {
                     "FINAL".into()
                 } else if status_known {
                     "NOT_EXPOSED".into()
@@ -1504,8 +1521,8 @@ mod tests {
         let lead = by_id["lead:lr1"];
         assert_eq!(lead.role, "LEAD");
         assert!(lead.session.is_none());
-        assert_eq!(lead.status, "READY");
-        assert_eq!(lead.observation, "NOT_EXPOSED");
+        assert_eq!(lead.status, "COMPLETED");
+        assert_eq!(lead.observation, "FINAL");
         assert_eq!(lead.model_call_count, Some(1));
         assert_eq!(lead.requested_route.as_ref().unwrap().provider, "opencode");
         assert_eq!(lead.usage.as_ref().unwrap().total_tokens, 15);

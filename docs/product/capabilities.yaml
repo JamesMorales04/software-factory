@@ -297,6 +297,50 @@ milestones:
   - The Product Owner completes the primary engineering journeys in Factory Office against the real Compose stack without raw API calls or terminal inspection
   owner_decisions:
   - Approve each Office slice and any new protected action separately
+- id: F1-S10
+  title: Agentic flow and dynamic composition
+  decision_status: proposed
+  dependencies:
+  - F1-S9
+  deliverables:
+  - Context handler with compaction, structured handoff and session rotation
+  - Typed triage and StackProfile
+  - Director, Operation Manager and portfolio concurrency
+  - Planner, Spec Manager and frozen specs projected to issues and kanban
+  - Explorer, Librarian, Context7 and temporary skills
+  - Dynamic participant composition and cheap operations interpreter
+  - Bounded repair from the exact candidate
+  - Owner charter and delegated R1-R3 autonomy
+  capability_ids:
+  - CAP-036
+  - CAP-038
+  - CAP-057
+  - CAP-058
+  - CAP-059
+  - CAP-060
+  - CAP-061
+  - CAP-062
+  - CAP-063
+  - CAP-064
+  - CAP-065
+  - CAP-066
+  exclusions:
+  - a second orchestrator outside Core
+  - model-granted authority or model-selected tools
+  - blanket R3 autonomy outside an owner charter
+  - unbounded concurrency without resource governance
+  risks:
+  - context loss across compaction and handoff
+  - agent and skill sprawl without minimum-sufficient composition
+  - issue/kanban drift from Core truth
+  - repair scope creep or candidate identity loss
+  deterministic_acceptance:
+  - Triage floors, participant composition, owner charter, repair authorization, context handoff, spec issue projection and reviewer aggregation pass deterministic positive and negative tests.
+  real_acceptance:
+  - A real-model browser campaign exercises a large spec, repair, concurrency and owner decision through Office without API or shell shortcuts.
+  owner_decisions:
+  - The owner approves the charter and each protected effect or delegation.
+
 - id: LATER
   title: Evaluated extensions
   decision_status: proposed
@@ -309,9 +353,7 @@ milestones:
   - extended Office
   - reliability analytics
   capability_ids:
-  - CAP-036
   - CAP-037
-  - CAP-038
   - CAP-039
   - CAP-040
   - CAP-041
@@ -1767,9 +1809,10 @@ capabilities:
   owner: Core
   dependencies:
   - CAP-017
-  target_milestone: LATER
+  target_milestone: F1-S10
   refs:
-    adr: []
+    adr:
+    - docs/architecture/decisions/ADR-0037-agent-topology-context-and-composition.md
     contract: []
     source: []
     test: []
@@ -1825,9 +1868,9 @@ capabilities:
   purpose: Version inspect scope revoke and evaluate external procedures
   product_objective: Safe extensibility
   decision_status: proposed
-  implementation_status: not_implemented
+  implementation_status: in_progress
   verification:
-    deterministic: not_tested
+    deterministic: verified
     live_agent: not_tested
     uat: not_tested
     deployment: not_tested
@@ -1836,25 +1879,29 @@ capabilities:
   dependencies:
   - CAP-008
   - CAP-017
-  target_milestone: LATER
+  target_milestone: F1-S10
   refs:
-    adr: []
-    contract: []
-    source: []
-    test: []
+    adr:
+    - docs/architecture/decisions/ADR-0037-agent-topology-context-and-composition.md
+    contract:
+    - docs/contracts/agentic-flow.md
+    source: [native/src/knowledge.rs, native/src/db/agentic_knowledge.rs, office/src/views/Skills.tsx]
+    test: [native/src/knowledge.rs, native/src/db/intake.rs, office/src/views/Skills.test.tsx]
   acceptance:
-    deterministic: Applicable skill registry and admission contract, negative and regression checks pass on an exact
-      candidate.
-    real: Exercise skill registry and admission in a genuine authorized project journey and independently verify
-      the outcome.
+    deterministic: A skill candidate has provenance, license, digest, compatibility and scope; the trust gate rejects write tools, expired or incompatible skills; RUN skills cannot widen tools; PROJECT promotion requires two successful uses and a reviewed license; GLOBAL requires an owner decision; weekly review and revocation are enforced.
+    real: A real participant uses a temporary skill and its verified outcome advances the promotion evidence.
   evidence:
-    deterministic: []
+    deterministic:
+    - docs/evidence/knowledge-skills-2026-11-09/deterministic.json
     live_agent: []
     uat: []
     deployment: []
     isolation: []
-  limitations: []
-  blockers: []
+  limitations:
+  - The skill registry is implemented; a full real Campaign using a skill and recording verified successful uses remains pending.
+  blockers:
+  - Live skill-use and promotion acceptance remains pending.
+
 - id: CAP-039
   name: Remote Workers
   category: Runtime
@@ -2752,3 +2799,414 @@ capabilities:
   - TRUSTED_LOCAL is broad local access; no isolation or security certification is claimed.
   blockers:
   - Independent live acceptance, autonomous repair and the independent security review remain open.
+
+- id: CAP-057
+  name: Context handler and session handoff
+  category: Planning
+  purpose: Keep long-running agent work coherent through tool-result clearing, structured notes, bounded compaction and audited handoff
+  product_objective: Reliable long-horizon autonomy
+  decision_status: proposed
+  implementation_status: not_implemented
+  verification:
+    deterministic: not_tested
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-013
+  target_milestone: F1-S10
+  refs:
+    adr:
+    - docs/architecture/decisions/ADR-0037-agent-topology-context-and-composition.md
+    contract: []
+    source: []
+    test: []
+  acceptance:
+    deterministic: Owner, operation and session context are separated; tool-result clearing and structured notes are preferred before compaction; compaction triggers at 70 percent of effective context; after at most two consecutive compactions the summary is audited and a stable-milestone handoff is required; deterministic identity, hashes, paths, checks and evidence references survive the handoff.
+    real: A long real-model browser operation compacts, hands off to a fresh session and continues without losing the exact candidate, pending checks or owner decision.
+  evidence:
+    deterministic: []
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations:
+  - A handoff summary is lossy; durable artifacts and Core evidence remain authoritative.
+  blockers:
+  - The context handler implementation and real long-horizon acceptance remain pending.
+
+- id: CAP-058
+  name: Triage, route and assurance
+  category: Planning
+  purpose: Classify informational, audit, change and repair work and apply deterministic route, assurance and review floors
+  product_objective: Right-sized governed execution
+  decision_status: proposed
+  implementation_status: in_progress
+  verification:
+    deterministic: verified
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-013
+  - CAP-014
+  target_milestone: F1-S10
+  refs:
+    adr:
+    - docs/architecture/decisions/ADR-0037-agent-topology-context-and-composition.md
+    contract: []
+    source: [native/src/agentic.rs, native/src/db/agentic_assessments.rs]
+    test: [native/src/agentic.rs, native/src/db/agentic_assessments.rs, native/src/bin/core.rs]
+  acceptance:
+    deterministic: A bounded semantic assessment proposes request kind, route, assurance, scope meaning, StackProfile and unknowns; Core applies non-weakening floors for concrete scope, cross-module, security, schema, public API, migration and ambiguity; informational and audit work cannot write; DIRECT, DELEGATED, FORMAL_SPEC and REPAIR are distinct.
+    real: A browser journey shows an informational question, an audit, a direct change and a formal spec taking different governed routes without a model lowering a floor.
+  evidence:
+    deterministic:
+    - docs/evidence/operation-scheduler-2026-11-08/deterministic.json
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations:
+  - The semantic assessor is advisory; deterministic floors and the Quality Gate remain authoritative.
+  - A real-model OpenCode Go browser self-test exists in docs/evidence/director-projection-2026-11-08/ and docs/evidence/full-agentic-e2e-2026-11-09/ but is not independent live certification.
+  blockers:
+  - Informational, audit and formal-spec browser journeys remain pending.
+
+- id: CAP-059
+  name: Director and Operation Manager
+  category: Planning
+  purpose: Give the owner one durable Director and each operation one semantic Operation Manager without creating a second authority
+  product_objective: Owner-level delegation with coherent operations
+  decision_status: proposed
+  implementation_status: in_progress
+  verification:
+    deterministic: verified
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-057
+  - CAP-058
+  target_milestone: F1-S10
+  refs:
+    adr:
+    - docs/architecture/decisions/ADR-0037-agent-topology-context-and-composition.md
+    contract: []
+    source: [native/src/db/agentic_operations.rs, native/src/bin/core.rs, office/src/views/Director.tsx]
+    test: [native/src/db/intake.rs, office/src/views/Director.test.tsx]
+  acceptance:
+    deterministic: The Director is scoped to one owner and a portfolio of Projects; each operation has one Operation Manager; the existing Integrator is not treated as a semantic supervisor; concurrent operations use separate worktrees and a priority queue; no fixed product cap replaces CPU, memory, disk, provider and worktree backpressure.
+    real: Two simultaneous browser requests are coordinated by the Director, run in separate worktrees and expose their own Operation Managers and evidence.
+  evidence:
+    deterministic:
+    - docs/evidence/operation-scheduler-2026-11-08/deterministic.json
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations:
+  - The Director uses reconstructed context plus handoff, not a permanently running model session.
+  - A real scheduler browser smoke exists in docs/evidence/operation-scheduler-2026-11-08/ and concurrent operations ran in docs/evidence/full-agentic-e2e-2026-11-09/, but this is not independent live certification.
+  - Two-operation concurrency and per-operation worktree isolation still need a real browser acceptance run.
+  blockers:
+  - Worktree isolation evidence and the two-operation real acceptance remain pending.
+
+- id: CAP-060
+  name: Planner and Spec Manager
+  category: Planning
+  purpose: Decompose a non-trivial request into a dependency-aware WorkGraph and author frozen formal specs with acceptance traceability
+  product_objective: Executable formal specifications
+  decision_status: proposed
+  implementation_status: in_progress
+  verification:
+    deterministic: verified
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-015
+  - CAP-016
+  - CAP-058
+  target_milestone: F1-S10
+  refs:
+    adr:
+    - docs/architecture/decisions/ADR-0037-agent-topology-context-and-composition.md
+    contract:
+    - docs/contracts/agentic-flow.md
+    source: [native/src/agentic.rs, native/src/db/agentic_plans.rs, native/src/bin/core.rs, office/src/views/Director.tsx]
+    test: [native/src/agentic.rs, native/src/db/intake.rs, office/src/views/Director.test.tsx]
+  acceptance:
+    deterministic: The Planner proposes a WorkGraph that Core validates for cycles, paths, dependencies, competence and budget; the Spec Manager authors observable acceptance and negative cases only for FORMAL_SPEC; deterministic compilation freezes exact requirement, assertion and check identities; post-freeze changes require a new revision.
+    real: A multi-unit browser operation is planned, specified, frozen and executed without the model changing a frozen requirement.
+  evidence:
+    deterministic:
+    - docs/evidence/spec-board-2026-11-09/deterministic.json
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations:
+  - The Planner and Spec Manager are bounded Lead-route model calls with distinct purpose and typed schemas; they do not have separate provider roles yet.
+  - A real-model browser self-test planned and froze revisions 1 and 2, and the full E2E campaign consumed the frozen plan, but independent live certification is pending.
+  blockers:
+  - Per-WorkUnit execution state and the full planned-specified-executed journey remain pending.
+
+- id: CAP-061
+  name: Spec issue projection and kanban
+  category: Delivery
+  purpose: Project frozen specs and work units to authorized GitHub issues and a truthful kanban while Core remains authoritative
+  product_objective: Visible governed work
+  decision_status: proposed
+  implementation_status: in_progress
+  verification:
+    deterministic: verified
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-024
+  - CAP-060
+  target_milestone: F1-S10
+  refs:
+    adr:
+    - docs/architecture/decisions/ADR-0037-agent-topology-context-and-composition.md
+    contract:
+    - docs/contracts/agentic-flow.md
+    source: [native/src/spec_publish.rs, native/src/github.rs, native/src/db/agentic_plans.rs, office/src/views/Specs.tsx]
+    test: [native/src/spec_publish.rs, native/src/db/intake.rs, office/src/views/Specs.test.tsx]
+  acceptance:
+    deterministic: Spec publication is an authorized idempotent external effect; issues carry exact operation, spec, risk and state labels; edits and comments are operator context and cannot mutate a frozen spec; Core state is authoritative and drift is detected; a local board works without GitHub.
+    real: A browser operation publishes a spec epic and work-unit issues, moves them through kanban states and closes them on accepted delivery without a second state authority.
+  evidence:
+    deterministic:
+    - docs/evidence/spec-board-2026-11-09/deterministic.json
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations:
+  - GitHub create/update/refresh is implemented and unit-tested for bounded shapes and markers, but no live GitHub publication was exercised in this slice.
+  - The kanban column is derived from the operation/Campaign/Gate, not per-WorkUnit execution.
+  blockers:
+  - Live GitHub external-effect acceptance and per-WorkUnit kanban state remain pending.
+
+- id: CAP-062
+  name: Explorer, Librarian and temporary skills
+  category: Knowledge
+  purpose: Discover repository facts and trusted external knowledge, then admit a bounded temporary skill only for a proven gap
+  product_objective: Grounded autonomous knowledge
+  decision_status: proposed
+  implementation_status: in_progress
+  verification:
+    deterministic: verified
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-020
+  - CAP-023
+  - CAP-038
+  target_milestone: F1-S10
+  refs:
+    adr:
+    - docs/architecture/decisions/ADR-0037-agent-topology-context-and-composition.md
+    contract:
+    - docs/contracts/agentic-flow.md
+    source: [native/src/knowledge.rs, native/src/context7.rs, native/src/db/agentic_knowledge.rs, native/src/bin/core.rs, office/src/views/KnowledgePanel.tsx]
+    test: [native/src/knowledge.rs, native/src/context7.rs, native/src/db/intake.rs, office/src/views/KnowledgePanel.test.tsx]
+  acceptance:
+    deterministic: Explorer is read-only and evidence-bound; Librarian is read-only and invoked only after a deterministic knowledge gap; Context7 MCP and additional sources are ranked and versioned; a SkillCandidate has provenance, license, digest, compatibility and scope; SkillTrustGate admits or denies; a RUN skill cannot widen tools or authority; promotion to PROJECT requires two successful uses and weekly reevaluation; GLOBAL requires an owner decision.
+    real: A browser operation detects an unknown library, obtains a Context7-backed KnowledgePack and a temporary skill, uses it in one authorized participant and records promotion evidence.
+  evidence:
+    deterministic:
+    - docs/evidence/knowledge-skills-2026-11-09/deterministic.json
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations:
+  - A real browser Context7 research and adoption passed in this slice; use in a real implementer Campaign and promotion evidence remain pending.
+  - Context7 content is external evidence and is not independently reviewed.
+  blockers:
+  - Real participant use, project promotion and weekly review acceptance remain pending.
+
+- id: CAP-063
+  name: Dynamic participant composition and cheap operations
+  category: Execution
+  purpose: Compile the minimum sufficient implementers, reviewers and cheap operations interpreter from the task, stack, risk and evidence needs
+  product_objective: Efficient reliable agent teams
+  decision_status: proposed
+  implementation_status: in_progress
+  verification:
+    deterministic: verified
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-018
+  - CAP-019
+  - CAP-022
+  - CAP-036
+  target_milestone: F1-S10
+  refs:
+    adr:
+    - docs/architecture/decisions/ADR-0037-agent-topology-context-and-composition.md
+    contract:
+    - docs/contracts/agentic-flow.md
+    source: [native/src/agentic.rs, native/src/db/agentic_participants.rs, native/src/quality.rs, native/src/cheap_ops.rs, office/src/components/office/CheapOpsPanel.tsx]
+    test: [native/src/agentic.rs, native/src/db/tests.rs, native/src/quality.rs, native/src/cheap_ops.rs]
+  acceptance:
+    deterministic: AgentTopology freezes available roles, specializations, routes, tools and classes; ParticipantPlan is compiled from the WorkGraph, CandidateImpact, policies, skills and budgets; an implementer is assigned per independent unit; reviewers are read-only and independent; the same model family is allowed; no extra provider or dimension requirement is imposed in this phase; the cheap interpreter classifies test and command output without deciding pass or fail.
+    real: A multi-stack browser operation compiles two or more implementers and independent reviewers, uses a cheap interpreter and records per-participant usage without self-acceptance.
+  evidence:
+    deterministic:
+    - docs/evidence/dynamic-fleets-2026-11-09/deterministic.json
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations:
+  - Provider diversity is not required; the same model family is allowed.
+  - A live Campaign with two independent reviewer processes was not run; the real E2E Campaign used one reviewer and multi-reviewer aggregation is deterministically tested.
+  - The current Compose topology provisions one reviewer identity, so plans are capped at one reviewer; multi-reviewer requires independent reviewer identities and tokens.
+  blockers:
+  - Real multi-unit Campaign, two-reviewer aggregation and per-unit execution state remain pending.
+
+- id: CAP-064
+  name: Bounded repair orchestration
+  category: Quality
+  purpose: Repair a rejected candidate from its exact identity, invalidate stale evidence and revalidate through the deterministic Gate
+  product_objective: Productive autonomous recovery
+  decision_status: proposed
+  implementation_status: in_progress
+  verification:
+    deterministic: verified
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-007
+  - CAP-010
+  - CAP-055
+  target_milestone: F1-S10
+  refs:
+    adr:
+    - docs/architecture/decisions/ADR-0037-agent-topology-context-and-composition.md
+    - docs/architecture/decisions/ADR-0036-owner-granted-autonomous-r0-intake.md
+    contract: []
+    source: []
+    test: []
+  acceptance:
+    deterministic: A RepairPacket binds the exact rejected candidate, findings, failed checks, allowed paths, risk and budget; the Repairer cannot widen scope; Core creates candidate C+1, invalidates C evidence and reruns affected checks plus the full Gate; R0 autonomous repair and at most one R1 cycle follow the policy; critical findings and R2/R3 reserved effects require the owner.
+    real: A browser operation turns a real REPAIR_REQUIRED into an accepted candidate without starting from the base commit, or blocks with the exact reason.
+  evidence:
+    deterministic:
+    - docs/evidence/repair-from-candidate-2026-11-08/manifest.json
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations:
+  - The operator-confirmed repair path is implemented and exercised; autonomous Gate repair scheduling remains disabled. The implementation is an implementer self-test, not independent acceptance.
+  blockers:
+  - RepairPacket, Repairer execution and candidate-based workspace remain pending.
+
+- id: CAP-065
+  name: Owner charter and delegated autonomy
+  category: Authority
+  purpose: Delegate routine R1-R3 execution by domain and effect while preserving reserved owner decisions and revocation
+  product_objective: Owner-level control without per-request involvement
+  decision_status: proposed
+  implementation_status: in_progress
+  verification:
+    deterministic: verified
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-008
+  - CAP-017
+  - CAP-056
+  target_milestone: F1-S10
+  refs:
+    adr:
+    - docs/architecture/decisions/ADR-0038-owner-charter-and-delegated-autonomy.md
+    contract:
+    - docs/contracts/agentic-flow.md
+    source: [native/src/db/agentic_charter.rs, native/src/bin/core.rs, office/src/views/Charter.tsx]
+    test: [native/src/db/intake.rs, office/src/views/Charter.test.tsx]
+  acceptance:
+    deterministic: An owner charter is durable, versioned, scoped and revocable; reserved matters always require an authenticated owner decision or a specific delegated exception; execution, repair, delivery and policy autonomy are separate; expired, revoked, out-of-domain and reserved-matter delegations fail closed; model output cannot create or widen a charter.
+    real: A browser journey grants a charter, executes routine R1/R2 work, returns a reserved OAuth/production decision to the owner and revokes the delegation.
+  evidence:
+    deterministic:
+    - docs/evidence/owner-charter-2026-11-09/deterministic.json
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations:
+  - Delivery autonomy and delivery effects are not implemented; delivery remains reserved.
+  - R2/R3 autonomous execution stays owner-controlled. R1 autonomy is delegated only when explicit and no reserved matter triggers.
+  - The full E2E exercised charter creation and a reserved decision, not routine R1/R2 execution under the charter.
+  - Charter budgets are not yet part of the durable record; budget enforcement remains pending.
+  blockers:
+  - Routine live R1/R2 execution under a charter and a revoked-charter live journey remain pending.
+
+- id: CAP-066
+  name: Agent fleet observability and cost
+  category: Observability
+  purpose: Make participants, context, tools, skills, decisions, latency and cost inspectable without creating a second authority
+  product_objective: Measured autonomy
+  decision_status: proposed
+  implementation_status: not_implemented
+  verification:
+    deterministic: not_tested
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Office
+  dependencies:
+  - CAP-011
+  - CAP-012
+  - CAP-063
+  target_milestone: F1-S10
+  refs:
+    adr:
+    - docs/architecture/decisions/ADR-0037-agent-topology-context-and-composition.md
+    contract: []
+    source: []
+    test: []
+  acceptance:
+    deterministic: Office projects each participant's role, specialization, provider/model, session, context manifest, compaction and handoff, tool events, skill manifests, token usage, latency, cost and decision reasons from Core records; no model reasoning or secret is exposed; telemetry never grants authority.
+    real: A browser operation shows per-participant identity, context/handoff history and measured usage for the exact campaign.
+  evidence:
+    deterministic: []
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations:
+  - Usage counts are telemetry, not productivity caps.
+  blockers:
+  - Participant/context projections and Office views remain pending.

@@ -260,6 +260,51 @@ pub fn verify_integrated_candidate(
     })
 }
 
+/// Bounded repository-relative paths under one prefix at an exact commit.
+/// Used to give the independent reviewer relevant unchanged source context.
+pub fn candidate_paths(
+    repository: &Path,
+    commit_sha: &str,
+    prefix: &str,
+    max_paths: usize,
+) -> Result<Vec<String>, WorkspaceError> {
+    if !is_object_id(commit_sha) {
+        return Err(WorkspaceError::Invalid(
+            "candidate paths require a full Git commit ID".into(),
+        ));
+    }
+    if prefix.is_empty() || !is_safe_repository_path(prefix) {
+        return Err(WorkspaceError::Invalid(format!(
+            "candidate path prefix is unsafe: {prefix:?}"
+        )));
+    }
+    let max_paths = max_paths.clamp(1, 512);
+    let repository = repository.canonicalize()?;
+    let output = git(
+        &repository,
+        [
+            OsStr::new("ls-tree"),
+            OsStr::new("-r"),
+            OsStr::new("-z"),
+            OsStr::new("--name-only"),
+            OsStr::new(commit_sha),
+            OsStr::new("--"),
+            OsStr::new(prefix),
+        ],
+    )?;
+    let mut paths = Vec::new();
+    for entry in output.stdout.split(|byte| *byte == 0) {
+        if entry.is_empty() || paths.len() >= max_paths {
+            continue;
+        }
+        let path = String::from_utf8_lossy(entry);
+        if is_safe_repository_path(&path) && !paths.iter().any(|candidate| candidate == &path) {
+            paths.push(path.into_owned());
+        }
+    }
+    Ok(paths)
+}
+
 fn git_with_dates(cwd: &Path, args: &[String]) -> Result<Output, WorkspaceError> {
     let display = format!("git {}", args.join(" "));
     let mut command = hardened_git();
@@ -1149,6 +1194,34 @@ pub fn is_safe_repository_path(path: &str) -> bool {
             .all(|component| !component.is_empty() && component != ".." && component != ".")
 }
 
+/// Whether `ancestor` is an ancestor of (or equal to) `descendant` in the
+/// registered repository. Used to refuse a repair base that is not on the
+/// candidate lineage.
+pub fn is_ancestor(
+    repository: &Path,
+    ancestor: &str,
+    descendant: &str,
+) -> Result<bool, WorkspaceError> {
+    if !is_object_id(ancestor) || !is_object_id(descendant) {
+        return Err(WorkspaceError::Invalid(
+            "ancestry requires full Git object IDs".into(),
+        ));
+    }
+    let repository = repository.canonicalize()?;
+    let output = hardened_git()
+        .args(["merge-base", "--is-ancestor", ancestor, descendant])
+        .current_dir(&repository)
+        .output()?;
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(WorkspaceError::Git {
+            command: format!("git merge-base --is-ancestor {ancestor} {descendant}"),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().into(),
+        }),
+    }
+}
+
 fn hardened_git() -> Command {
     let mut command = Command::new("git");
     command
@@ -1294,6 +1367,38 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn ancestry_accepts_only_lineage_commits() {
+        let repo = TempRepo::new();
+        let base = repo.head();
+        fs::write(repo.0.join("next.txt"), "next\n").unwrap();
+        git(&repo.0, ["add", "next.txt"]).unwrap();
+        git(&repo.0, ["commit", "-qm", "next"]).unwrap();
+        let next = repo.head();
+        assert!(is_ancestor(&repo.0, &base, &next).unwrap());
+        assert!(!is_ancestor(&repo.0, &next, &base).unwrap());
+    }
+
+    #[test]
+    fn candidate_paths_exposes_unchanged_source_context() {
+        let repo = TempRepo::new();
+        fs::create_dir_all(repo.0.join("src")).unwrap();
+        fs::write(
+            repo.0.join("src/lib.rs"),
+            "pub fn present() -> bool { true }\n",
+        )
+        .unwrap();
+        git(&repo.0, ["add", "src/lib.rs"]).unwrap();
+        git(&repo.0, ["commit", "-qm", "source"]).unwrap();
+        let head = repo.head();
+        let paths = candidate_paths(&repo.0, &head, "src", 10).unwrap();
+        assert_eq!(paths, vec!["src/lib.rs"]);
+        let content = candidate_file(&repo.0, &head, "src/lib.rs", 1024)
+            .unwrap()
+            .unwrap();
+        assert!(content.contains("pub fn present"));
     }
 
     #[test]

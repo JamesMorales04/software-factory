@@ -12,6 +12,7 @@ const STATE_KEYS = {
   FAILED: "request.state.FAILED",
   COMPLETED: "request.state.COMPLETED",
   CANCELLED: "request.state.CANCELLED",
+  ASSESSED: "request.state.ASSESSED",
 } as const satisfies Record<IntakeState, string>;
 
 const STATE_TONES: Record<IntakeState, BadgeTone> = {
@@ -24,6 +25,7 @@ const STATE_TONES: Record<IntakeState, BadgeTone> = {
   FAILED: "danger",
   COMPLETED: "success",
   CANCELLED: "muted",
+  ASSESSED: "info",
 };
 
 const MODE_KEYS = {
@@ -57,5 +59,5 @@ export function IntakeModeBadge({ mode }: { mode: IntakeMode | string }) {
 }
 
 export function isTerminalIntakeState(state: IntakeState | string): boolean {
-  return state === "COMPLETED" || state === "CANCELLED";
+  return state === "COMPLETED" || state === "CANCELLED" || state === "ASSESSED";
 }

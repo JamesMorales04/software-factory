@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { StatusBadge } from "../components/office/StatusBadge";
 import { Badge } from "../components/ui/Badge";
 import { Button, buttonClass } from "../components/ui/Button";
@@ -51,6 +51,7 @@ function messageRoleLabel(
 export function RequestWorkspace() {
   const { requestId = "" } = useParams<{ requestId: string }>();
   const { t, formatDate, formatNumber } = useI18n();
+  const navigate = useNavigate();
   const [data, setData] = useState<IntakeRequestProjection | null>(null);
   const [projectName, setProjectName] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -66,6 +67,11 @@ export function RequestWorkspace() {
   const [extraUsageConfirmed, setExtraUsageConfirmed] = useState(false);
   const [messageBody, setMessageBody] = useState("");
   const [cancelOpen, setCancelOpen] = useState(false);
+  const [repairOpen, setRepairOpen] = useState(false);
+  const [repairReason, setRepairReason] = useState("");
+  const [repairConfirmed, setRepairConfirmed] = useState(false);
+  const [repairBusy, setRepairBusy] = useState(false);
+  const [repairError, setRepairError] = useState<string | null>(null);
   const [cancelReason, setCancelReason] = useState("");
   const messageKey = useRef(newIdempotencyKey());
 
@@ -291,6 +297,24 @@ export function RequestWorkspace() {
     }
   }
 
+  async function repairFromCandidate(event: React.FormEvent) {
+    event.preventDefault();
+    if (!data?.campaignId || !repairConfirmed) return;
+    setRepairBusy(true);
+    setRepairError(null);
+    try {
+      const result = await coreApi.repairCampaign(data.campaignId, {
+        confirm: true,
+        reason: repairReason.trim(),
+      });
+      navigate(`/requests/${encodeURIComponent(result.requestId)}`);
+    } catch (cause) {
+      setRepairError(errorMessage(cause, t("request.repair.error")));
+    } finally {
+      setRepairBusy(false);
+    }
+  }
+
   async function cancelRequest(event: React.FormEvent) {
     event.preventDefault();
     if (!data || cancelReason.trim() === "") return;
@@ -442,6 +466,14 @@ export function RequestWorkspace() {
 
       <div className="request-layout">
         <div className="request-column">
+          {data.state === "ASSESSED" && (
+            <Panel className="request-panel">
+              <p className="ui-callout ui-callout--info" role="status">
+                {t("request.assessed.callout")}
+              </p>
+            </Panel>
+          )}
+
           {(data.state === "SUBMITTED" ||
             data.state === "ASSESSING" ||
             data.state === "PLAN_READY" ||
@@ -750,6 +782,69 @@ export function RequestWorkspace() {
                   </dd>
                 </div>
               </dl>
+            </Panel>
+          )}
+
+          {data.gateOutcome === "REPAIR_REQUIRED" && data.campaignId && (
+            <Panel className="request-panel request-repair">
+              <div className="section-heading">
+                <h2>{t("request.repair.title")}</h2>
+                <Badge tone="attention">{t("request.repair.badge")}</Badge>
+              </div>
+              <p className="muted">{t("request.repair.description")}</p>
+              {!repairOpen ? (
+                <Button
+                  variant="secondary"
+                  disabled={offline}
+                  onClick={() => setRepairOpen(true)}
+                >
+                  {t("request.repair.open")}
+                </Button>
+              ) : (
+                <form
+                  className="request-cancel-form"
+                  onSubmit={(event) => void repairFromCandidate(event)}
+                >
+                  <Textarea
+                    label={t("request.repair.reason")}
+                    value={repairReason}
+                    onChange={(event) => setRepairReason(event.target.value)}
+                    disabled={repairBusy || offline}
+                  />
+                  <Checkbox
+                    label={t("request.repair.confirm")}
+                    checked={repairConfirmed}
+                    onChange={(event) =>
+                      setRepairConfirmed(event.target.checked)
+                    }
+                    disabled={repairBusy || offline}
+                  />
+                  <div className="request-form-actions">
+                    <Button
+                      type="submit"
+                      variant="primary"
+                      disabled={!repairConfirmed || repairBusy || offline}
+                    >
+                      {repairBusy
+                        ? t("request.repair.starting")
+                        : t("request.repair.start")}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      disabled={repairBusy}
+                      onClick={() => setRepairOpen(false)}
+                    >
+                      {t("request.repair.cancel")}
+                    </Button>
+                  </div>
+                  {repairError && (
+                    <p className="ui-callout ui-callout--danger" role="alert">
+                      {repairError}
+                    </p>
+                  )}
+                </form>
+              )}
             </Panel>
           )}
 

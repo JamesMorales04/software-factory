@@ -33,12 +33,33 @@ pub enum ReceiptResult {
     NotTested,
 }
 
+impl ReceiptResult {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pass => "PASS",
+            Self::Fail => "FAIL",
+            Self::ChangesRequested => "CHANGES_REQUESTED",
+            Self::NotTested => "NOT_TESTED",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum EvidenceKind {
     Executed,
     Mocked,
     Unknown,
+}
+
+impl EvidenceKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Executed => "EXECUTED",
+            Self::Mocked => "MOCKED",
+            Self::Unknown => "UNKNOWN",
+        }
+    }
 }
 
 /// A verifier receipt bound to a single exact ActionSpec and candidate revision.
@@ -120,6 +141,30 @@ pub fn evaluate_quality_gate(
     implementer_id: &str,
     verifier: Option<&VerifierReceipt>,
     reviewer: Option<&ReviewerReceipt>,
+    policy: GatePolicy,
+) -> GateDecision {
+    let reviewers: Vec<&ReviewerReceipt> = reviewer.into_iter().collect();
+    evaluate_quality_gate_with_reviewers(
+        action,
+        candidate,
+        implementer_id,
+        verifier,
+        &reviewers,
+        policy,
+    )
+}
+
+/// Aggregate multiple independent reviewer receipts. Every reviewer must bind
+/// the same exact candidate, be independent of the implementer and verifier,
+/// and return executed PASS evidence. One failing reviewer requires repair; a
+/// missing, unknown or not-tested reviewer yields NOT_TESTED. Reviewer count
+/// never changes the outcome of an otherwise failing receipt.
+pub fn evaluate_quality_gate_with_reviewers(
+    action: &FrozenActionSpec,
+    candidate: &CandidateRevision,
+    implementer_id: &str,
+    verifier: Option<&VerifierReceipt>,
+    reviewers: &[&ReviewerReceipt],
     policy: GatePolicy,
 ) -> GateDecision {
     let mut reasons = Vec::new();
@@ -211,64 +256,80 @@ pub fn evaluate_quality_gate(
         ReceiptResult::Pass => {}
     }
 
-    let Some(reviewer) = reviewer else {
+    if reviewers.is_empty() {
         return decision(
             GateOutcome::NotTested,
             "independent reviewer receipt is missing",
         );
-    };
-    if reviewer.receipt_id.trim().is_empty() || reviewer.principal_id.trim().is_empty() {
-        return decision(GateOutcome::Blocked, "reviewer receipt identity is missing");
     }
-    if reviewer.action_spec_hash != action.hash {
-        return decision(GateOutcome::Blocked, "reviewer ActionSpec hash mismatch");
+    let mut principals = std::collections::BTreeSet::new();
+    let mut receipts = std::collections::BTreeSet::new();
+    let mut not_tested = false;
+    for reviewer in reviewers {
+        if reviewer.receipt_id.trim().is_empty() || reviewer.principal_id.trim().is_empty() {
+            return decision(GateOutcome::Blocked, "reviewer receipt identity is missing");
+        }
+        if !principals.insert(reviewer.principal_id.as_str()) {
+            return decision(
+                GateOutcome::Blocked,
+                "reviewer principals must be independent",
+            );
+        }
+        if !receipts.insert(reviewer.receipt_id.as_str()) {
+            return decision(GateOutcome::Blocked, "reviewer receipts must be distinct");
+        }
+        if reviewer.action_spec_hash != action.hash {
+            return decision(GateOutcome::Blocked, "reviewer ActionSpec hash mismatch");
+        }
+        if reviewer.candidate_commit_sha != candidate.commit_sha
+            || reviewer.candidate_tree_sha != candidate.tree_sha
+        {
+            return decision(GateOutcome::Blocked, "reviewer candidate revision mismatch");
+        }
+        if reviewer.principal_id == implementer_id {
+            return decision(
+                GateOutcome::Blocked,
+                "implementer cannot verify or review their own candidate",
+            );
+        }
+        if verifier.principal_id == reviewer.principal_id {
+            return decision(
+                GateOutcome::Blocked,
+                "verifier and reviewer must be independent principals",
+            );
+        }
+        if verifier.receipt_id == reviewer.receipt_id {
+            return decision(
+                GateOutcome::Blocked,
+                "verifier and reviewer receipts must be distinct",
+            );
+        }
+        if reviewer.evidence == EvidenceKind::Mocked {
+            return decision(
+                GateOutcome::Blocked,
+                "mocked evidence cannot satisfy the quality gate",
+            );
+        }
+        if reviewer.evidence == EvidenceKind::Unknown {
+            not_tested = true;
+            continue;
+        }
+        match reviewer.result {
+            ReceiptResult::Fail => {
+                return decision(GateOutcome::RepairRequired, "review found a failure");
+            }
+            ReceiptResult::ChangesRequested => {
+                return decision(GateOutcome::RepairRequired, "review requires changes");
+            }
+            ReceiptResult::NotTested => not_tested = true,
+            ReceiptResult::Pass => {}
+        }
     }
-    if reviewer.candidate_commit_sha != candidate.commit_sha
-        || reviewer.candidate_tree_sha != candidate.tree_sha
-    {
-        return decision(GateOutcome::Blocked, "reviewer candidate revision mismatch");
-    }
-    if reviewer.principal_id == implementer_id {
-        return decision(
-            GateOutcome::Blocked,
-            "implementer cannot verify or review their own candidate",
-        );
-    }
-    if verifier.principal_id == reviewer.principal_id {
-        return decision(
-            GateOutcome::Blocked,
-            "verifier and reviewer must be independent principals",
-        );
-    }
-    if verifier.receipt_id == reviewer.receipt_id {
-        return decision(
-            GateOutcome::Blocked,
-            "verifier and reviewer receipts must be distinct",
-        );
-    }
-    if reviewer.evidence == EvidenceKind::Mocked {
-        return decision(
-            GateOutcome::Blocked,
-            "mocked evidence cannot satisfy the quality gate",
-        );
-    }
-    if reviewer.evidence == EvidenceKind::Unknown {
+    if not_tested {
         return decision(
             GateOutcome::NotTested,
-            "receipt evidence provenance is unknown",
+            "one or more reviews were not tested",
         );
-    }
-    match reviewer.result {
-        ReceiptResult::Fail => {
-            return decision(GateOutcome::RepairRequired, "review found a failure");
-        }
-        ReceiptResult::ChangesRequested => {
-            return decision(GateOutcome::RepairRequired, "review requires changes");
-        }
-        ReceiptResult::NotTested => {
-            return decision(GateOutcome::NotTested, "review was not tested");
-        }
-        ReceiptResult::Pass => {}
     }
 
     decision(
@@ -350,6 +411,69 @@ mod tests {
         assert_eq!(
             evaluate(Some(&verifier()), Some(&reviewer())).outcome,
             GateOutcome::Accepted
+        );
+    }
+
+    fn second_reviewer() -> ReviewerReceipt {
+        ReviewerReceipt {
+            receipt_id: "review-2".into(),
+            principal_id: "reviewer-2".into(),
+            action_spec_hash: "a".repeat(64),
+            candidate_commit_sha: "b".repeat(40),
+            candidate_tree_sha: "c".repeat(40),
+            result: ReceiptResult::Pass,
+            evidence: EvidenceKind::Executed,
+        }
+    }
+
+    fn multi(reviewers: &[&ReviewerReceipt]) -> GateDecision {
+        evaluate_quality_gate_with_reviewers(
+            &action(),
+            &candidate(),
+            "implementer",
+            Some(&verifier()),
+            reviewers,
+            policy(),
+        )
+    }
+
+    #[test]
+    fn multiple_independent_reviewers_all_pass_before_acceptance() {
+        assert_eq!(
+            multi(&[&reviewer(), &second_reviewer()]).outcome,
+            GateOutcome::Accepted
+        );
+        let mut failed = second_reviewer();
+        failed.result = ReceiptResult::ChangesRequested;
+        assert_eq!(
+            multi(&[&reviewer(), &failed]).outcome,
+            GateOutcome::RepairRequired
+        );
+        let mut untested = second_reviewer();
+        untested.result = ReceiptResult::NotTested;
+        assert_eq!(
+            multi(&[&reviewer(), &untested]).outcome,
+            GateOutcome::NotTested
+        );
+    }
+
+    #[test]
+    fn duplicate_reviewer_principals_or_receipts_are_blocked() {
+        let duplicate_principal = ReviewerReceipt {
+            principal_id: "reviewer".into(),
+            ..second_reviewer()
+        };
+        assert_eq!(
+            multi(&[&reviewer(), &duplicate_principal]).outcome,
+            GateOutcome::Blocked
+        );
+        let duplicate_receipt = ReviewerReceipt {
+            receipt_id: "review-1".into(),
+            ..second_reviewer()
+        };
+        assert_eq!(
+            multi(&[&reviewer(), &duplicate_receipt]).outcome,
+            GateOutcome::Blocked
         );
     }
 

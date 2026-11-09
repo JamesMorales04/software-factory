@@ -1,0 +1,81 @@
+{
+  "schema": "factory.operation-scheduler.v1",
+  "schema_version": 1,
+  "result": "PARTIAL",
+  "kind": "implementer-browser-and-real-model-self-test",
+  "captured_at": "2026-11-08T23:55:00Z",
+  "candidate": "branch factory/agentic-flow-20261108; exact code commit is recorded in pull request #96",
+  "environment": {
+    "runtime": "rootless Podman Compose developer-preview stack",
+    "office": "http://127.0.0.1:8893",
+    "browser": "Chromium 1248 via Playwright",
+    "provider": "OpenCode Go / deepseek-v4.1-flash",
+    "profile": "Live workspace archive profile 1794095707 revision 2"
+  },
+  "scope": "Durable agentic operation records, resource-derived start scheduler, priority queue, Operation Manager Director projection and Campaign/Gate reconciliation. Worktree isolation proof, two simultaneous operations, Planner/Spec Manager, issue projection, Explorer/Librarian, dynamic fleets and the owner charter remain pending.",
+  "scheduler": {
+    "endpoint": "GET /agentic/scheduler",
+    "capacity": 10,
+    "resource_policy": "CPU and available memory; no fixed product concurrency cap",
+    "worktree_policy": "PER_ATTEMPT"
+  },
+  "operation": {
+    "request": "b19cdff1-7e0f-4be6-9ceb-7d2f138332a8",
+    "campaign": "2eaaee94-0504-4f72-b6ab-8532be84e078",
+    "director": "director:device:9e72d781-110a-40de-8103-ded80d2909c4",
+    "operation_manager": "operation-manager:b19cdff1-7e0f-4be6-9ceb-7d2f138332a8",
+    "initial_priority": 100,
+    "updated_priority": 10,
+    "observed_state": "Executing within 22 seconds of submission",
+    "terminal_reconciliation": "Campaign CANCELLED -> operation CANCELLED"
+  },
+  "ui_matrix": [
+    {
+      "id": "S1",
+      "surface": "/director / operation manager",
+      "control_or_state": "Operation record projection",
+      "expected": "Director, Operation Manager, priority, status and worktree policy come from Core records.",
+      "result": "PASS",
+      "evidence": "01-operation-manager.png; 01-operation-manager-cancelled-1440.png"
+    },
+    {
+      "id": "S2",
+      "surface": "/director / operation manager / priority",
+      "control_or_state": "Update priority",
+      "expected": "An integer 0-1000 is validated, persisted in Core and reflected in the queue order.",
+      "result": "PASS",
+      "evidence": "02-priority.png; request b19cdff1 priority 100 -> 10"
+    },
+    {
+      "id": "S3",
+      "surface": "/director / resource governor",
+      "control_or_state": "Scheduler status",
+      "expected": "Active, queued and resource-derived capacity are visible and are not a fixed product cap.",
+      "result": "PASS",
+      "evidence": "01-operation-manager-cancelled-1440.png; capacity 10"
+    },
+    {
+      "id": "S4",
+      "surface": "/director / operation manager",
+      "control_or_state": "Terminal Campaign reconciliation",
+      "expected": "A cancelled Campaign cannot leave the operation projection claiming to execute.",
+      "result": "PASS",
+      "evidence": "01-operation-manager-cancelled-1440.png; CANCELLED"
+    },
+    {
+      "id": "S5",
+      "surface": "/director at 390 px",
+      "control_or_state": "Responsive operation manager",
+      "expected": "No horizontal overflow and controls remain usable.",
+      "result": "PASS",
+      "evidence": "03-operation-390.png; scrollWidth=390, clientWidth=390"
+    }
+  ],
+  "console_errors": [],
+  "unexpected_http_errors": [],
+  "limitations": [
+    "This is implementer self-test evidence, not independent acceptance.",
+    "Two simultaneous operations and per-operation worktree isolation are not yet proven.",
+    "Operation status reconciliation is periodic; it is a projection, not a second lifecycle authority."
+  ]
+}

@@ -73,6 +73,72 @@ impl Database {
         Ok(next)
     }
 
+    /// Advance the Project base to the exact candidate under repair. The
+    /// candidate is already a Factory-authored commit; the new config revision
+    /// keeps the same scope and quality policy and records a new hash.
+    pub async fn advance_project_base_for_repair(
+        &self,
+        project_id: &str,
+        candidate_commit: &str,
+        expected_config_revision: u32,
+    ) -> Result<ProjectConfig, Error> {
+        if candidate_commit.len() != 40
+            || !candidate_commit
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(Error::Invalid("repair candidate commit"));
+        }
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin().await?;
+        let current = load_project_config(&mut transaction, project_id).await?;
+        if current.revision != expected_config_revision {
+            return Err(Error::Conflict("project config revision is stale"));
+        }
+        let (repository,): (String,) =
+            sqlx::query_as::query_as("SELECT repository FROM projects WHERE id=?1")
+                .bind(project_id)
+                .fetch_one(&mut *transaction)
+                .await?;
+        if !crate::workspace::is_ancestor(
+            std::path::Path::new(&repository),
+            &current.base_commit,
+            candidate_commit,
+        )
+        .map_err(|error| Error::Validation(error.to_string()))?
+        {
+            return Err(Error::Conflict(
+                "repair candidate is not on the current Project base lineage",
+            ));
+        }
+        sqlx::query::query("UPDATE projects SET base_commit=?1 WHERE id=?2")
+            .bind(candidate_commit)
+            .bind(project_id)
+            .execute(&mut *transaction)
+            .await?;
+        let mut next = current;
+        next.revision = next
+            .revision
+            .checked_add(1)
+            .ok_or(Error::Constraint("project config revision overflow".into()))?;
+        next.base_commit = candidate_commit.into();
+        next.updated_at = Utc::now().to_rfc3339();
+        next.config_hash = next.compute_hash();
+        write_project_config(&mut transaction, &next).await?;
+        record_event(
+            &mut transaction,
+            project_id,
+            "project.config_updated",
+            &format!(
+                "repair_base_candidate={} revision={}",
+                candidate_commit, next.revision
+            ),
+        )
+        .await?;
+        transaction.commit().await?;
+        Ok(next)
+    }
+
     pub(super) async fn ensure_project_config(
         &self,
         transaction: &mut SqliteConnection,
@@ -208,16 +274,54 @@ mod tests {
     use super::*;
     use crate::lead::Capability;
 
-    async fn fixture() -> (std::path::PathBuf, Database) {
-        let path = std::env::temp_dir().join(format!(
-            "factory-project-config-{}.sqlite",
-            uuid::Uuid::new_v4()
-        ));
+    async fn fixture() -> (std::path::PathBuf, Database, String) {
+        let root =
+            std::env::temp_dir().join(format!("factory-project-config-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        for args in [
+            vec!["init", "-q"],
+            vec!["config", "user.email", "fixture@example.invalid"],
+            vec!["config", "user.name", "Fixture"],
+            vec!["commit", "--allow-empty", "-qm", "base"],
+            vec!["commit", "--allow-empty", "-qm", "candidate"],
+        ] {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+        }
+        let base = String::from_utf8(
+            std::process::Command::new("git")
+                .args(["rev-parse", "HEAD~1"])
+                .current_dir(&repo)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_owned();
+        let candidate = String::from_utf8(
+            std::process::Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(&repo)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_owned();
+        let path = root.join("factory.sqlite");
         let db = Database::open(&path).await.unwrap();
         sqlx::query::query("INSERT INTO projects(id,repository,base_commit,created_at,identity) VALUES (?1,?2,?3,?4,'')")
             .bind("project")
-            .bind("/fixture")
-            .bind("a".repeat(40))
+            .bind(repo.to_string_lossy().as_ref())
+            .bind(&base)
             .bind(Utc::now().to_rfc3339())
             .execute(&db.pool)
             .await
@@ -227,12 +331,37 @@ mod tests {
             .await
             .unwrap();
         drop(connection);
-        (path, db)
+        (path, db, candidate)
+    }
+
+    #[tokio::test]
+    async fn repair_base_advances_the_project_and_config_with_stale_fencing() {
+        let (path, db, candidate) = fixture().await;
+        let advanced = db
+            .advance_project_base_for_repair("project", &candidate, 1)
+            .await
+            .unwrap();
+        assert_eq!(advanced.revision, 2);
+        assert_eq!(advanced.base_commit, candidate);
+        assert_eq!(advanced.config_hash, advanced.compute_hash());
+        let stored: (String,) =
+            sqlx::query_as::query_as("SELECT base_commit FROM projects WHERE id='project'")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(stored.0, candidate);
+        assert!(matches!(
+            db.advance_project_base_for_repair("project", &"d".repeat(40), 1)
+                .await,
+            Err(Error::Conflict(_))
+        ));
+        db.close().await;
+        let _ = std::fs::remove_file(path);
     }
 
     #[tokio::test]
     async fn default_config_is_hashed_and_updates_require_the_current_revision() {
-        let (path, db) = fixture().await;
+        let (path, db, _candidate) = fixture().await;
         let initial = db.project_config("project").await.unwrap();
         assert_eq!(initial.revision, 1);
         assert_eq!(initial.config_hash, initial.compute_hash());

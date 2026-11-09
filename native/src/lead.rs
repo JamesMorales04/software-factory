@@ -1348,8 +1348,24 @@ impl LeadAssessment {
     /// Decode the strict advisory assessment. Unknown fields, duplicate
     /// fields, nulls and trailing JSON are rejected by the typed decoder.
     pub fn from_json(raw: &[u8], input: &AssessmentInput) -> Result<Self, LeadError> {
-        let assessment: Self = serde_json::from_slice(raw)
+        let mut assessment: Self = serde_json::from_slice(raw)
             .map_err(|error| LeadError::Assessment(format!("invalid assessment JSON: {error}")))?;
+        // The effort estimate is advisory. When the intent is informational or
+        // audit and the operator did not ask for an estimate, a model-supplied
+        // estimate cannot affect execution; normalize it to not_requested
+        // instead of blocking the request on a harmless advisory field.
+        let requires_estimate =
+            assessment.intent == Intent::Change || requests_effort_estimate(&input.objective);
+        if !requires_estimate {
+            assessment.effort_estimate = EffortEstimate {
+                status: EffortStatus::NotRequested,
+                unit: String::new(),
+                min_person_hours: 0,
+                max_person_hours: 0,
+                assumptions: Vec::new(),
+                unknown_reason: String::new(),
+            };
+        }
         assessment.validate(input)?;
         Ok(assessment)
     }
@@ -1408,6 +1424,11 @@ impl LeadAssessment {
         if !requires_estimate && self.effort_estimate.status != EffortStatus::NotRequested {
             return Err(LeadError::Assessment(
                 "effort must be not_requested when no estimate was requested".into(),
+            ));
+        }
+        if self.intent == Intent::Change && self.proposal.is_none() {
+            return Err(LeadError::Assessment(
+                "a change assessment requires an executable proposal".into(),
             ));
         }
         if self.intent != Intent::Change
@@ -1585,6 +1606,7 @@ pub enum LeadRequestProjectionState {
     Failed,
     Withdrawn,
     Cancelled,
+    Assessed,
 }
 
 /// Projection precedence: Campaign/gate outcome, then the withdrawal fact, then
@@ -1595,6 +1617,16 @@ pub fn project_lead_request_state(
     campaign_status: Option<&str>,
     gate_outcome: Option<&str>,
     withdrawn: bool,
+) -> LeadRequestProjectionState {
+    project_lead_request_state_with_reason(state, campaign_status, gate_outcome, withdrawn, None)
+}
+
+pub fn project_lead_request_state_with_reason(
+    state: LeadRequestState,
+    campaign_status: Option<&str>,
+    gate_outcome: Option<&str>,
+    withdrawn: bool,
+    failure_reason: Option<&str>,
 ) -> LeadRequestProjectionState {
     if campaign_status == Some("CANCELLED") {
         return LeadRequestProjectionState::Cancelled;
@@ -1625,6 +1657,12 @@ pub fn project_lead_request_state(
             LeadRequestProjectionState::AwaitingApproval
         }
         LeadRequestState::Running => LeadRequestProjectionState::Executing,
+        LeadRequestState::Blocked
+            if failure_reason
+                .is_some_and(|reason| reason.starts_with("informational_assessment:")) =>
+        {
+            LeadRequestProjectionState::Assessed
+        }
         LeadRequestState::Blocked => LeadRequestProjectionState::Blocked,
         LeadRequestState::Failed => LeadRequestProjectionState::Failed,
     }
@@ -1847,6 +1885,10 @@ pub fn is_safe_relative_path(path: &str) -> bool {
         .all(|component| !component.is_empty() && component != ".." && component != ".")
 }
 
+pub(crate) fn path_within(path: &str, granted: &str) -> bool {
+    path == granted || path.starts_with(&format!("{granted}/"))
+}
+
 fn covered_by(path: &str, granted: &[String]) -> bool {
     granted
         .iter()
@@ -1906,6 +1948,30 @@ mod tests {
         DateTime::parse_from_rfc3339("2026-10-23T12:00:00Z")
             .unwrap()
             .with_timezone(&Utc)
+    }
+
+    #[test]
+    fn informational_assessment_projects_as_assessed_without_a_campaign() {
+        assert_eq!(
+            project_lead_request_state_with_reason(
+                LeadRequestState::Blocked,
+                None,
+                None,
+                false,
+                Some("informational_assessment: no execution plan is required for this intent"),
+            ),
+            LeadRequestProjectionState::Assessed
+        );
+        assert_eq!(
+            project_lead_request_state_with_reason(
+                LeadRequestState::Blocked,
+                None,
+                None,
+                false,
+                Some("campaign cancelled"),
+            ),
+            LeadRequestProjectionState::Blocked
+        );
     }
 
     #[test]
@@ -2435,6 +2501,44 @@ mod tests {
     #[test]
     fn assessment_accepts_typed_evidence_and_estimate() {
         assessment().validate(&assessment_input()).unwrap();
+    }
+
+    #[test]
+    fn a_change_without_a_proposal_is_rejected() {
+        let mut value = assessment();
+        value.proposal = None;
+        assert!(value.validate(&assessment_input()).is_err());
+        let mut informational = assessment();
+        informational.intent = Intent::Informational;
+        informational.proposal = None;
+        informational.effort_estimate = EffortEstimate {
+            status: EffortStatus::NotRequested,
+            unit: String::new(),
+            min_person_hours: 0,
+            max_person_hours: 0,
+            assumptions: Vec::new(),
+            unknown_reason: String::new(),
+        };
+        let input = AssessmentInput {
+            objective: "Explain the behavior.".into(),
+            ..assessment_input()
+        };
+        assert!(informational.validate(&input).is_ok());
+    }
+
+    #[test]
+    fn informational_effort_is_normalized_before_validation() {
+        let mut value = assessment();
+        value.intent = Intent::Informational;
+        value.proposal = None;
+        let raw = serde_json::to_vec(&value).unwrap();
+        let input = AssessmentInput {
+            objective: "Explain how the validator treats leap years.".into(),
+            ..assessment_input()
+        };
+        let decoded = LeadAssessment::from_json(&raw, &input).unwrap();
+        assert_eq!(decoded.effort_estimate.status, EffortStatus::NotRequested);
+        assert_eq!(decoded.effort_estimate.max_person_hours, 0);
     }
 
     #[test]

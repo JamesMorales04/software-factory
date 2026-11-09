@@ -1,0 +1,82 @@
+{
+ "schema": "factory.deterministic-evidence.v1",
+ "schema_version": 1,
+ "result": "PASS",
+ "kind": "deterministic-test-evidence",
+ "captured_at": "2026-11-09T07:00:00Z",
+ "candidate": "branch factory/agentic-flow-20261108; exact code commit is recorded in pull request #96",
+ "scope": "Deterministic ParticipantPlan persistence and unit routing, multiple reviewer receipts, Gate aggregation and wait-for-required-reviewers, Cheap Ops observation-only interpretation, and owner charter/reserved decision persistence.",
+ "checks": [
+  {
+   "id": "D1",
+   "name": "cargo fmt --check",
+   "pass": true,
+   "detail": "cargo fmt --manifest-path native/Cargo.toml --all -- --check"
+  },
+  {
+   "id": "D2",
+   "name": "strict Clippy",
+   "pass": true,
+   "detail": "cargo clippy --all-targets --all-features -- -D warnings"
+  },
+  {
+   "id": "D3",
+   "name": "Rust library tests",
+   "pass": true,
+   "detail": "cargo test --all-features --lib: 606 passed, 0 failed, 2 ignored"
+  },
+  {
+   "id": "D4",
+   "name": "Core binary tests",
+   "pass": true,
+   "detail": "cargo test --all-features --bin factory-core: 38 passed, 0 failed"
+  },
+  {
+   "id": "D5",
+   "name": "Office component tests",
+   "pass": true,
+   "detail": "vitest: 296 passed across 45 files"
+  },
+  {
+   "id": "D6",
+   "name": "participant plan and reviewer count",
+   "pass": true,
+   "detail": "agentic::tests::graph_plan_binds_units_and_two_reviewers_for_elevated_assurance and db::intake::tests::work_graph_and_spec_freeze_bind_exact_revisions persist unit routing and reviewer count"
+  },
+  {
+   "id": "D7",
+   "name": "multi-reviewer Gate aggregation",
+   "pass": true,
+   "detail": "quality::tests covers all-pass, one failure, not-tested and duplicate principal/receipt; db::tests::multiple_independent_reviewers_are_aggregated_into_one_gate proves the Gate waits for the plan's reviewer count and links both receipts"
+  },
+  {
+   "id": "D8",
+   "name": "cheap ops interpretation",
+   "pass": true,
+   "detail": "cheap_ops::tests proves OBSERVATION_ONLY authority, reviewer aggregation, mocked/unknown notes and verbatim Gate context; CheapOpsPanel.test.tsx covers the UI"
+  },
+  {
+   "id": "D9",
+   "name": "owner charter and decisions",
+   "pass": true,
+   "detail": "db::intake::tests::owner_charter_and_reserved_decision_are_durable covers charter create/active/revoke, reserved decision create/resolve; Charter.test.tsx covers create, open decision, resolve and revoke"
+  },
+  {
+   "id": "D10",
+   "name": "endpoint authorization",
+   "pass": true,
+   "detail": "the Core route test rejects unauthenticated participant, interpretation, charter and owner-decision calls"
+  },
+  {
+   "id": "D11",
+   "name": "architecture and parity",
+   "pass": true,
+   "detail": "factory-architecture-check and check-office-parity pass after the capability updates"
+  }
+ ],
+ "limitations": [
+  "Deterministic evidence only; it does not certify a live two-reviewer Campaign or independent acceptance.",
+  "Delivery autonomy and delivery effects are not implemented."
+ ],
+ "candidate_sha": "29221072834c124d8dd1186eedbaf7c2a65f185a"
+}

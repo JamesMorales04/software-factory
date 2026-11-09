@@ -113,7 +113,10 @@ fn assessment_prompt(request: &AssessmentRequest<'_>) -> Result<String, LeadErro
 JSON Schema below. Do not add prose, markdown, comments or unknown fields. \
 The example below is a valid shape for this request; copy its identities, route, qualityProfile, \
 paths and capabilities exactly, and use your own judgment for intent, complexity, risks, \
-assumptions, uncertainty and the effort estimate. {checks_instruction} A change request must carry \
+assumptions, uncertainty and the effort estimate. Classify a question or a read-only assessment as \
+informational or audit; never propose executable WorkUnits for those intents. For informational or \
+audit without an explicit estimate request, effortEstimate.status must be not_requested with empty \
+unit, bounds, assumptions and unknownReason. {checks_instruction} A change request must carry \
 a real estimated or unknown effort estimate. For status=estimated, unit must be \"person-hours\", \
 0 <= minPersonHours <= maxPersonHours, maxPersonHours >= 1, assumptions must be non-empty, and \
 unknownReason must be empty. Objective: {objective}. Project: {project_id}. Action: \
@@ -152,7 +155,7 @@ pub async fn assess(
     gateway: &ModelGateway,
     database: &Database,
     request: AssessmentRequest<'_>,
-) -> Result<(LeadAssessment, LeadPlanProposal), LeadError> {
+) -> Result<(LeadAssessment, Option<LeadPlanProposal>), LeadError> {
     let input = AssessmentInput {
         project_id: request.project.project_id.clone(),
         action_id: request.action.id.clone(),
@@ -190,15 +193,14 @@ pub async fn assess(
         })?;
     let assessment = decode_lead_assessment(result.content.as_bytes(), &input)
         .map_err(|error| LeadError::Assessment(error.to_string()))?;
-    let proposal = assessment
-        .proposal
-        .clone()
-        .ok_or_else(|| LeadError::Assessment("model assessment has no proposal".into()))?;
-    proposal.validate_v2(
-        request.grant,
-        &request.project.binding(),
-        request.action,
-        request.now,
-    )?;
+    let proposal = assessment.proposal.clone();
+    if let Some(proposal) = &proposal {
+        proposal.validate_v2(
+            request.grant,
+            &request.project.binding(),
+            request.action,
+            request.now,
+        )?;
+    }
     Ok((assessment, proposal))
 }

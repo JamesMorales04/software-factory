@@ -11,6 +11,7 @@ import {
   ReviewFindings,
 } from "../components/office/CandidateEvidence";
 import { CandidatePullRequest } from "../components/office/CandidatePullRequest";
+import { CheapOpsPanel } from "../components/office/CheapOpsPanel";
 import { ParticipantSessionList } from "../components/office/ParticipantSessionList";
 import { StatusBadge } from "../components/office/StatusBadge";
 import { WorkGraphPanel } from "../components/office/WorkGraph";
@@ -1079,6 +1080,7 @@ export function CampaignDetail() {
                       gate={gates[candidate.id] ?? null}
                       candidateId={candidate.id}
                     />
+                    <CheapOpsPanel candidateId={candidate.id} />
                   </Panel>
                 ))
               )}

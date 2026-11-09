@@ -1,13 +1,17 @@
 import type { LucideIcon } from "lucide-react";
 import {
   Activity,
+  BookOpen,
   Bot,
   ClipboardList,
+  FileText,
   FolderGit2,
   Inbox,
   ListChecks,
   Megaphone,
+  Network,
   Settings,
+  ShieldCheck,
   Sparkles,
 } from "lucide-react";
 import type { MessageKey, Translate } from "./i18n";
@@ -48,6 +52,13 @@ export const NAV_GROUPS: NavGroup[] = [
         keywords: "requests history status objectives",
       },
       {
+        to: "/director",
+        labelKey: "nav.director",
+        icon: Network,
+        keywords:
+          "director portfolio route assurance stack agents participants operation manager planning triage context handoff",
+      },
+      {
         to: "/inbox",
         labelKey: "nav.decisions",
         icon: Inbox,
@@ -71,6 +82,27 @@ export const NAV_GROUPS: NavGroup[] = [
         labelKey: "nav.issues",
         icon: ListChecks,
         keywords: "github issues sync repository labels triage backlog intake",
+      },
+      {
+        to: "/specs",
+        labelKey: "nav.specs",
+        icon: FileText,
+        keywords:
+          "specifications specs formal frozen workgraph work graph requirements acceptance checks kanban board github",
+      },
+      {
+        to: "/skills",
+        labelKey: "nav.skills",
+        icon: BookOpen,
+        keywords:
+          "skills knowledge context7 librarian explorer library docs temporary promotion license review revoke",
+      },
+      {
+        to: "/charter",
+        labelKey: "nav.charter",
+        icon: ShieldCheck,
+        keywords:
+          "charter owner autonomy reserved matters decisions risk appetite delegation expiry revoke",
       },
       {
         to: "/agents",
@@ -137,6 +169,7 @@ export function routeLabel(
   if (pathname.startsWith("/projects/")) return t("nav.projectDetail");
   if (pathname.startsWith("/campaigns/")) return t("nav.campaignDetail");
   if (pathname.startsWith("/agents/")) return t("nav.agentParticipant");
+  if (pathname === "/director") return t("nav.director");
   if (pathname === "/settings" && matchesQuery(search, "tab=access")) {
     return t("nav.accessDevices");
   }

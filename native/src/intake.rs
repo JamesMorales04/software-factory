@@ -103,6 +103,7 @@ pub enum IntakeState {
     Failed,
     Completed,
     Cancelled,
+    Assessed,
 }
 
 impl IntakeState {
@@ -117,6 +118,7 @@ impl IntakeState {
             Self::Failed => "FAILED",
             Self::Completed => "COMPLETED",
             Self::Cancelled => "CANCELLED",
+            Self::Assessed => "ASSESSED",
         }
     }
 

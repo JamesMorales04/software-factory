@@ -1,0 +1,205 @@
+{
+ "schema": "factory.full-agentic-e2e.v1",
+ "schema_version": 1,
+ "result": "PARTIAL",
+ "kind": "implementer-browser-and-real-model-self-test",
+ "captured_at": "2026-11-09T10:05:00Z",
+ "candidate": "branch factory/agentic-flow-20261108; exact code commit is recorded in pull request #96",
+ "environment": {
+  "runtime": "rootless Podman Compose developer-preview stack",
+  "office": "http://127.0.0.1:8893",
+  "browser": "Chromium 1248 via Playwright",
+  "provider": "OpenCode Go / deepseek-v4.1-flash"
+ },
+ "real_autonomous_campaign": {
+  "request": "38a4c431-c263-428a-b777-5cb300a4c14a",
+  "campaign": "4c01ce12-dd5d-4cc1-9d1c-fd742047ec29",
+  "objective": "Add a `previous_leap_year(year: i32) -> i32` helper that returns the previous leap year strictly before the given year, with unit tests.",
+  "mode": "AUTONOMOUS",
+  "route": "DIRECT",
+  "risk": "R0",
+  "provider_model": "opencode-go/deepseek-v4.1-flash",
+  "candidate": "386b7a56-210d-4ac2-a3e2-13fd2d3a0994",
+  "commit": "37f9bc17f690b501b375cb1662c288946c6ba659",
+  "tree": "3ca5e508d4a006abf5ef33d586a2edaac56974b5",
+  "base": "88ca73d72a09b53973e99bea3ad66db66d22b755",
+  "changed_files": [
+   "src/lib.rs"
+  ],
+  "diff_stat": "1 file changed, 32 insertions(+)",
+  "gate": "ACCEPTED",
+  "gate_reasons": [
+   "independent executed evidence accepts exact candidate"
+  ],
+  "verifier": {
+   "principal": "verifier-process",
+   "result": "PASS",
+   "evidence": "DETERMINISTIC"
+  },
+  "reviewer": {
+   "principal": "reviewer-process",
+   "result": "PASS",
+   "mechanism": "MODEL",
+   "provider": "opencode-go",
+   "model": "deepseek-v4.1-flash",
+   "input_tokens": 6463,
+   "output_tokens": 2089,
+   "cost_micros": 2224
+  },
+  "browser_timing": "Assessing -> Executing -> Completed through Office; Gate ACCEPTED without an API or command shortcut",
+  "prior_campaign": "5a2be8ae / 1a1f1111 / 60c2577a was the first accepted real campaign before the independent-review fixes; the final campaign above was rerun on candidate 11933a6."
+ },
+ "journeys": {
+  "informational": {
+   "request": "c0f6e8b0-7395-40d7-a713-d0e5299bad62",
+   "state": "ASSESSED",
+   "outcome": "Assessment recorded; no execution plan or Campaign; no repository mutation.",
+   "evidence": "informational-1440.png"
+  },
+  "audit": {
+   "request": "6df5bed8-5f77-4249-9627-fff920c3cda7",
+   "state": "ASSESSED",
+   "outcome": "Read-only audit assessment recorded; no execution plan or Campaign.",
+   "evidence": "audit-1440.png"
+  },
+  "formal_spec": {
+   "request": "659636fa-7a7e-462b-b457-4c562a43b0dd",
+   "evidence": "docs/evidence/spec-board-2026-11-09/manifest.json",
+   "outcome": "Real Planner and Spec Manager; revision 2 frozen."
+  },
+  "repair": {
+   "campaign": "0a81b768-3349-4b4f-b415-f5678a2779e0",
+   "candidate": "42dd71d7-a4c0-4bda-ab7a-202a65d0e239",
+   "evidence": "docs/evidence/repair-from-candidate-2026-11-08/manifest.json",
+   "outcome": "Rejected candidate dbbfa1d6 repaired to 88ca73d7; Gate ACCEPTED."
+  },
+  "concurrent_operations": {
+   "requests": [
+    "574fbd15-937e-4180-b9f5-622c3d1ee371",
+    "b7bafdd9-4357-42c1-9a51-34ec7f25e878"
+   ],
+   "observed": "Both operations were created back-to-back and reached STARTING/EXECUTING with separate Operation Managers; one completed and one blocked. The scheduler status was visible in Director.",
+   "evidence": "concurrent-operations-1440.png; operations-corrected-1440.png"
+  },
+  "owner_decision": {
+   "charter": "5e287870-b540-49ec-9253-80faeab6dd42",
+   "decision": "bee1d2f1-83f5-4b9e-b700-82b82c2b7644",
+   "evidence": "docs/evidence/owner-charter-2026-11-09/manifest.json",
+   "outcome": "Reserved credentials decision opened with DENY recommendation and resolved APPROVE with owner rationale."
+  }
+ },
+ "deviations_found_and_fixed": [
+  {
+   "id": "E2E-D1",
+   "finding": "The independent reviewer only received changed files, so a test-only diff for an existing helper was wrongly blocked as missing implementation.",
+   "fix": "The review bundle now includes bounded unchanged source files under the allowed paths, prioritizes lib/main, and the prompt requires checking existing source before claiming a symbol is missing.",
+   "evidence": "campaign ebb9fc9f was the blocked first attempt; campaign 1a1f1111 accepted after the fix"
+  },
+  {
+   "id": "E2E-D2",
+   "finding": "Informational/audit assessments could return an advisory effort estimate and be rejected by strict validation.",
+   "fix": "Advisory effort is normalized to not_requested when the intent is non-change and no estimate was requested; the Lead prompt now states the same.",
+   "evidence": "lead::tests::informational_effort_is_normalized_before_validation"
+  },
+  {
+   "id": "E2E-D3",
+   "finding": "A non-change assessment without a proposal blocked the request as invalid.",
+   "fix": "The assessment flow accepts no proposal for informational/audit, records the assessment, and projects a derived ASSESSED disposition with no plan or Campaign.",
+   "evidence": "informational-1440.png; audit-1440.png"
+  },
+  {
+   "id": "E2E-D4",
+   "finding": "Historical blocked/review-plan operations remained QUEUED in Director and could be resumed after restart.",
+   "fix": "Operation creation marks review-plan operations OBSERVED; reconciliation maps withdrawn/blocked/failed Lead states; the resume query excludes blocked, failed and withdrawn requests.",
+   "evidence": "operations-corrected-1440.png; db::intake tests for reconciliation and resume filtering"
+  },
+  {
+   "id": "E2E-D5",
+   "finding": "The independent review found that a semantic assessment could replace deterministic triage signals and lower a floor.",
+   "fix": "Deterministic triage is computed first and the model decision is merged into it, so a model can only raise a floor.",
+   "evidence": "agentic merge tests; code at native/src/bin/core.rs agentic_triage_context"
+  },
+  {
+   "id": "E2E-D6",
+   "finding": "A change assessment without a proposal could be projected as ASSESSED, and the reviewer queue hid candidates after the first reviewer.",
+   "fix": "Change intent now requires a proposal; the reviewer queue counts distinct principals against the plan requirement and the single-reviewer topology caps the plan to one reviewer.",
+   "evidence": "lead::tests::a_change_without_a_proposal_is_rejected; db::tests::multiple_independent_reviewers_are_aggregated_into_one_gate"
+  },
+  {
+   "id": "E2E-D7",
+   "finding": "Cheap Ops read snake_case fields while Rust serialized camelCase, showing a pending Gate and missing verifier on an accepted candidate.",
+   "fix": "The Office contract, component and tests now use camelCase; the accepted screenshots were recaptured on candidate 11933a6.",
+   "evidence": "final-cheap-ops-1440.png; CheapOpsPanel.test.tsx"
+  }
+ ],
+ "ui_matrix": [
+  {
+   "id": "E1",
+   "surface": "Home -> request",
+   "control_or_state": "Autonomous request submission",
+   "expected": "A real request is created through Office and the Lead assesses, freezes and starts it.",
+   "result": "PASS",
+   "evidence": "final-request-1440.png; request 38a4c431"
+  },
+  {
+   "id": "E2",
+   "surface": "Campaign / Overview",
+   "control_or_state": "Accepted campaign",
+   "expected": "Campaign shows Accepted and the exact candidate/Gate identity; the request route is DIRECT for the bounded single-unit change.",
+   "result": "PASS",
+   "evidence": "final-campaign-accepted-1440.png"
+  },
+  {
+   "id": "E3",
+   "surface": "Campaign / Candidates",
+   "control_or_state": "Candidate diff",
+   "expected": "The diff includes the requested src/lib.rs helper and tests.",
+   "result": "PASS",
+   "evidence": "final-candidate-diff-1440.png"
+  },
+  {
+   "id": "E4",
+   "surface": "Campaign / Quality Gate",
+   "control_or_state": "Gate and Cheap Ops",
+   "expected": "Verifier and model reviewer passes are visible; Cheap Ops is OBSERVATION_ONLY and displays the accepted Gate, verifier and reviewer count.",
+   "result": "PASS",
+   "evidence": "final-gate-accepted-1440.png; final-cheap-ops-1440.png"
+  },
+  {
+   "id": "E5",
+   "surface": "Request / informational and audit",
+   "control_or_state": "Run assessment",
+   "expected": "No execution plan is required; the request shows ASSESSED and the repository is not mutated.",
+   "result": "PASS",
+   "evidence": "informational-1440.png; audit-1440.png"
+  },
+  {
+   "id": "E6",
+   "surface": "Director / operations",
+   "control_or_state": "Concurrent operations and status reconciliation",
+   "expected": "Two operations are coordinated; terminal or blocked requests no longer claim to be queued.",
+   "result": "PASS",
+   "evidence": "concurrent-operations-1440.png; operations-corrected-1440.png"
+  },
+  {
+   "id": "E7",
+   "surface": "Campaign and Director at 390 px",
+   "control_or_state": "Responsive acceptance",
+   "expected": "No horizontal overflow.",
+   "result": "PASS",
+   "evidence": "final-gate-accepted-390.png; operations-corrected-390.png; scrollWidth=390/clientWidth=390"
+  }
+ ],
+ "console_errors": [],
+ "unexpected_http_errors": [],
+ "limitations": [
+  "This is implementer self-test evidence, not independent verification or acceptance.",
+  "The live Campaign used one independent reviewer process. Multi-reviewer aggregation is deterministically tested and waits for the plan's reviewer count, but a live two-reviewer Campaign was not run.",
+  "GitHub spec publication, skill use/promotion inside a Campaign and delivery effects remain NOT_TESTED.",
+  "The first blocked Campaign and the informational no-plan path are retained as deviation evidence.",
+  "The independent-review fixes addressed High findings; live two-reviewer topology, GitHub publication, skill use/promotion in a Campaign and delivery effects remain NOT_TESTED.",
+  "The live request projection reports route DIRECT for the accepted single-unit campaign; the manifest previously recorded DELEGATED incorrectly and has been corrected.",
+  "Skill 343eca10 is NOASSERTION and may be adopted but cannot be used until an owner records a reviewed license."
+ ],
+ "candidate_sha": "29221072834c124d8dd1186eedbaf7c2a65f185a"
+}

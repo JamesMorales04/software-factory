@@ -460,6 +460,67 @@ Decision: `approved`
 - Approve each Office slice and any new protected action separately
 
 
+## F1-S10 — Agentic flow and dynamic composition
+
+Decision: `proposed`
+
+### Dependencies
+
+- F1-S9
+
+### Capabilities
+
+- CAP-036 — Adaptive Model Router (proposed, not_implemented)
+- CAP-038 — Skill Registry and admission (proposed, in_progress)
+- CAP-057 — Context handler and session handoff (proposed, not_implemented)
+- CAP-058 — Triage, route and assurance (proposed, in_progress)
+- CAP-059 — Director and Operation Manager (proposed, in_progress)
+- CAP-060 — Planner and Spec Manager (proposed, in_progress)
+- CAP-061 — Spec issue projection and kanban (proposed, in_progress)
+- CAP-062 — Explorer, Librarian and temporary skills (proposed, in_progress)
+- CAP-063 — Dynamic participant composition and cheap operations (proposed, in_progress)
+- CAP-064 — Bounded repair orchestration (proposed, in_progress)
+- CAP-065 — Owner charter and delegated autonomy (proposed, in_progress)
+- CAP-066 — Agent fleet observability and cost (proposed, not_implemented)
+
+### Deliverables
+
+- Context handler with compaction, structured handoff and session rotation
+- Typed triage and StackProfile
+- Director, Operation Manager and portfolio concurrency
+- Planner, Spec Manager and frozen specs projected to issues and kanban
+- Explorer, Librarian, Context7 and temporary skills
+- Dynamic participant composition and cheap operations interpreter
+- Bounded repair from the exact candidate
+- Owner charter and delegated R1-R3 autonomy
+
+### Exclusions
+
+- a second orchestrator outside Core
+- model-granted authority or model-selected tools
+- blanket R3 autonomy outside an owner charter
+- unbounded concurrency without resource governance
+
+### Risks
+
+- context loss across compaction and handoff
+- agent and skill sprawl without minimum-sufficient composition
+- issue/kanban drift from Core truth
+- repair scope creep or candidate identity loss
+
+### Deterministic acceptance
+
+- Triage floors, participant composition, owner charter, repair authorization, context handoff, spec issue projection and reviewer aggregation pass deterministic positive and negative tests.
+
+### Real acceptance
+
+- A real-model browser campaign exercises a large spec, repair, concurrency and owner decision through Office without API or shell shortcuts.
+
+### Product Owner decisions
+
+- The owner approves the charter and each protected effect or delegation.
+
+
 ## LATER — Evaluated extensions
 
 Decision: `proposed`
@@ -470,9 +531,7 @@ Decision: `proposed`
 
 ### Capabilities
 
-- CAP-036 — Adaptive Model Router (proposed, not_implemented)
 - CAP-037 — Model evaluation and route promotion (proposed, not_implemented)
-- CAP-038 — Skill Registry and admission (proposed, not_implemented)
 - CAP-039 — Remote Workers (proposed, not_implemented)
 - CAP-040 — Extended Factory Office (proposed, not_implemented)
 - CAP-041 — Reliability analytics (proposed, not_implemented)

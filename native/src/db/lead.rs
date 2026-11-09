@@ -724,11 +724,12 @@ impl Database {
             None => None,
         };
         let withdrawn = self.lead_withdrawal(id).await?.is_some();
-        Ok(crate::lead::project_lead_request_state(
+        Ok(crate::lead::project_lead_request_state_with_reason(
             request.state,
             campaign_status.as_deref(),
             gate_outcome.as_deref(),
             withdrawn,
+            request.failure_reason.as_deref(),
         ))
     }
 
@@ -2491,6 +2492,16 @@ async fn start_lead_campaign_in_tx(
         .execute(&mut *connection)
         .await?;
     }
+    sqlx::query::query(
+        "INSERT INTO campaign_review_requirements (campaign_id,reviewer_count,created_at)
+         SELECT ?1,pp.reviewer_count,?2 FROM agentic_participant_plans pp WHERE pp.request_id=?3
+         ON CONFLICT(campaign_id) DO NOTHING",
+    )
+    .bind(&campaign.id)
+    .bind(&now)
+    .bind(&request.id)
+    .execute(&mut *connection)
+    .await?;
     sqlx::query::query(
         "UPDATE intake_requests SET campaign_id=?1,updated_at=?2 WHERE lead_request_id=?3",
     )

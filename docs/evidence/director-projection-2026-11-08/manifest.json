@@ -1,0 +1,111 @@
+{
+  "schema": "factory.director-projection.v1",
+  "schema_version": 1,
+  "result": "PARTIAL",
+  "kind": "implementer-browser-self-test",
+  "captured_at": "2026-11-08T21:30:00Z",
+  "candidate": "514bfc1d049ba577b0eb3f6c503e23771197b8af",
+  "environment": {
+    "runtime": "rootless Podman Compose developer-preview stack",
+    "office": "http://127.0.0.1:8893",
+    "browser": "Chromium 1248 via Playwright",
+    "provider": "OpenCode Go / deepseek-v4.1-flash",
+    "profile": "Live workspace archive profile 1794095707 revision 2"
+  },
+  "scope": "Director portfolio projection, technology profile, deterministic participant plan, context policy and browser-triggered semantic triage. Operation Manager runtime, concurrency, repair, spec issue publishing, Explorer/Librarian and dynamic fleets are not implemented in this slice.",
+  "ui_matrix": [
+    {
+      "id": "D1",
+      "surface": "/director",
+      "control_or_state": "Load the owner portfolio",
+      "expected": "Core-backed operations appear with state, route, assurance and participant count.",
+      "result": "PASS",
+      "evidence": "director-1440.png"
+    },
+    {
+      "id": "D2",
+      "surface": "/director",
+      "control_or_state": "Select an operation",
+      "expected": "The detail shows request identity, profile revision, route, assurance, mechanism and frozen plan identity.",
+      "result": "PASS",
+      "evidence": "director-1440.png; semantic-triage-1440.png"
+    },
+    {
+      "id": "D3",
+      "surface": "/director / technology profile",
+      "control_or_state": "Inspect StackProfile",
+      "expected": "Languages, frameworks, data, tests, browser, infra and evidence references come from Core records, with unknowns explicit.",
+      "result": "PASS",
+      "evidence": "semantic-triage-1440.png"
+    },
+    {
+      "id": "D4",
+      "surface": "/director / participants",
+      "control_or_state": "Inspect deterministic ParticipantPlan",
+      "expected": "Roles, specializations, counts, read-only/write access and tool packs are visible; no decorative agent control exists.",
+      "result": "PASS",
+      "evidence": "director-1440.png"
+    },
+    {
+      "id": "D5",
+      "surface": "/director / semantic assessment",
+      "control_or_state": "Run semantic triage",
+      "expected": "A real OpenCode Go model call records a typed StackProfile and recommendation; Core merges it with non-weakening floors and shows measured usage.",
+      "result": "PASS",
+      "evidence": "semantic-triage-1440.png; request d13fed9d"
+    },
+    {
+      "id": "D6",
+      "surface": "/director / semantic assessment",
+      "control_or_state": "No semantic assessment recorded",
+      "expected": "The page states that the current route, assurance and stack are deterministic evidence only and offers the triage action.",
+      "result": "PASS",
+      "evidence": "Director.test.tsx; semantic-triage-1440.png"
+    },
+    {
+      "id": "D7",
+      "surface": "/director",
+      "control_or_state": "Loading, empty and error states",
+      "expected": "Loading is announced; an empty portfolio invents no operation; an error offers retry and does not fabricate data.",
+      "result": "PASS",
+      "evidence": "Director.test.tsx"
+    },
+    {
+      "id": "D8",
+      "surface": "/director at 390 px",
+      "control_or_state": "Portfolio and detail layout",
+      "expected": "No horizontal overflow; portfolio stacks above detail and controls remain usable.",
+      "result": "PASS",
+      "evidence": "director-390.png, semantic-triage-390.png; scrollWidth=390, clientWidth=390"
+    },
+    {
+      "id": "D9",
+      "surface": "/director",
+      "control_or_state": "Keyboard and focus behavior",
+      "expected": "Portfolio buttons, refresh and triage remain reachable; labels and live regions are present.",
+      "result": "NOT_TESTED",
+      "evidence": "Component tests cover labels and status regions; no full keyboard-only browser matrix was run."
+    },
+    {
+      "id": "D10",
+      "surface": "/director",
+      "control_or_state": "Offline/disconnected Core",
+      "expected": "The existing error state appears and no stale data is presented as live.",
+      "result": "NOT_TESTED",
+      "evidence": "No network-offline browser run was performed for this route."
+    }
+  ],
+  "checks": {
+    "browser": "PASS \u2014 1440 and 390 px, zero console errors, zero unexpected 4xx/5xx, no horizontal overflow.",
+    "semantic_model": "PASS \u2014 real OpenCode Go deepseek-v4.1-flash call returned a schema-valid AgenticTriageModel; deterministic route/assurance floors were merged.",
+    "component": "PASS \u2014 Director.test.tsx covers populated, empty, error and semantic-triage states.",
+    "deterministic": "PASS \u2014 agentic domain tests cover triage floors, stack detection, participant composition, context policy, owner charter and model-floor merging."
+  },
+  "limitations": [
+    "This is implementer evidence, not independent acceptance.",
+    "Only the Director projection slice is implemented; Operation Manager runtime, concurrency, repair, spec issue publishing, Explorer/Librarian/Context7, skills and dynamic fleets remain pending.",
+    "Semantic triage requires an active request-scoped subscription admission; historical requests with consumed funding cannot be re-assessed.",
+    "The StackProfile is advisory and may contain low-confidence model inference; Explorer confirmation is not implemented.",
+    "No isolation or security certification is claimed. TRUSTED_LOCAL is broad local access."
+  ]
+}

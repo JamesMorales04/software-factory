@@ -212,6 +212,13 @@ export function QualityGatePanel({
           })}
         </span>
       </p>
+      {gate.reviewerReceiptIds && gate.reviewerReceiptIds.length > 0 && (
+        <p className="muted">
+          {t("evidence.gate.reviewers", {
+            count: gate.reviewerReceiptIds.length,
+          })}
+        </p>
+      )}
       {gate.reasons.length === 0 ? (
         <p className="muted">{t("evidence.gate.noReasons")}</p>
       ) : (

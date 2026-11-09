@@ -4,7 +4,10 @@ use std::{
     future::IntoFuture,
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, OnceLock},
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use axum::{
@@ -44,6 +47,8 @@ struct App {
     worker_bootstrap_token: String,
     verifier_token: String,
     reviewer_token: String,
+    verifier_principal: String,
+    reviewer_principal: String,
     lead_fixture_assessor: bool,
     lead_autonomous_start: bool,
     model_gateway: Option<factory_native::model_gateway::ModelGateway>,
@@ -455,6 +460,118 @@ struct IntakeMessageRequest {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct AgenticPriorityRequest {
+    priority: i64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AgenticSpecFreezeRequest {
+    expected_spec_sha256: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AgenticSpecPublishRequest {
+    #[serde(default)]
+    confirm: bool,
+    #[serde(default)]
+    local: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AgenticKnowledgeRequest {
+    library: String,
+    query: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AgenticSkillUseRequest {
+    request_id: String,
+    outcome: String,
+    evidence: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AgenticSkillLicenseRequest {
+    license: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AgenticSkillPromoteRequest {
+    scope: String,
+    #[serde(default)]
+    owner_approved: bool,
+    #[serde(default)]
+    confirm: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AgenticSkillRevokeRequest {
+    reason: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NewOwnerCharterRequest {
+    project_id: String,
+    domains: Vec<String>,
+    risk_appetite: String,
+    #[serde(default)]
+    execution_autonomy: bool,
+    #[serde(default)]
+    repair_autonomy: bool,
+    #[serde(default)]
+    delivery_autonomy: bool,
+    reserved_matters: Vec<String>,
+    expires_at: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RevokeOwnerCharterRequest {
+    reason: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NewOwnerDecisionRequest {
+    project_id: String,
+    #[serde(default)]
+    request_id: Option<String>,
+    #[serde(default)]
+    campaign_id: Option<String>,
+    matter: String,
+    risk: String,
+    options: Vec<String>,
+    evidence: Value,
+    recommendation: String,
+    deadline: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ResolveOwnerDecisionRequest {
+    option: String,
+    rationale: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RepairCampaignRequest {
+    #[serde(default)]
+    confirm: bool,
+    #[serde(default)]
+    reason: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct CancelIntakeRequest {
     reason: String,
 }
@@ -628,6 +745,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         factory_native::secrets::required("FACTORY_WORKER_BOOTSTRAP_TOKEN")?;
     let verifier_token = factory_native::secrets::required("FACTORY_VERIFIER_TOKEN")?;
     let reviewer_token = factory_native::secrets::required("FACTORY_REVIEWER_TOKEN")?;
+    let verifier_principal =
+        env::var("FACTORY_VERIFIER_PRINCIPAL").unwrap_or_else(|_| "verifier-process".into());
+    let reviewer_principal =
+        env::var("FACTORY_REVIEWER_PRINCIPAL").unwrap_or_else(|_| "reviewer-process".into());
     let tokens = [
         operator_token.as_str(),
         worker_bootstrap_token.as_str(),
@@ -703,6 +824,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         worker_bootstrap_token,
         verifier_token,
         reviewer_token,
+        verifier_principal,
+        reviewer_principal,
         lead_fixture_assessor: env::var("FACTORY_LEAD_FIXTURE_ASSESSOR").ok().as_deref()
             == Some("1"),
         lead_autonomous_start: env::var("FACTORY_ENABLE_AUTONOMOUS_START").ok().as_deref()
@@ -719,6 +842,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let app_for_autopilot = Arc::clone(&app);
         tokio::spawn(async move {
             resume_autopilot_requests(&app_for_autopilot).await;
+        });
+    }
+    {
+        let app_for_repairs = Arc::clone(&app);
+        tokio::spawn(async move {
+            promote_accepted_repairs(app_for_repairs).await;
         });
     }
     let router = build_router(Arc::clone(&app));
@@ -956,6 +1085,79 @@ fn office_api_router(app: Arc<App>) -> Router {
         .route("/office/overview", get(office_overview))
         .route("/office/decisions", get(office_decisions))
         .route("/office/participants", get(office_participants))
+        .route("/agentic/portfolio", get(agentic_portfolio))
+        .route("/agentic/scheduler", get(agentic_scheduler_status))
+        .route(
+            "/agentic/requests/{id}/priority",
+            post(agentic_operation_priority),
+        )
+        .route(
+            "/agentic/requests/{id}/assess",
+            post(assess_agentic_request),
+        )
+        .route(
+            "/agentic/requests/{id}/plan",
+            get(get_agentic_plan).post(plan_agentic_request),
+        )
+        .route(
+            "/agentic/requests/{id}/participants",
+            get(get_agentic_participants).post(record_agentic_participants),
+        )
+        .route(
+            "/agentic/requests/{id}/spec",
+            get(get_agentic_spec).post(author_agentic_spec),
+        )
+        .route(
+            "/agentic/requests/{id}/spec/freeze",
+            post(freeze_agentic_spec),
+        )
+        .route(
+            "/agentic/requests/{id}/spec/publish",
+            post(publish_agentic_spec),
+        )
+        .route(
+            "/agentic/requests/{id}/spec/refresh",
+            post(refresh_agentic_spec),
+        )
+        .route("/agentic/specs/board", get(agentic_spec_board))
+        .route(
+            "/quality/candidates/{id}/interpretation",
+            get(candidate_cheap_ops),
+        )
+        .route(
+            "/agentic/requests/{id}/knowledge",
+            get(get_agentic_knowledge).post(research_agentic_knowledge),
+        )
+        .route(
+            "/agentic/requests/{id}/skills/{skill_id}/adopt",
+            post(adopt_agentic_skill),
+        )
+        .route("/agentic/skills", get(agentic_skills))
+        .route("/agentic/skills/{id}/uses", post(record_agentic_skill_use))
+        .route(
+            "/agentic/skills/{id}/license",
+            post(review_agentic_skill_license),
+        )
+        .route("/agentic/skills/{id}/promote", post(promote_agentic_skill))
+        .route("/agentic/skills/{id}/review", post(review_agentic_skill))
+        .route("/agentic/skills/{id}/revoke", post(revoke_agentic_skill))
+        .route(
+            "/agentic/charters",
+            get(agentic_charters).post(create_agentic_charter),
+        )
+        .route(
+            "/agentic/charters/{id}/revoke",
+            post(revoke_agentic_charter),
+        )
+        .route(
+            "/agentic/decisions",
+            get(agentic_owner_decisions).post(create_agentic_owner_decision),
+        )
+        .route(
+            "/agentic/decisions/{id}/resolve",
+            post(resolve_agentic_owner_decision),
+        )
+        .route("/agentic/requests/{id}", get(agentic_request_detail))
         .route(
             "/provider/sessions/{session_record_id}/tool_events",
             get(provider_session_tool_events),
@@ -967,6 +1169,7 @@ fn office_api_router(app: Arc<App>) -> Router {
             get(candidate_diff),
         )
         .route("/campaigns/{id}/cancel", post(cancel_campaign))
+        .route("/campaigns/{id}/repair", post(repair_campaign))
         .route("/campaigns/{id}/authorization", get(campaign_authorization))
         .route("/campaigns/{id}/authorize", post(authorize_campaign))
         .route("/campaigns/{id}/runs", post(create_campaign_run))
@@ -1161,6 +1364,79 @@ fn api_router(app: Arc<App>) -> Router {
         .route("/office/overview", get(office_overview))
         .route("/office/decisions", get(office_decisions))
         .route("/office/participants", get(office_participants))
+        .route("/agentic/portfolio", get(agentic_portfolio))
+        .route("/agentic/scheduler", get(agentic_scheduler_status))
+        .route(
+            "/agentic/requests/{id}/priority",
+            post(agentic_operation_priority),
+        )
+        .route(
+            "/agentic/requests/{id}/assess",
+            post(assess_agentic_request),
+        )
+        .route(
+            "/agentic/requests/{id}/plan",
+            get(get_agentic_plan).post(plan_agentic_request),
+        )
+        .route(
+            "/agentic/requests/{id}/participants",
+            get(get_agentic_participants).post(record_agentic_participants),
+        )
+        .route(
+            "/agentic/requests/{id}/spec",
+            get(get_agentic_spec).post(author_agentic_spec),
+        )
+        .route(
+            "/agentic/requests/{id}/spec/freeze",
+            post(freeze_agentic_spec),
+        )
+        .route(
+            "/agentic/requests/{id}/spec/publish",
+            post(publish_agentic_spec),
+        )
+        .route(
+            "/agentic/requests/{id}/spec/refresh",
+            post(refresh_agentic_spec),
+        )
+        .route("/agentic/specs/board", get(agentic_spec_board))
+        .route(
+            "/quality/candidates/{id}/interpretation",
+            get(candidate_cheap_ops),
+        )
+        .route(
+            "/agentic/requests/{id}/knowledge",
+            get(get_agentic_knowledge).post(research_agentic_knowledge),
+        )
+        .route(
+            "/agentic/requests/{id}/skills/{skill_id}/adopt",
+            post(adopt_agentic_skill),
+        )
+        .route("/agentic/skills", get(agentic_skills))
+        .route("/agentic/skills/{id}/uses", post(record_agentic_skill_use))
+        .route(
+            "/agentic/skills/{id}/license",
+            post(review_agentic_skill_license),
+        )
+        .route("/agentic/skills/{id}/promote", post(promote_agentic_skill))
+        .route("/agentic/skills/{id}/review", post(review_agentic_skill))
+        .route("/agentic/skills/{id}/revoke", post(revoke_agentic_skill))
+        .route(
+            "/agentic/charters",
+            get(agentic_charters).post(create_agentic_charter),
+        )
+        .route(
+            "/agentic/charters/{id}/revoke",
+            post(revoke_agentic_charter),
+        )
+        .route(
+            "/agentic/decisions",
+            get(agentic_owner_decisions).post(create_agentic_owner_decision),
+        )
+        .route(
+            "/agentic/decisions/{id}/resolve",
+            post(resolve_agentic_owner_decision),
+        )
+        .route("/agentic/requests/{id}", get(agentic_request_detail))
         .route(
             "/provider/sessions/{session_record_id}/tool_events",
             get(provider_session_tool_events),
@@ -1172,6 +1448,7 @@ fn api_router(app: Arc<App>) -> Router {
             get(candidate_diff),
         )
         .route("/campaigns/{id}/cancel", post(cancel_campaign))
+        .route("/campaigns/{id}/repair", post(repair_campaign))
         .route("/runs", get(runs))
         .route("/attempts", get(attempts))
         .route("/events", get(events))
@@ -4366,12 +4643,20 @@ async fn candidate_gate_identity(
     candidate_id: &str,
 ) -> Result<Option<serde_json::Value>, Response> {
     match app.db.gate_for_candidate(candidate_id).await {
-        Ok(Some(gate)) => Ok(Some(json!({
-            "candidate_id": gate.candidate_id,
-            "outcome": gate.outcome,
-            "reasons": gate.reasons,
-            "decided_at": gate.decided_at,
-        }))),
+        Ok(Some(gate)) => {
+            let reviewer_ids = app
+                .db
+                .gate_reviewer_ids(&gate.candidate_id)
+                .await
+                .unwrap_or_default();
+            Ok(Some(json!({
+                "candidate_id": gate.candidate_id,
+                "outcome": gate.outcome,
+                "reasons": gate.reasons,
+                "decided_at": gate.decided_at,
+                "reviewerReceiptIds": reviewer_ids,
+            })))
+        }
         Ok(None) => Ok(None),
         Err(error) => Err(api_error(error)),
     }
@@ -7383,6 +7668,11 @@ async fn candidate_diff(
         .iter()
         .map(|file| file.path.clone())
         .collect::<Vec<_>>();
+    let reviewer_ids = app
+        .db
+        .gate_reviewer_ids(&candidate.id)
+        .await
+        .unwrap_or_default();
     Json(json!({
         "candidate_id": candidate.id,
         "candidate": {
@@ -7401,6 +7691,7 @@ async fn candidate_diff(
             "outcome": gate.outcome,
             "reasons": gate.reasons,
             "decided_at": gate.decided_at,
+            "reviewerReceiptIds": reviewer_ids,
         })),
         "project_id": project.id,
         "campaign_id": campaign.id,
@@ -7455,6 +7746,263 @@ fn candidate_diff_error(
         })),
     )
         .into_response()
+}
+
+async fn repair_campaign(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    body: Bytes,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let input = if body.is_empty() {
+        RepairCampaignRequest {
+            confirm: false,
+            reason: String::new(),
+        }
+    } else {
+        match serde_json::from_slice::<RepairCampaignRequest>(&body) {
+            Ok(input) => input,
+            Err(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error":"invalid repair payload"})),
+                )
+                    .into_response();
+            }
+        }
+    };
+    if !input.confirm {
+        return api_error(Error::Forbidden(
+            "repair requires explicit operator confirmation".into(),
+        ));
+    }
+    if input.reason.len() > 1_000 {
+        return api_error(Error::Invalid("repair reason"));
+    }
+    if let Err(error) = app.db.campaign(&id).await {
+        return api_error(error);
+    }
+    let candidate = match app.db.latest_candidate_for_campaign(&id).await {
+        Ok(candidate) => candidate,
+        Err(error) => return api_error(error),
+    };
+    let gate = match app.db.gate_for_candidate(&candidate.id).await {
+        Ok(Some(gate)) => gate,
+        Ok(None) => {
+            return api_error(Error::Conflict("repair requires a decided Quality Gate"));
+        }
+        Err(error) => return api_error(error),
+    };
+    if gate.outcome != factory_native::quality::GateOutcome::RepairRequired {
+        return api_error(Error::Conflict(
+            "repair is available only for REPAIR_REQUIRED candidates",
+        ));
+    }
+    let intake = match app.db.intake_request_for_campaign(&id).await {
+        Ok(intake) => intake,
+        Err(error) => return api_error(error),
+    };
+    let profile = match app
+        .db
+        .execution_profile_revision(&intake.profile_id, &intake.profile_revision_id)
+        .await
+    {
+        Ok(profile) => profile,
+        Err(error) => return api_error(error),
+    };
+    let proposal = app
+        .db
+        .lead_proposal(&intake.lead_request_id)
+        .await
+        .ok()
+        .and_then(|record| {
+            serde_json::from_str::<factory_native::lead::LeadPlanProposal>(&record.proposal_json)
+                .ok()
+        });
+    let risk = proposal
+        .as_ref()
+        .map(|proposal| proposal.risk_class)
+        .unwrap_or(factory_native::lead::RiskClass::R0);
+    let charter_present = app
+        .db
+        .active_agentic_charter(&intake.project_id)
+        .await
+        .ok()
+        .flatten()
+        .is_some();
+    if matches!(
+        risk,
+        factory_native::lead::RiskClass::R2 | factory_native::lead::RiskClass::R3
+    ) && !charter_present
+    {
+        return api_error(Error::Forbidden(
+            "R2 and R3 repair requires an owner decision or a delegated owner charter".into(),
+        ));
+    }
+    if charter_present
+        && let Err(response) = charter_owner_decision_gate(
+            &app,
+            &intake.project_id,
+            Some(&intake.id),
+            Some(&id),
+            &intake.objective,
+            risk,
+            "repair",
+        )
+        .await
+    {
+        return response;
+    }
+    let Some(content) = profile.content.v2() else {
+        return api_error(Error::Forbidden(
+            "repair requires a V2 execution profile".into(),
+        ));
+    };
+    if !factory_native::intake::autonomous_subscription_profile(content) {
+        return api_error(Error::Forbidden(
+            "repair currently requires OpenCode Go subscription Lead and implementer routes".into(),
+        ));
+    }
+    let config = match app.db.project_config(&intake.project_id).await {
+        Ok(config) => config,
+        Err(error) => return api_error(error),
+    };
+    let reviewer = app
+        .db
+        .quality_receipts(&candidate.id)
+        .await
+        .ok()
+        .and_then(|receipts| {
+            receipts
+                .into_iter()
+                .find(|receipt| receipt.role == factory_native::db::QualityRole::Reviewer)
+        });
+    let mut findings = Vec::new();
+    if let Some(reviewer) = &reviewer {
+        for finding in reviewer.findings.iter().take(6) {
+            if matches!(
+                finding.severity,
+                factory_native::review::FindingSeverity::Blocking
+                    | factory_native::review::FindingSeverity::Warning
+            ) {
+                findings.push(format!("{:?}: {}", finding.severity, finding.message));
+            }
+        }
+    }
+    if findings.is_empty() {
+        findings.extend(gate.reasons.iter().take(6).cloned());
+    }
+    findings.sort();
+    findings.dedup();
+    let reason = input.reason.trim();
+    let objective = format!(
+        "Repair the rejected candidate {}. Resolve these findings and preserve the frozen objective, allowed paths and quality policy: {}. The repair base is the candidate, not the Project base commit. Add regression coverage for every fixed behavior.{}",
+        candidate.commit_sha,
+        findings.join(" | "),
+        if reason.is_empty() {
+            String::new()
+        } else {
+            format!(" Operator context: {reason}.")
+        }
+    );
+    if objective.len() > 4_000 {
+        return api_error(Error::Invalid("repair objective is too long"));
+    }
+    if let Some(existing) = match app.db.repair_request_for_candidate(&candidate.id).await {
+        Ok(value) => value,
+        Err(error) => return api_error(error),
+    } {
+        return Json(json!({
+            "requestId": existing,
+            "projectId": intake.project_id,
+            "candidateId": candidate.id,
+            "baseCommit": candidate.commit_sha,
+            "profileId": intake.profile_id,
+            "mode": "AUTONOMOUS",
+            "replayed": true,
+        }))
+        .into_response();
+    }
+    let (principal_id, principal_label) =
+        authenticated_operator(session.as_ref().map(|Extension(device)| device));
+    let next_config = if config.base_commit == candidate.commit_sha {
+        config.clone()
+    } else {
+        match app
+            .db
+            .advance_project_base_for_repair(
+                &intake.project_id,
+                &candidate.commit_sha,
+                config.revision,
+            )
+            .await
+        {
+            Ok(config) => config,
+            Err(error) => return api_error(error),
+        }
+    };
+    let grant = match app
+        .db
+        .create_execution_policy_grant(factory_native::db::NewExecutionPolicyGrant {
+            project_id: &intake.project_id,
+            profile_id: &intake.profile_id,
+            expected_revision: profile.revision,
+            expected_revision_hash: &profile.content_hash,
+            project_config_hash: &next_config.config_hash,
+            acknowledge: true,
+            autonomous: true,
+            subscription_confirmed: true,
+            idempotency_key: &format!("repair-policy-base:{}", candidate.id),
+            principal_id: &principal_id,
+            principal_label: principal_label.as_deref(),
+        })
+        .await
+    {
+        Ok(grant) => grant,
+        Err(error) => return api_error(error),
+    };
+    let request_key = format!("repair-request:{}", candidate.id);
+    let (request, created) = match app
+        .db
+        .create_intake_request(
+            &intake.project_id,
+            &objective,
+            Some(&intake.profile_id),
+            factory_native::intake::IntakeMode::Autonomous,
+            &request_key,
+            &principal_id,
+        )
+        .await
+    {
+        Ok(value) => value,
+        Err(error) => return api_error(error),
+    };
+    let linked = match app.db.save_repair_request(&candidate.id, &request.id).await {
+        Ok(request_id) => request_id,
+        Err(error) => return api_error(error),
+    };
+    let should_start = match app.db.intake_request(&linked).await {
+        Ok(record) => record.campaign_id.is_none(),
+        Err(_) => false,
+    };
+    if linked == request.id && should_start {
+        enqueue_autopilot(&app, &request.id).await;
+    }
+    Json(json!({
+        "requestId": linked,
+        "projectId": request.project_id,
+        "candidateId": candidate.id,
+        "baseCommit": candidate.commit_sha,
+        "profileId": request.profile_id,
+        "mode": "AUTONOMOUS",
+        "grantDelegationId": grant.delegation.id,
+        "replayed": !created || linked != request.id,
+    }))
+    .into_response()
 }
 
 async fn cancel_campaign(
@@ -8202,6 +8750,22 @@ async fn quality_receipt(State(app): State<Arc<App>>, headers: HeaderMap, body: 
                 .into_response();
         }
     };
+    if !cfg!(any(test, feature = "test-support")) {
+        let expected = match role {
+            QualityRole::Verifier => &app.verifier_principal,
+            QualityRole::Reviewer => &app.reviewer_principal,
+        };
+        if input.principal_id != *expected {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({
+                    "error": "receipt principal does not match the authenticated quality role",
+                    "code": "QUALITY_PRINCIPAL_MISMATCH",
+                })),
+            )
+                .into_response();
+        }
+    }
     let receipt = QualityReceiptInput {
         receipt_id: input.receipt_id,
         principal_id: input.principal_id,
@@ -8478,7 +9042,7 @@ async fn assess_lead_request(
     } else {
         "FIXTURE"
     };
-    let (mut assessment, mut proposal) = if let Some(gateway) = &current_gateway {
+    let (mut assessment, proposal) = if let Some(gateway) = &current_gateway {
         match factory_native::lead_model::assess(
             gateway,
             &app.db,
@@ -8520,12 +9084,51 @@ async fn assess_lead_request(
             &grant,
             chrono::Utc::now(),
         ) {
-            Ok(value) => value,
+            Ok((assessment, proposal)) => (assessment, Some(proposal)),
             Err(error) => {
                 let _ = app.db.block_lead_request(&id, &error.to_string()).await;
                 return api_error(error.into());
             }
         }
+    };
+    let input = factory_native::lead::AssessmentInput {
+        project_id: request.project_id.clone(),
+        action_id: request.action_id.clone(),
+        request_id: request.id.clone(),
+        objective: request.objective.clone(),
+        allowed_evidence_refs: std::collections::BTreeSet::from(["repository-files".to_string()]),
+    };
+    let assessment_record = match app
+        .db
+        .record_lead_assessment(
+            &id,
+            mechanism,
+            &assessment,
+            &input,
+            &format!("{mechanism}-assessment:{id}"),
+        )
+        .await
+    {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    let Some(mut proposal) = proposal else {
+        let _ = app
+            .db
+            .block_lead_request(
+                &id,
+                "informational_assessment: no execution plan is required for this intent",
+            )
+            .await;
+        return (
+            StatusCode::OK,
+            Json(json!({
+                "assessment": assessment_record,
+                "proposal": null,
+                "informational": true
+            })),
+        )
+            .into_response();
     };
     let requested_units = if app.lead_fixture_assessor {
         env::var("FACTORY_LEAD_FIXTURE_UNITS")
@@ -8558,27 +9161,6 @@ async fn assess_lead_request(
             .collect();
         assessment.proposal = Some(proposal.clone());
     }
-    let input = factory_native::lead::AssessmentInput {
-        project_id: request.project_id.clone(),
-        action_id: request.action_id.clone(),
-        request_id: request.id.clone(),
-        objective: request.objective.clone(),
-        allowed_evidence_refs: std::collections::BTreeSet::from(["repository-files".to_string()]),
-    };
-    let assessment_record = match app
-        .db
-        .record_lead_assessment(
-            &id,
-            mechanism,
-            &assessment,
-            &input,
-            &format!("{mechanism}-assessment:{id}"),
-        )
-        .await
-    {
-        Ok(record) => record,
-        Err(error) => return api_error(error),
-    };
     let proposal_record = match app
         .db
         .record_lead_proposal(&id, &proposal, &format!("{mechanism}-proposal:{id}"))
@@ -8933,6 +9515,7 @@ fn intake_state_from_lead(
         LeadRequestProjectionState::Completed => IntakeState::Completed,
         LeadRequestProjectionState::Blocked => IntakeState::Blocked,
         LeadRequestProjectionState::Failed => IntakeState::Failed,
+        LeadRequestProjectionState::Assessed => IntakeState::Assessed,
         LeadRequestProjectionState::Withdrawn | LeadRequestProjectionState::Cancelled => {
             IntakeState::Cancelled
         }
@@ -8959,6 +9542,10 @@ fn intake_state_detail(
         IntakeState::AwaitingApproval => "Frozen plan ready for explicit operator approval.".into(),
         IntakeState::Executing => {
             "Campaign authorized. Campaign, Run and Quality Gate state remain authoritative.".into()
+        }
+        IntakeState::Assessed => {
+            "Assessment recorded. This informational or audit request requires no execution plan."
+                .into()
         }
         IntakeState::Completed => match gate_outcome {
             Some(outcome) => format!("Quality Gate recorded {outcome} for the exact candidate."),
@@ -9349,6 +9936,7 @@ async fn intake_requests(
             "FAILED" => Some(factory_native::intake::IntakeState::Failed),
             "COMPLETED" => Some(factory_native::intake::IntakeState::Completed),
             "CANCELLED" => Some(factory_native::intake::IntakeState::Cancelled),
+            "ASSESSED" => Some(factory_native::intake::IntakeState::Assessed),
             _ => {
                 return (
                     StatusCode::BAD_REQUEST,
@@ -9399,6 +9987,2564 @@ async fn get_intake_request(
         Err(error) => return api_error(error),
     };
     match intake_request_value(&app, &record, true).await {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgenticPortfolioEntry {
+    id: String,
+    project_id: String,
+    objective: String,
+    mode: String,
+    state: String,
+    route: factory_native::agentic::ChangeRoute,
+    assurance: factory_native::agentic::Assurance,
+    request_kind: factory_native::agentic::RequestKind,
+    work_units: usize,
+    participant_count: u32,
+    stack_languages: Vec<String>,
+    director_id: String,
+    operation_manager_id: String,
+    priority: i64,
+    operation_status: String,
+    worktree_policy: String,
+    updated_at: String,
+}
+
+fn assurance_for_risk(risk: factory_native::lead::RiskClass) -> factory_native::agentic::Assurance {
+    use factory_native::agentic::Assurance;
+    use factory_native::lead::RiskClass;
+    match risk {
+        RiskClass::R0 => Assurance::None,
+        RiskClass::R1 => Assurance::Standard,
+        RiskClass::R2 => Assurance::Elevated,
+        RiskClass::R3 => Assurance::Critical,
+    }
+}
+
+async fn agentic_stack_for_project(
+    app: &App,
+    project_id: &str,
+) -> factory_native::agentic::StackProfile {
+    let Ok(config) = app.db.project_config(project_id).await else {
+        return factory_native::agentic::StackProfile::default();
+    };
+    let Some(projects_root) = app.projects_root.as_ref() else {
+        return factory_native::agentic::StackProfile::default();
+    };
+    let Ok(root) = projects_root.canonicalize() else {
+        return factory_native::agentic::StackProfile::default();
+    };
+    let Ok(repository) = std::path::PathBuf::from(&config.repository).canonicalize() else {
+        return factory_native::agentic::StackProfile::default();
+    };
+    if !repository.starts_with(&root) {
+        return factory_native::agentic::StackProfile::default();
+    }
+    factory_native::agentic::detect_stack(&repository)
+}
+
+struct AgenticTriageContext {
+    proposal: Option<factory_native::lead::LeadPlanProposal>,
+    risk: factory_native::lead::RiskClass,
+    stack: factory_native::agentic::StackProfile,
+    triage: factory_native::agentic::TriageDecision,
+    semantic: Option<(
+        factory_native::db::AgenticAssessmentRecord,
+        factory_native::agentic::AgenticTriageModel,
+    )>,
+}
+
+impl AgenticTriageContext {
+    fn assurance(&self) -> factory_native::agentic::Assurance {
+        self.triage.assurance.max(assurance_for_risk(self.risk))
+    }
+}
+
+/// One Core-owned interpretation of the request used by the Director, Planner
+/// and Spec Manager. The model remains advisory; deterministic floors are
+/// applied here and reused everywhere.
+async fn agentic_triage_context(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+) -> Result<AgenticTriageContext, Error> {
+    use factory_native::agentic;
+    let proposal = app
+        .db
+        .lead_proposal(&record.lead_request_id)
+        .await
+        .ok()
+        .and_then(|record| {
+            serde_json::from_str::<factory_native::lead::LeadPlanProposal>(&record.proposal_json)
+                .ok()
+        });
+    let work_units = proposal
+        .as_ref()
+        .map(|proposal| proposal.work_units.len())
+        .unwrap_or(0);
+    let risk = proposal
+        .as_ref()
+        .map(|proposal| proposal.risk_class)
+        .unwrap_or(factory_native::lead::RiskClass::R0);
+    let fallback_paths = app
+        .db
+        .project_config(&record.project_id)
+        .await
+        .map(|config| config.allowed_paths)
+        .unwrap_or_default();
+    let paths: Vec<String> = proposal
+        .as_ref()
+        .map(|proposal| {
+            proposal
+                .work_units
+                .iter()
+                .flat_map(|unit| unit.allowed_paths.iter().cloned())
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect()
+        })
+        .unwrap_or(fallback_paths);
+    let semantic = app
+        .db
+        .agentic_assessment(&record.id)
+        .await
+        .ok()
+        .and_then(|record| {
+            serde_json::from_str::<agentic::AgenticTriageModel>(&record.response_json)
+                .ok()
+                .map(|model| (record, model))
+        });
+    let lead_intent = app
+        .db
+        .lead_assessment(&record.lead_request_id)
+        .await
+        .ok()
+        .and_then(|record| {
+            serde_json::from_str::<factory_native::lead::LeadAssessment>(&record.assessment_json)
+                .ok()
+        })
+        .map(|assessment| assessment.intent);
+    let explicit_informational = lead_intent == Some(factory_native::lead::Intent::Informational)
+        || semantic
+            .as_ref()
+            .is_some_and(|(_, model)| model.request_kind == agentic::RequestKind::Informational);
+    let explicit_audit = lead_intent == Some(factory_native::lead::Intent::Audit)
+        || semantic
+            .as_ref()
+            .is_some_and(|(_, model)| model.request_kind == agentic::RequestKind::Audit);
+    let deterministic_signals = agentic::TriageSignals {
+        objective: record.objective.clone(),
+        files: paths,
+        domains: Vec::new(),
+        risk: match risk {
+            factory_native::lead::RiskClass::R0 => "low",
+            factory_native::lead::RiskClass::R1 => "medium",
+            _ => "high",
+        }
+        .into(),
+        expected_work_units: if work_units > 0 {
+            Some(u32::try_from(work_units).unwrap_or(u32::MAX))
+        } else {
+            None
+        },
+        ambiguous: proposal.is_none() && !explicit_informational && !explicit_audit,
+        architecture_uncertainty: false,
+        cross_module: work_units > 1,
+        public_contract: false,
+        data_or_schema: false,
+        security_boundary: false,
+        explicit_informational,
+        explicit_audit,
+        explicit_repair: false,
+    };
+    let deterministic_stack = agentic_stack_for_project(app, &record.project_id).await;
+    // Deterministic floors are computed first. A semantic assessment may raise
+    // them, but never replace the deterministic signals or lower a floor.
+    let deterministic_decision = agentic::triage(&deterministic_signals);
+    let (stack, triage) = match &semantic {
+        Some((_, model)) => (
+            model.stack.clone(),
+            agentic::merge_model_decision(deterministic_decision, model),
+        ),
+        None => (deterministic_stack, deterministic_decision),
+    };
+    Ok(AgenticTriageContext {
+        proposal,
+        risk,
+        stack,
+        triage,
+        semantic,
+    })
+}
+
+async fn agentic_projection_for_request(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+) -> Result<serde_json::Value, Error> {
+    use factory_native::agentic;
+    let lead = app.db.lead_request(&record.lead_request_id).await?;
+    let context = agentic_triage_context(app, record).await?;
+    let participant_from_graph = match app.db.agentic_work_graph(&record.id).await {
+        Ok(graph_record) => {
+            match serde_json::from_str::<factory_native::agentic::ValidatedWorkGraph>(
+                &graph_record.graph_json,
+            ) {
+                Ok(graph) => deterministic_participant_plan(app, record, &context, &graph).await,
+                Err(_) => None,
+            }
+        }
+        Err(_) => None,
+    };
+    let proposal = context.proposal.as_ref();
+    let work_units = proposal
+        .map(|proposal| proposal.work_units.len())
+        .unwrap_or(0);
+    let plan = app.db.frozen_lead_plan(&record.lead_request_id).await.ok();
+    let tasks = if let Some(campaign_id) = &record.campaign_id {
+        app.db.campaign_tasks(campaign_id).await.unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let assurance = context.assurance();
+    let stack = context.stack.clone();
+    let triage = context.triage;
+    let semantic = context.semantic;
+    let participants = participant_from_graph.unwrap_or_else(|| {
+        agentic::participant_plan(
+            triage.route,
+            assurance,
+            u32::try_from(work_units.max(1)).unwrap_or(u32::MAX),
+            &stack,
+        )
+    });
+    let specifications = proposal
+        .map(|proposal| {
+            proposal
+                .work_units
+                .iter()
+                .map(|unit| {
+                    let status = tasks
+                        .iter()
+                        .find(|task| task.unit_id == unit.id)
+                        .map(|task| task.status.clone())
+                        .unwrap_or_else(|| "PLANNED".into());
+                    serde_json::json!({
+                        "id": unit.id,
+                        "description": unit.description,
+                        "kind": format!("{:?}", unit.kind),
+                        "allowedPaths": unit.allowed_paths,
+                        "capabilities": unit.capabilities,
+                        "dependsOn": unit.depends_on,
+                        "status": status,
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    Ok(serde_json::json!({
+        "request": {
+            "id": record.id,
+            "projectId": record.project_id,
+            "objective": record.objective,
+            "mode": record.mode,
+            "state": app.db.lead_request_projection(&record.lead_request_id).await?,
+            "profile": {
+                "id": record.profile_id,
+                "revision": record.profile_revision,
+                "name": record.profile_name,
+            },
+            "createdAt": record.created_at,
+            "updatedAt": record.updated_at,
+        },
+        "lead": {
+            "state": lead.state,
+            "campaignId": lead.campaign_id,
+            "failureReason": lead.failure_reason,
+        },
+        "triage": triage,
+        "stack": stack,
+        "participants": participants,
+        "specifications": specifications,
+        "plan": plan.map(|plan| serde_json::json!({
+            "id": plan.id,
+            "planHash": plan.plan_hash,
+            "configHash": plan.config_hash,
+            "createdAt": plan.created_at,
+        })),
+        "operation": app.db.agentic_operation_for_request(&record.id).await.ok(),
+        "context": {
+            "handoffs": [],
+            "note": "Handoff records appear here after the context handler is enabled for this operation."
+        },
+        "semantic": semantic.as_ref().map(|(record, model)| serde_json::json!({
+            "provider": record.provider,
+            "model": record.model,
+            "createdAt": record.created_at,
+            "usage": {
+                "inputTokens": record.input_tokens,
+                "outputTokens": record.output_tokens,
+                "totalTokens": record.total_tokens,
+                "costMicros": record.cost_micros,
+                "usageKnown": record.usage_known,
+            },
+            "recommendation": {
+                "requestKind": model.request_kind,
+                "route": model.route,
+                "assurance": model.assurance,
+                "skillNeeds": model.skill_needs,
+                "unknowns": model.unknowns,
+            }
+        }))
+    }))
+}
+
+async fn agentic_scheduler_status(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let scheduler = start_agentic_scheduler(&app);
+    let queued = scheduler.queue.lock().await.len();
+    Json(json!({
+        "capacity": scheduler.capacity,
+        "active": scheduler.active.load(Ordering::Relaxed),
+        "queued": queued,
+        "resourcePolicy": "CPU and available memory; no fixed product concurrency cap",
+        "worktreePolicy": "PER_ATTEMPT",
+    }))
+    .into_response()
+}
+
+async fn agentic_operation_priority(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<AgenticPriorityRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if !(0..=1_000).contains(&input.priority) {
+        return api_error(Error::Invalid("agentic operation priority"));
+    }
+    if let Err(error) = app.db.intake_request(&id).await {
+        return api_error(error);
+    }
+    let operation = match app
+        .db
+        .set_agentic_operation_priority(&id, input.priority)
+        .await
+    {
+        Ok(operation) => operation,
+        Err(error) => return api_error(error),
+    };
+    start_agentic_scheduler(&app)
+        .reprioritize(&id, input.priority)
+        .await;
+    Json(operation).into_response()
+}
+
+struct AgenticModelOutcome {
+    content: String,
+    provider: String,
+    model: String,
+    request_sha256: String,
+    input_tokens: u64,
+    output_tokens: u64,
+    total_tokens: u64,
+    cost_micros: u64,
+    usage_known: bool,
+}
+
+fn agentic_model_error(error: factory_native::model_gateway::ModelGatewayError) -> Response {
+    use factory_native::model_gateway::ModelGatewayError;
+    match error {
+        ModelGatewayError::Database(Error::SubscriptionFunding(refusal)) => (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": refusal.to_string(),
+                "code": refusal.code(),
+            })),
+        )
+            .into_response(),
+        ModelGatewayError::Database(Error::Withdrawn) => (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "the request was withdrawn; the model call is unavailable",
+                "code": "REQUEST_WITHDRAWN",
+            })),
+        )
+            .into_response(),
+        ModelGatewayError::Database(other) => api_error(other),
+        ModelGatewayError::Invalid(message) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": message, "code": "AGENTIC_MODEL_INVALID"})),
+        )
+            .into_response(),
+        other => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({
+                "error": other.to_string(),
+                "code": "AGENTIC_MODEL_FAILED",
+            })),
+        )
+            .into_response(),
+    }
+}
+
+async fn call_agentic_lead_model(
+    app: &Arc<App>,
+    record: &factory_native::db::IntakeRequestRecord,
+    purpose: &str,
+    system_prompt: &str,
+    user_prompt: &str,
+    max_output_tokens: u64,
+) -> Result<AgenticModelOutcome, Response> {
+    let profile = app
+        .db
+        .execution_profile_revision(&record.profile_id, &record.profile_revision_id)
+        .await
+        .map_err(api_error)?;
+    let grant = app
+        .db
+        .standing_delegation_v2(&record.delegation_id)
+        .await
+        .map_err(api_error)?;
+    let gateway = app
+        .intake_assess_gateway(&profile)
+        .await
+        .map_err(|route_error| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "error": route_error.to_string(),
+                    "code": "AGENTIC_MODEL_UNAVAILABLE",
+                    "routeCode": route_error.code(),
+                })),
+            )
+                .into_response()
+        })?;
+    let principal_id = grant.principal_id.clone();
+    let result = gateway
+        .call(
+            &app.db,
+            factory_native::model_gateway::ModelCallRequest {
+                role: factory_native::db::ModelCallRole::Lead,
+                principal_id: &principal_id,
+                project_id: &record.project_id,
+                objective_id: &record.lead_request_id,
+                scope_id: &record.delegation_id,
+                purpose,
+                system_prompt,
+                user_prompt,
+                max_output_tokens,
+            },
+        )
+        .await
+        .map_err(agentic_model_error)?;
+    Ok(AgenticModelOutcome {
+        content: result.content,
+        provider: result.provider,
+        model: result.model,
+        request_sha256: result.request_sha256,
+        input_tokens: result.input_tokens,
+        output_tokens: result.output_tokens,
+        total_tokens: result.total_tokens,
+        cost_micros: result.cost_micros,
+        usage_known: result.usage_known,
+    })
+}
+
+fn agentic_conflict(code: &'static str, message: &'static str) -> Response {
+    (
+        StatusCode::CONFLICT,
+        Json(json!({"error": message, "code": code})),
+    )
+        .into_response()
+}
+
+fn parse_graph_record(
+    record: &factory_native::db::AgenticWorkGraphRecord,
+) -> Result<factory_native::agentic::ValidatedWorkGraph, Box<Response>> {
+    let graph =
+        serde_json::from_str::<factory_native::agentic::ValidatedWorkGraph>(&record.graph_json)
+            .map_err(|_| {
+                Box::new(
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({"error": "stored work graph is not decodable"})),
+                    )
+                        .into_response(),
+                )
+            })?;
+    if graph.graph_sha256 != record.graph_sha256 {
+        return Err(Box::new(
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "stored work graph identity does not match"})),
+            )
+                .into_response(),
+        ));
+    }
+    Ok(graph)
+}
+
+async fn get_agentic_plan(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.intake_request(&id).await {
+        Ok(_) => {}
+        Err(error) => return api_error(error),
+    }
+    match app.db.agentic_work_graph(&id).await {
+        Ok(record) => Json(json!({"graph": record})).into_response(),
+        Err(Error::NotFound) => Json(json!({"graph": null})).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn plan_agentic_request(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    let context = match agentic_triage_context(&app, &record).await {
+        Ok(context) => context,
+        Err(error) => return api_error(error),
+    };
+    if matches!(
+        context.triage.route,
+        factory_native::agentic::ChangeRoute::NoAgent
+    ) {
+        return agentic_conflict(
+            "PLANNER_NOT_APPLICABLE",
+            "informational requests do not compile a Planner WorkGraph",
+        );
+    }
+    if app.db.agentic_spec(&record.id).await.is_ok() {
+        return agentic_conflict(
+            "PLAN_ALREADY_SPECIFIED",
+            "a specification already binds this plan; a material change requires a new request or spec revision",
+        );
+    }
+    let config = match app.db.project_config(&record.project_id).await {
+        Ok(config) => config,
+        Err(error) => return api_error(error),
+    };
+    let schema = factory_native::model_output::work_graph_schema();
+    let schema_sha256 = factory_native::model_output::work_graph_schema_sha256();
+    let system_prompt = format!(
+        "You are the bounded Software Factory Planner. Return ONLY one JSON object that validates against the JSON Schema below. Do not add prose, markdown, comments or unknown fields. You are read-only: you cannot use tools, write files, grant authority, approve work or change a frozen specification. Decompose the objective into 1-24 work units. Use lowercase slug ids. Each unit must have one responsibility, explicit dependsOn ids, 1-32 project-relative paths inside the project allowedPaths, and at least one observable acceptance statement. Independent units must not share a write path. Never invent a file, dependency or technology. Keep the graph acyclic and within the stated budget.
+
+JSON Schema:
+{schema}"
+    );
+    let user_prompt = serde_json::json!({
+        "objective": record.objective,
+        "route": context.triage.route,
+        "assurance": context.assurance(),
+        "risk": format!("{:?}", context.risk),
+        "projectConfig": {
+            "repository": config.repository,
+            "baseCommit": config.base_commit,
+            "allowedPaths": config.allowed_paths,
+            "capabilities": config.capabilities,
+            "qualityProfile": config.quality_profile,
+        },
+        "stack": context.stack,
+        "existingProposal": context.proposal.as_ref().map(|proposal| serde_json::json!({
+            "class": proposal.class,
+            "riskClass": proposal.risk_class,
+            "workUnits": proposal.work_units.iter().map(|unit| serde_json::json!({
+                "id": unit.id,
+                "description": unit.description,
+                "dependsOn": unit.depends_on,
+                "allowedPaths": unit.allowed_paths,
+                "capabilities": unit.capabilities,
+            })).collect::<Vec<_>>(),
+            "acceptanceCriteria": proposal.acceptance_criteria,
+            "negativeCases": proposal.negative_cases,
+            "assumptions": proposal.assumptions,
+            "risks": proposal.risks,
+        })),
+        "limits": {
+            "maxUnits": factory_native::agentic::MAX_WORK_UNITS,
+            "maxPathsPerUnit": factory_native::agentic::MAX_UNIT_PATHS,
+            "independentUnitsMayNotSharePaths": true,
+        }
+    })
+    .to_string();
+    let result = match call_agentic_lead_model(
+        &app,
+        &record,
+        "agentic_planner",
+        &system_prompt,
+        &user_prompt,
+        4_096,
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(response) => return response,
+    };
+    let model = match factory_native::model_output::decode_work_graph(result.content.as_bytes()) {
+        Ok(model) => model,
+        Err(error) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({
+                    "error": error.to_string(),
+                    "code": "AGENTIC_PLAN_OUTPUT_INVALID",
+                })),
+            )
+                .into_response();
+        }
+    };
+    let graph = match factory_native::agentic::validate_work_graph(&model, &config.allowed_paths) {
+        Ok(graph) => graph,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": error, "code": "AGENTIC_PLAN_INVALID"})),
+            )
+                .into_response();
+        }
+    };
+    match app
+        .db
+        .save_agentic_work_graph(&factory_native::db::NewAgenticWorkGraph {
+            request_id: &record.id,
+            graph: &graph,
+            provider: &result.provider,
+            model: &result.model,
+            schema_sha256: &schema_sha256,
+            request_sha256: &result.request_sha256,
+            input_tokens: result.input_tokens,
+            output_tokens: result.output_tokens,
+            total_tokens: result.total_tokens,
+            cost_micros: result.cost_micros,
+            usage_known: result.usage_known,
+        })
+        .await
+    {
+        Ok(saved_graph) => {
+            let participants =
+                deterministic_participant_plan(&app, &record, &context, &graph).await;
+            let participant_record = match participants {
+                Some(plan) => app
+                    .db
+                    .save_agentic_participant_plan(&record.id, Some(&graph.graph_sha256), &plan)
+                    .await
+                    .ok(),
+                None => None,
+            };
+            Json(json!({
+                "graph": saved_graph,
+                "validated": graph,
+                "participantPlan": participant_record,
+                "provider": result.provider,
+                "model": result.model,
+                "usage": {
+                    "inputTokens": result.input_tokens,
+                    "outputTokens": result.output_tokens,
+                    "totalTokens": result.total_tokens,
+                    "costMicros": result.cost_micros,
+                    "usageKnown": result.usage_known,
+                }
+            }))
+            .into_response()
+        }
+        Err(error) => api_error(error),
+    }
+}
+
+async fn deterministic_participant_plan(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+    context: &AgenticTriageContext,
+    graph: &factory_native::agentic::ValidatedWorkGraph,
+) -> Option<factory_native::agentic::ParticipantPlan> {
+    let profile = app
+        .db
+        .execution_profile_revision(&record.profile_id, &record.profile_revision_id)
+        .await
+        .ok()?;
+    let content = profile.content.v2()?;
+    let mut plan = factory_native::agentic::participant_plan_for_graph(
+        context.triage.route,
+        context.assurance(),
+        graph,
+        &context.stack,
+        &content.roles.implementer.provider,
+        &content.roles.implementer.model,
+        "",
+    );
+    // The current Compose topology authenticates one reviewer identity/token.
+    // Do not require a second receipt that no reviewer can submit. Multi-
+    // reviewer aggregation remains implemented and tested for a deployment
+    // that provisions independent reviewer identities.
+    if plan.reviewer_count > 1 {
+        plan.reviewer_count = 1;
+        for assignment in &mut plan.assignments {
+            if assignment.role == "Reviewer" {
+                assignment.count = 1;
+            }
+        }
+        plan.reasons.push(
+            "Only one independent reviewer identity is configured; the plan uses one reviewer."
+                .into(),
+        );
+    }
+    Some(plan)
+}
+
+async fn get_agentic_participants(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    match app.db.agentic_participant_plan(&record.id).await {
+        Ok(record) => Json(json!({"plan": record})).into_response(),
+        Err(Error::NotFound) => Json(json!({"plan": null})).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn record_agentic_participants(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    let graph_record = match app.db.agentic_work_graph(&record.id).await {
+        Ok(graph) => graph,
+        Err(Error::NotFound) => {
+            return agentic_conflict(
+                "WORK_GRAPH_REQUIRED",
+                "a validated Planner WorkGraph is required before participant compilation",
+            );
+        }
+        Err(error) => return api_error(error),
+    };
+    let graph = match parse_graph_record(&graph_record) {
+        Ok(graph) => graph,
+        Err(response) => return *response,
+    };
+    let context = match agentic_triage_context(&app, &record).await {
+        Ok(context) => context,
+        Err(error) => return api_error(error),
+    };
+    let plan = match deterministic_participant_plan(&app, &record, &context, &graph).await {
+        Some(plan) => plan,
+        None => {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": "the frozen execution profile is not executable",
+                    "code": "PROFILE_NOT_EXECUTABLE",
+                })),
+            )
+                .into_response();
+        }
+    };
+    match app
+        .db
+        .save_agentic_participant_plan(&record.id, Some(&graph.graph_sha256), &plan)
+        .await
+    {
+        Ok(record) => Json(json!({"plan": record, "compiled": plan})).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn get_agentic_spec(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    let frozen = app
+        .db
+        .agentic_spec(&record.id)
+        .await
+        .ok()
+        .filter(|spec| spec.state == "FROZEN");
+    let draft = app.db.agentic_spec_draft(&record.id).await.ok();
+    let graph = app.db.agentic_work_graph(&record.id).await.ok();
+    let publication = app
+        .db
+        .agentic_spec_publication(
+            frozen
+                .as_ref()
+                .map(|spec| spec.id.as_str())
+                .unwrap_or_default(),
+        )
+        .await
+        .ok();
+    let issues = match &frozen {
+        Some(spec) => app
+            .db
+            .agentic_spec_issues(&spec.id)
+            .await
+            .unwrap_or_default(),
+        None => Vec::new(),
+    };
+    let github_bound = app
+        .db
+        .project_github_binding(&record.project_id)
+        .await
+        .is_ok();
+    Json(json!({
+        "frozen": frozen.map(|spec| {
+            let parsed = spec
+                .frozen_json
+                .as_deref()
+                .and_then(|json| serde_json::from_str::<factory_native::agentic::FrozenSpec>(json).ok());
+            json!({"record": spec, "spec": parsed})
+        }),
+        "draft": draft.map(|spec| {
+            let preview = serde_json::from_str::<factory_native::agentic::SpecDraftModel>(&spec.draft_json)
+                .ok()
+                .and_then(|draft| factory_native::agentic::compile_spec(&draft, spec.revision).ok());
+            json!({"record": spec, "preview": preview})
+        }),
+        "graph": graph,
+        "publication": publication,
+        "issues": issues,
+        "githubBound": github_bound,
+    }))
+    .into_response()
+}
+
+async fn author_agentic_spec(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    let context = match agentic_triage_context(&app, &record).await {
+        Ok(context) => context,
+        Err(error) => return api_error(error),
+    };
+    if !matches!(
+        context.triage.route,
+        factory_native::agentic::ChangeRoute::FormalSpec
+    ) {
+        return agentic_conflict(
+            "SPEC_NOT_REQUIRED",
+            "the Spec Manager authors only FORMAL_SPEC requests",
+        );
+    }
+    let graph_record = match app.db.agentic_work_graph(&record.id).await {
+        Ok(graph) => graph,
+        Err(Error::NotFound) => {
+            return agentic_conflict(
+                "WORK_GRAPH_REQUIRED",
+                "a validated Planner WorkGraph is required before specification",
+            );
+        }
+        Err(error) => return api_error(error),
+    };
+    let graph = match parse_graph_record(&graph_record) {
+        Ok(graph) => graph,
+        Err(response) => return *response,
+    };
+    let current = app.db.agentic_spec(&record.id).await.ok();
+    let (revision, has_frozen) = match &current {
+        Some(spec) if spec.state == "FROZEN" => (spec.revision + 1, true),
+        Some(spec) => (spec.revision, false),
+        None => (1, false),
+    };
+    let config = app.db.project_config(&record.project_id).await.ok();
+    let schema = factory_native::model_output::spec_draft_schema();
+    let schema_sha256 = factory_native::model_output::spec_draft_schema_sha256();
+    let system_prompt = format!(
+        "You are the bounded Software Factory Spec Manager. Return ONLY one JSON object that validates against the JSON Schema below. Do not add prose, markdown, comments or unknown fields. You are read-only: you cannot use tools, write files, grant authority, approve work or change a frozen specification. Author observable formal requirements for a FORMAL_SPEC request. Every requirement must state an observable behavior and carry at least one acceptance case and at least one negative case. Acceptance and negative cases must be concrete and testable, not implementation instructions. Do not invent scope outside the objective and WorkGraph. Requirements are numbered deterministically by Core after you return; assertion and check identities are also compiled by Core.
+
+JSON Schema:
+{schema}"
+    );
+    let user_prompt = serde_json::json!({
+        "objective": record.objective,
+        "route": context.triage.route,
+        "assurance": context.assurance(),
+        "risk": format!("{:?}", context.risk),
+        "revision": revision,
+        "supersedesFrozenRevision": has_frozen,
+        "workGraph": {
+            "units": graph.units,
+            "topologicalOrder": graph.topological_order,
+        },
+        "stack": context.stack,
+        "projectConfig": config.as_ref().map(|config| serde_json::json!({
+            "repository": config.repository,
+            "baseCommit": config.base_commit,
+            "allowedPaths": config.allowed_paths,
+            "capabilities": config.capabilities,
+            "qualityProfile": config.quality_profile,
+        })),
+        "existingProposal": context.proposal.as_ref().map(|proposal| serde_json::json!({
+            "acceptanceCriteria": proposal.acceptance_criteria,
+            "negativeCases": proposal.negative_cases,
+            "assumptions": proposal.assumptions,
+            "risks": proposal.risks,
+        })),
+        "limits": {
+            "maxRequirements": factory_native::agentic::MAX_SPEC_REQUIREMENTS,
+            "maxCasesPerRequirement": factory_native::agentic::MAX_SPEC_CASES,
+        }
+    })
+    .to_string();
+    let result = match call_agentic_lead_model(
+        &app,
+        &record,
+        "agentic_spec_manager",
+        &system_prompt,
+        &user_prompt,
+        6_144,
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(response) => return response,
+    };
+    let draft = match factory_native::model_output::decode_spec_draft(result.content.as_bytes()) {
+        Ok(draft) => draft,
+        Err(error) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({
+                    "error": error.to_string(),
+                    "code": "AGENTIC_SPEC_OUTPUT_INVALID",
+                })),
+            )
+                .into_response();
+        }
+    };
+    if let Err(error) = factory_native::agentic::compile_spec(&draft, revision) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": error, "code": "AGENTIC_SPEC_INVALID"})),
+        )
+            .into_response();
+    }
+    let draft_json = match serde_json::to_string(&draft) {
+        Ok(json) => json,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "spec draft could not be encoded"})),
+            )
+                .into_response();
+        }
+    };
+    match app
+        .db
+        .save_agentic_spec_draft(&factory_native::db::NewAgenticSpecDraft {
+            request_id: &record.id,
+            draft_json: &draft_json,
+            graph_sha256: Some(&graph_record.graph_sha256),
+            provider: &result.provider,
+            model: &result.model,
+            schema_sha256: &schema_sha256,
+            request_sha256: &result.request_sha256,
+            input_tokens: result.input_tokens,
+            output_tokens: result.output_tokens,
+            total_tokens: result.total_tokens,
+            cost_micros: result.cost_micros,
+            usage_known: result.usage_known,
+        })
+        .await
+    {
+        Ok(spec) => {
+            let preview = factory_native::agentic::compile_spec(&draft, spec.revision).ok();
+            Json(json!({
+                "spec": spec,
+                "preview": preview,
+                "provider": result.provider,
+                "model": result.model,
+                "usage": {
+                    "inputTokens": result.input_tokens,
+                    "outputTokens": result.output_tokens,
+                    "totalTokens": result.total_tokens,
+                    "costMicros": result.cost_micros,
+                    "usageKnown": result.usage_known,
+                }
+            }))
+            .into_response()
+        }
+        Err(error) => api_error(error),
+    }
+}
+
+async fn freeze_agentic_spec(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<AgenticSpecFreezeRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if input.expected_spec_sha256.len() != 64
+        || !input
+            .expected_spec_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        return api_error(Error::Invalid("expected spec sha256"));
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    let draft = match app.db.agentic_spec_draft(&record.id).await {
+        Ok(draft) => draft,
+        Err(Error::NotFound) => {
+            return agentic_conflict(
+                "SPEC_DRAFT_REQUIRED",
+                "there is no draft specification to freeze",
+            );
+        }
+        Err(error) => return api_error(error),
+    };
+    let graph_record = match app.db.agentic_work_graph(&record.id).await {
+        Ok(graph) => graph,
+        Err(error) => return api_error(error),
+    };
+    let graph = match parse_graph_record(&graph_record) {
+        Ok(graph) => graph,
+        Err(response) => return *response,
+    };
+    let draft_model =
+        match serde_json::from_str::<factory_native::agentic::SpecDraftModel>(&draft.draft_json) {
+            Ok(draft) => draft,
+            Err(_) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": "stored spec draft is not decodable"})),
+                )
+                    .into_response();
+            }
+        };
+    let frozen = match factory_native::agentic::compile_spec(&draft_model, draft.revision) {
+        Ok(frozen) => frozen,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": error, "code": "AGENTIC_SPEC_INVALID"})),
+            )
+                .into_response();
+        }
+    };
+    if frozen.spec_sha256 != input.expected_spec_sha256 {
+        return agentic_conflict(
+            "SPEC_REVISION_CHANGED",
+            "the draft specification changed; reload before freezing",
+        );
+    }
+    match app.db.freeze_agentic_spec(&draft.id, &frozen, &graph).await {
+        Ok(spec) => Json(json!({"spec": spec, "frozen": frozen})).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn publish_agentic_spec(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<AgenticSpecPublishRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if !input.confirm {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "explicit confirmation is required before publishing spec issues",
+                "code": "SPEC_PUBLISH_CONFIRMATION_REQUIRED",
+            })),
+        )
+            .into_response();
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    let spec = match app.db.agentic_spec(&record.id).await {
+        Ok(spec) if spec.state == "FROZEN" => spec,
+        Ok(_) => {
+            return agentic_conflict(
+                "SPEC_NOT_FROZEN",
+                "only a frozen specification can be published",
+            );
+        }
+        Err(Error::NotFound) => {
+            return agentic_conflict(
+                "SPEC_NOT_FROZEN",
+                "there is no frozen specification to publish",
+            );
+        }
+        Err(error) => return api_error(error),
+    };
+    let binding = app.db.project_github_binding(&record.project_id).await.ok();
+    if input.local || binding.is_none() {
+        let repository = binding
+            .as_ref()
+            .map(|binding| binding.repo_full_name.clone())
+            .unwrap_or_else(|| "local-board".into());
+        return match app
+            .db
+            .upsert_agentic_spec_publication(&factory_native::db::NewAgenticSpecPublication {
+                spec_id: &spec.id,
+                project_id: &record.project_id,
+                provider: "LOCAL",
+                repository: &repository,
+                status: "LOCAL",
+                drift_status: "UNKNOWN",
+                last_error: None,
+            })
+            .await
+        {
+            Ok(publication) => Json(json!({
+                "publication": publication,
+                "issues": app.db.agentic_spec_issues(&spec.id).await.unwrap_or_default(),
+                "local": true,
+            }))
+            .into_response(),
+            Err(error) => api_error(error),
+        };
+    }
+    let binding = binding.expect("binding checked");
+    let credential = match load_github_credential(&app).await {
+        Ok(credential) => credential,
+        Err(response) => return response,
+    };
+    let _ = app
+        .db
+        .upsert_agentic_spec_publication(&factory_native::db::NewAgenticSpecPublication {
+            spec_id: &spec.id,
+            project_id: &record.project_id,
+            provider: "GITHUB",
+            repository: &binding.repo_full_name,
+            status: "PENDING",
+            drift_status: "UNKNOWN",
+            last_error: None,
+        })
+        .await;
+    match factory_native::spec_publish::publish_spec(
+        &app.db,
+        &app.github,
+        &credential,
+        &spec,
+        &record.objective,
+        &binding.owner,
+        &binding.repo,
+    )
+    .await
+    {
+        Ok(issues) => match app
+            .db
+            .upsert_agentic_spec_publication(&factory_native::db::NewAgenticSpecPublication {
+                spec_id: &spec.id,
+                project_id: &record.project_id,
+                provider: "GITHUB",
+                repository: &binding.repo_full_name,
+                status: "PUBLISHED",
+                drift_status: "IN_SYNC",
+                last_error: None,
+            })
+            .await
+        {
+            Ok(publication) => {
+                Json(json!({"publication": publication, "issues": issues})).into_response()
+            }
+            Err(error) => api_error(error),
+        },
+        Err(error) => {
+            let message = error.to_string();
+            let _ = app
+                .db
+                .upsert_agentic_spec_publication(&factory_native::db::NewAgenticSpecPublication {
+                    spec_id: &spec.id,
+                    project_id: &record.project_id,
+                    provider: "GITHUB",
+                    repository: &binding.repo_full_name,
+                    status: "FAILED",
+                    drift_status: "UNKNOWN",
+                    last_error: Some(&message),
+                })
+                .await;
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({
+                    "error": message,
+                    "code": "SPEC_PUBLISH_FAILED",
+                })),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn refresh_agentic_spec(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    let spec = match app.db.agentic_spec(&record.id).await {
+        Ok(spec) if spec.state == "FROZEN" => spec,
+        _ => {
+            return agentic_conflict(
+                "SPEC_NOT_FROZEN",
+                "there is no frozen specification to refresh",
+            );
+        }
+    };
+    let binding = match app.db.project_github_binding(&record.project_id).await {
+        Ok(binding) => binding,
+        Err(Error::NotFound) => {
+            return agentic_conflict(
+                "GITHUB_NOT_BOUND",
+                "the project is not bound to a GitHub repository",
+            );
+        }
+        Err(error) => return api_error(error),
+    };
+    let credential = match load_github_credential(&app).await {
+        Ok(credential) => credential,
+        Err(response) => return response,
+    };
+    let in_sync = match factory_native::spec_publish::refresh_publication(
+        &app.db,
+        &app.github,
+        &credential,
+        &spec,
+        &binding.owner,
+        &binding.repo,
+    )
+    .await
+    {
+        Ok(in_sync) => in_sync,
+        Err(factory_native::spec_publish::SpecPublishError::GitHub(error)) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"error": error.to_string(), "code": "SPEC_REFRESH_FAILED"})),
+            )
+                .into_response();
+        }
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": error.to_string(), "code": "SPEC_REFRESH_INVALID"})),
+            )
+                .into_response();
+        }
+    };
+    match app
+        .db
+        .upsert_agentic_spec_publication(&factory_native::db::NewAgenticSpecPublication {
+            spec_id: &spec.id,
+            project_id: &record.project_id,
+            provider: "GITHUB",
+            repository: &binding.repo_full_name,
+            status: "PUBLISHED",
+            drift_status: if in_sync { "IN_SYNC" } else { "DRIFTED" },
+            last_error: None,
+        })
+        .await
+    {
+        Ok(publication) => {
+            Json(json!({"publication": publication, "inSync": in_sync})).into_response()
+        }
+        Err(error) => api_error(error),
+    }
+}
+
+async fn agentic_spec_board(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let specs = match app.db.frozen_agentic_specs().await {
+        Ok(specs) => specs,
+        Err(error) => return api_error(error),
+    };
+    let mut cards = Vec::with_capacity(specs.len());
+    for spec in specs {
+        let record = match app.db.intake_request(&spec.request_id).await {
+            Ok(record) => record,
+            Err(_) => continue,
+        };
+        let operation = app.db.agentic_operation_for_request(&record.id).await.ok();
+        let publication = app.db.agentic_spec_publication(&spec.id).await.ok();
+        let issues = app
+            .db
+            .agentic_spec_issues(&spec.id)
+            .await
+            .unwrap_or_default();
+        let campaign_status = match &record.campaign_id {
+            Some(campaign_id) => app.db.campaign_status_and_gate(campaign_id).await.ok(),
+            None => None,
+        };
+        let gate = campaign_status.as_ref().and_then(|(_, gate)| gate.clone());
+        let campaign = campaign_status.as_ref().map(|(status, _)| status.clone());
+        let column = match (
+            campaign.as_deref(),
+            gate.as_deref(),
+            operation
+                .as_ref()
+                .map(|operation| operation.status.as_str()),
+        ) {
+            (Some("CANCELLED"), _, _) => "CANCELLED",
+            (Some("FAILED"), _, _)
+            | (_, Some("REPAIR_REQUIRED" | "BLOCKED" | "HUMAN_REQUIRED" | "NOT_TESTED"), _) => {
+                "BLOCKED"
+            }
+            (_, Some("ACCEPTED"), _) => "ACCEPTED",
+            (Some(_), _, Some("EXECUTING" | "STARTING")) => "RUNNING",
+            (Some(_), _, _) => "QUEUED",
+            (None, _, _) => "FROZEN",
+        };
+        let graph = spec.graph_json.as_deref().and_then(|json| {
+            serde_json::from_str::<factory_native::agentic::ValidatedWorkGraph>(json).ok()
+        });
+        let frozen = spec.frozen_json.as_deref().and_then(|json| {
+            serde_json::from_str::<factory_native::agentic::FrozenSpec>(json).ok()
+        });
+        cards.push(json!({
+            "specId": spec.id,
+            "requestId": record.id,
+            "projectId": record.project_id,
+            "objective": record.objective,
+            "revision": spec.revision,
+            "summary": frozen.as_ref().map(|frozen| frozen.summary.clone()),
+            "specSha256": spec.spec_sha256,
+            "graphSha256": spec.graph_sha256,
+            "frozenAt": spec.frozen_at,
+            "column": column,
+            "campaignStatus": campaign,
+            "gateOutcome": gate,
+            "operation": operation,
+            "publication": publication,
+            "issues": issues,
+            "units": graph.map(|graph| graph.units).unwrap_or_default(),
+        }));
+    }
+    Json(json!({
+        "columns": ["FROZEN", "QUEUED", "RUNNING", "ACCEPTED", "BLOCKED", "CANCELLED"],
+        "specs": cards,
+    }))
+    .into_response()
+}
+
+async fn explorer_inventory(
+    app: &App,
+    project: &factory_native::db::Project,
+) -> Result<factory_native::knowledge::RepositoryInventory, Response> {
+    let project_id = project.id.clone();
+    let repository = PathBuf::from(project.repository.clone());
+    let identity = project.identity.clone();
+    let base_commit = project.base_commit.clone();
+    let manifests = ["Cargo.toml", "package.json"];
+    let mut inventories = Vec::new();
+    for manifest in manifests {
+        let project_id = project_id.clone();
+        let repository = repository.clone();
+        let identity = identity.clone();
+        let base_commit = base_commit.clone();
+        let path = manifest.to_owned();
+        let result = tokio::task::spawn_blocking(move || {
+            factory_native::project_files::read_project_file(
+                &project_id,
+                &repository,
+                &identity,
+                &base_commit,
+                None,
+                &path,
+            )
+        })
+        .await;
+        let Ok(Ok(projection)) = result else {
+            continue;
+        };
+        let Some(content) = projection.content else {
+            continue;
+        };
+        let libraries = if manifest.ends_with(".toml") {
+            factory_native::knowledge::parse_cargo_manifest(&content, manifest)
+        } else {
+            factory_native::knowledge::parse_package_json(&content, manifest)
+        };
+        inventories.push((manifest.to_owned(), libraries));
+    }
+    let mut library_map = BTreeMap::new();
+    for (manifest, libraries) in &inventories {
+        for library in libraries {
+            library_map
+                .entry(library.name.to_ascii_lowercase())
+                .or_insert_with(|| library.clone());
+        }
+        let _ = manifest;
+    }
+    let mut libraries = library_map.into_values().collect::<Vec<_>>();
+    libraries.sort_by(|left, right| left.name.cmp(&right.name));
+    let manifests = inventories
+        .iter()
+        .map(|(manifest, _)| manifest.clone())
+        .collect::<Vec<_>>();
+    let evidence_refs = if manifests.is_empty() {
+        vec!["repository manifest inventory unavailable".into()]
+    } else {
+        manifests.clone()
+    };
+    let _ = app;
+    Ok(factory_native::knowledge::RepositoryInventory {
+        manifests,
+        libraries,
+        evidence_refs,
+    })
+}
+
+async fn get_agentic_knowledge(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    let pack = app.db.agentic_knowledge_pack(&record.id).await.ok();
+    let skills = app
+        .db
+        .agentic_skills(Some(&record.project_id))
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|skill| skill.request_id.as_deref() == Some(record.id.as_str()))
+        .collect::<Vec<_>>();
+    let adoptions = app
+        .db
+        .agentic_skill_adoptions(&record.id)
+        .await
+        .unwrap_or_default();
+    let project = app.db.project(&record.project_id).await.ok();
+    let inventory = match project.as_ref() {
+        Some(project) => explorer_inventory(&app, project).await.ok(),
+        None => None,
+    };
+    Json(json!({
+        "pack": pack,
+        "skills": skills,
+        "adoptions": adoptions,
+        "inventory": inventory,
+    }))
+    .into_response()
+}
+
+async fn research_agentic_knowledge(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<AgenticKnowledgeRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    let project = match app.db.project(&record.project_id).await {
+        Ok(project) => project,
+        Err(error) => return api_error(error),
+    };
+    let context = match agentic_triage_context(&app, &record).await {
+        Ok(context) => context,
+        Err(error) => return api_error(error),
+    };
+    let skill_needs = context
+        .semantic
+        .as_ref()
+        .map(|(_, model)| model.skill_needs.clone())
+        .unwrap_or_default();
+    let inventory = match explorer_inventory(&app, &project).await {
+        Ok(inventory) => inventory,
+        Err(response) => return response,
+    };
+    let gap = match factory_native::knowledge::detect_knowledge_gap(
+        &inventory,
+        &record.objective,
+        &skill_needs,
+        &input.library,
+        &input.query,
+    ) {
+        Ok(gap) => gap,
+        Err(error) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": error,
+                    "code": "KNOWLEDGE_GAP_REQUIRED",
+                })),
+            )
+                .into_response();
+        }
+    };
+    let client = match factory_native::context7::Context7Client::production() {
+        Ok(client) => client,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": error.to_string(), "code": "CONTEXT7_CONFIGURATION"})),
+            )
+                .into_response();
+        }
+    };
+    let fetched_at = chrono::Utc::now().to_rfc3339();
+    let pack = match client
+        .knowledge_pack(&gap.library, &gap.query, &fetched_at)
+        .await
+    {
+        Ok(pack) => pack,
+        Err(error) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({
+                    "error": error.to_string(),
+                    "code": "CONTEXT7_UNAVAILABLE",
+                })),
+            )
+                .into_response();
+        }
+    };
+    if pack.library_id.is_empty()
+        || !pack.library_id.starts_with('/')
+        || pack.sources.is_empty()
+        || pack.pack_sha256.len() != 64
+    {
+        return (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({
+                "error": "Context7 returned an unusable KnowledgePack",
+                "code": "CONTEXT7_INVALID",
+            })),
+        )
+            .into_response();
+    }
+    let source_url = pack.sources[0].url.clone();
+    let saved_pack = match app
+        .db
+        .save_agentic_knowledge_pack(&factory_native::db::NewAgenticKnowledgePack {
+            request_id: &record.id,
+            project_id: &record.project_id,
+            pack: &pack,
+            provider: "CONTEXT7_MCP",
+            source_url: &source_url,
+        })
+        .await
+    {
+        Ok(pack) => pack,
+        Err(error) => return api_error(error),
+    };
+    let created_at = chrono::Utc::now();
+    let expires_at = (created_at + chrono::Duration::days(7)).to_rfc3339();
+    let created_at = created_at.to_rfc3339();
+    let manifest = match factory_native::knowledge::derive_skill_manifest(
+        &pack,
+        &context.stack.languages,
+        &created_at,
+        &expires_at,
+    ) {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": error, "code": "SKILL_MANIFEST_INVALID"})),
+            )
+                .into_response();
+        }
+    };
+    if let Err(error) = factory_native::knowledge::trust_gate(
+        &manifest,
+        &["context-read".into(), "repository-read".into()],
+        &created_at,
+    ) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": error, "code": "SKILL_TRUST_GATE_REJECTED"})),
+        )
+            .into_response();
+    }
+    let manifest_sha256 = factory_native::knowledge::skill_manifest_sha256(&manifest);
+    let skill = match app
+        .db
+        .create_agentic_skill(&factory_native::db::NewAgenticSkill {
+            project_id: &record.project_id,
+            request_id: &record.id,
+            manifest: &manifest,
+            manifest_sha256: &manifest_sha256,
+            status: "ACTIVE",
+        })
+        .await
+    {
+        Ok(skill) => skill,
+        Err(error) => return api_error(error),
+    };
+    if skill.manifest_sha256 != manifest_sha256 && skill.scope == "RUN" {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "a temporary skill for this library already exists with different knowledge",
+                "code": "SKILL_ALREADY_EXISTS",
+            })),
+        )
+            .into_response();
+    }
+    Json(json!({
+        "gap": gap,
+        "pack": saved_pack,
+        "skill": skill,
+        "inventory": inventory,
+    }))
+    .into_response()
+}
+
+async fn agentic_skills(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let project_id = query.get("project_id").map(String::as_str);
+    let now = chrono::Utc::now().to_rfc3339();
+    match app.db.agentic_skills(project_id).await {
+        Ok(skills) => {
+            let values = skills
+                .into_iter()
+                .map(|skill| {
+                    let review_due = skill
+                        .next_review_at
+                        .as_deref()
+                        .is_some_and(|value| value <= now.as_str());
+                    json!({
+                        "skill": skill,
+                        "reviewDue": review_due,
+                    })
+                })
+                .collect::<Vec<_>>();
+            Json(json!({"skills": values})).into_response()
+        }
+        Err(error) => api_error(error),
+    }
+}
+
+async fn adopt_agentic_skill(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath((id, skill_id)): AxumPath<(String, String)>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    let skill = match app.db.agentic_skill(&skill_id).await {
+        Ok(skill) => skill,
+        Err(error) => return api_error(error),
+    };
+    if skill.project_id != record.project_id {
+        return api_error(Error::Forbidden(
+            "skill belongs to a different project".into(),
+        ));
+    }
+    match app
+        .db
+        .adopt_agentic_skill(&record.id, &skill_id, "implementer")
+        .await
+    {
+        Ok(adoption) => Json(adoption).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn record_agentic_skill_use(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<AgenticSkillUseRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let skill = match app.db.agentic_skill(&id).await {
+        Ok(skill) => skill,
+        Err(error) => return api_error(error),
+    };
+    let request = match app.db.intake_request(&input.request_id).await {
+        Ok(request) => request,
+        Err(error) => return api_error(error),
+    };
+    if request.project_id != skill.project_id {
+        return api_error(Error::Forbidden(
+            "skill use request belongs to a different project".into(),
+        ));
+    }
+    match app
+        .db
+        .record_agentic_skill_use(&id, &request.id, &input.outcome, &input.evidence)
+        .await
+    {
+        Ok(skill) => Json(skill).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+fn operator_principal(session: Option<&factory_native::db::DeviceSessionRecord>) -> String {
+    session
+        .map(|session| format!("device:{}", session.id))
+        .unwrap_or_else(|| "operator".into())
+}
+
+async fn review_agentic_skill_license(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<AgenticSkillLicenseRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let principal = operator_principal(session.as_ref().map(|Extension(device)| device));
+    match app
+        .db
+        .review_agentic_skill_license(&id, &principal, &input.license)
+        .await
+    {
+        Ok(skill) => Json(skill).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn promote_agentic_skill(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<AgenticSkillPromoteRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if input.scope == "GLOBAL" && !input.owner_approved {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "global skill promotion requires an explicit owner decision",
+                "code": "OWNER_DECISION_REQUIRED",
+            })),
+        )
+            .into_response();
+    }
+    let principal = operator_principal(session.as_ref().map(|Extension(device)| device));
+    match app
+        .db
+        .promote_agentic_skill(&id, &input.scope, &principal, input.confirm)
+        .await
+    {
+        Ok(skill) => Json(skill).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn review_agentic_skill(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let principal = operator_principal(session.as_ref().map(|Extension(device)| device));
+    match app.db.review_agentic_skill(&id, &principal).await {
+        Ok(skill) => Json(skill).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn revoke_agentic_skill(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<AgenticSkillRevokeRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.revoke_agentic_skill(&id, &input.reason).await {
+        Ok(skill) => Json(skill).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn candidate_cheap_ops(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if let Err(error) = app.db.candidate(&id).await {
+        return api_error(error);
+    }
+    let receipts = match app.db.quality_receipts(&id).await {
+        Ok(receipts) => receipts,
+        Err(error) => return api_error(error),
+    };
+    let gate = app.db.gate_for_candidate(&id).await.ok().flatten();
+    let observations = receipts
+        .iter()
+        .map(|receipt| factory_native::cheap_ops::ReceiptObservation {
+            role: receipt.role.as_str().into(),
+            principal_id: receipt.principal_id.clone(),
+            result: receipt.result.as_str().into(),
+            evidence: receipt.evidence.as_str().into(),
+        })
+        .collect::<Vec<_>>();
+    let report = factory_native::cheap_ops::interpret_receipts(
+        &observations,
+        gate.as_ref().map(|gate| match gate.outcome {
+            GateOutcome::Accepted => "ACCEPTED",
+            GateOutcome::RepairRequired => "REPAIR_REQUIRED",
+            GateOutcome::Blocked => "BLOCKED",
+            GateOutcome::HumanRequired => "HUMAN_REQUIRED",
+            GateOutcome::NotTested => "NOT_TESTED",
+        }),
+        gate.as_ref()
+            .map(|gate| gate.reasons.as_slice())
+            .unwrap_or(&[]),
+    );
+    Json(json!({
+        "candidateId": id,
+        "report": report,
+        "reviewerReceiptIds": app.db.gate_reviewer_ids(&id).await.unwrap_or_default(),
+    }))
+    .into_response()
+}
+
+async fn agentic_charters(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app
+        .db
+        .agentic_charters(query.get("project_id").map(String::as_str))
+        .await
+    {
+        Ok(charters) => Json(json!({"charters": charters})).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn create_agentic_charter(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    Json(input): Json<NewOwnerCharterRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let risk = match input.risk_appetite.as_str() {
+        "R0" => factory_native::lead::RiskClass::R0,
+        "R1" => factory_native::lead::RiskClass::R1,
+        "R2" => factory_native::lead::RiskClass::R2,
+        "R3" => factory_native::lead::RiskClass::R3,
+        _ => return api_error(Error::Invalid("charter risk appetite")),
+    };
+    let principal = operator_principal(session.as_ref().map(|Extension(device)| device));
+    match app
+        .db
+        .create_agentic_charter(&factory_native::db::NewAgenticCharter {
+            owner: &principal,
+            project_id: &input.project_id,
+            domains: &input.domains,
+            risk_appetite: risk,
+            execution_autonomy: input.execution_autonomy,
+            repair_autonomy: input.repair_autonomy,
+            delivery_autonomy: input.delivery_autonomy,
+            reserved_matters: &input.reserved_matters,
+            expires_at: &input.expires_at,
+        })
+        .await
+    {
+        Ok(charter) => Json(charter).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn revoke_agentic_charter(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<RevokeOwnerCharterRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.revoke_agentic_charter(&id, &input.reason).await {
+        Ok(charter) => Json(charter).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn agentic_owner_decisions(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let pending_only = query.get("status").map(String::as_str) == Some("PENDING");
+    match app
+        .db
+        .agentic_owner_decisions(query.get("project_id").map(String::as_str), pending_only)
+        .await
+    {
+        Ok(decisions) => Json(json!({"decisions": decisions})).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn create_agentic_owner_decision(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(input): Json<NewOwnerDecisionRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let risk = match input.risk.as_str() {
+        "R0" => factory_native::lead::RiskClass::R0,
+        "R1" => factory_native::lead::RiskClass::R1,
+        "R2" => factory_native::lead::RiskClass::R2,
+        "R3" => factory_native::lead::RiskClass::R3,
+        _ => return api_error(Error::Invalid("owner decision risk")),
+    };
+    match app
+        .db
+        .create_agentic_owner_decision(&factory_native::db::NewAgenticOwnerDecision {
+            project_id: &input.project_id,
+            request_id: input.request_id.as_deref(),
+            campaign_id: input.campaign_id.as_deref(),
+            matter: &input.matter,
+            risk,
+            options: &input.options,
+            evidence: &input.evidence,
+            recommendation: &input.recommendation,
+            deadline: &input.deadline,
+        })
+        .await
+    {
+        Ok(decision) => Json(decision).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn resolve_agentic_owner_decision(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<ResolveOwnerDecisionRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let principal = operator_principal(session.as_ref().map(|Extension(device)| device));
+    match app
+        .db
+        .resolve_agentic_owner_decision(&id, &input.option, &input.rationale, &principal)
+        .await
+    {
+        Ok(decision) => Json(decision).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+fn reserved_matter_triggered(objective: &str, reserved: &[String]) -> Option<String> {
+    let objective = objective.to_ascii_lowercase();
+    let keywords: &[(&str, &[&str])] = &[
+        (
+            "credentials",
+            &["credential", "secret", "api key", "password", "token"],
+        ),
+        ("isolation", &["isolation", "sandbox", "privileged"]),
+        ("production", &["production", "deploy", "release"]),
+        (
+            "destructive_migrations",
+            &["drop table", "destructive", "delete data", "migration"],
+        ),
+        (
+            "public_contracts",
+            &[
+                "public api",
+                "public contract",
+                "breaking change",
+                "schema change",
+            ],
+        ),
+        (
+            "security_exceptions",
+            &[
+                "security exception",
+                "bypass auth",
+                "disable authentication",
+            ],
+        ),
+        (
+            "policy_changes",
+            &["policy change", "charter change", "authorization change"],
+        ),
+        ("out_of_budget", &["over budget", "out of budget"]),
+        ("cross_project_effects", &["cross-project", "other project"]),
+        ("delivery", &["merge", "pull request", "deliver", "deploy"]),
+    ];
+    reserved.iter().find_map(|matter| {
+        let alternatives = keywords
+            .iter()
+            .find(|(name, _)| name == matter)
+            .map(|(_, words)| *words)
+            .unwrap_or(&[]);
+        if objective.contains(&matter.replace('_', " "))
+            || alternatives.iter().any(|word| objective.contains(word))
+        {
+            Some(matter.clone())
+        } else {
+            None
+        }
+    })
+}
+
+async fn charter_owner_decision_gate(
+    app: &Arc<App>,
+    project_id: &str,
+    request_id: Option<&str>,
+    campaign_id: Option<&str>,
+    objective: &str,
+    risk: factory_native::lead::RiskClass,
+    action: &str,
+) -> Result<Option<String>, Response> {
+    let Some(charter) = app
+        .db
+        .active_agentic_charter(project_id)
+        .await
+        .map_err(api_error)?
+    else {
+        return Ok(None);
+    };
+    let required_domain = if action == "delivery" {
+        "delivery"
+    } else {
+        "repository"
+    };
+    if !charter
+        .domains
+        .iter()
+        .any(|domain| domain == required_domain)
+    {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "the owner charter does not cover this domain",
+                "code": "CHARTER_DOMAIN_NOT_COVERED",
+            })),
+        )
+            .into_response());
+    }
+    if risk > charter.risk_appetite {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "request risk exceeds the owner charter appetite",
+                "code": "CHARTER_RISK_EXCEEDED",
+            })),
+        )
+            .into_response());
+    }
+    let delegated = match action {
+        "execution" => charter.execution_autonomy,
+        "repair" => charter.repair_autonomy,
+        "delivery" => charter.delivery_autonomy,
+        _ => false,
+    };
+    if !delegated {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "the owner charter does not delegate this action",
+                "code": "CHARTER_ACTION_NOT_DELEGATED",
+            })),
+        )
+            .into_response());
+    }
+    let Some(matter) = reserved_matter_triggered(objective, &charter.reserved_matters) else {
+        return Ok(None);
+    };
+    if let Some(request_id) = request_id {
+        let approved = app
+            .db
+            .agentic_owner_decisions(Some(project_id), false)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .any(|decision| {
+                decision.request_id.as_deref() == Some(request_id)
+                    && decision.matter == matter
+                    && decision.status == "APPROVED"
+                    && decision.selected_option.as_deref() == Some("APPROVE")
+            });
+        if approved {
+            return Ok(None);
+        }
+    }
+    let pending = app
+        .db
+        .agentic_owner_decisions(Some(project_id), true)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .find(|decision| {
+            decision.matter == matter
+                && decision.request_id.as_deref() == request_id
+                && decision.campaign_id.as_deref() == campaign_id
+        });
+    let decision = match pending {
+        Some(decision) => decision,
+        None => {
+            let deadline = (chrono::Utc::now() + chrono::Duration::hours(24)).to_rfc3339();
+            app.db
+                .create_agentic_owner_decision(&factory_native::db::NewAgenticOwnerDecision {
+                    project_id,
+                    request_id,
+                    campaign_id,
+                    matter: &matter,
+                    risk,
+                    options: &["APPROVE".into(), "DENY".into()],
+                    evidence: &json!({
+                        "objective": objective,
+                        "risk": format!("{risk:?}"),
+                        "action": action,
+                        "charterId": charter.id,
+                    }),
+                    recommendation: "DENY",
+                    deadline: &deadline,
+                })
+                .await
+                .map_err(api_error)?
+        }
+    };
+    Err((
+        StatusCode::CONFLICT,
+        Json(json!({
+            "error": "this reserved matter requires an owner decision",
+            "code": "OWNER_DECISION_REQUIRED",
+            "decisionId": decision.id,
+            "matter": matter,
+        })),
+    )
+        .into_response())
+}
+
+async fn assess_agentic_request(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => {
+            tracing::warn!(%id, %error, "agentic assess request not found");
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": format!("agentic intake lookup failed: {id}")})),
+            )
+                .into_response();
+        }
+    };
+    let profile = match app
+        .db
+        .execution_profile_revision(&record.profile_id, &record.profile_revision_id)
+        .await
+    {
+        Ok(profile) => profile,
+        Err(error) => {
+            tracing::warn!(%id, %error, profile_id = %record.profile_id, revision_id = %record.profile_revision_id, "agentic profile lookup failed");
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": format!("agentic profile lookup failed: {id}")})),
+            )
+                .into_response();
+        }
+    };
+    let grant = match app.db.standing_delegation_v2(&record.delegation_id).await {
+        Ok(grant) => grant,
+        Err(error) => return api_error(error),
+    };
+    let gateway = match app.intake_assess_gateway(&profile).await {
+        Ok(gateway) => gateway,
+        Err(route_error) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "error": route_error.to_string(),
+                    "code": "ASSESSMENT_UNAVAILABLE",
+                    "routeCode": route_error.code(),
+                })),
+            )
+                .into_response();
+        }
+    };
+    let stack = agentic_stack_for_project(&app, &record.project_id).await;
+    let config = app.db.project_config(&record.project_id).await.ok();
+    let lead = app.db.lead_request(&record.lead_request_id).await.ok();
+    let proposal = app
+        .db
+        .lead_proposal(&record.lead_request_id)
+        .await
+        .ok()
+        .and_then(|record| {
+            serde_json::from_str::<factory_native::lead::LeadPlanProposal>(&record.proposal_json)
+                .ok()
+        });
+    let schema = factory_native::model_output::agentic_triage_schema();
+    let schema_sha256 = factory_native::model_output::agentic_triage_schema_sha256();
+    let system_prompt = format!(
+        "You are the bounded Software Factory Semantic Assessor. Return ONLY one JSON object that validates against the JSON Schema below. Do not add prose, markdown, comments or unknown fields. You are read-only: you cannot use tools, write files, grant authority, choose tools or accept work. Determine the request kind, the recommended route, the assurance recommendation, the technology StackProfile, concrete file scope, risk signals, expected work units, knowledge/skill needs and explicit unknowns. Use deterministic evidence where supplied; do not invent a technology or a file. If a value is unknown, leave it empty or record it in unknowns. The StackProfile is advisory; Core applies deterministic route and assurance floors. The request kind must be INFORMATIONAL, AUDIT, CHANGE or REPAIR. Routes are NO_AGENT, DIRECT, DELEGATED, FORMAL_SPEC or REPAIR. Assurance is NONE, STANDARD, ELEVATED or CRITICAL.\n\nJSON Schema:\n{schema}"
+    );
+    let user_prompt = serde_json::json!({
+        "objective": record.objective,
+        "projectId": record.project_id,
+        "projectConfig": config.as_ref().map(|config| serde_json::json!({
+            "repository": config.repository,
+            "baseCommit": config.base_commit,
+            "allowedPaths": config.allowed_paths,
+            "capabilities": config.capabilities,
+            "qualityProfile": config.quality_profile,
+        })),
+        "deterministicStack": stack,
+        "lead": lead.as_ref().map(|lead| serde_json::json!({
+            "state": format!("{:?}", lead.state),
+            "failureReason": lead.failure_reason,
+            "campaignId": lead.campaign_id,
+        })),
+        "existingProposal": proposal.as_ref().map(|proposal| serde_json::json!({
+            "class": format!("{:?}", proposal.class),
+            "riskClass": proposal.risk_class,
+            "workUnits": proposal.work_units.iter().map(|unit| serde_json::json!({
+                "id": unit.id,
+                "description": unit.description,
+                "allowedPaths": unit.allowed_paths,
+                "capabilities": unit.capabilities,
+            })).collect::<Vec<_>>(),
+            "assumptions": proposal.assumptions,
+            "risks": proposal.risks,
+        })),
+    })
+    .to_string();
+    let principal_id = grant.principal_id.clone();
+    let result = match gateway
+        .call(
+            &app.db,
+            factory_native::model_gateway::ModelCallRequest {
+                role: factory_native::db::ModelCallRole::Lead,
+                principal_id: &principal_id,
+                project_id: &record.project_id,
+                objective_id: &record.lead_request_id,
+                scope_id: &record.delegation_id,
+                purpose: "agentic_triage",
+                system_prompt: &system_prompt,
+                user_prompt: &user_prompt,
+                max_output_tokens: 4_096,
+            },
+        )
+        .await
+    {
+        Ok(result) => result,
+        Err(factory_native::model_gateway::ModelGatewayError::Database(error)) => {
+            return match error {
+                Error::SubscriptionFunding(refusal) => (
+                    StatusCode::CONFLICT,
+                    Json(json!({
+                        "error": refusal.to_string(),
+                        "code": refusal.code(),
+                    })),
+                )
+                    .into_response(),
+                Error::Withdrawn => (
+                    StatusCode::CONFLICT,
+                    Json(json!({
+                        "error": "the request was withdrawn; semantic triage is unavailable",
+                        "code": "REQUEST_WITHDRAWN",
+                    })),
+                )
+                    .into_response(),
+                other => api_error(other),
+            };
+        }
+        Err(factory_native::model_gateway::ModelGatewayError::Invalid(message)) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": message, "code": "AGENTIC_TRIAGE_INVALID"})),
+            )
+                .into_response();
+        }
+        Err(error) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({
+                    "error": error.to_string(),
+                    "code": "AGENTIC_TRIAGE_FAILED",
+                })),
+            )
+                .into_response();
+        }
+    };
+    let assessment =
+        match factory_native::model_output::decode_agentic_triage(result.content.as_bytes()) {
+            Ok(assessment) => assessment,
+            Err(error) => {
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(json!({
+                        "error": error.to_string(),
+                        "code": "AGENTIC_TRIAGE_OUTPUT_INVALID",
+                    })),
+                )
+                    .into_response();
+            }
+        };
+    let decision = factory_native::agentic::merge_model_decision(
+        factory_native::agentic::triage(&assessment.signals(&record.objective)),
+        &assessment,
+    );
+    if let Err(error) = app
+        .db
+        .save_agentic_assessment(&factory_native::db::NewAgenticAssessment {
+            request_id: &record.id,
+            response_json: &result.content,
+            schema_sha256: &schema_sha256,
+            provider: &result.provider,
+            model: &result.model,
+            request_sha256: &result.request_sha256,
+            input_tokens: result.input_tokens,
+            output_tokens: result.output_tokens,
+            total_tokens: result.total_tokens,
+            cost_micros: result.cost_micros,
+            usage_known: result.usage_known,
+        })
+        .await
+    {
+        return api_error(error);
+    }
+    Json(json!({
+        "assessment": assessment,
+        "decision": decision,
+        "provider": result.provider,
+        "model": result.model,
+        "usage": {
+            "inputTokens": result.input_tokens,
+            "outputTokens": result.output_tokens,
+            "totalTokens": result.total_tokens,
+            "costMicros": result.cost_micros,
+            "usageKnown": result.usage_known,
+        }
+    }))
+    .into_response()
+}
+
+async fn agentic_portfolio(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let records = match app.db.intake_requests().await {
+        Ok(records) => records,
+        Err(error) => return api_error(error),
+    };
+    let mut entries = Vec::new();
+    for record in records.into_iter().take(50) {
+        let lead = match app.db.lead_request(&record.lead_request_id).await {
+            Ok(lead) => lead,
+            Err(_) => continue,
+        };
+        let proposal = app
+            .db
+            .lead_proposal(&record.lead_request_id)
+            .await
+            .ok()
+            .and_then(|record| {
+                serde_json::from_str::<factory_native::lead::LeadPlanProposal>(
+                    &record.proposal_json,
+                )
+                .ok()
+            });
+        let work_units = proposal.as_ref().map(|p| p.work_units.len()).unwrap_or(0);
+        let risk = proposal
+            .as_ref()
+            .map(|p| p.risk_class)
+            .unwrap_or(factory_native::lead::RiskClass::R0);
+        let stack = agentic_stack_for_project(&app, &record.project_id).await;
+        let signals = factory_native::agentic::TriageSignals {
+            objective: record.objective.clone(),
+            files: Vec::new(),
+            domains: Vec::new(),
+            risk: "low".into(),
+            expected_work_units: if work_units > 0 {
+                Some(u32::try_from(work_units).unwrap_or(u32::MAX))
+            } else {
+                None
+            },
+            ambiguous: proposal.is_none(),
+            architecture_uncertainty: false,
+            cross_module: work_units > 1,
+            public_contract: false,
+            data_or_schema: false,
+            security_boundary: false,
+            explicit_informational: false,
+            explicit_audit: false,
+            explicit_repair: false,
+        };
+        let triage = factory_native::agentic::triage(&signals);
+        let participants = factory_native::agentic::participant_plan(
+            triage.route,
+            triage.assurance.max(assurance_for_risk(risk)),
+            u32::try_from(work_units.max(1)).unwrap_or(u32::MAX),
+            &stack,
+        );
+        let state = app
+            .db
+            .lead_request_projection(&record.lead_request_id)
+            .await
+            .map(|state| format!("{state:?}"))
+            .unwrap_or_else(|_| format!("{:?}", lead.state));
+        let operation = app.db.agentic_operation_for_request(&record.id).await.ok();
+        let request_id = record.id.clone();
+        entries.push(AgenticPortfolioEntry {
+            id: request_id.clone(),
+            project_id: record.project_id,
+            objective: record.objective,
+            mode: format!("{:?}", record.mode),
+            state,
+            route: triage.route,
+            assurance: triage.assurance.max(assurance_for_risk(risk)),
+            request_kind: triage.request_kind,
+            work_units,
+            participant_count: participants.assignments.iter().map(|a| a.count).sum(),
+            stack_languages: stack.languages,
+            director_id: operation
+                .as_ref()
+                .map(|operation| operation.director_id.clone())
+                .unwrap_or_else(|| format!("director:{}", record.delegation_id)),
+            operation_manager_id: operation
+                .as_ref()
+                .map(|operation| operation.operation_manager_id.clone())
+                .unwrap_or_else(|| format!("operation-manager:{request_id}")),
+            priority: operation
+                .as_ref()
+                .map(|operation| operation.priority)
+                .unwrap_or(100),
+            operation_status: operation
+                .as_ref()
+                .map(|operation| operation.status.clone())
+                .unwrap_or_else(|| "OBSERVED".into()),
+            worktree_policy: operation
+                .as_ref()
+                .map(|operation| operation.worktree_policy.clone())
+                .unwrap_or_else(|| "PER_ATTEMPT".into()),
+            updated_at: record.updated_at,
+        });
+    }
+    Json(entries).into_response()
+}
+
+async fn agentic_request_detail(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    match agentic_projection_for_request(&app, &record).await {
         Ok(value) => Json(value).into_response(),
         Err(error) => api_error(error),
     }
@@ -9465,6 +12611,47 @@ async fn autonomous_start_intake(app: &Arc<App>, id: &str) -> Result<(), Error> 
     if context.lead.campaign_id.is_some() {
         return Ok(());
     }
+    let global_reserved = factory_native::db::RESERVED_MATTERS
+        .iter()
+        .map(|matter| (*matter).to_string())
+        .collect::<Vec<_>>();
+    if let Some(matter) = reserved_matter_triggered(&context.lead.objective, &global_reserved) {
+        return Err(Error::Forbidden(format!(
+            "autonomous execution of reserved matter {matter} requires an explicit owner decision"
+        )));
+    }
+    if let Ok(Some(charter)) = app
+        .db
+        .active_agentic_charter(&context.intake.project_id)
+        .await
+    {
+        let risk = app
+            .db
+            .lead_proposal(&context.lead.id)
+            .await
+            .ok()
+            .and_then(|record| {
+                serde_json::from_str::<factory_native::lead::LeadPlanProposal>(
+                    &record.proposal_json,
+                )
+                .ok()
+            })
+            .map(|proposal| proposal.risk_class)
+            .unwrap_or(factory_native::lead::RiskClass::R0);
+        let reserved =
+            reserved_matter_triggered(&context.lead.objective, &charter.reserved_matters);
+        if !charter.domains.iter().any(|domain| domain == "repository") {
+            return Err(Error::Forbidden(
+                "the owner charter does not cover the repository execution domain".into(),
+            ));
+        }
+        if !charter.execution_autonomy || risk > charter.risk_appetite || reserved.is_some() {
+            return Err(Error::Forbidden(
+                "autonomous execution requires an explicit owner decision under the active charter"
+                    .into(),
+            ));
+        }
+    }
     let billable = context.mechanism == "MODEL";
     let admission_id = if billable {
         let admission = app.db.active_subscription_admission_for_request(id).await?;
@@ -9511,6 +12698,145 @@ async fn autonomous_start_intake(app: &Arc<App>, id: &str) -> Result<(), Error> 
         )
         .await?;
     Ok(())
+}
+
+#[derive(Clone)]
+struct QueuedOperation {
+    priority: i64,
+    sequence: u64,
+    request_id: String,
+}
+
+struct AgenticScheduler {
+    queue: tokio::sync::Mutex<Vec<QueuedOperation>>,
+    notify: tokio::sync::Notify,
+    permits: Arc<tokio::sync::Semaphore>,
+    active: AtomicUsize,
+    capacity: usize,
+    sequence: AtomicUsize,
+}
+
+static AGENTIC_SCHEDULER: OnceLock<Arc<AgenticScheduler>> = OnceLock::new();
+
+/// Resource-derived start concurrency. This is not a fixed product cap: the
+/// number of simultaneous Lead assessment/start operations is bounded by the
+/// observed CPU and available memory, with worker/Campaign concurrency governed
+/// separately by leases and the worker runtime.
+fn agentic_start_capacity() -> usize {
+    let cpu = std::thread::available_parallelism()
+        .map(std::num::NonZeroUsize::get)
+        .unwrap_or(2);
+    let memory_slots = std::fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|contents| {
+            contents
+                .lines()
+                .find(|line| line.starts_with("MemAvailable:"))
+                .and_then(|line| line.split_whitespace().nth(1))
+                .and_then(|value| value.parse::<u64>().ok())
+        })
+        .map(|available_kb| usize::try_from(available_kb / (2 * 1024 * 1024)).unwrap_or(1))
+        .unwrap_or(2)
+        .max(1);
+    cpu.min(memory_slots).max(1)
+}
+
+fn start_agentic_scheduler(app: &Arc<App>) -> Arc<AgenticScheduler> {
+    AGENTIC_SCHEDULER
+        .get_or_init(|| {
+            let capacity = agentic_start_capacity();
+            let scheduler = Arc::new(AgenticScheduler {
+                queue: tokio::sync::Mutex::new(Vec::new()),
+                notify: tokio::sync::Notify::new(),
+                permits: Arc::new(tokio::sync::Semaphore::new(capacity)),
+                active: AtomicUsize::new(0),
+                capacity,
+                sequence: AtomicUsize::new(0),
+            });
+            let app_for_loop = Arc::clone(app);
+            let scheduler_for_loop = Arc::clone(&scheduler);
+            tokio::spawn(async move {
+                agentic_scheduler_loop(app_for_loop, scheduler_for_loop).await;
+            });
+            scheduler
+        })
+        .clone()
+}
+
+impl AgenticScheduler {
+    async fn enqueue(&self, request_id: &str, priority: i64) {
+        let mut queue = self.queue.lock().await;
+        if queue.iter().any(|item| item.request_id == request_id) {
+            return;
+        }
+        queue.push(QueuedOperation {
+            priority,
+            sequence: self.sequence.fetch_add(1, Ordering::Relaxed) as u64,
+            request_id: request_id.to_owned(),
+        });
+        drop(queue);
+        self.notify.notify_waiters();
+    }
+
+    async fn reprioritize(&self, request_id: &str, priority: i64) {
+        let mut queue = self.queue.lock().await;
+        if let Some(item) = queue.iter_mut().find(|item| item.request_id == request_id) {
+            item.priority = priority;
+        }
+    }
+
+    async fn next(&self) -> QueuedOperation {
+        loop {
+            let mut queue = self.queue.lock().await;
+            queue.sort_by_key(|item| (item.priority, item.sequence));
+            if let Some(item) = queue.pop() {
+                return item;
+            }
+            drop(queue);
+            self.notify.notified().await;
+        }
+    }
+}
+
+async fn enqueue_autopilot(app: &Arc<App>, request_id: &str) {
+    let priority = app
+        .db
+        .agentic_operation_for_request(request_id)
+        .await
+        .map(|operation| operation.priority)
+        .unwrap_or(100);
+    start_agentic_scheduler(app)
+        .enqueue(request_id, priority)
+        .await;
+}
+
+async fn agentic_scheduler_loop(app: Arc<App>, scheduler: Arc<AgenticScheduler>) {
+    loop {
+        let permit = match Arc::clone(&scheduler.permits).acquire_owned().await {
+            Ok(permit) => permit,
+            Err(_) => return,
+        };
+        let item = scheduler.next().await;
+        scheduler.active.fetch_add(1, Ordering::Relaxed);
+        let app_for_task = Arc::clone(&app);
+        let scheduler_for_task = Arc::clone(&scheduler);
+        tokio::spawn(async move {
+            let _permit = permit;
+            let _ = app_for_task
+                .db
+                .set_agentic_operation_status(&item.request_id, "STARTING")
+                .await;
+            if let Err(error) = run_autopilot(&app_for_task, &item.request_id).await {
+                fail_autopilot(&app_for_task, &item.request_id, &error).await;
+                let _ = app_for_task
+                    .db
+                    .set_agentic_operation_status(&item.request_id, "BLOCKED")
+                    .await;
+            }
+            scheduler_for_task.active.fetch_sub(1, Ordering::Relaxed);
+            scheduler_for_task.notify.notify_waiters();
+        });
+    }
 }
 
 async fn run_autopilot(app: &Arc<App>, id: &str) -> Result<(), Error> {
@@ -9563,9 +12889,12 @@ async fn run_autopilot_inner(app: &Arc<App>, id: &str) -> Result<(), Error> {
     let record = app.db.intake_request(id).await?;
     let lead = app.db.lead_request(&record.lead_request_id).await?;
     if lead.campaign_id.is_some() {
+        let _ = app.db.set_agentic_operation_status(id, "EXECUTING").await;
         return Ok(());
     }
-    autonomous_start_intake(app, id).await
+    autonomous_start_intake(app, id).await?;
+    let _ = app.db.set_agentic_operation_status(id, "EXECUTING").await;
+    Ok(())
 }
 
 async fn fail_autopilot(app: &Arc<App>, id: &str, error: &Error) {
@@ -9585,9 +12914,36 @@ async fn resume_autopilot_requests(app: &Arc<App>) {
         return;
     };
     for record in records {
-        if let Err(error) = run_autopilot(app, &record.id).await {
-            fail_autopilot(app, &record.id, &error).await;
+        enqueue_autopilot(app, &record.id).await;
+    }
+}
+
+async fn promote_accepted_repairs(app: Arc<App>) {
+    loop {
+        let _ = app.db.reconcile_agentic_operations().await;
+        if let Ok(candidates) = app.db.accepted_repair_candidates().await {
+            let mut advanced = BTreeSet::new();
+            for (project_id, candidate_commit) in candidates {
+                if !advanced.insert((project_id.clone(), candidate_commit.clone())) {
+                    continue;
+                }
+                let Ok(config) = app.db.project_config(&project_id).await else {
+                    continue;
+                };
+                if config.base_commit == candidate_commit {
+                    continue;
+                }
+                let _ = app
+                    .db
+                    .advance_project_base_for_repair(
+                        &project_id,
+                        &candidate_commit,
+                        config.revision,
+                    )
+                    .await;
+            }
         }
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
     }
 }
 
@@ -9661,13 +13017,7 @@ async fn create_intake_request(
                 Err(error) => return api_error(error),
             };
             if created && record.mode == factory_native::intake::IntakeMode::Autonomous {
-                let app_for_autopilot = Arc::clone(&app);
-                let request_id = record.id.clone();
-                tokio::spawn(async move {
-                    if let Err(error) = run_autopilot(&app_for_autopilot, &request_id).await {
-                        fail_autopilot(&app_for_autopilot, &request_id, &error).await;
-                    }
-                });
+                enqueue_autopilot(&app, &record.id).await;
             }
             (
                 if created {
@@ -9967,6 +13317,19 @@ async fn assess_intake_request(
     {
         return api_error(error);
     }
+    let Some(proposal) = proposal else {
+        let _ = app
+            .db
+            .block_lead_request(
+                &lead.id,
+                "informational_assessment: no execution plan is required for this intent",
+            )
+            .await;
+        return match intake_request_value(&app, &record, true).await {
+            Ok(value) => Json(value).into_response(),
+            Err(error) => api_error(error),
+        };
+    };
     if let Err(error) = app
         .db
         .record_lead_proposal(&lead.id, &proposal, &format!("intake-assess:{id}:proposal"))
@@ -11341,6 +14704,8 @@ mod tests {
             worker_bootstrap_token: "bootstrap".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
             reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            verifier_principal: "verifier-process".into(),
+            reviewer_principal: "reviewer-process".into(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
@@ -11438,6 +14803,8 @@ mod tests {
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
             reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            verifier_principal: "verifier-process".into(),
+            reviewer_principal: "reviewer-process".into(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
@@ -11651,6 +15018,8 @@ mod tests {
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
             reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            verifier_principal: "verifier-process".into(),
+            reviewer_principal: "reviewer-process".into(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
@@ -11843,6 +15212,8 @@ mod tests {
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
             reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            verifier_principal: "verifier-process".into(),
+            reviewer_principal: "reviewer-process".into(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
@@ -12019,6 +15390,8 @@ mod tests {
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
             reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            verifier_principal: "verifier-process".into(),
+            reviewer_principal: "reviewer-process".into(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
@@ -12087,6 +15460,8 @@ mod tests {
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
             reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            verifier_principal: "verifier-process".into(),
+            reviewer_principal: "reviewer-process".into(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
@@ -12134,6 +15509,8 @@ mod tests {
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
             reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            verifier_principal: "verifier-process".into(),
+            reviewer_principal: "reviewer-process".into(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
@@ -13214,6 +16591,140 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn agentic_plan_and_spec_routes_require_operator_credentials() {
+        use tower::ServiceExt;
+        let path = std::env::temp_dir().join(format!(
+            "factory-core-agentic-spec-routes-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let router = build_router(test_app(&path).await);
+        let zeros = "0".repeat(64);
+        let routes = [
+            ("GET", "/agentic/specs/board", "{}".to_string()),
+            ("GET", "/agentic/charters", "{}".to_string()),
+            (
+                "POST",
+                "/agentic/charters",
+                r#"{"project_id":"missing","domains":["repository"],"risk_appetite":"R0","reserved_matters":["credentials"],"expires_at":"2030-01-01T00:00:00Z"}"#.to_string(),
+            ),
+            (
+                "POST",
+                "/agentic/charters/missing/revoke",
+                r#"{"reason":"test"}"#.to_string(),
+            ),
+            ("GET", "/agentic/decisions", "{}".to_string()),
+            (
+                "POST",
+                "/agentic/decisions",
+                r#"{"project_id":"missing","matter":"credentials","risk":"R2","options":["APPROVE","DENY"],"evidence":{},"recommendation":"DENY","deadline":"2030-01-01T00:00:00Z"}"#.to_string(),
+            ),
+            (
+                "POST",
+                "/agentic/decisions/missing/resolve",
+                r#"{"option":"APPROVE","rationale":"test"}"#.to_string(),
+            ),
+            (
+                "GET",
+                "/quality/candidates/missing/interpretation",
+                "{}".to_string(),
+            ),
+            ("GET", "/agentic/requests/missing/plan", "{}".to_string()),
+            ("POST", "/agentic/requests/missing/plan", "{}".to_string()),
+            (
+                "GET",
+                "/agentic/requests/missing/participants",
+                "{}".to_string(),
+            ),
+            (
+                "POST",
+                "/agentic/requests/missing/participants",
+                "{}".to_string(),
+            ),
+            ("GET", "/agentic/requests/missing/spec", "{}".to_string()),
+            ("POST", "/agentic/requests/missing/spec", "{}".to_string()),
+            (
+                "POST",
+                "/agentic/requests/missing/spec/freeze",
+                format!(r#"{{"expected_spec_sha256":"{zeros}"}}"#),
+            ),
+            (
+                "POST",
+                "/agentic/requests/missing/spec/publish",
+                r#"{"confirm":false}"#.to_string(),
+            ),
+            (
+                "POST",
+                "/agentic/requests/missing/spec/refresh",
+                "{}".to_string(),
+            ),
+            (
+                "GET",
+                "/agentic/requests/missing/knowledge",
+                "{}".to_string(),
+            ),
+            (
+                "POST",
+                "/agentic/requests/missing/knowledge",
+                r#"{"library":"chrono","query":"dates"}"#.to_string(),
+            ),
+            (
+                "POST",
+                "/agentic/requests/missing/skills/skill/adopt",
+                "{}".to_string(),
+            ),
+            ("GET", "/agentic/skills", "{}".to_string()),
+            (
+                "POST",
+                "/agentic/skills/skill/uses",
+                r#"{"request_id":"missing","outcome":"SUCCESS","evidence":"test"}"#.to_string(),
+            ),
+            (
+                "POST",
+                "/agentic/skills/skill/license",
+                r#"{"license":"MIT"}"#.to_string(),
+            ),
+            (
+                "POST",
+                "/agentic/skills/skill/promote",
+                r#"{"scope":"PROJECT","confirm":true}"#.to_string(),
+            ),
+            ("POST", "/agentic/skills/skill/review", "{}".to_string()),
+            (
+                "POST",
+                "/agentic/skills/skill/revoke",
+                r#"{"reason":"test"}"#.to_string(),
+            ),
+        ];
+        for (method, uri, body) in routes {
+            let request = axum::http::Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(body))
+                .unwrap();
+            assert_eq!(
+                router.clone().oneshot(request).await.unwrap().status(),
+                StatusCode::UNAUTHORIZED,
+                "{method} {uri} must require the operator credential"
+            );
+        }
+        let request = axum::http::Request::builder()
+            .uri("/agentic/requests/missing/spec/freeze")
+            .method("POST")
+            .header("authorization", "Bearer operator-token")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                r#"{"expected_spec_sha256":"not-a-sha"}"#,
+            ))
+            .unwrap();
+        assert_eq!(
+            router.oneshot(request).await.unwrap().status(),
+            StatusCode::BAD_REQUEST
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
     async fn quality_role_requires_exact_distinct_role_tokens() {
         let path = std::env::temp_dir().join(format!(
             "factory-core-quality-{}.sqlite",
@@ -13225,6 +16736,8 @@ mod tests {
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
             reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            verifier_principal: "verifier-process".into(),
+            reviewer_principal: "reviewer-process".into(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
@@ -13277,6 +16790,8 @@ mod tests {
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
             reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            verifier_principal: "verifier-process".into(),
+            reviewer_principal: "reviewer-process".into(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
@@ -13437,6 +16952,8 @@ mod tests {
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
             reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            verifier_principal: "verifier-process".into(),
+            reviewer_principal: "reviewer-process".into(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
@@ -13672,6 +17189,8 @@ mod tests {
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
             reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            verifier_principal: "verifier-process".into(),
+            reviewer_principal: "reviewer-process".into(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
@@ -14511,6 +18030,8 @@ mod tests {
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
             reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            verifier_principal: "verifier-process".into(),
+            reviewer_principal: "reviewer-process".into(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
