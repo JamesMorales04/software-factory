@@ -526,6 +526,8 @@ pub struct ParticipantPlan {
     pub unit_assignments: Vec<AgentUnitAssignment>,
     #[serde(default)]
     pub reviewer_count: u32,
+    #[serde(default)]
+    pub reviewer_roles: Vec<crate::planning::ReviewerRole>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -658,7 +660,19 @@ pub fn participant_plan(
         reasons,
         unit_assignments: Vec::new(),
         reviewer_count: reviewers,
+        reviewer_roles: reviewer_roles(route, assurance),
     }
+}
+
+fn reviewer_roles(route: ChangeRoute, assurance: Assurance) -> Vec<crate::planning::ReviewerRole> {
+    let lane = match route {
+        ChangeRoute::NoAgent => return Vec::new(),
+        ChangeRoute::Direct => crate::planning::PlanningLane::Direct,
+        ChangeRoute::Delegated => crate::planning::PlanningLane::Delegated,
+        ChangeRoute::FormalSpec => crate::planning::PlanningLane::FormalSpec,
+        ChangeRoute::Repair => crate::planning::PlanningLane::Repair,
+    };
+    crate::planning::ReviewerPlan::for_lane(lane, assurance >= Assurance::Elevated).roles
 }
 
 /// Compile the deterministic plan for an exact validated WorkGraph. Each

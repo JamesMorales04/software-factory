@@ -978,6 +978,7 @@ mod projects;
 pub use projects::{ProjectCampaignSummary, ProjectDiscoveryRecord, RegisterProjectSource};
 mod quality;
 mod workers;
+mod workflow;
 
 mod device_pairing;
 #[cfg(test)]

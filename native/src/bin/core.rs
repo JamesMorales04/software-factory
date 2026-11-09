@@ -10030,6 +10030,18 @@ fn assurance_for_risk(risk: factory_native::lead::RiskClass) -> factory_native::
     }
 }
 
+/// Deterministic documentation-baseline signal for planning. This only raises
+/// the planning lane; it never grants, denies or bypasses execution authority.
+fn project_has_engineering_docs(repository: &str) -> bool {
+    let root = std::path::Path::new(repository);
+    let has_readme = ["README.md", "README.rst", "README.txt", "README"]
+        .iter()
+        .any(|name| root.join(name).is_file());
+    let has_agents = root.join("AGENTS.md").is_file();
+    let has_docs = root.join("docs").is_dir();
+    has_readme && (has_agents || has_docs)
+}
+
 async fn agentic_stack_for_project(
     app: &App,
     project_id: &str,
@@ -10156,7 +10168,7 @@ async fn agentic_triage_context(
             None
         },
         ambiguous: proposal.is_none() && !explicit_informational && !explicit_audit,
-        architecture_uncertainty: false,
+        architecture_uncertainty: proposal.is_none() && !explicit_informational && !explicit_audit,
         cross_module: work_units > 1,
         public_contract: false,
         data_or_schema: false,
@@ -10166,9 +10178,57 @@ async fn agentic_triage_context(
         explicit_repair: false,
     };
     let deterministic_stack = agentic_stack_for_project(app, &record.project_id).await;
+    let missing_docs = match app.db.project(&record.project_id).await {
+        Ok(project) => !project_has_engineering_docs(&project.repository),
+        Err(_) => true,
+    };
+    let planning_signals = factory_native::planning::PlanningSignals {
+        objective: record.objective.clone(),
+        greenfield: deterministic_stack.languages.is_empty(),
+        large: work_units > 1 || record.objective.chars().count() > 500,
+        missing_docs,
+        missing_stack: deterministic_stack.languages.is_empty(),
+        architecture_uncertainty: deterministic_signals.architecture_uncertainty,
+        public_contract: false,
+        data_or_schema: false,
+        security_boundary: false,
+        cross_module: work_units > 1,
+        changed_files: u32::try_from(deterministic_signals.files.len()).unwrap_or(u32::MAX),
+        expected_units: u32::try_from(work_units).unwrap_or(u32::MAX),
+        explicit_repair: false,
+    };
+    let planning_lane = factory_native::planning::route::route_for(
+        &factory_native::planning::route::PlanningRouteInput {
+            signals: planning_signals,
+            user_constraints: Default::default(),
+        },
+    )
+    .map_err(Error::Validation)?;
     // Deterministic floors are computed first. A semantic assessment may raise
     // them, but never replace the deterministic signals or lower a floor.
     let deterministic_decision = agentic::triage(&deterministic_signals);
+    let deterministic_decision = match planning_lane {
+        factory_native::planning::PlanningLane::FormalSpec
+            if deterministic_decision.route != agentic::ChangeRoute::FormalSpec =>
+        {
+            agentic::TriageDecision {
+                route: agentic::ChangeRoute::FormalSpec,
+                ..deterministic_decision
+            }
+        }
+        factory_native::planning::PlanningLane::Delegated
+            if matches!(
+                deterministic_decision.route,
+                agentic::ChangeRoute::Direct | agentic::ChangeRoute::NoAgent
+            ) =>
+        {
+            agentic::TriageDecision {
+                route: agentic::ChangeRoute::Delegated,
+                ..deterministic_decision
+            }
+        }
+        _ => deterministic_decision,
+    };
     let (stack, triage) = match &semantic {
         Some((_, model)) => (
             model.stack.clone(),

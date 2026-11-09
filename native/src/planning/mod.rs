@@ -11,8 +11,46 @@ use serde::{Deserialize, Serialize};
 
 use crate::lead::SpecCheck;
 
+pub mod prompts;
+pub mod route;
+
 pub const SCHEMA_VERSION: u32 = 1;
 pub const R0_AUTONOMY_POINTS: u16 = 8;
+pub const MAX_OPTIONS: usize = 8;
+pub const MAX_TEXT_CHARS: usize = 4_000;
+pub const MAX_SHORT_CHARS: usize = 500;
+pub const MAX_LIST_ITEMS: usize = 64;
+pub const MAX_REFS: usize = 16;
+pub const MAX_CHECKS: usize = 32;
+pub const MAX_DOCS: usize = 32;
+pub const MAX_SKILLS: usize = 16;
+pub const MAX_DEPENDENCIES: usize = 64;
+
+fn bounded_text(name: &str, value: &str, max: usize) -> Result<(), String> {
+    if value.trim().is_empty() || value.chars().count() > max || value.chars().any(char::is_control)
+    {
+        return Err(format!("{name} is required, bounded and control-free"));
+    }
+    Ok(())
+}
+
+fn bounded_list(name: &str, values: &[String], max: usize) -> Result<(), String> {
+    if values.len() > max {
+        return Err(format!("{name} exceeds its bound"));
+    }
+    for value in values {
+        bounded_text(name, value, MAX_SHORT_CHARS)?;
+    }
+    Ok(())
+}
+
+fn is_sha256(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn is_rfc3339(value: &str) -> bool {
+    chrono::DateTime::parse_from_rfc3339(value).is_ok()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -100,6 +138,8 @@ impl PlanReviewStatus {
 pub struct PlanReview {
     pub request_id: String,
     pub plan_revision: u32,
+    #[serde(default)]
+    pub plan_sha256: String,
     pub status: PlanReviewStatus,
     pub principal_id: String,
     pub rationale: String,
@@ -116,6 +156,12 @@ impl PlanReview {
             || self.reviewed_at.trim().is_empty()
         {
             return Err("plan review identity and rationale are required".into());
+        }
+        if !is_sha256(&self.plan_sha256) {
+            return Err("plan review must bind the exact plan SHA-256".into());
+        }
+        if !is_rfc3339(&self.reviewed_at) {
+            return Err("plan review timestamp must be RFC 3339".into());
         }
         if self.status == PlanReviewStatus::ChangesRequested && self.rationale.trim().is_empty() {
             return Err("a changes-requested review requires a rationale".into());
@@ -159,9 +205,11 @@ pub struct StackOption {
 
 impl StackOption {
     fn validate(&self) -> Result<(), String> {
-        if self.id.trim().is_empty() || self.summary.trim().is_empty() {
-            return Err("stack option id and summary are required".into());
-        }
+        bounded_text("stack option id", &self.id, 64)?;
+        bounded_text("stack option summary", &self.summary, MAX_SHORT_CHARS)?;
+        bounded_list("stack option pros", &self.pros, MAX_LIST_ITEMS)?;
+        bounded_list("stack option cons", &self.cons, MAX_LIST_ITEMS)?;
+        bounded_list("stack option evidence", &self.evidence_refs, MAX_REFS)?;
         for (name, score) in [
             ("fit", self.fit),
             ("security", self.security),
@@ -218,15 +266,16 @@ pub struct DependencyPlan {
 
 impl DependencyPlan {
     pub fn validate(&self) -> Result<(), String> {
+        if self.items.len() > MAX_DEPENDENCIES {
+            return Err("dependency plan exceeds its item bound".into());
+        }
         for item in &self.items {
-            if item.name.trim().is_empty()
-                || item.version.trim().is_empty()
-                || item.source.trim().is_empty()
-                || item.license.trim().is_empty()
-            {
-                return Err(
-                    "dependency item name, version, source and license are required".into(),
-                );
+            bounded_text("dependency name", &item.name, 200)?;
+            bounded_text("dependency version", &item.version, 100)?;
+            bounded_text("dependency source", &item.source, MAX_SHORT_CHARS)?;
+            bounded_text("dependency license", &item.license, 200)?;
+            if !item.checksum.is_empty() && !is_sha256(&item.checksum) {
+                return Err("dependency checksum must be SHA-256".into());
             }
         }
         if matches!(self.strategy, DependencyStrategy::NotRequired) && !self.items.is_empty() {
@@ -238,6 +287,9 @@ impl DependencyPlan {
         ) && self.cache_ref.trim().is_empty()
         {
             return Err("vendor/cache dependency plans require a cache reference".into());
+        }
+        if !self.sbom_ref.is_empty() {
+            bounded_text("dependency SBOM reference", &self.sbom_ref, MAX_SHORT_CHARS)?;
         }
         Ok(())
     }
@@ -272,12 +324,24 @@ impl StackDecision {
         if self.schema_version != SCHEMA_VERSION {
             return Err("unsupported stack decision schema version".into());
         }
+        if self.options.is_empty() || self.options.len() > MAX_OPTIONS {
+            return Err("stack decision options are missing or exceed the bound".into());
+        }
         if self.options.len() < 2
             && lane == PlanningLane::FormalSpec
             && self.source == StackSource::Model
         {
             return Err("a formal model-selected stack requires at least two options".into());
         }
+        bounded_list("stack constraints", &self.constraints, MAX_LIST_ITEMS)?;
+        bounded_list(
+            "stack required capabilities",
+            &self.required_capabilities,
+            MAX_LIST_ITEMS,
+        )?;
+        bounded_text("stack reason", &self.reason, MAX_TEXT_CHARS)?;
+        bounded_text("stack confidence", &self.confidence, 32)?;
+        bounded_text("stack ADR path", &self.adr_path, MAX_SHORT_CHARS)?;
         let mut ids = BTreeSet::new();
         for option in &self.options {
             option.validate()?;
@@ -346,9 +410,23 @@ pub struct ArchitecturePlan {
 
 impl ArchitecturePlan {
     pub fn validate(&self) -> Result<(), String> {
-        if self.context.trim().is_empty() || self.components.is_empty() {
-            return Err("architecture context and at least one component are required".into());
+        bounded_text("architecture context", &self.context, MAX_TEXT_CHARS)?;
+        if self.components.is_empty() || self.components.len() > MAX_LIST_ITEMS {
+            return Err("architecture requires bounded components".into());
         }
+        bounded_list("architecture components", &self.components, MAX_LIST_ITEMS)?;
+        bounded_list("architecture boundaries", &self.boundaries, MAX_LIST_ITEMS)?;
+        bounded_list("architecture interfaces", &self.interfaces, MAX_LIST_ITEMS)?;
+        bounded_list("architecture data", &self.data, MAX_LIST_ITEMS)?;
+        bounded_list("architecture deployment", &self.deployment, MAX_LIST_ITEMS)?;
+        bounded_list(
+            "architecture quality attributes",
+            &self.quality_attributes,
+            MAX_LIST_ITEMS,
+        )?;
+        bounded_list("architecture risks", &self.risks, MAX_LIST_ITEMS)?;
+        bounded_list("architecture tradeoffs", &self.tradeoffs, MAX_LIST_ITEMS)?;
+        bounded_list("architecture ADR paths", &self.adr_paths, MAX_LIST_ITEMS)?;
         Ok(())
     }
 }
@@ -377,12 +455,18 @@ pub struct DocumentationPlan {
 
 impl DocumentationPlan {
     pub fn validate(&self) -> Result<(), String> {
+        if self.required.len() > MAX_DOCS || self.existing.len() > MAX_DOCS {
+            return Err("documentation plan exceeds its item bound".into());
+        }
+        bounded_list("existing documentation paths", &self.existing, MAX_DOCS)?;
         for item in &self.required {
-            if item.path.trim().is_empty() || item.purpose.trim().is_empty() {
-                return Err("documentation item path and purpose are required".into());
-            }
+            bounded_text("documentation path", &item.path, MAX_SHORT_CHARS)?;
+            bounded_text("documentation purpose", &item.purpose, MAX_TEXT_CHARS)?;
             if item.required && item.check_command.is_empty() {
                 return Err("required documentation needs a deterministic check command".into());
+            }
+            if item.check_command.len() > MAX_LIST_ITEMS {
+                return Err("documentation check command exceeds its bound".into());
             }
         }
         Ok(())
@@ -417,24 +501,44 @@ pub struct SkillPack {
 
 impl SkillPack {
     pub fn validate(&self) -> Result<(), String> {
-        if self.technology.trim().is_empty()
-            || self.version.trim().is_empty()
-            || self.source_urls.is_empty()
-            || self.last_verified_at.trim().is_empty()
-            || self.review_after.trim().is_empty()
-            || self.license.trim().is_empty()
-            || self.best_practices.is_empty()
-        {
-            return Err(
-                "skill pack identity, sources, freshness, license and practices are required"
-                    .into(),
-            );
+        bounded_text("skill technology", &self.technology, 200)?;
+        bounded_text("skill version", &self.version, 100)?;
+        bounded_text("skill license", &self.license, 200)?;
+        if self.source_urls.is_empty() || self.source_urls.len() > MAX_REFS {
+            return Err("skill pack requires bounded official sources".into());
+        }
+        for url in &self.source_urls {
+            bounded_text("skill source URL", url, MAX_SHORT_CHARS)?;
+            if !url.starts_with("https://") {
+                return Err("skill source URLs must use HTTPS".into());
+            }
+        }
+        let last_verified = chrono::DateTime::parse_from_rfc3339(&self.last_verified_at)
+            .map_err(|_| "skill last_verified_at must be RFC 3339")?;
+        let review_after = chrono::DateTime::parse_from_rfc3339(&self.review_after)
+            .map_err(|_| "skill review_after must be RFC 3339")?;
+        if review_after <= last_verified {
+            return Err("skill pack review_after must be after last_verified_at".into());
+        }
+        bounded_list("skill best practices", &self.best_practices, MAX_LIST_ITEMS)?;
+        bounded_list("skill anti-patterns", &self.anti_patterns, MAX_LIST_ITEMS)?;
+        bounded_list("skill commands", &self.commands, MAX_LIST_ITEMS)?;
+        bounded_list("skill security notes", &self.security_notes, MAX_LIST_ITEMS)?;
+        bounded_list("skill deprecations", &self.deprecations, MAX_LIST_ITEMS)?;
+        if self.best_practices.is_empty() {
+            return Err("skill pack requires best practices".into());
         }
         Ok(())
     }
 
     pub fn is_stale(&self, now: &str) -> bool {
-        now >= self.review_after.as_str()
+        let (Ok(now), Ok(review_after)) = (
+            chrono::DateTime::parse_from_rfc3339(now),
+            chrono::DateTime::parse_from_rfc3339(&self.review_after),
+        ) else {
+            return true;
+        };
+        now >= review_after
     }
 }
 
@@ -453,6 +557,11 @@ pub struct SkillPlan {
 
 impl SkillPlan {
     pub fn validate(&self) -> Result<(), String> {
+        if self.proposed.len() > MAX_SKILLS {
+            return Err("skill plan exceeds its proposed-skill bound".into());
+        }
+        bounded_list("skill needs", &self.needs, MAX_LIST_ITEMS)?;
+        bounded_list("existing skills", &self.existing, MAX_LIST_ITEMS)?;
         for pack in &self.proposed {
             pack.validate()?;
         }
@@ -564,20 +673,58 @@ pub struct FindingDisposition {
     pub route: FindingRoute,
     pub status: FindingStatus,
     #[serde(default)]
+    pub candidate_id: String,
+    #[serde(default)]
+    pub reviewer_principal: String,
+    #[serde(default)]
     pub resolved_by: String,
     #[serde(default)]
     pub evidence_refs: Vec<String>,
+    #[serde(default)]
+    pub owner_principal: Option<String>,
     #[serde(default)]
     pub owner_decision: Option<String>,
 }
 
 impl FindingDisposition {
     pub fn validate(&self) -> Result<(), String> {
-        if self.finding_id.trim().is_empty() {
-            return Err("finding disposition id is required".into());
+        bounded_text("finding disposition id", &self.finding_id, 128)?;
+        if !self.candidate_id.is_empty() {
+            bounded_text("finding candidate id", &self.candidate_id, 128)?;
         }
-        if self.status != FindingStatus::Open && self.evidence_refs.is_empty() {
-            return Err("a closed finding requires evidence references".into());
+        if self.evidence_refs.len() > MAX_REFS {
+            return Err("finding disposition evidence exceeds its bound".into());
+        }
+        for reference in &self.evidence_refs {
+            bounded_text("finding evidence reference", reference, MAX_SHORT_CHARS)?;
+        }
+        match self.status {
+            FindingStatus::Open => {}
+            FindingStatus::Resolved => {
+                bounded_text("finding resolver", &self.resolved_by, 128)?;
+                if self.evidence_refs.is_empty() {
+                    return Err("a resolved finding requires evidence references".into());
+                }
+            }
+            FindingStatus::Refuted => {
+                let Some(owner) = self.owner_principal.as_deref() else {
+                    return Err(
+                        "a refuted finding requires an authenticated owner principal".into(),
+                    );
+                };
+                let Some(decision) = self.owner_decision.as_deref() else {
+                    return Err("a refuted finding requires an owner decision reference".into());
+                };
+                bounded_text("finding owner principal", owner, 128)?;
+                bounded_text("finding owner decision", decision, 128)?;
+                bounded_text("finding reviewer principal", &self.reviewer_principal, 128)?;
+                if owner == self.reviewer_principal {
+                    return Err("a reviewer cannot waive its own finding".into());
+                }
+                if self.evidence_refs.is_empty() {
+                    return Err("a refuted finding requires evidence references".into());
+                }
+            }
         }
         Ok(())
     }
@@ -600,8 +747,17 @@ pub struct DefinitionOfDone {
 
 impl DefinitionOfDone {
     pub fn validate(&self) -> Result<(), String> {
-        if self.project_checks.is_empty() {
-            return Err("definition of done requires project checks".into());
+        if self.project_checks.is_empty() || self.project_checks.len() > MAX_CHECKS {
+            return Err("definition of done requires bounded project checks".into());
+        }
+        if self.unit_checks.len() > MAX_CHECKS {
+            return Err("definition of done unit checks exceed the bound".into());
+        }
+        for check in self.project_checks.iter().chain(self.unit_checks.iter()) {
+            bounded_text("DoD check id", &check.id, 128)?;
+            if check.command.is_empty() || check.timeout_secs == 0 {
+                return Err("DoD checks require a command and timeout".into());
+            }
         }
         self.documentation.validate()?;
         self.reviewer_plan.validate()?;
@@ -640,17 +796,21 @@ pub struct OpenSpecProjection {
 
 impl OpenSpecProjection {
     pub fn validate(&self) -> Result<(), String> {
-        if self.change_id.trim().is_empty() || self.revision == 0 {
-            return Err("OpenSpec change id and revision are required".into());
+        bounded_text("OpenSpec change id", &self.change_id, 64)?;
+        if self.revision == 0 {
+            return Err("OpenSpec revision is required".into());
         }
         for (name, hash) in [
             ("proposal", &self.proposal_sha256),
             ("specs", &self.specs_sha256),
             ("tasks", &self.tasks_sha256),
         ] {
-            if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            if !is_sha256(hash) {
                 return Err(format!("OpenSpec {name} hash must be SHA-256"));
             }
+        }
+        if !self.design_sha256.is_empty() && !is_sha256(&self.design_sha256) {
+            return Err("OpenSpec design hash must be SHA-256".into());
         }
         Ok(())
     }
@@ -813,8 +973,11 @@ mod tests {
             finding_id: "f1".into(),
             route: FindingRoute::Repairer,
             status: FindingStatus::Resolved,
+            candidate_id: "candidate-2".into(),
+            reviewer_principal: "reviewer-code-quality".into(),
             resolved_by: "candidate-2".into(),
             evidence_refs: vec!["receipt-1".into()],
+            owner_principal: None,
             owner_decision: None,
         };
         assert!(finding.validate().is_ok());
