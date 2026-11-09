@@ -10,19 +10,24 @@ The 2026-11-09 owner decisions are now part of the design:
 
 1. Every reviewer finding blocks acceptance and must be resolved
    automatically; there is no silent warning debt.
-2. Changing the stack of an existing repository requires explicit owner
-   approval.
+2. A stack change is scored with the same autonomy points/risk policy as other
+   work; Core may authorize it inside the frozen budget, and the owner is asked
+   only when it is too large, irreversible, reserved or above budget.
 3. Dependency acquisition supports both a digest-pinned vendor/cache and a
    brokered fetch; the project plan chooses one or both.
-4. Plan review is mandatory for every lane, including `DIRECT`.
+4. Plan review is mandatory for every lane, including `DIRECT`; it may be
+   auto-approved by Core under the frozen policy, but it is never skipped.
 5. Documentation is quality-first: the minimum set that actually protects the
    built product, not a fixed file count.
-6. The Lead is a thin assessor. The Planner runs in every flow; the Spec
-   Manager always runs for `FORMAL_SPEC`.
-7. OpenSpec is the repository-facing specification projection for every change;
-   Core remains the authority.
+6. The Lead does not plan; it is a thin assessor. The Planner runs in every
+   flow; the Spec Manager always runs for `FORMAL_SPEC`. OpenSpec is mandatory
+   for `FORMAL_SPEC`, optional/compact for `DIRECT`.
+7. OpenSpec is the repository-facing specification projection for changes that
+   need a durable repo spec; Core remains the authority.
 8. Reviewers are specialized: functional, architecture, code quality, security,
    testing/traceability and operability/performance where applicable.
+9. Every technology has a current, source-cited skill pack; missing/stale
+   knowledge is refreshed by the Librarian before `FORMAL_SPEC` proceeds.
 
 ## 1. Why this plan exists
 
@@ -58,9 +63,9 @@ Owner objective + constraints
   -> Explorer: repository, docs, stack, test and capability inventory
   -> Librarian: knowledge/dependency/skill gaps (when needed)
   -> Planner: spec-lite/full spec, stack, architecture, WorkGraph, docs, DoD
-  -> OpenSpec renderer: proposal.md, specs/, design.md, tasks.md
-  -> Plan review (mandatory): owner or charter-authorized approval
-  -> Freeze: Core typed plan/spec + OpenSpec hash
+  -> OpenSpec renderer (FormalSpec; Delegated when needed; Direct compact plan)
+  -> Plan review (mandatory): owner or Core auto-approval under policy
+  -> Freeze: Core typed plan/spec + projection hash
   -> Execute WorkGraph units with per-unit DoD
   -> Verifier: deterministic checks
   -> Reviewer roles: functional, architecture, code quality, security, testing
@@ -84,10 +89,10 @@ flowchart TD
   O[Owner objective + constraints] --> T[Triage + semantic assessor]
   T --> E[Explorer: repo/docs/stack inventory]
   E --> P[Planner: 1-unit plan + checks + DoD]
-  P --> OS[OpenSpec: proposal, spec delta, tasks]
-  OS --> PR[Plan review]
+  P --> OS[Core compact plan or optional OpenSpec]
+  OS --> PR[Plan review / auto-approval]
   PR -->|amend| P
-  PR -->|approve| F[Freeze Core plan + OpenSpec hash]
+  PR -->|approve| F[Freeze Core plan + projection hash]
   F --> I[Implementer: one unit]
   I --> V[Verifier: build/test/lint/format/functional/negative/docs]
   V --> R[Functional + Code Quality reviewers]
@@ -216,9 +221,12 @@ flowchart LR
 
 ## 4. OpenSpec integration
 
-OpenSpec is the repository-facing plan/spec format, not a second authority.
+OpenSpec is the repository-facing plan/spec format for changes that need a
+durable repo spec, not a second authority. `FORMAL_SPEC` always uses it;
+`DELEGATED` uses it when the change benefits from a repo-local spec;
+`DIRECT` may use a compact Core plan instead.
 
-- Every change gets `openspec/changes/<change-id>/`:
+- A `FORMAL_SPEC` change gets `openspec/changes/<change-id>/`:
   - `proposal.md`: why, what changes, non-goals.
   - `specs/<capability>/spec.md`: requirements and scenarios (delta).
   - `design.md`: stack, architecture, ADRs, dependencies, tradeoffs.
@@ -339,6 +347,34 @@ acceptance checks. `SkillPlan` lists needs, existing skills, proposed temporary
 skills, license status, scope and adoption decision. A skill never grants
 tools, authority or scope.
 
+### 5.7 Technology skill packs and documentation baseline
+
+At assessment/stack detection, the Explorer/Librarian checks whether the project
+has a current, source-cited skill pack for each technology and version. If not,
+the Librarian fetches official documentation and composes a reviewable pack;
+the Planner uses it, implementers/reviewers receive it as read-only context, and
+Core records provenance, license, `last_verified_at` and `review_after`. Stale
+packs trigger refresh and block `FORMAL_SPEC` until refreshed or explicitly
+waived by the owner. Official docs > official changelog/blog > standards >
+compatibility data; never use tutorials, Stack Overflow or training data as the
+primary source. A skill pack is context, never a tool or authority.
+
+Recommended documentation baseline (quality-first, tiered):
+
+- **Every project:** README (what/quickstart/commands), concise `AGENTS.md`,
+  C4 context/container or module map, ADRs, DoD/test strategy, OpenSpec change
+  (mandatory for `FORMAL_SPEC`, compact/optional for `DIRECT`).
+- **Service/API:** API contract/OpenAPI, data model/migrations, runbook,
+  observability/SLO notes, threat model for trust boundaries.
+- **UI:** design system/tokens, WCAG 2.2 AA/accessibility notes, browser test
+  matrix, responsive states.
+- **Library:** public API reference/examples, semver/deprecation policy,
+  supported versions.
+
+Use Diátaxis for reader intent, C4/arc42 for architecture, ADRs for decisions
+and docs-as-code for delivery. Required docs are validated in the same change;
+no empty ceremony, but no missing decision/operating knowledge either.
+
 ## 6. Route and plan-depth rules
 
 1. Greenfield (no manifest, no docs, no usable stack) → `FORMAL_SPEC`.
@@ -367,7 +403,10 @@ Use a lightweight ATAM-style utility tree:
    dependencies, host-only runtime or non-compliant licenses.
 6. Select the smallest coherent stack satisfying high-priority attributes;
    record ADR, confidence and dependency plan.
-7. If the stack changes an existing project, require explicit owner approval.
+7. If the stack changes an existing project, score it with the autonomy
+   points/risk policy; Core may authorize inside the frozen budget. The owner is
+   asked only when the change is too large, irreversible, reserved or above
+   budget.
 
 Dependency acquisition supports both:
 

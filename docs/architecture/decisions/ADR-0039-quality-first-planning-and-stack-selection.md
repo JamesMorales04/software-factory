@@ -57,19 +57,24 @@ The Product Owner resolved the open planning choices:
 
 1. Every reviewer finding blocks acceptance and must be resolved
    automatically; there is no silent warning debt.
-2. Changing the stack of an existing repository requires explicit owner
-   approval.
+2. A stack change is scored with the same autonomy points/risk policy as other
+   work; Core may authorize it within the frozen budget, and the owner is asked
+   only when it is too large, irreversible, reserved or above budget.
 3. Dependency acquisition supports both a digest-pinned vendor/cache and a
    brokered fetch; the project plan chooses one or both.
-4. A plan review is mandatory for every lane, including `DIRECT`.
+4. A plan review is mandatory for every lane, including `DIRECT`; the plan may
+   be auto-approved by Core under the frozen policy, but it is never skipped.
 5. Documentation is quality-first: the minimum set that actually protects the
    built product, not a fixed file count.
-6. The Lead becomes a thin assessor. The Planner runs in every flow; the Spec
-   Manager always runs for `FORMAL_SPEC`.
-7. OpenSpec is the repository-facing specification projection for every change,
-   while Core remains the authority.
+6. The Lead does not plan. It is a thin assessor/classifier; the Planner runs in
+   every flow and the Spec Manager always runs for `FORMAL_SPEC`. OpenSpec is
+   mandatory for `FORMAL_SPEC` and may be compact/optional for `DIRECT`.
+7. OpenSpec is the repository-facing specification projection; Core remains the
+   authority.
 8. Reviewer roles must reflect architecture, code quality, security and testing,
    not one generic review.
+9. Every technology used must have a current, source-cited skill pack. If it is
+   missing or stale, the Librarian refreshes it before `FORMAL_SPEC` proceeds.
 
 ## Decision
 
@@ -91,8 +96,10 @@ The Product Owner resolved the open planning choices:
 
 3. **Stack selection is an explicit, evidence-based decision.**
    Precedence is: explicit owner constraints, then the existing project stack
-   and conventions, then a model proposal validated by Core. Changing the stack
-   of an existing repository is a reserved owner decision. The proposal
+   and conventions, then a model proposal validated by Core. A stack change is
+   scored with the same autonomy points/risk policy as the rest of the work;
+   Core may authorize it inside the frozen budget, and the owner is asked only
+   when it is too large, irreversible, reserved or above budget. The proposal
    compares 2–3 realistic options against quality attributes (fit, security,
    maintainability, operability, ecosystem, cost, time to value, licensing,
    team/agent familiarity, exit cost). It records the selected option, rejected
@@ -168,18 +175,20 @@ The Product Owner resolved the open planning choices:
 
 12. **Office owns the plan-review checkpoint for every lane.**
     The owner sees the plan before implementation for every request, including
-    `DIRECT`: goals, non-goals, OpenSpec change, stack options/decision,
-    architecture (when applicable), WorkGraph, docs plan, skills, checks, DoD
-    and risks. The owner can amend or reject; Core freezes the exact revision.
-    Autonomous R0 may auto-approve under an explicit charter, but the plan is
-    still shown, reviewed by deterministic validators and frozen; no model
-    output becomes authority.
+    `DIRECT`: goals, non-goals, OpenSpec change (or compact plan), stack
+    options/decision, architecture (when applicable), WorkGraph, docs plan,
+    skills, checks, DoD and risks. The plan may be auto-approved by Core under
+    the frozen charter/policy; the owner is asked only for a reserved matter or
+    when the plan exceeds the autonomy budget. Core freezes the exact revision;
+    no model output becomes authority.
 
 13. **OpenSpec is the repository-facing specification projection.**
-    Every change gets an `openspec/changes/<change-id>/` folder with
-    `proposal.md`, `specs/`, `design.md` (when technical decisions exist) and
-    `tasks.md`. Core renders this projection deterministically from the frozen
-    typed plan/spec/stack/architecture/WorkGraph/DoD; it is idempotent,
+    A `FORMAL_SPEC` change always gets an `openspec/changes/<change-id>/` folder
+    with `proposal.md`, `specs/`, `design.md` (when technical decisions exist)
+    and `tasks.md`. `DELEGATED` uses it when the change needs a durable repo
+    spec; `DIRECT` may use a compact Core plan instead. Core renders the
+    projection deterministically from the frozen typed
+    plan/spec/stack/architecture/WorkGraph/DoD; it is idempotent,
     revision-bound and never a second authority. `openspec/specs/` is updated on
     convergence and completed changes are archived. `openspec validate` is a
     deterministic check when the OpenSpec toolchain is available. The
@@ -195,13 +204,13 @@ The Product Owner resolved the open planning choices:
     PASS with no open findings. The current single generic reviewer is a
     temporary limitation, not the target topology.
 
-15. **Planner and Spec Manager are part of the normal lifecycle.**
-    The Lead is a thin assessor and request classifier. The Explorer inventories
-    the repository and docs; the Librarian researches knowledge, dependencies
-    and skills when there is a gap; the Planner runs in every flow; the Spec
-    Manager always runs for `FORMAL_SPEC`. The Director/Operation Manager are
-    orchestration projections, not additional model authorities. The Integrator
-    remains deterministic.
+15. **The Lead assesses; the Planner plans.**
+    The Lead is a thin assessor and request classifier; it never authors the
+    plan. The Explorer inventories the repository and docs; the Librarian
+    researches knowledge, dependencies and skills when there is a gap; the
+    Planner runs in every flow; the Spec Manager always runs for
+    `FORMAL_SPEC`. The Director/Operation Manager are orchestration projections,
+    not additional model authorities. The Integrator remains deterministic.
 
 16. **Planning and execution are durable, idempotent and replayable.**
     The planning lifecycle is a durable state machine with explicit
@@ -211,17 +220,35 @@ The Product Owner resolved the open planning choices:
     reconciled before retry; duplicate dispatch, duplicate issues and duplicate
     repairs are rejected by Core identity.
 
+17. **Technology skill packs and documentation freshness.**
+    Assessment detects the stack and checks for current, versioned, source-cited
+    skill packs and documentation. Missing or stale knowledge goes to the
+    Librarian, which fetches official documentation and composes a reviewable
+    skill pack; the Planner uses it for stack/architecture/dependency decisions,
+    and implementers/reviewers receive it as read-only context. Skill packs
+    record official source URLs, supported versions, best practices,
+    anti-patterns, commands, security/deprecation notes, `last_verified_at` and
+    `review_after`. Stale packs trigger refresh and block `FORMAL_SPEC` until
+    refreshed or explicitly waived by the owner. Skills remain context, never
+    tools or authority. The documentation baseline is tiered and quality-first:
+    README, concise `AGENTS.md`, C4 context/container or module map, ADRs,
+    DoD/test strategy and OpenSpec change for every project; API/data/runbook/
+    threat-model for services; design-system/accessibility/browser matrix for
+    UI; public API/semver for libraries. Docs are reviewed in the same change
+    and validated by deterministic checks.
+
 ## Consequences
 
 - Small `DIRECT` changes keep a fast path; complex and greenfield work gets
   deeper planning and more evidence.
 - More model calls, artifacts and DB records are introduced. They are bounded
   and right-sized; token/time/cost remain telemetry.
-- The existing Lead plan remains valid for `DIRECT`, but the Home lifecycle must
-  route `DELEGATED`/`FORMAL_SPEC` through the Planner/Spec Manager and the
-  WorkGraph execution path.
-- The Factory must add dependency acquisition/vendor support and a capability
-  inventory; otherwise stack choice is limited to what the sandbox can run.
+- The existing Lead plan is retired; `DIRECT` uses a compact Planner plan and
+  plan review, while `DELEGATED`/`FORMAL_SPEC` use the WorkGraph and (for
+  `FORMAL_SPEC`) the Spec Manager.
+- The Factory must add dependency acquisition/vendor support, a capability
+  inventory and a technology-skill refresh loop; otherwise stack choice is
+  limited to what the sandbox can run and quality depends on stale knowledge.
 - The Office needs a plan-review surface and a truthful "planning" stage; a
   request cannot jump from assessment to execution without showing the frozen
   artifacts. The review is mandatory for every lane.
