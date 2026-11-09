@@ -79,7 +79,7 @@ The Product Owner approved the following direction:
   telemetry, not authority; no-progress and resource governance remain.
 - The product can add specialist roles without putting all of them in the
   ExecutionProfile or starting them for every request.
-- A second orchestrator (Paseo/AEH or any external harness) is not introduced.
+- A second orchestrator (an external agent harness or controller) is not introduced.
   Core remains the Rust authority; provider adapters remain direct.
 - The full program is delivered in slices. No status is claimed beyond the
   evidence of the exact candidate.
@@ -91,7 +91,7 @@ The Product Owner approved the following direction:
   context rotation with auditable identities.
 - **Let a model choose agents and tools:** rejected; it would grant authority to
   model output.
-- **Adopt the external AEH/Paseo controller as a second orchestrator:** rejected;
+- **Adopt an external agent-harness controller as a second orchestrator:** rejected;
   it conflicts with Core ownership and the container-native service placement.
 - **Force a new agent after every compaction:** rejected by the context research;
   rotation follows a threshold, a milestone and a summary audit.
