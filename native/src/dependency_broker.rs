@@ -114,9 +114,8 @@ impl CommandRunner for ProcessCommandRunner {
             .parent()
             .map(|parent| format!("{}:/usr/bin:/bin", parent.display()))
             .unwrap_or_else(|| "/usr/bin:/bin".into());
-        let log_root = cargo_home.parent().unwrap_or(cwd);
-        let stdout_path = log_root.join("cargo-stdout.log");
-        let stderr_path = log_root.join("cargo-stderr.log");
+        let stdout_path = cargo_home.join("cargo-stdout.log");
+        let stderr_path = cargo_home.join("cargo-stderr.log");
         let stdout = std::fs::File::create(&stdout_path)
             .map_err(|error| format!("cargo stdout log: {error}"))?;
         let stderr = std::fs::File::create(&stderr_path)
@@ -377,7 +376,11 @@ mod tests {
     }
 
     impl CommandRunner for FakeRunner {
-        fn run(&self, argv: &[String], _cwd: &Path) -> Result<(), String> {
+        fn run(&self, argv: &[String], cwd: &Path) -> Result<(), String> {
+            self.run_in(argv, cwd, &std::env::temp_dir())
+        }
+
+        fn run_in(&self, argv: &[String], _cwd: &Path, _cargo_home: &Path) -> Result<(), String> {
             if self.fail {
                 return Err("network unavailable".into());
             }
