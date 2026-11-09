@@ -4,7 +4,7 @@
 **PR:** #96 (draft)
 **Base:** `main` at `8a677216638ef4b0f106d3a381e1d46ff19b5dde` (PR #95
 merged)
-**Code candidate:** `11933a6b16c46a8b95561935807ff92c2f954b42`
+**Code candidate:** `29221072834c124d8dd1186eedbaf7c2a65f185a` (previous verified code `11933a6` plus the verification fixes)
 **Docs/evidence head:** `9961113dde0f724b5bb28eb32a3fb2022a56e7ca` plus the verification updates
 
 ## What is complete
@@ -303,3 +303,22 @@ and the live API identities were queried. This remains an AI verification, not
 independent human certification. The external RUSTSEC-2026-0459 advisory still
 blocks merge unless the owner accepts the risk or a patched sqlx/libsqlite3-sys
 is adopted.
+
+### Post-verification closure (2026-11-09)
+
+The independent verifier's HIGH findings were fixed on code candidate
+`2922107` and verified live:
+
+- The NOASSERTION skill now rejects use before license review (live 409
+  `skill license must be reviewed before the skill is used`).
+- Informational request `c0f6e8b0` now projects `INFORMATIONAL` / `NO_AGENT`;
+  audit request `6df5bed8` projects `AUDIT` / `DIRECT`; both remain `ASSESSED`
+  with no Campaign.
+- The accepted campaign's Lead participant now reports `COMPLETED` / `FINAL`
+  instead of `RUNNING`.
+- Autonomous starts now require the `repository` charter domain.
+- The owner decision selector no longer displays an implicit APPROVE option.
+- Evidence route/assertion/assurance/charter/timestamp claims were corrected;
+  the code candidate is now recorded in every manifest.
+
+The remaining merge blocker is still the external RUSTSEC-2026-0459 advisory.

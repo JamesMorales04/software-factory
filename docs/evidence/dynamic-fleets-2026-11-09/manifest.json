@@ -119,5 +119,5 @@
   "Charter enforcement currently delegates execution/repair and gates reserved repair/autonomous starts; delivery effects are not yet implemented.",
   "The current Compose topology provisions one reviewer identity; Core caps a compiled plan at one reviewer so an undispatchable second receipt is not required. Multi-reviewer aggregation is deterministically tested with a manually configured requirement."
  ],
- "candidate_sha": "11933a6b16c46a8b95561935807ff92c2f954b42"
+ "candidate_sha": "29221072834c124d8dd1186eedbaf7c2a65f185a"
 }

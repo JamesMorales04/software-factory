@@ -132,5 +132,5 @@
   "The Planner and Spec Manager use the frozen Lead route with distinct purpose and typed schemas; they do not have separate provider roles yet.",
   "The board currently derives the column from the whole operation/Campaign/Gate; per-WorkUnit delivery state remains pending for dynamic fleets."
  ],
- "candidate_sha": "11933a6b16c46a8b95561935807ff92c2f954b42"
+ "candidate_sha": "29221072834c124d8dd1186eedbaf7c2a65f185a"
 }

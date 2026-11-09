@@ -102,7 +102,7 @@
   "R2/R3 autonomous execution remains owner-controlled; R1 execution is delegated only when the charter explicitly enables it and no reserved matter is triggered.",
   "The manifest lists the revoked charter used for the decision; the active replacement charter is identified separately."
  ],
- "candidate_sha": "11933a6b16c46a8b95561935807ff92c2f954b42",
+ "candidate_sha": "29221072834c124d8dd1186eedbaf7c2a65f185a",
  "active_charter_id": "5003310e-e744-429c-ad79-b156f8a01f14",
  "active_charter_note": "Active replacement charter created for the final autonomous campaign: R1, execution/repair autonomy, reserved credentials/production/delivery."
 }

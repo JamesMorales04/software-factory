@@ -48,5 +48,5 @@
   "Only live charter creation, decision opening and resolution were browser-exercised; revocation and expiry are deterministic.",
   "Delivery effects and autonomous R2/R3 execution remain owner-controlled and are not claimed."
  ],
- "candidate_sha": "11933a6b16c46a8b95561935807ff92c2f954b42"
+ "candidate_sha": "29221072834c124d8dd1186eedbaf7c2a65f185a"
 }
