@@ -10,13 +10,16 @@
 //! filesystem boundary.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
 
 pub const MAX_VENDOR_FILE_BYTES: u64 = 16 * 1024 * 1024;
 pub const MAX_VENDOR_TOTAL_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 pub const MAX_VENDOR_ENTRIES: usize = 200_000;
+pub const MAX_COMMAND_OUTPUT_BYTES: u64 = 16 * 1024 * 1024;
+pub const COMMAND_TIMEOUT: Duration = Duration::from_secs(600);
 
 #[derive(Debug, thiserror::Error)]
 pub enum DependencyBrokerError {
@@ -54,6 +57,12 @@ pub struct DependencyAcquisitionEvidence {
 
 pub trait CommandRunner {
     fn run(&self, argv: &[String], cwd: &Path) -> Result<(), String>;
+
+    /// Run with a private Cargo home. Runners that do not model an environment
+    /// may use the default, which keeps the simple test seam.
+    fn run_in(&self, argv: &[String], cwd: &Path, _cargo_home: &Path) -> Result<(), String> {
+        self.run(argv, cwd)
+    }
 }
 
 /// Trusted process runner. The broker must construct it from trusted
@@ -82,6 +91,12 @@ impl ProcessCommandRunner {
 
 impl CommandRunner for ProcessCommandRunner {
     fn run(&self, argv: &[String], cwd: &Path) -> Result<(), String> {
+        let cargo_home = std::env::temp_dir().join("factory-dependency-cargo-home");
+        std::fs::create_dir_all(&cargo_home).map_err(|error| format!("cargo home: {error}"))?;
+        self.run_in(argv, cwd, &cargo_home)
+    }
+
+    fn run_in(&self, argv: &[String], cwd: &Path, cargo_home: &Path) -> Result<(), String> {
         let (program, args) = argv
             .split_first()
             .ok_or_else(|| "empty dependency command".to_string())?;
@@ -96,26 +111,54 @@ impl CommandRunner for ProcessCommandRunner {
             .parent()
             .map(|parent| format!("{}:/usr/bin:/bin", parent.display()))
             .unwrap_or_else(|| "/usr/bin:/bin".into());
-        let output = Command::new(&self.cargo)
+        let log_root = cargo_home.parent().unwrap_or(cwd);
+        let stdout_path = log_root.join("cargo-stdout.log");
+        let stderr_path = log_root.join("cargo-stderr.log");
+        let stdout = std::fs::File::create(&stdout_path)
+            .map_err(|error| format!("cargo stdout log: {error}"))?;
+        let stderr = std::fs::File::create(&stderr_path)
+            .map_err(|error| format!("cargo stderr log: {error}"))?;
+        let mut child = Command::new(&self.cargo)
             .args(args)
             .current_dir(cwd)
             .env_clear()
             .env("PATH", path)
             .env("HOME", std::env::temp_dir())
             .env("RUSTUP_HOME", &self.rustup_home)
-            .env(
-                "CARGO_HOME",
-                std::env::temp_dir().join("factory-dependency-cargo-home"),
-            )
+            .env("CARGO_HOME", cargo_home)
             .env("CARGO_NET_OFFLINE", "false")
             .env("CARGO_TERM_COLOR", "never")
-            .output()
+            .stdout(Stdio::from(stdout))
+            .stderr(Stdio::from(stderr))
+            .spawn()
             .map_err(|error| format!("{}: {error}", self.cargo.display()))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
+        let started = Instant::now();
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) => {}
+                Err(error) => {
+                    let _ = child.kill();
+                    return Err(format!("cargo wait: {error}"));
+                }
+            }
+            if started.elapsed() > COMMAND_TIMEOUT {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("cargo command exceeded its timeout".into());
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        for path in [&stdout_path, &stderr_path] {
+            let size = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
+            if size > MAX_COMMAND_OUTPUT_BYTES {
+                return Err("cargo command output exceeded its bound".into());
+            }
+        }
+        if !status.success() {
+            let stderr = std::fs::read_to_string(&stderr_path).unwrap_or_default();
             return Err(format!(
-                "{program} exited with {}: {}",
-                output.status,
+                "{program} exited with {status}: {}",
                 stderr.chars().take(2_000).collect::<String>()
             ));
         }
@@ -263,11 +306,13 @@ pub fn acquire(
     }
     let staging = root.join(format!(".factory-deps-{}", uuid::Uuid::new_v4()));
     let staging_vendor = staging.join("vendor");
+    let cargo_home = staging.join("cargo-home");
     std::fs::create_dir_all(&staging_vendor)?;
+    std::fs::create_dir_all(&cargo_home)?;
     let cleanup = || {
         let _ = std::fs::remove_dir_all(&staging);
     };
-    if let Err(error) = runner.run(&request.fetch_command, &root) {
+    if let Err(error) = runner.run_in(&request.fetch_command, &root, &cargo_home) {
         cleanup();
         return Err(DependencyBrokerError::CommandFailed(error));
     }
@@ -275,7 +320,7 @@ pub fn acquire(
     if let Some(last) = vendor_command.last_mut() {
         *last = staging_vendor.to_string_lossy().to_string();
     }
-    if let Err(error) = runner.run(&vendor_command, &root) {
+    if let Err(error) = runner.run_in(&vendor_command, &root, &cargo_home) {
         cleanup();
         return Err(DependencyBrokerError::CommandFailed(error));
     }
