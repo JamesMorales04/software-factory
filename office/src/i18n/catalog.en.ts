@@ -136,6 +136,9 @@ export const en = {
   "home.composer.title": "What do you want to build today?",
   "home.composer.description":
     "Tell the Lead the outcome you want. You approve the plan before any work starts.",
+  "home.composer.autopilotTitle": "What should the Factory build?",
+  "home.composer.autopilotDescription":
+    "Describe the outcome. The Lead assesses, freezes and starts R0 work under the autonomous policy you enabled.",
   "home.projects.loading": "Loading Projects…",
   "home.projects.emptyTitle": "Register a Project first",
   "home.projects.emptyDescription":
@@ -148,6 +151,10 @@ export const en = {
   "home.objective.placeholder":
     "Describe what you want to build, fix or improve…",
   "home.profile.label": "Execution profile",
+  "home.autopilot.unsupported":
+    "This profile declares R0 auto-start, but autonomous execution currently requires OpenCode Go subscription routes for both the Lead and the implementer. Sending will use manual plan review.",
+  "home.autopilot.hint":
+    "This profile runs R0 requests automatically: the Lead assesses, freezes and starts without per-request approval.",
   "home.profile.routes": "Route detail",
   "home.profile.routesHint":
     "These routes are part of the profile revision Core freezes for this request.",
@@ -170,9 +177,15 @@ export const en = {
     "The selected execution profile is not executable in this Core build. Choose another profile.",
   "home.approval.title": "Explicit approval required.",
   "home.approval.body": "The Lead plans; you approve before any work starts.",
+  "home.approval.autopilotTitle": "Autopilot R0 enabled.",
+  "home.approval.autopilotBody":
+    "The Lead assesses, freezes and starts within your policy; you can cancel at any time.",
   "home.policy.title": "Enable governed execution",
+  "home.policy.autopilotTitle": "Enable autonomous R0 execution",
   "home.policy.description":
     "Core requires an explicit, bounded execution policy for this Project and exact profile revision before it can create the Lead request. This grant is non-autonomous and limited to R0 work; it does not enable auto-start.",
+  "home.policy.autopilotDescription":
+    "One bounded policy authorizes the Lead to assess, freeze and start R0 work automatically for this Project and exact profile revision. It also confirms Extra Usage is OFF. You can cancel any request at any time.",
   "home.policy.profile": "Profile",
   "home.policy.project": "Project",
   "home.policy.revision": "Revision {revision}",
@@ -193,8 +206,12 @@ export const en = {
     "Core required an execution policy but did not return the exact profile and Project scope. Refresh the page and try again.",
   "home.policy.acknowledge":
     "I authorize this bounded non-autonomous R0 execution policy for the exact Project configuration and profile revision shown.",
+  "home.policy.acknowledgeAutopilot":
+    "I authorize automatic R0 execution, confirm Extra Usage is OFF, and allow the Lead to assess, freeze and start within this policy.",
+  "home.policy.dismiss": "Not now",
   "home.policy.error": "The execution policy could not be enabled.",
   "home.policy.enable": "Enable governed execution",
+  "home.policy.enableAutopilot": "Enable autonomous R0 execution",
   "home.policy.enabling": "Enabling governed execution…",
   "home.validation.project": "Select a Project.",
   "home.validation.objective": "Describe the engineering outcome you want.",
@@ -336,6 +353,8 @@ export const en = {
   "request.notice.cancelled":
     "Core recorded the request cancellation. This does not cancel an authorized Campaign.",
   "request.next.title": "Next step",
+  "request.autopilot.status":
+    "Lead autopilot is assessing, freezing and starting this R0 request under the owner-granted policy. You can cancel the request at any time; no per-request approval is required.",
   "request.next.hint": "Core-owned operation",
   "request.next.assessDescription":
     "Run the bounded assessment with the frozen profile's Lead route. If Core has no routable model, it returns an explicit unavailable error rather than falling back.",

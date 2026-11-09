@@ -72,14 +72,24 @@ navigation requests.
 Home is a conversation-first unified intake composer: one Project, one
 natural-language objective and one execution profile create a durable intake
 request. It does not ask for monetary, token, turn, attempt, session or
-Campaign-deadline controls. When Core requires a non-autonomous execution
-policy, Home shows the exact scope, route, allowed paths, capabilities and
-grant lifetime for explicit acknowledgement, then retries the same request.
-The Request workspace derives its state from the authoritative Lead request,
-shows the frozen profile revision and plan hash, runs the bounded assessment,
-records a request-scoped subscription confirmation when the subscription route
-is used, approves the exact frozen plan, appends pre-freeze operator messages
-and withdraws through the authoritative Lead boundary.
+Campaign-deadline controls. A profile whose `auto_start` policy enables R0 is an
+autopilot profile: selecting it and sending the objective is enough. The Lead
+assesses, freezes and starts the R0 work under the owner-granted autonomous
+policy; the owner watches and can cancel. The first use of a Project/profile
+shows one exact policy grant covering autonomous R0 execution and the
+subscription Extra Usage confirmation. If the profile is not autonomous, the
+Request workspace keeps the manual assessment and exact plan-approval flow.
+Every request remains bounded by its frozen profile, delegation, allowed paths,
+capabilities, operations, progress policy and expiry.
+
+Autonomous intake is a Core-owned background advance, not a browser macro.
+Creating an `AUTONOMOUS` request with a valid autonomous grant makes Core run
+the assessment, freeze the plan and call the autonomous start boundary. The
+runner is idempotent for one request and resumes unfinished autonomous requests
+after a Core restart. It still fails closed: R1+ and protected decisions remain
+human, the policy/profile/route/path/expiry binding is revalidated, and a
+failed assessment or start leaves an explicit Blocked/Failed state rather than
+a false success.
 
 Campaigns is a read-only list with human objectives, translated states and a
 Project filter. Campaign Detail keeps lifecycle, WorkGraph, execution,
@@ -115,17 +125,23 @@ activity or acceptance.
 
 Known gaps:
 
-- Auto-start is browser-side and stops when Office closes. A Core-owned
-  autonomous issue scheduler remains unimplemented.
+- Issues auto-start is browser-side and stops when Office closes. A Core-owned
+  autonomous issue scheduler remains unimplemented; the unified-intake
+  autopilot is Core-owned.
+- Autonomous intake currently requires OpenCode Go subscription routes for both
+  the Lead and the implementer. A profile that declares R0 auto-start on another
+  route shows a warning and uses manual plan review instead of starting.
 - The computer-folder picker copies the folder into managed storage; there is
   no native desktop bridge or direct host-path mount into the container.
 - GitHub App/OAuth installation onboarding is not implemented. The supported
   flow uses the existing encrypted token connection.
 - Codex one-shot assessment and semantic review remain unsupported; a Codex
   route for those roles stays non-executable.
-- Autonomous repair is disabled. A Gate that requests changes remains
-  `REPAIR_REQUIRED` until an operator starts a new authorized request or
-  cancels the Campaign; the Inbox does not post a repair authorization.
+- Autonomous Gate repair is disabled. A Gate that requests changes remains
+  `REPAIR_REQUIRED` until an operator cancels the Campaign or supplies a Project
+  based on the candidate to repair; a new request starts from the Project base
+  commit and is not an in-place repair. The Inbox does not post a repair
+  authorization.
 - Provider-session termination and full-scope Campaign authorization remain
   outside the Inbox because no exact operator mutation is exposed there.
 - A true independent security review, Windows support, native ChatGPT OAuth and

@@ -115,8 +115,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .map_err(|error| format!("invalid FACTORY_REVIEW_MECHANISM: {error}"))?,
             ),
         },
+        // Must exceed the frozen 300s model-request timeout. A shorter client
+        // timeout can cancel the Core call and leave a reservation RESERVED,
+        // while the reviewer retries a receipt that Core cannot validate.
         client: reqwest::Client::builder()
-            .timeout(Duration::from_secs(90))
+            .timeout(Duration::from_secs(360))
             .build()?,
     };
     if env::var("FACTORY_REVIEWER_WATCH").as_deref() == Ok("1") {
@@ -327,6 +330,7 @@ async fn run_candidate(
                     inspection,
                     deterministic,
                     selection.max_output_tokens,
+                    &selection,
                 )
                 .await?
             }
@@ -472,6 +476,26 @@ fn combine_review_verdicts(deterministic: ReviewVerdict, semantic: ReceiptResult
 }
 
 async fn model_outcome(
+    config: &ReviewerConfig,
+    candidate_id: &str,
+    inspection: CandidateInspection,
+    deterministic: ReviewEvidence,
+    max_output_tokens: u32,
+    selection: &ReviewSelection,
+) -> Result<CompletedOutcome, Box<dyn std::error::Error>> {
+    let mut outcome = model_outcome_inner(
+        config,
+        candidate_id,
+        inspection,
+        deterministic,
+        max_output_tokens,
+    )
+    .await?;
+    fill_missing_provenance(&mut outcome, selection);
+    Ok(outcome)
+}
+
+async fn model_outcome_inner(
     config: &ReviewerConfig,
     candidate_id: &str,
     inspection: CandidateInspection,
@@ -821,6 +845,18 @@ fn failure_finding(candidate_id: &str, message: &str) -> ReviewFinding {
     }
 }
 
+fn fill_missing_provenance(outcome: &mut CompletedOutcome, selection: &ReviewSelection) {
+    // A failed call has no response envelope, but the receipt still attests
+    // which frozen route was attempted. Core requires that provenance even for
+    // non-PASS evidence; leaving it empty would make the reviewer retry forever.
+    if outcome.provider.is_empty() {
+        outcome.provider = selection.provider.clone();
+    }
+    if outcome.model.is_empty() {
+        outcome.model = selection.model.clone();
+    }
+}
+
 fn bounded(value: &str, limit: usize) -> String {
     if value.len() <= limit {
         return value.to_owned();
@@ -883,6 +919,36 @@ mod tests {
             combine_review_verdicts(ReviewVerdict::Approve, ReceiptResult::Fail),
             ReceiptResult::Fail
         );
+    }
+
+    #[test]
+    fn failed_model_outcomes_keep_the_frozen_provenance() {
+        let mut outcome = CompletedOutcome {
+            commit_sha: "commit".into(),
+            tree_sha: "tree".into(),
+            result: ReceiptResult::NotTested,
+            evidence: EvidenceKind::Unknown,
+            findings: Vec::new(),
+            mechanism: ReviewMechanism::Model,
+            provider: String::new(),
+            model: String::new(),
+            reservation_id: String::new(),
+            request_sha256: String::new(),
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+            cost_micros: 0,
+            usage_known: false,
+        };
+        let selection = ReviewSelection {
+            mechanism: SemanticReviewMechanism::Model,
+            provider: "opencode-go".into(),
+            model: "deepseek-v4.1-flash".into(),
+            max_output_tokens: 4096,
+        };
+        fill_missing_provenance(&mut outcome, &selection);
+        assert_eq!(outcome.provider, "opencode-go");
+        assert_eq!(outcome.model, "deepseek-v4.1-flash");
     }
 
     #[test]

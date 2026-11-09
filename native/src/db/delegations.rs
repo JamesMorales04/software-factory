@@ -488,7 +488,11 @@ pub(super) async fn create_standing_delegation_v2_in_tx(
         connection,
         &sealed.id,
         "delegation.recorded",
-        "V2 authority recorded; non-autonomous scope with technical operation limits",
+        if sealed.autonomous_start {
+            "V2 authority recorded; autonomous R0 scope with technical operation limits"
+        } else {
+            "V2 authority recorded; non-autonomous scope with technical operation limits"
+        },
     )
     .await?;
     Ok((sealed.clone(), true))

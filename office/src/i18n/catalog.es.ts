@@ -139,6 +139,9 @@ export const es: Catalog = {
   "home.composer.title": "¿Qué quieres construir hoy?",
   "home.composer.description":
     "Cuéntale al Lead el resultado que quieres. Apruebas el plan antes de que empiece el trabajo.",
+  "home.composer.autopilotTitle": "¿Qué debe construir la Factory?",
+  "home.composer.autopilotDescription":
+    "Describe el resultado. El Lead evalúa, congela e inicia trabajo R0 bajo la política autónoma que habilitaste.",
   "home.projects.loading": "Cargando Proyectos…",
   "home.projects.emptyTitle": "Registra primero un Proyecto",
   "home.projects.emptyDescription":
@@ -151,6 +154,10 @@ export const es: Catalog = {
   "home.objective.placeholder":
     "Describe qué quieres construir, corregir o mejorar…",
   "home.profile.label": "Perfil de ejecución",
+  "home.autopilot.unsupported":
+    "Este perfil declara inicio automático R0, pero la ejecución autónoma requiere actualmente rutas de suscripción OpenCode Go para el Lead y el implementador. El envío usará revisión manual del plan.",
+  "home.autopilot.hint":
+    "Este perfil ejecuta solicitudes R0 automáticamente: el Lead evalúa, congela e inicia sin aprobación por solicitud.",
   "home.profile.routes": "Detalle de rutas",
   "home.profile.routesHint":
     "Estas rutas forman parte de la revisión del perfil que Core congela para esta solicitud.",
@@ -175,9 +182,15 @@ export const es: Catalog = {
   "home.approval.title": "Aprobación explícita obligatoria.",
   "home.approval.body":
     "El Lead planifica; tú apruebas antes de que empiece el trabajo.",
+  "home.approval.autopilotTitle": "Piloto automático R0 habilitado.",
+  "home.approval.autopilotBody":
+    "El Lead evalúa, congela e inicia dentro de tu política; puedes cancelar en cualquier momento.",
   "home.policy.title": "Habilitar ejecución gobernada",
+  "home.policy.autopilotTitle": "Habilitar ejecución autónoma R0",
   "home.policy.description":
     "Core exige una política de ejecución explícita y acotada para este Proyecto y la revisión exacta del perfil antes de crear la solicitud de Lead. Esta concesión no es autónoma y se limita a trabajo R0; no habilita el inicio automático.",
+  "home.policy.autopilotDescription":
+    "Una política acotada autoriza al Lead a evaluar, congelar e iniciar trabajo R0 automáticamente para este Proyecto y la revisión exacta del perfil. También confirma que Extra Usage está DESACTIVADO. Puedes cancelar cualquier solicitud en todo momento.",
   "home.policy.profile": "Perfil",
   "home.policy.project": "Proyecto",
   "home.policy.revision": "Revisión {revision}",
@@ -198,8 +211,12 @@ export const es: Catalog = {
     "Core exigió una política de ejecución pero no devolvió el perfil y el alcance exactos del Proyecto. Actualiza la página e inténtalo de nuevo.",
   "home.policy.acknowledge":
     "Autorizo esta política de ejecución R0 no autónoma y acotada para la configuración exacta del Proyecto y la revisión del perfil mostradas.",
+  "home.policy.acknowledgeAutopilot":
+    "Autorizo la ejecución automática R0, confirmo que Extra Usage está DESACTIVADO y permito que el Lead evalúe, congele e inicie dentro de esta política.",
+  "home.policy.dismiss": "Ahora no",
   "home.policy.error": "No se pudo habilitar la política de ejecución.",
   "home.policy.enable": "Habilitar ejecución gobernada",
+  "home.policy.enableAutopilot": "Habilitar ejecución autónoma R0",
   "home.policy.enabling": "Habilitando ejecución gobernada…",
   "home.validation.project": "Selecciona un Proyecto.",
   "home.validation.objective":
@@ -347,6 +364,8 @@ export const es: Catalog = {
   "request.notice.cancelled":
     "Core registró la cancelación de la solicitud. Esto no cancela una Campaña autorizada.",
   "request.next.title": "Siguiente paso",
+  "request.autopilot.status":
+    "El piloto automático del Lead está evaluando, congelando e iniciando esta solicitud R0 bajo la política autorizada por el propietario. Puedes cancelarla en cualquier momento; no se requiere aprobación por solicitud.",
   "request.next.hint": "Operación propiedad de Core",
   "request.next.assessDescription":
     "Ejecuta la evaluación acotada con la ruta de Lead del perfil congelado. Si Core no tiene un modelo enrutable, devuelve un error explícito de no disponibilidad en lugar de usar una alternativa.",

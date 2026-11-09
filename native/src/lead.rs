@@ -1605,7 +1605,10 @@ pub fn project_lead_request_state(
     if gate_outcome == Some("ACCEPTED") {
         return LeadRequestProjectionState::Completed;
     }
-    if gate_outcome == Some("BLOCKED") {
+    if matches!(
+        gate_outcome,
+        Some("BLOCKED" | "REPAIR_REQUIRED" | "HUMAN_REQUIRED" | "NOT_TESTED")
+    ) {
         return LeadRequestProjectionState::Blocked;
     }
     if campaign_status == Some("AUTHORIZED") {
@@ -1924,6 +1927,24 @@ mod tests {
         assert_eq!(
             project_lead_request_state(L::Running, Some("AUTHORIZED"), Some("ACCEPTED"), false),
             P::Completed
+        );
+        assert_eq!(
+            project_lead_request_state(
+                L::Running,
+                Some("AUTHORIZED"),
+                Some("REPAIR_REQUIRED"),
+                false
+            ),
+            P::Blocked
+        );
+        assert_eq!(
+            project_lead_request_state(
+                L::Running,
+                Some("AUTHORIZED"),
+                Some("HUMAN_REQUIRED"),
+                false
+            ),
+            P::Blocked
         );
         assert_eq!(
             project_lead_request_state(L::Ready, None, None, true),

@@ -212,6 +212,29 @@ the verified allowed paths after validation commands, so a `cargo test`-rewritte
 This is implementer browser evidence, not independent acceptance. The detailed
 manifest, screenshots and deep-link report are in
 [office-autonomy-ux-2026-11-08](../evidence/office-autonomy-ux-2026-11-08/manifest.json).
+
+The same slice added owner-granted autonomous R0 intake ([ADR-0036](../architecture/decisions/ADR-0036-owner-granted-autonomous-r0-intake.md)).
+A V2 profile whose `auto_start` policy includes R0 is an autopilot profile. The
+owner grants that exact policy and confirms the subscription Extra Usage
+assumption once; Core then derives the request-scoped admission and runs the
+assessment, freeze and `StartAuthority::Autonomous` background runner without
+per-request assessment or approval clicks. The first autopilot run was blocked by
+two real Core guards (unassessed Action, then frozen-profile autonomy mismatch);
+both were corrected. A fresh disposable Project with a minimal Rust scaffold and
+the objective "crea un gestor de calendario" then produced candidate
+`be2cd79d6fb92f367b122e53a86c24317ae888d3` (`src/lib.rs`, `src/main.rs`,
+`tests/calendar.rs`) and reached Gate `ACCEPTED`. The first README-only fixture
+exposed a real deviation: the Lead assumed a build manifest that was not present,
+and the progress breaker blocked the Run rather than inventing success; the Lead
+prompt now warns against invisible manifests. Later hardening runs found generated
+`__pycache__` scope creep, a reviewer timeout/provenance retry loop, and a
+misleading `Executing` projection for terminal repair/not-tested gates. All were
+fixed, but those runs still ended `REPAIR_REQUIRED` or `NOT_TESTED` on real
+quality/provider findings and were surfaced as `Blocked`; no later run is claimed
+as accepted. See
+[autopilot-r0-2026-11-08](../evidence/autopilot-r0-2026-11-08/manifest.json) and
+[autopilot-r0-hardening-2026-11-08](../evidence/autopilot-r0-hardening-2026-11-08/manifest.json).
+
 A Core-owned autonomous issue scheduler, autonomous Gate repair, direct host
 folder integration, Windows, GitHub App/OAuth onboarding, independent security
 review and production deployment remain open. `TRUSTED_LOCAL` is not isolated or

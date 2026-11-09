@@ -535,6 +535,69 @@ describe("Home", () => {
     });
   });
 
+  it("submits autonomous mode when the selected profile enables R0 auto-start", async () => {
+    mocks.listExecutionProfiles.mockResolvedValue({
+      profiles: [
+        {
+          ...profile,
+          autoStart: { enabled: true, riskClasses: ["R0"] },
+        },
+      ],
+      supportedRoutes: [],
+    });
+    renderHome();
+    await screen.findByLabelText("Execution profile");
+    await userEvent.selectOptions(
+      screen.getByLabelText("Execution profile"),
+      "profile-1",
+    );
+    expect(
+      screen.getByText(/This profile runs R0 requests automatically/),
+    ).toBeDefined();
+    await userEvent.type(
+      screen.getByLabelText("Your instruction to the Lead"),
+      "Add a CSV export endpoint.",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Send to Lead" }));
+    expect(mocks.createIntakeRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ mode: "AUTONOMOUS" }),
+    );
+  });
+
+  it("falls back to manual review for an unsupported autonomous route", async () => {
+    mocks.listExecutionProfiles.mockResolvedValue({
+      profiles: [
+        {
+          ...profile,
+          roles: {
+            lead: { ...roleRoute, provider: "opencode" },
+            implementer: { ...roleRoute, provider: "opencode" },
+            semanticReviewer: { ...roleRoute, provider: "opencode" },
+          },
+          autoStart: { enabled: true, riskClasses: ["R0"] },
+        },
+      ],
+      supportedRoutes: [],
+    });
+    renderHome();
+    await screen.findByLabelText("Execution profile");
+    await userEvent.selectOptions(
+      screen.getByLabelText("Execution profile"),
+      "profile-1",
+    );
+    expect(
+      screen.getByText(/autonomous execution currently requires OpenCode Go/),
+    ).toBeDefined();
+    await userEvent.type(
+      screen.getByLabelText("Your instruction to the Lead"),
+      "Add a CSV export endpoint.",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Send to Lead" }));
+    expect(mocks.createIntakeRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ mode: "REVIEW_PLAN" }),
+    );
+  });
+
   it("disables duplicate submission while Core creates the request", async () => {
     let resolveCreate: ((value: IntakeRequestProjection) => void) | undefined;
     mocks.createIntakeRequest.mockReturnValue(
@@ -848,5 +911,210 @@ describe("Home", () => {
       mode: "REVIEW_PLAN",
       idempotency_key: "idem-test",
     });
+  });
+
+  it("shows the autonomous policy copy and can be dismissed without losing the objective", async () => {
+    mocks.listExecutionProfiles.mockResolvedValue({
+      profiles: [
+        {
+          ...profile,
+          autoStart: { enabled: true, riskClasses: ["R0"] },
+        },
+      ],
+      supportedRoutes: [],
+    });
+    mocks.createIntakeRequest.mockRejectedValueOnce(
+      new CoreApiError(409, "autonomous policy required", {
+        code: "AUTONOMOUS_POLICY_REQUIRED",
+        authorization: {
+          required: true,
+          available: false,
+          reason: "AUTONOMOUS_POLICY_REQUIRED",
+        },
+        scope: {
+          project: {
+            id: "project-1",
+            configHash: "config-hash",
+            repository: "https://github.com/acme/factory.git",
+            baseCommit: "0123456789abcdef0123456789abcdef01234567",
+            allowedPaths: ["src"],
+            capabilities: ["repository-edit"],
+            qualityProfile: "generic",
+          },
+          profile: {
+            id: "profile-1",
+            revisionId: "revision-1",
+            revision: 3,
+            name: "Balanced",
+            contentHash: "profile-hash",
+            schemaVersion: 2,
+            executable: true,
+            warnings: [],
+            operations,
+            progress,
+            autoStart: { enabled: true, riskClasses: ["R0"] },
+            implementer: roleRoute,
+            grantTerms: {
+              objectiveClasses: ["feature", "maintenance", "refactor"],
+              riskClasses: ["R0"],
+              autonomousStart: true,
+              validityDays: 30,
+              maxParallel: 1,
+              maxTimeoutSecs: 600,
+              progress,
+              operations,
+            },
+          },
+        },
+      }),
+    );
+    renderHome();
+    await screen.findByLabelText("Execution profile");
+    await userEvent.selectOptions(
+      screen.getByLabelText("Execution profile"),
+      "profile-1",
+    );
+    await userEvent.type(
+      screen.getByLabelText("Your instruction to the Lead"),
+      "Add a CSV export endpoint.",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Send to Lead" }));
+    expect(
+      await screen.findByRole("heading", {
+        name: "Enable autonomous R0 execution",
+      }),
+    ).toBeDefined();
+    expect(
+      screen.getByText(/One bounded policy authorizes the Lead/),
+    ).toBeDefined();
+    expect(
+      screen.getByRole("checkbox", {
+        name: /I authorize automatic R0 execution/,
+      }),
+    ).toBeDefined();
+    expect(
+      screen.getByRole("button", {
+        name: "Enable autonomous R0 execution",
+      }),
+    ).toBeDefined();
+    expect(screen.getByText(/autonomous start enabled/)).toBeDefined();
+    await userEvent.click(screen.getByRole("button", { name: "Not now" }));
+    expect(
+      screen.queryByRole("heading", {
+        name: "Enable autonomous R0 execution",
+      }),
+    ).toBeNull();
+    expect(
+      (
+        screen.getByRole("button", {
+          name: "Send to Lead",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(false);
+    expect(
+      (
+        screen.getByLabelText(
+          "Your instruction to the Lead",
+        ) as HTMLTextAreaElement
+      ).value,
+    ).toBe("Add a CSV export endpoint.");
+  });
+
+  it("enables the autonomous policy with the one-time subscription confirmation", async () => {
+    mocks.listExecutionProfiles.mockResolvedValue({
+      profiles: [
+        {
+          ...profile,
+          autoStart: { enabled: true, riskClasses: ["R0"] },
+        },
+      ],
+      supportedRoutes: [],
+    });
+    mocks.createIntakeRequest
+      .mockRejectedValueOnce(
+        new CoreApiError(409, "autonomous policy required", {
+          code: "AUTONOMOUS_POLICY_REQUIRED",
+          authorization: {
+            required: true,
+            available: false,
+            reason: "AUTONOMOUS_POLICY_REQUIRED",
+          },
+          scope: {
+            project: {
+              id: "project-1",
+              configHash: "config-hash",
+              repository: "https://github.com/acme/factory.git",
+              baseCommit: "0123456789abcdef0123456789abcdef01234567",
+              allowedPaths: ["src"],
+              capabilities: ["repository-edit"],
+              qualityProfile: "generic",
+            },
+            profile: {
+              id: "profile-1",
+              revisionId: "revision-1",
+              revision: 3,
+              name: "Balanced",
+              contentHash: "profile-hash",
+              schemaVersion: 2,
+              executable: true,
+              warnings: [],
+              operations,
+              progress,
+              autoStart: { enabled: true, riskClasses: ["R0"] },
+              implementer: roleRoute,
+              grantTerms: {
+                objectiveClasses: ["feature", "maintenance", "refactor"],
+                riskClasses: ["R0"],
+                autonomousStart: true,
+                validityDays: 30,
+                maxParallel: 1,
+                maxTimeoutSecs: 600,
+                progress,
+                operations,
+              },
+            },
+          },
+        }),
+      )
+      .mockResolvedValueOnce(projection);
+    renderHome();
+    await screen.findByLabelText("Execution profile");
+    await userEvent.selectOptions(
+      screen.getByLabelText("Execution profile"),
+      "profile-1",
+    );
+    await userEvent.type(
+      screen.getByLabelText("Your instruction to the Lead"),
+      "Add a CSV export endpoint.",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Send to Lead" }));
+    await screen.findByRole("heading", {
+      name: "Enable autonomous R0 execution",
+    });
+    await userEvent.click(
+      screen.getByRole("checkbox", {
+        name: /I authorize automatic R0 execution/,
+      }),
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Enable autonomous R0 execution" }),
+    );
+    await waitFor(() =>
+      expect(mocks.enableExecutionPolicy).toHaveBeenCalledWith("project-1", {
+        execution_profile_id: "profile-1",
+        expected_revision: 3,
+        expected_revision_hash: "profile-hash",
+        project_config_hash: "config-hash",
+        acknowledge: true,
+        autonomous: true,
+        subscription_confirmed: true,
+        idempotency_key: "idem-test",
+      }),
+    );
+    await waitFor(() =>
+      expect(mocks.createIntakeRequest).toHaveBeenLastCalledWith(
+        expect.objectContaining({ mode: "AUTONOMOUS" }),
+      ),
+    );
   });
 });

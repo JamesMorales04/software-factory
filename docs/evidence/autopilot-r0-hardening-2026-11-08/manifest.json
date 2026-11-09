@@ -1,0 +1,311 @@
+{
+  "schema": "factory.autopilot-r0.hardening.v1",
+  "schema_version": 1,
+  "result": "PARTIAL",
+  "kind": "implementer-browser-self-test",
+  "captured_at": "2026-11-08T22:15:00Z",
+  "candidate": "77680db9d69d2efa8bbb11e5fbacb1cf036f2ca5",
+  "environment": {
+    "runtime": "rootless Podman Compose developer-preview stack",
+    "office": "http://127.0.0.1:8893",
+    "browser": "Chromium 1248 via Playwright",
+    "provider": "OpenCode Go / deepseek-v4.1-flash",
+    "autonomous_start_flag": "FACTORY_ENABLE_AUTONOMOUS_START=1",
+    "profile": "2c271705-4df1-4b37-98b7-05f991819176 revision 2"
+  },
+  "successful_autopilot_run": {
+    "project": "acb7410e-0312-4926-b797-ed3073918e94",
+    "request": "c453e972-3f5c-4bc7-a793-e4b1a41fc84a",
+    "campaign": "867e07a1-0049-471e-94d9-1ccdd9a0d320",
+    "candidate": "d07ad857-e2f0-4f8e-abc3-46f1dc3c853a",
+    "candidate_commit": "be2cd79d6fb92f367b122e53a86c24317ae888d3",
+    "gate": "ACCEPTED",
+    "prompt": "crea un gestor de calendario",
+    "note": "This run validated the autonomous policy, Core-owned assessment, freeze, start and accepted candidate before the later hardening fixes. It is implementer self-test evidence, not independent acceptance."
+  },
+  "hardening_runs": [
+    {
+      "id": "pycache-scope-creep",
+      "project": "51f76830-8199-4d62-bcb2-2efbe016588a",
+      "request": "88ecdbdc-4bfa-4391-8422-f72a9425acac",
+      "campaign": "bd45f1ab-07d8-48bb-8bfb-cc75ec3f96e5",
+      "candidate": "97507c2a-ad2b-49d0-94d1-337f68fd0332",
+      "candidate_commit": "a0ec0336f164be78a7ec01991f20fbdd4877c596",
+      "gate": "REPAIR_REQUIRED",
+      "cause": "The implementer committed src/__pycache__ and tests/__pycache__ bytecode under allowed paths. The semantic reviewer correctly rejected it as scope creep.",
+      "repair": "Provider sandboxes now set PYTHONDONTWRITEBYTECODE=1 for every provider so generated Python bytecode cannot contaminate a candidate. The progress breaker and reviewer remained truthful."
+    },
+    {
+      "id": "reviewer-timeout-and-provenance",
+      "project": "6f628349-f687-43b0-bf90-7a9b2c2e45c9",
+      "request": "094b24bf-bab3-4372-83fb-44011d000ef8",
+      "campaign": "02b2ca24-524b-411c-b996-1c62ad9f9af7",
+      "candidate": "28358993-ab89-4a2e-b40d-6af955322a9f",
+      "candidate_commit": "1b9fe9ddace0594fdfb7eed081b676fb38c13fcb",
+      "gate": "NOT_TESTED",
+      "cause": "The reviewer's 90 s client timeout cancelled a model call whose Core model-request bound is 300 s, leaving the reservation RESERVED. The retry posted a failed receipt with empty provider/model, which Core correctly refused as provenance mismatch, so the reviewer looped.",
+      "repair": "The reviewer client timeout is 360 s, longer than the 300 s model bound, and failed receipts now carry the frozen reviewer route as provenance. The next run recorded a NOT_TESTED receipt and Core projected the request as Blocked with the NOT_TESTED detail."
+    },
+    {
+      "id": "truthful-repair-projection",
+      "project": "141a32cc-d04c-498b-9826-7e204ced5cf1",
+      "request": "026e09f6-c9ad-49fe-b804-8f66b8dd236d",
+      "campaign": "9f489f05-a34f-4511-8a75-4e1166accb44",
+      "candidate": "95260caf-48e8-4cd6-ae04-96e2c39bb704",
+      "candidate_commit": "dbbfa1d6eb62d2e354befef224d1de95f208265f",
+      "gate": "REPAIR_REQUIRED",
+      "cause": "The semantic reviewer found a real blocking date-validation bug: 2025-+1-01 was accepted by the Rust parser. The Gate correctly required repair and autonomous repair is disabled.",
+      "repair": "The request projection now maps REPAIR_REQUIRED, HUMAN_REQUIRED and NOT_TESTED to Blocked instead of Executing, and the detail states that autonomous repair is disabled and a new authorized request or operator action is required."
+    },
+    {
+      "id": "manifest-less-repository",
+      "project": "6f628349-f687-43b0-bf90-7a9b2c2e45c9",
+      "request": "371969a6-5df5-4911-a47e-8cff29f2a407",
+      "campaign": "96cb9598-17fe-4a0e-8a31-22495b13948b",
+      "gate": "BLOCKED",
+      "cause": "A truly manifest-less Project led the implementer to return final without writing any file. The progress breaker blocked the Run after four stagnant checkpoints instead of claiming success.",
+      "repair": "The Lead prompt warns against assuming an invisible manifest and prefers a self-contained script. The live test still shows that a truly empty repository can exhaust the implementer; a minimal build manifest is the supported Project scaffold."
+    },
+    {
+      "id": "repair-request-base",
+      "project": "141a32cc-d04c-498b-9826-7e204ced5cf1",
+      "request": "b236c9ea-e39e-43ef-86e3-f94b68f9678c",
+      "campaign": "d8a5e650-5173-4288-b686-7e9f36d99501",
+      "candidate": "c1d6596d-30eb-4a6d-91e7-2dede59491f7",
+      "candidate_commit": "eb742af05bc0a7e4de9fbbb04dc0c099fda98dac",
+      "gate": "REPAIR_REQUIRED",
+      "cause": "A follow-up request starts from the Project base commit, not the previous candidate. The verifier failed because the previous calendar implementation was not present.",
+      "repair": "Documented limitation: blocked or repair-required work needs the previous candidate delivered or a Project based on it before a follow-up request can repair it. No false success is shown."
+    }
+  ],
+  "cancellation": {
+    "request": "73607124-565d-47ee-a9eb-a3bf724f0e25",
+    "state": "CANCELLED",
+    "detail": "The operator cancelled the autonomous request during assessment. Core recorded the authoritative Lead-boundary withdrawal before any Campaign existed.",
+    "result": "PASS"
+  },
+  "ui_matrix": [
+    {
+      "id": "A1",
+      "surface": "Home / manual profile",
+      "control_or_state": "Select a non-autopilot profile",
+      "expected": "The existing review-plan copy and explicit-approval note remain.",
+      "result": "PASS",
+      "evidence": "home-manual.png"
+    },
+    {
+      "id": "A2",
+      "surface": "Home / autopilot profile",
+      "control_or_state": "Select an R0 auto-start profile",
+      "expected": "The hint, composer title/description and approval note explain that the Lead assesses, freezes and starts without per-request approval.",
+      "result": "PASS",
+      "evidence": "home-autopilot.png"
+    },
+    {
+      "id": "A3",
+      "surface": "Home / policy gate",
+      "control_or_state": "First autonomous request without a policy",
+      "expected": "The gate uses the autonomous title, description, button and acknowledgement, and Core returns AUTONOMOUS_POLICY_REQUIRED.",
+      "result": "PASS",
+      "evidence": "policy-gate-autopilot.png; final2 result.json autonomous_policy_reason"
+    },
+    {
+      "id": "A4",
+      "surface": "Home / policy gate / Spanish",
+      "control_or_state": "Switch language while the gate is open",
+      "expected": "Every new gate string is translated and the query keeps its meaning.",
+      "result": "PASS",
+      "evidence": "policy-gate-spanish.png"
+    },
+    {
+      "id": "A5",
+      "surface": "Home / policy gate at 390 px",
+      "control_or_state": "Gate at 390 px",
+      "expected": "No horizontal document overflow; controls remain usable.",
+      "result": "PASS",
+      "evidence": "policy-gate-390.png; scrollWidth=390, clientWidth=390"
+    },
+    {
+      "id": "A6",
+      "surface": "Home / policy gate at 320 px",
+      "control_or_state": "Gate at 320 px",
+      "expected": "No horizontal document overflow; controls remain usable.",
+      "result": "PASS",
+      "evidence": "policy-gate-320.png; scrollWidth=320, clientWidth=320"
+    },
+    {
+      "id": "A7",
+      "surface": "Home / policy gate",
+      "control_or_state": "Dismiss with Not now",
+      "expected": "The gate closes, the objective is preserved and Send to Lead is enabled again.",
+      "result": "PASS",
+      "evidence": "Browser check policy_gate_dismiss; Home.test.tsx"
+    },
+    {
+      "id": "A8",
+      "surface": "Home / policy gate",
+      "control_or_state": "Keyboard acknowledgement and enable",
+      "expected": "Space toggles the acknowledgement; the enable button becomes available without a mouse.",
+      "result": "PASS",
+      "evidence": "Browser check policy_gate_keyboard"
+    },
+    {
+      "id": "A9",
+      "surface": "Home / enable policy",
+      "control_or_state": "Enable autonomous R0 execution",
+      "expected": "Core creates the autonomous grant, retries the same request as AUTONOMOUS and starts the Core-owned autopilot.",
+      "result": "PASS",
+      "evidence": "request-running.png; requests 88ecdbdc, 094b24bf, 026e09f6; Home.test.tsx verifies autonomous=true and subscription_confirmed=true"
+    },
+    {
+      "id": "A10",
+      "surface": "Request workspace / autopilot",
+      "control_or_state": "Request while assessing or executing",
+      "expected": "The autopilot status is visible; Run assessment, plan approval and per-request subscription confirmation are absent.",
+      "result": "PASS",
+      "evidence": "request-running.png; RequestWorkspace.test.tsx"
+    },
+    {
+      "id": "A11",
+      "surface": "Request workspace / blocked",
+      "control_or_state": "Gate NOT_TESTED",
+      "expected": "The request shows Blocked and the exact NOT_TESTED gate reason, never Executing or accepted.",
+      "result": "PASS",
+      "evidence": "request-blocked-not-tested.png"
+    },
+    {
+      "id": "A12",
+      "surface": "Request workspace / blocked",
+      "control_or_state": "Gate REPAIR_REQUIRED",
+      "expected": "The request shows Blocked, the repair reason and the fact that autonomous repair is disabled.",
+      "result": "PASS",
+      "evidence": "request-blocked-repair-required.png"
+    },
+    {
+      "id": "A13",
+      "surface": "Campaign workspace",
+      "control_or_state": "Repair-required decision",
+      "expected": "Verifier, reviewer, Gate and Run states remain separate and authoritative.",
+      "result": "PASS",
+      "evidence": "campaign-repair-required.png"
+    },
+    {
+      "id": "A14",
+      "surface": "Campaign workspace",
+      "control_or_state": "Accepted decision",
+      "expected": "The exact accepted candidate and Gate are shown for the earlier successful autopilot run.",
+      "result": "PASS",
+      "evidence": "campaign-accepted.png; candidate be2cd79d"
+    },
+    {
+      "id": "A15",
+      "surface": "Request workspace / cancel",
+      "control_or_state": "Cancel an autonomous request during assessment",
+      "expected": "Core records an authoritative withdrawal before any Campaign, and the request becomes Cancelled.",
+      "result": "PASS",
+      "evidence": "request-cancelled.png; request 73607124"
+    },
+    {
+      "id": "A16",
+      "surface": "Request workspace at 390 px",
+      "control_or_state": "Blocked repair request",
+      "expected": "No horizontal overflow and the repair reason remains readable.",
+      "result": "PASS",
+      "evidence": "request-blocked-repair-required-390.png"
+    },
+    {
+      "id": "A17",
+      "surface": "Home / non-autonomous request",
+      "control_or_state": "Manual review-plan path",
+      "expected": "Manual profiles keep assessment and exact plan approval.",
+      "result": "NOT_TESTED",
+      "evidence": "Existing component tests and earlier manual browser evidence remain; this hardening run focused on the autonomous surface."
+    },
+    {
+      "id": "A18",
+      "surface": "Home / submit",
+      "control_or_state": "Double-click or concurrent submit",
+      "expected": "The send control is disabled while Core creates the request.",
+      "result": "NOT_TESTED",
+      "evidence": "Home.test.tsx covers the manual duplicate-submit guard; the autonomous browser run did not attempt a concurrent double submit."
+    },
+    {
+      "id": "A19",
+      "surface": "Home / autopilot",
+      "control_or_state": "Offline or unauthorized while the policy gate is open",
+      "expected": "The existing offline/unauthorized handling remains truthful and recovery is offered.",
+      "result": "NOT_TESTED",
+      "evidence": "Generic Home error/offline tests exist; the new autopilot gate was not exercised offline in this run."
+    },
+    {
+      "id": "A20",
+      "surface": "Home / autopilot",
+      "control_or_state": "Screen-reader and contrast review of every new string",
+      "expected": "New labels, live regions and focus order are accessible.",
+      "result": "NOT_TESTED",
+      "evidence": "Keyboard and label checks passed; a full screen-reader/contrast audit was not performed."
+    },
+    {
+      "id": "A21",
+      "surface": "Home / unsupported autopilot profile",
+      "control_or_state": "A profile declares R0 auto-start but its routes are not OpenCode Go subscription routes",
+      "expected": "Home warns that autonomous execution is unsupported for this route and sends the request as manual REVIEW_PLAN.",
+      "result": "PASS",
+      "evidence": "Home.test.tsx; the browser matrix did not create such a provider profile in the live stack."
+    }
+  ],
+  "checks": {
+    "deterministic": "PASS \u2014 cargo fmt --check, strict Clippy, 568 lib tests, 37 Core bin tests, 14 worker bin tests, 4 reviewer bin tests and 270 Office component tests; office-parity and architecture governance checks pass. Host cargo test --all-features also ran the provider_sandbox integration tests, where two failed because the host OpenCode executable exited before readiness; the canonical container suite remains authoritative.",
+    "browser": "PASS for the changed Home/Request/Campaign controls and states enumerated above; NOT_TESTED rows are explicit.",
+    "accepted_after_hardening": false
+  },
+  "deviations_found_and_fixed": [
+    "The autonomous policy rejection used the non-autonomous EXECUTION_POLICY_REQUIRED message; it now returns AUTONOMOUS_POLICY_REQUIRED with an autonomous-specific message.",
+    "The autonomous policy gate's submit button still said Enable governed execution while the title and description were autonomous; the button is now dynamic.",
+    "The policy gate had no dismiss control; Not now restores the composer without losing the objective.",
+    "Python bytecode could be committed under allowed src/tests paths; provider sandboxes now set PYTHONDONTWRITEBYTECODE=1.",
+    "A reviewer client timeout shorter than the model-request bound left reservations RESERVED and produced an infinite rejected-receipt loop; the client timeout is 360 s and failed receipts carry the frozen route.",
+    "REPAIR_REQUIRED, HUMAN_REQUIRED and NOT_TESTED gates were projected as Executing; they now project as Blocked with truthful detail.",
+    "The delegation audit event said non-autonomous for autonomous grants; it now reflects the actual autonomy scope.",
+    "Added a process-local single-flight guard around the autopilot runner so a create-time spawn and a restart resume cannot assess or start the same request concurrently."
+  ],
+  "limitations": [
+    "This is implementer browser self-test evidence, not independent verifier or Product Owner acceptance.",
+    "The successful ACCEPTED run predates the final hardening fixes; the later runs validate the fixes but ended Blocked or REPAIR_REQUIRED on real quality findings.",
+    "Autonomous Gate repair remains disabled. A repair-required or not-tested result needs a new authorized request or operator action.",
+    "A follow-up request starts from the Project base commit, not from the previous candidate; blocked work cannot be repaired in place without delivering the candidate or basing a Project on it.",
+    "A truly manifest-less Project can still exhaust the implementer; a minimal build manifest is the supported scaffold.",
+    "The Issues auto-start remains browser-side; this capability covers Core-owned unified-intake autopilot only.",
+    "The folder import used a documented showDirectoryPicker stub at the real upload boundary; it is not a native OS picker test.",
+    "No isolation or security certification is claimed. TRUSTED_LOCAL remains broad local access.",
+    "Two host provider_sandbox integration tests failed because the host OpenCode executable exited before readiness. They are not evidence about the Compose provider path; the container suite remains authoritative."
+  ],
+  "candidate_note": "Code and evidence commit. A later docs-only commit may update manifest metadata; the exact code candidate for these observations is this SHA.",
+  "codex_review": {
+    "reviewer": "codex/gpt-6-luna, read-only worktree checkout of the branch",
+    "blocking_findings": 0,
+    "findings": [
+      {
+        "severity": "medium",
+        "summary": "The subscription admission bound the Lead route to the deployment default gateway rather than the frozen profile Lead route.",
+        "disposition": "The admission handler now resolves the exact frozen Lead gateway and includes the frozen semantic reviewer route when it is OpenCode Go."
+      },
+      {
+        "severity": "medium",
+        "summary": "Autonomous profiles on non-subscription routes had no automatic inference-envelope path and would fail after submission.",
+        "disposition": "Autonomous grants, requests and the Home autopilot selector now require OpenCode Go subscription routes for both the Lead and implementer. Other profiles show an explicit warning and fall back to manual plan review."
+      },
+      {
+        "severity": "medium",
+        "summary": "Restart recovery could leave an interrupted request visibly ASSESSING and skipped unfinished autonomous work older than the newest-500 list cap.",
+        "disposition": "Recovery now queries every unfinished autonomous request and blocks a failed resume with the Core reason, instead of logging and leaving it stuck. A process-local single-flight guard also prevents create-time and resume runners from duplicating one request."
+      }
+    ]
+  },
+  "admission_route_smoke": {
+    "request": "f6bd26d0-2a78-4493-80c8-fe4b7c65d111",
+    "campaign": "5166cd73-8f1e-4244-a32b-5322a2a27dcd",
+    "observed": "The request reached Executing after Core created the subscription admission from the frozen Lead route, then the operator cancelled the Campaign and the request projected Cancelled.",
+    "result": "PASS"
+  }
+}

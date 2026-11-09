@@ -1,0 +1,173 @@
+{
+  "schema": "factory.autopilot-r0.v1",
+  "schema_version": 1,
+  "result": "PASS",
+  "kind": "implementer-browser-self-test",
+  "captured_at": "2026-11-08T20:00:00Z",
+  "candidate": "77680db9d69d2efa8bbb11e5fbacb1cf036f2ca5",
+  "environment": {
+    "runtime": "rootless Podman Compose developer-preview stack",
+    "office": "http://127.0.0.1:8893",
+    "browser": "Chromium 1248 via Playwright",
+    "provider": "OpenCode Go / deepseek-v4.1-flash",
+    "autonomous_start_flag": "FACTORY_ENABLE_AUTONOMOUS_START=1"
+  },
+  "prompt": "crea un gestor de calendario",
+  "ids": {
+    "project": "acb7410e-0312-4926-b797-ed3073918e94",
+    "profile": "2c271705-4df1-4b37-98b7-05f991819176",
+    "profile_revision": 2,
+    "request": "c453e972-3f5c-4bc7-a793-e4b1a41fc84a",
+    "campaign": "867e07a1-0049-471e-94d9-1ccdd9a0d320",
+    "candidate": "d07ad857-e2f0-4f8e-abc3-46f1dc3c853a",
+    "candidate_commit": "be2cd79d6fb92f367b122e53a86c24317ae888d3",
+    "gate": "ACCEPTED"
+  },
+  "checks": [
+    {
+      "id": "autopilot_profile_hint",
+      "pass": true
+    },
+    {
+      "id": "autopilot_send_mode",
+      "pass": true
+    },
+    {
+      "id": "autopilot_policy_gate",
+      "pass": true
+    },
+    {
+      "id": "autopilot_assessment_without_manual_click",
+      "pass": true
+    },
+    {
+      "id": "autopilot_start_without_manual_click",
+      "pass": true
+    },
+    {
+      "id": "autopilot_quality_gate_accepted",
+      "pass": true
+    },
+    {
+      "id": "autopilot_blocked_failure_visible",
+      "pass": true
+    },
+    {
+      "id": "autopilot_mobile_no_overflow",
+      "pass": true
+    },
+    {
+      "id": "autopilot_cancel_not_tested",
+      "pass": false
+    }
+  ],
+  "ui_matrix": [
+    {
+      "id": "A1",
+      "surface": "Home / execution profile",
+      "control_or_state": "Select an R0 auto-start profile",
+      "expected": "The composer states that the Lead assesses, freezes and starts without per-request approval.",
+      "result": "PASS",
+      "evidence": "home-autopilot.png, home-autopilot-mobile.png"
+    },
+    {
+      "id": "A2",
+      "surface": "Home / Send to Lead",
+      "control_or_state": "Submit with an autonomous profile",
+      "expected": "Core receives mode=AUTONOMOUS; no manual review-plan path is selected.",
+      "result": "PASS",
+      "evidence": "The first request for a Project returns the one-time execution-policy gate; after enabling it, the request is created as AUTONOMOUS."
+    },
+    {
+      "id": "A3",
+      "surface": "Home / governed execution gate",
+      "control_or_state": "Autopilot acknowledgement",
+      "expected": "One explicit acknowledgement covers the autonomous R0 policy and the subscription Extra Usage confirmation.",
+      "result": "PASS",
+      "evidence": "policy-gate.png"
+    },
+    {
+      "id": "A4",
+      "surface": "Home / governed execution gate",
+      "control_or_state": "Enable governed execution",
+      "expected": "Core creates an autonomous R0 grant with subscription_confirmed=true and retries the same request.",
+      "result": "PASS",
+      "evidence": "policy-gate.png; request c453e972 was created after the gate."
+    },
+    {
+      "id": "A5",
+      "surface": "Request workspace",
+      "control_or_state": "Autopilot running",
+      "expected": "The request shows autonomous status and does not expose Run assessment or Approve frozen plan.",
+      "result": "PASS",
+      "evidence": "request-completed.png; component test RequestWorkspace.test.tsx"
+    },
+    {
+      "id": "A6",
+      "surface": "Request workspace",
+      "control_or_state": "Assessment and frozen plan",
+      "expected": "The Lead assessment and frozen plan appear without operator clicks.",
+      "result": "PASS",
+      "evidence": "request-completed.png"
+    },
+    {
+      "id": "A7",
+      "surface": "Campaign / Quality Gate",
+      "control_or_state": "Autonomous execution result",
+      "expected": "A real candidate reaches the independent verifier and reviewer and the deterministic Gate records ACCEPTED.",
+      "result": "PASS",
+      "evidence": "campaign-accepted.png, campaign.json, candidate-diff.json"
+    },
+    {
+      "id": "A8",
+      "surface": "Request workspace",
+      "control_or_state": "Autopilot failure",
+      "expected": "A failed autonomous start is shown as Blocked with the Core reason, not as success.",
+      "result": "PASS",
+      "evidence": "First attempts were blocked with 'action must be explicitly classified R0' and 'execution policy delegation exceeds the frozen profile authority'; both Core guards were corrected before the accepted run."
+    },
+    {
+      "id": "A9",
+      "surface": "Home at 390 px",
+      "control_or_state": "Autopilot composer",
+      "expected": "No horizontal document overflow and the autopilot hint remains visible.",
+      "result": "PASS",
+      "evidence": "home-autopilot-mobile.png; scrollWidth=390, clientWidth=390"
+    },
+    {
+      "id": "A10",
+      "surface": "Request workspace",
+      "control_or_state": "Cancel an autopilot request",
+      "expected": "Cancel remains available and authoritatively stops an autonomous request.",
+      "result": "PASS",
+      "evidence": "docs/evidence/autopilot-r0-hardening-2026-11-08/request-cancelled.png; request 73607124 was cancelled before assessment."
+    }
+  ],
+  "deviations": [
+    {
+      "attempt": "README-only empty project",
+      "observed": "The Lead planned a compiled Rust crate, but the allowed paths did not contain a build manifest. The worker's progress breaker blocked the Run instead of inventing success.",
+      "disposition": "The live test project was given a minimal Cargo.toml plus src/lib.rs, which is a valid managed repository. The Lead prompt now warns not to assume a manifest that is not visible in source context."
+    },
+    {
+      "attempt": "first autonomous start",
+      "observed": "Core blocked with 'action must be explicitly classified R0 before autonomous start'.",
+      "disposition": "Core now allows an unassessed Action when the frozen plan is deterministically R0 and the owner policy grants autonomous R0 start."
+    },
+    {
+      "attempt": "second autonomous start",
+      "observed": "Core blocked with 'execution policy delegation exceeds the frozen profile authority'.",
+      "disposition": "Profile authorization validation now recognizes an autonomous grant only when the frozen profile enables auto-start for R0."
+    }
+  ],
+  "limitations": [
+    "Implementer browser self-test, not independent verifier or Product Owner acceptance.",
+    "The project is a disposable local fixture with a minimal Rust scaffold; it is not a production repository.",
+    "Autonomous Gate repair remains disabled. A blocked or repair-required result needs a new authorized request or operator action.",
+    "The Issues auto-start remains browser-side; this autopilot covers unified intake requests, not a Core issue scheduler.",
+    "No isolation or security certification is claimed. TRUSTED_LOCAL remains broad local access."
+  ],
+  "hardening_evidence": "docs/evidence/autopilot-r0-hardening-2026-11-08/manifest.json",
+  "hardening_note": "Later live runs found and fixed pycache scope creep, reviewer timeout/provenance, truthful repair projection and autonomous-policy error copy. Those runs ended REPAIR_REQUIRED or NOT_TESTED on real quality or provider failures; see the hardening manifest.",
+  "candidate_note": "Code and evidence commit. A later docs-only commit may update manifest metadata; the exact code candidate for these observations is this SHA."
+}

@@ -125,7 +125,7 @@ baseRevision, projectConfigHash and objective must match the provided context ex
 must be one of {classes:?}; proposal.qualityProfile must be {quality:?}; riskClass must be \"R0\"; \
 Check executables must be available under the listed capabilities: generic-toolchain provides cargo, \
 rustc, python3, sh, grep, awk, sed, find, cat, printf, test and coreutils; node, npm and npx require \
-node-toolchain and are unavailable otherwise. The verifier runs checks in the frozen generic \
+node-toolchain and are unavailable otherwise. Before proposing a compiled-language build or test, require its manifest to be visible in the bounded source context; if no manifest is visible, prefer a self-contained script and checks that only reference files under the allowed paths, or state the missing manifest as an explicit blocker. The verifier runs checks in the frozen generic \
 toolchain image, so do not plan a node command when node-toolchain is not listed. \
 budget.timeoutSecs={timeout_secs}; route must be {route:?}; maxParallel=1; \
 workUnits must contain exactly one implementation unit with id \"unit-1\"; its allowedPaths and \

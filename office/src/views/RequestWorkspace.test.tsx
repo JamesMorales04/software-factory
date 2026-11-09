@@ -217,6 +217,24 @@ describe("RequestWorkspace", () => {
     mocks.cancelIntakeRequest.mockReset().mockResolvedValue(awaiting);
   });
 
+  it("runs autonomous requests without manual assessment or approval controls", async () => {
+    mocks.getIntakeRequest.mockResolvedValue(
+      makeProjection({
+        mode: "AUTONOMOUS",
+        state: "AWAITING_APPROVAL",
+      }),
+    );
+    renderRequest();
+    expect(
+      await screen.findByText(/Lead autopilot is assessing, freezing/),
+    ).toBeDefined();
+    expect(screen.queryByRole("button", { name: "Run assessment" })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Approve frozen plan and start" }),
+    ).toBeNull();
+    expect(screen.queryByText("Subscription plan confirmation")).toBeNull();
+  });
+
   it("renders the request workspace in Spanish and preserves machine identifiers", async () => {
     renderRequest("es");
     await screen.findByRole("heading", { name: "Evaluación" });

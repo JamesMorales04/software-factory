@@ -103,6 +103,43 @@ function latestConversation(
   );
 }
 
+function profileDeclaresAutopilot(
+  profile:
+    | {
+        autoStart?: {
+          enabled: boolean;
+          riskClasses: Array<string>;
+        } | null;
+      }
+    | undefined,
+): boolean {
+  return (
+    profile?.autoStart?.enabled === true &&
+    profile.autoStart.riskClasses.includes("R0")
+  );
+}
+
+function profileRunsAutopilot(
+  profile:
+    | {
+        autoStart?: {
+          enabled: boolean;
+          riskClasses: Array<string>;
+        } | null;
+        roles?: {
+          lead?: { provider: string } | null;
+          implementer?: { provider: string } | null;
+        } | null;
+      }
+    | undefined,
+): boolean {
+  return (
+    profileDeclaresAutopilot(profile) &&
+    profile?.roles?.lead?.provider === "opencode-go" &&
+    profile?.roles?.implementer?.provider === "opencode-go"
+  );
+}
+
 export function Home() {
   const navigate = useNavigate();
   const { t, formatDate, formatNumber } = useI18n();
@@ -313,6 +350,10 @@ export function Home() {
   }, [loadRecent]);
 
   const selectedProfile = profiles?.find((profile) => profile.id === profileId);
+  const autopilotSelected = profileRunsAutopilot(selectedProfile);
+  const autopilotUnsupported =
+    profileDeclaresAutopilot(selectedProfile) && !autopilotSelected;
+  const policyAutopilot = policySetup?.pending.mode === "AUTONOMOUS";
   const profileUnavailable = selectedProfile?.executable === false;
   const profileDefaultLabel = selectedProfile
     ? projectId && selectedProfile.projectDefaults.includes(projectId)
@@ -369,7 +410,9 @@ export function Home() {
     } catch (cause) {
       if (
         cause instanceof CoreApiError &&
-        cause.reason === "EXECUTION_POLICY_REQUIRED"
+        (cause.reason === "EXECUTION_POLICY_REQUIRED" ||
+          cause.reason === "AUTONOMOUS_POLICY_REQUIRED" ||
+          cause.reason === "SUBSCRIPTION_CONFIRMATION_REQUIRED")
       ) {
         const scope = policyScopeFromError(cause);
         if (scope) {
@@ -424,10 +467,18 @@ export function Home() {
       project_id: projectId,
       objective: trimmed,
       ...(profileId === "" ? {} : { execution_profile_id: profileId }),
-      mode: "REVIEW_PLAN",
+      mode: profileRunsAutopilot(selectedProfile)
+        ? "AUTONOMOUS"
+        : "REVIEW_PLAN",
       idempotency_key: requestKey.current,
     };
     await submitRequest(input);
+  }
+
+  function dismissPolicy() {
+    setPolicySetup(null);
+    setPolicyAcknowledged(false);
+    setPolicyError(null);
   }
 
   async function enablePolicy() {
@@ -445,6 +496,9 @@ export function Home() {
         expected_revision_hash: profile.contentHash,
         project_config_hash: project.configHash,
         acknowledge: true,
+        ...(policySetup.pending.mode === "AUTONOMOUS"
+          ? { autonomous: true, subscription_confirmed: true }
+          : {}),
         idempotency_key: policyKey,
       });
       await submitRequest(pending);
@@ -477,8 +531,16 @@ export function Home() {
               </span>
               <div className="home-composer-head-copy">
                 <span className="home-kicker">{t("home.lead.kicker")}</span>
-                <h2>{t("home.composer.title")}</h2>
-                <p>{t("home.composer.description")}</p>
+                <h2>
+                  {autopilotSelected
+                    ? t("home.composer.autopilotTitle")
+                    : t("home.composer.title")}
+                </h2>
+                <p>
+                  {autopilotSelected
+                    ? t("home.composer.autopilotDescription")
+                    : t("home.composer.description")}
+                </p>
               </div>
             </div>
 
@@ -630,6 +692,16 @@ export function Home() {
                     {!busy && <Send size={17} aria-hidden="true" />}
                   </Button>
                 </div>
+                {profileRunsAutopilot(selectedProfile) && (
+                  <p className="ui-callout ui-callout--info" role="status">
+                    {t("home.autopilot.hint")}
+                  </p>
+                )}
+                {autopilotUnsupported && (
+                  <p className="ui-callout ui-callout--attention" role="status">
+                    {t("home.autopilot.unsupported")}
+                  </p>
+                )}
 
                 {profilesUnavailable && (
                   <p className="ui-callout ui-callout--info" role="status">
@@ -715,8 +787,14 @@ export function Home() {
                 <p className="home-approval-note">
                   <ShieldCheck size={16} aria-hidden="true" />
                   <span>
-                    <strong>{t("home.approval.title")}</strong>{" "}
-                    {t("home.approval.body")}
+                    <strong>
+                      {autopilotSelected
+                        ? t("home.approval.autopilotTitle")
+                        : t("home.approval.title")}
+                    </strong>{" "}
+                    {autopilotSelected
+                      ? t("home.approval.autopilotBody")
+                      : t("home.approval.body")}
                   </span>
                 </p>
 
@@ -725,8 +803,16 @@ export function Home() {
                     className="ui-callout ui-callout--attention home-policy"
                     role="status"
                   >
-                    <h3>{t("home.policy.title")}</h3>
-                    <p>{t("home.policy.description")}</p>
+                    <h3>
+                      {policyAutopilot
+                        ? t("home.policy.autopilotTitle")
+                        : t("home.policy.title")}
+                    </h3>
+                    <p>
+                      {policyAutopilot
+                        ? t("home.policy.autopilotDescription")
+                        : t("home.policy.description")}
+                    </p>
                     {policySetup.scope.profile && policySetup.scope.project ? (
                       <>
                         <dl className="request-facts">
@@ -816,7 +902,11 @@ export function Home() {
                       </p>
                     )}
                     <Checkbox
-                      label={t("home.policy.acknowledge")}
+                      label={
+                        policyAutopilot
+                          ? t("home.policy.acknowledgeAutopilot")
+                          : t("home.policy.acknowledge")
+                      }
                       checked={policyAcknowledged}
                       onChange={(event) =>
                         setPolicyAcknowledged(event.target.checked)
@@ -847,7 +937,17 @@ export function Home() {
                       >
                         {policyBusy
                           ? t("home.policy.enabling")
-                          : t("home.policy.enable")}
+                          : policyAutopilot
+                            ? t("home.policy.enableAutopilot")
+                            : t("home.policy.enable")}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        disabled={policyBusy}
+                        onClick={dismissPolicy}
+                      >
+                        {t("home.policy.dismiss")}
                       </Button>
                     </div>
                   </div>

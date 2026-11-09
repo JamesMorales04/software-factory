@@ -52,6 +52,10 @@ struct App {
     github_sync: tokio::sync::Mutex<()>,
     attempt_grant_key: Vec<u8>,
     observability: factory_native::observability::ExporterHandle,
+    /// Single-flight guard for the Core-owned autopilot runner. It prevents a
+    /// create-time spawn and a restart resume from assessing or starting the
+    /// same request twice. Durable start idempotency remains the final fence.
+    autopilot_in_flight: tokio::sync::Mutex<std::collections::HashSet<String>>,
 }
 
 const SESSION_COOKIE: &str = "factory_session";
@@ -462,6 +466,10 @@ struct ExecutionPolicyRequest {
     expected_revision: u32,
     expected_revision_hash: String,
     project_config_hash: String,
+    #[serde(default)]
+    autonomous: bool,
+    #[serde(default)]
+    subscription_confirmed: bool,
     acknowledge: bool,
     idempotency_key: String,
 }
@@ -705,7 +713,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         github_sync: tokio::sync::Mutex::new(()),
         attempt_grant_key: attempt_grant_key.into_bytes(),
         observability,
+        autopilot_in_flight: tokio::sync::Mutex::new(std::collections::HashSet::new()),
     });
+    {
+        let app_for_autopilot = Arc::clone(&app);
+        tokio::spawn(async move {
+            resume_autopilot_requests(&app_for_autopilot).await;
+        });
+    }
     let router = build_router(Arc::clone(&app));
     let mut listeners = Vec::new();
     for addr in &control_addrs {
@@ -8952,6 +8967,21 @@ fn intake_state_detail(
         IntakeState::Blocked => withdrawal
             .map(|withdrawal| format!("Withdrawn by operator: {}", withdrawal.reason))
             .or_else(|| lead.failure_reason.clone())
+            .or_else(|| match gate_outcome {
+                Some("REPAIR_REQUIRED") => Some(
+                    "Quality Gate requires repair; autonomous repair is disabled. Start a new authorized request or take an operator action."
+                        .into(),
+                ),
+                Some("HUMAN_REQUIRED") => Some(
+                    "Quality Gate requires a human decision before this request can proceed."
+                        .into(),
+                ),
+                Some("NOT_TESTED") => Some(
+                    "Quality Gate recorded NOT_TESTED; the request cannot be treated as accepted."
+                        .into(),
+                ),
+                _ => None,
+            })
             .unwrap_or_else(|| "Core blocked the request.".into()),
         IntakeState::Failed => lead
             .failure_reason
@@ -9207,13 +9237,30 @@ async fn validate_intake_assess_authority(
         });
     }
     grant.validate(chrono::Utc::now())?;
-    if grant.autonomous_start
-        || !grant.autonomous_risk_classes.is_empty()
-        || grant.risk_classes != vec![factory_native::lead::RiskClass::R0]
-    {
+    let autonomous_profile = profile.content.v2().is_some_and(|content| {
+        content.auto_start.enabled
+            && content
+                .auto_start
+                .risk_classes
+                .contains(&factory_native::lead::RiskClass::R0)
+    });
+    let autonomy_matches = match record.mode {
+        factory_native::intake::IntakeMode::ReviewPlan => {
+            !grant.autonomous_start && grant.autonomous_risk_classes.is_empty()
+        }
+        factory_native::intake::IntakeMode::Autonomous => {
+            grant.autonomous_start
+                && grant
+                    .autonomous_risk_classes
+                    .contains(&factory_native::lead::RiskClass::R0)
+                && autonomous_profile
+        }
+    };
+    if !autonomy_matches || grant.risk_classes != vec![factory_native::lead::RiskClass::R0] {
         return Err(Error::IntakeConflict {
             code: "EXECUTION_POLICY_REQUIRED",
-            message: "the request is not bound to a non-autonomous R0 execution policy".into(),
+            message: "the request is not bound to an execution policy matching its autonomy mode"
+                .into(),
         });
     }
     let content = profile.content.v2().ok_or_else(|| Error::IntakeConflict {
@@ -9357,6 +9404,193 @@ async fn get_intake_request(
     }
 }
 
+fn internal_operator_headers(app: &App) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::AUTHORIZATION,
+        format!("Bearer {}", app.operator_token)
+            .parse()
+            .expect("operator token header"),
+    );
+    headers
+}
+
+async fn ensure_autopilot_subscription_admission(app: &Arc<App>, id: &str) -> Result<(), Error> {
+    if app
+        .db
+        .active_subscription_admission_for_request(id)
+        .await?
+        .is_some()
+    {
+        return Ok(());
+    }
+    let now = chrono::Utc::now().timestamp_millis();
+    let input = IntakeSubscriptionAdmissionRequest {
+        assumption_id: format!("lead-autopilot:{id}:{now}"),
+        confirmed_by: "Product Owner (autonomous R0 policy)".into(),
+        confirmed_at_ms: now - 1_000,
+        valid_until_ms: now + 24 * 60 * 60 * 1_000,
+        extra_usage_disabled: true,
+        statement:
+            "Owner confirmed OpenCode Go Extra Usage is OFF and authorized autonomous R0 subscription execution."
+                .into(),
+        test_profile_id: "opencode-go-subscription".into(),
+        // The admission can expire while an autonomous request is still
+        // unfinished. A time-scoped key lets a resume create a fresh active
+        // admission instead of replaying expired evidence.
+        idempotency_key: format!("lead-autopilot-admission:{id}:{now}"),
+    };
+    let response = create_intake_subscription_admission(
+        State(Arc::clone(app)),
+        internal_operator_headers(app),
+        AxumPath(id.to_owned()),
+        None,
+        Json(input),
+    )
+    .await;
+    if !response.status().is_success() {
+        return Err(Error::IntakeConflict {
+            code: "AUTOPILOT_SUBSCRIPTION_ADMISSION_FAILED",
+            message: format!(
+                "autopilot could not record the subscription admission: {}",
+                response.status()
+            ),
+        });
+    }
+    Ok(())
+}
+
+async fn autonomous_start_intake(app: &Arc<App>, id: &str) -> Result<(), Error> {
+    let context = app.db.intake_start_context(id).await?;
+    if context.lead.campaign_id.is_some() {
+        return Ok(());
+    }
+    let billable = context.mechanism == "MODEL";
+    let admission_id = if billable {
+        let admission = app.db.active_subscription_admission_for_request(id).await?;
+        if admission.is_none() {
+            return Err(Error::IntakeConflict {
+                code: "SUBSCRIPTION_ADMISSION_REQUIRED",
+                message:
+                    "autonomous MODEL start requires the request-scoped subscription admission"
+                        .into(),
+            });
+        }
+        admission
+    } else {
+        None
+    };
+    let authorization = build_intake_authorization(
+        &context,
+        Some("Lead (autopilot)"),
+        "lead-autopilot",
+        "Autonomous R0 start under the owner-granted execution policy",
+        factory_native::db::NO_BILLABLE_ENVELOPE,
+    );
+    let expected = factory_native::db::ExpectedStartBinding::new(
+        &context.lead.request_hash,
+        &context.plan.plan_hash,
+        &context.spec_sha256,
+        &context.lead.project_config_hash,
+        &context.grant.content_hash,
+        Some(&context.context.profile_revision_id),
+        Some(&context.context.profile_hash),
+    )?;
+    let autonomy = factory_native::db::ValidatedAutonomyContext::from_deployment_policy(
+        app.lead_autonomous_start,
+    )?;
+    let idempotency_key = format!("intake-autopilot:{id}:{}", context.plan.plan_hash);
+    app.db
+        .start_lead_campaign_with_admission(
+            &context.lead.id,
+            &idempotency_key,
+            factory_native::db::StartAuthority::Autonomous(autonomy),
+            Some(&expected),
+            Some(&authorization),
+            admission_id.as_deref(),
+        )
+        .await?;
+    Ok(())
+}
+
+async fn run_autopilot(app: &Arc<App>, id: &str) -> Result<(), Error> {
+    {
+        let mut in_flight = app.autopilot_in_flight.lock().await;
+        if !in_flight.insert(id.to_owned()) {
+            return Ok(());
+        }
+    }
+    let result = run_autopilot_inner(app, id).await;
+    app.autopilot_in_flight.lock().await.remove(id);
+    result
+}
+
+async fn run_autopilot_inner(app: &Arc<App>, id: &str) -> Result<(), Error> {
+    let record = app.db.intake_request(id).await?;
+    if record.mode != factory_native::intake::IntakeMode::Autonomous {
+        return Ok(());
+    }
+    let policy = app.db.execution_policy_grant(&record.delegation_id).await?;
+    let profile = app
+        .db
+        .execution_profile_revision(&record.profile_id, &record.profile_revision_id)
+        .await?;
+    let subscription_profile = profile
+        .content
+        .v2()
+        .is_some_and(factory_native::intake::autonomous_subscription_profile);
+    if !policy.autonomous || !policy.subscription_confirmed || !subscription_profile {
+        return Err(Error::IntakeConflict {
+            code: "AUTONOMOUS_POLICY_REQUIRED",
+            message:
+                "autonomous intake requires the owner-granted autonomous R0 policy with subscription confirmation and OpenCode Go subscription routes for the Lead and implementer"
+                    .into(),
+        });
+    }
+    ensure_autopilot_subscription_admission(app, id).await?;
+    let response = assess_intake_request(
+        State(Arc::clone(app)),
+        internal_operator_headers(app),
+        AxumPath(id.to_owned()),
+    )
+    .await;
+    if !response.status().is_success() && response.status() != StatusCode::CONFLICT {
+        return Err(Error::IntakeConflict {
+            code: "AUTOPILOT_ASSESSMENT_FAILED",
+            message: format!("autopilot assessment returned {}", response.status()),
+        });
+    }
+    let record = app.db.intake_request(id).await?;
+    let lead = app.db.lead_request(&record.lead_request_id).await?;
+    if lead.campaign_id.is_some() {
+        return Ok(());
+    }
+    autonomous_start_intake(app, id).await
+}
+
+async fn fail_autopilot(app: &Arc<App>, id: &str, error: &Error) {
+    tracing::warn!(%error, request_id = %id, "autopilot failed");
+    if let Ok(record) = app.db.intake_request(id).await
+        && record.campaign_id.is_none()
+    {
+        let _ = app
+            .db
+            .block_lead_request(&record.lead_request_id, &format!("autopilot: {error}"))
+            .await;
+    }
+}
+
+async fn resume_autopilot_requests(app: &Arc<App>) {
+    let Ok(records) = app.db.unfinished_autonomous_intake_requests().await else {
+        return;
+    };
+    for record in records {
+        if let Err(error) = run_autopilot(app, &record.id).await {
+            fail_autopilot(app, &record.id, &error).await;
+        }
+    }
+}
+
 async fn create_intake_request(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
@@ -9426,6 +9660,15 @@ async fn create_intake_request(
                 Ok(value) => value,
                 Err(error) => return api_error(error),
             };
+            if created && record.mode == factory_native::intake::IntakeMode::Autonomous {
+                let app_for_autopilot = Arc::clone(&app);
+                let request_id = record.id.clone();
+                tokio::spawn(async move {
+                    if let Err(error) = run_autopilot(&app_for_autopilot, &request_id).await {
+                        fail_autopilot(&app_for_autopilot, &request_id, &error).await;
+                    }
+                });
+            }
             (
                 if created {
                     StatusCode::CREATED
@@ -9436,10 +9679,14 @@ async fn create_intake_request(
             )
                 .into_response()
         }
-        Err(Error::IntakeConflict {
-            code: "EXECUTION_POLICY_REQUIRED",
-            message,
-        }) => {
+        Err(Error::IntakeConflict { code, message })
+            if matches!(
+                code,
+                "EXECUTION_POLICY_REQUIRED"
+                    | "AUTONOMOUS_POLICY_REQUIRED"
+                    | "SUBSCRIPTION_CONFIRMATION_REQUIRED"
+            ) =>
+        {
             let scope = intake_policy_scope(
                 &app,
                 &input.project_id,
@@ -9450,11 +9697,11 @@ async fn create_intake_request(
                 StatusCode::CONFLICT,
                 Json(json!({
                     "error": message,
-                    "code": "EXECUTION_POLICY_REQUIRED",
+                    "code": code,
                     "authorization": {
                         "required": true,
                         "available": false,
-                        "reason": "EXECUTION_POLICY_REQUIRED",
+                        "reason": code,
                     },
                     "scope": scope,
                 })),
@@ -9798,12 +10045,21 @@ async fn create_intake_subscription_admission(
             "subscription acceptance requires a V2 execution profile".into(),
         ));
     };
-    let gateway = match app.current_model_gateway().await {
-        Some(gateway) => gateway,
-        None => {
-            return api_error(Error::Conflict(
-                "subscription acceptance requires a configured model gateway",
-            ));
+    // Bind the admission to the frozen profile Lead route, not the deployment
+    // default. A profile can select a different Lead provider/model than the
+    // default gateway, and the assessment must be covered by the exact route.
+    let gateway = match app.intake_assess_gateway(&profile).await {
+        Ok(gateway) => gateway,
+        Err(route_error) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "error": route_error.to_string(),
+                    "code": "ASSESSMENT_UNAVAILABLE",
+                    "routeCode": route_error.code(),
+                })),
+            )
+                .into_response();
         }
     };
     let assessment_provider = gateway.provider().to_owned();
@@ -9863,14 +10119,29 @@ async fn create_intake_subscription_admission(
             transport: implementer_transport.to_owned(),
         },
     ];
-    if let Some(reviewer_transport) = test_transport_for_provider(&assessment_provider)
-        && assessment_provider == "opencode-go"
-    {
+    let reviewer = &content.roles.semantic_reviewer;
+    if reviewer.provider == "opencode-go" {
+        let Some(reviewer_transport) = test_transport_for_provider(&reviewer.provider) else {
+            return api_error(Error::Forbidden(
+                "semantic reviewer provider is outside the automated acceptance allowlist".into(),
+            ));
+        };
+        let reviewer_settings = match app.db.provider_settings(&reviewer.provider).await {
+            Ok(settings) if settings.enabled && !settings.credential_ciphertext.is_empty() => {
+                settings
+            }
+            Ok(_) => {
+                return api_error(Error::Forbidden(
+                    "semantic reviewer provider is not configured and enabled".into(),
+                ));
+            }
+            Err(error) => return api_error(error),
+        };
         routes.push(factory_native::subscription_admission::TestRouteBinding {
             role: factory_native::subscription_admission::TestModelRole::SemanticReviewer,
-            provider: assessment_provider.clone(),
-            model: assessment_model.clone(),
-            settings_revision: format!("model-gateway:{assessment_provider}:{assessment_model}"),
+            provider: reviewer.provider.clone(),
+            model: reviewer.model.clone(),
+            settings_revision: reviewer_settings.revision.to_string(),
             transport: reviewer_transport.to_owned(),
         });
     }
@@ -10186,6 +10457,8 @@ async fn create_execution_policy(
             expected_revision_hash: &input.expected_revision_hash,
             project_config_hash: &input.project_config_hash,
             acknowledge: input.acknowledge,
+            autonomous: input.autonomous,
+            subscription_confirmed: input.subscription_confirmed,
             idempotency_key: &input.idempotency_key,
             principal_id: &principal_id,
             principal_label: device_label.as_deref(),
@@ -11083,6 +11356,7 @@ mod tests {
             }),
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
             observability: factory_native::observability::ExporterHandle::disabled(),
+            autopilot_in_flight: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         };
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -11179,6 +11453,7 @@ mod tests {
             }),
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
             observability: factory_native::observability::ExporterHandle::disabled(),
+            autopilot_in_flight: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         });
         let router = build_router(app);
         for uri in [
@@ -11391,6 +11666,7 @@ mod tests {
             }),
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
             observability: factory_native::observability::ExporterHandle::disabled(),
+            autopilot_in_flight: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         });
         let router = build_router(app);
 
@@ -11582,6 +11858,7 @@ mod tests {
             }),
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
             observability: factory_native::observability::ExporterHandle::disabled(),
+            autopilot_in_flight: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         });
         let router = build_router(Arc::clone(&app));
         let mut execution_grant = factory_native::lead::StandingDelegationV2 {
@@ -11757,6 +12034,7 @@ mod tests {
             }),
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
             observability: factory_native::observability::ExporterHandle::disabled(),
+            autopilot_in_flight: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         });
         let router = build_router(app);
         let request = axum::http::Request::builder()
@@ -11824,6 +12102,7 @@ mod tests {
             }),
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
             observability: factory_native::observability::ExporterHandle::disabled(),
+            autopilot_in_flight: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         })
     }
 
@@ -11870,6 +12149,7 @@ mod tests {
             }),
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
             observability: factory_native::observability::ExporterHandle::disabled(),
+            autopilot_in_flight: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         });
         let router = build_router(app.clone());
         let wrong_code = router
@@ -12960,6 +13240,7 @@ mod tests {
             }),
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
             observability: factory_native::observability::ExporterHandle::disabled(),
+            autopilot_in_flight: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         };
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -13011,6 +13292,7 @@ mod tests {
             }),
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
             observability: factory_native::observability::ExporterHandle::disabled(),
+            autopilot_in_flight: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         });
         let router = build_router(Arc::clone(&app));
         let disabled_model_call = axum::http::Request::builder()
@@ -13170,6 +13452,7 @@ mod tests {
             }),
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
             observability: factory_native::observability::ExporterHandle::disabled(),
+            autopilot_in_flight: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         });
         let router = build_router(app);
 
@@ -13404,6 +13687,7 @@ mod tests {
             }),
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
             observability: factory_native::observability::ExporterHandle::disabled(),
+            autopilot_in_flight: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         });
         let router = build_router(app);
         let authorized = |method: &str, uri: &str, body: Option<Value>| {
@@ -14242,6 +14526,7 @@ mod tests {
             }),
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
             observability: factory_native::observability::ExporterHandle::disabled(),
+            autopilot_in_flight: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         });
         let router = build_router(app.clone());
         let approve_uri = format!("/lead/requests/{request_id}/approve");

@@ -191,6 +191,7 @@ export function RequestWorkspace() {
     "FAILED",
   ].includes(data.state);
   const authorizationAvailable = data.authorization.available;
+  const isAutopilot = data.mode === "AUTONOMOUS";
   const offline = connectionError !== null;
   const approvalReady =
     data.state === "AWAITING_APPROVAL" && data.plan !== null;
@@ -450,145 +451,161 @@ export function RequestWorkspace() {
                 <h2>{t("request.next.title")}</h2>
                 <span className="muted">{t("request.next.hint")}</span>
               </div>
-              {data.state === "SUBMITTED" && (
+              {isAutopilot ? (
+                <p className="ui-callout ui-callout--info" role="status">
+                  {t("request.autopilot.status")}
+                </p>
+              ) : (
                 <>
-                  <p className="muted">{t("request.next.assessDescription")}</p>
-                  <Button
-                    variant="primary"
-                    disabled={busy !== null || offline}
-                    onClick={() => void assess()}
-                  >
-                    {busy === "assess"
-                      ? t("request.next.assessing")
-                      : t("request.next.assess")}
-                  </Button>
-                  <details className="request-subscription">
-                    <summary>{t("request.subscription.title")}</summary>
-                    <p className="muted">{t("request.subscription.help")}</p>
-                    <Checkbox
-                      label={t("request.subscription.confirm")}
-                      checked={extraUsageConfirmed}
-                      onChange={(event) =>
-                        setExtraUsageConfirmed(event.target.checked)
-                      }
-                      disabled={busy !== null || offline}
-                    />
-                    <Button
-                      variant="secondary"
-                      disabled={
-                        busy !== null || offline || !extraUsageConfirmed
-                      }
-                      onClick={() => void confirmSubscription()}
-                    >
-                      {busy === "subscription"
-                        ? t("request.subscription.saving")
-                        : t("request.subscription.save")}
-                    </Button>
-                  </details>
-                </>
-              )}
-              {data.state === "ASSESSING" && (
-                <>
-                  <p className="muted" role="status">
-                    {t("request.next.assessingDescription")}
-                  </p>
-                  <Button
-                    disabled={busy !== null}
-                    onClick={() => void load(true)}
-                  >
-                    {t("request.next.refresh")}
-                  </Button>
-                </>
-              )}
-              {data.state === "PLAN_READY" &&
-                (data.proposal ? (
-                  <>
-                    <p className="muted">
-                      {t("request.next.freezeDescription")}
-                    </p>
-                    <Button
-                      variant="primary"
-                      disabled={busy !== null || offline}
-                      onClick={() => void completeAssessment()}
-                    >
-                      {busy === "freeze"
-                        ? t("request.next.freezing")
-                        : t("request.next.freeze")}
-                    </Button>
-                  </>
-                ) : (
-                  <p className="muted">{t("request.next.readyNoProposal")}</p>
-                ))}
-              {data.state === "AWAITING_APPROVAL" &&
-                (data.plan === null ? (
-                  <p className="ui-callout ui-callout--danger">
-                    {t("request.next.awaitingNoPlan")}
-                  </p>
-                ) : (
-                  <form
-                    className="request-approval"
-                    onSubmit={(event) => void approve(event)}
-                  >
-                    <p className="muted">{t("request.approval.description")}</p>
-                    <dl className="request-facts">
-                      <div>
-                        <dt>{t("request.approval.planHash")}</dt>
-                        <dd>
-                          <code title={data.plan.plan_hash}>
-                            {data.plan.plan_hash}
-                          </code>
-                        </dd>
-                      </div>
-                      <div>
-                        <dt>{t("request.approval.profileRevision")}</dt>
-                        <dd>
-                          {data.profile.name} r{data.profile.revision} ·{" "}
-                          <code title={data.profile.contentHash}>
-                            {shortId(data.profile.contentHash, 12)}
-                          </code>
-                        </dd>
-                      </div>
-                    </dl>
-                    {!authorizationAvailable && (
-                      <p className="ui-callout ui-callout--danger">
-                        {data.authorization.reason ??
-                          t("request.approval.reasonFallback")}
+                  {data.state === "SUBMITTED" && (
+                    <>
+                      <p className="muted">
+                        {t("request.next.assessDescription")}
                       </p>
-                    )}
-                    <Textarea
-                      label={t("request.approval.rationale")}
-                      value={rationale}
-                      onChange={(event) => setRationale(event.target.value)}
-                      disabled={!authorizationAvailable || offline}
-                      help={t("request.approval.rationaleHelp")}
-                      required
-                    />
-                    <Checkbox
-                      label={t("request.approval.reviewed")}
-                      checked={approvedScope}
-                      onChange={(event) =>
-                        setApprovedScope(event.target.checked)
-                      }
-                      disabled={!authorizationAvailable || offline}
-                    />
-                    <div className="request-form-actions">
                       <Button
-                        type="submit"
                         variant="primary"
-                        disabled={approveDisabled}
+                        disabled={busy !== null || offline}
+                        onClick={() => void assess()}
                       >
-                        {busy === "approve"
-                          ? t("request.approval.record")
-                          : t("request.approval.approve")}
+                        {busy === "assess"
+                          ? t("request.next.assessing")
+                          : t("request.next.assess")}
                       </Button>
-                      {!authorizationAvailable && (
-                        <span className="muted">
-                          {t("request.approval.disabled")}
-                        </span>
-                      )}
-                    </div>
-                  </form>
-                ))}
+                      <details className="request-subscription">
+                        <summary>{t("request.subscription.title")}</summary>
+                        <p className="muted">
+                          {t("request.subscription.help")}
+                        </p>
+                        <Checkbox
+                          label={t("request.subscription.confirm")}
+                          checked={extraUsageConfirmed}
+                          onChange={(event) =>
+                            setExtraUsageConfirmed(event.target.checked)
+                          }
+                          disabled={busy !== null || offline}
+                        />
+                        <Button
+                          variant="secondary"
+                          disabled={
+                            busy !== null || offline || !extraUsageConfirmed
+                          }
+                          onClick={() => void confirmSubscription()}
+                        >
+                          {busy === "subscription"
+                            ? t("request.subscription.saving")
+                            : t("request.subscription.save")}
+                        </Button>
+                      </details>
+                    </>
+                  )}
+                  {data.state === "ASSESSING" && (
+                    <>
+                      <p className="muted" role="status">
+                        {t("request.next.assessingDescription")}
+                      </p>
+                      <Button
+                        disabled={busy !== null}
+                        onClick={() => void load(true)}
+                      >
+                        {t("request.next.refresh")}
+                      </Button>
+                    </>
+                  )}
+                  {data.state === "PLAN_READY" &&
+                    (data.proposal ? (
+                      <>
+                        <p className="muted">
+                          {t("request.next.freezeDescription")}
+                        </p>
+                        <Button
+                          variant="primary"
+                          disabled={busy !== null || offline}
+                          onClick={() => void completeAssessment()}
+                        >
+                          {busy === "freeze"
+                            ? t("request.next.freezing")
+                            : t("request.next.freeze")}
+                        </Button>
+                      </>
+                    ) : (
+                      <p className="muted">
+                        {t("request.next.readyNoProposal")}
+                      </p>
+                    ))}
+                  {data.state === "AWAITING_APPROVAL" &&
+                    (data.plan === null ? (
+                      <p className="ui-callout ui-callout--danger">
+                        {t("request.next.awaitingNoPlan")}
+                      </p>
+                    ) : (
+                      <form
+                        className="request-approval"
+                        onSubmit={(event) => void approve(event)}
+                      >
+                        <p className="muted">
+                          {t("request.approval.description")}
+                        </p>
+                        <dl className="request-facts">
+                          <div>
+                            <dt>{t("request.approval.planHash")}</dt>
+                            <dd>
+                              <code title={data.plan.plan_hash}>
+                                {data.plan.plan_hash}
+                              </code>
+                            </dd>
+                          </div>
+                          <div>
+                            <dt>{t("request.approval.profileRevision")}</dt>
+                            <dd>
+                              {data.profile.name} r{data.profile.revision} ·{" "}
+                              <code title={data.profile.contentHash}>
+                                {shortId(data.profile.contentHash, 12)}
+                              </code>
+                            </dd>
+                          </div>
+                        </dl>
+                        {!authorizationAvailable && (
+                          <p className="ui-callout ui-callout--danger">
+                            {data.authorization.reason ??
+                              t("request.approval.reasonFallback")}
+                          </p>
+                        )}
+                        <Textarea
+                          label={t("request.approval.rationale")}
+                          value={rationale}
+                          onChange={(event) => setRationale(event.target.value)}
+                          disabled={!authorizationAvailable || offline}
+                          help={t("request.approval.rationaleHelp")}
+                          required
+                        />
+                        <Checkbox
+                          label={t("request.approval.reviewed")}
+                          checked={approvedScope}
+                          onChange={(event) =>
+                            setApprovedScope(event.target.checked)
+                          }
+                          disabled={!authorizationAvailable || offline}
+                        />
+                        <div className="request-form-actions">
+                          <Button
+                            type="submit"
+                            variant="primary"
+                            disabled={approveDisabled}
+                          >
+                            {busy === "approve"
+                              ? t("request.approval.record")
+                              : t("request.approval.approve")}
+                          </Button>
+                          {!authorizationAvailable && (
+                            <span className="muted">
+                              {t("request.approval.disabled")}
+                            </span>
+                          )}
+                        </div>
+                      </form>
+                    ))}
+                </>
+              )}
             </Panel>
           )}
 

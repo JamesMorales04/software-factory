@@ -281,6 +281,7 @@ milestones:
   - CAP-052
   - CAP-054
   - CAP-055
+  - CAP-056
   exclusions:
   - Generic SaaS dashboard scope
   - invented backend capability or decorative actions
@@ -2689,3 +2690,65 @@ capabilities:
   - TRUSTED_LOCAL work is not isolation and does not certify SEC-01.
   blockers:
   - Independent review, Product Owner approval of ADR-0033 and a fresh real-model acceptance remain pending.
+
+- id: CAP-056
+  name: Owner-granted autonomous R0 intake
+  category: Product mode
+  purpose: An owner enables one bounded R0 autopilot policy on OpenCode Go subscription routes, then the Lead assesses, freezes and starts eligible requests without per-request approval while Core remains the authority
+  product_objective: Autonomous product development
+  decision_status: approved
+  implementation_status: in_progress
+  verification:
+    deterministic: verified
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-043
+  - CAP-046
+  - CAP-049
+  target_milestone: F1-S9
+  refs:
+    adr:
+    - docs/architecture/decisions/ADR-0036-owner-granted-autonomous-r0-intake.md
+    - docs/architecture/decisions/ADR-0016-dual-mode-autonomous-engineering.md
+    contract:
+    - docs/product/factory-office.md
+    - docs/product/office-parity.json
+    source:
+    - migrations/0051_autonomous_intake.sql
+    - native/src/bin/core.rs
+    - native/src/db/intake.rs
+    - native/src/db/lead.rs
+    - native/src/intake.rs
+    - native/src/lead_model.rs
+    - office/src/views/Home.tsx
+    - office/src/views/RequestWorkspace.tsx
+    - office/src/coreApi.ts
+    test:
+    - native/src/db/intake.rs
+    - native/src/bin/core.rs
+    - office/src/views/Home.test.tsx
+    - office/src/views/RequestWorkspace.test.tsx
+    - .agents/skills/ui-change-acceptance/SKILL.md
+  acceptance:
+    deterministic: An autonomous policy grant persists autonomy only for an exact V2 profile revision whose auto_start policy includes R0; autonomous intake refuses a non-autonomous grant or missing subscription confirmation; Core derives the request-scoped subscription admission from the durable owner confirmation; the background runner is idempotent, resumes unfinished autonomous requests after restart and blocks truthfully on failure; R1+ and protected decisions remain operator-only.
+    real: A fresh Compose Project created through Office with an R0 autopilot profile and the objective "crea un gestor de calendario" is assessed, frozen and started by Core without per-request assessment or approval clicks, produces a real candidate and reaches an ACCEPTED Quality Gate; the same run records Blocked states for real failures instead of false success.
+  evidence:
+    deterministic:
+    - docs/evidence/autopilot-r0-2026-11-08/manifest.json
+    - docs/evidence/office-autonomy-ux-2026-11-08/manifest.json
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations:
+  - The live autopilot run is an implementer browser self-test with the real OpenCode Go provider; independent verifier acceptance and Product Owner UAT remain pending.
+  - Autonomous Gate repair remains disabled. A blocked, failed or repair-required result needs an operator action or a new authorized request against a Project that contains the rejected candidate; a request from the base commit is not an in-place repair.
+  - The Issues auto-start is browser-side; this capability covers Core-owned unified-intake autopilot only.
+  - The policy is limited to R0, one frozen profile revision, fixed paths/capabilities/route/operations/progress and the configured expiry. The current product supports autonomous execution only when the Lead and implementer both use the OpenCode Go subscription route; other profiles stay on manual review.
+  - TRUSTED_LOCAL is broad local access; no isolation or security certification is claimed.
+  blockers:
+  - Independent live acceptance, autonomous repair and the independent security review remain open.

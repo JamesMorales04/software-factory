@@ -1717,6 +1717,7 @@ fn validate_profile_authorization(
     grant: &StandingDelegationV2,
     action_spec: &ActionSpec,
     mechanism: &str,
+    authority: &StartAuthority,
 ) -> Result<(), Error> {
     let expected_mode = match mechanism {
         "MODEL" => "TRUSTED_LOCAL_PROVIDER",
@@ -1738,9 +1739,24 @@ fn validate_profile_authorization(
             "authorization delegation differs from the frozen request".into(),
         ));
     }
+    let autonomy_matches = match authority {
+        StartAuthority::Operator(_) => {
+            !grant.autonomous_start && grant.autonomous_risk_classes.is_empty()
+        }
+        StartAuthority::Autonomous(_) => {
+            grant.autonomous_start
+                && grant
+                    .autonomous_risk_classes
+                    .contains(&crate::lead::RiskClass::R0)
+                && profile.auto_start.enabled
+                && profile
+                    .auto_start
+                    .risk_classes
+                    .contains(&crate::lead::RiskClass::R0)
+        }
+    };
     if grant.risk_classes != vec![crate::lead::RiskClass::R0]
-        || grant.autonomous_start
-        || !grant.autonomous_risk_classes.is_empty()
+        || !autonomy_matches
         || grant.max_timeout_secs > profile.operations.tool_call_timeout_secs.get()
         || grant.max_parallel != 1
         || grant.progress != profile.progress
@@ -1968,9 +1984,10 @@ async fn start_lead_campaign_in_tx(
                     "delegation does not authorize autonomous R0 start".into(),
                 ));
             }
-            if action_classification.0 != "R0" {
+            if !matches!(action_classification.0.as_str(), "R0" | "UNASSESSED") {
                 return Err(Error::Forbidden(
-                    "action must be explicitly classified R0 before autonomous start".into(),
+                    "autonomous start requires an R0 or unassessed action with an R0 frozen plan"
+                        .into(),
                 ));
             }
         }
@@ -2004,11 +2021,6 @@ async fn start_lead_campaign_in_tx(
             ));
         }
         _ => {}
-    }
-    if matches!(authority, StartAuthority::Autonomous(_)) && identity.profile.is_some() {
-        return Err(Error::Forbidden(
-            "a unified-intake request can start only through explicit operator approval".into(),
-        ));
     }
     if let Some(expected) = expected
         && !expected_binding_matches(expected, &identity)
@@ -2161,6 +2173,7 @@ async fn start_lead_campaign_in_tx(
             grant,
             &identity.action_spec,
             &mechanism,
+            authority,
         )?;
     }
     let (mode, principal_id, principal_label, rationale) = match authority {
