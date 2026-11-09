@@ -9689,18 +9689,13 @@ async fn intake_request_value(
             None => None,
         };
         let messages = app.db.intake_messages(&record.id).await?;
-        let planning_artifacts = app
-            .db
-            .planning_artifacts(&record.id)
-            .await
-            .unwrap_or_default();
-        let plan_review = app.db.latest_plan_review(&record.id).await.ok();
-        let workflow = app
-            .db
-            .workflow_run_for_request(&record.id)
-            .await
-            .ok()
-            .flatten();
+        let planning_artifacts = app.db.planning_artifacts(&record.id).await?;
+        let plan_review = match app.db.latest_plan_review(&record.id).await {
+            Ok(review) => Some(review),
+            Err(Error::NotFound) => None,
+            Err(error) => return Err(error),
+        };
+        let workflow = app.db.workflow_run_for_request(&record.id).await?;
         value["assessment"] = json!(assessment);
         value["proposal"] = json!(proposal);
         value["plan"] = json!(plan);
@@ -10326,23 +10321,14 @@ async fn agentic_projection_for_request(
             &stack,
         )
     });
-    let planning_artifacts = app
-        .db
-        .planning_artifacts(&record.id)
-        .await
-        .unwrap_or_default();
-    let plan_review = app.db.latest_plan_review(&record.id).await.ok();
-    let workflow = app
-        .db
-        .workflow_run_for_request(&record.id)
-        .await
-        .ok()
-        .flatten();
-    let findings = app
-        .db
-        .finding_dispositions(&record.id)
-        .await
-        .unwrap_or_default();
+    let planning_artifacts = app.db.planning_artifacts(&record.id).await?;
+    let plan_review = match app.db.latest_plan_review(&record.id).await {
+        Ok(review) => Some(review),
+        Err(Error::NotFound) => None,
+        Err(error) => return Err(error),
+    };
+    let workflow = app.db.workflow_run_for_request(&record.id).await?;
+    let findings = app.db.finding_dispositions(&record.id).await?;
     let specifications = proposal
         .map(|proposal| {
             proposal
@@ -10750,13 +10736,18 @@ async fn persist_planning_plan(
     documentation
         .validate()
         .map_err(|error| api_error(Error::Validation(error)))?;
-    let persisted = app.db.skill_packs().await.unwrap_or_default();
-    let persisted_packs = persisted
-        .iter()
-        .filter_map(|record| {
-            serde_json::from_str::<factory_native::planning::SkillPack>(&record.content_json).ok()
-        })
-        .collect::<Vec<_>>();
+    let persisted = app.db.skill_packs().await.map_err(api_error)?;
+    let mut persisted_packs = Vec::with_capacity(persisted.len());
+    for record in &persisted {
+        let pack =
+            serde_json::from_str::<factory_native::planning::SkillPack>(&record.content_json)
+                .map_err(|_| {
+                    api_error(Error::Invalid(
+                        "stored skill pack is not a valid planning artifact",
+                    ))
+                })?;
+        persisted_packs.push(pack);
+    }
     let now = chrono::Utc::now().to_rfc3339();
     let skill_plan = match factory_native::planning::skills::build_skill_plan(
         &context.stack,
@@ -11428,26 +11419,29 @@ async fn get_agentic_planning(
         Ok(context) => context,
         Err(error) => return api_error(error),
     };
-    let artifacts = app
-        .db
-        .planning_artifacts(&record.id)
-        .await
-        .unwrap_or_default();
-    let review = app.db.latest_plan_review(&record.id).await.ok();
-    let workflow = app
-        .db
-        .workflow_run_for_request(&record.id)
-        .await
-        .ok()
-        .flatten();
+    let artifacts = match app.db.planning_artifacts(&record.id).await {
+        Ok(artifacts) => artifacts,
+        Err(error) => return api_error(error),
+    };
+    let review = match app.db.latest_plan_review(&record.id).await {
+        Ok(review) => Some(review),
+        Err(Error::NotFound) => None,
+        Err(error) => return api_error(error),
+    };
+    let workflow = match app.db.workflow_run_for_request(&record.id).await {
+        Ok(workflow) => workflow,
+        Err(error) => return api_error(error),
+    };
     let revision = review
         .as_ref()
         .map(|review| review.plan_revision)
         .or_else(|| artifacts.iter().map(|artifact| artifact.revision).max())
         .unwrap_or(1);
-    let missing = planning_readiness(&app, &record.id, revision, context.planning_lane)
-        .await
-        .unwrap_or_else(|_| vec!["PLAN"]);
+    let missing = match planning_readiness(&app, &record.id, revision, context.planning_lane).await
+    {
+        Ok(missing) => missing,
+        Err(error) => return api_error(error),
+    };
     Json(json!({
         "lane": planning_lane_code(context.planning_lane),
         "signals": context.planning_signals,
@@ -11651,6 +11645,41 @@ async fn resolve_agentic_finding(
         }
     };
     let principal = operator_principal(session.as_ref().map(|Extension(device)| device));
+    if status == FindingStatus::Refuted {
+        let decision_id = match input.owner_decision.as_deref() {
+            Some(value) if !value.trim().is_empty() => value,
+            _ => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": "a refutation requires an owner decision reference", "code": "OWNER_DECISION_REQUIRED"})),
+                )
+                    .into_response();
+            }
+        };
+        let decision = match app.db.agentic_owner_decision(decision_id).await {
+            Ok(decision) => decision,
+            Err(Error::NotFound) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": "the owner decision reference does not exist", "code": "OWNER_DECISION_INVALID"})),
+                )
+                    .into_response();
+            }
+            Err(error) => return api_error(error),
+        };
+        let scoped = decision.request_id.as_deref() == Some(record.id.as_str())
+            || (decision.request_id.is_none() && decision.project_id == record.project_id);
+        if decision.status != "RESOLVED"
+            || decision.resolved_by.as_deref() != Some(principal.as_str())
+            || !scoped
+        {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "the owner decision is not a resolved decision by this owner for this request", "code": "OWNER_DECISION_INVALID"})),
+            )
+                .into_response();
+        }
+    }
     let disposition = FindingDisposition {
         request_id: record.id.clone(),
         finding_id,

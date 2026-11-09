@@ -1723,6 +1723,7 @@ export interface FindingDispositionRecord {
   reviewerPrincipal: string;
   resolvedBy: string;
   evidenceRefs: string[];
+  ownerPrincipal: string | null;
   ownerDecision: string | null;
   createdAt: string;
   updatedAt: string;

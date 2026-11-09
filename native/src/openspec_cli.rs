@@ -38,6 +38,7 @@ pub trait OpenSpecRunner {
     fn validate(
         &self,
         program: &str,
+        workspace: &Path,
         change_id: &str,
     ) -> Result<(String, String), OpenSpecCliError>;
 }
@@ -66,10 +67,12 @@ impl OpenSpecRunner for ProcessRunner {
     fn validate(
         &self,
         program: &str,
+        workspace: &Path,
         change_id: &str,
     ) -> Result<(String, String), OpenSpecCliError> {
         let output = Command::new(program)
             .args(["validate", change_id, "--strict"])
+            .current_dir(workspace)
             .env("OPENSPEC_NO_UPDATE_CHECK", "1")
             .env("NO_COLOR", "1")
             .output()
@@ -103,13 +106,18 @@ pub fn validate_with_pinned_cli(
         ));
     }
     let version = runner.version("openspec")?;
-    if !version.contains(OPENSPEC_CLI_VERSION) {
+    let reported = version
+        .split_whitespace()
+        .last()
+        .unwrap_or_default()
+        .trim_start_matches('v');
+    if reported != OPENSPEC_CLI_VERSION {
         return Err(OpenSpecCliError::VersionMismatch {
             expected: OPENSPEC_CLI_VERSION.into(),
             found: version,
         });
     }
-    let (stdout, stderr) = runner.validate("openspec", change_id)?;
+    let (stdout, stderr) = runner.validate("openspec", workspace, change_id)?;
     Ok(OpenSpecValidation {
         version,
         change_id: change_id.into(),
@@ -135,6 +143,7 @@ mod tests {
         fn validate(
             &self,
             _program: &str,
+            _workspace: &Path,
             change_id: &str,
         ) -> Result<(String, String), OpenSpecCliError> {
             if self.fail {
@@ -162,6 +171,14 @@ mod tests {
         };
         assert!(matches!(
             validate_with_pinned_cli(&root, "add-validator", &wrong),
+            Err(OpenSpecCliError::VersionMismatch { .. })
+        ));
+        let newer = FakeRunner {
+            version: "openspec 1.16.10".into(),
+            fail: false,
+        };
+        assert!(matches!(
+            validate_with_pinned_cli(&root, "add-validator", &newer),
             Err(OpenSpecCliError::VersionMismatch { .. })
         ));
         let failing = FakeRunner {

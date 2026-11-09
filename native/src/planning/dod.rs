@@ -118,13 +118,34 @@ pub fn build_definition_of_done(
     reviewer_plan: ReviewerPlan,
 ) -> DefinitionOfDone {
     let mut project_checks = stack_checks(stack);
-    project_checks.push(check(
-        "documentation-baseline",
-        CheckKind::Functional,
-        "Verify every required baseline document exists and is non-empty.",
-        &["test", "-s", "README.md"],
-        60,
-    ));
+    for (index, item) in documentation.required.iter().enumerate() {
+        let slug: String = item
+            .path
+            .chars()
+            .map(|character| {
+                if character.is_ascii_alphanumeric() {
+                    character
+                } else {
+                    '-'
+                }
+            })
+            .collect();
+        let command = item
+            .check_command
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        project_checks.push(check(
+            &format!("doc-{}-{}", index + 1, slug.trim_matches('-')),
+            CheckKind::Functional,
+            &format!(
+                "Required documentation exists and has a heading: {}",
+                item.path
+            ),
+            &command,
+            60,
+        ));
+    }
     if matches!(lane, PlanningLane::Delegated | PlanningLane::FormalSpec) {
         project_checks.push(check(
             "agents-contract",

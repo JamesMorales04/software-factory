@@ -14,7 +14,8 @@ use std::process::Command;
 
 use sha2::{Digest, Sha256};
 
-pub const MAX_VENDOR_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+pub const MAX_VENDOR_FILE_BYTES: u64 = 16 * 1024 * 1024;
+pub const MAX_VENDOR_TOTAL_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 pub const MAX_VENDOR_ENTRIES: usize = 200_000;
 
 #[derive(Debug, thiserror::Error)]
@@ -62,9 +63,22 @@ impl CommandRunner for ProcessCommandRunner {
         let (program, args) = argv
             .split_first()
             .ok_or_else(|| "empty dependency command".to_string())?;
+        // The broker network namespace and egress policy own registry
+        // allowlisting. This process still scrubs the ambient environment so a
+        // provider, registry or cloud credential cannot leak into Cargo.
         let output = Command::new(program)
             .args(args)
             .current_dir(cwd)
+            .env_clear()
+            .env(
+                "PATH",
+                std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into()),
+            )
+            .env("HOME", std::env::temp_dir())
+            .env(
+                "CARGO_HOME",
+                std::env::temp_dir().join("factory-dependency-cargo-home"),
+            )
             .env("CARGO_NET_OFFLINE", "false")
             .env("CARGO_TERM_COLOR", "never")
             .output()
@@ -137,7 +151,8 @@ fn validate_commands(request: &DependencyAcquisitionRequest) -> Result<(), Depen
 
 fn hash_tree(root: &Path) -> Result<(String, usize), DependencyBrokerError> {
     let mut entries = Vec::new();
-    collect(root, root, &mut entries)?;
+    let mut total_bytes = 0u64;
+    collect(root, root, &mut entries, &mut total_bytes)?;
     entries.sort();
     let mut hasher = Sha256::new();
     let count = entries.len();
@@ -154,15 +169,16 @@ fn collect(
     root: &Path,
     directory: &Path,
     entries: &mut Vec<(String, Vec<u8>)>,
+    total_bytes: &mut u64,
 ) -> Result<(), DependencyBrokerError> {
-    if entries.len() > MAX_VENDOR_ENTRIES {
-        return Err(DependencyBrokerError::VendorInvalid(
-            "vendor entry bound exceeded".into(),
-        ));
-    }
     let mut children = std::fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()?;
     children.sort_by_key(|entry| entry.file_name());
     for child in children {
+        if entries.len() >= MAX_VENDOR_ENTRIES {
+            return Err(DependencyBrokerError::VendorInvalid(
+                "vendor entry bound exceeded".into(),
+            ));
+        }
         let path = child.path();
         let metadata = std::fs::symlink_metadata(&path)?;
         if metadata.file_type().is_symlink() {
@@ -172,11 +188,17 @@ fn collect(
             )));
         }
         if metadata.is_dir() {
-            collect(root, &path, entries)?;
+            collect(root, &path, entries, total_bytes)?;
         } else if metadata.is_file() {
-            if metadata.len() > MAX_VENDOR_BYTES {
+            if metadata.len() > MAX_VENDOR_FILE_BYTES {
                 return Err(DependencyBrokerError::VendorInvalid(
                     "vendor file is too large".into(),
+                ));
+            }
+            *total_bytes = total_bytes.saturating_add(metadata.len());
+            if *total_bytes > MAX_VENDOR_TOTAL_BYTES {
+                return Err(DependencyBrokerError::VendorInvalid(
+                    "vendor total size bound exceeded".into(),
                 ));
             }
             let relative = path

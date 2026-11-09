@@ -864,6 +864,7 @@ pub struct FindingDispositionRecord {
     pub reviewer_principal: String,
     pub resolved_by: String,
     pub evidence_refs: Vec<String>,
+    pub owner_principal: Option<String>,
     pub owner_decision: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -930,8 +931,8 @@ impl Database {
             sqlx::query::query(
                 "INSERT INTO finding_dispositions
                  (id,request_id,candidate_id,finding_id,route,status,reviewer_principal,
-                  resolved_by,evidence_refs_json,owner_decision,created_at,updated_at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?11)",
+                  resolved_by,evidence_refs_json,owner_principal,owner_decision,created_at,updated_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?12)",
             )
             .bind(&id)
             .bind(request_id)
@@ -946,6 +947,7 @@ impl Database {
             .bind(&disposition.reviewer_principal)
             .bind(&disposition.resolved_by)
             .bind(&evidence_refs_json)
+            .bind(disposition.owner_principal.as_deref())
             .bind(disposition.owner_decision.as_deref())
             .bind(&now)
             .execute(&mut *transaction)
@@ -954,7 +956,7 @@ impl Database {
         };
         let row: FindingDispositionRow = sqlx::query_as::query_as(
             "SELECT id,request_id,candidate_id,finding_id,route,status,reviewer_principal,
-                    resolved_by,evidence_refs_json,owner_decision,created_at,updated_at
+                    resolved_by,evidence_refs_json,owner_principal,owner_decision,created_at,updated_at
              FROM finding_dispositions WHERE id=?1",
         )
         .bind(&id)
@@ -970,7 +972,7 @@ impl Database {
     ) -> Result<Vec<FindingDispositionRecord>, Error> {
         let rows: Vec<FindingDispositionRow> = sqlx::query_as::query_as(
             "SELECT id,request_id,candidate_id,finding_id,route,status,reviewer_principal,
-                    resolved_by,evidence_refs_json,owner_decision,created_at,updated_at
+                    resolved_by,evidence_refs_json,owner_principal,owner_decision,created_at,updated_at
              FROM finding_dispositions WHERE request_id=?1
              ORDER BY created_at,finding_id",
         )
@@ -987,7 +989,7 @@ impl Database {
     ) -> Result<FindingDispositionRecord, Error> {
         let row: Option<FindingDispositionRow> = sqlx::query_as::query_as(
             "SELECT id,request_id,candidate_id,finding_id,route,status,reviewer_principal,
-                    resolved_by,evidence_refs_json,owner_decision,created_at,updated_at
+                    resolved_by,evidence_refs_json,owner_principal,owner_decision,created_at,updated_at
              FROM finding_dispositions WHERE request_id=?1 AND finding_id=?2",
         )
         .bind(request_id)
@@ -1008,6 +1010,7 @@ type FindingDispositionRow = (
     String,
     String,
     String,
+    Option<String>,
     Option<String>,
     String,
     String,
@@ -1038,8 +1041,9 @@ fn finding_from_row(row: FindingDispositionRow) -> Result<FindingDispositionReco
         resolved_by: row.7,
         evidence_refs: serde_json::from_str(&row.8)
             .map_err(|_| Error::Invalid("stored finding evidence is invalid"))?,
-        owner_decision: row.9,
-        created_at: row.10,
-        updated_at: row.11,
+        owner_principal: row.9,
+        owner_decision: row.10,
+        created_at: row.11,
+        updated_at: row.12,
     })
 }

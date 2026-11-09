@@ -29,7 +29,9 @@ const BASELINE: &[(&str, &str)] = &[
 ];
 
 fn check_command(path: &str) -> Vec<String> {
-    vec!["test".into(), "-s".into(), path.into()]
+    // A baseline document must exist, be non-empty and carry a Markdown
+    // heading. This is a structural check, not a claim that prose is correct.
+    vec!["grep".into(), "-q".into(), "^#".into(), path.into()]
 }
 
 /// Build the documentation plan for the lane. `Direct` still requires the
