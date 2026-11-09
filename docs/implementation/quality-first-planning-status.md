@@ -7,6 +7,8 @@ what remains unverified. It is not acceptance evidence and does not claim
 
 - Branch: `factory/agentic-flow-20261108`
 - Implementation commit: `ae7182e`
+- Review-fix commits: `29ee61c`, `d774d3e`, `ae7182e`, `185ca99`, `a086d02`,
+  `30e6ad2`
 - Design authority: [ADR-0039](../architecture/decisions/ADR-0039-quality-first-planning-and-stack-selection.md)
 - Plans: [quality-first planning](../implementation/quality-first-planning-plan.md),
   [delivery](quality-first-delivery-plan.md),
