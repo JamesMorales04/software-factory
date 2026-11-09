@@ -82,6 +82,7 @@ const detail: AgenticRequestDetail = {
     review: null,
     workflow: null,
   },
+  findings: [],
   stack: {
     languages: ["rust", "typescript"],
     frameworks: ["axum", "react"],

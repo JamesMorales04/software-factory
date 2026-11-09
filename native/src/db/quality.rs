@@ -886,6 +886,62 @@ async fn ensure_receipt_available(
     Ok(())
 }
 
+/// Create the durable OPEN disposition for every reviewer finding. A finding
+/// without a disposition can never be treated as closed.
+async fn ensure_finding_dispositions(
+    connection: &mut SqliteConnection,
+    candidate_id: &str,
+    findings: &[crate::review::ReviewFinding],
+    reviewer_principal: &str,
+) -> Result<(), Error> {
+    if findings.is_empty() {
+        return Ok(());
+    }
+    let request: Option<(String,)> = sqlx::query_as::query_as(
+        "SELECT ir.id
+         FROM candidates cd
+         JOIN attempts a ON a.id=cd.attempt_id
+         JOIN runs r ON r.id=a.run_id
+         JOIN intake_requests ir ON ir.campaign_id=r.campaign_id
+         WHERE cd.id=?1
+         LIMIT 1",
+    )
+    .bind(candidate_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    let Some((request_id,)) = request else {
+        return Ok(());
+    };
+    let now = Utc::now().to_rfc3339();
+    for finding in findings {
+        let disposition = crate::planning::findings::open_disposition(
+            finding,
+            &request_id,
+            candidate_id,
+            reviewer_principal,
+        );
+        let evidence_refs_json = serde_json::to_string(&disposition.evidence_refs)
+            .map_err(|_| Error::Invalid("finding evidence encoding"))?;
+        sqlx::query::query(
+            "INSERT OR IGNORE INTO finding_dispositions
+             (id,request_id,candidate_id,finding_id,route,status,reviewer_principal,
+              resolved_by,evidence_refs_json,owner_decision,created_at,updated_at)
+             VALUES (?1,?2,?3,?4,?5,'OPEN',?6,'',?7,NULL,?8,?8)",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(&disposition.request_id)
+        .bind(candidate_id)
+        .bind(&disposition.finding_id)
+        .bind(crate::planning::findings::route_code(disposition.route))
+        .bind(reviewer_principal)
+        .bind(evidence_refs_json)
+        .bind(&now)
+        .execute(&mut *connection)
+        .await?;
+    }
+    Ok(())
+}
+
 async fn insert_receipt(
     connection: &mut SqliteConnection,
     candidate_id: &str,
@@ -952,6 +1008,15 @@ async fn insert_receipt(
     .bind(&receipt.received_at)
     .execute(&mut *connection)
     .await?;
+    if role == QualityRole::Reviewer {
+        ensure_finding_dispositions(
+            connection,
+            candidate_id,
+            &receipt.findings,
+            &receipt.principal_id,
+        )
+        .await?;
+    }
     record_event(
         connection,
         candidate_id,
@@ -1330,6 +1395,36 @@ async fn decide_gate(
                 reasons: vec!["reviewer approval contradicts a blocking finding".into()],
             };
         }
+    }
+    // Every reviewer finding is a durable disposition. A missing or OPEN
+    // disposition blocks acceptance even when the reviewer receipt itself
+    // passed; the finding must be repaired, resolved with evidence or refuted
+    // by an authenticated owner.
+    let mut open_findings = 0usize;
+    for reviewer in &reviewer_records {
+        for finding in &reviewer.findings {
+            let status: Option<(String,)> = sqlx::query_as::query_as(
+                "SELECT status FROM finding_dispositions
+                 WHERE candidate_id=?1 AND finding_id=?2",
+            )
+            .bind(candidate_id)
+            .bind(&finding.id)
+            .fetch_optional(&mut *connection)
+            .await?;
+            let closed = matches!(
+                status.as_ref().map(|(status,)| status.as_str()),
+                Some("RESOLVED") | Some("REFUTED")
+            );
+            if !closed {
+                open_findings += 1;
+            }
+        }
+    }
+    if open_findings > 0 && decision.outcome == GateOutcome::Accepted {
+        decision = crate::quality::GateDecision {
+            outcome: GateOutcome::RepairRequired,
+            reasons: vec![format!("{open_findings} reviewer finding(s) remain open")],
+        };
     }
     match reviewer_selection_for_candidate_in_tx(connection, candidate_id).await {
         Ok(ReviewerSelection::Deterministic) => {

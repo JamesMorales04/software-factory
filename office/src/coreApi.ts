@@ -1713,6 +1713,21 @@ export interface PlanReviewRecord {
   reviewedAt: string;
 }
 
+export interface FindingDispositionRecord {
+  id: string;
+  requestId: string;
+  candidateId: string | null;
+  findingId: string;
+  route: string;
+  status: "OPEN" | "RESOLVED" | "REFUTED";
+  reviewerPrincipal: string;
+  resolvedBy: string;
+  evidenceRefs: string[];
+  ownerDecision: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface PlanningWorkflowRun {
   id: string;
   requestId: string;
@@ -1770,6 +1785,7 @@ export interface AgenticRequestDetail {
     review: PlanReviewRecord | null;
     workflow: PlanningWorkflowRun | null;
   };
+  findings: FindingDispositionRecord[];
   stack: AgenticStackProfile;
   participants: AgenticParticipantPlan;
   specifications: AgenticSpecification[];
@@ -3362,6 +3378,23 @@ export const coreApi = {
     }>(`/agentic/requests/${encodeURIComponent(id)}/plan`, {
       method: "POST",
     }),
+  getAgenticFindings: (id: string) =>
+    request<{ findings: FindingDispositionRecord[] }>(
+      `/agentic/requests/${encodeURIComponent(id)}/findings`,
+    ),
+  resolveAgenticFinding: (
+    id: string,
+    findingId: string,
+    input: {
+      status: "RESOLVED" | "REFUTED";
+      evidenceRefs: string[];
+      ownerDecision?: string;
+    },
+  ) =>
+    request<FindingDispositionRecord>(
+      `/agentic/requests/${encodeURIComponent(id)}/findings/${encodeURIComponent(findingId)}/disposition`,
+      { method: "POST", body: JSON.stringify(input) },
+    ),
   getAgenticSpec: (id: string) =>
     request<AgenticSpecDetail>(
       `/agentic/requests/${encodeURIComponent(id)}/spec`,

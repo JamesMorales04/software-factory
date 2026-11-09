@@ -3051,3 +3051,42 @@ async fn owner_confirmed_campaign_admission_enables_subscription_mode() {
     db.close().await;
     let _ = std::fs::remove_file(path);
 }
+
+#[tokio::test]
+async fn open_reviewer_findings_block_the_gate() {
+    use crate::review::{FindingCategory, FindingSeverity, ReviewFinding};
+
+    let fixture = candidate_fixture().await;
+    fixture
+        .db
+        .record_quality_receipt(
+            &fixture.candidate_id,
+            QualityRole::Verifier,
+            &quality_receipt(&fixture, "verifier-open-finding", "verifier-1"),
+        )
+        .await
+        .unwrap();
+    let mut review = quality_receipt(&fixture, "reviewer-open-finding", "reviewer-1");
+    review.findings = vec![ReviewFinding {
+        id: "finding-open".into(),
+        severity: FindingSeverity::Warning,
+        category: FindingCategory::Functional,
+        message: "the exported file is not closed deterministically".into(),
+        points: FindingSeverity::Warning.canonical_points(),
+        rationale: "the candidate diff shows a missing close path".into(),
+        evidence_refs: vec!["src/export.rs:42".into()],
+    }];
+    let result = fixture
+        .db
+        .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &review)
+        .await
+        .unwrap();
+    let gate = result.gate.expect("gate is decided");
+    assert_eq!(gate.outcome, GateOutcome::RepairRequired);
+    assert!(
+        gate.reasons
+            .iter()
+            .any(|reason| reason.contains("remain open"))
+    );
+    fixture.db.close().await;
+}

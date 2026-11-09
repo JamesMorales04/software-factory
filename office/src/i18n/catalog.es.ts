@@ -3583,6 +3583,27 @@ export const es: Catalog = {
   "director.planning.dod": "Definición de terminado",
   "director.planning.checks": "verificación(es)",
   "director.planning.openspec": "Cambio OpenSpec",
+  "director.findings.title": "Hallazgos del revisor",
+  "director.findings.open": "{count} abiertos",
+  "director.findings.empty":
+    "No hay hallazgos del revisor registrados para esta solicitud.",
+  "director.findings.reviewer": "Revisor: {value}",
+  "director.findings.evidence": "Evidencia: {value}",
+  "director.findings.select": "Hallazgo",
+  "director.findings.selectPlaceholder": "Selecciona un hallazgo abierto",
+  "director.findings.evidenceLabel":
+    "Referencias de evidencia (una por línea o separadas por comas)",
+  "director.findings.ownerDecision":
+    "Referencia de decisión del owner (solo refutación)",
+  "director.findings.resolve": "Resolver hallazgo",
+  "director.findings.refute": "Refutar hallazgo",
+  "director.findings.evidenceRequired":
+    "Ingresa al menos una referencia de evidencia.",
+  "director.findings.ownerDecisionRequired":
+    "Una refutación requiere una referencia de decisión del owner.",
+  "director.findings.success": "La disposición del hallazgo fue registrada.",
+  "director.findings.error":
+    "No se pudo registrar la disposición del hallazgo.",
   "director.spec.title": "Especificación formal",
   "director.spec.author": "Redactar especificación",
   "director.spec.authoring": "Redactando especificación",

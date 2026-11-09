@@ -668,6 +668,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn finding_dispositions_are_immutable_and_close_with_evidence() {
+        use crate::planning::{FindingDisposition, FindingRoute, FindingStatus};
+        let db = seeded_db("request-finding").await;
+        let open = FindingDisposition {
+            request_id: "request-finding".into(),
+            finding_id: "finding-1".into(),
+            route: FindingRoute::Repairer,
+            status: FindingStatus::Open,
+            candidate_id: "candidate-1".into(),
+            reviewer_principal: "reviewer-1".into(),
+            resolved_by: String::new(),
+            evidence_refs: Vec::new(),
+            owner_principal: None,
+            owner_decision: None,
+        };
+        let saved = db.save_finding_disposition(&open).await.unwrap();
+        assert_eq!(saved.status, "OPEN");
+        assert_eq!(saved.reviewer_principal, "reviewer-1");
+        let mut resolved = open.clone();
+        resolved.status = FindingStatus::Resolved;
+        resolved.resolved_by = "operator".into();
+        resolved.evidence_refs = vec!["test:export_closes_file".into()];
+        let saved = db.save_finding_disposition(&resolved).await.unwrap();
+        assert_eq!(saved.status, "RESOLVED");
+        assert_eq!(saved.evidence_refs.len(), 1);
+        let mut changed_route = resolved.clone();
+        changed_route.route = FindingRoute::Planner;
+        assert!(db.save_finding_disposition(&changed_route).await.is_err());
+        assert_eq!(
+            db.finding_dispositions("request-finding")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
     async fn skill_packs_are_immutable_and_fresh() {
         let db = seeded_db("request-skill").await;
         let pack = crate::planning::skills::builtin_skill_pack("rust").unwrap();
@@ -809,6 +847,198 @@ fn openspec_from_row(row: OpenSpecRow) -> Result<OpenSpecProjectionRecord, Error
         tasks_sha256: row.7,
         validated: row.8 != 0,
         archived: row.9 != 0,
+        created_at: row.10,
+        updated_at: row.11,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FindingDispositionRecord {
+    pub id: String,
+    pub request_id: String,
+    pub candidate_id: Option<String>,
+    pub finding_id: String,
+    pub route: String,
+    pub status: String,
+    pub reviewer_principal: String,
+    pub resolved_by: String,
+    pub evidence_refs: Vec<String>,
+    pub owner_decision: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+impl Database {
+    /// Persist a finding disposition. The first write creates the durable OPEN
+    /// record; later writes may only close it, and the route/reviewer identity
+    /// cannot be replaced by a caller.
+    pub async fn save_finding_disposition(
+        &self,
+        disposition: &crate::planning::FindingDisposition,
+    ) -> Result<FindingDispositionRecord, Error> {
+        disposition
+            .validate()
+            .map_err(|error| Error::Validation(format!("finding disposition: {error}")))?;
+        if disposition.request_id.is_empty() {
+            return Err(Error::Validation(
+                "finding disposition request id is required".into(),
+            ));
+        }
+        let request_id = disposition.request_id.as_str();
+        let evidence_refs_json = serde_json::to_string(&disposition.evidence_refs)
+            .map_err(|_| Error::Validation("finding evidence encoding".into()))?;
+        let now = Utc::now().to_rfc3339();
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin().await?;
+        let existing: Option<(String, String, String)> = sqlx::query_as::query_as(
+            "SELECT id,route,reviewer_principal FROM finding_dispositions
+             WHERE request_id=?1 AND finding_id=?2",
+        )
+        .bind(request_id)
+        .bind(&disposition.finding_id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let id = if let Some((id, route, reviewer_principal)) = existing {
+            if route != finding_route_code(disposition.route) {
+                return Err(Error::Conflict("finding disposition route is immutable"));
+            }
+            if !disposition.reviewer_principal.is_empty()
+                && reviewer_principal != disposition.reviewer_principal
+            {
+                return Err(Error::Conflict(
+                    "finding disposition reviewer identity is immutable",
+                ));
+            }
+            sqlx::query::query(
+                "UPDATE finding_dispositions
+                 SET status=?1,resolved_by=?2,evidence_refs_json=?3,owner_decision=?4,
+                     updated_at=?5
+                 WHERE id=?6",
+            )
+            .bind(finding_status_code(disposition.status))
+            .bind(&disposition.resolved_by)
+            .bind(&evidence_refs_json)
+            .bind(disposition.owner_decision.as_deref())
+            .bind(&now)
+            .bind(&id)
+            .execute(&mut *transaction)
+            .await?;
+            id
+        } else {
+            let id = uuid::Uuid::new_v4().to_string();
+            sqlx::query::query(
+                "INSERT INTO finding_dispositions
+                 (id,request_id,candidate_id,finding_id,route,status,reviewer_principal,
+                  resolved_by,evidence_refs_json,owner_decision,created_at,updated_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?11)",
+            )
+            .bind(&id)
+            .bind(request_id)
+            .bind(if disposition.candidate_id.is_empty() {
+                None
+            } else {
+                Some(disposition.candidate_id.as_str())
+            })
+            .bind(&disposition.finding_id)
+            .bind(finding_route_code(disposition.route))
+            .bind(finding_status_code(disposition.status))
+            .bind(&disposition.reviewer_principal)
+            .bind(&disposition.resolved_by)
+            .bind(&evidence_refs_json)
+            .bind(disposition.owner_decision.as_deref())
+            .bind(&now)
+            .execute(&mut *transaction)
+            .await?;
+            id
+        };
+        let row: FindingDispositionRow = sqlx::query_as::query_as(
+            "SELECT id,request_id,candidate_id,finding_id,route,status,reviewer_principal,
+                    resolved_by,evidence_refs_json,owner_decision,created_at,updated_at
+             FROM finding_dispositions WHERE id=?1",
+        )
+        .bind(&id)
+        .fetch_one(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        finding_from_row(row)
+    }
+
+    pub async fn finding_dispositions(
+        &self,
+        request_id: &str,
+    ) -> Result<Vec<FindingDispositionRecord>, Error> {
+        let rows: Vec<FindingDispositionRow> = sqlx::query_as::query_as(
+            "SELECT id,request_id,candidate_id,finding_id,route,status,reviewer_principal,
+                    resolved_by,evidence_refs_json,owner_decision,created_at,updated_at
+             FROM finding_dispositions WHERE request_id=?1
+             ORDER BY created_at,finding_id",
+        )
+        .bind(request_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(finding_from_row).collect()
+    }
+
+    pub async fn finding_disposition(
+        &self,
+        request_id: &str,
+        finding_id: &str,
+    ) -> Result<FindingDispositionRecord, Error> {
+        let row: Option<FindingDispositionRow> = sqlx::query_as::query_as(
+            "SELECT id,request_id,candidate_id,finding_id,route,status,reviewer_principal,
+                    resolved_by,evidence_refs_json,owner_decision,created_at,updated_at
+             FROM finding_dispositions WHERE request_id=?1 AND finding_id=?2",
+        )
+        .bind(request_id)
+        .bind(finding_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.ok_or(Error::NotFound).and_then(finding_from_row)
+    }
+}
+
+type FindingDispositionRow = (
+    String,
+    String,
+    Option<String>,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    String,
+    String,
+);
+
+fn finding_route_code(route: crate::planning::FindingRoute) -> &'static str {
+    crate::planning::findings::route_code(route)
+}
+
+fn finding_status_code(status: crate::planning::FindingStatus) -> &'static str {
+    use crate::planning::FindingStatus;
+    match status {
+        FindingStatus::Open => "OPEN",
+        FindingStatus::Resolved => "RESOLVED",
+        FindingStatus::Refuted => "REFUTED",
+    }
+}
+
+fn finding_from_row(row: FindingDispositionRow) -> Result<FindingDispositionRecord, Error> {
+    Ok(FindingDispositionRecord {
+        id: row.0,
+        request_id: row.1,
+        candidate_id: row.2,
+        finding_id: row.3,
+        route: row.4,
+        status: row.5,
+        reviewer_principal: row.6,
+        resolved_by: row.7,
+        evidence_refs: serde_json::from_str(&row.8)
+            .map_err(|_| Error::Invalid("stored finding evidence is invalid"))?,
+        owner_decision: row.9,
         created_at: row.10,
         updated_at: row.11,
     })

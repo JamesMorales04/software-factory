@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { Badge } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
-import { Input, Textarea } from "../components/ui/Field";
+import { Input, Select, Textarea } from "../components/ui/Field";
 import {
   EmptyState,
   ErrorState,
@@ -102,6 +102,12 @@ export function Director() {
   const [planningNotice, setPlanningNotice] = useState<string | null>(null);
   const [reviewBusy, setReviewBusy] = useState<string | null>(null);
   const [reviewRationale, setReviewRationale] = useState("");
+  const [findingId, setFindingId] = useState("");
+  const [findingEvidence, setFindingEvidence] = useState("");
+  const [findingOwnerDecision, setFindingOwnerDecision] = useState("");
+  const [findingBusy, setFindingBusy] = useState<string | null>(null);
+  const [findingError, setFindingError] = useState<string | null>(null);
+  const [findingNotice, setFindingNotice] = useState<string | null>(null);
 
   const loadPortfolio = useCallback(async () => {
     try {
@@ -354,6 +360,42 @@ export function Director() {
       setPlanningError(errorText(cause, t("director.planning.reviewError")));
     } finally {
       setReviewBusy(null);
+    }
+  }
+
+  async function disposeFinding(status: "RESOLVED" | "REFUTED") {
+    if (!activeId || !findingId) return;
+    const evidenceRefs = findingEvidence
+      .split(/[\n,]/)
+      .map((value) => value.trim())
+      .filter(Boolean);
+    if (evidenceRefs.length === 0) {
+      setFindingError(t("director.findings.evidenceRequired"));
+      return;
+    }
+    if (status === "REFUTED" && findingOwnerDecision.trim() === "") {
+      setFindingError(t("director.findings.ownerDecisionRequired"));
+      return;
+    }
+    setFindingBusy(status);
+    setFindingError(null);
+    setFindingNotice(null);
+    try {
+      await coreApi.resolveAgenticFinding(activeId, findingId, {
+        status,
+        evidenceRefs,
+        ownerDecision:
+          status === "REFUTED" ? findingOwnerDecision.trim() : undefined,
+      });
+      setDetail(await coreApi.getAgenticRequest(activeId));
+      setFindingId("");
+      setFindingEvidence("");
+      setFindingOwnerDecision("");
+      setFindingNotice(t("director.findings.success"));
+    } catch (cause) {
+      setFindingError(errorText(cause, t("director.findings.error")));
+    } finally {
+      setFindingBusy(null);
     }
   }
 
@@ -982,6 +1024,130 @@ export function Director() {
                         </div>
                       </dl>
                     </>
+                  )}
+                </Panel>
+
+                <Panel>
+                  <div className="section-heading">
+                    <h2>{t("director.findings.title")}</h2>
+                    <Badge
+                      tone={
+                        detail.findings.some(
+                          (finding) => finding.status === "OPEN",
+                        )
+                          ? "attention"
+                          : "success"
+                      }
+                    >
+                      {t("director.findings.open", {
+                        count: detail.findings.filter(
+                          (finding) => finding.status === "OPEN",
+                        ).length,
+                      })}
+                    </Badge>
+                  </div>
+                  {findingError && (
+                    <p className="ui-callout ui-callout--danger" role="alert">
+                      {findingError}
+                    </p>
+                  )}
+                  {findingNotice && (
+                    <p className="notice" role="status">
+                      {findingNotice}
+                    </p>
+                  )}
+                  {detail.findings.length === 0 ? (
+                    <p className="muted">{t("director.findings.empty")}</p>
+                  ) : (
+                    <ul className="director-findings">
+                      {detail.findings.map((finding) => (
+                        <li key={finding.id}>
+                          <div className="director-finding-head">
+                            <code>{finding.findingId}</code>
+                            <Badge
+                              tone={
+                                finding.status === "OPEN"
+                                  ? "attention"
+                                  : "success"
+                              }
+                            >
+                              {finding.status}
+                            </Badge>
+                            <span className="muted">{finding.route}</span>
+                          </div>
+                          <p className="muted">
+                            {t("director.findings.reviewer", {
+                              value: finding.reviewerPrincipal,
+                            })}
+                          </p>
+                          {finding.evidenceRefs.length > 0 && (
+                            <p className="muted">
+                              {t("director.findings.evidence", {
+                                value: finding.evidenceRefs.join(", "),
+                              })}
+                            </p>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {detail.findings.some(
+                    (finding) => finding.status === "OPEN",
+                  ) && (
+                    <div className="director-finding-form">
+                      <Select
+                        label={t("director.findings.select")}
+                        value={findingId}
+                        onChange={(event) => setFindingId(event.target.value)}
+                        disabled={findingBusy !== null}
+                      >
+                        <option value="">
+                          {t("director.findings.selectPlaceholder")}
+                        </option>
+                        {detail.findings
+                          .filter((finding) => finding.status === "OPEN")
+                          .map((finding) => (
+                            <option key={finding.id} value={finding.findingId}>
+                              {finding.findingId} · {finding.route}
+                            </option>
+                          ))}
+                      </Select>
+                      <Textarea
+                        label={t("director.findings.evidenceLabel")}
+                        value={findingEvidence}
+                        onChange={(event) =>
+                          setFindingEvidence(event.target.value)
+                        }
+                        disabled={findingBusy !== null}
+                      />
+                      <Input
+                        label={t("director.findings.ownerDecision")}
+                        value={findingOwnerDecision}
+                        onChange={(event) =>
+                          setFindingOwnerDecision(event.target.value)
+                        }
+                        disabled={findingBusy !== null}
+                      />
+                      <div className="director-priority">
+                        <Button
+                          size="sm"
+                          busy={findingBusy === "RESOLVED"}
+                          disabled={findingBusy !== null || findingId === ""}
+                          onClick={() => void disposeFinding("RESOLVED")}
+                        >
+                          {t("director.findings.resolve")}
+                        </Button>
+                        <Button
+                          variant="danger"
+                          size="sm"
+                          busy={findingBusy === "REFUTED"}
+                          disabled={findingBusy !== null || findingId === ""}
+                          onClick={() => void disposeFinding("REFUTED")}
+                        >
+                          {t("director.findings.refute")}
+                        </Button>
+                      </div>
+                    </div>
                   )}
                 </Panel>
 

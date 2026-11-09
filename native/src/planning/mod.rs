@@ -14,6 +14,7 @@ use crate::lead::SpecCheck;
 pub mod architecture;
 pub mod docs;
 pub mod dod;
+pub mod findings;
 pub mod prompts;
 pub mod route;
 pub mod skills;
@@ -674,6 +675,8 @@ pub enum FindingStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct FindingDisposition {
+    #[serde(default)]
+    pub request_id: String,
     pub finding_id: String,
     pub route: FindingRoute,
     pub status: FindingStatus,
@@ -693,6 +696,7 @@ pub struct FindingDisposition {
 
 impl FindingDisposition {
     pub fn validate(&self) -> Result<(), String> {
+        bounded_text("finding request id", &self.request_id, 200)?;
         bounded_text("finding disposition id", &self.finding_id, 128)?;
         if !self.candidate_id.is_empty() {
             bounded_text("finding candidate id", &self.candidate_id, 128)?;
@@ -975,6 +979,7 @@ mod tests {
     #[test]
     fn closed_findings_need_evidence_and_stale_skill_blocks() {
         let finding = FindingDisposition {
+            request_id: "request-1".into(),
             finding_id: "f1".into(),
             route: FindingRoute::Repairer,
             status: FindingStatus::Resolved,

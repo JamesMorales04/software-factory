@@ -3448,6 +3448,26 @@ export const en = {
   "director.planning.dod": "Definition of Done",
   "director.planning.checks": "check(s)",
   "director.planning.openspec": "OpenSpec change",
+  "director.findings.title": "Reviewer findings",
+  "director.findings.open": "{count} open",
+  "director.findings.empty":
+    "No reviewer findings are recorded for this request.",
+  "director.findings.reviewer": "Reviewer: {value}",
+  "director.findings.evidence": "Evidence: {value}",
+  "director.findings.select": "Finding",
+  "director.findings.selectPlaceholder": "Select an open finding",
+  "director.findings.evidenceLabel":
+    "Evidence references (one per line or comma-separated)",
+  "director.findings.ownerDecision":
+    "Owner decision reference (refutation only)",
+  "director.findings.resolve": "Resolve finding",
+  "director.findings.refute": "Refute finding",
+  "director.findings.evidenceRequired":
+    "Enter at least one evidence reference.",
+  "director.findings.ownerDecisionRequired":
+    "A refutation requires an owner decision reference.",
+  "director.findings.success": "The finding disposition was recorded.",
+  "director.findings.error": "The finding disposition could not be recorded.",
   "director.spec.title": "Formal specification",
   "director.spec.author": "Author specification",
   "director.spec.authoring": "Authoring specification",

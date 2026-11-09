@@ -1104,6 +1104,11 @@ fn office_api_router(app: Arc<App>) -> Router {
             "/agentic/requests/{id}/plan-review",
             post(review_agentic_plan),
         )
+        .route("/agentic/requests/{id}/findings", get(get_agentic_findings))
+        .route(
+            "/agentic/requests/{id}/findings/{finding_id}/disposition",
+            post(resolve_agentic_finding),
+        )
         .route(
             "/agentic/requests/{id}/participants",
             get(get_agentic_participants).post(record_agentic_participants),
@@ -1387,6 +1392,11 @@ fn api_router(app: Arc<App>) -> Router {
         .route(
             "/agentic/requests/{id}/plan-review",
             post(review_agentic_plan),
+        )
+        .route("/agentic/requests/{id}/findings", get(get_agentic_findings))
+        .route(
+            "/agentic/requests/{id}/findings/{finding_id}/disposition",
+            post(resolve_agentic_finding),
         )
         .route(
             "/agentic/requests/{id}/participants",
@@ -10328,6 +10338,11 @@ async fn agentic_projection_for_request(
         .await
         .ok()
         .flatten();
+    let findings = app
+        .db
+        .finding_dispositions(&record.id)
+        .await
+        .unwrap_or_default();
     let specifications = proposal
         .map(|proposal| {
             proposal
@@ -10379,6 +10394,7 @@ async fn agentic_projection_for_request(
             "review": plan_review,
             "workflow": workflow,
         },
+        "findings": findings,
         "stack": stack,
         "participants": participants,
         "specifications": specifications,
@@ -11568,6 +11584,100 @@ async fn review_agentic_plan(
         .ok()
         .flatten();
     Json(json!({"review": review, "workflow": workflow})).into_response()
+}
+
+async fn get_agentic_findings(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    match app.db.finding_dispositions(&record.id).await {
+        Ok(findings) => Json(json!({"findings": findings})).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct AgenticFindingDispositionInput {
+    status: String,
+    #[serde(default)]
+    evidence_refs: Vec<String>,
+    #[serde(default)]
+    owner_decision: Option<String>,
+}
+
+async fn resolve_agentic_finding(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    AxumPath((id, finding_id)): AxumPath<(String, String)>,
+    Json(input): Json<AgenticFindingDispositionInput>,
+) -> Response {
+    use factory_native::planning::{FindingDisposition, FindingStatus};
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    let existing = match app.db.finding_disposition(&record.id, &finding_id).await {
+        Ok(existing) => existing,
+        Err(error) => return api_error(error),
+    };
+    let route = match factory_native::planning::findings::parse_route_code(&existing.route) {
+        Some(route) => route,
+        None => {
+            return api_error(Error::Invalid("stored finding route is invalid"));
+        }
+    };
+    let status = match input.status.as_str() {
+        "RESOLVED" => FindingStatus::Resolved,
+        "REFUTED" => FindingStatus::Refuted,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "status must be RESOLVED or REFUTED", "code": "FINDING_STATUS_INVALID"})),
+            )
+                .into_response();
+        }
+    };
+    let principal = operator_principal(session.as_ref().map(|Extension(device)| device));
+    let disposition = FindingDisposition {
+        request_id: record.id.clone(),
+        finding_id,
+        route,
+        status,
+        candidate_id: existing.candidate_id.clone().unwrap_or_default(),
+        reviewer_principal: existing.reviewer_principal.clone(),
+        resolved_by: if status == FindingStatus::Resolved {
+            principal.clone()
+        } else {
+            existing.resolved_by.clone()
+        },
+        evidence_refs: input.evidence_refs,
+        owner_principal: (status == FindingStatus::Refuted).then_some(principal),
+        owner_decision: input.owner_decision,
+    };
+    if let Err(error) = disposition.validate() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": error, "code": "FINDING_DISPOSITION_INVALID"})),
+        )
+            .into_response();
+    }
+    match app.db.save_finding_disposition(&disposition).await {
+        Ok(saved) => Json(saved).into_response(),
+        Err(error) => api_error(error),
+    }
 }
 
 async fn deterministic_participant_plan(
