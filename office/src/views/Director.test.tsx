@@ -10,6 +10,8 @@ const mocks = vi.hoisted(() => ({
   listAgenticPortfolio: vi.fn(),
   getAgenticRequest: vi.fn(),
   assessAgenticRequest: vi.fn(),
+  getAgenticScheduler: vi.fn(),
+  setAgenticPriority: vi.fn(),
 }));
 
 vi.mock("../coreApi", () => ({
@@ -37,6 +39,11 @@ const portfolio: AgenticPortfolioEntry[] = [
     workUnits: 2,
     participantCount: 4,
     stackLanguages: ["rust", "typescript"],
+    directorId: "director:owner",
+    operationManagerId: "operation-manager:request-1",
+    priority: 100,
+    operationStatus: "EXECUTING",
+    worktreePolicy: "PER_ATTEMPT",
     updatedAt: "2026-11-08T12:00:00Z",
   },
 ];
@@ -121,6 +128,18 @@ const detail: AgenticRequestDetail = {
     configHash: "b".repeat(64),
     createdAt: "2026-11-08T11:30:00Z",
   },
+  operation: {
+    id: "operation-request-1",
+    requestId: "request-1",
+    projectId: "project-1",
+    directorId: "director:owner",
+    operationManagerId: "operation-manager:request-1",
+    priority: 100,
+    status: "EXECUTING",
+    worktreePolicy: "PER_ATTEMPT",
+    createdAt: "2026-11-08T11:00:00Z",
+    updatedAt: "2026-11-08T12:00:00Z",
+  },
   context: { handoffs: [], note: "No handoffs yet." },
   semantic: null,
 };
@@ -140,6 +159,25 @@ describe("Director", () => {
     mocks.listAgenticPortfolio.mockReset().mockResolvedValue(portfolio);
     mocks.getAgenticRequest.mockReset().mockResolvedValue(detail);
     mocks.assessAgenticRequest.mockReset().mockResolvedValue({});
+    mocks.getAgenticScheduler.mockReset().mockResolvedValue({
+      capacity: 4,
+      active: 1,
+      queued: 0,
+      resourcePolicy: "CPU and available memory",
+      worktreePolicy: "PER_ATTEMPT",
+    });
+    mocks.setAgenticPriority.mockReset().mockResolvedValue({
+      id: "operation-request-1",
+      requestId: "request-1",
+      projectId: "project-1",
+      directorId: "director:owner",
+      operationManagerId: "operation-manager:request-1",
+      priority: 10,
+      status: "EXECUTING",
+      worktreePolicy: "PER_ATTEMPT",
+      createdAt: "2026-11-08T11:00:00Z",
+      updatedAt: "2026-11-08T12:00:00Z",
+    });
   });
 
   it("renders the owner portfolio and the compiled operation", async () => {
@@ -160,6 +198,26 @@ describe("Director", () => {
       ),
     ).toBeDefined();
     expect(screen.getByText("unit-1")).toBeDefined();
+  });
+
+  it("shows the operation manager, resource governor and updates priority", async () => {
+    renderDirector();
+    await screen.findByText("operation-manager:request-1");
+    expect(
+      screen.getByText(/Resource governor: 1 active, 0 queued, capacity 4/),
+    ).toBeDefined();
+    await userEvent.clear(
+      screen.getByLabelText("Queue priority (0 highest, 1000 lowest)"),
+    );
+    await userEvent.type(
+      screen.getByLabelText("Queue priority (0 highest, 1000 lowest)"),
+      "10",
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Update priority" }),
+    );
+    expect(mocks.setAgenticPriority).toHaveBeenCalledWith("request-1", 10);
+    expect(await screen.findByText("Priority updated.")).toBeDefined();
   });
 
   it("runs semantic triage and displays the recorded recommendation", async () => {

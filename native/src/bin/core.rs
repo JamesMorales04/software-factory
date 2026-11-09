@@ -4,7 +4,10 @@ use std::{
     future::IntoFuture,
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, OnceLock},
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use axum::{
@@ -455,6 +458,12 @@ struct IntakeMessageRequest {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct AgenticPriorityRequest {
+    priority: i64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RepairCampaignRequest {
     #[serde(default)]
     confirm: bool,
@@ -730,6 +739,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             resume_autopilot_requests(&app_for_autopilot).await;
         });
     }
+    {
+        let app_for_repairs = Arc::clone(&app);
+        tokio::spawn(async move {
+            promote_accepted_repairs(app_for_repairs).await;
+        });
+    }
     let router = build_router(Arc::clone(&app));
     let mut listeners = Vec::new();
     for addr in &control_addrs {
@@ -966,6 +981,11 @@ fn office_api_router(app: Arc<App>) -> Router {
         .route("/office/decisions", get(office_decisions))
         .route("/office/participants", get(office_participants))
         .route("/agentic/portfolio", get(agentic_portfolio))
+        .route("/agentic/scheduler", get(agentic_scheduler_status))
+        .route(
+            "/agentic/requests/{id}/priority",
+            post(agentic_operation_priority),
+        )
         .route(
             "/agentic/requests/{id}/assess",
             post(assess_agentic_request),
@@ -1178,6 +1198,11 @@ fn api_router(app: Arc<App>) -> Router {
         .route("/office/decisions", get(office_decisions))
         .route("/office/participants", get(office_participants))
         .route("/agentic/portfolio", get(agentic_portfolio))
+        .route("/agentic/scheduler", get(agentic_scheduler_status))
+        .route(
+            "/agentic/requests/{id}/priority",
+            post(agentic_operation_priority),
+        )
         .route(
             "/agentic/requests/{id}/assess",
             post(assess_agentic_request),
@@ -7700,13 +7725,7 @@ async fn repair_campaign(
         Err(_) => false,
     };
     if linked == request.id && should_start {
-        let app_for_autopilot = Arc::clone(&app);
-        let request_id = request.id.clone();
-        tokio::spawn(async move {
-            if let Err(error) = run_autopilot(&app_for_autopilot, &request_id).await {
-                fail_autopilot(&app_for_autopilot, &request_id, &error).await;
-            }
-        });
+        enqueue_autopilot(&app, &request.id).await;
     }
     Json(json!({
         "requestId": linked,
@@ -9682,6 +9701,11 @@ struct AgenticPortfolioEntry {
     work_units: usize,
     participant_count: u32,
     stack_languages: Vec<String>,
+    director_id: String,
+    operation_manager_id: String,
+    priority: i64,
+    operation_status: String,
+    worktree_policy: String,
     updated_at: String,
 }
 
@@ -9870,6 +9894,7 @@ async fn agentic_projection_for_request(
             "configHash": plan.config_hash,
             "createdAt": plan.created_at,
         })),
+        "operation": app.db.agentic_operation_for_request(&record.id).await.ok(),
         "context": {
             "handoffs": [],
             "note": "Handoff records appear here after the context handler is enabled for this operation."
@@ -9894,6 +9919,51 @@ async fn agentic_projection_for_request(
             }
         }))
     }))
+}
+
+async fn agentic_scheduler_status(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let scheduler = start_agentic_scheduler(&app);
+    let queued = scheduler.queue.lock().await.len();
+    Json(json!({
+        "capacity": scheduler.capacity,
+        "active": scheduler.active.load(Ordering::Relaxed),
+        "queued": queued,
+        "resourcePolicy": "CPU and available memory; no fixed product concurrency cap",
+        "worktreePolicy": "PER_ATTEMPT",
+    }))
+    .into_response()
+}
+
+async fn agentic_operation_priority(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<AgenticPriorityRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if !(0..=1_000).contains(&input.priority) {
+        return api_error(Error::Invalid("agentic operation priority"));
+    }
+    if let Err(error) = app.db.intake_request(&id).await {
+        return api_error(error);
+    }
+    let operation = match app
+        .db
+        .set_agentic_operation_priority(&id, input.priority)
+        .await
+    {
+        Ok(operation) => operation,
+        Err(error) => return api_error(error),
+    };
+    start_agentic_scheduler(&app)
+        .reprioritize(&id, input.priority)
+        .await;
+    Json(operation).into_response()
 }
 
 async fn assess_agentic_request(
@@ -10170,8 +10240,10 @@ async fn agentic_portfolio(State(app): State<Arc<App>>, headers: HeaderMap) -> R
             .await
             .map(|state| format!("{state:?}"))
             .unwrap_or_else(|_| format!("{:?}", lead.state));
+        let operation = app.db.agentic_operation_for_request(&record.id).await.ok();
+        let request_id = record.id.clone();
         entries.push(AgenticPortfolioEntry {
-            id: record.id,
+            id: request_id.clone(),
             project_id: record.project_id,
             objective: record.objective,
             mode: format!("{:?}", record.mode),
@@ -10182,6 +10254,26 @@ async fn agentic_portfolio(State(app): State<Arc<App>>, headers: HeaderMap) -> R
             work_units,
             participant_count: participants.assignments.iter().map(|a| a.count).sum(),
             stack_languages: stack.languages,
+            director_id: operation
+                .as_ref()
+                .map(|operation| operation.director_id.clone())
+                .unwrap_or_else(|| format!("director:{}", record.delegation_id)),
+            operation_manager_id: operation
+                .as_ref()
+                .map(|operation| operation.operation_manager_id.clone())
+                .unwrap_or_else(|| format!("operation-manager:{request_id}")),
+            priority: operation
+                .as_ref()
+                .map(|operation| operation.priority)
+                .unwrap_or(100),
+            operation_status: operation
+                .as_ref()
+                .map(|operation| operation.status.clone())
+                .unwrap_or_else(|| "OBSERVED".into()),
+            worktree_policy: operation
+                .as_ref()
+                .map(|operation| operation.worktree_policy.clone())
+                .unwrap_or_else(|| "PER_ATTEMPT".into()),
             updated_at: record.updated_at,
         });
     }
@@ -10315,6 +10407,145 @@ async fn autonomous_start_intake(app: &Arc<App>, id: &str) -> Result<(), Error> 
     Ok(())
 }
 
+#[derive(Clone)]
+struct QueuedOperation {
+    priority: i64,
+    sequence: u64,
+    request_id: String,
+}
+
+struct AgenticScheduler {
+    queue: tokio::sync::Mutex<Vec<QueuedOperation>>,
+    notify: tokio::sync::Notify,
+    permits: Arc<tokio::sync::Semaphore>,
+    active: AtomicUsize,
+    capacity: usize,
+    sequence: AtomicUsize,
+}
+
+static AGENTIC_SCHEDULER: OnceLock<Arc<AgenticScheduler>> = OnceLock::new();
+
+/// Resource-derived start concurrency. This is not a fixed product cap: the
+/// number of simultaneous Lead assessment/start operations is bounded by the
+/// observed CPU and available memory, with worker/Campaign concurrency governed
+/// separately by leases and the worker runtime.
+fn agentic_start_capacity() -> usize {
+    let cpu = std::thread::available_parallelism()
+        .map(std::num::NonZeroUsize::get)
+        .unwrap_or(2);
+    let memory_slots = std::fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|contents| {
+            contents
+                .lines()
+                .find(|line| line.starts_with("MemAvailable:"))
+                .and_then(|line| line.split_whitespace().nth(1))
+                .and_then(|value| value.parse::<u64>().ok())
+        })
+        .map(|available_kb| usize::try_from(available_kb / (2 * 1024 * 1024)).unwrap_or(1))
+        .unwrap_or(2)
+        .max(1);
+    cpu.min(memory_slots).max(1)
+}
+
+fn start_agentic_scheduler(app: &Arc<App>) -> Arc<AgenticScheduler> {
+    AGENTIC_SCHEDULER
+        .get_or_init(|| {
+            let capacity = agentic_start_capacity();
+            let scheduler = Arc::new(AgenticScheduler {
+                queue: tokio::sync::Mutex::new(Vec::new()),
+                notify: tokio::sync::Notify::new(),
+                permits: Arc::new(tokio::sync::Semaphore::new(capacity)),
+                active: AtomicUsize::new(0),
+                capacity,
+                sequence: AtomicUsize::new(0),
+            });
+            let app_for_loop = Arc::clone(app);
+            let scheduler_for_loop = Arc::clone(&scheduler);
+            tokio::spawn(async move {
+                agentic_scheduler_loop(app_for_loop, scheduler_for_loop).await;
+            });
+            scheduler
+        })
+        .clone()
+}
+
+impl AgenticScheduler {
+    async fn enqueue(&self, request_id: &str, priority: i64) {
+        let mut queue = self.queue.lock().await;
+        if queue.iter().any(|item| item.request_id == request_id) {
+            return;
+        }
+        queue.push(QueuedOperation {
+            priority,
+            sequence: self.sequence.fetch_add(1, Ordering::Relaxed) as u64,
+            request_id: request_id.to_owned(),
+        });
+        drop(queue);
+        self.notify.notify_waiters();
+    }
+
+    async fn reprioritize(&self, request_id: &str, priority: i64) {
+        let mut queue = self.queue.lock().await;
+        if let Some(item) = queue.iter_mut().find(|item| item.request_id == request_id) {
+            item.priority = priority;
+        }
+    }
+
+    async fn next(&self) -> QueuedOperation {
+        loop {
+            let mut queue = self.queue.lock().await;
+            queue.sort_by_key(|item| (item.priority, item.sequence));
+            if let Some(item) = queue.pop() {
+                return item;
+            }
+            drop(queue);
+            self.notify.notified().await;
+        }
+    }
+}
+
+async fn enqueue_autopilot(app: &Arc<App>, request_id: &str) {
+    let priority = app
+        .db
+        .agentic_operation_for_request(request_id)
+        .await
+        .map(|operation| operation.priority)
+        .unwrap_or(100);
+    start_agentic_scheduler(app)
+        .enqueue(request_id, priority)
+        .await;
+}
+
+async fn agentic_scheduler_loop(app: Arc<App>, scheduler: Arc<AgenticScheduler>) {
+    loop {
+        let permit = match Arc::clone(&scheduler.permits).acquire_owned().await {
+            Ok(permit) => permit,
+            Err(_) => return,
+        };
+        let item = scheduler.next().await;
+        scheduler.active.fetch_add(1, Ordering::Relaxed);
+        let app_for_task = Arc::clone(&app);
+        let scheduler_for_task = Arc::clone(&scheduler);
+        tokio::spawn(async move {
+            let _permit = permit;
+            let _ = app_for_task
+                .db
+                .set_agentic_operation_status(&item.request_id, "STARTING")
+                .await;
+            if let Err(error) = run_autopilot(&app_for_task, &item.request_id).await {
+                fail_autopilot(&app_for_task, &item.request_id, &error).await;
+                let _ = app_for_task
+                    .db
+                    .set_agentic_operation_status(&item.request_id, "BLOCKED")
+                    .await;
+            }
+            scheduler_for_task.active.fetch_sub(1, Ordering::Relaxed);
+            scheduler_for_task.notify.notify_waiters();
+        });
+    }
+}
+
 async fn run_autopilot(app: &Arc<App>, id: &str) -> Result<(), Error> {
     {
         let mut in_flight = app.autopilot_in_flight.lock().await;
@@ -10365,9 +10596,12 @@ async fn run_autopilot_inner(app: &Arc<App>, id: &str) -> Result<(), Error> {
     let record = app.db.intake_request(id).await?;
     let lead = app.db.lead_request(&record.lead_request_id).await?;
     if lead.campaign_id.is_some() {
+        let _ = app.db.set_agentic_operation_status(id, "EXECUTING").await;
         return Ok(());
     }
-    autonomous_start_intake(app, id).await
+    autonomous_start_intake(app, id).await?;
+    let _ = app.db.set_agentic_operation_status(id, "EXECUTING").await;
+    Ok(())
 }
 
 async fn fail_autopilot(app: &Arc<App>, id: &str, error: &Error) {
@@ -10387,9 +10621,36 @@ async fn resume_autopilot_requests(app: &Arc<App>) {
         return;
     };
     for record in records {
-        if let Err(error) = run_autopilot(app, &record.id).await {
-            fail_autopilot(app, &record.id, &error).await;
+        enqueue_autopilot(app, &record.id).await;
+    }
+}
+
+async fn promote_accepted_repairs(app: Arc<App>) {
+    loop {
+        let _ = app.db.reconcile_agentic_operations().await;
+        if let Ok(candidates) = app.db.accepted_repair_candidates().await {
+            let mut advanced = BTreeSet::new();
+            for (project_id, candidate_commit) in candidates {
+                if !advanced.insert((project_id.clone(), candidate_commit.clone())) {
+                    continue;
+                }
+                let Ok(config) = app.db.project_config(&project_id).await else {
+                    continue;
+                };
+                if config.base_commit == candidate_commit {
+                    continue;
+                }
+                let _ = app
+                    .db
+                    .advance_project_base_for_repair(
+                        &project_id,
+                        &candidate_commit,
+                        config.revision,
+                    )
+                    .await;
+            }
         }
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
     }
 }
 
@@ -10463,13 +10724,7 @@ async fn create_intake_request(
                 Err(error) => return api_error(error),
             };
             if created && record.mode == factory_native::intake::IntakeMode::Autonomous {
-                let app_for_autopilot = Arc::clone(&app);
-                let request_id = record.id.clone();
-                tokio::spawn(async move {
-                    if let Err(error) = run_autopilot(&app_for_autopilot, &request_id).await {
-                        fail_autopilot(&app_for_autopilot, &request_id, &error).await;
-                    }
-                });
+                enqueue_autopilot(&app, &record.id).await;
             }
             (
                 if created {

@@ -2840,9 +2840,9 @@ capabilities:
   purpose: Classify informational, audit, change and repair work and apply deterministic route, assurance and review floors
   product_objective: Right-sized governed execution
   decision_status: proposed
-  implementation_status: not_implemented
+  implementation_status: in_progress
   verification:
-    deterministic: not_tested
+    deterministic: verified
     live_agent: not_tested
     uat: not_tested
     deployment: not_tested
@@ -2856,21 +2856,23 @@ capabilities:
     adr:
     - docs/architecture/decisions/ADR-0037-agent-topology-context-and-composition.md
     contract: []
-    source: []
-    test: []
+    source: [native/src/agentic.rs, native/src/db/agentic_assessments.rs]
+    test: [native/src/agentic.rs, native/src/db/agentic_assessments.rs, native/src/bin/core.rs]
   acceptance:
     deterministic: A bounded semantic assessment proposes request kind, route, assurance, scope meaning, StackProfile and unknowns; Core applies non-weakening floors for concrete scope, cross-module, security, schema, public API, migration and ambiguity; informational and audit work cannot write; DIRECT, DELEGATED, FORMAL_SPEC and REPAIR are distinct.
     real: A browser journey shows an informational question, an audit, a direct change and a formal spec taking different governed routes without a model lowering a floor.
   evidence:
-    deterministic: []
+    deterministic:
+    - docs/evidence/operation-scheduler-2026-11-08/deterministic.json
     live_agent: []
     uat: []
     deployment: []
     isolation: []
   limitations:
   - The semantic assessor is advisory; deterministic floors and the Quality Gate remain authoritative.
+  - A real-model OpenCode Go browser self-test exists in docs/evidence/director-projection-2026-11-08/ but is not independent live certification.
   blockers:
-  - Triage persistence, StackProfile and Office projections remain pending.
+  - Informational, audit and formal-spec browser journeys remain pending.
 
 - id: CAP-059
   name: Director and Operation Manager
@@ -2878,9 +2880,9 @@ capabilities:
   purpose: Give the owner one durable Director and each operation one semantic Operation Manager without creating a second authority
   product_objective: Owner-level delegation with coherent operations
   decision_status: proposed
-  implementation_status: not_implemented
+  implementation_status: in_progress
   verification:
-    deterministic: not_tested
+    deterministic: verified
     live_agent: not_tested
     uat: not_tested
     deployment: not_tested
@@ -2894,21 +2896,24 @@ capabilities:
     adr:
     - docs/architecture/decisions/ADR-0037-agent-topology-context-and-composition.md
     contract: []
-    source: []
-    test: []
+    source: [native/src/db/agentic_operations.rs, native/src/bin/core.rs, office/src/views/Director.tsx]
+    test: [native/src/db/intake.rs, office/src/views/Director.test.tsx]
   acceptance:
     deterministic: The Director is scoped to one owner and a portfolio of Projects; each operation has one Operation Manager; the existing Integrator is not treated as a semantic supervisor; concurrent operations use separate worktrees and a priority queue; no fixed product cap replaces CPU, memory, disk, provider and worktree backpressure.
     real: Two simultaneous browser requests are coordinated by the Director, run in separate worktrees and expose their own Operation Managers and evidence.
   evidence:
-    deterministic: []
+    deterministic:
+    - docs/evidence/operation-scheduler-2026-11-08/deterministic.json
     live_agent: []
     uat: []
     deployment: []
     isolation: []
   limitations:
   - The Director uses reconstructed context plus handoff, not a permanently running model session.
+  - A real scheduler browser smoke exists in docs/evidence/operation-scheduler-2026-11-08/ but is not independent live certification.
+  - Two-operation concurrency and per-operation worktree isolation still need a real browser acceptance run.
   blockers:
-  - Portfolio records, concurrency governance and Office projections remain pending.
+  - Worktree isolation evidence and the two-operation real acceptance remain pending.
 
 - id: CAP-060
   name: Planner and Spec Manager

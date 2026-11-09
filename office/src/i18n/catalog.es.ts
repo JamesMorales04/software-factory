@@ -3461,4 +3461,20 @@ export const es: Catalog = {
   "request.repair.starting": "Iniciando reparación…",
   "request.repair.cancel": "Cancelar",
   "request.repair.error": "No se pudo iniciar la reparación.",
+  "director.operation.title": "Operation manager",
+  "director.operation.notRecorded": "No registrado",
+  "director.operation.director": "Director",
+  "director.operation.manager": "Operation Manager",
+  "director.operation.priority": "Prioridad",
+  "director.operation.worktree": "Política de worktree",
+  "director.portfolio.priority": "Prioridad {priority}",
+  "director.priority.label": "Prioridad de cola (0 máxima, 1000 mínima)",
+  "director.priority.save": "Actualizar prioridad",
+  "director.priority.help":
+    "La prioridad ordena los inicios autónomos en cola. No evita la autoridad de Core ni el presupuesto de concurrencia derivado de recursos.",
+  "director.priority.success": "Prioridad actualizada.",
+  "director.priority.invalid": "La prioridad debe ser un entero de 0 a 1000.",
+  "director.priority.error": "No se pudo actualizar la prioridad.",
+  "director.scheduler.value":
+    "Resource governor: {active} activas, {queued} en cola, capacidad {capacity} inicio(s). Los worktrees son por intento.",
 };

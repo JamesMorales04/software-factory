@@ -453,6 +453,26 @@ impl Database {
         row.map(candidate_from_columns).ok_or(Error::NotFound)
     }
 
+    /// Accepted repair candidates whose Project base has not necessarily been
+    /// advanced yet. The Core watcher uses this to promote the accepted repair
+    /// without a second operator action.
+    pub async fn accepted_repair_candidates(&self) -> Result<Vec<(String, String)>, Error> {
+        let rows: Vec<(String, String)> = sqlx::query_as::query_as(
+            "SELECT ir.project_id, cd.commit_sha
+             FROM repair_requests rr
+             JOIN intake_requests ir ON ir.id=rr.request_id
+             JOIN runs r ON r.campaign_id=ir.campaign_id
+             JOIN attempts a ON a.run_id=r.id
+             JOIN candidates cd ON cd.attempt_id=a.id
+             JOIN gate_decisions gd ON gd.candidate_id=cd.id
+             WHERE gd.outcome='ACCEPTED'
+             ORDER BY cd.created_at DESC,cd.id DESC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
     pub async fn repair_request_for_candidate(
         &self,
         candidate_id: &str,

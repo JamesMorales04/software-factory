@@ -3331,6 +3331,22 @@ export const en = {
   "request.repair.starting": "Starting repair…",
   "request.repair.cancel": "Cancel",
   "request.repair.error": "The repair request could not be started.",
+  "director.operation.title": "Operation manager",
+  "director.operation.notRecorded": "Not recorded",
+  "director.operation.director": "Director",
+  "director.operation.manager": "Operation Manager",
+  "director.operation.priority": "Priority",
+  "director.operation.worktree": "Worktree policy",
+  "director.portfolio.priority": "Priority {priority}",
+  "director.priority.label": "Queue priority (0 highest, 1000 lowest)",
+  "director.priority.save": "Update priority",
+  "director.priority.help":
+    "Priority orders queued autonomous starts. It does not bypass Core authority or the resource-derived concurrency budget.",
+  "director.priority.success": "Priority updated.",
+  "director.priority.invalid": "Priority must be an integer from 0 to 1000.",
+  "director.priority.error": "The priority could not be updated.",
+  "director.scheduler.value":
+    "Resource governor: {active} active, {queued} queued, capacity {capacity} start(s). Worktrees are per attempt.",
 } as const;
 
 export type MessageKey = keyof typeof en;

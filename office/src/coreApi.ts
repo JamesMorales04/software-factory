@@ -1592,6 +1592,11 @@ export interface AgenticPortfolioEntry {
   workUnits: number;
   participantCount: number;
   stackLanguages: string[];
+  directorId: string;
+  operationManagerId: string;
+  priority: number;
+  operationStatus: string;
+  worktreePolicy: string;
   updatedAt: string;
 }
 
@@ -1652,11 +1657,25 @@ export interface AgenticRequestDetail {
     configHash: string;
     createdAt: string;
   };
+  operation: AgenticOperation | null;
   context: {
     handoffs: unknown[];
     note: string;
   };
   semantic: AgenticSemanticAssessment | null;
+}
+
+export interface AgenticOperation {
+  id: string;
+  requestId: string;
+  projectId: string;
+  directorId: string;
+  operationManagerId: string;
+  priority: number;
+  status: string;
+  worktreePolicy: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface ExecutionPolicyRequest {
@@ -2900,6 +2919,19 @@ export const coreApi = {
     request<LeadWithdrawalRecord>(
       `/lead/requests/${encodeURIComponent(id)}/withdraw`,
       { method: "POST", body: JSON.stringify({ reason }) },
+    ),
+  getAgenticScheduler: () =>
+    request<{
+      capacity: number;
+      active: number;
+      queued: number;
+      resourcePolicy: string;
+      worktreePolicy: string;
+    }>("/agentic/scheduler"),
+  setAgenticPriority: (id: string, priority: number) =>
+    request<AgenticOperation>(
+      `/agentic/requests/${encodeURIComponent(id)}/priority`,
+      { method: "POST", body: JSON.stringify({ priority }) },
     ),
   assessAgenticRequest: (id: string) =>
     request<unknown>(`/agentic/requests/${encodeURIComponent(id)}/assess`, {

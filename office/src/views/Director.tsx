@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Badge } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
+import { Input } from "../components/ui/Field";
 import {
   EmptyState,
   ErrorState,
@@ -68,6 +69,17 @@ export function Director() {
   const [triageError, setTriageError] = useState<string | null>(null);
   const [triageNotice, setTriageNotice] = useState<string | null>(null);
   const [lastLoadedAt, setLastLoadedAt] = useState<string | null>(null);
+  const [scheduler, setScheduler] = useState<{
+    capacity: number;
+    active: number;
+    queued: number;
+    resourcePolicy: string;
+    worktreePolicy: string;
+  } | null>(null);
+  const [priorityDraft, setPriorityDraft] = useState("100");
+  const [priorityBusy, setPriorityBusy] = useState(false);
+  const [priorityError, setPriorityError] = useState<string | null>(null);
+  const [priorityNotice, setPriorityNotice] = useState<string | null>(null);
 
   const loadPortfolio = useCallback(async () => {
     try {
@@ -85,6 +97,18 @@ export function Director() {
     const timer = window.setInterval(() => void loadPortfolio(), 8000);
     return () => window.clearInterval(timer);
   }, [loadPortfolio]);
+  useEffect(() => {
+    const load = async () => {
+      try {
+        setScheduler(await coreApi.getAgenticScheduler());
+      } catch {
+        setScheduler(null);
+      }
+    };
+    void load();
+    const timer = window.setInterval(() => void load(), 5000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const activeId =
     selectedId ||
@@ -102,7 +126,10 @@ export function Director() {
     coreApi
       .getAgenticRequest(activeId)
       .then((next) => {
-        if (active) setDetail(next);
+        if (active) {
+          setDetail(next);
+          if (next.operation) setPriorityDraft(String(next.operation.priority));
+        }
       })
       .catch((cause) => {
         if (active) {
@@ -131,6 +158,28 @@ export function Director() {
       setTriageError(errorText(cause, t("director.triage.error")));
     } finally {
       setTriageBusy(false);
+    }
+  }
+
+  async function updatePriority() {
+    if (!activeId) return;
+    const priority = Number(priorityDraft);
+    if (!Number.isInteger(priority) || priority < 0 || priority > 1000) {
+      setPriorityError(t("director.priority.invalid"));
+      return;
+    }
+    setPriorityBusy(true);
+    setPriorityError(null);
+    setPriorityNotice(null);
+    try {
+      await coreApi.setAgenticPriority(activeId, priority);
+      const next = await coreApi.getAgenticRequest(activeId);
+      setDetail(next);
+      setPriorityNotice(t("director.priority.success"));
+    } catch (cause) {
+      setPriorityError(errorText(cause, t("director.priority.error")));
+    } finally {
+      setPriorityBusy(false);
     }
   }
 
@@ -247,6 +296,12 @@ export function Director() {
                           count: entry.participantCount,
                         })}
                       </span>
+                      <Badge tone="neutral">
+                        {t("director.portfolio.priority", {
+                          priority: entry.priority,
+                        })}
+                      </Badge>
+                      <span className="muted">{entry.operationStatus}</span>
                     </span>
                   </button>
                 </li>
@@ -378,6 +433,76 @@ export function Director() {
                     <p className="ui-callout ui-callout--attention">
                       {t("director.detail.unknowns", {
                         values: detail.triage.unknowns.join("; "),
+                      })}
+                    </p>
+                  )}
+                </Panel>
+
+                <Panel>
+                  <div className="section-heading">
+                    <h2>{t("director.operation.title")}</h2>
+                    <Badge tone="info">
+                      {detail.operation?.status ??
+                        t("director.operation.notRecorded")}
+                    </Badge>
+                  </div>
+                  <dl className="director-facts">
+                    <div>
+                      <dt>{t("director.operation.director")}</dt>
+                      <dd>{detail.operation?.directorId ?? "—"}</dd>
+                    </div>
+                    <div>
+                      <dt>{t("director.operation.manager")}</dt>
+                      <dd>{detail.operation?.operationManagerId ?? "—"}</dd>
+                    </div>
+                    <div>
+                      <dt>{t("director.operation.priority")}</dt>
+                      <dd>{detail.operation?.priority ?? 100}</dd>
+                    </div>
+                    <div>
+                      <dt>{t("director.operation.worktree")}</dt>
+                      <dd>
+                        {detail.operation?.worktreePolicy ?? "PER_ATTEMPT"}
+                      </dd>
+                    </div>
+                  </dl>
+                  <div className="director-priority">
+                    <Input
+                      label={t("director.priority.label")}
+                      type="number"
+                      min={0}
+                      max={1000}
+                      value={priorityDraft}
+                      onChange={(event) => setPriorityDraft(event.target.value)}
+                      disabled={priorityBusy}
+                    />
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      busy={priorityBusy}
+                      disabled={priorityBusy}
+                      onClick={() => void updatePriority()}
+                    >
+                      {t("director.priority.save")}
+                    </Button>
+                  </div>
+                  <p className="muted">{t("director.priority.help")}</p>
+                  {priorityNotice && (
+                    <p className="notice" role="status">
+                      {priorityNotice}
+                    </p>
+                  )}
+                  {priorityError && (
+                    <p className="ui-callout ui-callout--danger" role="alert">
+                      {priorityError}
+                    </p>
+                  )}
+                  {scheduler && (
+                    <p className="ui-callout ui-callout--info" role="status">
+                      {t("director.scheduler.value", {
+                        capacity: scheduler.capacity,
+                        active: scheduler.active,
+                        queued: scheduler.queued,
                       })}
                     </p>
                   )}

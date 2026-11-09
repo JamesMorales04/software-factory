@@ -906,6 +906,20 @@ pub(super) async fn create_intake_request_in_tx(
     .bind(&record.created_at)
     .execute(&mut *transaction)
     .await?;
+    sqlx::query::query(
+        "INSERT INTO agentic_operations
+         (id,request_id,project_id,director_id,operation_manager_id,priority,status,
+          worktree_policy,created_at,updated_at)
+         VALUES (?1,?2,?3,?4,?5,100,'QUEUED','PER_ATTEMPT',?6,?6)",
+    )
+    .bind(format!("operation-{}", record.id))
+    .bind(&record.id)
+    .bind(project_id)
+    .bind(format!("director:{}", grant.principal_id))
+    .bind(format!("operation-manager:{}", record.id))
+    .bind(&now)
+    .execute(&mut *transaction)
+    .await?;
     let context_json = serde_json::to_string(&serde_json::json!({
         "schema":"factory-lead-execution-context-v1",
         "projectId":project_id,
@@ -2298,6 +2312,46 @@ mod tests {
             .unwrap();
         assert!(created);
         assert_eq!(request.mode, IntakeMode::Autonomous);
+        let operation = db.agentic_operation_for_request(&request.id).await.unwrap();
+        assert_eq!(operation.priority, 100);
+        assert_eq!(operation.status, "QUEUED");
+        assert_eq!(operation.worktree_policy, "PER_ATTEMPT");
+        let operation = db
+            .set_agentic_operation_priority(&request.id, 10)
+            .await
+            .unwrap();
+        assert_eq!(operation.priority, 10);
+        let operation = db
+            .set_agentic_operation_status(&request.id, "EXECUTING")
+            .await
+            .unwrap();
+        assert_eq!(operation.status, "EXECUTING");
+        let now = chrono::Utc::now().to_rfc3339();
+        let action_id: (String,) =
+            sqlx::query_as::query_as("SELECT action_id FROM intake_requests WHERE id=?1")
+                .bind(&request.id)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        sqlx::query::query(
+            "INSERT INTO campaigns(id,action_id,status,created_at)
+             VALUES ('operation-campaign',?1,'CANCELLED',?2)",
+        )
+        .bind(&action_id.0)
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "UPDATE intake_requests SET campaign_id='operation-campaign' WHERE id=?1",
+        )
+        .bind(&request.id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let changed = db.reconcile_agentic_operations().await.unwrap();
+        assert_eq!(changed.len(), 1);
+        assert_eq!(changed[0].status, "CANCELLED");
         db.close().await;
         let _ = std::fs::remove_file(path);
     }

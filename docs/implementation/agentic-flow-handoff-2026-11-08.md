@@ -40,7 +40,18 @@ commit
   the full Gate. Real browser repair of candidate `dbbfa1d6` fixed the date
   validator and reached `ACCEPTED` at candidate `88ca73d7`; evidence is in
   `docs/evidence/repair-from-candidate-2026-11-08/`. R2/R3 are refused pending
-  the owner charter.
+  the owner charter. A Core watcher promotes the accepted repair candidate to
+  the Project base without a second operator action.
+- **Phase 2 operation manager and scheduler:** migration
+  `0055_agentic_operations.sql`, durable operation records linked to each
+  intake request, Director/Operation Manager identity, per-operation priority
+  (0-1000), resource-derived start capacity from CPU and available memory,
+  in-process priority queue, `GET /agentic/scheduler`,
+  `POST /agentic/requests/{id}/priority`, Office operation panel and priority
+  control. Terminal Campaign/Gate states reconcile the operation projection
+  every five seconds; a cancelled Campaign can never leave an operation
+  claiming to execute. Evidence is in
+  `docs/evidence/operation-scheduler-2026-11-08/`.
 
 ## Live evidence
 
@@ -49,20 +60,22 @@ commit
 - Usage observed: 1451 input / 1139 output / 2590 total / 902 micros.
 - 1440 and 390 px: zero console errors, zero unexpected 4xx/5xx, no horizontal
   overflow.
+- Phase 2 browser smoke: request `b19cdff1-7e0f-4be6-9ceb-7d2f138332a8`
+  reached `Executing` within 22 seconds through the real Office intake and
+  resource governor; priority was updated 100 -> 10 from the browser; the
+  Campaign was cancelled and the operation projection reconciled to
+  `CANCELLED`. Scheduler capacity observed at 10 from CPU and available memory.
 
 ## What remains
 
-### Phase 2 — Operation Manager and concurrency (next)
+### Phase 2 — Operation Manager and concurrency (partial)
 
-- Add durable `agentic_operations` linked to intake/lead/campaign.
-- Director per owner; Operation Manager per operation.
-- Priority queue, resource governor (CPU/memory/disk/provider/worktrees) and
-  worktrees per operation.
-- UI portfolio/operation manager and concurrency state.
-- Tests: two simultaneous operations, no duplicate runner, worktree isolation,
-  priority/fairness, no fixed numeric cap but backpressure.
+- Durable `agentic_operations`, Director/Operation Manager identity, priority
+  queue and resource-derived capacity are implemented.
+- Remaining: two simultaneous operations, duplicate-runner proof, per-operation
+  worktree isolation evidence, disk/provider backpressure and fairness tests.
 
-### Phase 3 — Repair
+### Phase 3 — Repair (operator-confirmed R0/R1 complete)
 
 - RepairPacket from the exact rejected candidate, findings and failed checks.
 - Repairer execution from the candidate, C+1 candidate assembly, evidence

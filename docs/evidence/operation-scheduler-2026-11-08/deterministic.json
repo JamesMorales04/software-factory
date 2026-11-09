@@ -1,0 +1,63 @@
+{
+  "schema": "factory.deterministic-evidence.v1",
+  "schema_version": 1,
+  "result": "PASS",
+  "kind": "deterministic-test-evidence",
+  "captured_at": "2026-11-08T23:58:00Z",
+  "candidate": "branch factory/agentic-flow-20261108; exact code commit is recorded in pull request #96",
+  "scope": "Operation record creation, Director and Operation Manager identity, priority validation and persistence, and Campaign/Gate reconciliation.",
+  "checks": [
+    {
+      "id": "D1",
+      "name": "cargo fmt --check",
+      "pass": true,
+      "detail": "cargo fmt --manifest-path native/Cargo.toml --all -- --check"
+    },
+    {
+      "id": "D2",
+      "name": "strict Clippy",
+      "pass": true,
+      "detail": "cargo clippy --all-targets --all-features -- -D warnings"
+    },
+    {
+      "id": "D3",
+      "name": "Rust library tests",
+      "pass": true,
+      "detail": "cargo test --all-features --lib: 578 passed, 0 failed, 2 ignored"
+    },
+    {
+      "id": "D4",
+      "name": "Core binary tests",
+      "pass": true,
+      "detail": "cargo test --all-features --bin factory-core: 37 passed, 0 failed"
+    },
+    {
+      "id": "D5",
+      "name": "Office component tests",
+      "pass": true,
+      "detail": "vitest: 276 passed"
+    },
+    {
+      "id": "D6",
+      "name": "operation record and reconciliation",
+      "pass": true,
+      "detail": "db::intake::tests::autonomous_policy_grants_r0_autonomy_and_accepts_autonomous_request asserts QUEUED creation, priority 100 -> 10, EXECUTING transition and CANCELLED reconciliation from the authoritative Campaign"
+    },
+    {
+      "id": "D7",
+      "name": "Office operation panel",
+      "pass": true,
+      "detail": "Director.test.tsx observes the Operation Manager, resource governor and persists a priority update"
+    },
+    {
+      "id": "D8",
+      "name": "architecture and parity",
+      "pass": true,
+      "detail": "factory-architecture-check: PASS; check-office-parity.py: PASS"
+    }
+  ],
+  "limitations": [
+    "Deterministic evidence only; it does not certify real-model live acceptance.",
+    "Two simultaneous operations and worktree isolation are not yet proven."
+  ]
+}
