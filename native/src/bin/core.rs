@@ -11736,13 +11736,14 @@ async fn deterministic_participant_plan(
     // that provisions independent reviewer identities.
     if plan.reviewer_count > 1 {
         plan.reviewer_count = 1;
+        plan.reviewer_roles = vec![factory_native::planning::ReviewerRole::Functional];
         for assignment in &mut plan.assignments {
             if assignment.role == "Reviewer" {
                 assignment.count = 1;
             }
         }
         plan.reasons.push(
-            "Only one independent reviewer identity is configured; the plan uses one reviewer."
+            "Only one independent reviewer identity is configured; the plan uses one Functional reviewer and does not claim multi-role coverage."
                 .into(),
         );
     }

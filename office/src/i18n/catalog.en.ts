@@ -3460,6 +3460,8 @@ export const en = {
     "Evidence references (one per line or comma-separated)",
   "director.findings.ownerDecision":
     "Owner decision reference (refutation only)",
+  "director.findings.ownerDecisionHelp":
+    "Required for a refutation. Use the id of a resolved owner decision for this request.",
   "director.findings.resolve": "Resolve finding",
   "director.findings.refute": "Refute finding",
   "director.findings.evidenceRequired":

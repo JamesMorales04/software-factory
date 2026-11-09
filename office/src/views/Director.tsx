@@ -1122,6 +1122,7 @@ export function Director() {
                       />
                       <Input
                         label={t("director.findings.ownerDecision")}
+                        help={t("director.findings.ownerDecisionHelp")}
                         value={findingOwnerDecision}
                         onChange={(event) =>
                           setFindingOwnerDecision(event.target.value)
@@ -1141,7 +1142,11 @@ export function Director() {
                           variant="danger"
                           size="sm"
                           busy={findingBusy === "REFUTED"}
-                          disabled={findingBusy !== null || findingId === ""}
+                          disabled={
+                            findingBusy !== null ||
+                            findingId === "" ||
+                            findingOwnerDecision.trim() === ""
+                          }
                           onClick={() => void disposeFinding("REFUTED")}
                         >
                           {t("director.findings.refute")}

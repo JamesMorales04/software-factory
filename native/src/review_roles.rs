@@ -66,12 +66,22 @@ impl ReviewerEvidence {
         {
             return Err("reviewer evidence identity/result is invalid".into());
         }
+        let mut ids = std::collections::BTreeSet::new();
         for finding in &self.findings {
             if finding.id.trim().is_empty() || finding.message.trim().is_empty() {
                 return Err("reviewer finding id and message are required".into());
             }
-            if finding.status != FindingStatus::Open && finding.evidence_refs.is_empty() {
-                return Err("a closed reviewer finding requires evidence".into());
+            if !ids.insert(finding.id.as_str()) {
+                return Err("reviewer finding ids must be unique".into());
+            }
+            if !matches!(
+                finding.severity.as_str(),
+                "critical" | "blocking" | "warning" | "info"
+            ) {
+                return Err("reviewer finding severity is not canonical".into());
+            }
+            if finding.evidence_refs.is_empty() {
+                return Err("every reviewer finding requires evidence references".into());
             }
         }
         if self.result == "PASS"
@@ -106,6 +116,22 @@ pub fn assignments(
         assignment.validate()?;
     }
     Ok(assignments)
+}
+
+/// Critical assurance requires at least two distinct reviewer provider/model
+/// pairs. This is a plan-level check; it never accepts a receipt.
+pub fn validate_critical_diversity(assignments: &[ReviewerAssignment]) -> Result<(), String> {
+    if assignments.len() < 2 {
+        return Err("critical assurance requires at least two reviewers".into());
+    }
+    let distinct = assignments
+        .iter()
+        .map(|assignment| (assignment.provider.as_str(), assignment.model.as_str()))
+        .collect::<std::collections::BTreeSet<_>>();
+    if distinct.len() < 2 {
+        return Err("critical assurance requires provider or model diversity".into());
+    }
+    Ok(())
 }
 
 pub fn role_slug(role: ReviewerRole) -> &'static str {
@@ -184,6 +210,46 @@ mod tests {
             }],
         };
         assert!(evidence.validate().is_err());
+    }
+
+    #[test]
+    fn duplicate_ids_and_noncanonical_severity_are_rejected() {
+        let mut evidence = ReviewerEvidence {
+            role: ReviewerRole::Testing,
+            principal_id: "reviewer-testing".into(),
+            result: "CHANGES_REQUESTED".into(),
+            evidence: "EXECUTED".into(),
+            findings: vec![
+                ReviewerFinding {
+                    id: "f1".into(),
+                    severity: "warning".into(),
+                    status: FindingStatus::Open,
+                    message: "one".into(),
+                    evidence_refs: vec!["evidence-1".into()],
+                },
+                ReviewerFinding {
+                    id: "f1".into(),
+                    severity: "warning".into(),
+                    status: FindingStatus::Open,
+                    message: "two".into(),
+                    evidence_refs: vec!["evidence-2".into()],
+                },
+            ],
+        };
+        assert!(evidence.validate().is_err());
+        evidence.findings[1].id = "f2".into();
+        evidence.findings[0].severity = "severe".into();
+        assert!(evidence.validate().is_err());
+    }
+
+    #[test]
+    fn critical_diversity_requires_two_provider_or_model_pairs() {
+        let plan = ReviewerPlan::for_lane(PlanningLane::FormalSpec, true);
+        let assignments = assignments(&plan, "codex", "gpt-6-luna").unwrap();
+        assert!(validate_critical_diversity(&assignments).is_err());
+        let mut diverse = assignments;
+        diverse[0].model = "other-model".into();
+        validate_critical_diversity(&diverse).unwrap();
     }
 
     #[test]

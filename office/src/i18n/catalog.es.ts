@@ -3595,6 +3595,8 @@ export const es: Catalog = {
     "Referencias de evidencia (una por línea o separadas por comas)",
   "director.findings.ownerDecision":
     "Referencia de decisión del owner (solo refutación)",
+  "director.findings.ownerDecisionHelp":
+    "Obligatoria para una refutación. Usa el id de una decisión del owner resuelta para esta solicitud.",
   "director.findings.resolve": "Resolver hallazgo",
   "director.findings.refute": "Refutar hallazgo",
   "director.findings.evidenceRequired":
