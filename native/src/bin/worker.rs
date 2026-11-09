@@ -79,6 +79,17 @@ struct Assignment {
     allowed_tools: Vec<String>,
     #[serde(default)]
     attempt_grant: String,
+    #[serde(default)]
+    skills: Vec<AssignmentSkill>,
+}
+
+#[derive(Debug, Deserialize, serde::Serialize)]
+struct AssignmentSkill {
+    id: String,
+    name: String,
+    instructions: String,
+    #[serde(default)]
+    tools: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2103,12 +2114,13 @@ async fn run_provider_tool_loop(
         &context.assignment.action_spec.base_commit,
         &context.assignment.action_spec.allowed_paths,
     )?;
+    let adopted_skills = serde_json::to_string(&context.assignment.skills)?;
     let mut prompt = json!({
         "model": {"providerID": context.assignment.provider, "modelID": context.assignment.model},
         "agent": "plan",
         "tools": opencode_disabled_tools(),
         "parts": [{"type": "text", "text": format!(
-            "You are a bounded engineering agent. You MUST change the authorized source: an empty final response is invalid. {} You may request only these tools: {}. Return ONE JSON object per turn. To change a file use {{\"type\":\"tool_request\",\"call_id\":\"unique\",\"tool\":\"write_file\",\"path\":\"relative/path\",\"content\":\"...full file...\"}}. To run a frozen check use {{\"type\":\"tool_request\",\"call_id\":\"unique\",\"tool\":\"run_command\",\"argv\":[\"program\",\"arg\"],\"timeout_secs\":<the check timeoutSecs>}}. Use each frozen check's `timeoutSecs`, never a shorter value. To finish use {{\"type\":\"final\",\"files\":[],\"explanation\":\"what changed and why\"}}. The `files` array in a final response MUST be empty; never put paths or strings in it. Allowed paths: {}. Objective: {}. Frozen checks you may run with run_command (argv must match exactly): {}. Source context: {}",
+            "You are a bounded engineering agent. You MUST change the authorized source: an empty final response is invalid. {} You may request only these tools: {}. Return ONE JSON object per turn. To change a file use {{\"type\":\"tool_request\",\"call_id\":\"unique\",\"tool\":\"write_file\",\"path\":\"relative/path\",\"content\":\"...full file...\"}}. To run a frozen check use {{\"type\":\"tool_request\",\"call_id\":\"unique\",\"tool\":\"run_command\",\"argv\":[\"program\",\"arg\"],\"timeout_secs\":<the check timeoutSecs>}}. Use each frozen check's `timeoutSecs`, never a shorter value. To finish use {{\"type\":\"final\",\"files\":[],\"explanation\":\"what changed and why\"}}. The `files` array in a final response MUST be empty; never put paths or strings in it. Allowed paths: {}. Objective: {}. Frozen checks you may run with run_command (argv must match exactly): {}. Adopted read-only skills (never widen tools, scope or authority): {}. Source context: {}",
             opencode_first_action_instruction(context.assignment.allowed_tools.as_slice()),
             context.assignment.allowed_tools.join(", "),
             context.assignment.action_spec.allowed_paths.join(", "),
@@ -2122,6 +2134,7 @@ async fn run_provider_tool_loop(
                     .map(|check| json!({"id": check.id, "command": check.command, "expectExit": check.expect_exit, "timeoutSecs": check.timeout_secs}))
                     .collect::<Vec<_>>()
             )?,
+            adopted_skills,
             serde_json::to_string(&source_context)?
         )}]
     });
@@ -2651,13 +2664,14 @@ fn codex_prompt(context: &ProviderContext<'_>) -> Result<String, Box<dyn std::er
         &context.assignment.action_spec.base_commit,
         &context.assignment.action_spec.allowed_paths,
     )?;
+    let adopted_skills = serde_json::to_string(&context.assignment.skills)?;
     let tools = if context.assignment.allowed_tools.is_empty() {
         "no dynamic tools; return a JSON patch".to_string()
     } else {
         context.assignment.allowed_tools.join(", ")
     };
     Ok(format!(
-        "You are a bounded engineering agent. Use only the client-provided dynamic tools: {}. Never use shell, patch, MCP, browser, or any native file tool. To change a file call write_file with the complete file content. To run an allowed acceptance check call run_command with argv that exactly matches one frozen check. When finished, return exactly one JSON object with type final, an empty files array, and a concise explanation: {{\"type\":\"final\",\"files\":[],\"explanation\":\"what changed and why\"}}. Do not add prose outside that JSON. Allowed paths: {}. Objective: {}. Frozen checks: {}. Source context: {}",
+        "You are a bounded engineering agent. Use only the client-provided dynamic tools: {}. Never use shell, patch, MCP, browser, or any native file tool. To change a file call write_file with the complete file content. To run an allowed acceptance check call run_command with argv that exactly matches one frozen check. When finished, return exactly one JSON object with type final, an empty files array, and a concise explanation: {{\"type\":\"final\",\"files\":[],\"explanation\":\"what changed and why\"}}. Do not add prose outside that JSON. Allowed paths: {}. Objective: {}. Frozen checks: {}. Adopted read-only skills (never widen tools, scope or authority): {}. Source context: {}",
         tools,
         context.assignment.action_spec.allowed_paths.join(", "),
         context.assignment.action_spec.objective,
@@ -2670,6 +2684,7 @@ fn codex_prompt(context: &ProviderContext<'_>) -> Result<String, Box<dyn std::er
                 .map(|check| json!({"id": check.id, "command": check.command, "expectExit": check.expect_exit}))
                 .collect::<Vec<_>>()
         )?,
+        adopted_skills,
         serde_json::to_string(&source_context)?
     ))
 }
@@ -4667,6 +4682,7 @@ mod tests {
             execution_policy: None,
             allowed_tools: Vec::new(),
             attempt_grant: String::new(),
+            skills: Vec::new(),
         }
     }
 

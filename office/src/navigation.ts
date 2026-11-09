@@ -1,6 +1,7 @@
 import type { LucideIcon } from "lucide-react";
 import {
   Activity,
+  BookOpen,
   Bot,
   ClipboardList,
   FileText,
@@ -87,6 +88,13 @@ export const NAV_GROUPS: NavGroup[] = [
         icon: FileText,
         keywords:
           "specifications specs formal frozen workgraph work graph requirements acceptance checks kanban board github",
+      },
+      {
+        to: "/skills",
+        labelKey: "nav.skills",
+        icon: BookOpen,
+        keywords:
+          "skills knowledge context7 librarian explorer library docs temporary promotion license review revoke",
       },
       {
         to: "/agents",

@@ -110,17 +110,30 @@ commit
   1440/390 with zero console errors and no overflow. GitHub live publication
   remains `NOT_TESTED`.
 
-### Phase 5 — Explorer, Librarian, Context7 and skills (next)
+### Phase 5 — Explorer, Librarian, Context7 and skills (implemented, live use pending)
 
-- Read-only Explorer using deterministic repository evidence plus semantic
-  interpretation.
-- KnowledgeGate, KnowledgePack, Context7 MCP and ranked sources.
-- SkillCandidate/SkillRegistry with RUN/PROJECT/GLOBAL scope, trust gate,
-  compatibility, expiry/revocation.
-- Promotion after two successful uses, weekly reevaluation, GLOBAL owner
-  decision.
-- Free navigation only for the read-only Librarian with egress broker and no
-  credentials.
+- Read-only Explorer inventories the exact Project `Cargo.toml` and
+  `package.json` at the frozen base commit and records manifest evidence.
+- Deterministic knowledge-gap gate: a named library must be evidenced by the
+  objective or semantic skill needs and must not be already pinned in a
+  manifest.
+- Bounded Context7 MCP client with initialize/initialized/tool-call, JSON or
+  SSE responses, optional session header, fixed HTTPS endpoint, no credentials,
+  size/time limits and deterministic library ranking.
+- Migration `0057_agentic_knowledge_skills.sql`, durable KnowledgePacks,
+  skills, uses and adoptions.
+- Read-only skill trust gate, RUN/PROJECT/GLOBAL scope, two successful uses,
+  reviewed upstream license, weekly reevaluation, explicit owner decision for
+  GLOBAL and revocation.
+- Adopted skills are delivered in the Worker assignment and included in both
+  OpenCode and Codex prompts as read-only guidance; they cannot widen tools or
+  authority.
+- Office Director `Knowledge and skills` panel and `/skills` registry.
+- Real browser evidence in `docs/evidence/knowledge-skills-2026-11-09/`:
+  request `d0004d44`, real Context7 MCP research for `chrono`, KnowledgePack
+  SHA `d3818a21`, temporary skill `context7-chrono`, adoption for the
+  implementer, 1440/390 with zero console errors and no overflow. Real
+  participant use and promotion remain `NOT_TESTED`.
 
 ### Phase 6 — Dynamic fleets and cheap operations
 

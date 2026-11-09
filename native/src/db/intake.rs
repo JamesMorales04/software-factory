@@ -2516,6 +2516,142 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn knowledge_skill_promotion_follows_the_trust_gate() {
+        let (path, db, profile, config) = fixture().await;
+        let policy = create_policy(&db, &profile, &config).await;
+        let _ = policy;
+        let request = create_request(&db, &profile, "skill-request").await;
+        let pack = crate::knowledge::KnowledgePack {
+            library: "chrono".into(),
+            library_id: "/chronotope/chrono".into(),
+            query: "timezone-aware ICS export".into(),
+            sources: vec![crate::knowledge::KnowledgeSource {
+                title: "Chrono — Context7".into(),
+                url: "https://context7.com/chronotope/chrono".into(),
+                kind: "CONTEXT7_MCP".into(),
+                snippet: "Use Utc::now().to_rfc3339().".into(),
+                reputation: Some("High".into()),
+                benchmark_score: Some(77.3),
+            }],
+            pack_sha256: String::new(),
+            fetched_at: "2026-11-09T00:00:00Z".into(),
+        }
+        .seal();
+        let saved = db
+            .save_agentic_knowledge_pack(&crate::db::NewAgenticKnowledgePack {
+                request_id: &request.id,
+                project_id: "project",
+                pack: &pack,
+                provider: "CONTEXT7_MCP",
+                source_url: "https://context7.com/chronotope/chrono",
+            })
+            .await
+            .unwrap();
+        assert_eq!(saved.pack_sha256, pack.pack_sha256);
+        let manifest = crate::knowledge::derive_skill_manifest(
+            &pack,
+            &["rust".into()],
+            "2026-11-09T00:00:00Z",
+            "2026-11-16T00:00:00Z",
+        )
+        .unwrap();
+        let skill = db
+            .create_agentic_skill(&crate::db::NewAgenticSkill {
+                project_id: "project",
+                request_id: &request.id,
+                manifest: &manifest,
+                manifest_sha256: &crate::knowledge::skill_manifest_sha256(&manifest),
+                status: "ACTIVE",
+            })
+            .await
+            .unwrap();
+        assert_eq!(skill.scope, "RUN");
+        assert_eq!(skill.status, "ACTIVE");
+        let adoption = db
+            .adopt_agentic_skill(&request.id, &skill.id, "implementer")
+            .await
+            .unwrap();
+        assert_eq!(adoption.role, "implementer");
+        let now = chrono::Utc::now().to_rfc3339();
+        let action_id: (String,) =
+            sqlx::query_as::query_as("SELECT action_id FROM intake_requests WHERE id=?1")
+                .bind(&request.id)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        sqlx::query::query(
+            "INSERT INTO campaigns(id,action_id,status,created_at)
+             VALUES ('skill-campaign',?1,'AUTHORIZED',?2)",
+        )
+        .bind(&action_id.0)
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query("UPDATE intake_requests SET campaign_id='skill-campaign' WHERE id=?1")
+            .bind(&request.id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let assignment_skills = db
+            .adopted_skills_for_campaign("skill-campaign")
+            .await
+            .unwrap();
+        assert_eq!(assignment_skills.len(), 1);
+        assert_eq!(assignment_skills[0].name, "context7-chrono");
+        assert!(assignment_skills[0].instructions.contains("Context7"));
+        assert_eq!(
+            assignment_skills[0].tools,
+            vec!["context-read", "repository-read"]
+        );
+        let skill = db
+            .record_agentic_skill_use(
+                &skill.id,
+                &request.id,
+                "SUCCESS",
+                "candidate accepted after using the docs",
+            )
+            .await
+            .unwrap();
+        assert_eq!(skill.success_count, 1);
+        assert_eq!(skill.scope, "RUN");
+        let skill = db
+            .record_agentic_skill_use(&skill.id, &request.id, "SUCCESS", "second accepted use")
+            .await
+            .unwrap();
+        assert_eq!(skill.success_count, 2);
+        assert_eq!(skill.status, "PROMOTION_READY");
+        assert_eq!(skill.scope, "RUN");
+        let skill = db
+            .review_agentic_skill_license(&skill.id, "owner", "MIT")
+            .await
+            .unwrap();
+        assert_eq!(skill.scope, "PROJECT");
+        assert_eq!(skill.status, "ACTIVE");
+        let skill = db.review_agentic_skill(&skill.id, "owner").await.unwrap();
+        assert!(skill.last_reviewed_at.is_some());
+        let skill = db
+            .promote_agentic_skill(&skill.id, "GLOBAL", "owner", true)
+            .await
+            .unwrap();
+        assert_eq!(skill.scope, "GLOBAL");
+        assert_eq!(skill.owner_approved_by.as_deref(), Some("owner"));
+        assert_eq!(db.agentic_skill_uses(&skill.id).await.unwrap().len(), 2);
+        let skill = db
+            .revoke_agentic_skill(&skill.id, "superseded")
+            .await
+            .unwrap();
+        assert_eq!(skill.status, "REVOKED");
+        assert!(
+            db.adopt_agentic_skill(&request.id, &skill.id, "implementer")
+                .await
+                .is_err()
+        );
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
     async fn unfinished_autonomous_requests_exclude_review_plan_work() {
         let (path, db, _profile, config) = fixture().await;
         let mut content = profile_content("Autopilot");

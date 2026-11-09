@@ -1819,6 +1819,88 @@ export interface AgenticSpecBoardCard {
   units: AgenticWorkUnit[];
 }
 
+export interface AgenticKnowledgeSource {
+  title: string;
+  url: string;
+  kind: string;
+  snippet: string;
+  reputation?: string | null;
+  benchmarkScore?: number | null;
+}
+
+export interface AgenticKnowledgePack {
+  library: string;
+  libraryId: string;
+  query: string;
+  sources: AgenticKnowledgeSource[];
+  packSha256: string;
+  fetchedAt: string;
+}
+
+export interface AgenticKnowledgePackRecord {
+  id: string;
+  requestId: string;
+  projectId: string;
+  library: string;
+  libraryId: string;
+  query: string;
+  packJson: string;
+  packSha256: string;
+  provider: string;
+  sourceUrl: string;
+  fetchedAt: string;
+  createdAt: string;
+}
+
+export interface AgenticSkillRecord {
+  id: string;
+  projectId: string;
+  requestId: string | null;
+  name: string;
+  scope: "RUN" | "PROJECT" | "GLOBAL";
+  status: "CANDIDATE" | "ACTIVE" | "PROMOTION_READY" | "REVOKED" | "EXPIRED";
+  manifestJson: string;
+  manifestSha256: string;
+  provenance: string;
+  license: string;
+  licenseReviewedAt: string | null;
+  compatibilityJson: string;
+  successCount: number;
+  failureCount: number;
+  lastUsedAt: string | null;
+  promotedAt: string | null;
+  lastReviewedAt: string | null;
+  nextReviewAt: string | null;
+  revokedAt: string | null;
+  ownerApprovedBy: string | null;
+  expiresAt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AgenticSkillAdoption {
+  requestId: string;
+  skillId: string;
+  role: string;
+  adoptedAt: string;
+}
+
+export interface AgenticKnowledgeResponse {
+  pack: AgenticKnowledgePackRecord | null;
+  skills: AgenticSkillRecord[];
+  adoptions: AgenticSkillAdoption[];
+  inventory: {
+    manifests: string[];
+    libraries: { name: string; version: string | null; manifest: string }[];
+    evidenceRefs: string[];
+  } | null;
+}
+
+export interface AgenticSkillRegistryEntry {
+  skill: AgenticSkillRecord;
+  reviewDue: boolean;
+}
+
 export interface AgenticSpecBoard {
   columns: string[];
   specs: AgenticSpecBoardCard[];
@@ -3134,6 +3216,74 @@ export const coreApi = {
       { method: "POST" },
     ),
   getAgenticSpecBoard: () => request<AgenticSpecBoard>("/agentic/specs/board"),
+  getAgenticKnowledge: (id: string) =>
+    request<AgenticKnowledgeResponse>(
+      `/agentic/requests/${encodeURIComponent(id)}/knowledge`,
+    ),
+  researchAgenticKnowledge: (id: string, library: string, query: string) =>
+    request<{
+      gap: {
+        library: string;
+        query: string;
+        reasons: string[];
+        manifestVersion: string | null;
+        evidenceRefs: string[];
+      };
+      pack: AgenticKnowledgePackRecord;
+      skill: AgenticSkillRecord;
+      inventory: AgenticKnowledgeResponse["inventory"];
+    }>(`/agentic/requests/${encodeURIComponent(id)}/knowledge`, {
+      method: "POST",
+      body: JSON.stringify({ library, query }),
+    }),
+  adoptAgenticSkill: (id: string, skillId: string) =>
+    request<AgenticSkillAdoption>(
+      `/agentic/requests/${encodeURIComponent(id)}/skills/${encodeURIComponent(skillId)}/adopt`,
+      { method: "POST" },
+    ),
+  listAgenticSkills: (projectId?: string) =>
+    request<{ skills: AgenticSkillRegistryEntry[] }>(
+      `/agentic/skills${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ""}`,
+    ),
+  recordAgenticSkillUse: (
+    skillId: string,
+    input: {
+      request_id: string;
+      outcome: "SUCCESS" | "FAILURE";
+      evidence: string;
+    },
+  ) =>
+    request<AgenticSkillRecord>(
+      `/agentic/skills/${encodeURIComponent(skillId)}/uses`,
+      { method: "POST", body: JSON.stringify(input) },
+    ),
+  reviewAgenticSkillLicense: (skillId: string, license: string) =>
+    request<AgenticSkillRecord>(
+      `/agentic/skills/${encodeURIComponent(skillId)}/license`,
+      { method: "POST", body: JSON.stringify({ license }) },
+    ),
+  promoteAgenticSkill: (
+    skillId: string,
+    input: {
+      scope: "PROJECT" | "GLOBAL";
+      owner_approved: boolean;
+      confirm: boolean;
+    },
+  ) =>
+    request<AgenticSkillRecord>(
+      `/agentic/skills/${encodeURIComponent(skillId)}/promote`,
+      { method: "POST", body: JSON.stringify(input) },
+    ),
+  reviewAgenticSkill: (skillId: string) =>
+    request<AgenticSkillRecord>(
+      `/agentic/skills/${encodeURIComponent(skillId)}/review`,
+      { method: "POST" },
+    ),
+  revokeAgenticSkill: (skillId: string, reason: string) =>
+    request<AgenticSkillRecord>(
+      `/agentic/skills/${encodeURIComponent(skillId)}/revoke`,
+      { method: "POST", body: JSON.stringify({ reason }) },
+    ),
   listAgenticPortfolio: () =>
     request<AgenticPortfolioEntry[]>("/agentic/portfolio"),
   getAgenticRequest: (id: string) =>

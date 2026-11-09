@@ -471,13 +471,13 @@ Decision: `proposed`
 ### Capabilities
 
 - CAP-036 — Adaptive Model Router (proposed, not_implemented)
-- CAP-038 — Skill Registry and admission (proposed, not_implemented)
+- CAP-038 — Skill Registry and admission (proposed, in_progress)
 - CAP-057 — Context handler and session handoff (proposed, not_implemented)
 - CAP-058 — Triage, route and assurance (proposed, in_progress)
 - CAP-059 — Director and Operation Manager (proposed, in_progress)
 - CAP-060 — Planner and Spec Manager (proposed, in_progress)
 - CAP-061 — Spec issue projection and kanban (proposed, in_progress)
-- CAP-062 — Explorer, Librarian and temporary skills (proposed, not_implemented)
+- CAP-062 — Explorer, Librarian and temporary skills (proposed, in_progress)
 - CAP-063 — Dynamic participant composition and cheap operations (proposed, not_implemented)
 - CAP-064 — Bounded repair orchestration (proposed, in_progress)
 - CAP-065 — Owner charter and delegated autonomy (proposed, not_implemented)

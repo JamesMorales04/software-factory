@@ -378,6 +378,7 @@ impl Database {
                 "assignment has no frozen allowed-path scope".into(),
             ));
         }
+        let skills = self.adopted_skills_for_campaign(&campaign_id).await?;
         Ok(WorkerAssignment {
             lease: lease.clone(),
             campaign_id,
@@ -400,6 +401,7 @@ impl Database {
             allowed_tools: serde_json::from_str(&allowed_tools)
                 .map_err(|_| Error::Invalid("stored allowed tools encoding"))?,
             attempt_grant: String::new(),
+            skills,
         })
     }
 

@@ -158,6 +158,14 @@ pub struct Attempt {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AssignmentSkill {
+    pub id: String,
+    pub name: String,
+    pub instructions: String,
+    pub tools: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorkerAssignment {
     pub lease: WorkerLease,
     pub campaign_id: String,
@@ -187,6 +195,10 @@ pub struct WorkerAssignment {
     /// layer never invents or stores this capability.
     #[serde(default)]
     pub attempt_grant: String,
+    /// Read-only adopted skills. Core populates them from durable adoption
+    /// records at claim time; they cannot widen tools or authority.
+    #[serde(default)]
+    pub skills: Vec<AssignmentSkill>,
 }
 
 #[derive(Clone, Debug)]
@@ -878,6 +890,7 @@ pub use authorization::{
     SubscriptionFundingRecord,
 };
 mod agentic_assessments;
+mod agentic_knowledge;
 mod agentic_operations;
 mod agentic_plans;
 mod delegations;
@@ -940,6 +953,10 @@ mod provider_sessions;
 mod provider_settings;
 mod subscription_admissions;
 pub use agentic_assessments::{AgenticAssessmentRecord, NewAgenticAssessment};
+pub use agentic_knowledge::{
+    AgenticKnowledgePackRecord, AgenticSkillAdoptionRecord, AgenticSkillRecord,
+    AgenticSkillUseRecord, NewAgenticKnowledgePack, NewAgenticSkill,
+};
 pub use agentic_operations::AgenticOperationRecord;
 pub use agentic_plans::{
     AgenticSpecIssueRecord, AgenticSpecPublicationRecord, AgenticSpecRecord,

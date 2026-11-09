@@ -23,6 +23,7 @@ import {
 } from "../coreApi";
 import { shortId } from "../format";
 import { useI18n } from "../i18n";
+import { KnowledgePanel } from "./KnowledgePanel";
 import "./director.css";
 import "./specs.css";
 
@@ -788,6 +789,8 @@ export function Director() {
                     </>
                   )}
                 </Panel>
+
+                <KnowledgePanel requestId={detail.request.id} />
 
                 <Panel>
                   <div className="section-heading">

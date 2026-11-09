@@ -1868,9 +1868,9 @@ capabilities:
   purpose: Version inspect scope revoke and evaluate external procedures
   product_objective: Safe extensibility
   decision_status: proposed
-  implementation_status: not_implemented
+  implementation_status: in_progress
   verification:
-    deterministic: not_tested
+    deterministic: verified
     live_agent: not_tested
     uat: not_tested
     deployment: not_tested
@@ -1883,22 +1883,25 @@ capabilities:
   refs:
     adr:
     - docs/architecture/decisions/ADR-0037-agent-topology-context-and-composition.md
-    contract: []
-    source: []
-    test: []
+    contract:
+    - docs/contracts/agentic-flow.md
+    source: [native/src/knowledge.rs, native/src/db/agentic_knowledge.rs, office/src/views/Skills.tsx]
+    test: [native/src/knowledge.rs, native/src/db/intake.rs, office/src/views/Skills.test.tsx]
   acceptance:
-    deterministic: Applicable skill registry and admission contract, negative and regression checks pass on an exact
-      candidate.
-    real: Exercise skill registry and admission in a genuine authorized project journey and independently verify
-      the outcome.
+    deterministic: A skill candidate has provenance, license, digest, compatibility and scope; the trust gate rejects write tools, expired or incompatible skills; RUN skills cannot widen tools; PROJECT promotion requires two successful uses and a reviewed license; GLOBAL requires an owner decision; weekly review and revocation are enforced.
+    real: A real participant uses a temporary skill and its verified outcome advances the promotion evidence.
   evidence:
-    deterministic: []
+    deterministic:
+    - docs/evidence/knowledge-skills-2026-11-09/deterministic.json
     live_agent: []
     uat: []
     deployment: []
     isolation: []
-  limitations: []
-  blockers: []
+  limitations:
+  - The skill registry is implemented; a full real Campaign using a skill and recording verified successful uses remains pending.
+  blockers:
+  - Live skill-use and promotion acceptance remains pending.
+
 - id: CAP-039
   name: Remote Workers
   category: Runtime
@@ -3004,9 +3007,9 @@ capabilities:
   purpose: Discover repository facts and trusted external knowledge, then admit a bounded temporary skill only for a proven gap
   product_objective: Grounded autonomous knowledge
   decision_status: proposed
-  implementation_status: not_implemented
+  implementation_status: in_progress
   verification:
-    deterministic: not_tested
+    deterministic: verified
     live_agent: not_tested
     uat: not_tested
     deployment: not_tested
@@ -3020,22 +3023,25 @@ capabilities:
   refs:
     adr:
     - docs/architecture/decisions/ADR-0037-agent-topology-context-and-composition.md
-    contract: []
-    source: []
-    test: []
+    contract:
+    - docs/contracts/agentic-flow.md
+    source: [native/src/knowledge.rs, native/src/context7.rs, native/src/db/agentic_knowledge.rs, native/src/bin/core.rs, office/src/views/KnowledgePanel.tsx]
+    test: [native/src/knowledge.rs, native/src/context7.rs, native/src/db/intake.rs, office/src/views/KnowledgePanel.test.tsx]
   acceptance:
     deterministic: Explorer is read-only and evidence-bound; Librarian is read-only and invoked only after a deterministic knowledge gap; Context7 MCP and additional sources are ranked and versioned; a SkillCandidate has provenance, license, digest, compatibility and scope; SkillTrustGate admits or denies; a RUN skill cannot widen tools or authority; promotion to PROJECT requires two successful uses and weekly reevaluation; GLOBAL requires an owner decision.
     real: A browser operation detects an unknown library, obtains a Context7-backed KnowledgePack and a temporary skill, uses it in one authorized participant and records promotion evidence.
   evidence:
-    deterministic: []
+    deterministic:
+    - docs/evidence/knowledge-skills-2026-11-09/deterministic.json
     live_agent: []
     uat: []
     deployment: []
     isolation: []
   limitations:
-  - Free Librarian navigation is read-only, credential-free and observable; allowlists are optional policy, not isolation.
+  - A real browser Context7 research and adoption passed in this slice; use in a real implementer Campaign and promotion evidence remain pending.
+  - Context7 content is external evidence and is not independently reviewed.
   blockers:
-  - MCP client, Skill Registry and knowledge evidence remain pending.
+  - Real participant use, project promotion and weekly review acceptance remain pending.
 
 - id: CAP-063
   name: Dynamic participant composition and cheap operations

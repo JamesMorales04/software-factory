@@ -479,6 +479,43 @@ struct AgenticSpecPublishRequest {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct AgenticKnowledgeRequest {
+    library: String,
+    query: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AgenticSkillUseRequest {
+    request_id: String,
+    outcome: String,
+    evidence: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AgenticSkillLicenseRequest {
+    license: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AgenticSkillPromoteRequest {
+    scope: String,
+    #[serde(default)]
+    owner_approved: bool,
+    #[serde(default)]
+    confirm: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AgenticSkillRevokeRequest {
+    reason: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RepairCampaignRequest {
     #[serde(default)]
     confirm: bool,
@@ -1026,6 +1063,23 @@ fn office_api_router(app: Arc<App>) -> Router {
             post(refresh_agentic_spec),
         )
         .route("/agentic/specs/board", get(agentic_spec_board))
+        .route(
+            "/agentic/requests/{id}/knowledge",
+            get(get_agentic_knowledge).post(research_agentic_knowledge),
+        )
+        .route(
+            "/agentic/requests/{id}/skills/{skill_id}/adopt",
+            post(adopt_agentic_skill),
+        )
+        .route("/agentic/skills", get(agentic_skills))
+        .route("/agentic/skills/{id}/uses", post(record_agentic_skill_use))
+        .route(
+            "/agentic/skills/{id}/license",
+            post(review_agentic_skill_license),
+        )
+        .route("/agentic/skills/{id}/promote", post(promote_agentic_skill))
+        .route("/agentic/skills/{id}/review", post(review_agentic_skill))
+        .route("/agentic/skills/{id}/revoke", post(revoke_agentic_skill))
         .route("/agentic/requests/{id}", get(agentic_request_detail))
         .route(
             "/provider/sessions/{session_record_id}/tool_events",
@@ -1264,6 +1318,23 @@ fn api_router(app: Arc<App>) -> Router {
             post(refresh_agentic_spec),
         )
         .route("/agentic/specs/board", get(agentic_spec_board))
+        .route(
+            "/agentic/requests/{id}/knowledge",
+            get(get_agentic_knowledge).post(research_agentic_knowledge),
+        )
+        .route(
+            "/agentic/requests/{id}/skills/{skill_id}/adopt",
+            post(adopt_agentic_skill),
+        )
+        .route("/agentic/skills", get(agentic_skills))
+        .route("/agentic/skills/{id}/uses", post(record_agentic_skill_use))
+        .route(
+            "/agentic/skills/{id}/license",
+            post(review_agentic_skill_license),
+        )
+        .route("/agentic/skills/{id}/promote", post(promote_agentic_skill))
+        .route("/agentic/skills/{id}/review", post(review_agentic_skill))
+        .route("/agentic/skills/{id}/revoke", post(revoke_agentic_skill))
         .route("/agentic/requests/{id}", get(agentic_request_detail))
         .route(
             "/provider/sessions/{session_record_id}/tool_events",
@@ -10974,6 +11045,465 @@ async fn agentic_spec_board(State(app): State<Arc<App>>, headers: HeaderMap) -> 
     .into_response()
 }
 
+async fn explorer_inventory(
+    app: &App,
+    project: &factory_native::db::Project,
+) -> Result<factory_native::knowledge::RepositoryInventory, Response> {
+    let project_id = project.id.clone();
+    let repository = PathBuf::from(project.repository.clone());
+    let identity = project.identity.clone();
+    let base_commit = project.base_commit.clone();
+    let manifests = ["Cargo.toml", "package.json"];
+    let mut inventories = Vec::new();
+    for manifest in manifests {
+        let project_id = project_id.clone();
+        let repository = repository.clone();
+        let identity = identity.clone();
+        let base_commit = base_commit.clone();
+        let path = manifest.to_owned();
+        let result = tokio::task::spawn_blocking(move || {
+            factory_native::project_files::read_project_file(
+                &project_id,
+                &repository,
+                &identity,
+                &base_commit,
+                None,
+                &path,
+            )
+        })
+        .await;
+        let Ok(Ok(projection)) = result else {
+            continue;
+        };
+        let Some(content) = projection.content else {
+            continue;
+        };
+        let libraries = if manifest.ends_with(".toml") {
+            factory_native::knowledge::parse_cargo_manifest(&content, manifest)
+        } else {
+            factory_native::knowledge::parse_package_json(&content, manifest)
+        };
+        inventories.push((manifest.to_owned(), libraries));
+    }
+    let mut library_map = BTreeMap::new();
+    for (manifest, libraries) in &inventories {
+        for library in libraries {
+            library_map
+                .entry(library.name.to_ascii_lowercase())
+                .or_insert_with(|| library.clone());
+        }
+        let _ = manifest;
+    }
+    let mut libraries = library_map.into_values().collect::<Vec<_>>();
+    libraries.sort_by(|left, right| left.name.cmp(&right.name));
+    let manifests = inventories
+        .iter()
+        .map(|(manifest, _)| manifest.clone())
+        .collect::<Vec<_>>();
+    let evidence_refs = if manifests.is_empty() {
+        vec!["repository manifest inventory unavailable".into()]
+    } else {
+        manifests.clone()
+    };
+    let _ = app;
+    Ok(factory_native::knowledge::RepositoryInventory {
+        manifests,
+        libraries,
+        evidence_refs,
+    })
+}
+
+async fn get_agentic_knowledge(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    let pack = app.db.agentic_knowledge_pack(&record.id).await.ok();
+    let skills = app
+        .db
+        .agentic_skills(Some(&record.project_id))
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|skill| skill.request_id.as_deref() == Some(record.id.as_str()))
+        .collect::<Vec<_>>();
+    let adoptions = app
+        .db
+        .agentic_skill_adoptions(&record.id)
+        .await
+        .unwrap_or_default();
+    let project = app.db.project(&record.project_id).await.ok();
+    let inventory = match project.as_ref() {
+        Some(project) => explorer_inventory(&app, project).await.ok(),
+        None => None,
+    };
+    Json(json!({
+        "pack": pack,
+        "skills": skills,
+        "adoptions": adoptions,
+        "inventory": inventory,
+    }))
+    .into_response()
+}
+
+async fn research_agentic_knowledge(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<AgenticKnowledgeRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    let project = match app.db.project(&record.project_id).await {
+        Ok(project) => project,
+        Err(error) => return api_error(error),
+    };
+    let context = match agentic_triage_context(&app, &record).await {
+        Ok(context) => context,
+        Err(error) => return api_error(error),
+    };
+    let skill_needs = context
+        .semantic
+        .as_ref()
+        .map(|(_, model)| model.skill_needs.clone())
+        .unwrap_or_default();
+    let inventory = match explorer_inventory(&app, &project).await {
+        Ok(inventory) => inventory,
+        Err(response) => return response,
+    };
+    let gap = match factory_native::knowledge::detect_knowledge_gap(
+        &inventory,
+        &record.objective,
+        &skill_needs,
+        &input.library,
+        &input.query,
+    ) {
+        Ok(gap) => gap,
+        Err(error) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": error,
+                    "code": "KNOWLEDGE_GAP_REQUIRED",
+                })),
+            )
+                .into_response();
+        }
+    };
+    let client = match factory_native::context7::Context7Client::production() {
+        Ok(client) => client,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": error.to_string(), "code": "CONTEXT7_CONFIGURATION"})),
+            )
+                .into_response();
+        }
+    };
+    let fetched_at = chrono::Utc::now().to_rfc3339();
+    let pack = match client
+        .knowledge_pack(&gap.library, &gap.query, &fetched_at)
+        .await
+    {
+        Ok(pack) => pack,
+        Err(error) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({
+                    "error": error.to_string(),
+                    "code": "CONTEXT7_UNAVAILABLE",
+                })),
+            )
+                .into_response();
+        }
+    };
+    if pack.library_id.is_empty()
+        || !pack.library_id.starts_with('/')
+        || pack.sources.is_empty()
+        || pack.pack_sha256.len() != 64
+    {
+        return (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({
+                "error": "Context7 returned an unusable KnowledgePack",
+                "code": "CONTEXT7_INVALID",
+            })),
+        )
+            .into_response();
+    }
+    let source_url = pack.sources[0].url.clone();
+    let saved_pack = match app
+        .db
+        .save_agentic_knowledge_pack(&factory_native::db::NewAgenticKnowledgePack {
+            request_id: &record.id,
+            project_id: &record.project_id,
+            pack: &pack,
+            provider: "CONTEXT7_MCP",
+            source_url: &source_url,
+        })
+        .await
+    {
+        Ok(pack) => pack,
+        Err(error) => return api_error(error),
+    };
+    let created_at = chrono::Utc::now();
+    let expires_at = (created_at + chrono::Duration::days(7)).to_rfc3339();
+    let created_at = created_at.to_rfc3339();
+    let manifest = match factory_native::knowledge::derive_skill_manifest(
+        &pack,
+        &context.stack.languages,
+        &created_at,
+        &expires_at,
+    ) {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": error, "code": "SKILL_MANIFEST_INVALID"})),
+            )
+                .into_response();
+        }
+    };
+    if let Err(error) = factory_native::knowledge::trust_gate(
+        &manifest,
+        &["context-read".into(), "repository-read".into()],
+        &created_at,
+    ) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": error, "code": "SKILL_TRUST_GATE_REJECTED"})),
+        )
+            .into_response();
+    }
+    let manifest_sha256 = factory_native::knowledge::skill_manifest_sha256(&manifest);
+    let skill = match app
+        .db
+        .create_agentic_skill(&factory_native::db::NewAgenticSkill {
+            project_id: &record.project_id,
+            request_id: &record.id,
+            manifest: &manifest,
+            manifest_sha256: &manifest_sha256,
+            status: "ACTIVE",
+        })
+        .await
+    {
+        Ok(skill) => skill,
+        Err(error) => return api_error(error),
+    };
+    if skill.manifest_sha256 != manifest_sha256 && skill.scope == "RUN" {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "a temporary skill for this library already exists with different knowledge",
+                "code": "SKILL_ALREADY_EXISTS",
+            })),
+        )
+            .into_response();
+    }
+    Json(json!({
+        "gap": gap,
+        "pack": saved_pack,
+        "skill": skill,
+        "inventory": inventory,
+    }))
+    .into_response()
+}
+
+async fn agentic_skills(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let project_id = query.get("project_id").map(String::as_str);
+    let now = chrono::Utc::now().to_rfc3339();
+    match app.db.agentic_skills(project_id).await {
+        Ok(skills) => {
+            let values = skills
+                .into_iter()
+                .map(|skill| {
+                    let review_due = skill
+                        .next_review_at
+                        .as_deref()
+                        .is_some_and(|value| value <= now.as_str());
+                    json!({
+                        "skill": skill,
+                        "reviewDue": review_due,
+                    })
+                })
+                .collect::<Vec<_>>();
+            Json(json!({"skills": values})).into_response()
+        }
+        Err(error) => api_error(error),
+    }
+}
+
+async fn adopt_agentic_skill(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath((id, skill_id)): AxumPath<(String, String)>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    let skill = match app.db.agentic_skill(&skill_id).await {
+        Ok(skill) => skill,
+        Err(error) => return api_error(error),
+    };
+    if skill.project_id != record.project_id {
+        return api_error(Error::Forbidden(
+            "skill belongs to a different project".into(),
+        ));
+    }
+    match app
+        .db
+        .adopt_agentic_skill(&record.id, &skill_id, "implementer")
+        .await
+    {
+        Ok(adoption) => Json(adoption).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn record_agentic_skill_use(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<AgenticSkillUseRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let skill = match app.db.agentic_skill(&id).await {
+        Ok(skill) => skill,
+        Err(error) => return api_error(error),
+    };
+    let request = match app.db.intake_request(&input.request_id).await {
+        Ok(request) => request,
+        Err(error) => return api_error(error),
+    };
+    if request.project_id != skill.project_id {
+        return api_error(Error::Forbidden(
+            "skill use request belongs to a different project".into(),
+        ));
+    }
+    match app
+        .db
+        .record_agentic_skill_use(&id, &request.id, &input.outcome, &input.evidence)
+        .await
+    {
+        Ok(skill) => Json(skill).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+fn operator_principal(session: Option<&factory_native::db::DeviceSessionRecord>) -> String {
+    session
+        .map(|session| format!("device:{}", session.id))
+        .unwrap_or_else(|| "operator".into())
+}
+
+async fn review_agentic_skill_license(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<AgenticSkillLicenseRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let principal = operator_principal(session.as_ref().map(|Extension(device)| device));
+    match app
+        .db
+        .review_agentic_skill_license(&id, &principal, &input.license)
+        .await
+    {
+        Ok(skill) => Json(skill).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn promote_agentic_skill(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<AgenticSkillPromoteRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if input.scope == "GLOBAL" && !input.owner_approved {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "global skill promotion requires an explicit owner decision",
+                "code": "OWNER_DECISION_REQUIRED",
+            })),
+        )
+            .into_response();
+    }
+    let principal = operator_principal(session.as_ref().map(|Extension(device)| device));
+    match app
+        .db
+        .promote_agentic_skill(&id, &input.scope, &principal, input.confirm)
+        .await
+    {
+        Ok(skill) => Json(skill).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn review_agentic_skill(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let principal = operator_principal(session.as_ref().map(|Extension(device)| device));
+    match app.db.review_agentic_skill(&id, &principal).await {
+        Ok(skill) => Json(skill).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn revoke_agentic_skill(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<AgenticSkillRevokeRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.revoke_agentic_skill(&id, &input.reason).await {
+        Ok(skill) => Json(skill).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
 async fn assess_agentic_request(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
@@ -15307,6 +15837,43 @@ mod tests {
                 "POST",
                 "/agentic/requests/missing/spec/refresh",
                 "{}".to_string(),
+            ),
+            (
+                "GET",
+                "/agentic/requests/missing/knowledge",
+                "{}".to_string(),
+            ),
+            (
+                "POST",
+                "/agentic/requests/missing/knowledge",
+                r#"{"library":"chrono","query":"dates"}"#.to_string(),
+            ),
+            (
+                "POST",
+                "/agentic/requests/missing/skills/skill/adopt",
+                "{}".to_string(),
+            ),
+            ("GET", "/agentic/skills", "{}".to_string()),
+            (
+                "POST",
+                "/agentic/skills/skill/uses",
+                r#"{"request_id":"missing","outcome":"SUCCESS","evidence":"test"}"#.to_string(),
+            ),
+            (
+                "POST",
+                "/agentic/skills/skill/license",
+                r#"{"license":"MIT"}"#.to_string(),
+            ),
+            (
+                "POST",
+                "/agentic/skills/skill/promote",
+                r#"{"scope":"PROJECT","confirm":true}"#.to_string(),
+            ),
+            ("POST", "/agentic/skills/skill/review", "{}".to_string()),
+            (
+                "POST",
+                "/agentic/skills/skill/revoke",
+                r#"{"reason":"test"}"#.to_string(),
             ),
         ];
         for (method, uri, body) in routes {

@@ -1,6 +1,6 @@
 {
  "schema_version": 1,
- "updated_at": "2026-11-09T00:30:00Z",
+ "updated_at": "2026-11-09T06:20:00Z",
  "route_base_note": "Current Office uses hash routes. The design-foundation slice moves to a stable /office browser base while preserving these logical routes.",
  "capabilities": {
   "CAP-011": {
@@ -865,6 +865,89 @@
     "docs/evidence/spec-board-2026-11-09/manifest.json"
    ],
    "notes": "GitHub issues are a projection; Core remains authoritative. Publication is operator-confirmed, bounded and idempotent by deterministic body markers. Issue edits and comments are operator context. A local board is always available."
+  },
+  "CAP-038": {
+   "name": "Skill Registry and admission",
+   "user_facing": true,
+   "job": "Inspect temporary, project and global read-only skills; review licenses and weekly evidence; promote with the required authority and revoke unsafe skills.",
+   "routes": [
+    "/skills",
+    "/director"
+   ],
+   "core_api": [
+    "GET /agentic/skills",
+    "POST /agentic/skills/{id}/uses",
+    "POST /agentic/skills/{id}/license",
+    "POST /agentic/skills/{id}/promote",
+    "POST /agentic/skills/{id}/review",
+    "POST /agentic/skills/{id}/revoke"
+   ],
+   "user_actions": [
+    "inspect skill scope status provenance license uses and review dates",
+    "record a license review",
+    "record a weekly review",
+    "promote a ready RUN skill to PROJECT",
+    "promote a PROJECT skill to GLOBAL after the owner decision",
+    "revoke a skill with a reason"
+   ],
+   "states": [
+    "loading",
+    "empty",
+    "error",
+    "run",
+    "project",
+    "global",
+    "promotion-ready",
+    "review-due",
+    "revoked",
+    "expired",
+    "license-required",
+    "owner-decision-required",
+    "responsive"
+   ],
+   "acceptance": [
+    "office/src/views/Skills.test.tsx",
+    "docs/evidence/knowledge-skills-2026-11-09/manifest.json"
+   ],
+   "notes": "The registry enforces read-only tools, license review, two-use PROJECT promotion, an explicit owner decision for GLOBAL, weekly review and revocation. A skill never grants write or execution tools."
+  },
+  "CAP-062": {
+   "name": "Explorer, Librarian and temporary skills",
+   "user_facing": true,
+   "job": "Inventory repository manifests, prove a deterministic library knowledge gap and obtain a bounded Context7 KnowledgePack that becomes a temporary read-only skill.",
+   "routes": [
+    "/director",
+    "/skills"
+   ],
+   "core_api": [
+    "GET /agentic/requests/{id}/knowledge",
+    "POST /agentic/requests/{id}/knowledge",
+    "POST /agentic/requests/{id}/skills/{skill_id}/adopt"
+   ],
+   "user_actions": [
+    "inspect Explorer manifest and library evidence",
+    "name an evidenced unpinned library and a bounded documentation query",
+    "research with Context7 and inspect the recorded source",
+    "adopt the temporary read-only skill for the operation",
+    "retry after an explicit unavailable or gap error"
+   ],
+   "states": [
+    "loading",
+    "error",
+    "inventory-empty",
+    "gap-required",
+    "context7-unavailable",
+    "pack-recorded",
+    "skill-active",
+    "adopted",
+    "expired",
+    "responsive"
+   ],
+   "acceptance": [
+    "office/src/views/KnowledgePanel.test.tsx",
+    "docs/evidence/knowledge-skills-2026-11-09/manifest.json"
+   ],
+   "notes": "The Explorer is deterministic and read-only. Context7 is reached over a fixed HTTPS MCP endpoint with no credentials and bounded responses. Core decides the gap and the trust gate; the fetched documentation cannot widen tools or authority."
   }
  },
  "deferred": [

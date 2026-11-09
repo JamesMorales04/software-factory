@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   getAgenticSpec: vi.fn(),
   authorAgenticSpec: vi.fn(),
   freezeAgenticSpec: vi.fn(),
+  getAgenticKnowledge: vi.fn(),
 }));
 
 vi.mock("../coreApi", () => ({
@@ -231,6 +232,12 @@ describe("Director", () => {
     mocks.getAgenticSpec.mockReset().mockResolvedValue(emptySpec);
     mocks.authorAgenticSpec.mockReset();
     mocks.freezeAgenticSpec.mockReset();
+    mocks.getAgenticKnowledge.mockReset().mockResolvedValue({
+      pack: null,
+      skills: [],
+      adoptions: [],
+      inventory: null,
+    });
     mocks.setAgenticPriority.mockReset().mockResolvedValue({
       id: "operation-request-1",
       requestId: "request-1",
