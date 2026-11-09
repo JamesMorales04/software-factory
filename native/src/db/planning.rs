@@ -693,6 +693,15 @@ mod tests {
         let saved = db.save_finding_disposition(&resolved).await.unwrap();
         assert_eq!(saved.status, "RESOLVED");
         assert_eq!(saved.evidence_refs.len(), 1);
+        let replay = db.save_finding_disposition(&resolved).await.unwrap();
+        assert_eq!(replay.id, saved.id);
+        let mut changed_evidence = resolved.clone();
+        changed_evidence.evidence_refs = vec!["different".into()];
+        assert!(
+            db.save_finding_disposition(&changed_evidence)
+                .await
+                .is_err()
+        );
         let mut changed_route = resolved.clone();
         changed_route.route = FindingRoute::Planner;
         assert!(db.save_finding_disposition(&changed_route).await.is_err());
@@ -703,6 +712,31 @@ mod tests {
                 .len(),
             1
         );
+
+        // Refuting an existing OPEN finding follows the update path and must
+        // persist both the authenticated owner principal and the decision.
+        let open_again = FindingDisposition {
+            request_id: "request-finding".into(),
+            finding_id: "finding-refute".into(),
+            route: FindingRoute::SecurityReviewer,
+            status: FindingStatus::Open,
+            candidate_id: "candidate-1".into(),
+            reviewer_principal: "reviewer-1".into(),
+            resolved_by: String::new(),
+            evidence_refs: Vec::new(),
+            owner_principal: None,
+            owner_decision: None,
+        };
+        db.save_finding_disposition(&open_again).await.unwrap();
+        let mut refuted = open_again.clone();
+        refuted.status = FindingStatus::Refuted;
+        refuted.evidence_refs = vec!["owner-evidence".into()];
+        refuted.owner_principal = Some("owner-1".into());
+        refuted.owner_decision = Some("decision-1".into());
+        let saved = db.save_finding_disposition(&refuted).await.unwrap();
+        assert_eq!(saved.status, "REFUTED");
+        assert_eq!(saved.owner_principal.as_deref(), Some("owner-1"));
+        assert_eq!(saved.owner_decision.as_deref(), Some("decision-1"));
     }
 
     #[tokio::test]
