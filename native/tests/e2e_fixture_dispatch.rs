@@ -72,10 +72,12 @@ impl CoreProcess {
         }
     }
 
+    #[cfg(feature = "test-support")]
     fn start_with_lead_model(database: &Path, port: u16, log: &Path, model_url: &str) -> Self {
         Self::start_with_lead_model_config(database, port, log, model_url, false)
     }
 
+    #[cfg(feature = "test-support")]
     fn start_with_lead_model_and_codex(
         database: &Path,
         port: u16,
@@ -85,6 +87,7 @@ impl CoreProcess {
         Self::start_with_lead_model_config(database, port, log, model_url, true)
     }
 
+    #[cfg(feature = "test-support")]
     fn start_with_lead_model_config(
         database: &Path,
         port: u16,
@@ -1028,6 +1031,7 @@ async fn fixture_campaign_dispatches_candidate_and_gate_without_provider() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+#[cfg(feature = "test-support")]
 struct FixtureCandidate {
     campaign_id: String,
     candidate_id: String,
@@ -1037,6 +1041,7 @@ struct FixtureCandidate {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(feature = "test-support")]
 async fn drive_fixture_campaign_to_candidate(
     client: &reqwest::Client,
     base_url: &str,
@@ -1185,6 +1190,7 @@ async fn drive_fixture_campaign_to_candidate(
     }
 }
 
+#[cfg(feature = "test-support")]
 async fn run_fixture_verifier(
     root: &Path,
     base_url: &str,

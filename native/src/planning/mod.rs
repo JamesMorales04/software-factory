@@ -11,8 +11,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::lead::SpecCheck;
 
+pub mod architecture;
+pub mod docs;
+pub mod dod;
 pub mod prompts;
 pub mod route;
+pub mod skills;
+pub mod stack;
 
 pub const SCHEMA_VERSION: u32 = 1;
 pub const R0_AUTONOMY_POINTS: u16 = 8;

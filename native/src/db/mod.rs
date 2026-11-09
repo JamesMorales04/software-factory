@@ -976,6 +976,11 @@ pub use project_configs::NewProjectConfig;
 pub use runtime_settings::FactorySettings;
 mod projects;
 pub use projects::{ProjectCampaignSummary, ProjectDiscoveryRecord, RegisterProjectSource};
+mod planning;
+pub use planning::{
+    NewPlanReview, OpenSpecProjectionRecord, PlanReviewRecord, PlanningArtifactRecord,
+    SkillPackRecord,
+};
 mod quality;
 mod workers;
 mod workflow;

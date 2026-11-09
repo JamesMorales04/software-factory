@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { Badge } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
-import { Input } from "../components/ui/Field";
+import { Input, Textarea } from "../components/ui/Field";
 import {
   EmptyState,
   ErrorState,
@@ -12,6 +12,7 @@ import {
 } from "../components/ui/Surface";
 import {
   type AgenticAssurance,
+  type AgenticPlanningProjection,
   type AgenticPortfolioEntry,
   type AgenticRequestDetail,
   type AgenticRoute,
@@ -94,6 +95,13 @@ export function Director() {
   const [specBusy, setSpecBusy] = useState<string | null>(null);
   const [specError, setSpecError] = useState<string | null>(null);
   const [specNotice, setSpecNotice] = useState<string | null>(null);
+  const [planning, setPlanning] = useState<AgenticPlanningProjection | null>(
+    null,
+  );
+  const [planningError, setPlanningError] = useState<string | null>(null);
+  const [planningNotice, setPlanningNotice] = useState<string | null>(null);
+  const [reviewBusy, setReviewBusy] = useState<string | null>(null);
+  const [reviewRationale, setReviewRationale] = useState("");
 
   const loadPortfolio = useCallback(async () => {
     try {
@@ -179,7 +187,8 @@ export function Director() {
     Promise.allSettled([
       coreApi.getAgenticPlan(activeId),
       coreApi.getAgenticSpec(activeId),
-    ]).then(([planResult, specResult]) => {
+      coreApi.getAgenticPlanning(activeId),
+    ]).then(([planResult, specResult, planningResult]) => {
       if (!active) return;
       if (planResult.status === "fulfilled") {
         setPlan(planResult.value.graph);
@@ -192,6 +201,15 @@ export function Director() {
       } else {
         setSpec(null);
         setSpecError(errorText(specResult.reason, t("director.spec.error")));
+      }
+      if (planningResult.status === "fulfilled") {
+        setPlanning(planningResult.value);
+        setPlanningError(null);
+      } else {
+        setPlanning(null);
+        setPlanningError(
+          errorText(planningResult.reason, t("director.planning.error")),
+        );
       }
     });
     return () => {
@@ -307,6 +325,47 @@ export function Director() {
       setSpecError(errorText(cause, t("director.spec.freezeError")));
     } finally {
       setSpecBusy(null);
+    }
+  }
+
+  async function reviewPlan(
+    decision: "APPROVE" | "CHANGES_REQUESTED" | "REJECT",
+  ) {
+    if (!activeId || !planning?.review) return;
+    if (reviewRationale.trim() === "") {
+      setPlanningError(t("director.planning.rationaleRequired"));
+      return;
+    }
+    setReviewBusy(decision);
+    setPlanningError(null);
+    setPlanningNotice(null);
+    try {
+      await coreApi.reviewAgenticPlan(activeId, {
+        planRevision: planning.review.planRevision,
+        planSha256: planning.review.planSha256,
+        decision,
+        rationale: reviewRationale.trim(),
+      });
+      setPlanning(await coreApi.getAgenticPlanning(activeId));
+      setDetail(await coreApi.getAgenticRequest(activeId));
+      setReviewRationale("");
+      setPlanningNotice(t("director.planning.reviewSuccess"));
+    } catch (cause) {
+      setPlanningError(errorText(cause, t("director.planning.reviewError")));
+    } finally {
+      setReviewBusy(null);
+    }
+  }
+
+  function artifact<T>(kind: string): T | null {
+    const record = planning?.artifacts.find(
+      (candidate) => candidate.kind === kind,
+    );
+    if (!record) return null;
+    try {
+      return JSON.parse(record.contentJson) as T;
+    } catch {
+      return null;
     }
   }
 
@@ -741,6 +800,188 @@ export function Director() {
                   </div>
                   {Boolean(spec?.frozen || spec?.draft) && (
                     <p className="muted">{t("director.plan.frozen")}</p>
+                  )}
+                </Panel>
+
+                <Panel>
+                  <div className="section-heading">
+                    <h2>{t("director.planning.title")}</h2>
+                    {planning?.review && (
+                      <Badge
+                        tone={
+                          planning.review.status === "PENDING"
+                            ? "attention"
+                            : planning.review.status === "REJECTED" ||
+                                planning.review.status === "CHANGES_REQUESTED"
+                              ? "danger"
+                              : "success"
+                        }
+                      >
+                        {planning.review.status}
+                      </Badge>
+                    )}
+                  </div>
+                  {planningError && (
+                    <p className="ui-callout ui-callout--danger" role="alert">
+                      {planningError}
+                    </p>
+                  )}
+                  {planningNotice && (
+                    <p className="notice" role="status">
+                      {planningNotice}
+                    </p>
+                  )}
+                  {!planning ? (
+                    <p className="muted">{t("director.planning.empty")}</p>
+                  ) : (
+                    <>
+                      <dl className="director-facts">
+                        <div>
+                          <dt>{t("director.planning.lane")}</dt>
+                          <dd>{planning.lane}</dd>
+                        </div>
+                        <div>
+                          <dt>{t("director.planning.workflow")}</dt>
+                          <dd>{planning.workflow?.state ?? "—"}</dd>
+                        </div>
+                        <div>
+                          <dt>{t("director.planning.revision")}</dt>
+                          <dd>{planning.review?.planRevision ?? "—"}</dd>
+                        </div>
+                        <div>
+                          <dt>{t("director.planning.hash")}</dt>
+                          <dd>
+                            <code title={planning.review?.planSha256}>
+                              {planning.review
+                                ? shortId(planning.review.planSha256, 16)
+                                : "—"}
+                            </code>
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>{t("director.planning.principal")}</dt>
+                          <dd>{planning.review?.principalId ?? "—"}</dd>
+                        </div>
+                        <div>
+                          <dt>{t("director.planning.points")}</dt>
+                          <dd>{planning.review?.points ?? 0}</dd>
+                        </div>
+                      </dl>
+                      {planning.missingArtifacts.length > 0 && (
+                        <p className="ui-callout ui-callout--attention">
+                          {t("director.planning.missing", {
+                            values: planning.missingArtifacts.join(", "),
+                          })}
+                        </p>
+                      )}
+                      {planning.review && (
+                        <p className="muted">
+                          {t("director.planning.rationale", {
+                            value: planning.review.rationale,
+                          })}
+                        </p>
+                      )}
+                      {planning.review?.status === "PENDING" && (
+                        <div className="director-planning-review">
+                          <Textarea
+                            label={t("director.planning.reviewRationale")}
+                            value={reviewRationale}
+                            onChange={(event) =>
+                              setReviewRationale(event.target.value)
+                            }
+                            disabled={reviewBusy !== null}
+                          />
+                          <div className="director-priority">
+                            <Button
+                              size="sm"
+                              busy={reviewBusy === "APPROVE"}
+                              disabled={
+                                reviewBusy !== null ||
+                                planning.missingArtifacts.length > 0
+                              }
+                              onClick={() => void reviewPlan("APPROVE")}
+                            >
+                              {t("director.planning.approve")}
+                            </Button>
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              busy={reviewBusy === "CHANGES_REQUESTED"}
+                              disabled={reviewBusy !== null}
+                              onClick={() =>
+                                void reviewPlan("CHANGES_REQUESTED")
+                              }
+                            >
+                              {t("director.planning.requestChanges")}
+                            </Button>
+                            <Button
+                              variant="danger"
+                              size="sm"
+                              busy={reviewBusy === "REJECT"}
+                              disabled={reviewBusy !== null}
+                              onClick={() => void reviewPlan("REJECT")}
+                            >
+                              {t("director.planning.reject")}
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+                      <dl className="director-facts director-facts--wide">
+                        <div>
+                          <dt>{t("director.planning.stack")}</dt>
+                          <dd>
+                            {artifact<{
+                              selected: string;
+                              source: string;
+                              requiredCapabilities: string[];
+                            }>("STACK")?.selected ?? "—"}{" "}
+                            ·{" "}
+                            {artifact<{ source: string }>("STACK")?.source ??
+                              "—"}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>{t("director.planning.architecture")}</dt>
+                          <dd>
+                            {artifact<{ components: string[] }>("ARCHITECTURE")
+                              ?.components.length ?? 0}{" "}
+                            {t("director.planning.components")}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>{t("director.planning.documentation")}</dt>
+                          <dd>
+                            {artifact<{ required: unknown[] }>("DOCUMENTATION")
+                              ?.required.length ?? 0}{" "}
+                            {t("director.planning.requiredDocs")}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>{t("director.planning.skills")}</dt>
+                          <dd>
+                            {artifact<{ needs: string[] }>("SKILL")?.needs.join(
+                              ", ",
+                            ) ?? "—"}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>{t("director.planning.dod")}</dt>
+                          <dd>
+                            {artifact<{ projectChecks: unknown[] }>("DOD")
+                              ?.projectChecks.length ?? 0}{" "}
+                            {t("director.planning.checks")}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>{t("director.planning.openspec")}</dt>
+                          <dd>
+                            {artifact<{ changeId: string; revision: number }>(
+                              "OPENSPEC",
+                            )?.changeId ?? "—"}
+                          </dd>
+                        </div>
+                      </dl>
+                    </>
                   )}
                 </Panel>
 

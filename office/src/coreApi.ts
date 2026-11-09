@@ -1447,6 +1447,11 @@ export interface IntakeRequestProjection extends IntakeRequestSummary {
   assessment: LeadAssessmentView | null;
   proposal: LeadPlanProposalView | null;
   plan: FrozenLeadPlanRecord | null;
+  planning?: {
+    artifacts: PlanningArtifactRecord[];
+    review: PlanReviewRecord | null;
+    workflow: PlanningWorkflowRun | null;
+  };
   campaign: CampaignDetail | null;
   messages: IntakeMessage[];
 }
@@ -1678,6 +1683,70 @@ export interface AgenticSemanticAssessment {
   };
 }
 
+export type PlanningLane = "DIRECT" | "DELEGATED" | "FORMAL_SPEC" | "REPAIR";
+
+export type PlanReviewStatus =
+  | "PENDING"
+  | "AUTO_APPROVED"
+  | "OWNER_APPROVED"
+  | "CHANGES_REQUESTED"
+  | "REJECTED";
+
+export interface PlanningArtifactRecord {
+  requestId: string;
+  kind: string;
+  revision: number;
+  contentJson: string;
+  contentSha256: string;
+  createdAt: string;
+}
+
+export interface PlanReviewRecord {
+  id: string;
+  requestId: string;
+  planRevision: number;
+  planSha256: string;
+  status: PlanReviewStatus;
+  principalId: string;
+  rationale: string;
+  points: number;
+  reviewedAt: string;
+}
+
+export interface PlanningWorkflowRun {
+  id: string;
+  requestId: string;
+  campaignId: string | null;
+  state: string;
+  revision: number;
+  planSha256: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AgenticPlanningProjection {
+  lane: PlanningLane;
+  signals: {
+    objective: string;
+    greenfield: boolean;
+    large: boolean;
+    missingDocs: boolean;
+    missingStack: boolean;
+    architectureUncertainty: boolean;
+    publicContract: boolean;
+    dataOrSchema: boolean;
+    securityBoundary: boolean;
+    crossModule: boolean;
+    changedFiles: number;
+    expectedUnits: number;
+    explicitRepair: boolean;
+  };
+  artifacts: PlanningArtifactRecord[];
+  review: PlanReviewRecord | null;
+  workflow: PlanningWorkflowRun | null;
+  missingArtifacts: string[];
+}
+
 export interface AgenticRequestDetail {
   request: {
     id: string;
@@ -1695,6 +1764,12 @@ export interface AgenticRequestDetail {
     failureReason: string | null;
   };
   triage: AgenticTriage;
+  planningLane: PlanningLane;
+  planning: {
+    artifacts: PlanningArtifactRecord[];
+    review: PlanReviewRecord | null;
+    workflow: PlanningWorkflowRun | null;
+  };
   stack: AgenticStackProfile;
   participants: AgenticParticipantPlan;
   specifications: AgenticSpecification[];
@@ -3257,6 +3332,26 @@ export const coreApi = {
     request<{ graph: AgenticWorkGraphRecord | null }>(
       `/agentic/requests/${encodeURIComponent(id)}/plan`,
     ),
+  getAgenticPlanning: (id: string) =>
+    request<AgenticPlanningProjection>(
+      `/agentic/requests/${encodeURIComponent(id)}/planning`,
+    ),
+  reviewAgenticPlan: (
+    id: string,
+    input: {
+      planRevision: number;
+      planSha256: string;
+      decision: "APPROVE" | "CHANGES_REQUESTED" | "REJECT";
+      rationale: string;
+    },
+  ) =>
+    request<{
+      review: PlanReviewRecord;
+      workflow: PlanningWorkflowRun | null;
+    }>(`/agentic/requests/${encodeURIComponent(id)}/plan-review`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
   planAgenticRequest: (id: string) =>
     request<{
       graph: AgenticWorkGraphRecord;

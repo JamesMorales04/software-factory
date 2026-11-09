@@ -14,6 +14,8 @@ const mocks = vi.hoisted(() => ({
   setAgenticPriority: vi.fn(),
   getAgenticPlan: vi.fn(),
   planAgenticRequest: vi.fn(),
+  getAgenticPlanning: vi.fn(),
+  reviewAgenticPlan: vi.fn(),
   getAgenticSpec: vi.fn(),
   authorAgenticSpec: vi.fn(),
   freezeAgenticSpec: vi.fn(),
@@ -73,6 +75,12 @@ const detail: AgenticRequestDetail = {
     mechanism: "HYBRID",
     reasons: ["The request affects a public contract."],
     unknowns: ["The OAuth library version is not pinned."],
+  },
+  planningLane: "FORMAL_SPEC",
+  planning: {
+    artifacts: [],
+    review: null,
+    workflow: null,
   },
   stack: {
     languages: ["rust", "typescript"],
@@ -227,6 +235,29 @@ describe("Director", () => {
       worktreePolicy: "PER_ATTEMPT",
     });
     mocks.getAgenticPlan.mockReset().mockResolvedValue({ graph: planRecord });
+    mocks.getAgenticPlanning.mockReset().mockResolvedValue({
+      lane: "FORMAL_SPEC",
+      signals: {
+        objective: "Add an ICS export endpoint",
+        greenfield: false,
+        large: true,
+        missingDocs: false,
+        missingStack: false,
+        architectureUncertainty: false,
+        publicContract: true,
+        dataOrSchema: false,
+        securityBoundary: false,
+        crossModule: false,
+        changedFiles: 2,
+        expectedUnits: 2,
+        explicitRepair: false,
+      },
+      artifacts: [],
+      review: null,
+      workflow: null,
+      missingArtifacts: [],
+    });
+    mocks.reviewAgenticPlan.mockReset();
     mocks.planAgenticRequest.mockReset().mockResolvedValue({
       graph: planRecord,
       validated: graph,
@@ -295,6 +326,70 @@ describe("Director", () => {
         "The Planner WorkGraph was validated and recorded.",
       ),
     ).toBeDefined();
+  });
+
+  it("records an owner plan review decision", async () => {
+    mocks.getAgenticPlanning.mockResolvedValue({
+      lane: "FORMAL_SPEC",
+      signals: {
+        objective: "Add an ICS export endpoint",
+        greenfield: false,
+        large: true,
+        missingDocs: false,
+        missingStack: false,
+        architectureUncertainty: false,
+        publicContract: true,
+        dataOrSchema: false,
+        securityBoundary: false,
+        crossModule: false,
+        changedFiles: 2,
+        expectedUnits: 2,
+        explicitRepair: false,
+      },
+      artifacts: [],
+      review: {
+        id: "review-1",
+        requestId: "request-1",
+        planRevision: 1,
+        planSha256: "a".repeat(64),
+        status: "PENDING",
+        principalId: "core:planning",
+        rationale: "Owner decision required.",
+        points: 0,
+        reviewedAt: "2026-11-08T12:00:00Z",
+      },
+      workflow: null,
+      missingArtifacts: [],
+    });
+    mocks.reviewAgenticPlan.mockResolvedValue({
+      review: {
+        id: "review-2",
+        requestId: "request-1",
+        planRevision: 1,
+        planSha256: "a".repeat(64),
+        status: "OWNER_APPROVED",
+        principalId: "operator",
+        rationale: "Owner approved.",
+        points: 0,
+        reviewedAt: "2026-11-08T12:01:00Z",
+      },
+      workflow: null,
+    });
+    renderDirector();
+    expect(
+      await screen.findByRole("heading", { name: "Plan review" }),
+    ).toBeDefined();
+    await userEvent.type(
+      screen.getByLabelText("Review rationale"),
+      "Owner approved.",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Approve plan" }));
+    expect(mocks.reviewAgenticPlan).toHaveBeenCalledWith("request-1", {
+      planRevision: 1,
+      planSha256: "a".repeat(64),
+      decision: "APPROVE",
+      rationale: "Owner approved.",
+    });
   });
 
   it("shows both the frozen revision and a newer draft revision", async () => {

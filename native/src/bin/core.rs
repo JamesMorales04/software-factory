@@ -1099,6 +1099,11 @@ fn office_api_router(app: Arc<App>) -> Router {
             "/agentic/requests/{id}/plan",
             get(get_agentic_plan).post(plan_agentic_request),
         )
+        .route("/agentic/requests/{id}/planning", get(get_agentic_planning))
+        .route(
+            "/agentic/requests/{id}/plan-review",
+            post(review_agentic_plan),
+        )
         .route(
             "/agentic/requests/{id}/participants",
             get(get_agentic_participants).post(record_agentic_participants),
@@ -1377,6 +1382,11 @@ fn api_router(app: Arc<App>) -> Router {
         .route(
             "/agentic/requests/{id}/plan",
             get(get_agentic_plan).post(plan_agentic_request),
+        )
+        .route("/agentic/requests/{id}/planning", get(get_agentic_planning))
+        .route(
+            "/agentic/requests/{id}/plan-review",
+            post(review_agentic_plan),
         )
         .route(
             "/agentic/requests/{id}/participants",
@@ -9669,9 +9679,26 @@ async fn intake_request_value(
             None => None,
         };
         let messages = app.db.intake_messages(&record.id).await?;
+        let planning_artifacts = app
+            .db
+            .planning_artifacts(&record.id)
+            .await
+            .unwrap_or_default();
+        let plan_review = app.db.latest_plan_review(&record.id).await.ok();
+        let workflow = app
+            .db
+            .workflow_run_for_request(&record.id)
+            .await
+            .ok()
+            .flatten();
         value["assessment"] = json!(assessment);
         value["proposal"] = json!(proposal);
         value["plan"] = json!(plan);
+        value["planning"] = json!({
+            "artifacts": planning_artifacts,
+            "review": plan_review,
+            "workflow": workflow,
+        });
         value["campaign"] = json!(campaign);
         value["messages"] = json!(
             messages
@@ -10069,6 +10096,8 @@ struct AgenticTriageContext {
     risk: factory_native::lead::RiskClass,
     stack: factory_native::agentic::StackProfile,
     triage: factory_native::agentic::TriageDecision,
+    planning_lane: factory_native::planning::PlanningLane,
+    planning_signals: factory_native::planning::PlanningSignals,
     semantic: Option<(
         factory_native::db::AgenticAssessmentRecord,
         factory_native::agentic::AgenticTriageModel,
@@ -10199,7 +10228,7 @@ async fn agentic_triage_context(
     };
     let planning_lane = factory_native::planning::route::route_for(
         &factory_native::planning::route::PlanningRouteInput {
-            signals: planning_signals,
+            signals: planning_signals.clone(),
             user_constraints: Default::default(),
         },
     )
@@ -10241,6 +10270,8 @@ async fn agentic_triage_context(
         risk,
         stack,
         triage,
+        planning_lane,
+        planning_signals,
         semantic,
     })
 }
@@ -10285,6 +10316,18 @@ async fn agentic_projection_for_request(
             &stack,
         )
     });
+    let planning_artifacts = app
+        .db
+        .planning_artifacts(&record.id)
+        .await
+        .unwrap_or_default();
+    let plan_review = app.db.latest_plan_review(&record.id).await.ok();
+    let workflow = app
+        .db
+        .workflow_run_for_request(&record.id)
+        .await
+        .ok()
+        .flatten();
     let specifications = proposal
         .map(|proposal| {
             proposal
@@ -10330,6 +10373,12 @@ async fn agentic_projection_for_request(
             "failureReason": lead.failure_reason,
         },
         "triage": triage,
+        "planningLane": planning_lane_code(context.planning_lane),
+        "planning": {
+            "artifacts": planning_artifacts,
+            "review": plan_review,
+            "workflow": workflow,
+        },
         "stack": stack,
         "participants": participants,
         "specifications": specifications,
@@ -10575,6 +10624,307 @@ async fn get_agentic_plan(
     }
 }
 
+fn planning_artifact_code(
+    kind: factory_native::planning::route::PlanningArtifactKind,
+) -> &'static str {
+    use factory_native::planning::route::PlanningArtifactKind;
+    match kind {
+        PlanningArtifactKind::Spec => "SPEC",
+        PlanningArtifactKind::Stack => "STACK",
+        PlanningArtifactKind::Architecture => "ARCHITECTURE",
+        PlanningArtifactKind::Documentation => "DOCUMENTATION",
+        PlanningArtifactKind::Skills => "SKILL",
+        PlanningArtifactKind::WorkGraph => "PLAN",
+        PlanningArtifactKind::DoD => "DOD",
+        PlanningArtifactKind::OpenSpec => "OPENSPEC",
+    }
+}
+
+fn planning_lane_code(lane: factory_native::planning::PlanningLane) -> &'static str {
+    use factory_native::planning::PlanningLane;
+    match lane {
+        PlanningLane::Direct => "DIRECT",
+        PlanningLane::Delegated => "DELEGATED",
+        PlanningLane::FormalSpec => "FORMAL_SPEC",
+        PlanningLane::Repair => "REPAIR",
+    }
+}
+
+fn planning_conflict(code: &'static str, message: &str) -> Response {
+    (
+        StatusCode::CONFLICT,
+        Json(json!({"error": message, "code": code})),
+    )
+        .into_response()
+}
+
+async fn ensure_planning_workflow(
+    app: &App,
+    request_id: &str,
+    plan_sha256: &str,
+) -> Result<String, Error> {
+    use factory_native::planning::WorkflowState;
+    let run_id = app
+        .db
+        .ensure_workflow_run(request_id, None, plan_sha256)
+        .await?;
+    let mut run = app.db.workflow_run(&run_id).await?;
+    let advance = |state: WorkflowState| -> Option<(WorkflowState, WorkflowState)> {
+        match state {
+            WorkflowState::Submitted => Some((WorkflowState::Submitted, WorkflowState::Assessing)),
+            WorkflowState::Assessing => Some((WorkflowState::Assessing, WorkflowState::Planned)),
+            WorkflowState::Planned | WorkflowState::Replanning => {
+                Some((state, WorkflowState::PlanReview))
+            }
+            _ => None,
+        }
+    };
+    while let Some((from, to)) = advance(run.state) {
+        app.db
+            .transition_workflow(&run_id, from, to, "planning artifacts persisted")
+            .await?;
+        run = app.db.workflow_run(&run_id).await?;
+    }
+    Ok(run_id)
+}
+
+async fn persist_planning_plan(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+    context: &AgenticTriageContext,
+    graph: &factory_native::agentic::ValidatedWorkGraph,
+) -> Result<Value, Response> {
+    use factory_native::planning::route::{required_artifacts, required_reviewers};
+    use factory_native::planning::{PlanningLane, R0_AUTONOMY_POINTS};
+
+    let lane = context.planning_lane;
+    let config = app
+        .db
+        .project_config(&record.project_id)
+        .await
+        .map_err(api_error)?;
+    let repository = PathBuf::from(&config.repository);
+    let stack = match factory_native::planning::stack::build_stack_decision(
+        lane,
+        &context.stack,
+        &factory_native::planning::route::UserPlanningConstraints::default(),
+        &record.objective,
+    ) {
+        Ok(stack) => stack,
+        Err(factory_native::planning::stack::StackBuildError::SelectionRequired { options }) => {
+            return Ok(json!({
+                "code": "STACK_SELECTION_REQUIRED",
+                "message": "A greenfield request needs an explicit stack selection before planning.",
+                "options": options,
+            }));
+        }
+        Err(error) => {
+            return Err(api_error(Error::Validation(error.to_string())));
+        }
+    };
+    let architecture = factory_native::planning::architecture::build_architecture_plan(
+        &record.objective,
+        graph,
+        &context.stack,
+    );
+    architecture
+        .validate()
+        .map_err(|error| api_error(Error::Validation(error)))?;
+    let documentation = factory_native::planning::docs::build_documentation_plan(&repository, lane);
+    documentation
+        .validate()
+        .map_err(|error| api_error(Error::Validation(error)))?;
+    let persisted = app.db.skill_packs().await.unwrap_or_default();
+    let persisted_packs = persisted
+        .iter()
+        .filter_map(|record| {
+            serde_json::from_str::<factory_native::planning::SkillPack>(&record.content_json).ok()
+        })
+        .collect::<Vec<_>>();
+    let now = chrono::Utc::now().to_rfc3339();
+    let skill_plan = match factory_native::planning::skills::build_skill_plan(
+        &context.stack,
+        &persisted_packs,
+        &now,
+    ) {
+        Ok(plan) => plan,
+        Err(error) => {
+            return Ok(json!({
+                "code": "SKILL_PACK_REQUIRED",
+                "message": error.to_string(),
+            }));
+        }
+    };
+    for pack in &skill_plan.proposed {
+        app.db.save_skill_pack(pack).await.map_err(api_error)?;
+    }
+    let reviewer_plan = required_reviewers(lane, context.assurance());
+    reviewer_plan
+        .validate()
+        .map_err(|error| api_error(Error::Validation(error)))?;
+    let dod = factory_native::planning::dod::build_definition_of_done(
+        lane,
+        &context.stack,
+        documentation.clone(),
+        reviewer_plan.clone(),
+    );
+    dod.validate()
+        .map_err(|error| api_error(Error::Validation(error)))?;
+
+    let required = required_artifacts(lane);
+    let revision = app
+        .db
+        .latest_planning_artifact(&record.id, "PLAN")
+        .await
+        .map(|plan| plan.revision.saturating_add(1))
+        .unwrap_or(1);
+    let plan_bundle = json!({
+        "schemaVersion": factory_native::planning::SCHEMA_VERSION,
+        "requestId": record.id,
+        "lane": planning_lane_code(lane),
+        "planRevision": revision,
+        "graphSha256": graph.graph_sha256,
+        "requiredArtifacts": required.iter().map(|kind| planning_artifact_code(*kind)).collect::<Vec<_>>(),
+        "reviewerPlan": reviewer_plan,
+        "openspecRequired": factory_native::planning::route::openspec_required(lane),
+        "planReviewRequired": factory_native::planning::route::plan_review_required(lane),
+        "signals": context.planning_signals,
+        "createdAt": now,
+    });
+    let plan_record = app
+        .db
+        .save_planning_artifact(&record.id, "PLAN", revision, &plan_bundle.to_string())
+        .await
+        .map_err(api_error)?;
+    app.db
+        .save_planning_artifact(
+            &record.id,
+            "STACK",
+            revision,
+            &serde_json::to_string(&stack)
+                .map_err(|_| api_error(Error::Invalid("stack encoding")))?,
+        )
+        .await
+        .map_err(api_error)?;
+    app.db
+        .save_planning_artifact(
+            &record.id,
+            "ARCHITECTURE",
+            revision,
+            &serde_json::to_string(&architecture)
+                .map_err(|_| api_error(Error::Invalid("architecture encoding")))?,
+        )
+        .await
+        .map_err(api_error)?;
+    app.db
+        .save_planning_artifact(
+            &record.id,
+            "DOCUMENTATION",
+            revision,
+            &serde_json::to_string(&documentation)
+                .map_err(|_| api_error(Error::Invalid("documentation encoding")))?,
+        )
+        .await
+        .map_err(api_error)?;
+    app.db
+        .save_planning_artifact(
+            &record.id,
+            "SKILL",
+            revision,
+            &serde_json::to_string(&skill_plan)
+                .map_err(|_| api_error(Error::Invalid("skill plan encoding")))?,
+        )
+        .await
+        .map_err(api_error)?;
+    app.db
+        .save_planning_artifact(
+            &record.id,
+            "DOD",
+            revision,
+            &serde_json::to_string(&dod).map_err(|_| api_error(Error::Invalid("DoD encoding")))?,
+        )
+        .await
+        .map_err(api_error)?;
+
+    let owner_required = context.assurance() >= factory_native::agentic::Assurance::Elevated
+        || context.planning_signals.large
+        || stack.stack_change
+        || stack.autonomy_points > R0_AUTONOMY_POINTS
+        || (lane == PlanningLane::FormalSpec
+            && (context.planning_signals.public_contract
+                || context.planning_signals.data_or_schema
+                || context.planning_signals.security_boundary));
+    let (status, principal, rationale) = if owner_required {
+        (
+            "PENDING",
+            "core:planning",
+            "The plan requires an authenticated owner decision under the frozen policy.",
+        )
+    } else {
+        (
+            "AUTO_APPROVED",
+            "core:auto-plan-review",
+            "The plan satisfies the deterministic auto-approval policy for its lane and assurance.",
+        )
+    };
+    let review = app
+        .db
+        .save_plan_review(factory_native::db::NewPlanReview {
+            request_id: &record.id,
+            plan_revision: revision,
+            plan_sha256: &plan_record.content_sha256,
+            status,
+            principal_id: principal,
+            rationale,
+            points: stack.autonomy_points,
+        })
+        .await
+        .map_err(api_error)?;
+    let workflow_run_id = ensure_planning_workflow(app, &record.id, &plan_record.content_sha256)
+        .await
+        .map_err(api_error)?;
+    let mut missing = planning_readiness(app, &record.id, revision, lane)
+        .await
+        .map_err(api_error)?;
+    if status == "AUTO_APPROVED" && missing.is_empty() {
+        let run = app
+            .db
+            .workflow_run(&workflow_run_id)
+            .await
+            .map_err(api_error)?;
+        if run.state == factory_native::planning::WorkflowState::PlanReview {
+            app.db
+                .transition_workflow(
+                    &workflow_run_id,
+                    factory_native::planning::WorkflowState::PlanReview,
+                    factory_native::planning::WorkflowState::Frozen,
+                    "deterministic auto-approval",
+                )
+                .await
+                .map_err(api_error)?;
+        }
+    }
+    missing.sort_unstable();
+    missing.dedup();
+    let workflow = app
+        .db
+        .workflow_run(&workflow_run_id)
+        .await
+        .map_err(api_error)?;
+    Ok(json!({
+        "plan": plan_record,
+        "stack": stack,
+        "architecture": architecture,
+        "documentation": documentation,
+        "skillPlan": skill_plan,
+        "definitionOfDone": dod,
+        "review": review,
+        "workflowRunId": workflow_run_id,
+        "workflowState": workflow.state,
+        "missingArtifacts": missing,
+    }))
+}
+
 async fn plan_agentic_request(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
@@ -10587,6 +10937,21 @@ async fn plan_agentic_request(
         Ok(record) => record,
         Err(error) => return api_error(error),
     };
+    if let Ok(plan) = app.db.latest_planning_artifact(&record.id, "PLAN").await {
+        let review = app.db.latest_plan_review(&record.id).await.ok();
+        let artifacts = app
+            .db
+            .planning_artifacts(&record.id)
+            .await
+            .unwrap_or_default();
+        return Json(json!({
+            "plan": plan,
+            "review": review,
+            "artifacts": artifacts,
+            "alreadyPlanned": true,
+        }))
+        .into_response();
+    }
     let context = match agentic_triage_context(&app, &record).await {
         Ok(context) => context,
         Err(error) => return api_error(error),
@@ -10717,10 +11082,26 @@ JSON Schema:
                     .ok(),
                 None => None,
             };
+            let planning = match persist_planning_plan(&app, &record, &context, &graph).await {
+                Ok(value) => value,
+                Err(response) => return response,
+            };
+            if let Some(code) = planning.get("code").and_then(Value::as_str) {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(json!({
+                        "code": code,
+                        "error": planning.get("message").and_then(Value::as_str).unwrap_or("planning is blocked"),
+                        "options": planning.get("options").cloned().unwrap_or(Value::Null),
+                    })),
+                )
+                    .into_response();
+            }
             Json(json!({
                 "graph": saved_graph,
                 "validated": graph,
                 "participantPlan": participant_record,
+                "planning": planning,
                 "provider": result.provider,
                 "model": result.model,
                 "usage": {
@@ -10735,6 +11116,458 @@ JSON Schema:
         }
         Err(error) => api_error(error),
     }
+}
+
+fn openspec_change_for_plan(
+    record: &factory_native::db::IntakeRequestRecord,
+    spec: &factory_native::agentic::FrozenSpec,
+    graph: &factory_native::agentic::ValidatedWorkGraph,
+    stack: &factory_native::agentic::StackProfile,
+    architecture: &factory_native::planning::ArchitecturePlan,
+    evidence: &[String],
+) -> Result<factory_native::openspec::OpenSpecChange, String> {
+    use factory_native::agentic::SpecAssertionKind;
+    use factory_native::openspec::{OpenSpecChange, OpenSpecRequirement, OpenSpecTask};
+    let change_id = format!(
+        "request-{}",
+        record
+            .id
+            .chars()
+            .filter(|character| character.is_ascii_alphanumeric())
+            .take(16)
+            .collect::<String>()
+            .to_ascii_lowercase()
+    );
+    let requirements = spec
+        .requirements
+        .iter()
+        .map(|requirement| OpenSpecRequirement {
+            id: requirement.id.clone(),
+            statement: requirement.statement.clone(),
+            acceptance: requirement
+                .assertions
+                .iter()
+                .filter(|assertion| assertion.kind == SpecAssertionKind::Acceptance)
+                .map(|assertion| assertion.statement.clone())
+                .collect(),
+            negative: requirement
+                .assertions
+                .iter()
+                .filter(|assertion| assertion.kind == SpecAssertionKind::Negative)
+                .map(|assertion| assertion.statement.clone())
+                .collect(),
+        })
+        .collect::<Vec<_>>();
+    let tasks = graph
+        .units
+        .iter()
+        .enumerate()
+        .map(|(index, unit)| {
+            let requirement = requirements
+                .get(index.min(requirements.len().saturating_sub(1)))
+                .map(|requirement| requirement.id.as_str())
+                .unwrap_or("REQ-001");
+            let mut acceptance = unit.acceptance.clone();
+            acceptance.push(format!("Requirement: {requirement}"));
+            OpenSpecTask {
+                id: format!("T{}", index + 1),
+                title: unit.title.clone(),
+                paths: unit.paths.clone(),
+                acceptance,
+                evidence: evidence.to_vec(),
+            }
+        })
+        .collect::<Vec<_>>();
+    let change = OpenSpecChange {
+        change_id,
+        title: record
+            .objective
+            .lines()
+            .next()
+            .unwrap_or("Request")
+            .chars()
+            .take(200)
+            .collect(),
+        why: spec.summary.clone(),
+        what_changes: requirements
+            .iter()
+            .map(|requirement| requirement.statement.clone())
+            .collect(),
+        non_goals: Vec::new(),
+        requirements,
+        design: format!(
+            "## Stack\n\n{}\n\n## Architecture\n\n{}",
+            stack.languages.join(", "),
+            architecture.components.join("\n")
+        ),
+        tasks,
+        stack_summary: format!(
+            "{} {}",
+            stack.languages.join(", "),
+            stack.frameworks.join(", ")
+        )
+        .trim()
+        .to_string(),
+        architecture_summary: architecture.components.join("; "),
+    };
+    change.validate().map_err(|error| error.to_string())?;
+    Ok(change)
+}
+
+async fn persist_openspec_projection(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+    spec: &factory_native::agentic::FrozenSpec,
+    graph: &factory_native::agentic::ValidatedWorkGraph,
+) -> Result<(), Response> {
+    let config = app
+        .db
+        .project_config(&record.project_id)
+        .await
+        .map_err(api_error)?;
+    let stack = factory_native::agentic::detect_stack(std::path::Path::new(&config.repository));
+    let architecture = factory_native::planning::architecture::build_architecture_plan(
+        &record.objective,
+        graph,
+        &stack,
+    );
+    let evidence = app
+        .db
+        .planning_artifact(
+            &record.id,
+            "DOD",
+            app.db
+                .latest_planning_artifact(&record.id, "PLAN")
+                .await
+                .map(|plan| plan.revision)
+                .unwrap_or(1),
+        )
+        .await
+        .ok()
+        .and_then(|record| {
+            serde_json::from_str::<factory_native::planning::DefinitionOfDone>(&record.content_json)
+                .ok()
+        })
+        .map(|dod| {
+            dod.project_checks
+                .iter()
+                .map(|check| check.command.join(" "))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|| vec!["Run the deterministic Definition of Done checks.".into()]);
+    let change =
+        match openspec_change_for_plan(record, spec, graph, &stack, &architecture, &evidence) {
+            Ok(change) => change,
+            Err(error) => {
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": error, "code": "OPENSPEC_CHANGE_INVALID"})),
+                )
+                    .into_response());
+            }
+        };
+    let artifacts = match factory_native::openspec::render(&change) {
+        Ok(artifacts) => artifacts,
+        Err(error) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": error.to_string(), "code": "OPENSPEC_RENDER_FAILED"})),
+            )
+                .into_response());
+        }
+    };
+    if let Err(error) = artifacts.validate() {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": error.to_string(), "code": "OPENSPEC_VALIDATION_FAILED"})),
+        )
+            .into_response());
+    }
+    let projection = match artifacts.projection(true) {
+        Ok(projection) => projection,
+        Err(error) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": error.to_string(), "code": "OPENSPEC_PROJECTION_FAILED"})),
+            )
+                .into_response());
+        }
+    };
+    app.db
+        .save_openspec_projection(&record.id, &projection)
+        .await
+        .map_err(api_error)?;
+    let revision = app
+        .db
+        .latest_planning_artifact(&record.id, "PLAN")
+        .await
+        .map(|plan| plan.revision)
+        .unwrap_or(1);
+    app.db
+        .save_planning_artifact(
+            &record.id,
+            "OPENSPEC",
+            revision,
+            &serde_json::to_string(&artifacts)
+                .map_err(|_| api_error(Error::Invalid("OpenSpec encoding")))?,
+        )
+        .await
+        .map_err(api_error)?;
+    Ok(())
+}
+
+async fn try_freeze_approved_plan(
+    app: &App,
+    request_id: &str,
+    lane: factory_native::planning::PlanningLane,
+) -> Result<(), Error> {
+    use factory_native::planning::WorkflowState;
+    let Ok(review) = app.db.latest_plan_review(request_id).await else {
+        return Ok(());
+    };
+    if !matches!(review.status.as_str(), "AUTO_APPROVED" | "OWNER_APPROVED") {
+        return Ok(());
+    }
+    if !planning_readiness(app, request_id, review.plan_revision, lane)
+        .await?
+        .is_empty()
+    {
+        return Ok(());
+    }
+    let Some(run) = app.db.workflow_run_for_request(request_id).await? else {
+        return Ok(());
+    };
+    if run.state == WorkflowState::PlanReview {
+        app.db
+            .transition_workflow(
+                &run.id,
+                WorkflowState::PlanReview,
+                WorkflowState::Frozen,
+                "plan review approved and required artifacts complete",
+            )
+            .await?;
+    }
+    Ok(())
+}
+
+async fn planning_readiness(
+    app: &App,
+    request_id: &str,
+    revision: u32,
+    lane: factory_native::planning::PlanningLane,
+) -> Result<Vec<&'static str>, Error> {
+    use factory_native::planning::PlanningLane;
+    let mut missing = Vec::new();
+    if app
+        .db
+        .planning_artifact(request_id, "PLAN", revision)
+        .await
+        .is_err()
+    {
+        missing.push("PLAN");
+    }
+    for kind in ["STACK", "ARCHITECTURE", "DOCUMENTATION", "SKILL", "DOD"] {
+        if app
+            .db
+            .planning_artifact(request_id, kind, revision)
+            .await
+            .is_err()
+        {
+            missing.push(kind);
+        }
+    }
+    if app.db.agentic_work_graph(request_id).await.is_err() {
+        missing.push("WORKGRAPH");
+    }
+    if lane == PlanningLane::FormalSpec {
+        let has_spec = app
+            .db
+            .agentic_spec(request_id)
+            .await
+            .map(|spec| spec.state == "FROZEN")
+            .unwrap_or(false);
+        if !has_spec {
+            missing.push("SPEC");
+        }
+        if app.db.latest_openspec_projection(request_id).await.is_err() {
+            missing.push("OPENSPEC");
+        }
+    }
+    Ok(missing)
+}
+
+async fn get_agentic_planning(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    let context = match agentic_triage_context(&app, &record).await {
+        Ok(context) => context,
+        Err(error) => return api_error(error),
+    };
+    let artifacts = app
+        .db
+        .planning_artifacts(&record.id)
+        .await
+        .unwrap_or_default();
+    let review = app.db.latest_plan_review(&record.id).await.ok();
+    let workflow = app
+        .db
+        .workflow_run_for_request(&record.id)
+        .await
+        .ok()
+        .flatten();
+    let revision = review
+        .as_ref()
+        .map(|review| review.plan_revision)
+        .or_else(|| artifacts.iter().map(|artifact| artifact.revision).max())
+        .unwrap_or(1);
+    let missing = planning_readiness(&app, &record.id, revision, context.planning_lane)
+        .await
+        .unwrap_or_else(|_| vec!["PLAN"]);
+    Json(json!({
+        "lane": planning_lane_code(context.planning_lane),
+        "signals": context.planning_signals,
+        "artifacts": artifacts,
+        "review": review,
+        "workflow": workflow,
+        "missingArtifacts": missing,
+    }))
+    .into_response()
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct AgenticPlanReviewInput {
+    plan_revision: u32,
+    plan_sha256: String,
+    decision: String,
+    rationale: String,
+}
+
+async fn review_agentic_plan(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<AgenticPlanReviewInput>,
+) -> Response {
+    use factory_native::planning::WorkflowState;
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    let context = match agentic_triage_context(&app, &record).await {
+        Ok(context) => context,
+        Err(error) => return api_error(error),
+    };
+    let plan = match app
+        .db
+        .planning_artifact(&record.id, "PLAN", input.plan_revision)
+        .await
+    {
+        Ok(plan) => plan,
+        Err(error) => return api_error(error),
+    };
+    if plan.content_sha256 != input.plan_sha256 {
+        return planning_conflict(
+            "PLAN_REVIEW_STALE",
+            "the plan review does not bind the current plan hash",
+        );
+    }
+    if input.rationale.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "a plan review requires a rationale", "code": "RATIONALE_REQUIRED"})),
+        )
+            .into_response();
+    }
+    let (status, target) = match input.decision.as_str() {
+        "APPROVE" => ("OWNER_APPROVED", Some(WorkflowState::Frozen)),
+        "CHANGES_REQUESTED" => ("CHANGES_REQUESTED", Some(WorkflowState::Replanning)),
+        "REJECT" => ("REJECTED", Some(WorkflowState::Blocked)),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "decision must be APPROVE, CHANGES_REQUESTED or REJECT", "code": "PLAN_REVIEW_DECISION_INVALID"})),
+            )
+                .into_response();
+        }
+    };
+    if status == "OWNER_APPROVED" {
+        let missing =
+            match planning_readiness(&app, &record.id, input.plan_revision, context.planning_lane)
+                .await
+            {
+                Ok(missing) => missing,
+                Err(error) => return api_error(error),
+            };
+        if !missing.is_empty() {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": "the plan is not ready for approval",
+                    "code": "PLAN_NOT_READY",
+                    "missingArtifacts": missing,
+                })),
+            )
+                .into_response();
+        }
+    }
+    let principal = operator_principal(session.as_ref().map(|Extension(device)| device));
+    let review = match app
+        .db
+        .save_plan_review(factory_native::db::NewPlanReview {
+            request_id: &record.id,
+            plan_revision: input.plan_revision,
+            plan_sha256: &input.plan_sha256,
+            status,
+            principal_id: &principal,
+            rationale: &input.rationale,
+            points: 0,
+        })
+        .await
+    {
+        Ok(review) => review,
+        Err(error) => return api_error(error),
+    };
+    if let Some(target) = target {
+        match app.db.workflow_run_for_request(&record.id).await {
+            Ok(Some(run)) if run.state == WorkflowState::PlanReview => {
+                if let Err(error) = app
+                    .db
+                    .transition_workflow(
+                        &run.id,
+                        WorkflowState::PlanReview,
+                        target,
+                        "authenticated plan review",
+                    )
+                    .await
+                {
+                    return api_error(error);
+                }
+            }
+            Ok(_) => {}
+            Err(error) => return api_error(error),
+        }
+    }
+    let workflow = app
+        .db
+        .workflow_run_for_request(&record.id)
+        .await
+        .ok()
+        .flatten();
+    Json(json!({"review": review, "workflow": workflow})).into_response()
 }
 
 async fn deterministic_participant_plan(
@@ -11062,6 +11895,12 @@ JSON Schema:
     {
         Ok(spec) => {
             let preview = factory_native::agentic::compile_spec(&draft, spec.revision).ok();
+            if let Some(preview) = preview.as_ref()
+                && let Err(response) =
+                    persist_openspec_projection(&app, &record, preview, &graph).await
+            {
+                return response;
+            }
             Json(json!({
                 "spec": spec,
                 "preview": preview,
@@ -11148,7 +11987,22 @@ async fn freeze_agentic_spec(
         );
     }
     match app.db.freeze_agentic_spec(&draft.id, &frozen, &graph).await {
-        Ok(spec) => Json(json!({"spec": spec, "frozen": frozen})).into_response(),
+        Ok(spec) => {
+            let lane = match agentic_triage_context(&app, &record).await {
+                Ok(context) => context.planning_lane,
+                Err(error) => return api_error(error),
+            };
+            if let Err(error) = try_freeze_approved_plan(&app, &record.id, lane).await {
+                return api_error(error);
+            }
+            let workflow = app
+                .db
+                .workflow_run_for_request(&record.id)
+                .await
+                .ok()
+                .flatten();
+            Json(json!({"spec": spec, "frozen": frozen, "workflow": workflow})).into_response()
+        }
         Err(error) => api_error(error),
     }
 }
@@ -18943,6 +19797,7 @@ mod tests {
                 .unwrap()
         }
 
+        #[cfg(feature = "test-support")]
         fn master_key() -> factory_native::provider_secrets::ProviderSecretKey {
             use std::io::Write;
             let path = std::env::temp_dir().join(format!(
@@ -18963,6 +19818,7 @@ mod tests {
             key
         }
 
+        #[cfg(feature = "test-support")]
         async fn chat_upstream() -> (String, Arc<Mutex<usize>>) {
             use axum::{Router, routing::post};
             let hits = Arc::new(Mutex::new(0));
@@ -18985,6 +19841,7 @@ mod tests {
             (url, hits)
         }
 
+        #[cfg(feature = "test-support")]
         async fn chat_upstream_with_content(
             content: Arc<Mutex<String>>,
         ) -> (String, Arc<Mutex<usize>>) {
