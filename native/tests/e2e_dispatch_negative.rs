@@ -933,7 +933,7 @@ async fn failing_frozen_check_produces_repair_required_gate_not_accepted() {
         .unwrap()
         .iter()
         .find(|receipt| receipt["role"] == "verifier")
-        .expect("verifier receipt");
+        .unwrap_or_else(|| panic!("verifier receipt; log:\n{log}"));
     assert_eq!(verifier_receipt["result"], "FAIL");
     assert_eq!(verifier_receipt["evidence"], "EXECUTED");
 

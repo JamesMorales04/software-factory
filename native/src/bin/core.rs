@@ -7871,25 +7871,30 @@ async fn repair_campaign(
         Ok(config) => config,
         Err(error) => return api_error(error),
     };
-    let reviewer = app
+    let receipts = app
         .db
         .quality_receipts(&candidate.id)
         .await
-        .ok()
-        .and_then(|receipts| {
-            receipts
-                .into_iter()
-                .find(|receipt| receipt.role == factory_native::db::QualityRole::Reviewer)
-        });
+        .unwrap_or_default();
     let mut findings = Vec::new();
-    if let Some(reviewer) = &reviewer {
-        for finding in reviewer.findings.iter().take(6) {
+    for receipt in &receipts {
+        if !matches!(
+            receipt.role,
+            factory_native::db::QualityRole::Verifier | factory_native::db::QualityRole::Reviewer
+        ) {
+            continue;
+        }
+        for finding in receipt.findings.iter().take(6) {
             if matches!(
                 finding.severity,
                 factory_native::review::FindingSeverity::Blocking
                     | factory_native::review::FindingSeverity::Warning
             ) {
-                findings.push(format!("{:?}: {}", finding.severity, finding.message));
+                findings.push(format!(
+                    "{:?}: {}",
+                    finding.severity,
+                    finding.message.chars().take(900).collect::<String>()
+                ));
             }
         }
     }

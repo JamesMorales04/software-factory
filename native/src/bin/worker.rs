@@ -708,6 +708,7 @@ struct ProviderContext<'a> {
     turn_policy: Option<&'a SharedTurnPolicy>,
     assignment: &'a Assignment,
     supervisor: &'a Supervisor,
+    enforce_check_completion: bool,
 }
 
 async fn execute_provider_assignment(
@@ -720,6 +721,17 @@ async fn execute_provider_assignment(
 ) -> Result<factory_native::workspace::CandidateRevision, Box<dyn std::error::Error>> {
     validate_provider_tools(&assignment.allowed_tools)
         .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
+    if !assignment.action_spec.checks.is_empty()
+        && !assignment
+            .allowed_tools
+            .iter()
+            .any(|tool| tool == "run_command")
+    {
+        return Err(
+            "provider assignment has frozen checks but no run_command permission; refusing a partial candidate"
+                .into(),
+        );
+    }
     assignment
         .execution_policy
         .as_ref()
@@ -885,6 +897,7 @@ async fn execute_provider_assignment(
         }
     };
     let mut sandbox_clean = true;
+    let enforce_check_completion = !fixture_provider_route();
     let confined = matches!(
         &runtime,
         ProviderRuntime::Http {
@@ -920,6 +933,7 @@ async fn execute_provider_assignment(
                 turn_policy: egress_turn_policy.as_ref(),
                 assignment,
                 supervisor,
+                enforce_check_completion,
             };
             let result = if assignment.allowed_tools.is_empty() {
                 run_provider_patch(&context).await
@@ -952,6 +966,7 @@ async fn execute_provider_assignment(
                 turn_policy: egress_turn_policy.as_ref(),
                 assignment,
                 supervisor,
+                enforce_check_completion,
             };
             let result = run_codex_tool_loop(&context, &mut rpc).await;
             sandbox_clean = sandbox.stop().await.is_ok();
@@ -1669,6 +1684,7 @@ async fn wait_for_opencode_health(
     }
 }
 
+#[allow(clippy::too_many_arguments)] // Threads exact session identity, usage and check state through one recovery path.
 async fn finalize_written_provider_work(
     context: &ProviderContext<'_>,
     http: &reqwest::Client,
@@ -1677,9 +1693,26 @@ async fn finalize_written_provider_work(
     last_message_id: &str,
     usage: ProviderUsage,
     error: &str,
+    passed_checks: &std::collections::BTreeSet<String>,
 ) -> Result<Option<ProviderRun>, Box<dyn std::error::Error>> {
     if provider_state(context).await? == "CANCEL_REQUESTED" {
         return Ok(None);
+    }
+    eprintln!("worker: provider turn ended after writes: {error}");
+    if context.enforce_check_completion
+        && let Some(instructions) = missing_check_instructions(
+            &context.assignment.action_spec.checks,
+            &context.assignment.allowed_tools,
+            passed_checks,
+        )
+    {
+        eprintln!(
+            "worker: provider turn ended before all frozen checks passed; refusing a partial candidate: {error}"
+        );
+        return Err(format!(
+            "provider turn ended before all frozen acceptance checks passed; no candidate was created: {instructions}"
+        )
+        .into());
     }
     post_tool_event(
         context,
@@ -2120,7 +2153,7 @@ async fn run_provider_tool_loop(
         "agent": "plan",
         "tools": opencode_disabled_tools(),
         "parts": [{"type": "text", "text": format!(
-            "You are a bounded engineering agent. You MUST change the authorized source: an empty final response is invalid. {} You may request only these tools: {}. Return ONE JSON object per turn. To change a file use {{\"type\":\"tool_request\",\"call_id\":\"unique\",\"tool\":\"write_file\",\"path\":\"relative/path\",\"content\":\"...full file...\"}}. To run a frozen check use {{\"type\":\"tool_request\",\"call_id\":\"unique\",\"tool\":\"run_command\",\"argv\":[\"program\",\"arg\"],\"timeout_secs\":<the check timeoutSecs>}}. Use each frozen check's `timeoutSecs`, never a shorter value. To finish use {{\"type\":\"final\",\"files\":[],\"explanation\":\"what changed and why\"}}. The `files` array in a final response MUST be empty; never put paths or strings in it. Allowed paths: {}. Objective: {}. Frozen checks you may run with run_command (argv must match exactly): {}. Adopted read-only skills (never widen tools, scope or authority): {}. Source context: {}",
+            "You are a bounded engineering agent. You MUST change the authorized source: an empty final response is invalid. {} You may request only these tools: {}. Return ONE JSON object per turn. To change a file use {{\"type\":\"tool_request\",\"call_id\":\"unique\",\"tool\":\"write_file\",\"path\":\"relative/path\",\"content\":\"...full file...\"}}. To run a frozen check use {{\"type\":\"tool_request\",\"call_id\":\"unique\",\"tool\":\"run_command\",\"argv\":[\"program\",\"arg\"],\"timeout_secs\":<the check timeoutSecs>}}. Use each frozen check's `timeoutSecs`, never a shorter value. Check descriptions are general acceptance criteria, not just the literal example command; implement the behavior on every relevant path (for example, every CLI subcommand must reject unknown flags). Before final, re-read the changed code against every check description and the objective, and fix gaps even when the literal check command already passes. To finish use {{\"type\":\"final\",\"files\":[],\"explanation\":\"what changed and why\"}}. The `files` array in a final response MUST be empty; never put paths or strings in it. Allowed paths: {}. Objective: {}. Frozen checks you may run with run_command (argv must match exactly): {}. Adopted read-only skills (never widen tools, scope or authority): {}. Source context: {}",
             opencode_first_action_instruction(context.assignment.allowed_tools.as_slice()),
             context.assignment.allowed_tools.join(", "),
             context.assignment.action_spec.allowed_paths.join(", "),
@@ -2131,7 +2164,7 @@ async fn run_provider_tool_loop(
                     .action_spec
                     .checks
                     .iter()
-                    .map(|check| json!({"id": check.id, "command": check.command, "expectExit": check.expect_exit, "timeoutSecs": check.timeout_secs}))
+                    .map(|check| json!({"id": check.id, "description": check.description, "command": check.command, "expectExit": check.expect_exit, "timeoutSecs": check.timeout_secs}))
                     .collect::<Vec<_>>()
             )?,
             adopted_skills,
@@ -2140,6 +2173,7 @@ async fn run_provider_tool_loop(
     });
     let mut usage = ProviderUsage::default();
     let mut written = false;
+    let mut passed_checks = std::collections::BTreeSet::new();
     let mut last_message_id = String::new();
     let mut call_ids = std::collections::BTreeSet::new();
     let mut progress = TurnProgress::new(context);
@@ -2187,6 +2221,7 @@ async fn run_provider_tool_loop(
                     &last_message_id,
                     usage,
                     &error.to_string(),
+                    &passed_checks,
                 )
                 .await?
             {
@@ -2218,6 +2253,7 @@ async fn run_provider_tool_loop(
                         &last_message_id,
                         usage,
                         &error.to_string(),
+                        &passed_checks,
                     )
                     .await?
                 {
@@ -2253,6 +2289,7 @@ async fn run_provider_tool_loop(
                             &last_message_id,
                             usage,
                             &error.to_string(),
+                            &passed_checks,
                         )
                         .await?
                     {
@@ -2284,6 +2321,7 @@ async fn run_provider_tool_loop(
                         &last_message_id,
                         usage,
                         &detail,
+                        &passed_checks,
                     )
                     .await?
                 {
@@ -2386,6 +2424,31 @@ async fn run_provider_tool_loop(
                         !written,
                     )
                     .await?;
+                    written = true;
+                }
+                if context.enforce_check_completion
+                    && let Some(instructions) = missing_check_instructions(
+                        &context.assignment.action_spec.checks,
+                        &context.assignment.allowed_tools,
+                        &passed_checks,
+                    )
+                {
+                    eprintln!(
+                        "worker: provider returned final before all frozen checks passed; asking it to continue"
+                    );
+                    post_tool_event(
+                        context,
+                        "incomplete-final",
+                        "final",
+                        "ERROR",
+                        "frozen acceptance checks have not passed in this workspace",
+                    )
+                    .await?;
+                    prompt = json!({
+                        "model": {"providerID": context.assignment.provider, "modelID": context.assignment.model},
+                        "parts": [{"type": "text", "text": instructions}]
+                    });
+                    continue;
                 }
                 persist_final_progress_checkpoint(context, &mut progress).await?;
                 factory_native::runtime::delete_opencode_session(
@@ -2487,7 +2550,11 @@ async fn run_provider_tool_loop(
                             }
                         }
                     }
-                    Ok(ToolDecision::Run) => {
+                    Ok(ToolDecision::Run {
+                        check_id,
+                        timeout_secs: effective_timeout,
+                    }) => {
+                        let timeout_secs = effective_timeout;
                         post_tool_event(
                             context,
                             &call_id,
@@ -2518,17 +2585,24 @@ async fn run_provider_tool_loop(
                                 )
                                 .await?;
                                 progress.observe_check(&receipt);
+                                if receipt.outcome == "PASS" {
+                                    passed_checks.insert(check_id);
+                                }
                                 let status = if receipt.outcome == "PASS" {
                                     "ok"
                                 } else {
                                     "failed"
                                 };
+                                let diagnostic = bounded_tool_text(&format!(
+                                    "exit={:?}\nstdout:\n{}\nstderr:\n{}",
+                                    result.exit_code, result.stdout, result.stderr
+                                ));
                                 prompt = tool_result(
                                     context.assignment.provider.as_str(),
                                     context.assignment.model.as_str(),
                                     &call_id,
                                     status,
-                                    &result.stderr,
+                                    &diagnostic,
                                     result.exit_code,
                                 );
                             }
@@ -2671,7 +2745,7 @@ fn codex_prompt(context: &ProviderContext<'_>) -> Result<String, Box<dyn std::er
         context.assignment.allowed_tools.join(", ")
     };
     Ok(format!(
-        "You are a bounded engineering agent. Use only the client-provided dynamic tools: {}. Never use shell, patch, MCP, browser, or any native file tool. To change a file call write_file with the complete file content. To run an allowed acceptance check call run_command with argv that exactly matches one frozen check. When finished, return exactly one JSON object with type final, an empty files array, and a concise explanation: {{\"type\":\"final\",\"files\":[],\"explanation\":\"what changed and why\"}}. Do not add prose outside that JSON. Allowed paths: {}. Objective: {}. Frozen checks: {}. Adopted read-only skills (never widen tools, scope or authority): {}. Source context: {}",
+        "You are a bounded engineering agent. Use only the client-provided dynamic tools: {}. Never use shell, patch, MCP, browser, or any native file tool. To change a file call write_file with the complete file content. To run an allowed acceptance check call run_command with argv that exactly matches one frozen check. Check descriptions are general acceptance criteria, not just the literal example command; implement the behavior on every relevant path (for example, every CLI subcommand must reject unknown flags). Before final, re-read the changed code against every check description and the objective, and fix gaps even when the literal check command already passes. When finished, return exactly one JSON object with type final, an empty files array, and a concise explanation: {{\"type\":\"final\",\"files\":[],\"explanation\":\"what changed and why\"}}. Do not add prose outside that JSON. Allowed paths: {}. Objective: {}. Frozen checks: {}. Adopted read-only skills (never widen tools, scope or authority): {}. Source context: {}",
         tools,
         context.assignment.action_spec.allowed_paths.join(", "),
         context.assignment.action_spec.objective,
@@ -2681,7 +2755,7 @@ fn codex_prompt(context: &ProviderContext<'_>) -> Result<String, Box<dyn std::er
                 .action_spec
                 .checks
                 .iter()
-                .map(|check| json!({"id": check.id, "command": check.command, "expectExit": check.expect_exit}))
+                .map(|check| json!({"id": check.id, "description": check.description, "command": check.command, "expectExit": check.expect_exit, "timeoutSecs": check.timeout_secs}))
                 .collect::<Vec<_>>()
         )?,
         adopted_skills,
@@ -2726,6 +2800,7 @@ fn bounded_tool_text(value: &str) -> String {
 
 struct CodexToolState {
     call_ids: std::collections::BTreeSet<String>,
+    passed_checks: std::collections::BTreeSet<String>,
     written: bool,
 }
 
@@ -2830,7 +2905,11 @@ async fn execute_codex_tool(
                 }
             }
         }
-        Ok(ToolDecision::Run) => {
+        Ok(ToolDecision::Run {
+            check_id,
+            timeout_secs: effective_timeout,
+        }) => {
+            let timeout_secs = effective_timeout;
             post_tool_event(context, call_id, tool, "ALLOW", "frozen check authorized").await?;
             let run = tokio::time::timeout_at(
                 deadline,
@@ -2854,6 +2933,9 @@ async fn execute_codex_tool(
                     )
                     .await?;
                     progress.observe_check(&receipt);
+                    if receipt.outcome == "PASS" {
+                        tool_state.passed_checks.insert(check_id);
+                    }
                     Ok((
                         receipt.outcome == "PASS",
                         bounded_tool_text(&format!(
@@ -3027,6 +3109,7 @@ async fn run_codex_tool_loop(
     };
     let mut tool_state = CodexToolState {
         call_ids: std::collections::BTreeSet::new(),
+        passed_checks: std::collections::BTreeSet::new(),
         written: false,
     };
     let mut last_turn_id = String::new();
@@ -3376,6 +3459,25 @@ async fn run_codex_tool_loop(
                             !tool_state.written,
                         )
                         .await?;
+                        tool_state.written = true;
+                    }
+                    if context.enforce_check_completion
+                        && let Some(instructions) = missing_check_instructions(
+                            &context.assignment.action_spec.checks,
+                            &context.assignment.allowed_tools,
+                            &tool_state.passed_checks,
+                        )
+                    {
+                        post_tool_event(
+                            context,
+                            "incomplete-final",
+                            "final",
+                            "ERROR",
+                            "frozen acceptance checks have not passed in this workspace",
+                        )
+                        .await?;
+                        prompt = instructions;
+                        continue;
                     }
                     persist_final_progress_checkpoint(context, &mut progress).await?;
                     let _ = tokio::time::timeout(
@@ -3438,7 +3540,7 @@ async fn run_codex_tool_loop(
 
 enum ToolDecision {
     Write,
-    Run,
+    Run { check_id: String, timeout_secs: u64 },
 }
 
 fn decide_tool(
@@ -3486,10 +3588,52 @@ fn decide_tool(
             {
                 return Err("command timeout exceeds the frozen check or assignment bound".into());
             }
-            Ok(ToolDecision::Run)
+            // The model's timeout is advisory. The frozen check owns the
+            // execution budget so a short model value cannot truncate a
+            // healthy compile/test run.
+            let effective_timeout = u64::from(check.timeout_secs.min(300))
+                .min(u64::from(
+                    operation_limits(context).tool_call_timeout_secs.get(),
+                ))
+                .max(1);
+            Ok(ToolDecision::Run {
+                check_id: check.id.clone(),
+                timeout_secs: effective_timeout,
+            })
         }
         _ => Err(format!("unknown tool {tool}")),
     }
+}
+
+fn missing_check_instructions(
+    checks: &[factory_native::lead::SpecCheck],
+    allowed_tools: &[String],
+    passed: &std::collections::BTreeSet<String>,
+) -> Option<String> {
+    if !allowed_tools.iter().any(|tool| tool == "run_command") {
+        return None;
+    }
+    let missing = checks
+        .iter()
+        .filter(|check| !passed.contains(&check.id))
+        .map(|check| {
+            format!(
+                "{} ({}): run_command(argv={:?}, timeout_secs={}) expected exit {}",
+                check.id,
+                check.description,
+                check.command,
+                check.timeout_secs.min(300),
+                check.expect_exit
+            )
+        })
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "Not finished: every frozen acceptance check must pass in the workspace before you may return final. Missing checks: {}. Write the remaining implementation and invoke each check with run_command using the exact argv and timeout_secs above. If a check fails, read its output, fix the workspace, and run it again. Do not return final until every check has passed.",
+        missing.join("; ")
+    ))
 }
 
 fn tool_result(
@@ -3622,6 +3766,13 @@ fn request_digest(value: &serde_json::Value) -> Result<String, Box<dyn std::erro
 /// rather than byte equality.
 fn strict_request_digest(provider_kind: &str) -> bool {
     !matches!(provider_kind, "opencode" | "codex")
+}
+
+/// Test-only provider transports simulate a model turn and do not execute the
+/// frozen checks. Production routes must satisfy every check before final.
+fn fixture_provider_route() -> bool {
+    env::var("FACTORY_PROVIDER_KIND").as_deref() == Ok("fixture")
+        || env::var("FACTORY_PROVIDER_BINARY").is_ok()
 }
 
 async fn authorize_provider_turn(
@@ -4592,10 +4743,12 @@ mod tests {
 
     use super::{
         ActionSpec, Assignment, ContinuationDecision, Lease, ProgressKind, TurnProgress,
-        WorkerProgressHalt, opencode_first_action_instruction, sha256_hex, strict_request_digest,
-        submit_progress_checkpoint, validate_provider_tools, validated_loopback_url,
+        WorkerProgressHalt, missing_check_instructions, opencode_first_action_instruction,
+        sha256_hex, strict_request_digest, submit_progress_checkpoint, validate_provider_tools,
+        validated_loopback_url,
     };
     use factory_native::db::ExecutionCheckReceiptRecord;
+    use factory_native::lead::{CheckKind, SpecCheck};
 
     fn check_receipt(
         call_id: &str,
@@ -4630,6 +4783,43 @@ mod tests {
         );
         let command_only = vec!["run_command".to_string()];
         assert!(!opencode_first_action_instruction(&command_only).contains("write_file"));
+    }
+
+    #[test]
+    fn final_requires_every_frozen_check_to_pass() {
+        let checks = vec![
+            SpecCheck {
+                id: "build".into(),
+                kind: CheckKind::Build,
+                description: "build".into(),
+                command: vec!["cargo".into(), "build".into()],
+                expect_exit: 0,
+                timeout_secs: 120,
+            },
+            SpecCheck {
+                id: "negative".into(),
+                kind: CheckKind::Negative,
+                description: "reject empty name".into(),
+                command: vec!["gym".into(), "member".into(), "add".into()],
+                expect_exit: 1,
+                timeout_secs: 30,
+            },
+        ];
+        let tools = vec!["write_file".to_string(), "run_command".to_string()];
+        let mut passed = std::collections::BTreeSet::new();
+        let message = missing_check_instructions(&checks, &tools, &passed).unwrap();
+        assert!(message.contains("build (build)"));
+        assert!(message.contains("negative (reject empty name)"));
+        assert!(message.contains("expected exit 1"));
+        passed.insert("build".into());
+        let message = missing_check_instructions(&checks, &tools, &passed).unwrap();
+        assert!(!message.contains("build (build)"));
+        assert!(message.contains("negative (reject empty name)"));
+        passed.insert("negative".into());
+        assert!(missing_check_instructions(&checks, &tools, &passed).is_none());
+        assert!(
+            missing_check_instructions(&checks, &["write_file".to_string()], &passed).is_none()
+        );
     }
 
     #[test]

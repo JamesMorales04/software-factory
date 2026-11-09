@@ -16,6 +16,10 @@ use sha2::{Digest, Sha256};
 use tar::{Archive, Builder, EntryType, Header};
 
 const MAX_ARCHIVE_BYTES: u64 = 64 * 1024 * 1024;
+/// A raw volume tar may contain generated build paths such as `target/` that
+/// `extract` discards. Bound the transport separately from the materialized
+/// workspace content so ignored build state cannot masquerade as source.
+const MAX_TRANSPORT_ARCHIVE_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_ENTRY_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_ENTRIES: usize = 20_000;
 
@@ -161,7 +165,7 @@ fn append_directory(
 /// Extract a sandbox-produced archive into a fresh staging directory. The
 /// caller then replaces the Git worktree contents except `.git`.
 pub fn extract(bytes: &[u8], destination: &Path) -> Result<usize, ArchiveError> {
-    if bytes.len() as u64 > MAX_ARCHIVE_BYTES {
+    if bytes.len() as u64 > MAX_TRANSPORT_ARCHIVE_BYTES {
         return Err(ArchiveError::TooLarge("archive is too large".into()));
     }
     if destination.exists() {
@@ -298,6 +302,7 @@ fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Read;
     use std::path::PathBuf;
     use uuid::Uuid;
 
@@ -362,6 +367,40 @@ mod tests {
             .unwrap();
         let bytes = builder.into_inner().unwrap();
         assert_eq!(extract(&bytes, &destination).unwrap(), 1);
+        assert!(!destination.join("target").exists());
+    }
+
+    #[test]
+    fn ignores_oversized_generated_target_entries() {
+        let output = Temp::new();
+        let destination = output.0.join("stage");
+        let mut builder = Builder::new(Vec::new());
+        let mut header = Header::new_gnu();
+        header.set_entry_type(EntryType::Regular);
+        header.set_size(MAX_ENTRY_BYTES + 1);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder
+            .append_data(
+                &mut header,
+                "target/debug/huge.bin",
+                std::io::repeat(0).take(MAX_ENTRY_BYTES + 1),
+            )
+            .unwrap();
+        let mut source = Header::new_gnu();
+        source.set_entry_type(EntryType::Regular);
+        source.set_size(13);
+        source.set_mode(0o644);
+        source.set_cksum();
+        builder
+            .append_data(&mut source, "src/main.rs", &b"fn main() {}\n"[..])
+            .unwrap();
+        let bytes = builder.into_inner().unwrap();
+        extract(&bytes, &destination).unwrap();
+        assert_eq!(
+            fs::read_to_string(destination.join("src/main.rs")).unwrap(),
+            "fn main() {}\n"
+        );
         assert!(!destination.join("target").exists());
     }
 

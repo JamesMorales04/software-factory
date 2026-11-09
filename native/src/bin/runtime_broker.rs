@@ -889,8 +889,12 @@ async fn run_child(app: &App, input: &RunContainer) -> Result<ChildOutput, Strin
         "--pull=never".to_owned(),
         "--network=none".to_owned(),
         "--read-only".to_owned(),
-        "--tmpfs=/tmp:rw,noexec,nosuid,size=64m".to_owned(),
+        "--tmpfs=/tmp:rw,noexec,nosuid,size=512m".to_owned(),
         "--tmpfs=/run:rw,noexec,nosuid,size=16m".to_owned(),
+        // Cargo must execute freshly built test binaries. Keep its target
+        // directory on an executable ephemeral tmpfs, outside the workspace
+        // volume, so build artifacts never enter the exported tar.
+        "--tmpfs=/cargo-target:rw,nodev,nosuid,size=512m".to_owned(),
         "--cap-drop=all".to_owned(),
         "--cap-add=NET_ADMIN".to_owned(),
         "--security-opt=no-new-privileges".to_owned(),
@@ -901,6 +905,7 @@ async fn run_child(app: &App, input: &RunContainer) -> Result<ChildOutput, Strin
         "--workdir=/workspace".to_owned(),
         "--env=HOME=/tmp".to_owned(),
         "--env=TMPDIR=/tmp".to_owned(),
+        "--env=CARGO_TARGET_DIR=/cargo-target".to_owned(),
         format!("--volume={}:/workspace:rw", input.volume),
         input.image.clone(),
     ];

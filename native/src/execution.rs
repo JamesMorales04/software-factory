@@ -361,7 +361,8 @@ impl RootlessPodmanVolumes {
             "--pull=never".into(),
             "--network=none".into(),
             "--read-only".into(),
-            "--tmpfs=/tmp:rw,noexec,nosuid,size=64m".into(),
+            "--tmpfs=/tmp:rw,noexec,nosuid,size=512m".into(),
+            "--tmpfs=/cargo-target:rw,nodev,nosuid,size=512m".into(),
             "--cap-drop=all".into(),
             "--security-opt=no-new-privileges".into(),
             "--userns=keep-id".into(),
@@ -372,6 +373,7 @@ impl RootlessPodmanVolumes {
             "--workdir=/workspace".into(),
             "--env=HOME=/tmp".into(),
             "--env=TMPDIR=/tmp".into(),
+            "--env=CARGO_TARGET_DIR=/cargo-target".into(),
             format!("--volume={volume}:/workspace:rw").into(),
             image.into(),
         ];

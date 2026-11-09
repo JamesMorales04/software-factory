@@ -1,7 +1,7 @@
 //! Unix-socket to loopback-TCP bridge for provider servers that only listen on
 //! TCP inside the confined namespace.
 
-use std::{env, time::Duration};
+use std::env;
 
 use tokio::{
     io::AsyncWriteExt,
@@ -28,11 +28,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let Ok(mut upstream) = TcpStream::connect(target).await else {
                 return;
             };
-            let _ = tokio::time::timeout(
-                Duration::from_secs(150),
-                tokio::io::copy_bidirectional(&mut stream, &mut upstream),
-            )
-            .await;
+            // The provider event stream is long-lived by protocol. A total
+            // connection deadline would sever an otherwise healthy SSE stream
+            // mid-turn; the sandbox and provider session own the lifecycle.
+            let _ = tokio::io::copy_bidirectional(&mut stream, &mut upstream).await;
             let _ = stream.shutdown().await;
             let _ = upstream.shutdown().await;
         });

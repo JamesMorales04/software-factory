@@ -260,7 +260,8 @@ async fn run_candidate(
             "commitSha": inspection.candidate.commit_sha,
             "treeSha": inspection.candidate.tree_sha,
             "result": outcome,
-            "evidence": "EXECUTED"
+            "evidence": "EXECUTED",
+            "findings": failure.as_deref().map(failure_findings).unwrap_or_default()
         }))
         .send()
         .await?;
@@ -816,6 +817,34 @@ where
     Ok((captured, truncated))
 }
 
+fn failure_findings(message: &str) -> Vec<serde_json::Value> {
+    vec![json!({
+        "id": "verifier-check-failure",
+        "severity": "blocking",
+        "category": "functional",
+        "message": bounded_finding_text(message),
+        "points": 5,
+        "rationale": "The independent verifier executed the frozen acceptance checks against the exact candidate and at least one check did not produce its expected outcome.",
+        "evidenceRefs": ["verifier:executed-check"]
+    })]
+}
+
+fn bounded_finding_text(message: &str) -> String {
+    const LIMIT: usize = 1_900;
+    let mut text = message
+        .chars()
+        .filter(|character| !character.is_control() || matches!(character, '\n' | '\t' | '\r'))
+        .take(LIMIT)
+        .collect::<String>();
+    if text.is_empty() {
+        text.push_str("verification failed without a diagnostic");
+    }
+    if message.chars().count() > LIMIT {
+        text.push_str(" [truncated]");
+    }
+    text
+}
+
 fn check_diagnostic(
     stdout: &[u8],
     stdout_truncated: bool,
@@ -1154,6 +1183,25 @@ mod tests {
             old_mode: old_mode.into(),
             new_mode: new_mode.into(),
         }
+    }
+
+    #[test]
+    fn failed_check_finding_is_bounded_and_valid() {
+        let message = format!(
+            "check build exited 101, expected 0: \u{1b}[31m{}\u{1b}[0m",
+            "compiler error ".repeat(300)
+        );
+        let finding = failure_findings(&message).pop().unwrap();
+        assert_eq!(finding["severity"], "blocking");
+        assert_eq!(finding["points"], 5);
+        assert_eq!(finding["id"], "verifier-check-failure");
+        let text = finding["message"].as_str().unwrap();
+        assert!(!text.contains('\u{1b}'));
+        assert!(text.ends_with("[truncated]"));
+        assert!(text.chars().count() <= 2_000);
+        let parsed: factory_native::review::ReviewFinding =
+            serde_json::from_value(finding).unwrap();
+        factory_native::semantic_review::validate_findings(&[parsed]).unwrap();
     }
 
     #[tokio::test]
