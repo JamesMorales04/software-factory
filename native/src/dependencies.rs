@@ -226,7 +226,9 @@ impl RustDependency {
 
 /// Exact, deterministic command vectors for the Rust dependency lifecycle.
 /// Acquisition commands may reach the network; every check command is offline
-/// or lockfile-only by contract.
+/// or uses an explicitly bounded local data source. The exact vectors below are
+/// the approved policy: deny uses `--offline`, audit uses `--no-fetch`, SBOM is
+/// lockfile-only, and vet uses `--locked --frozen`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct RustDependencyCommands {
@@ -262,10 +264,27 @@ impl RustDependencyCommands {
                 "--offline".into(),
             ],
             frozen: vec!["cargo".into(), "check".into(), "--frozen".into()],
-            deny: vec!["cargo".into(), "deny".into(), "check".into()],
-            audit: vec!["cargo".into(), "audit".into()],
-            sbom: vec!["cargo".into(), "cyclonedx".into()],
-            vet: vet_required.then(|| vec!["cargo".into(), "vet".into()]),
+            deny: vec![
+                "cargo".into(),
+                "deny".into(),
+                "--offline".into(),
+                "check".into(),
+            ],
+            audit: vec!["cargo".into(), "audit".into(), "--no-fetch".into()],
+            sbom: vec![
+                "cargo".into(),
+                "cyclonedx".into(),
+                "--format".into(),
+                "json".into(),
+            ],
+            vet: vet_required.then(|| {
+                vec![
+                    "cargo".into(),
+                    "vet".into(),
+                    "--locked".into(),
+                    "--frozen".into(),
+                ]
+            }),
         }
     }
 
@@ -281,7 +300,7 @@ impl RustDependencyCommands {
             ("build", &self.build, &expected.build, true),
             ("test", &self.test, &expected.test, true),
             ("frozen", &self.frozen, &expected.frozen, true),
-            ("deny", &self.deny, &expected.deny, false),
+            ("deny", &self.deny, &expected.deny, true),
             ("audit", &self.audit, &expected.audit, false),
             ("sbom", &self.sbom, &expected.sbom, false),
         ] {
@@ -299,8 +318,8 @@ impl RustDependencyCommands {
                 "cargo vet is required".into(),
             )),
             (Some(command), _) => {
-                validate_check_command("vet", command, false)?;
-                if !command_eq(command, &["cargo", "vet"]) {
+                validate_check_command("vet", command, true)?;
+                if !command_eq(command, &["cargo", "vet", "--locked", "--frozen"]) {
                     return Err(DependencyError::InvalidCommand(
                         "vet command must be `cargo vet`".into(),
                     ));
@@ -1070,13 +1089,10 @@ fn validate_check_command(
         return Err(DependencyError::OnlineCheck(command.join(" ")));
     }
     if require_offline {
-        let locked = command
-            .iter()
-            .any(|token| token == "--locked" || token == "--frozen");
         let offline = command
             .iter()
-            .any(|token| token == "--offline" || token == "--frozen");
-        if !locked || !offline {
+            .any(|token| token == "--offline" || token == "--frozen" || token == "--no-fetch");
+        if !offline {
             return Err(DependencyError::OnlineCheck(command.join(" ")));
         }
     }
@@ -1354,9 +1370,12 @@ mod tests {
             vec!["cargo", "test", "--locked", "--offline"]
         );
         assert_eq!(commands.frozen, vec!["cargo", "check", "--frozen"]);
-        assert_eq!(commands.deny, vec!["cargo", "deny", "check"]);
-        assert_eq!(commands.audit, vec!["cargo", "audit"]);
-        assert_eq!(commands.sbom, vec!["cargo", "cyclonedx"]);
+        assert_eq!(commands.deny, vec!["cargo", "deny", "--offline", "check"]);
+        assert_eq!(commands.audit, vec!["cargo", "audit", "--no-fetch"]);
+        assert_eq!(
+            commands.sbom,
+            vec!["cargo", "cyclonedx", "--format", "json"]
+        );
         assert_eq!(commands.vet, None);
     }
 
@@ -1386,7 +1405,12 @@ mod tests {
             .expect("valid plan with vet");
         assert_eq!(
             plan.commands().expect("rust commands").vet,
-            Some(vec!["cargo".into(), "vet".into()])
+            Some(vec![
+                "cargo".into(),
+                "vet".into(),
+                "--locked".into(),
+                "--frozen".into(),
+            ])
         );
     }
 
