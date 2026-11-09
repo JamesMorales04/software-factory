@@ -187,16 +187,40 @@ impl Database {
         if !matches!(role, "verifier" | "reviewer") {
             return Err(Error::Invalid("pending quality role"));
         }
+        let required_reviewers = "COALESCE(
+               (SELECT rr.reviewer_count FROM candidates c2
+                JOIN attempts a2 ON a2.id=c2.attempt_id
+                JOIN runs r2 ON r2.id=a2.run_id
+                LEFT JOIN campaign_review_requirements rr ON rr.campaign_id=r2.campaign_id
+                WHERE c2.id=c.id),
+               (SELECT pp.reviewer_count FROM candidates c2
+                JOIN attempts a2 ON a2.id=c2.attempt_id
+                JOIN runs r2 ON r2.id=a2.run_id
+                JOIN intake_requests ir ON ir.campaign_id=r2.campaign_id
+                JOIN agentic_participant_plans pp ON pp.request_id=ir.id
+                WHERE c2.id=c.id),
+               1)";
+        let missing = match role {
+            "verifier" => {
+                "NOT EXISTS (SELECT 1 FROM quality_receipts r
+                                       WHERE r.candidate_id=c.id AND r.role='verifier')"
+            }
+            "reviewer" => {
+                "((SELECT COUNT(DISTINCT r.principal_id) FROM quality_receipts r
+                             WHERE r.candidate_id=c.id AND r.role='reviewer') < required_reviewers)"
+            }
+            _ => unreachable!(),
+        };
         let reviewer_gate = if role == "reviewer" {
             "AND EXISTS (SELECT 1 FROM quality_receipts vr
                          WHERE vr.candidate_id=c.id AND vr.role='verifier' AND vr.result='PASS')"
         } else {
             ""
         };
+        let missing = missing.replace("required_reviewers", required_reviewers);
         let query = format!(
             "SELECT c.id FROM candidates c
-             WHERE NOT EXISTS (SELECT 1 FROM quality_receipts r
-                               WHERE r.candidate_id=c.id AND r.role=?1)
+             WHERE {missing}
                AND NOT EXISTS (SELECT 1 FROM gate_decisions g WHERE g.candidate_id=c.id)
                {reviewer_gate}
              ORDER BY c.created_at ASC

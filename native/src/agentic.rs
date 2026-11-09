@@ -960,11 +960,13 @@ pub fn validate_work_graph(
             if left_depends || right_depends {
                 continue;
             }
-            if left
-                .paths
-                .iter()
-                .any(|left_path| right.paths.iter().any(|right_path| left_path == right_path))
-            {
+            if left.paths.iter().any(|left_path| {
+                right.paths.iter().any(|right_path| {
+                    left_path == right_path
+                        || left_path.starts_with(&format!("{right_path}/"))
+                        || right_path.starts_with(&format!("{left_path}/"))
+                })
+            }) {
                 return Err(format!(
                     "independent work units {} and {} share a write path",
                     left.id, right.id
@@ -1419,6 +1421,12 @@ mod tests {
             risks: vec![],
         };
         assert!(validate_work_graph(&model, &["src".into()]).is_err());
+        let prefix = WorkGraphModel {
+            units: vec![unit("a", &[], &["src"]), unit("b", &[], &["src/api.rs"])],
+            assumptions: vec![],
+            risks: vec![],
+        };
+        assert!(validate_work_graph(&prefix, &["src".into()]).is_err());
     }
 
     fn spec_draft() -> SpecDraftModel {

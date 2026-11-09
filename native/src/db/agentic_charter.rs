@@ -458,6 +458,17 @@ impl Database {
         if decision.status != "PENDING" {
             return Err(Error::Conflict("owner decision is not pending"));
         }
+        if decision.deadline.as_str() <= Utc::now().to_rfc3339().as_str() {
+            let _write = self.write_lock.lock().await;
+            sqlx::query::query(
+                "UPDATE agentic_owner_decisions SET status='EXPIRED',updated_at=?1 WHERE id=?2",
+            )
+            .bind(Utc::now().to_rfc3339())
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+            return Err(Error::Conflict("owner decision has expired"));
+        }
         if !decision.options.iter().any(|candidate| candidate == option) {
             return Err(Error::Invalid("owner decision option"));
         }

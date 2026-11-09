@@ -3605,6 +3605,7 @@ export const en = {
   "status.assessed": "Assessed",
   "home.thread.state.ASSESSED":
     "The assessment is complete; no execution plan is required.",
+  "charter.decisions.choose": "Select an owner option",
 } as const;
 
 export type MessageKey = keyof typeof en;

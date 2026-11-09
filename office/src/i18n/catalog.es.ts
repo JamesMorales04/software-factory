@@ -3742,4 +3742,5 @@ export const es: Catalog = {
   "status.assessed": "Evaluada",
   "home.thread.state.ASSESSED":
     "La evaluación está completa; no se requiere un plan de ejecución.",
+  "charter.decisions.choose": "Selecciona una opción del owner",
 };

@@ -183,7 +183,7 @@ export function Charter() {
   }
 
   async function resolve(decision: AgenticOwnerDecision) {
-    const option = decisionOptions[decision.id] ?? decision.options[0] ?? "";
+    const option = decisionOptions[decision.id] ?? "";
     const rationale = decisionRationales[decision.id]?.trim();
     if (!option || !rationale) {
       setActionError(t("charter.decisions.required"));
@@ -292,6 +292,7 @@ export function Charter() {
                       }))
                     }
                   >
+                    <option value="">{t("charter.decisions.choose")}</option>
                     {decision.options.map((option) => (
                       <option key={option} value={option}>
                         {option}
@@ -311,7 +312,9 @@ export function Charter() {
                   <Button
                     size="sm"
                     busy={busy === `decision:${decision.id}`}
-                    disabled={busy !== null}
+                    disabled={
+                      busy !== null || !(decisionOptions[decision.id] ?? "")
+                    }
                     onClick={() => void resolve(decision)}
                   >
                     {t("charter.decisions.resolve")}

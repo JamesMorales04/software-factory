@@ -488,6 +488,18 @@ impl Database {
         if evidence.trim().is_empty() || evidence.len() > 2_000 {
             return Err(Error::Invalid("skill use evidence"));
         }
+        let adopted: Option<(String,)> = sqlx::query_as::query_as(
+            "SELECT skill_id FROM agentic_skill_adoptions WHERE request_id=?1 AND skill_id=?2",
+        )
+        .bind(request_id)
+        .bind(skill_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        if adopted.is_none() {
+            return Err(Error::Conflict(
+                "skill must be adopted for the request before a use is recorded",
+            ));
+        }
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin().await?;
         let row = sqlx::query::query(
@@ -580,7 +592,11 @@ impl Database {
         reviewer: &str,
         license: &str,
     ) -> Result<AgenticSkillRecord, Error> {
-        if reviewer.trim().is_empty() || license.trim().is_empty() || license.len() > 120 {
+        if reviewer.trim().is_empty()
+            || license.trim().is_empty()
+            || license.eq_ignore_ascii_case("NOASSERTION")
+            || license.len() > 120
+        {
             return Err(Error::Invalid("skill license review"));
         }
         let _write = self.write_lock.lock().await;

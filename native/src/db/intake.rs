@@ -2453,6 +2453,7 @@ mod tests {
             .save_agentic_spec_draft(&crate::db::NewAgenticSpecDraft {
                 request_id: &request.id,
                 draft_json: &draft_json,
+                graph_sha256: Some(&graph.graph_sha256),
                 provider: "opencode",
                 model: "deepseek-v4.1-flash",
                 schema_sha256: &"a".repeat(64),
@@ -2466,7 +2467,49 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(draft.revision, 1);
+        let mut changed_graph_model = graph_model.clone();
+        changed_graph_model
+            .assumptions
+            .push("a later plan change".into());
+        let changed_graph =
+            crate::agentic::validate_work_graph(&changed_graph_model, &["src".into()]).unwrap();
+        db.save_agentic_work_graph(&crate::db::NewAgenticWorkGraph {
+            request_id: &request.id,
+            graph: &changed_graph,
+            provider: "opencode",
+            model: "deepseek-v4.1-flash",
+            schema_sha256: &"a".repeat(64),
+            request_sha256: &"b".repeat(64),
+            input_tokens: 10,
+            output_tokens: 5,
+            total_tokens: 15,
+            cost_micros: 1,
+            usage_known: true,
+        })
+        .await
+        .unwrap();
         let frozen = crate::agentic::compile_spec(&draft_model, draft.revision).unwrap();
+        assert!(
+            db.freeze_agentic_spec(&draft.id, &frozen, &changed_graph)
+                .await
+                .is_err(),
+            "a changed WorkGraph must not freeze against an older draft"
+        );
+        db.save_agentic_work_graph(&crate::db::NewAgenticWorkGraph {
+            request_id: &request.id,
+            graph: &graph,
+            provider: "opencode",
+            model: "deepseek-v4.1-flash",
+            schema_sha256: &"a".repeat(64),
+            request_sha256: &"b".repeat(64),
+            input_tokens: 10,
+            output_tokens: 5,
+            total_tokens: 15,
+            cost_micros: 1,
+            usage_known: true,
+        })
+        .await
+        .unwrap();
         let frozen_record = db
             .freeze_agentic_spec(&draft.id, &frozen, &graph)
             .await
@@ -2497,6 +2540,7 @@ mod tests {
             .save_agentic_spec_draft(&crate::db::NewAgenticSpecDraft {
                 request_id: &request.id,
                 draft_json: &draft_json,
+                graph_sha256: Some(&graph.graph_sha256),
                 provider: "opencode",
                 model: "deepseek-v4.1-flash",
                 schema_sha256: &"a".repeat(64),

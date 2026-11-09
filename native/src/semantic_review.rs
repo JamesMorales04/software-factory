@@ -292,7 +292,7 @@ pub fn build_review_bundle(
         else {
             continue;
         };
-        if content.is_empty() {
+        if content.is_empty() || looks_secret_bearing(&content) {
             continue;
         }
         source_bytes = source_bytes.saturating_add(content.len());
@@ -353,7 +353,7 @@ pub fn build_review_bundle(
         else {
             continue;
         };
-        if content.is_empty() {
+        if content.is_empty() || looks_secret_bearing(&content) {
             continue;
         }
         source_bytes = source_bytes.saturating_add(content.len());
@@ -494,7 +494,24 @@ pub fn mechanism_from_env(
     }
 }
 
-pub fn is_secret_shaped_path(path: &str) -> bool {
+pub fn looks_secret_bearing(content: &str) -> bool {
+    let lower = content.to_ascii_lowercase();
+    if lower.contains("begin rsa private key")
+        || lower.contains("begin ec private key")
+        || lower.contains("begin openssh private key")
+        || lower.contains("begin private key")
+    {
+        return true;
+    }
+    let compact = lower.replace([' ', '\t', '\n', '\r'], "");
+    compact.contains("ghp_")
+        || compact.contains("github_pat_")
+        || compact.contains("sk-")
+        || compact.contains("xoxb-")
+        || compact.contains("aws_secret_access_key")
+}
+
+fn is_secret_shaped_path(path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
     lower.split('/').any(|component| {
         [
@@ -528,6 +545,17 @@ fn bound_text(value: &str, limit: usize) -> (String, bool) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn secret_bearing_source_is_excluded_from_review_context() {
+        assert!(looks_secret_bearing("-----BEGIN PRIVATE KEY-----\nabc"));
+        assert!(looks_secret_bearing(
+            "const TOKEN: &str = \"ghp_abcdefghijklmnopqrstuvwxyz\";"
+        ));
+        assert!(!looks_secret_bearing(
+            "pub fn next_leap_year(year: i32) -> i32 { year + 1 }"
+        ));
+    }
+
     use super::*;
     use crate::review::FindingCategory;
 

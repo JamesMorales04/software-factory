@@ -1338,12 +1338,24 @@ async fn multiple_independent_reviewers_are_aggregated_into_one_gate() {
         "one of two reviewers must not decide the Gate"
     );
     let second = quality_receipt(&fixture, "reviewer-b", "reviewer-b");
+    let pending = fixture
+        .db
+        .pending_quality_candidates("reviewer")
+        .await
+        .unwrap();
+    assert!(pending.contains(&fixture.candidate_id));
     let ingested = fixture
         .db
         .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &second)
         .await
         .unwrap();
     assert_eq!(ingested.gate.unwrap().outcome, GateOutcome::Accepted);
+    let pending = fixture
+        .db
+        .pending_quality_candidates("reviewer")
+        .await
+        .unwrap();
+    assert!(!pending.contains(&fixture.candidate_id));
     let reviewers = fixture
         .db
         .gate_reviewer_ids(&fixture.candidate_id)

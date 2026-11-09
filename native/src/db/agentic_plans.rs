@@ -73,6 +73,7 @@ pub struct AgenticSpecRecord {
 pub struct NewAgenticSpecDraft<'a> {
     pub request_id: &'a str,
     pub draft_json: &'a str,
+    pub graph_sha256: Option<&'a str>,
     pub provider: &'a str,
     pub model: &'a str,
     pub schema_sha256: &'a str,
@@ -329,8 +330,8 @@ impl Database {
                 "UPDATE agentic_specs
                  SET draft_json=?1,provider=?2,model=?3,schema_sha256=?4,
                      request_sha256=?5,input_tokens=?6,output_tokens=?7,total_tokens=?8,
-                     cost_micros=?9,usage_known=?10
-                 WHERE id=?11",
+                     cost_micros=?9,usage_known=?10,graph_sha256=?11
+                 WHERE id=?12",
             )
             .bind(input.draft_json)
             .bind(input.provider)
@@ -342,6 +343,7 @@ impl Database {
             .bind(i64::try_from(input.total_tokens).unwrap_or(i64::MAX))
             .bind(i64::try_from(input.cost_micros).unwrap_or(i64::MAX))
             .bind(input.usage_known)
+            .bind(input.graph_sha256)
             .bind(&existing.id)
             .execute(&self.pool)
             .await?;
@@ -360,7 +362,7 @@ impl Database {
               graph_json,graph_sha256,provider,model,schema_sha256,request_sha256,
               input_tokens,output_tokens,total_tokens,cost_micros,usage_known,
               created_at,frozen_at)
-             VALUES (?1,?2,?3,'DRAFT',?4,NULL,NULL,NULL,NULL,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,NULL)",
+             VALUES (?1,?2,?3,'DRAFT',?4,NULL,NULL,NULL,?15,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,NULL)",
         )
         .bind(&id)
         .bind(input.request_id)
@@ -376,6 +378,7 @@ impl Database {
         .bind(i64::try_from(input.cost_micros).unwrap_or(i64::MAX))
         .bind(input.usage_known)
         .bind(&now)
+        .bind(input.graph_sha256)
         .execute(&self.pool)
         .await?;
         self.agentic_spec_by_id(&id).await
@@ -468,6 +471,13 @@ impl Database {
         if record.revision != frozen.revision {
             return Err(Error::Conflict(
                 "the frozen revision does not match the draft",
+            ));
+        }
+        if let Some(draft_graph) = record.graph_sha256.as_deref()
+            && draft_graph != graph_sha256
+        {
+            return Err(Error::Conflict(
+                "the WorkGraph changed after the draft was authored; author a new draft",
             ));
         }
         let now = Utc::now().to_rfc3339();

@@ -1,18 +1,24 @@
 # Agentic flow implementation plan
 
-**Status:** proposed program F1-S10. The detailed design is in
+**Status:** implemented program F1-S10 as an implementer self-test;
+independent verification and a few live boundaries remain pending. The detailed
+design is in
 [ADR-0037](../architecture/decisions/ADR-0037-agent-topology-context-and-composition.md)
 and [ADR-0038](../architecture/decisions/ADR-0038-owner-charter-and-delegated-autonomy.md).
 The typed boundary is [the agentic flow contract](../contracts/agentic-flow.md).
 
 ## Current state
 
-The Rust product has one Lead assessment/proposal call, one Implementer per
-WorkUnit, one semantic Reviewer, a deterministic Verifier and the deterministic
-Quality Gate. `supervisor.rs` is an Integrator, not a semantic Operation
-Manager. Director, Operation Manager, Explorer, Librarian, Planner, Spec Manager,
-Repairer, Agent Composer, dynamic fleets, context handler, owner charter and
-spec issue projection are not implemented.
+The Rust product now has the typed agentic flow, Director and Operation
+Manager, semantic triage with deterministic floors, exact-candidate repair,
+frozen Planner/Spec Manager revisions, the local/GitHub spec projection,
+read-only Explorer/Context7 Librarian and skill registry, durable participant
+plans with multi-reviewer Gate aggregation, the Cheap Ops interpreter, the owner
+charter and reserved decisions, and a real-model browser E2E. The context
+handler remains a typed policy (`ContextPolicy`/`HandoffSummary`) without a
+runtime compactor; delivery effects, a live two-reviewer topology, GitHub live
+publication and independent acceptance remain pending. `supervisor.rs` remains
+an Integrator, not a second authority.
 
 ## Target flow
 

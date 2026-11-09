@@ -379,11 +379,11 @@ export interface CheapOpsReport {
   summary: string;
   passed: number;
   failed: number;
-  not_tested: number;
-  reviewer_count: number;
-  verifier_present: boolean;
-  gate_outcome: string | null;
-  gate_reasons: string[];
+  notTested: number;
+  reviewerCount: number;
+  verifierPresent: boolean;
+  gateOutcome: string | null;
+  gateReasons: string[];
   notes: string[];
 }
 

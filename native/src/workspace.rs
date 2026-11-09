@@ -1194,6 +1194,34 @@ pub fn is_safe_repository_path(path: &str) -> bool {
             .all(|component| !component.is_empty() && component != ".." && component != ".")
 }
 
+/// Whether `ancestor` is an ancestor of (or equal to) `descendant` in the
+/// registered repository. Used to refuse a repair base that is not on the
+/// candidate lineage.
+pub fn is_ancestor(
+    repository: &Path,
+    ancestor: &str,
+    descendant: &str,
+) -> Result<bool, WorkspaceError> {
+    if !is_object_id(ancestor) || !is_object_id(descendant) {
+        return Err(WorkspaceError::Invalid(
+            "ancestry requires full Git object IDs".into(),
+        ));
+    }
+    let repository = repository.canonicalize()?;
+    let output = hardened_git()
+        .args(["merge-base", "--is-ancestor", ancestor, descendant])
+        .current_dir(&repository)
+        .output()?;
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(WorkspaceError::Git {
+            command: format!("git merge-base --is-ancestor {ancestor} {descendant}"),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().into(),
+        }),
+    }
+}
+
 fn hardened_git() -> Command {
     let mut command = Command::new("git");
     command
@@ -1339,6 +1367,18 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn ancestry_accepts_only_lineage_commits() {
+        let repo = TempRepo::new();
+        let base = repo.head();
+        fs::write(repo.0.join("next.txt"), "next\n").unwrap();
+        git(&repo.0, ["add", "next.txt"]).unwrap();
+        git(&repo.0, ["commit", "-qm", "next"]).unwrap();
+        let next = repo.head();
+        assert!(is_ancestor(&repo.0, &base, &next).unwrap());
+        assert!(!is_ancestor(&repo.0, &next, &base).unwrap());
     }
 
     #[test]

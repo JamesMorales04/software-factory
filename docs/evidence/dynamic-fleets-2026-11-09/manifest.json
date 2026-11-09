@@ -90,7 +90,7 @@
       "control_or_state": "Create charter",
       "expected": "Execution and repair autonomy can be delegated separately; policy autonomy is absent; reserved matters are explicit.",
       "result": "PASS",
-      "evidence": "charter-1440.png"
+      "evidence": "docs/evidence/owner-charter-2026-11-09/charter-1440.png"
     },
     {
       "id": "F4",
@@ -98,7 +98,7 @@
       "control_or_state": "Open and resolve a reserved decision",
       "expected": "A reserved matter opens a pending owner decision with a DENY recommendation; only an owner option and rationale resolve it.",
       "result": "PASS",
-      "evidence": "charter-1440.png; decision bee1d2f1"
+      "evidence": "docs/evidence/owner-charter-2026-11-09/charter-1440.png; decision bee1d2f1"
     },
     {
       "id": "F5",

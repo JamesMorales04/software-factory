@@ -31,6 +31,7 @@ const STATES: IntakeState[] = [
   "FAILED",
   "COMPLETED",
   "CANCELLED",
+  "ASSESSED",
 ];
 
 function errorText(cause: unknown, fallback: string): string {

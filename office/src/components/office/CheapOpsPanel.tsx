@@ -42,26 +42,26 @@ export function CheapOpsPanel({ candidateId }: { candidateId: string }) {
       {report ? (
         <>
           <p>{report.summary}</p>
-          <dl className="campaign-facts">
+          <dl className="knowledge-facts">
             <div>
               <dt>{t("cheapOps.authorityLabel")}</dt>
               <dd>{report.authority}</dd>
             </div>
             <div>
               <dt>{t("cheapOps.reviewers")}</dt>
-              <dd>{report.reviewer_count}</dd>
+              <dd>{report.reviewerCount}</dd>
             </div>
             <div>
               <dt>{t("cheapOps.verifier")}</dt>
               <dd>
-                {report.verifier_present
+                {report.verifierPresent
                   ? t("cheapOps.recorded")
                   : t("cheapOps.missing")}
               </dd>
             </div>
             <div>
               <dt>{t("cheapOps.gate")}</dt>
-              <dd>{report.gate_outcome ?? t("cheapOps.pending")}</dd>
+              <dd>{report.gateOutcome ?? t("cheapOps.pending")}</dd>
             </div>
           </dl>
           {report.notes.length > 0 && (

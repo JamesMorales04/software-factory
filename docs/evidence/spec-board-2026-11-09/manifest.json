@@ -17,7 +17,7 @@
     "mode": "REVIEW_PLAN",
     "objective": "Add a public ICS export API across the calendar model and HTTP layer, including validation and regression tests.",
     "route": "FORMAL_SPEC",
-    "assurance": "ELEVATED"
+    "assurance": "CRITICAL"
   },
   "plan": {
     "graph_sha256": "448f0889d486952dd1f6d6cb6db060e027fb9d8814fff3f67187d6a029a51802",
@@ -71,7 +71,7 @@
       "control_or_state": "Author specification",
       "expected": "A real Spec Manager call returns a typed draft; Core compiles deterministic requirement, assertion and check identities.",
       "result": "PASS",
-      "evidence": "spec-frozen-1440.png; record 2d14dc73"
+      "evidence": "director-spec-1440.png; record 2d14dc73"
     },
     {
       "id": "P3",

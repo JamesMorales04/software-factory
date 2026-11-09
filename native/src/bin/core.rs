@@ -47,6 +47,8 @@ struct App {
     worker_bootstrap_token: String,
     verifier_token: String,
     reviewer_token: String,
+    verifier_principal: String,
+    reviewer_principal: String,
     lead_fixture_assessor: bool,
     lead_autonomous_start: bool,
     model_gateway: Option<factory_native::model_gateway::ModelGateway>,
@@ -743,6 +745,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         factory_native::secrets::required("FACTORY_WORKER_BOOTSTRAP_TOKEN")?;
     let verifier_token = factory_native::secrets::required("FACTORY_VERIFIER_TOKEN")?;
     let reviewer_token = factory_native::secrets::required("FACTORY_REVIEWER_TOKEN")?;
+    let verifier_principal =
+        env::var("FACTORY_VERIFIER_PRINCIPAL").unwrap_or_else(|_| "verifier-process".into());
+    let reviewer_principal =
+        env::var("FACTORY_REVIEWER_PRINCIPAL").unwrap_or_else(|_| "reviewer-process".into());
     let tokens = [
         operator_token.as_str(),
         worker_bootstrap_token.as_str(),
@@ -818,6 +824,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         worker_bootstrap_token,
         verifier_token,
         reviewer_token,
+        verifier_principal,
+        reviewer_principal,
         lead_fixture_assessor: env::var("FACTORY_LEAD_FIXTURE_ASSESSOR").ok().as_deref()
             == Some("1"),
         lead_autonomous_start: env::var("FACTORY_ENABLE_AUTONOMOUS_START").ok().as_deref()
@@ -8742,6 +8750,22 @@ async fn quality_receipt(State(app): State<Arc<App>>, headers: HeaderMap, body: 
                 .into_response();
         }
     };
+    if !cfg!(any(test, feature = "test-support")) {
+        let expected = match role {
+            QualityRole::Verifier => &app.verifier_principal,
+            QualityRole::Reviewer => &app.reviewer_principal,
+        };
+        if input.principal_id != *expected {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({
+                    "error": "receipt principal does not match the authenticated quality role",
+                    "code": "QUALITY_PRINCIPAL_MISMATCH",
+                })),
+            )
+                .into_response();
+        }
+    }
     let receipt = QualityReceiptInput {
         receipt_id: input.receipt_id,
         principal_id: input.principal_id,
@@ -9912,6 +9936,7 @@ async fn intake_requests(
             "FAILED" => Some(factory_native::intake::IntakeState::Failed),
             "COMPLETED" => Some(factory_native::intake::IntakeState::Completed),
             "CANCELLED" => Some(factory_native::intake::IntakeState::Cancelled),
+            "ASSESSED" => Some(factory_native::intake::IntakeState::Assessed),
             _ => {
                 return (
                     StatusCode::BAD_REQUEST,
@@ -10118,13 +10143,15 @@ async fn agentic_triage_context(
                 .ok()
                 .map(|model| (record, model))
         });
-    let (signals, stack) = match &semantic {
-        Some((_, model)) => (model.signals(&record.objective), model.stack.clone()),
-        None => (deterministic_signals, deterministic_stack),
-    };
-    let triage = match &semantic {
-        Some((_, model)) => agentic::merge_model_decision(agentic::triage(&signals), model),
-        None => agentic::triage(&signals),
+    // Deterministic floors are computed first. A semantic assessment may raise
+    // them, but never replace the deterministic signals or lower a floor.
+    let deterministic_decision = agentic::triage(&deterministic_signals);
+    let (stack, triage) = match &semantic {
+        Some((_, model)) => (
+            model.stack.clone(),
+            agentic::merge_model_decision(deterministic_decision, model),
+        ),
+        None => (deterministic_stack, deterministic_decision),
     };
     Ok(AgenticTriageContext {
         proposal,
@@ -10639,7 +10666,7 @@ async fn deterministic_participant_plan(
         .await
         .ok()?;
     let content = profile.content.v2()?;
-    Some(factory_native::agentic::participant_plan_for_graph(
+    let mut plan = factory_native::agentic::participant_plan_for_graph(
         context.triage.route,
         context.assurance(),
         graph,
@@ -10647,7 +10674,24 @@ async fn deterministic_participant_plan(
         &content.roles.implementer.provider,
         &content.roles.implementer.model,
         "",
-    ))
+    );
+    // The current Compose topology authenticates one reviewer identity/token.
+    // Do not require a second receipt that no reviewer can submit. Multi-
+    // reviewer aggregation remains implemented and tested for a deployment
+    // that provisions independent reviewer identities.
+    if plan.reviewer_count > 1 {
+        plan.reviewer_count = 1;
+        for assignment in &mut plan.assignments {
+            if assignment.role == "Reviewer" {
+                assignment.count = 1;
+            }
+        }
+        plan.reasons.push(
+            "Only one independent reviewer identity is configured; the plan uses one reviewer."
+                .into(),
+        );
+    }
+    Some(plan)
 }
 
 async fn get_agentic_participants(
@@ -10920,6 +10964,7 @@ JSON Schema:
         .save_agentic_spec_draft(&factory_native::db::NewAgenticSpecDraft {
             request_id: &record.id,
             draft_json: &draft_json,
+            graph_sha256: Some(&graph_record.graph_sha256),
             provider: &result.provider,
             model: &result.model,
             schema_sha256: &schema_sha256,
@@ -11280,7 +11325,10 @@ async fn agentic_spec_board(State(app): State<Arc<App>>, headers: HeaderMap) -> 
                 .map(|operation| operation.status.as_str()),
         ) {
             (Some("CANCELLED"), _, _) => "CANCELLED",
-            (Some("FAILED"), _, _) | (_, Some("REJECTED" | "REPAIR_REQUIRED"), _) => "BLOCKED",
+            (Some("FAILED"), _, _)
+            | (_, Some("REPAIR_REQUIRED" | "BLOCKED" | "HUMAN_REQUIRED" | "NOT_TESTED"), _) => {
+                "BLOCKED"
+            }
             (_, Some("ACCEPTED"), _) => "ACCEPTED",
             (Some(_), _, Some("EXECUTING" | "STARTING")) => "RUNNING",
             (Some(_), _, _) => "QUEUED",
@@ -12039,6 +12087,25 @@ async fn charter_owner_decision_gate(
     else {
         return Ok(None);
     };
+    let required_domain = if action == "delivery" {
+        "delivery"
+    } else {
+        "repository"
+    };
+    if !charter
+        .domains
+        .iter()
+        .any(|domain| domain == required_domain)
+    {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "the owner charter does not cover this domain",
+                "code": "CHARTER_DOMAIN_NOT_COVERED",
+            })),
+        )
+            .into_response());
+    }
     if risk > charter.risk_appetite {
         return Err((
             StatusCode::FORBIDDEN,
@@ -12525,6 +12592,15 @@ async fn autonomous_start_intake(app: &Arc<App>, id: &str) -> Result<(), Error> 
     let context = app.db.intake_start_context(id).await?;
     if context.lead.campaign_id.is_some() {
         return Ok(());
+    }
+    let global_reserved = factory_native::db::RESERVED_MATTERS
+        .iter()
+        .map(|matter| (*matter).to_string())
+        .collect::<Vec<_>>();
+    if let Some(matter) = reserved_matter_triggered(&context.lead.objective, &global_reserved) {
+        return Err(Error::Forbidden(format!(
+            "autonomous execution of reserved matter {matter} requires an explicit owner decision"
+        )));
     }
     if let Ok(Some(charter)) = app
         .db
@@ -14605,6 +14681,8 @@ mod tests {
             worker_bootstrap_token: "bootstrap".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
             reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            verifier_principal: "verifier-process".into(),
+            reviewer_principal: "reviewer-process".into(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
@@ -14702,6 +14780,8 @@ mod tests {
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
             reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            verifier_principal: "verifier-process".into(),
+            reviewer_principal: "reviewer-process".into(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
@@ -14915,6 +14995,8 @@ mod tests {
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
             reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            verifier_principal: "verifier-process".into(),
+            reviewer_principal: "reviewer-process".into(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
@@ -15107,6 +15189,8 @@ mod tests {
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
             reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            verifier_principal: "verifier-process".into(),
+            reviewer_principal: "reviewer-process".into(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
@@ -15283,6 +15367,8 @@ mod tests {
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
             reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            verifier_principal: "verifier-process".into(),
+            reviewer_principal: "reviewer-process".into(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
@@ -15351,6 +15437,8 @@ mod tests {
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
             reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            verifier_principal: "verifier-process".into(),
+            reviewer_principal: "reviewer-process".into(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
@@ -15398,6 +15486,8 @@ mod tests {
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
             reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            verifier_principal: "verifier-process".into(),
+            reviewer_principal: "reviewer-process".into(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
@@ -16623,6 +16713,8 @@ mod tests {
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
             reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            verifier_principal: "verifier-process".into(),
+            reviewer_principal: "reviewer-process".into(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
@@ -16675,6 +16767,8 @@ mod tests {
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
             reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            verifier_principal: "verifier-process".into(),
+            reviewer_principal: "reviewer-process".into(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
@@ -16835,6 +16929,8 @@ mod tests {
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
             reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            verifier_principal: "verifier-process".into(),
+            reviewer_principal: "reviewer-process".into(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
@@ -17070,6 +17166,8 @@ mod tests {
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
             reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            verifier_principal: "verifier-process".into(),
+            reviewer_principal: "reviewer-process".into(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
@@ -17909,6 +18007,8 @@ mod tests {
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
             reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            verifier_principal: "verifier-process".into(),
+            reviewer_principal: "reviewer-process".into(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,

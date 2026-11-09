@@ -1426,6 +1426,11 @@ impl LeadAssessment {
                 "effort must be not_requested when no estimate was requested".into(),
             ));
         }
+        if self.intent == Intent::Change && self.proposal.is_none() {
+            return Err(LeadError::Assessment(
+                "a change assessment requires an executable proposal".into(),
+            ));
+        }
         if self.intent != Intent::Change
             && let Some(proposal) = &self.proposal
             && !proposal.work_units.is_empty()
@@ -2496,6 +2501,29 @@ mod tests {
     #[test]
     fn assessment_accepts_typed_evidence_and_estimate() {
         assessment().validate(&assessment_input()).unwrap();
+    }
+
+    #[test]
+    fn a_change_without_a_proposal_is_rejected() {
+        let mut value = assessment();
+        value.proposal = None;
+        assert!(value.validate(&assessment_input()).is_err());
+        let mut informational = assessment();
+        informational.intent = Intent::Informational;
+        informational.proposal = None;
+        informational.effort_estimate = EffortEstimate {
+            status: EffortStatus::NotRequested,
+            unit: String::new(),
+            min_person_hours: 0,
+            max_person_hours: 0,
+            assumptions: Vec::new(),
+            unknown_reason: String::new(),
+        };
+        let input = AssessmentInput {
+            objective: "Explain the behavior.".into(),
+            ..assessment_input()
+        };
+        assert!(informational.validate(&input).is_ok());
     }
 
     #[test]

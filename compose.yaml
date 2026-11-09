@@ -202,6 +202,8 @@ services:
       FACTORY_WORKER_BOOTSTRAP_TOKEN_FILE: /config/worker-bootstrap.token
       FACTORY_VERIFIER_TOKEN_FILE: /config/verifier.token
       FACTORY_REVIEWER_TOKEN_FILE: /config/reviewer.token
+      FACTORY_VERIFIER_PRINCIPAL: verifier-process
+      FACTORY_REVIEWER_PRINCIPAL: reviewer-process
       FACTORY_ATTEMPT_GRANT_KEY_FILE: /config/attempt-grant.key
       FACTORY_LEAD_FIXTURE_ASSESSOR: ${FACTORY_LEAD_FIXTURE_ASSESSOR:-0}
       FACTORY_ENABLE_AUTONOMOUS_START: "1"
