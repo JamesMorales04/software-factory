@@ -812,28 +812,28 @@ fn render_spec(change: &OpenSpecChange, revision: u32) -> String {
         change.title.trim(),
         change.change_id
     ));
-    output.push_str("## Requirements\n\n");
+    output.push_str("## ADDED Requirements\n\n");
     for requirement in &change.requirements {
         output.push_str(&format!("### Requirement: {}\n\n", requirement.id));
         output.push_str(&normalize_multiline(&requirement.statement));
         output.push_str("\n\n");
         for (index, scenario) in requirement.acceptance.iter().enumerate() {
             output.push_str(&format!(
-                "#### Scenario: {}-ACC-{:02} (acceptance)\n\n",
+                "#### Scenario: {}-ACC-{:02}\n\n",
                 requirement.id,
                 index + 1
             ));
-            output.push_str(&normalize_multiline(scenario));
-            output.push_str("\n\n");
+            output.push_str("- **WHEN** the acceptance case is exercised\n");
+            output.push_str(&format!("- **THEN** {}\n\n", one_line(scenario)));
         }
         for (index, scenario) in requirement.negative.iter().enumerate() {
             output.push_str(&format!(
-                "#### Scenario: {}-NEG-{:02} (negative)\n\n",
+                "#### Scenario: {}-NEG-{:02}\n\n",
                 requirement.id,
                 index + 1
             ));
-            output.push_str(&normalize_multiline(scenario));
-            output.push_str("\n\n");
+            output.push_str("- **WHEN** the negative case is exercised\n");
+            output.push_str(&format!("- **THEN** {}\n\n", one_line(scenario)));
         }
     }
     output.push_str("---\n");
@@ -886,9 +886,10 @@ fn render_tasks(change: &OpenSpecChange, revision: u32) -> String {
         "Change: `{}` (revision {revision})\n\n",
         change.change_id
     ));
-    output.push_str("## Tasks\n\n");
-    for task in &change.tasks {
-        output.push_str(&format!("- [ ] {} — {}\n", task.id, task.title.trim()));
+    output.push_str("## 1. Implementation\n\n");
+    for (task_index, task) in change.tasks.iter().enumerate() {
+        let task_id = format!("1.{}", task_index + 1);
+        output.push_str(&format!("- [ ] {task_id} — {}\n", task.title.trim()));
         output.push_str("  - Paths: ");
         for (index, path) in task.paths.iter().enumerate() {
             if index > 0 {
@@ -924,11 +925,12 @@ fn render_tasks(change: &OpenSpecChange, revision: u32) -> String {
     output.push_str("| Requirement | Tasks |\n");
     output.push_str("|---|---|\n");
     for requirement in &change.requirements {
-        let tasks: Vec<&str> = change
+        let tasks: Vec<String> = change
             .tasks
             .iter()
-            .filter(|task| requirement_refs(change, task).contains(&requirement.id.as_str()))
-            .map(|task| task.id.as_str())
+            .enumerate()
+            .filter(|(_, task)| requirement_refs(change, task).contains(&requirement.id.as_str()))
+            .map(|(index, _)| format!("1.{}", index + 1))
             .collect();
         output.push_str("| ");
         output.push_str(&requirement.id);
@@ -984,6 +986,10 @@ fn normalize_multiline(value: &str) -> String {
         .join("\n")
         .trim_matches('\n')
         .to_owned()
+}
+
+fn one_line(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn requirement_refs<'a>(change: &'a OpenSpecChange, task: &OpenSpecTask) -> Vec<&'a str> {
@@ -1176,9 +1182,9 @@ fn validate_spec_headings(content: &str, capability: &str) -> Result<(), OpenSpe
             "spec is missing its capability heading".into(),
         ));
     }
-    if !content.lines().any(|line| line == "## Requirements") {
+    if !content.lines().any(|line| line == "## ADDED Requirements") {
         return Err(OpenSpecError::InvalidArtifact(
-            "spec is missing the Requirements heading".into(),
+            "spec is missing the ADDED Requirements heading".into(),
         ));
     }
     Ok(())
@@ -1220,12 +1226,18 @@ fn validate_tasks_headings(content: &str) -> Result<(), OpenSpecError> {
             "tasks.md is missing its title heading".into(),
         ));
     }
-    for heading in ["## Tasks", "## Traceability"] {
-        if !content.lines().any(|line| line == heading) {
-            return Err(OpenSpecError::InvalidArtifact(format!(
-                "tasks.md is missing the {heading} heading"
-            )));
-        }
+    if !content.lines().any(|line| {
+        line.strip_prefix("## 1. ")
+            .is_some_and(|title| !title.trim().is_empty())
+    }) {
+        return Err(OpenSpecError::InvalidArtifact(
+            "tasks.md is missing its numeric task section".into(),
+        ));
+    }
+    if !content.lines().any(|line| line == "## Traceability") {
+        return Err(OpenSpecError::InvalidArtifact(
+            "tasks.md is missing the Traceability heading".into(),
+        ));
     }
     Ok(())
 }
@@ -1261,19 +1273,17 @@ fn parse_spec(content: &str) -> Result<Vec<ParsedRequirement>, OpenSpecError> {
             continue;
         };
         if let Some(scenario) = line.strip_prefix("#### Scenario: ") {
-            let scenario = scenario.trim();
-            let (id, acceptance) = if let Some(id) = scenario.strip_suffix(" (acceptance)") {
-                (id.trim(), true)
-            } else if let Some(id) = scenario.strip_suffix(" (negative)") {
-                (id.trim(), false)
-            } else {
-                return Err(OpenSpecError::InvalidArtifact(
-                    "scenario heading is missing its acceptance or negative label".into(),
-                ));
-            };
+            let id = scenario.trim();
             if !is_safe_identifier(id) {
                 return Err(OpenSpecError::InvalidArtifact(
                     "spec contains an unsafe scenario id".into(),
+                ));
+            }
+            let acceptance = id.contains("-ACC-");
+            let negative = id.contains("-NEG-");
+            if acceptance == negative {
+                return Err(OpenSpecError::InvalidArtifact(
+                    "scenario id must identify exactly one of ACC or NEG".into(),
                 ));
             }
             if acceptance {
@@ -1994,17 +2004,17 @@ mod tests {
         assert!(first.proposal.contains("](design.md)"));
         assert!(first.proposal.contains("](tasks.md)"));
 
-        assert!(first.specs[0].content.contains("## Requirements"));
+        assert!(first.specs[0].content.contains("## ADDED Requirements"));
         assert!(first.specs[0].content.contains("### Requirement: REQ-001"));
         assert!(
             first.specs[0]
                 .content
-                .contains("#### Scenario: REQ-001-ACC-01 (acceptance)")
+                .contains("#### Scenario: REQ-001-ACC-01")
         );
         assert!(
             first.specs[0]
                 .content
-                .contains("#### Scenario: REQ-001-NEG-01 (negative)")
+                .contains("#### Scenario: REQ-001-NEG-01")
         );
 
         let design = first.design.as_deref().expect("design exists");
@@ -2018,14 +2028,14 @@ mod tests {
             assert!(design.contains(heading));
         }
 
-        assert!(first.tasks.contains("- [ ] T1"));
-        assert!(first.tasks.contains("- [ ] T2"));
+        assert!(first.tasks.contains("- [ ] 1.1"));
+        assert!(first.tasks.contains("- [ ] 1.2"));
         assert!(first.tasks.contains("Paths: `src/validator.rs`"));
         assert!(first.tasks.contains("Acceptance:"));
         assert!(first.tasks.contains("Evidence:"));
         assert!(first.tasks.contains("Requirements: REQ-001"));
-        assert!(first.tasks.contains("| REQ-001 | T1 |"));
-        assert!(first.tasks.contains("| REQ-002 | T2 |"));
+        assert!(first.tasks.contains("| REQ-001 | 1.1 |"));
+        assert!(first.tasks.contains("| REQ-002 | 1.2 |"));
         assert!(validate_artifacts(&first).is_ok());
     }
 
@@ -2204,7 +2214,7 @@ mod tests {
     fn artifact_validation_rejects_duplicate_requirement_ids() {
         let mut artifacts = render(&sample_change()).expect("valid change");
         artifacts.specs[0].content.push_str(
-            "\n### Requirement: REQ-001\n\nDuplicate.\n\n#### Scenario: REQ-001-ACC-01 (acceptance)\n\nDuplicate.\n\n#### Scenario: REQ-001-NEG-01 (negative)\n\nDuplicate.\n",
+            "\n### Requirement: REQ-001\n\nDuplicate.\n\n#### Scenario: REQ-001-ACC-01\n\n- **WHEN** duplicate\n- **THEN** duplicate\n\n#### Scenario: REQ-001-NEG-01\n\n- **WHEN** duplicate\n- **THEN** duplicate\n",
         );
         refresh_manifest(&mut artifacts);
         let error = validate_artifacts(&artifacts).expect_err("duplicate requirement");

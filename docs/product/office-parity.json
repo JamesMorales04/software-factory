@@ -1,6 +1,6 @@
 {
  "schema_version": 1,
- "updated_at": "2026-11-09T18:45:00Z",
+ "updated_at": "2026-11-09T23:30:00Z",
  "route_base_note": "Current Office uses hash routes. The design-foundation slice moves to a stable /office browser base while preserving these logical routes.",
  "capabilities": {
   "CAP-011": {
@@ -797,12 +797,19 @@
    "core_api": [
     "GET /agentic/requests/{id}/plan",
     "POST /agentic/requests/{id}/plan",
+    "GET /agentic/requests/{id}/planning",
+    "POST /agentic/requests/{id}/plan-review",
+    "GET /agentic/requests/{id}/findings",
+    "POST /agentic/requests/{id}/findings/{finding_id}/disposition",
     "GET /agentic/requests/{id}/spec",
     "POST /agentic/requests/{id}/spec",
     "POST /agentic/requests/{id}/spec/freeze"
    ],
    "user_actions": [
     "compile a Planner WorkGraph and inspect validation, order and digest",
+    "inspect the planning lane, required artifacts, stack, architecture, documentation, skill packs, Definition of Done and OpenSpec projection",
+    "approve, request changes or reject the exact plan revision with an authenticated rationale",
+    "inspect reviewer findings and resolve or refute each finding with evidence and the required owner decision",
     "author a formal specification draft for a FORMAL_SPEC request",
     "freeze the exact draft revision by its preview digest",
     "inspect requirement, assertion and check traceability",
@@ -816,6 +823,16 @@
     "plan-frozen",
     "spec-not-required",
     "spec-empty",
+    "planning-pending",
+    "plan-review-pending",
+    "plan-auto-approved",
+    "plan-owner-approved",
+    "plan-changes-requested",
+    "plan-rejected",
+    "plan-missing-artifacts",
+    "findings-open",
+    "finding-resolved",
+    "finding-refuted",
     "spec-draft",
     "spec-frozen",
     "spec-revision-changed",
@@ -825,9 +842,10 @@
    "acceptance": [
     "office/src/views/Director.test.tsx",
     "office/src/views/Specs.test.tsx",
+    "native/tests/planning_pipeline.rs",
     "docs/evidence/spec-board-2026-11-09/manifest.json"
    ],
-   "notes": "The Planner and Spec Manager are bounded Lead-route model calls with distinct purpose and typed schemas. Core validates the graph and compiles the frozen identities deterministically. A frozen specification is immutable; authoring creates a new revision."
+   "notes": "The Planner and Spec Manager are bounded Lead-route model calls with distinct purpose and typed schemas. Core validates the graph and compiles the frozen identities deterministically. Planning is lane-routed and every lane requires a plan review; Core auto-approves only within the frozen policy and otherwise requires an authenticated owner decision. Planning artifacts are exact revisions bound to a SHA-256. Reviewer findings are durable dispositions and an OPEN finding blocks the Gate even when the reviewer receipt passed. A frozen specification is immutable; authoring creates a new revision. Browser acceptance for the new plan-review and finding surfaces remains NOT_TESTED."
   },
   "CAP-061": {
    "name": "Spec issue projection and kanban",

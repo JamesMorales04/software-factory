@@ -2061,6 +2061,58 @@ async fn persist_final_progress_checkpoint(
     Ok(())
 }
 
+type ProviderEventStream = std::pin::Pin<
+    Box<dyn futures_util::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send>,
+>;
+
+/// Wait for a provider terminal event with bounded SSE reconnect. A reconnect
+/// reopens the same session stream; it never creates a second provider session
+/// and never treats an HTTP reconnect as task success.
+async fn wait_for_provider_terminal(
+    http: &reqwest::Client,
+    context: &ProviderContext<'_>,
+    session_id: &str,
+    stream: &mut ProviderEventStream,
+    parser: &mut factory_native::sse::SseParser,
+    cancel_requested: bool,
+) -> Result<factory_native::runtime::OpenCodePromptTerminal, Box<dyn std::error::Error>> {
+    let policy = factory_native::provider_reliability::SseReconnectPolicy::default();
+    let mut attempts = 0;
+    loop {
+        match factory_native::runtime::wait_for_opencode_prompt_terminal(
+            stream,
+            parser,
+            session_id,
+            cancel_requested,
+        )
+        .await
+        {
+            Ok(terminal) => return Ok(terminal),
+            Err(error) => {
+                let reconnectable = matches!(
+                    &error,
+                    factory_native::runtime::Error::Incompatible(message)
+                        if message.contains("SSE ended") || message.contains("SSE read failed")
+                );
+                if !reconnectable || !policy.can_retry(attempts) {
+                    return Err(error.into());
+                }
+                attempts = attempts.saturating_add(1);
+                tokio::time::sleep(policy.delay(attempts)).await;
+                let response = factory_native::runtime::open_opencode_event_stream(
+                    http,
+                    context.base_url,
+                    context.password,
+                    context.api_directory,
+                )
+                .await?;
+                *stream = Box::pin(response.bytes_stream());
+                *parser = factory_native::sse::SseParser::new(1_048_576);
+            }
+        }
+    }
+}
+
 async fn run_provider_tool_loop(
     context: &ProviderContext<'_>,
 ) -> Result<ProviderRun, Box<dyn std::error::Error>> {
@@ -2073,7 +2125,7 @@ async fn run_provider_tool_loop(
         context.api_directory,
     )
     .await?;
-    let mut event_stream = event_response.bytes_stream();
+    let mut event_stream: ProviderEventStream = Box::pin(event_response.bytes_stream());
     let mut parser = factory_native::sse::SseParser::new(1_048_576);
     let created = factory_native::runtime::create_opencode_session(
         &http,
@@ -2231,10 +2283,12 @@ async fn run_provider_tool_loop(
         }
         // No total model-request deadline. The provider may take as long as
         // it needs; latency and progress are telemetry.
-        let terminal = match factory_native::runtime::wait_for_opencode_prompt_terminal(
+        let terminal = match wait_for_provider_terminal(
+            &http,
+            context,
+            &session_id,
             &mut event_stream,
             &mut parser,
-            &session_id,
             false,
         )
         .await
@@ -2259,7 +2313,7 @@ async fn run_provider_tool_loop(
                 {
                     return Ok(run);
                 }
-                return Err(error.into());
+                return Err(error);
             }
         };
         let message = match &terminal {
@@ -4091,7 +4145,7 @@ async fn run_provider_patch(
         context.api_directory,
     )
     .await?;
-    let mut event_stream = event_response.bytes_stream();
+    let mut event_stream: ProviderEventStream = Box::pin(event_response.bytes_stream());
     let mut parser = factory_native::sse::SseParser::new(1_048_576);
     let created = factory_native::runtime::create_opencode_session(
         &http,
@@ -4165,10 +4219,12 @@ async fn run_provider_patch(
         }
         return Err(error.into());
     }
-    let terminal = match factory_native::runtime::wait_for_opencode_prompt_terminal(
+    let terminal = match wait_for_provider_terminal(
+        &http,
+        context,
+        &provider_session_id,
         &mut event_stream,
         &mut parser,
-        &provider_session_id,
         false,
     )
     .await
@@ -4178,7 +4234,7 @@ async fn run_provider_patch(
             if let Some(turn) = &turn {
                 release_provider_turn(context, &turn.reservation_id).await;
             }
-            return Err(error.into());
+            return Err(error);
         }
     };
     let response = match &terminal {

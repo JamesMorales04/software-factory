@@ -945,56 +945,51 @@ where
             "OpenCode prompt requires an exact nonempty session identity".into(),
         ));
     }
-    time::timeout(Duration::from_secs(300), async {
-        for _ in 0..100_000 {
-            let chunk = stream
-                .next()
-                .await
-                .ok_or_else(|| {
-                    Error::Incompatible("OpenCode SSE ended before prompt terminal".into())
-                })?
-                .map_err(|error| {
-                    Error::Incompatible(format!("OpenCode SSE read failed: {error}"))
-                })?;
-            for frame in parser
-                .push(chunk.as_ref())
-                .map_err(|error| Error::Incompatible(error.to_string()))?
-            {
-                let event = OpenCodeEvent::parse(&frame.data)
-                    .map_err(|error| Error::Incompatible(error.to_string()))?;
-                if !matches!(event.kind.as_str(), "session.idle" | "session.error") {
-                    continue;
-                }
-                if event.session_id.as_deref() != Some(session_id) {
-                    continue;
-                }
-                event
-                    .require_session(session_id)
-                    .map_err(|error| Error::Incompatible(error.to_string()))?;
-                if event.kind == "session.error" {
-                    let value: serde_json::Value = serde_json::from_str(&frame.data)
-                        .map_err(|_| Error::Incompatible("OpenCode SSE data is not JSON".into()))?;
-                    let error = value
-                        .pointer("/properties/error")
-                        .cloned()
-                        .unwrap_or(serde_json::Value::Null);
-                    return Ok(OpenCodePromptTerminal::Failed {
-                        session_id: session_id.to_owned(),
-                        error,
-                    });
-                }
-                return Ok(OpenCodePromptTerminal::Idle {
+    // A model turn has no total deadline. Progress checkpoints, cancellation
+    // and the bounded event count are the stop conditions; latency is
+    // telemetry, not a reason to fail a long but healthy turn.
+    for _ in 0..100_000 {
+        let chunk = stream
+            .next()
+            .await
+            .ok_or_else(|| Error::Incompatible("OpenCode SSE ended before prompt terminal".into()))?
+            .map_err(|error| Error::Incompatible(format!("OpenCode SSE read failed: {error}")))?;
+        for frame in parser
+            .push(chunk.as_ref())
+            .map_err(|error| Error::Incompatible(error.to_string()))?
+        {
+            let event = OpenCodeEvent::parse(&frame.data)
+                .map_err(|error| Error::Incompatible(error.to_string()))?;
+            if !matches!(event.kind.as_str(), "session.idle" | "session.error") {
+                continue;
+            }
+            if event.session_id.as_deref() != Some(session_id) {
+                continue;
+            }
+            event
+                .require_session(session_id)
+                .map_err(|error| Error::Incompatible(error.to_string()))?;
+            if event.kind == "session.error" {
+                let value: serde_json::Value = serde_json::from_str(&frame.data)
+                    .map_err(|_| Error::Incompatible("OpenCode SSE data is not JSON".into()))?;
+                let error = value
+                    .pointer("/properties/error")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
+                return Ok(OpenCodePromptTerminal::Failed {
                     session_id: session_id.to_owned(),
-                    cancel_requested,
+                    error,
                 });
             }
+            return Ok(OpenCodePromptTerminal::Idle {
+                session_id: session_id.to_owned(),
+                cancel_requested,
+            });
         }
-        Err(Error::Incompatible(
-            "OpenCode prompt terminal event not found within 256 SSE chunks".into(),
-        ))
-    })
-    .await
-    .map_err(|_| Error::Timeout)?
+    }
+    Err(Error::Incompatible(
+        "OpenCode prompt terminal event not found within the event bound".into(),
+    ))
 }
 
 /// Validates the JSON body returned by OpenCode's synchronous session message
