@@ -724,11 +724,12 @@ impl Database {
             None => None,
         };
         let withdrawn = self.lead_withdrawal(id).await?.is_some();
-        Ok(crate::lead::project_lead_request_state(
+        Ok(crate::lead::project_lead_request_state_with_reason(
             request.state,
             campaign_status.as_deref(),
             gate_outcome.as_deref(),
             withdrawn,
+            request.failure_reason.as_deref(),
         ))
     }
 

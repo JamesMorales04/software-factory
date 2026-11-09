@@ -2873,7 +2873,7 @@ capabilities:
     isolation: []
   limitations:
   - The semantic assessor is advisory; deterministic floors and the Quality Gate remain authoritative.
-  - A real-model OpenCode Go browser self-test exists in docs/evidence/director-projection-2026-11-08/ but is not independent live certification.
+  - A real-model OpenCode Go browser self-test exists in docs/evidence/director-projection-2026-11-08/ and docs/evidence/full-agentic-e2e-2026-11-09/ but is not independent live certification.
   blockers:
   - Informational, audit and formal-spec browser journeys remain pending.
 
@@ -2913,7 +2913,7 @@ capabilities:
     isolation: []
   limitations:
   - The Director uses reconstructed context plus handoff, not a permanently running model session.
-  - A real scheduler browser smoke exists in docs/evidence/operation-scheduler-2026-11-08/ but is not independent live certification.
+  - A real scheduler browser smoke exists in docs/evidence/operation-scheduler-2026-11-08/ and concurrent operations ran in docs/evidence/full-agentic-e2e-2026-11-09/, but this is not independent live certification.
   - Two-operation concurrency and per-operation worktree isolation still need a real browser acceptance run.
   blockers:
   - Worktree isolation evidence and the two-operation real acceptance remain pending.
@@ -2956,7 +2956,7 @@ capabilities:
     isolation: []
   limitations:
   - The Planner and Spec Manager are bounded Lead-route model calls with distinct purpose and typed schemas; they do not have separate provider roles yet.
-  - A real-model browser self-test planned and froze revisions 1 and 2, but independent live certification is pending.
+  - A real-model browser self-test planned and froze revisions 1 and 2, and the full E2E campaign consumed the frozen plan, but independent live certification is pending.
   blockers:
   - Per-WorkUnit execution state and the full planned-specified-executed journey remain pending.
 
@@ -3082,7 +3082,7 @@ capabilities:
     isolation: []
   limitations:
   - Provider diversity is not required; the same model family is allowed.
-  - A live Campaign with two independent reviewer processes was not run in this slice.
+  - A live Campaign with two independent reviewer processes was not run; the real E2E Campaign used one reviewer and multi-reviewer aggregation is deterministically tested.
   blockers:
   - Real multi-unit Campaign, two-reviewer aggregation and per-unit execution state remain pending.
 
@@ -3166,6 +3166,7 @@ capabilities:
   limitations:
   - Delivery autonomy and delivery effects are not implemented; delivery remains reserved.
   - R2/R3 autonomous execution stays owner-controlled. R1 autonomy is delegated only when explicit and no reserved matter triggers.
+  - The full E2E exercised charter creation and a reserved decision, not routine R1/R2 execution under the charter.
   blockers:
   - Routine live R1/R2 execution under a charter and a revoked-charter live journey remain pending.
 

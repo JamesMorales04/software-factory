@@ -3736,4 +3736,10 @@ export const es: Catalog = {
   "charter.pending.error": "No se pudo abrir la decisión reservada.",
   "charter.pending.createNote":
     "El owner puede abrir una decisión para un asunto reservado. La recomendación es siempre DENY hasta que el owner la resuelva.",
+  "request.state.ASSESSED": "Evaluada",
+  "request.assessed.callout":
+    "La evaluación está registrada. Esta solicitud informativa o de auditoría no requiere un plan de ejecución y no puede modificar el repositorio.",
+  "status.assessed": "Evaluada",
+  "home.thread.state.ASSESSED":
+    "La evaluación está completa; no se requiere un plan de ejecución.",
 };

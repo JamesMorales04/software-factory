@@ -1,0 +1,175 @@
+{
+  "schema": "factory.full-agentic-e2e.v1",
+  "schema_version": 1,
+  "result": "PARTIAL",
+  "kind": "implementer-browser-and-real-model-self-test",
+  "captured_at": "2026-11-09T07:40:00Z",
+  "candidate": "branch factory/agentic-flow-20261108; exact code commit is recorded in pull request #96",
+  "environment": {
+    "runtime": "rootless Podman Compose developer-preview stack",
+    "office": "http://127.0.0.1:8893",
+    "browser": "Chromium 1248 via Playwright",
+    "provider": "OpenCode Go / deepseek-v4.1-flash"
+  },
+  "real_autonomous_campaign": {
+    "request": "5a2be8ae-8555-4985-a525-bd26028f5599",
+    "campaign": "1a1f1111-e4c4-4316-a479-df4b32be2362",
+    "objective": "Add a `next_leap_year(year: i32) -> i32` helper that returns the next leap year strictly after the given year, with unit tests.",
+    "mode": "AUTONOMOUS",
+    "route": "DELEGATED",
+    "risk": "R0",
+    "provider_model": "opencode-go/deepseek-v4.1-flash",
+    "candidate": "60c2577a-3570-4473-a698-14e1c2cd35bb",
+    "commit": "d665b08d74078019b60b054c8a7ec1617b49b197",
+    "tree": "c85f1a33e4249a5bd87d63cbcaa6111b4a7ae172",
+    "base": "88ca73d72a09b53973e99bea3ad66db66d22b755",
+    "changed_files": ["src/lib.rs", "tests/next_leap_year.rs"],
+    "diff_stat": "2 files changed, 46 insertions(+)",
+    "gate": "ACCEPTED",
+    "gate_reasons": ["independent executed evidence accepts exact candidate"],
+    "verifier": {
+      "principal": "verifier-process",
+      "result": "PASS",
+      "evidence": "DETERMINISTIC"
+    },
+    "reviewer": {
+      "principal": "reviewer-process",
+      "result": "PASS",
+      "mechanism": "MODEL",
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "input_tokens": 6741,
+      "output_tokens": 1003,
+      "cost_micros": 1883
+    },
+    "browser_timing": "Assessing -> Executing -> Completed through Office; Gate ACCEPTED without an API or command shortcut"
+  },
+  "journeys": {
+    "informational": {
+      "request": "c0f6e8b0-7395-40d7-a713-d0e5299bad62",
+      "state": "ASSESSED",
+      "outcome": "Assessment recorded; no execution plan or Campaign; no repository mutation.",
+      "evidence": "informational-1440.png"
+    },
+    "audit": {
+      "request": "6df5bed8-5f77-4249-9627-fff920c3cda7",
+      "state": "ASSESSED",
+      "outcome": "Read-only audit assessment recorded; no execution plan or Campaign.",
+      "evidence": "audit-1440.png"
+    },
+    "formal_spec": {
+      "request": "659636fa-7a7e-462b-b457-4c562a43b0dd",
+      "evidence": "docs/evidence/spec-board-2026-11-09/manifest.json",
+      "outcome": "Real Planner and Spec Manager; revision 2 frozen."
+    },
+    "repair": {
+      "campaign": "0a81b768-3349-4b4f-b415-f5678a2779e0",
+      "candidate": "42dd71d7-a4c0-4bda-ab7a-202a65d0e239",
+      "evidence": "docs/evidence/repair-from-candidate-2026-11-08/manifest.json",
+      "outcome": "Rejected candidate dbbfa1d6 repaired to 88ca73d7; Gate ACCEPTED."
+    },
+    "concurrent_operations": {
+      "requests": ["574fbd15-937e-4180-b9f5-622c3d1ee371", "b7bafdd9-4357-42c1-9a51-34ec7f25e878"],
+      "observed": "Both operations were created back-to-back and reached STARTING/EXECUTING with separate Operation Managers; one completed and one blocked. The scheduler status was visible in Director.",
+      "evidence": "concurrent-operations-1440.png; operations-corrected-1440.png"
+    },
+    "owner_decision": {
+      "charter": "5e287870-b540-49ec-9253-80faeab6dd42",
+      "decision": "bee1d2f1-83f5-4b9e-b700-82b82c2b7644",
+      "evidence": "docs/evidence/owner-charter-2026-11-09/manifest.json",
+      "outcome": "Reserved credentials decision opened with DENY recommendation and resolved APPROVE with owner rationale."
+    }
+  },
+  "deviations_found_and_fixed": [
+    {
+      "id": "E2E-D1",
+      "finding": "The independent reviewer only received changed files, so a test-only diff for an existing helper was wrongly blocked as missing implementation.",
+      "fix": "The review bundle now includes bounded unchanged source files under the allowed paths, prioritizes lib/main, and the prompt requires checking existing source before claiming a symbol is missing.",
+      "evidence": "campaign ebb9fc9f was the blocked first attempt; campaign 1a1f1111 accepted after the fix"
+    },
+    {
+      "id": "E2E-D2",
+      "finding": "Informational/audit assessments could return an advisory effort estimate and be rejected by strict validation.",
+      "fix": "Advisory effort is normalized to not_requested when the intent is non-change and no estimate was requested; the Lead prompt now states the same.",
+      "evidence": "lead::tests::informational_effort_is_normalized_before_validation"
+    },
+    {
+      "id": "E2E-D3",
+      "finding": "A non-change assessment without a proposal blocked the request as invalid.",
+      "fix": "The assessment flow accepts no proposal for informational/audit, records the assessment, and projects a derived ASSESSED disposition with no plan or Campaign.",
+      "evidence": "informational-1440.png; audit-1440.png"
+    },
+    {
+      "id": "E2E-D4",
+      "finding": "Historical blocked/review-plan operations remained QUEUED in Director and could be resumed after restart.",
+      "fix": "Operation creation marks review-plan operations OBSERVED; reconciliation maps withdrawn/blocked/failed Lead states; the resume query excludes blocked, failed and withdrawn requests.",
+      "evidence": "operations-corrected-1440.png; db::intake tests for reconciliation and resume filtering"
+    }
+  ],
+  "ui_matrix": [
+    {
+      "id": "E1",
+      "surface": "Home -> request",
+      "control_or_state": "Autonomous request submission",
+      "expected": "A real request is created through Office and the Lead assesses, freezes and starts it.",
+      "result": "PASS",
+      "evidence": "request-terminal-1440.png; request 5a2be8ae"
+    },
+    {
+      "id": "E2",
+      "surface": "Campaign / Overview",
+      "control_or_state": "Accepted campaign",
+      "expected": "Campaign shows Accepted and the exact candidate/Gate identity.",
+      "result": "PASS",
+      "evidence": "campaign-accepted-1440.png"
+    },
+    {
+      "id": "E3",
+      "surface": "Campaign / Candidates",
+      "control_or_state": "Candidate diff",
+      "expected": "The diff includes src/lib.rs and tests/next_leap_year.rs.",
+      "result": "PASS",
+      "evidence": "candidate-diff-1440.png"
+    },
+    {
+      "id": "E4",
+      "surface": "Campaign / Quality Gate",
+      "control_or_state": "Gate and Cheap Ops",
+      "expected": "Verifier and model reviewer passes are visible; Cheap Ops is OBSERVATION_ONLY and copies the Gate decision.",
+      "result": "PASS",
+      "evidence": "gate-accepted-1440.png; cheap-ops-accepted-1440.png"
+    },
+    {
+      "id": "E5",
+      "surface": "Request / informational and audit",
+      "control_or_state": "Run assessment",
+      "expected": "No execution plan is required; the request shows ASSESSED and the repository is not mutated.",
+      "result": "PASS",
+      "evidence": "informational-1440.png; audit-1440.png"
+    },
+    {
+      "id": "E6",
+      "surface": "Director / operations",
+      "control_or_state": "Concurrent operations and status reconciliation",
+      "expected": "Two operations are coordinated; terminal or blocked requests no longer claim to be queued.",
+      "result": "PASS",
+      "evidence": "concurrent-operations-1440.png; operations-corrected-1440.png"
+    },
+    {
+      "id": "E7",
+      "surface": "Campaign and Director at 390 px",
+      "control_or_state": "Responsive acceptance",
+      "expected": "No horizontal overflow.",
+      "result": "PASS",
+      "evidence": "gate-accepted-390.png; operations-corrected-390.png; scrollWidth=390/clientWidth=390"
+    }
+  ],
+  "console_errors": [],
+  "unexpected_http_errors": [],
+  "limitations": [
+    "This is implementer self-test evidence, not independent verification or acceptance.",
+    "The live Campaign used one independent reviewer process. Multi-reviewer aggregation is deterministically tested and waits for the plan's reviewer count, but a live two-reviewer Campaign was not run.",
+    "GitHub spec publication, skill use/promotion inside a Campaign and delivery effects remain NOT_TESTED.",
+    "The first blocked Campaign and the informational no-plan path are retained as deviation evidence."
+  ]
+}

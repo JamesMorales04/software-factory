@@ -315,9 +315,13 @@ impl Database {
     ) -> Result<Vec<IntakeRequestRecord>, Error> {
         let mut connection = self.pool.acquire().await?;
         let rows = sqlx::query::query(
-            "SELECT id FROM intake_requests
-             WHERE mode='AUTONOMOUS' AND campaign_id IS NULL
-             ORDER BY created_at ASC,id ASC",
+            "SELECT ir.id FROM intake_requests ir
+             JOIN lead_requests lr ON lr.id=ir.lead_request_id
+             LEFT JOIN lead_withdrawals lw ON lw.request_id=lr.id
+             WHERE ir.mode='AUTONOMOUS' AND ir.campaign_id IS NULL
+               AND lr.state NOT IN ('BLOCKED','FAILED')
+               AND lw.request_id IS NULL
+             ORDER BY ir.created_at ASC,ir.id ASC",
         )
         .fetch_all(&mut *connection)
         .await?;
@@ -810,7 +814,9 @@ impl Database {
                 available: false,
                 reason: Some(IntakeAuthorizationReason::Withdrawn.as_str().into()),
             },
-            IntakeState::Blocked | IntakeState::Failed => IntakeAuthorizationState::not_required(),
+            IntakeState::Blocked | IntakeState::Failed | IntakeState::Assessed => {
+                IntakeAuthorizationState::not_required()
+            }
             IntakeState::Submitted | IntakeState::Assessing => {
                 IntakeAuthorizationState::blocked(IntakeAuthorizationReason::FrozenPlanRequired)
             }
@@ -920,6 +926,12 @@ pub(super) async fn create_intake_request_in_tx(
     .bind(&now)
     .execute(&mut *transaction)
     .await?;
+    if !matches!(mode, IntakeMode::Autonomous) {
+        sqlx::query::query("UPDATE agentic_operations SET status='OBSERVED' WHERE request_id=?1")
+            .bind(&record.id)
+            .execute(&mut *transaction)
+            .await?;
+    }
     let context_json = serde_json::to_string(&serde_json::json!({
         "schema":"factory-lead-execution-context-v1",
         "projectId":project_id,
@@ -2790,10 +2802,31 @@ mod tests {
             )
             .await
             .unwrap();
+        let review_operation = db.agentic_operation_for_request(&review.id).await.unwrap();
+        assert_eq!(review_operation.status, "OBSERVED");
         let unfinished = db.unfinished_autonomous_intake_requests().await.unwrap();
         assert_eq!(unfinished.len(), 1);
         assert_eq!(unfinished[0].id, autonomous.id);
         assert_ne!(unfinished[0].id, review.id);
+        let lead_id: (String,) =
+            sqlx::query_as::query_as("SELECT lead_request_id FROM intake_requests WHERE id=?1")
+                .bind(&autonomous.id)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        db.set_agentic_operation_status(&autonomous.id, "EXECUTING")
+            .await
+            .unwrap();
+        sqlx::query::query("UPDATE lead_requests SET state='BLOCKED' WHERE id=?1")
+            .bind(&lead_id.0)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let changed = db.reconcile_agentic_operations().await.unwrap();
+        assert_eq!(changed.len(), 1);
+        assert_eq!(changed[0].status, "BLOCKED");
+        let unfinished = db.unfinished_autonomous_intake_requests().await.unwrap();
+        assert!(unfinished.is_empty());
         db.close().await;
         let _ = std::fs::remove_file(path);
     }

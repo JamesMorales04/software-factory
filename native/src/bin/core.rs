@@ -9018,7 +9018,7 @@ async fn assess_lead_request(
     } else {
         "FIXTURE"
     };
-    let (mut assessment, mut proposal) = if let Some(gateway) = &current_gateway {
+    let (mut assessment, proposal) = if let Some(gateway) = &current_gateway {
         match factory_native::lead_model::assess(
             gateway,
             &app.db,
@@ -9060,12 +9060,51 @@ async fn assess_lead_request(
             &grant,
             chrono::Utc::now(),
         ) {
-            Ok(value) => value,
+            Ok((assessment, proposal)) => (assessment, Some(proposal)),
             Err(error) => {
                 let _ = app.db.block_lead_request(&id, &error.to_string()).await;
                 return api_error(error.into());
             }
         }
+    };
+    let input = factory_native::lead::AssessmentInput {
+        project_id: request.project_id.clone(),
+        action_id: request.action_id.clone(),
+        request_id: request.id.clone(),
+        objective: request.objective.clone(),
+        allowed_evidence_refs: std::collections::BTreeSet::from(["repository-files".to_string()]),
+    };
+    let assessment_record = match app
+        .db
+        .record_lead_assessment(
+            &id,
+            mechanism,
+            &assessment,
+            &input,
+            &format!("{mechanism}-assessment:{id}"),
+        )
+        .await
+    {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    let Some(mut proposal) = proposal else {
+        let _ = app
+            .db
+            .block_lead_request(
+                &id,
+                "informational_assessment: no execution plan is required for this intent",
+            )
+            .await;
+        return (
+            StatusCode::OK,
+            Json(json!({
+                "assessment": assessment_record,
+                "proposal": null,
+                "informational": true
+            })),
+        )
+            .into_response();
     };
     let requested_units = if app.lead_fixture_assessor {
         env::var("FACTORY_LEAD_FIXTURE_UNITS")
@@ -9098,27 +9137,6 @@ async fn assess_lead_request(
             .collect();
         assessment.proposal = Some(proposal.clone());
     }
-    let input = factory_native::lead::AssessmentInput {
-        project_id: request.project_id.clone(),
-        action_id: request.action_id.clone(),
-        request_id: request.id.clone(),
-        objective: request.objective.clone(),
-        allowed_evidence_refs: std::collections::BTreeSet::from(["repository-files".to_string()]),
-    };
-    let assessment_record = match app
-        .db
-        .record_lead_assessment(
-            &id,
-            mechanism,
-            &assessment,
-            &input,
-            &format!("{mechanism}-assessment:{id}"),
-        )
-        .await
-    {
-        Ok(record) => record,
-        Err(error) => return api_error(error),
-    };
     let proposal_record = match app
         .db
         .record_lead_proposal(&id, &proposal, &format!("{mechanism}-proposal:{id}"))
@@ -9473,6 +9491,7 @@ fn intake_state_from_lead(
         LeadRequestProjectionState::Completed => IntakeState::Completed,
         LeadRequestProjectionState::Blocked => IntakeState::Blocked,
         LeadRequestProjectionState::Failed => IntakeState::Failed,
+        LeadRequestProjectionState::Assessed => IntakeState::Assessed,
         LeadRequestProjectionState::Withdrawn | LeadRequestProjectionState::Cancelled => {
             IntakeState::Cancelled
         }
@@ -9499,6 +9518,10 @@ fn intake_state_detail(
         IntakeState::AwaitingApproval => "Frozen plan ready for explicit operator approval.".into(),
         IntakeState::Executing => {
             "Campaign authorized. Campaign, Run and Quality Gate state remain authoritative.".into()
+        }
+        IntakeState::Assessed => {
+            "Assessment recorded. This informational or audit request requires no execution plan."
+                .into()
         }
         IntakeState::Completed => match gate_outcome {
             Some(outcome) => format!("Quality Gate recorded {outcome} for the exact candidate."),
@@ -13195,6 +13218,19 @@ async fn assess_intake_request(
     {
         return api_error(error);
     }
+    let Some(proposal) = proposal else {
+        let _ = app
+            .db
+            .block_lead_request(
+                &lead.id,
+                "informational_assessment: no execution plan is required for this intent",
+            )
+            .await;
+        return match intake_request_value(&app, &record, true).await {
+            Ok(value) => Json(value).into_response(),
+            Err(error) => api_error(error),
+        };
+    };
     if let Err(error) = app
         .db
         .record_lead_proposal(&lead.id, &proposal, &format!("intake-assess:{id}:proposal"))

@@ -1400,7 +1400,8 @@ export type IntakeState =
   | "BLOCKED"
   | "FAILED"
   | "COMPLETED"
-  | "CANCELLED";
+  | "CANCELLED"
+  | "ASSESSED";
 
 export interface IntakeProfileReference {
   id: string;

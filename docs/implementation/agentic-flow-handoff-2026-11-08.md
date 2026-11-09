@@ -171,13 +171,36 @@ commit
 - Evidence: `docs/evidence/owner-charter-2026-11-09/`. Live routine R1/R2
   execution under the charter and revocation remain pending.
 
-### Phase 8 — Real-model browser E2E (next)
+### Phase 8 — Real-model browser E2E (complete as implementer self-test)
 
-- Full campaign through Office only, no API/command shortcut.
-- Real OpenCode Go `deepseek-v4.1-flash` for roles without a defined model.
-- Cover informational, audit, direct, formal spec, repair, concurrent operations
-  and owner decision.
-- Fix every E2E deviation and record candidate-bound evidence.
+- A real autonomous request `5a2be8ae` ran from Office through Lead assessment,
+  plan freeze, dispatch, Implementer, deterministic Verifier, model Reviewer and
+  Gate `ACCEPTED` at candidate `60c2577a` / commit `d665b08d`. The diff changed
+  `src/lib.rs` and `tests/next_leap_year.rs` (46 insertions).
+- Reviewer usage: 6741 input / 1003 output tokens; provider/model
+  `opencode-go/deepseek-v4.1-flash`.
+- Informational request `c0f6e8b0` and audit request `6df5bed8` both completed
+  assessment as `ASSESSED` with no plan or Campaign mutation.
+- Concurrent operations `574fbd15` and `b7bafdd9` were created back-to-back and
+  coordinated by the Director; one completed and one blocked.
+- Formal spec (`659636fa`), repair (`0a81b768`), owner decision (`bee1d2f1`)
+  and scheduler evidence are linked from the same manifest.
+- Four real deviations were found and fixed:
+  1. The reviewer lacked unchanged source context and falsely blocked a
+     test-only diff; the review bundle now includes bounded unchanged source
+     context and the prompt requires checking it.
+  2. Informational/audit assessments could carry an unnecessary effort estimate;
+     advisory effort is normalized for non-change intents.
+  3. A non-change assessment without a proposal blocked the request; it now
+     records the assessment and projects a derived `ASSESSED` disposition.
+  4. Blocked/review-plan operations remained `QUEUED` and could resume after
+     restart; operation creation and reconciliation now reflect the Lead/intake
+     state, and resume filters terminal/withdrawn requests.
+- Evidence: `docs/evidence/full-agentic-e2e-2026-11-09/`.
+- Remaining gaps: independent verifier/Reviewer acceptance, a live two-reviewer
+  Campaign, live GitHub issue publication, skill use/promotion inside a
+  Campaign, delivery effects, Windows and deployment. `TRUSTED_LOCAL` is not
+  isolation or certification.
 
 ## Key invariants
 

@@ -466,6 +466,14 @@ export function RequestWorkspace() {
 
       <div className="request-layout">
         <div className="request-column">
+          {data.state === "ASSESSED" && (
+            <Panel className="request-panel">
+              <p className="ui-callout ui-callout--info" role="status">
+                {t("request.assessed.callout")}
+              </p>
+            </Panel>
+          )}
+
           {(data.state === "SUBMITTED" ||
             data.state === "ASSESSING" ||
             data.state === "PLAN_READY" ||

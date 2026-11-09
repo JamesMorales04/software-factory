@@ -3599,6 +3599,12 @@ export const en = {
   "charter.pending.error": "The reserved decision could not be opened.",
   "charter.pending.createNote":
     "The owner can open a decision for a reserved matter. The recommendation is always DENY until the owner resolves it.",
+  "request.state.ASSESSED": "Assessed",
+  "request.assessed.callout":
+    "The assessment is recorded. This informational or audit request requires no execution plan and cannot mutate the repository.",
+  "status.assessed": "Assessed",
+  "home.thread.state.ASSESSED":
+    "The assessment is complete; no execution plan is required.",
 } as const;
 
 export type MessageKey = keyof typeof en;

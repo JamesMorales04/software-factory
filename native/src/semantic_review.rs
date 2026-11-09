@@ -301,6 +301,67 @@ pub fn build_review_bundle(
             content,
         });
     }
+    // Include bounded unchanged source context under the allowed paths. A diff
+    // may legitimately add only tests for a symbol that already exists; without
+    // repository context an independent reviewer can wrongly claim the symbol
+    // is missing.
+    let mut context_candidates = Vec::new();
+    for allowed in request.allowed_paths {
+        if context_candidates.len() >= 8 {
+            break;
+        }
+        if is_secret_shaped_path(allowed) {
+            continue;
+        }
+        let mut paths =
+            match workspace::candidate_paths(request.repository, &commit_sha, allowed, 64) {
+                Ok(paths) => paths,
+                Err(_) => continue,
+            };
+        paths.sort_by_key(|path| {
+            if path.ends_with("lib.rs") || path.ends_with("main.rs") {
+                0
+            } else if path.ends_with("Cargo.toml") || path.ends_with("package.json") {
+                1
+            } else {
+                2
+            }
+        });
+        for path in paths {
+            if context_candidates.len() >= 8 {
+                break;
+            }
+            if changed_paths.contains(&path) || is_secret_shaped_path(&path) {
+                continue;
+            }
+            if !context_candidates
+                .iter()
+                .any(|candidate| candidate == &path)
+            {
+                context_candidates.push(path);
+            }
+        }
+    }
+    for path in context_candidates {
+        if source_bytes >= MAX_SOURCE_TOTAL_BYTES {
+            break;
+        }
+        let remaining = MAX_SOURCE_TOTAL_BYTES - source_bytes;
+        let limit = remaining.min(MAX_SOURCE_FILE_BYTES);
+        let Some(content) =
+            workspace::candidate_file(request.repository, &commit_sha, &path, limit)?
+        else {
+            continue;
+        };
+        if content.is_empty() {
+            continue;
+        }
+        source_bytes = source_bytes.saturating_add(content.len());
+        source_files.push(SourceExcerpt {
+            path: path.clone(),
+            content,
+        });
+    }
     let mut acceptance_checks = Vec::new();
     let mut negative_checks = Vec::new();
     for check in request.checks {
@@ -344,7 +405,9 @@ blocking findings for defects, critical findings for security or irreparable aut
 and uncertain with at least one concrete finding when evidence is insufficient. Every finding must \
 set points to the canonical severity weight (critical=8, blocking=5, warning=2, info=1), include a \
 concrete rationale and cite 1..=16 evidence references. Never approve from the candidate \
-description alone.\n\nJSON Schema:\n{schema}"
+description alone. Before claiming that a required symbol, function or module is missing, \
+check the bounded candidate source files: an unchanged existing symbol can satisfy the \
+objective, and a test-only diff can be correct. Cite the source evidence.\n\nJSON Schema:\n{schema}"
     );
     let mut prompt = String::new();
     prompt.push_str("Review the following exact frozen candidate.\n\n");

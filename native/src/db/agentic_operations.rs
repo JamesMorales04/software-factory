@@ -126,6 +126,9 @@ impl Database {
         let rows = sqlx::query::query(
             "SELECT o.id,o.request_id,o.project_id,o.director_id,o.operation_manager_id,
                     o.priority,o.status,o.worktree_policy,o.created_at,o.updated_at,
+                    ir.mode AS intake_mode,
+                    lr.state AS lead_state,
+                    lw.request_id AS withdrawn_request,
                     c.status AS campaign_status,
                     (SELECT gd.outcome FROM gate_decisions gd
                      JOIN candidates ca ON ca.id=gd.candidate_id
@@ -135,6 +138,8 @@ impl Database {
                      ORDER BY gd.decided_at DESC LIMIT 1) AS gate_outcome
              FROM agentic_operations o
              LEFT JOIN intake_requests ir ON ir.id=o.request_id
+             LEFT JOIN lead_requests lr ON lr.id=ir.lead_request_id
+             LEFT JOIN lead_withdrawals lw ON lw.request_id=lr.id
              LEFT JOIN campaigns c ON c.id=ir.campaign_id
              WHERE o.status IN ('QUEUED','STARTING','EXECUTING')",
         )
@@ -145,11 +150,18 @@ impl Database {
             let operation = from_row(row)?;
             let campaign_status: Option<String> = row.try_get("campaign_status")?;
             let gate_outcome: Option<String> = row.try_get("gate_outcome")?;
+            let intake_mode: Option<String> = row.try_get("intake_mode")?;
+            let lead_state: Option<String> = row.try_get("lead_state")?;
+            let withdrawn: Option<String> = row.try_get("withdrawn_request")?;
             let target = match (campaign_status.as_deref(), gate_outcome.as_deref()) {
                 (Some("CANCELLED"), _) => Some("CANCELLED"),
                 (Some("FAILED"), _) => Some("FAILED"),
                 (_, Some("ACCEPTED")) => Some("COMPLETED"),
                 (_, Some("REPAIR_REQUIRED" | "REJECTED")) => Some("FAILED"),
+                (_, _) if withdrawn.is_some() => Some("CANCELLED"),
+                (_, _) if lead_state.as_deref() == Some("BLOCKED") => Some("BLOCKED"),
+                (_, _) if lead_state.as_deref() == Some("FAILED") => Some("FAILED"),
+                (_, _) if intake_mode.as_deref() == Some("REVIEW_PLAN") => Some("OBSERVED"),
                 _ => None,
             };
             if let Some(target) = target

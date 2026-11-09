@@ -19,6 +19,7 @@ const STATE_STATUS: Record<IntakeState, MessageKey> = {
   FAILED: "home.thread.state.FAILED",
   COMPLETED: "home.thread.state.COMPLETED",
   CANCELLED: "home.thread.state.CANCELLED",
+  ASSESSED: "home.thread.state.ASSESSED",
 };
 
 function latestMessage(
