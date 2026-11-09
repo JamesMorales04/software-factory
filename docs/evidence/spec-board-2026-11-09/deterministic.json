@@ -1,0 +1,87 @@
+{
+  "schema": "factory.deterministic-evidence.v1",
+  "schema_version": 1,
+  "result": "PASS",
+  "kind": "deterministic-test-evidence",
+  "captured_at": "2026-11-09T05:58:00Z",
+  "candidate": "branch factory/agentic-flow-20261108; exact code commit is recorded in pull request #96",
+  "scope": "Planner WorkGraph validation, Spec Manager compilation and freezing, version supersession, local/GitHub publication records, Office plan/spec board projections and endpoint authorization.",
+  "checks": [
+    {
+      "id": "D1",
+      "name": "cargo fmt --check",
+      "pass": true,
+      "detail": "cargo fmt --manifest-path native/Cargo.toml --all -- --check"
+    },
+    {
+      "id": "D2",
+      "name": "strict Clippy",
+      "pass": true,
+      "detail": "cargo clippy --all-targets --all-features -- -D warnings"
+    },
+    {
+      "id": "D3",
+      "name": "Rust library tests",
+      "pass": true,
+      "detail": "cargo test --all-features --lib: 585 passed, 0 failed, 2 ignored"
+    },
+    {
+      "id": "D4",
+      "name": "Core binary tests",
+      "pass": true,
+      "detail": "cargo test --all-features --bin factory-core: 38 passed, 0 failed"
+    },
+    {
+      "id": "D5",
+      "name": "Office component tests",
+      "pass": true,
+      "detail": "vitest: 282 passed across 41 files"
+    },
+    {
+      "id": "D6",
+      "name": "WorkGraph invariants",
+      "pass": true,
+      "detail": "agentic::tests covers stable topological order and digest, cycles, unknown dependencies, unsafe and out-of-scope paths, and shared write paths between independent units"
+    },
+    {
+      "id": "D7",
+      "name": "Specification identity",
+      "pass": true,
+      "detail": "agentic::tests covers deterministic REQ/ASR/CHK identities, revision-sensitive digest and mandatory acceptance plus negative cases"
+    },
+    {
+      "id": "D8",
+      "name": "Freeze and revision persistence",
+      "pass": true,
+      "detail": "db::intake::tests::work_graph_and_spec_freeze_bind_exact_revisions proves frozen-plan immutability, revision 2 creation, supersession and publication/issue records"
+    },
+    {
+      "id": "D9",
+      "name": "Projection determinism",
+      "pass": true,
+      "detail": "spec_publish::tests proves deterministic epic/unit targets, markers and requirement-to-check traceability"
+    },
+    {
+      "id": "D10",
+      "name": "Endpoint authorization",
+      "pass": true,
+      "detail": "tests::agentic_plan_and_spec_routes_require_operator_credentials rejects unauthenticated plan, spec, freeze, publish and board calls"
+    },
+    {
+      "id": "D11",
+      "name": "Office projections",
+      "pass": true,
+      "detail": "Director.test.tsx covers plan compilation, frozen+draft badges and priority; Specs.test.tsx covers board, traceability, local fallback and publish confirmation"
+    },
+    {
+      "id": "D12",
+      "name": "architecture and parity",
+      "pass": true,
+      "detail": "factory-architecture-check: PASS; check-office-parity.py: PASS"
+    }
+  ],
+  "limitations": [
+    "Deterministic evidence only; it does not certify real-model live acceptance or GitHub external effects.",
+    "Per-WorkUnit delivery state and dynamic fleet execution remain pending."
+  ]
+}

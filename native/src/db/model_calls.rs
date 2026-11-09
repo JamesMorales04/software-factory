@@ -1410,11 +1410,17 @@ impl Database {
                         "Lead model call is not bound to the request delegation".into(),
                     ));
                 }
-                // The agentic triage is a bounded read-only semantic assessment
-                // of an existing request. It does not advance the Lead lifecycle
-                // and may run outside ASSESSING; the Lead assessment itself
-                // remains restricted to an assessing request.
-                if state != "ASSESSING" && input.purpose != "agentic_triage" {
+                // Agentic triage, Planner and Spec Manager calls are bounded,
+                // read-only semantic work over an existing request. They do not
+                // advance the Lead lifecycle, grant authority or mutate a frozen
+                // plan; Core validates and stores their output separately. They
+                // may run outside ASSESSING. The Lead assessment and every other
+                // Lead-role purpose remain restricted to an assessing request.
+                let bounded_agentic_purpose = matches!(
+                    input.purpose.as_str(),
+                    "agentic_triage" | "agentic_planner" | "agentic_spec_manager"
+                );
+                if state != "ASSESSING" && !bounded_agentic_purpose {
                     return Err(Error::Forbidden(
                         "Lead model call requires an assessing request".into(),
                     ));

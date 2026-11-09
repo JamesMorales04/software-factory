@@ -2357,6 +2357,165 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn work_graph_and_spec_freeze_bind_exact_revisions() {
+        let (path, db, profile, config) = fixture().await;
+        let _ = config;
+        let policy = create_policy(&db, &profile, &config).await;
+        let _ = policy;
+        let request = create_request(&db, &profile, "spec-request").await;
+        let graph_model = crate::agentic::WorkGraphModel {
+            units: vec![
+                crate::agentic::PlannedWorkUnit {
+                    id: "model".into(),
+                    title: "Model".into(),
+                    objective: "Implement the validator".into(),
+                    depends_on: vec![],
+                    paths: vec!["src/model.rs".into()],
+                    acceptance: vec!["invalid input is rejected".into()],
+                },
+                crate::agentic::PlannedWorkUnit {
+                    id: "api".into(),
+                    title: "API".into(),
+                    objective: "Expose the validator".into(),
+                    depends_on: vec!["model".into()],
+                    paths: vec!["src/api.rs".into()],
+                    acceptance: vec!["the endpoint returns the result".into()],
+                },
+            ],
+            assumptions: vec![],
+            risks: vec![],
+        };
+        let graph = crate::agentic::validate_work_graph(&graph_model, &["src".into()]).unwrap();
+        let saved = db
+            .save_agentic_work_graph(&crate::db::NewAgenticWorkGraph {
+                request_id: &request.id,
+                graph: &graph,
+                provider: "opencode",
+                model: "deepseek-v4.1-flash",
+                schema_sha256: &"a".repeat(64),
+                request_sha256: &"b".repeat(64),
+                input_tokens: 10,
+                output_tokens: 5,
+                total_tokens: 15,
+                cost_micros: 1,
+                usage_known: true,
+            })
+            .await
+            .unwrap();
+        assert_eq!(saved.graph_sha256, graph.graph_sha256);
+        let draft_model = crate::agentic::SpecDraftModel {
+            summary: "Bounded validator".into(),
+            requirements: vec![crate::agentic::SpecRequirementDraft {
+                statement: "Invalid input is rejected.".into(),
+                acceptance: vec!["invalid input returns an error".into()],
+                negative: vec!["valid input is accepted".into()],
+            }],
+            assumptions: vec![],
+            risks: vec![],
+        };
+        let draft_json = serde_json::to_string(&draft_model).unwrap();
+        let draft = db
+            .save_agentic_spec_draft(&crate::db::NewAgenticSpecDraft {
+                request_id: &request.id,
+                draft_json: &draft_json,
+                provider: "opencode",
+                model: "deepseek-v4.1-flash",
+                schema_sha256: &"a".repeat(64),
+                request_sha256: &"b".repeat(64),
+                input_tokens: 10,
+                output_tokens: 5,
+                total_tokens: 15,
+                cost_micros: 1,
+                usage_known: true,
+            })
+            .await
+            .unwrap();
+        assert_eq!(draft.revision, 1);
+        let frozen = crate::agentic::compile_spec(&draft_model, draft.revision).unwrap();
+        let frozen_record = db
+            .freeze_agentic_spec(&draft.id, &frozen, &graph)
+            .await
+            .unwrap();
+        assert_eq!(frozen_record.state, "FROZEN");
+        assert_eq!(
+            frozen_record.spec_sha256.as_deref(),
+            Some(frozen.spec_sha256.as_str())
+        );
+        assert!(
+            db.save_agentic_work_graph(&crate::db::NewAgenticWorkGraph {
+                request_id: &request.id,
+                graph: &graph,
+                provider: "opencode",
+                model: "deepseek-v4.1-flash",
+                schema_sha256: &"a".repeat(64),
+                request_sha256: &"b".repeat(64),
+                input_tokens: 10,
+                output_tokens: 5,
+                total_tokens: 15,
+                cost_micros: 1,
+                usage_known: true,
+            })
+            .await
+            .is_err()
+        );
+        let second = db
+            .save_agentic_spec_draft(&crate::db::NewAgenticSpecDraft {
+                request_id: &request.id,
+                draft_json: &draft_json,
+                provider: "opencode",
+                model: "deepseek-v4.1-flash",
+                schema_sha256: &"a".repeat(64),
+                request_sha256: &"b".repeat(64),
+                input_tokens: 10,
+                output_tokens: 5,
+                total_tokens: 15,
+                cost_micros: 1,
+                usage_known: true,
+            })
+            .await
+            .unwrap();
+        assert_eq!(second.revision, 2);
+        assert_eq!(db.agentic_spec(&request.id).await.unwrap().revision, 1);
+        let second_frozen = crate::agentic::compile_spec(&draft_model, second.revision).unwrap();
+        db.freeze_agentic_spec(&second.id, &second_frozen, &graph)
+            .await
+            .unwrap();
+        let current = db.agentic_spec(&request.id).await.unwrap();
+        assert_eq!(current.revision, 2);
+        assert_eq!(
+            db.agentic_spec_by_id(&draft.id).await.unwrap().state,
+            "SUPERSEDED"
+        );
+        let publication = db
+            .upsert_agentic_spec_publication(&crate::db::NewAgenticSpecPublication {
+                spec_id: &current.id,
+                project_id: "project",
+                provider: "GITHUB",
+                repository: "acme/widgets",
+                status: "PUBLISHED",
+                drift_status: "IN_SYNC",
+                last_error: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(publication.status, "PUBLISHED");
+        let issue = db
+            .record_agentic_spec_issue(
+                &current.id,
+                "api",
+                "factory-spec:api",
+                Some(42),
+                Some("https://github.com/acme/widgets/issues/42"),
+                "PUBLISHED",
+            )
+            .await
+            .unwrap();
+        assert_eq!(issue.external_number, Some(42));
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
     async fn unfinished_autonomous_requests_exclude_review_plan_work() {
         let (path, db, _profile, config) = fixture().await;
         let mut content = profile_content("Autopilot");

@@ -380,6 +380,13 @@ pub struct NewPullRequest<'a> {
     pub draft: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct NewGitHubIssue<'a> {
+    pub title: &'a str,
+    pub body: &'a str,
+    pub labels: &'a [String],
+}
+
 pub struct MergePullRequest<'a> {
     pub number: u64,
     pub expected_head_sha: &'a str,
@@ -1105,6 +1112,122 @@ impl GitHubClient {
 
     /// Fetch one exact issue for the pre-proposal freshness check. Pull
     /// requests are refused because they are not eligible issue intake.
+    /// Create one authorized issue. Callers persist the returned number before
+    /// retrying; the body carries a deterministic marker for idempotency.
+    pub async fn create_issue(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        input: NewGitHubIssue<'_>,
+    ) -> Result<GitHubIssue, GitHubError> {
+        validate_token(token)?;
+        validate_repo_coordinates(owner, repo)?;
+        let title = clean_single_line(input.title.trim());
+        if title.is_empty() || title.len() > MAX_ISSUE_TITLE_BYTES {
+            return Err(GitHubError::Invalid(
+                "issue title must be 1-512 characters".into(),
+            ));
+        }
+        let body = clean_body(input.body);
+        if body.is_empty() || body.len() > MAX_PULL_REQUEST_BODY_BYTES {
+            return Err(GitHubError::Invalid(
+                "issue body must be 1-65536 characters".into(),
+            ));
+        }
+        validate_issue_labels(input.labels)?;
+        let response = self
+            .execute(
+                self.client
+                    .post(format!("{}/repos/{owner}/{repo}/issues", self.base_url))
+                    .json(&serde_json::json!({
+                        "title": title,
+                        "body": body,
+                        "labels": input.labels,
+                    })),
+                token,
+            )
+            .await?;
+        let raw: RawIssue = parse_json(&response.body, "issue")?;
+        raw.into_issue()
+            .ok_or_else(|| GitHubError::InvalidResponse("issue had no usable shape".into()))
+    }
+
+    /// Update only the title and body of an existing issue. Spec publication
+    /// never uses this path to mutate a frozen spec; the issue is a projection.
+    pub async fn update_issue(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        number: u64,
+        input: NewGitHubIssue<'_>,
+    ) -> Result<GitHubIssue, GitHubError> {
+        validate_token(token)?;
+        validate_repo_coordinates(owner, repo)?;
+        if number == 0 {
+            return Err(GitHubError::Invalid("issue number is invalid".into()));
+        }
+        let title = clean_single_line(input.title.trim());
+        if title.is_empty() || title.len() > MAX_ISSUE_TITLE_BYTES {
+            return Err(GitHubError::Invalid(
+                "issue title must be 1-512 characters".into(),
+            ));
+        }
+        let body = clean_body(input.body);
+        if body.is_empty() || body.len() > MAX_PULL_REQUEST_BODY_BYTES {
+            return Err(GitHubError::Invalid(
+                "issue body must be 1-65536 characters".into(),
+            ));
+        }
+        let response = self
+            .execute(
+                self.client
+                    .patch(format!(
+                        "{}/repos/{owner}/{repo}/issues/{number}",
+                        self.base_url
+                    ))
+                    .json(&serde_json::json!({"title": title, "body": body})),
+                token,
+            )
+            .await?;
+        let raw: RawIssue = parse_json(&response.body, "issue")?;
+        raw.into_issue()
+            .ok_or_else(|| GitHubError::InvalidResponse("issue had no usable shape".into()))
+    }
+
+    /// Find a recently updated issue carrying an exact deterministic marker.
+    /// The bounded scan is used only to recover a publication whose create
+    /// succeeded before its local identity was persisted.
+    pub async fn find_issue_by_marker(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        marker: &str,
+    ) -> Result<Option<GitHubIssue>, GitHubError> {
+        validate_token(token)?;
+        validate_repo_coordinates(owner, repo)?;
+        if marker.trim().is_empty() || marker.len() > 200 || marker.contains('\n') {
+            return Err(GitHubError::Invalid("issue marker is invalid".into()));
+        }
+        for page in 1..=5 {
+            let page = self.issue_page(token, owner, repo, page, None).await?;
+            if let Some(issue) = page
+                .issues
+                .iter()
+                .find(|issue| issue.body.contains(marker))
+                .cloned()
+            {
+                return Ok(Some(issue));
+            }
+            if !page.page_full {
+                break;
+            }
+        }
+        Ok(None)
+    }
+
     pub async fn get_issue(
         &self,
         token: &str,
@@ -1222,6 +1345,22 @@ pub fn validate_token(token: &str) -> Result<(), GitHubError> {
         return Err(GitHubError::Invalid(
             "GitHub token must be 16-512 printable characters".into(),
         ));
+    }
+    Ok(())
+}
+
+fn validate_issue_labels(labels: &[String]) -> Result<(), GitHubError> {
+    if labels.len() > 20 {
+        return Err(GitHubError::Invalid("too many issue labels".into()));
+    }
+    for label in labels {
+        if label.trim().is_empty()
+            || label.len() > 50
+            || label.contains('\n')
+            || label.contains('\r')
+        {
+            return Err(GitHubError::Invalid("issue label is invalid".into()));
+        }
     }
     Ok(())
 }

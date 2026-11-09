@@ -2921,9 +2921,9 @@ capabilities:
   purpose: Decompose a non-trivial request into a dependency-aware WorkGraph and author frozen formal specs with acceptance traceability
   product_objective: Executable formal specifications
   decision_status: proposed
-  implementation_status: not_implemented
+  implementation_status: in_progress
   verification:
-    deterministic: not_tested
+    deterministic: verified
     live_agent: not_tested
     uat: not_tested
     deployment: not_tested
@@ -2937,22 +2937,25 @@ capabilities:
   refs:
     adr:
     - docs/architecture/decisions/ADR-0037-agent-topology-context-and-composition.md
-    contract: []
-    source: []
-    test: []
+    contract:
+    - docs/contracts/agentic-flow.md
+    source: [native/src/agentic.rs, native/src/db/agentic_plans.rs, native/src/bin/core.rs, office/src/views/Director.tsx]
+    test: [native/src/agentic.rs, native/src/db/intake.rs, office/src/views/Director.test.tsx]
   acceptance:
     deterministic: The Planner proposes a WorkGraph that Core validates for cycles, paths, dependencies, competence and budget; the Spec Manager authors observable acceptance and negative cases only for FORMAL_SPEC; deterministic compilation freezes exact requirement, assertion and check identities; post-freeze changes require a new revision.
     real: A multi-unit browser operation is planned, specified, frozen and executed without the model changing a frozen requirement.
   evidence:
-    deterministic: []
+    deterministic:
+    - docs/evidence/spec-board-2026-11-09/deterministic.json
     live_agent: []
     uat: []
     deployment: []
     isolation: []
   limitations:
-  - Spec authoring is model-assisted; compilation, traceability and freezing are deterministic.
+  - The Planner and Spec Manager are bounded Lead-route model calls with distinct purpose and typed schemas; they do not have separate provider roles yet.
+  - A real-model browser self-test planned and froze revisions 1 and 2, but independent live certification is pending.
   blockers:
-  - Planner and Spec Manager model contracts and formal spec persistence remain pending.
+  - Per-WorkUnit execution state and the full planned-specified-executed journey remain pending.
 
 - id: CAP-061
   name: Spec issue projection and kanban
@@ -2960,9 +2963,9 @@ capabilities:
   purpose: Project frozen specs and work units to authorized GitHub issues and a truthful kanban while Core remains authoritative
   product_objective: Visible governed work
   decision_status: proposed
-  implementation_status: not_implemented
+  implementation_status: in_progress
   verification:
-    deterministic: not_tested
+    deterministic: verified
     live_agent: not_tested
     uat: not_tested
     deployment: not_tested
@@ -2975,22 +2978,25 @@ capabilities:
   refs:
     adr:
     - docs/architecture/decisions/ADR-0037-agent-topology-context-and-composition.md
-    contract: []
-    source: []
-    test: []
+    contract:
+    - docs/contracts/agentic-flow.md
+    source: [native/src/spec_publish.rs, native/src/github.rs, native/src/db/agentic_plans.rs, office/src/views/Specs.tsx]
+    test: [native/src/spec_publish.rs, native/src/db/intake.rs, office/src/views/Specs.test.tsx]
   acceptance:
     deterministic: Spec publication is an authorized idempotent external effect; issues carry exact operation, spec, risk and state labels; edits and comments are operator context and cannot mutate a frozen spec; Core state is authoritative and drift is detected; a local board works without GitHub.
     real: A browser operation publishes a spec epic and work-unit issues, moves them through kanban states and closes them on accepted delivery without a second state authority.
   evidence:
-    deterministic: []
+    deterministic:
+    - docs/evidence/spec-board-2026-11-09/deterministic.json
     live_agent: []
     uat: []
     deployment: []
     isolation: []
   limitations:
-  - GitHub issues are a projection; GitHub Projects is optional.
+  - GitHub create/update/refresh is implemented and unit-tested for bounded shapes and markers, but no live GitHub publication was exercised in this slice.
+  - The kanban column is derived from the operation/Campaign/Gate, not per-WorkUnit execution.
   blockers:
-  - GitHub write authorization, Spec Publisher and Office board remain pending.
+  - Live GitHub external-effect acceptance and per-WorkUnit kanban state remain pending.
 
 - id: CAP-062
   name: Explorer, Librarian and temporary skills

@@ -47,6 +47,7 @@ pub mod sandbox;
 pub mod secrets;
 pub mod semantic_review;
 pub mod service_network;
+pub mod spec_publish;
 pub mod sse;
 pub mod subscription_admission;
 pub mod telemetry;

@@ -5,11 +5,17 @@
 //! A model may propose a triage, stack interpretation, plan or specification;
 //! it cannot select tools, widen scope, accept a candidate or grant authority.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
 
 /// The owner-facing classification of a request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -723,6 +729,386 @@ impl OwnerCharter {
     }
 }
 
+/// A Planner proposal. Core validates and freezes it; the model cannot widen
+/// paths, dependencies or budget.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct PlannedWorkUnit {
+    pub id: String,
+    pub title: String,
+    pub objective: String,
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+    #[serde(default)]
+    pub paths: Vec<String>,
+    #[serde(default)]
+    pub acceptance: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct WorkGraphModel {
+    pub units: Vec<PlannedWorkUnit>,
+    #[serde(default)]
+    pub assumptions: Vec<String>,
+    #[serde(default)]
+    pub risks: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ValidatedWorkGraph {
+    pub units: Vec<PlannedWorkUnit>,
+    pub assumptions: Vec<String>,
+    pub risks: Vec<String>,
+    pub topological_order: Vec<String>,
+    pub graph_sha256: String,
+}
+
+pub const MAX_WORK_UNITS: usize = 24;
+pub const MAX_UNIT_PATHS: usize = 32;
+
+/// Deterministic WorkGraph validation. Cycles, unknown predecessors, unsafe
+/// paths, out-of-scope paths, duplicate ids, empty units and overlapping
+/// independent write scopes fail closed. The returned order is stable.
+pub fn validate_work_graph(
+    model: &WorkGraphModel,
+    allowed_paths: &[String],
+) -> Result<ValidatedWorkGraph, String> {
+    if model.units.is_empty() {
+        return Err("work graph is empty".into());
+    }
+    if model.units.len() > MAX_WORK_UNITS {
+        return Err(format!(
+            "work graph exceeds the {MAX_WORK_UNITS}-unit bound"
+        ));
+    }
+    let mut by_id = BTreeMap::new();
+    for unit in &model.units {
+        if !valid_unit_id(&unit.id) {
+            return Err(format!(
+                "work unit id {:?} must be a lowercase slug",
+                unit.id
+            ));
+        }
+        if unit.title.trim().is_empty() || unit.objective.trim().is_empty() {
+            return Err(format!("work unit {} needs a title and objective", unit.id));
+        }
+        if unit.title.len() > 200 || unit.objective.len() > 4_000 {
+            return Err(format!("work unit {} text exceeds the bound", unit.id));
+        }
+        if unit.depends_on.len() > MAX_WORK_UNITS {
+            return Err(format!("work unit {} has too many predecessors", unit.id));
+        }
+        if unit.paths.is_empty() || unit.paths.len() > MAX_UNIT_PATHS {
+            return Err(format!(
+                "work unit {} must declare 1-{MAX_UNIT_PATHS} paths",
+                unit.id
+            ));
+        }
+        let mut unique_paths = BTreeSet::new();
+        for path in &unit.paths {
+            if !crate::lead::is_safe_relative_path(path) {
+                return Err(format!("work unit {} has unsafe path {:?}", unit.id, path));
+            }
+            if !allowed_paths.is_empty()
+                && !allowed_paths
+                    .iter()
+                    .any(|granted| crate::lead::path_within(path, granted))
+            {
+                return Err(format!(
+                    "work unit {} path {:?} is outside the project scope",
+                    unit.id, path
+                ));
+            }
+            if !unique_paths.insert(path) {
+                return Err(format!("work unit {} repeats path {:?}", unit.id, path));
+            }
+        }
+        if unit.acceptance.is_empty() || unit.acceptance.len() > 20 {
+            return Err(format!(
+                "work unit {} must declare 1-20 acceptance statements",
+                unit.id
+            ));
+        }
+        for statement in &unit.acceptance {
+            if statement.trim().is_empty() || statement.len() > 2_000 {
+                return Err(format!("work unit {} acceptance is invalid", unit.id));
+            }
+        }
+        if by_id.insert(unit.id.as_str(), unit).is_some() {
+            return Err(format!("duplicate work unit id {:?}", unit.id));
+        }
+    }
+    for unit in &model.units {
+        let mut unique_dependencies = BTreeSet::new();
+        for dependency in &unit.depends_on {
+            if dependency == &unit.id {
+                return Err(format!("work unit {} depends on itself", unit.id));
+            }
+            if !by_id.contains_key(dependency.as_str()) {
+                return Err(format!(
+                    "work unit {} references unknown predecessor {dependency:?}",
+                    unit.id
+                ));
+            }
+            if !unique_dependencies.insert(dependency) {
+                return Err(format!(
+                    "work unit {} repeats predecessor {dependency:?}",
+                    unit.id
+                ));
+            }
+        }
+    }
+    let topological_order = topological_order(&model.units, &by_id)?;
+    for (index, left) in model.units.iter().enumerate() {
+        for right in &model.units[index + 1..] {
+            let left_depends = depends_on(&left.id, &right.id, &by_id);
+            let right_depends = depends_on(&right.id, &left.id, &by_id);
+            if left_depends || right_depends {
+                continue;
+            }
+            if left
+                .paths
+                .iter()
+                .any(|left_path| right.paths.iter().any(|right_path| left_path == right_path))
+            {
+                return Err(format!(
+                    "independent work units {} and {} share a write path",
+                    left.id, right.id
+                ));
+            }
+        }
+    }
+    let canonical = serde_json::to_vec(&serde_json::json!({
+        "units": model.units,
+        "assumptions": model.assumptions,
+        "risks": model.risks,
+    }))
+    .map_err(|_| "work graph encoding".to_string())?;
+    Ok(ValidatedWorkGraph {
+        units: model.units.clone(),
+        assumptions: model.assumptions.clone(),
+        risks: model.risks.clone(),
+        topological_order,
+        graph_sha256: sha256_hex(&canonical),
+    })
+}
+
+fn valid_unit_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 48
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        && id.bytes().next().is_some_and(|byte| byte != b'-')
+        && id.bytes().last().is_some_and(|byte| byte != b'-')
+}
+
+fn depends_on(start: &str, target: &str, by_id: &BTreeMap<&str, &PlannedWorkUnit>) -> bool {
+    let mut stack = vec![start];
+    let mut seen = BTreeSet::new();
+    while let Some(current) = stack.pop() {
+        if !seen.insert(current) {
+            continue;
+        }
+        if let Some(unit) = by_id.get(current) {
+            for dependency in &unit.depends_on {
+                if dependency == target {
+                    return true;
+                }
+                stack.push(dependency);
+            }
+        }
+    }
+    false
+}
+
+fn topological_order(
+    units: &[PlannedWorkUnit],
+    by_id: &BTreeMap<&str, &PlannedWorkUnit>,
+) -> Result<Vec<String>, String> {
+    let mut remaining: BTreeMap<&str, usize> = by_id
+        .iter()
+        .map(|(id, unit)| (*id, unit.depends_on.len()))
+        .collect();
+    let mut ready: BTreeSet<&str> = remaining
+        .iter()
+        .filter(|(_, count)| **count == 0)
+        .map(|(id, _)| *id)
+        .collect();
+    let mut order = Vec::with_capacity(units.len());
+    while let Some(id) = ready.pop_first() {
+        order.push(id.to_owned());
+        for unit in units {
+            if unit.depends_on.iter().any(|dependency| dependency == id) {
+                let count = remaining
+                    .get_mut(unit.id.as_str())
+                    .ok_or_else(|| "work graph predecessor state".to_string())?;
+                *count -= 1;
+                if *count == 0 {
+                    ready.insert(unit.id.as_str());
+                }
+            }
+        }
+    }
+    if order.len() != units.len() {
+        return Err("work graph contains a dependency cycle".into());
+    }
+    Ok(order)
+}
+
+/// A Spec Manager proposal. Only FORMAL_SPEC requests use this contract.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct SpecDraftModel {
+    pub summary: String,
+    pub requirements: Vec<SpecRequirementDraft>,
+    #[serde(default)]
+    pub assumptions: Vec<String>,
+    #[serde(default)]
+    pub risks: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct SpecRequirementDraft {
+    pub statement: String,
+    #[serde(default)]
+    pub acceptance: Vec<String>,
+    #[serde(default)]
+    pub negative: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrozenSpec {
+    pub revision: u32,
+    pub summary: String,
+    pub requirements: Vec<FrozenRequirement>,
+    pub assumptions: Vec<String>,
+    pub risks: Vec<String>,
+    pub spec_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrozenRequirement {
+    pub id: String,
+    pub statement: String,
+    pub assertions: Vec<FrozenAssertion>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum SpecAssertionKind {
+    Acceptance,
+    Negative,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrozenAssertion {
+    pub id: String,
+    pub kind: SpecAssertionKind,
+    pub statement: String,
+    pub check_id: String,
+}
+
+pub const MAX_SPEC_REQUIREMENTS: usize = 40;
+pub const MAX_SPEC_CASES: usize = 12;
+
+/// Deterministic spec compilation. Requirement, assertion and check
+/// identities are derived from position and revision, never from model text.
+/// Every requirement must carry observable acceptance and negative cases.
+pub fn compile_spec(draft: &SpecDraftModel, revision: u32) -> Result<FrozenSpec, String> {
+    if revision == 0 {
+        return Err("spec revision must be positive".into());
+    }
+    if draft.summary.trim().is_empty() || draft.summary.len() > 4_000 {
+        return Err("spec summary is required".into());
+    }
+    if draft.requirements.is_empty() || draft.requirements.len() > MAX_SPEC_REQUIREMENTS {
+        return Err(format!(
+            "spec must declare 1-{MAX_SPEC_REQUIREMENTS} requirements"
+        ));
+    }
+    let mut requirements = Vec::with_capacity(draft.requirements.len());
+    for (index, requirement) in draft.requirements.iter().enumerate() {
+        let number = index + 1;
+        if requirement.statement.trim().is_empty() || requirement.statement.len() > 2_000 {
+            return Err(format!("requirement {number} statement is invalid"));
+        }
+        if requirement.acceptance.is_empty() || requirement.acceptance.len() > MAX_SPEC_CASES {
+            return Err(format!(
+                "requirement {number} needs 1-{MAX_SPEC_CASES} acceptance cases"
+            ));
+        }
+        if requirement.negative.is_empty() || requirement.negative.len() > MAX_SPEC_CASES {
+            return Err(format!(
+                "requirement {number} needs 1-{MAX_SPEC_CASES} negative cases"
+            ));
+        }
+        let mut assertions = Vec::new();
+        for (case_index, statement) in requirement.acceptance.iter().enumerate() {
+            let case = case_index + 1;
+            if statement.trim().is_empty() || statement.len() > 2_000 {
+                return Err(format!(
+                    "requirement {number} acceptance case {case} is invalid"
+                ));
+            }
+            assertions.push(FrozenAssertion {
+                id: format!("ASR-{number:03}-ACC-{case:02}"),
+                kind: SpecAssertionKind::Acceptance,
+                statement: statement.clone(),
+                check_id: format!("CHK-{number:03}-ACC-{case:02}"),
+            });
+        }
+        for (case_index, statement) in requirement.negative.iter().enumerate() {
+            let case = case_index + 1;
+            if statement.trim().is_empty() || statement.len() > 2_000 {
+                return Err(format!(
+                    "requirement {number} negative case {case} is invalid"
+                ));
+            }
+            assertions.push(FrozenAssertion {
+                id: format!("ASR-{number:03}-NEG-{case:02}"),
+                kind: SpecAssertionKind::Negative,
+                statement: statement.clone(),
+                check_id: format!("CHK-{number:03}-NEG-{case:02}"),
+            });
+        }
+        requirements.push(FrozenRequirement {
+            id: format!("REQ-{number:03}"),
+            statement: requirement.statement.clone(),
+            assertions,
+        });
+    }
+    let mut frozen = FrozenSpec {
+        revision,
+        summary: draft.summary.clone(),
+        requirements,
+        assumptions: draft.assumptions.clone(),
+        risks: draft.risks.clone(),
+        spec_sha256: String::new(),
+    };
+    frozen.spec_sha256 = spec_content_sha256(&frozen);
+    Ok(frozen)
+}
+
+/// Stable digest of the frozen content, excluding the digest field itself.
+pub fn spec_content_sha256(spec: &FrozenSpec) -> String {
+    let canonical = serde_json::to_vec(&serde_json::json!({
+        "revision": spec.revision,
+        "summary": spec.summary,
+        "requirements": spec.requirements,
+        "assumptions": spec.assumptions,
+        "risks": spec.risks,
+    }))
+    .expect("frozen spec is serializable");
+    sha256_hex(&canonical)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -869,6 +1255,121 @@ mod tests {
         assert!(formal.assignments.iter().any(|a| a.role == "Planner"));
         assert!(formal.assignments.iter().any(|a| a.role == "Spec Manager"));
         assert!(formal.assignments.iter().any(|a| a.count == 3));
+    }
+
+    fn unit(id: &str, depends_on: &[&str], paths: &[&str]) -> PlannedWorkUnit {
+        PlannedWorkUnit {
+            id: id.into(),
+            title: format!("Unit {id}"),
+            objective: format!("Complete {id}"),
+            depends_on: depends_on.iter().map(|value| value.to_string()).collect(),
+            paths: paths.iter().map(|value| value.to_string()).collect(),
+            acceptance: vec!["observable result".into()],
+        }
+    }
+
+    #[test]
+    fn work_graph_orders_dependencies_and_freezes_identity() {
+        let model = WorkGraphModel {
+            units: vec![
+                unit("api", &["model"], &["src/api.rs"]),
+                unit("model", &[], &["src/model.rs"]),
+            ],
+            assumptions: vec!["rust".into()],
+            risks: vec![],
+        };
+        let graph = validate_work_graph(&model, &["src".into()]).unwrap();
+        assert_eq!(graph.topological_order, vec!["model", "api"]);
+        assert_eq!(graph.graph_sha256.len(), 64);
+        let again = validate_work_graph(&model, &["src".into()]).unwrap();
+        assert_eq!(graph.graph_sha256, again.graph_sha256);
+    }
+
+    #[test]
+    fn work_graph_rejects_cycles_unknown_dependencies_and_scope_escape() {
+        let cyclic = WorkGraphModel {
+            units: vec![
+                unit("a", &["b"], &["src/a.rs"]),
+                unit("b", &["a"], &["src/b.rs"]),
+            ],
+            assumptions: vec![],
+            risks: vec![],
+        };
+        assert!(validate_work_graph(&cyclic, &["src".into()]).is_err());
+        let unknown = WorkGraphModel {
+            units: vec![unit("a", &["missing"], &["src/a.rs"])],
+            assumptions: vec![],
+            risks: vec![],
+        };
+        assert!(validate_work_graph(&unknown, &["src".into()]).is_err());
+        let escaped = WorkGraphModel {
+            units: vec![unit("a", &[], &["../secret"])],
+            assumptions: vec![],
+            risks: vec![],
+        };
+        assert!(validate_work_graph(&escaped, &[]).is_err());
+        let outside = WorkGraphModel {
+            units: vec![unit("a", &[], &["tests/a.rs"])],
+            assumptions: vec![],
+            risks: vec![],
+        };
+        assert!(validate_work_graph(&outside, &["src".into()]).is_err());
+    }
+
+    #[test]
+    fn independent_units_cannot_share_a_write_path() {
+        let model = WorkGraphModel {
+            units: vec![
+                unit("a", &[], &["src/lib.rs"]),
+                unit("b", &[], &["src/lib.rs"]),
+            ],
+            assumptions: vec![],
+            risks: vec![],
+        };
+        assert!(validate_work_graph(&model, &["src".into()]).is_err());
+    }
+
+    fn spec_draft() -> SpecDraftModel {
+        SpecDraftModel {
+            summary: "Bounded calendar validation".into(),
+            requirements: vec![SpecRequirementDraft {
+                statement: "Invalid dates are rejected.".into(),
+                acceptance: vec!["2025-13-01 is rejected".into()],
+                negative: vec!["2024-02-29 is accepted".into()],
+            }],
+            assumptions: vec![],
+            risks: vec![],
+        }
+    }
+
+    #[test]
+    fn spec_compilation_is_deterministic_and_traceable() {
+        let frozen = compile_spec(&spec_draft(), 1).unwrap();
+        assert_eq!(frozen.requirements[0].id, "REQ-001");
+        assert_eq!(
+            frozen.requirements[0].assertions[0].check_id,
+            "CHK-001-ACC-01"
+        );
+        assert_eq!(
+            frozen.requirements[0].assertions[1].check_id,
+            "CHK-001-NEG-01"
+        );
+        assert_eq!(frozen.spec_sha256.len(), 64);
+        let again = compile_spec(&spec_draft(), 1).unwrap();
+        assert_eq!(frozen.spec_sha256, again.spec_sha256);
+        let revision = compile_spec(&spec_draft(), 2).unwrap();
+        assert_ne!(frozen.spec_sha256, revision.spec_sha256);
+    }
+
+    #[test]
+    fn spec_compilation_requires_acceptance_and_negative_cases() {
+        let mut draft = spec_draft();
+        draft.requirements[0].negative.clear();
+        assert!(compile_spec(&draft, 1).is_err());
+        draft.requirements[0].negative.push("reject".into());
+        draft.requirements[0].acceptance.clear();
+        assert!(compile_spec(&draft, 1).is_err());
+        assert!(compile_spec(&spec_draft(), 0).is_err());
     }
 
     #[test]

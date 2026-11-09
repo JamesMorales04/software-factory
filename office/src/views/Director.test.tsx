@@ -12,6 +12,11 @@ const mocks = vi.hoisted(() => ({
   assessAgenticRequest: vi.fn(),
   getAgenticScheduler: vi.fn(),
   setAgenticPriority: vi.fn(),
+  getAgenticPlan: vi.fn(),
+  planAgenticRequest: vi.fn(),
+  getAgenticSpec: vi.fn(),
+  authorAgenticSpec: vi.fn(),
+  freezeAgenticSpec: vi.fn(),
 }));
 
 vi.mock("../coreApi", () => ({
@@ -144,6 +149,49 @@ const detail: AgenticRequestDetail = {
   semantic: null,
 };
 
+const graph = {
+  units: [
+    {
+      id: "unit-1",
+      title: "Implement the ICS exporter",
+      objective: "Add the exporter",
+      dependsOn: [],
+      paths: ["src/ics"],
+      acceptance: ["The exporter returns a calendar"],
+    },
+  ],
+  assumptions: [],
+  risks: [],
+  topologicalOrder: ["unit-1"],
+  graphSha256: "c".repeat(64),
+};
+
+const planRecord = {
+  requestId: "request-1",
+  graphJson: JSON.stringify(graph),
+  graphSha256: graph.graphSha256,
+  topologicalOrderJson: JSON.stringify(graph.topologicalOrder),
+  plannerProvider: "opencode",
+  plannerModel: "deepseek-v4.1-flash",
+  schemaSha256: "e".repeat(64),
+  requestSha256: "f".repeat(64),
+  inputTokens: 10,
+  outputTokens: 5,
+  totalTokens: 15,
+  costMicros: 1,
+  usageKnown: true,
+  createdAt: "2026-11-08T12:00:00Z",
+};
+
+const emptySpec = {
+  frozen: null,
+  draft: null,
+  graph: planRecord,
+  publication: null,
+  issues: [],
+  githubBound: false,
+};
+
 function renderDirector() {
   return render(
     <I18nProvider initialLocale="en">
@@ -166,6 +214,23 @@ describe("Director", () => {
       resourcePolicy: "CPU and available memory",
       worktreePolicy: "PER_ATTEMPT",
     });
+    mocks.getAgenticPlan.mockReset().mockResolvedValue({ graph: planRecord });
+    mocks.planAgenticRequest.mockReset().mockResolvedValue({
+      graph: planRecord,
+      validated: graph,
+      provider: "opencode",
+      model: "deepseek-v4.1-flash",
+      usage: {
+        inputTokens: 10,
+        outputTokens: 5,
+        totalTokens: 15,
+        costMicros: 1,
+        usageKnown: true,
+      },
+    });
+    mocks.getAgenticSpec.mockReset().mockResolvedValue(emptySpec);
+    mocks.authorAgenticSpec.mockReset();
+    mocks.freezeAgenticSpec.mockReset();
     mocks.setAgenticPriority.mockReset().mockResolvedValue({
       id: "operation-request-1",
       requestId: "request-1",
@@ -197,7 +262,64 @@ describe("Director", () => {
         "At 70% of effective context; at most 2 consecutive compactions",
       ),
     ).toBeDefined();
-    expect(screen.getByText("unit-1")).toBeDefined();
+    expect(screen.getAllByText("unit-1").length).toBeGreaterThan(0);
+  });
+
+  it("shows the validated Planner WorkGraph and recompiles it", async () => {
+    renderDirector();
+    await screen.findAllByText("Implement the ICS exporter");
+    expect(screen.getAllByText("1 unit(s)").length).toBeGreaterThan(0);
+    expect(screen.getByText("Graph SHA-256")).toBeDefined();
+    await userEvent.click(screen.getByRole("button", { name: "Compile plan" }));
+    expect(mocks.planAgenticRequest).toHaveBeenCalledWith("request-1");
+    expect(
+      await screen.findByText(
+        "The Planner WorkGraph was validated and recorded.",
+      ),
+    ).toBeDefined();
+  });
+
+  it("shows both the frozen revision and a newer draft revision", async () => {
+    const frozenSpec = {
+      revision: 1,
+      summary: "Frozen summary",
+      requirements: [],
+      assumptions: [],
+      risks: [],
+      specSha256: "a".repeat(64),
+    };
+    mocks.getAgenticSpec.mockResolvedValue({
+      ...emptySpec,
+      frozen: {
+        record: {
+          ...planRecord,
+          id: "spec-1",
+          revision: 1,
+          state: "FROZEN",
+          draftJson: "{}",
+          frozenJson: JSON.stringify(frozenSpec),
+          specSha256: frozenSpec.specSha256,
+          frozenAt: "2026-11-08T12:00:00Z",
+        },
+        spec: frozenSpec,
+      },
+      draft: {
+        record: {
+          ...planRecord,
+          id: "spec-2",
+          revision: 2,
+          state: "DRAFT",
+          draftJson: "{}",
+          frozenJson: null,
+          specSha256: null,
+          frozenAt: null,
+        },
+        preview: { ...frozenSpec, revision: 2, specSha256: "b".repeat(64) },
+      },
+    });
+    renderDirector();
+    expect(await screen.findByText("Frozen revision 1")).toBeDefined();
+    expect(screen.getByText("Draft revision 2")).toBeDefined();
   });
 
   it("shows the operation manager, resource governor and updates priority", async () => {

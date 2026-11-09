@@ -879,6 +879,7 @@ pub use authorization::{
 };
 mod agentic_assessments;
 mod agentic_operations;
+mod agentic_plans;
 mod delegations;
 mod device_sessions;
 pub use device_sessions::{DeviceSessionRecord, NewDeviceSession};
@@ -940,6 +941,10 @@ mod provider_settings;
 mod subscription_admissions;
 pub use agentic_assessments::{AgenticAssessmentRecord, NewAgenticAssessment};
 pub use agentic_operations::AgenticOperationRecord;
+pub use agentic_plans::{
+    AgenticSpecIssueRecord, AgenticSpecPublicationRecord, AgenticSpecRecord,
+    AgenticWorkGraphRecord, NewAgenticSpecDraft, NewAgenticSpecPublication, NewAgenticWorkGraph,
+};
 pub use provider_settings::{ProviderSettingsAudit, ProviderSettingsRecord, ProviderSettingsWrite};
 pub use subscription_admissions::{ScopeAdmissionRecord, ScopeAdmissionWrite};
 mod runtime_settings;

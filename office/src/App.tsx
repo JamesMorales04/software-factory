@@ -26,6 +26,7 @@ import { Requests } from "./views/Requests";
 import { RequestWorkspace } from "./views/RequestWorkspace";
 import { Runtime } from "./views/Runtime";
 import { Settings } from "./views/Settings";
+import { Specs } from "./views/Specs";
 
 function BootstrapGate({
   onComplete,
@@ -238,6 +239,7 @@ export function App() {
         <Route path="/projects/:projectId/files" element={<ProjectFiles />} />
         <Route path="/campaigns" element={<Campaigns />} />
         <Route path="/issues" element={<Issues />} />
+        <Route path="/specs" element={<Specs />} />
         <Route path="/campaigns/:campaignId" element={<CampaignDetail />} />
         <Route path="/agents" element={<AgentOffice />} />
         <Route path="/agents/:participantId" element={<AgentOffice />} />

@@ -1611,6 +1611,14 @@ export interface RepairCampaignResult {
   replayed: boolean;
 }
 
+export interface AgenticUsage {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  costMicros: number;
+  usageKnown: boolean;
+}
+
 export interface AgenticSemanticAssessment {
   provider: string;
   model: string;
@@ -1676,6 +1684,144 @@ export interface AgenticOperation {
   worktreePolicy: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface AgenticWorkUnit {
+  id: string;
+  title: string;
+  objective: string;
+  dependsOn: string[];
+  paths: string[];
+  acceptance: string[];
+}
+
+export interface AgenticWorkGraph {
+  units: AgenticWorkUnit[];
+  assumptions: string[];
+  risks: string[];
+  topologicalOrder: string[];
+  graphSha256: string;
+}
+
+export interface AgenticWorkGraphRecord {
+  requestId: string;
+  graphJson: string;
+  graphSha256: string;
+  topologicalOrderJson: string;
+  plannerProvider: string;
+  plannerModel: string;
+  schemaSha256: string;
+  requestSha256: string;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  costMicros: number;
+  usageKnown: boolean;
+  createdAt: string;
+}
+
+export interface AgenticFrozenAssertion {
+  id: string;
+  kind: "ACCEPTANCE" | "NEGATIVE";
+  statement: string;
+  checkId: string;
+}
+
+export interface AgenticFrozenRequirement {
+  id: string;
+  statement: string;
+  assertions: AgenticFrozenAssertion[];
+}
+
+export interface AgenticFrozenSpec {
+  revision: number;
+  summary: string;
+  requirements: AgenticFrozenRequirement[];
+  assumptions: string[];
+  risks: string[];
+  specSha256: string;
+}
+
+export interface AgenticSpecRecord {
+  id: string;
+  requestId: string;
+  revision: number;
+  state: "DRAFT" | "FROZEN" | "SUPERSEDED";
+  draftJson: string;
+  frozenJson: string | null;
+  specSha256: string | null;
+  graphJson: string | null;
+  graphSha256: string | null;
+  provider: string;
+  model: string;
+  schemaSha256: string;
+  requestSha256: string;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  costMicros: number;
+  usageKnown: boolean;
+  createdAt: string;
+  frozenAt: string | null;
+}
+
+export interface AgenticSpecPublication {
+  id: string;
+  specId: string;
+  projectId: string;
+  provider: "GITHUB" | "LOCAL";
+  repository: string;
+  status: "PENDING" | "PUBLISHED" | "FAILED" | "LOCAL";
+  driftStatus: "IN_SYNC" | "DRIFTED" | "UNKNOWN";
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AgenticSpecIssue {
+  specId: string;
+  unitId: string;
+  marker: string;
+  externalNumber: number | null;
+  externalUrl: string | null;
+  state: string;
+  updatedAt: string;
+}
+
+export interface AgenticSpecDetail {
+  frozen: { record: AgenticSpecRecord; spec: AgenticFrozenSpec | null } | null;
+  draft: {
+    record: AgenticSpecRecord;
+    preview: AgenticFrozenSpec | null;
+  } | null;
+  graph: AgenticWorkGraphRecord | null;
+  publication: AgenticSpecPublication | null;
+  issues: AgenticSpecIssue[];
+  githubBound: boolean;
+}
+
+export interface AgenticSpecBoardCard {
+  specId: string;
+  requestId: string;
+  projectId: string;
+  objective: string;
+  revision: number;
+  summary: string | null;
+  specSha256: string | null;
+  graphSha256: string | null;
+  frozenAt: string | null;
+  column: string;
+  campaignStatus: string | null;
+  gateOutcome: string | null;
+  operation: AgenticOperation | null;
+  publication: AgenticSpecPublication | null;
+  issues: AgenticSpecIssue[];
+  units: AgenticWorkUnit[];
+}
+
+export interface AgenticSpecBoard {
+  columns: string[];
+  specs: AgenticSpecBoardCard[];
 }
 
 export interface ExecutionPolicyRequest {
@@ -2937,6 +3083,57 @@ export const coreApi = {
     request<unknown>(`/agentic/requests/${encodeURIComponent(id)}/assess`, {
       method: "POST",
     }),
+  getAgenticPlan: (id: string) =>
+    request<{ graph: AgenticWorkGraphRecord | null }>(
+      `/agentic/requests/${encodeURIComponent(id)}/plan`,
+    ),
+  planAgenticRequest: (id: string) =>
+    request<{
+      graph: AgenticWorkGraphRecord;
+      validated: AgenticWorkGraph;
+      provider: string;
+      model: string;
+      usage: AgenticUsage;
+    }>(`/agentic/requests/${encodeURIComponent(id)}/plan`, {
+      method: "POST",
+    }),
+  getAgenticSpec: (id: string) =>
+    request<AgenticSpecDetail>(
+      `/agentic/requests/${encodeURIComponent(id)}/spec`,
+    ),
+  authorAgenticSpec: (id: string) =>
+    request<{
+      spec: AgenticSpecRecord;
+      preview: AgenticFrozenSpec | null;
+      provider: string;
+      model: string;
+      usage: AgenticUsage;
+    }>(`/agentic/requests/${encodeURIComponent(id)}/spec`, {
+      method: "POST",
+    }),
+  freezeAgenticSpec: (id: string, expectedSpecSha256: string) =>
+    request<{ spec: AgenticSpecRecord; frozen: AgenticFrozenSpec }>(
+      `/agentic/requests/${encodeURIComponent(id)}/spec/freeze`,
+      {
+        method: "POST",
+        body: JSON.stringify({ expected_spec_sha256: expectedSpecSha256 }),
+      },
+    ),
+  publishAgenticSpec: (id: string, confirm: boolean, local = false) =>
+    request<{
+      publication: AgenticSpecPublication;
+      issues: AgenticSpecIssue[];
+      local?: boolean;
+    }>(`/agentic/requests/${encodeURIComponent(id)}/spec/publish`, {
+      method: "POST",
+      body: JSON.stringify({ confirm, local }),
+    }),
+  refreshAgenticSpec: (id: string) =>
+    request<{ publication: AgenticSpecPublication; inSync: boolean }>(
+      `/agentic/requests/${encodeURIComponent(id)}/spec/refresh`,
+      { method: "POST" },
+    ),
+  getAgenticSpecBoard: () => request<AgenticSpecBoard>("/agentic/specs/board"),
   listAgenticPortfolio: () =>
     request<AgenticPortfolioEntry[]>("/agentic/portfolio"),
   getAgenticRequest: (id: string) =>

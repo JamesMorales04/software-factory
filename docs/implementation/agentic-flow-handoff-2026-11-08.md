@@ -85,16 +85,32 @@ commit
   candidate-based repair workspace/project design; do not simply create a new
   request from the base commit.
 
-### Phase 4 — Planner, Spec Manager, issues and kanban
+### Phase 4 — Planner, Spec Manager, issues and kanban (implemented)
 
-- Planner model contract and WorkGraph validation.
-- Spec Manager model contract, formal specs with Gherkin/acceptance/negative
-  cases and requirement→assertion→check traceability.
-- Deterministic freeze/seal.
-- Durable spec records and authorized GitHub issue projection; Core remains
-  source of truth; local board fallback; drift detection.
+- Typed `WorkGraphModel`/`PlannedWorkUnit` with deterministic validation for
+  cycles, unknown predecessors, unsafe or out-of-scope paths, unit bounds and
+  shared write paths between independent units.
+- Typed `SpecDraftModel` and deterministic `compile_spec`: requirement,
+  assertion and check identities are derived from position and revision, never
+  from model text; every requirement needs acceptance and negative cases.
+- Real Planner and Spec Manager model calls through the frozen Lead route with
+  distinct purpose, typed schemas and bounded output. Core validates and stores
+  only the compiled record.
+- Migration `0056_agentic_plans_specs.sql`, durable work graphs, draft/frozen
+  spec revisions, supersession, publication and issue projection records.
+- Operator-confirmed GitHub issue projection with deterministic body markers,
+  bounded marker recovery, create/update and drift refresh; local board
+  fallback when GitHub is unavailable.
+- Office `/specs` kanban with Core-derived columns, requirement-to-check
+  traceability, publication/drift state and local fallback; Director Planner
+  and Spec Manager panels with freeze and revision controls.
+- Real browser evidence in `docs/evidence/spec-board-2026-11-09/`: request
+  `659636fa`, FORMAL_SPEC route, real `deepseek-v4.1-flash` Planner and Spec
+  Manager calls, revision 2 frozen, 6 requirements, 20 assertions, local board,
+  1440/390 with zero console errors and no overflow. GitHub live publication
+  remains `NOT_TESTED`.
 
-### Phase 5 — Explorer, Librarian, Context7 and skills
+### Phase 5 — Explorer, Librarian, Context7 and skills (next)
 
 - Read-only Explorer using deterministic repository evidence plus semantic
   interpretation.

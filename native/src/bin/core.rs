@@ -464,6 +464,21 @@ struct AgenticPriorityRequest {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct AgenticSpecFreezeRequest {
+    expected_spec_sha256: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AgenticSpecPublishRequest {
+    #[serde(default)]
+    confirm: bool,
+    #[serde(default)]
+    local: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RepairCampaignRequest {
     #[serde(default)]
     confirm: bool,
@@ -990,6 +1005,27 @@ fn office_api_router(app: Arc<App>) -> Router {
             "/agentic/requests/{id}/assess",
             post(assess_agentic_request),
         )
+        .route(
+            "/agentic/requests/{id}/plan",
+            get(get_agentic_plan).post(plan_agentic_request),
+        )
+        .route(
+            "/agentic/requests/{id}/spec",
+            get(get_agentic_spec).post(author_agentic_spec),
+        )
+        .route(
+            "/agentic/requests/{id}/spec/freeze",
+            post(freeze_agentic_spec),
+        )
+        .route(
+            "/agentic/requests/{id}/spec/publish",
+            post(publish_agentic_spec),
+        )
+        .route(
+            "/agentic/requests/{id}/spec/refresh",
+            post(refresh_agentic_spec),
+        )
+        .route("/agentic/specs/board", get(agentic_spec_board))
         .route("/agentic/requests/{id}", get(agentic_request_detail))
         .route(
             "/provider/sessions/{session_record_id}/tool_events",
@@ -1207,6 +1243,27 @@ fn api_router(app: Arc<App>) -> Router {
             "/agentic/requests/{id}/assess",
             post(assess_agentic_request),
         )
+        .route(
+            "/agentic/requests/{id}/plan",
+            get(get_agentic_plan).post(plan_agentic_request),
+        )
+        .route(
+            "/agentic/requests/{id}/spec",
+            get(get_agentic_spec).post(author_agentic_spec),
+        )
+        .route(
+            "/agentic/requests/{id}/spec/freeze",
+            post(freeze_agentic_spec),
+        )
+        .route(
+            "/agentic/requests/{id}/spec/publish",
+            post(publish_agentic_spec),
+        )
+        .route(
+            "/agentic/requests/{id}/spec/refresh",
+            post(refresh_agentic_spec),
+        )
+        .route("/agentic/specs/board", get(agentic_spec_board))
         .route("/agentic/requests/{id}", get(agentic_request_detail))
         .route(
             "/provider/sessions/{session_record_id}/tool_events",
@@ -9742,12 +9799,31 @@ async fn agentic_stack_for_project(
     factory_native::agentic::detect_stack(&repository)
 }
 
-async fn agentic_projection_for_request(
+struct AgenticTriageContext {
+    proposal: Option<factory_native::lead::LeadPlanProposal>,
+    risk: factory_native::lead::RiskClass,
+    stack: factory_native::agentic::StackProfile,
+    triage: factory_native::agentic::TriageDecision,
+    semantic: Option<(
+        factory_native::db::AgenticAssessmentRecord,
+        factory_native::agentic::AgenticTriageModel,
+    )>,
+}
+
+impl AgenticTriageContext {
+    fn assurance(&self) -> factory_native::agentic::Assurance {
+        self.triage.assurance.max(assurance_for_risk(self.risk))
+    }
+}
+
+/// One Core-owned interpretation of the request used by the Director, Planner
+/// and Spec Manager. The model remains advisory; deterministic floors are
+/// applied here and reused everywhere.
+async fn agentic_triage_context(
     app: &App,
     record: &factory_native::db::IntakeRequestRecord,
-) -> Result<serde_json::Value, Error> {
+) -> Result<AgenticTriageContext, Error> {
     use factory_native::agentic;
-    let lead = app.db.lead_request(&record.lead_request_id).await?;
     let proposal = app
         .db
         .lead_proposal(&record.lead_request_id)
@@ -9757,12 +9833,6 @@ async fn agentic_projection_for_request(
             serde_json::from_str::<factory_native::lead::LeadPlanProposal>(&record.proposal_json)
                 .ok()
         });
-    let plan = app.db.frozen_lead_plan(&record.lead_request_id).await.ok();
-    let tasks = if let Some(campaign_id) = &record.campaign_id {
-        app.db.campaign_tasks(campaign_id).await.unwrap_or_default()
-    } else {
-        Vec::new()
-    };
     let work_units = proposal
         .as_ref()
         .map(|proposal| proposal.work_units.len())
@@ -9833,14 +9903,43 @@ async fn agentic_projection_for_request(
         Some((_, model)) => agentic::merge_model_decision(agentic::triage(&signals), model),
         None => agentic::triage(&signals),
     };
+    Ok(AgenticTriageContext {
+        proposal,
+        risk,
+        stack,
+        triage,
+        semantic,
+    })
+}
+
+async fn agentic_projection_for_request(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+) -> Result<serde_json::Value, Error> {
+    use factory_native::agentic;
+    let lead = app.db.lead_request(&record.lead_request_id).await?;
+    let context = agentic_triage_context(app, record).await?;
+    let proposal = context.proposal.as_ref();
+    let work_units = proposal
+        .map(|proposal| proposal.work_units.len())
+        .unwrap_or(0);
+    let plan = app.db.frozen_lead_plan(&record.lead_request_id).await.ok();
+    let tasks = if let Some(campaign_id) = &record.campaign_id {
+        app.db.campaign_tasks(campaign_id).await.unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let assurance = context.assurance();
+    let stack = context.stack.clone();
+    let triage = context.triage;
+    let semantic = context.semantic;
     let participants = agentic::participant_plan(
         triage.route,
-        triage.assurance.max(assurance_for_risk(risk)),
+        assurance,
         u32::try_from(work_units.max(1)).unwrap_or(u32::MAX),
         &stack,
     );
     let specifications = proposal
-        .as_ref()
         .map(|proposal| {
             proposal
                 .work_units
@@ -9964,6 +10063,915 @@ async fn agentic_operation_priority(
         .reprioritize(&id, input.priority)
         .await;
     Json(operation).into_response()
+}
+
+struct AgenticModelOutcome {
+    content: String,
+    provider: String,
+    model: String,
+    request_sha256: String,
+    input_tokens: u64,
+    output_tokens: u64,
+    total_tokens: u64,
+    cost_micros: u64,
+    usage_known: bool,
+}
+
+fn agentic_model_error(error: factory_native::model_gateway::ModelGatewayError) -> Response {
+    use factory_native::model_gateway::ModelGatewayError;
+    match error {
+        ModelGatewayError::Database(Error::SubscriptionFunding(refusal)) => (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": refusal.to_string(),
+                "code": refusal.code(),
+            })),
+        )
+            .into_response(),
+        ModelGatewayError::Database(Error::Withdrawn) => (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "the request was withdrawn; the model call is unavailable",
+                "code": "REQUEST_WITHDRAWN",
+            })),
+        )
+            .into_response(),
+        ModelGatewayError::Database(other) => api_error(other),
+        ModelGatewayError::Invalid(message) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": message, "code": "AGENTIC_MODEL_INVALID"})),
+        )
+            .into_response(),
+        other => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({
+                "error": other.to_string(),
+                "code": "AGENTIC_MODEL_FAILED",
+            })),
+        )
+            .into_response(),
+    }
+}
+
+async fn call_agentic_lead_model(
+    app: &Arc<App>,
+    record: &factory_native::db::IntakeRequestRecord,
+    purpose: &str,
+    system_prompt: &str,
+    user_prompt: &str,
+    max_output_tokens: u64,
+) -> Result<AgenticModelOutcome, Response> {
+    let profile = app
+        .db
+        .execution_profile_revision(&record.profile_id, &record.profile_revision_id)
+        .await
+        .map_err(api_error)?;
+    let grant = app
+        .db
+        .standing_delegation_v2(&record.delegation_id)
+        .await
+        .map_err(api_error)?;
+    let gateway = app
+        .intake_assess_gateway(&profile)
+        .await
+        .map_err(|route_error| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "error": route_error.to_string(),
+                    "code": "AGENTIC_MODEL_UNAVAILABLE",
+                    "routeCode": route_error.code(),
+                })),
+            )
+                .into_response()
+        })?;
+    let principal_id = grant.principal_id.clone();
+    let result = gateway
+        .call(
+            &app.db,
+            factory_native::model_gateway::ModelCallRequest {
+                role: factory_native::db::ModelCallRole::Lead,
+                principal_id: &principal_id,
+                project_id: &record.project_id,
+                objective_id: &record.lead_request_id,
+                scope_id: &record.delegation_id,
+                purpose,
+                system_prompt,
+                user_prompt,
+                max_output_tokens,
+            },
+        )
+        .await
+        .map_err(agentic_model_error)?;
+    Ok(AgenticModelOutcome {
+        content: result.content,
+        provider: result.provider,
+        model: result.model,
+        request_sha256: result.request_sha256,
+        input_tokens: result.input_tokens,
+        output_tokens: result.output_tokens,
+        total_tokens: result.total_tokens,
+        cost_micros: result.cost_micros,
+        usage_known: result.usage_known,
+    })
+}
+
+fn agentic_conflict(code: &'static str, message: &'static str) -> Response {
+    (
+        StatusCode::CONFLICT,
+        Json(json!({"error": message, "code": code})),
+    )
+        .into_response()
+}
+
+fn parse_graph_record(
+    record: &factory_native::db::AgenticWorkGraphRecord,
+) -> Result<factory_native::agentic::ValidatedWorkGraph, Box<Response>> {
+    let graph =
+        serde_json::from_str::<factory_native::agentic::ValidatedWorkGraph>(&record.graph_json)
+            .map_err(|_| {
+                Box::new(
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({"error": "stored work graph is not decodable"})),
+                    )
+                        .into_response(),
+                )
+            })?;
+    if graph.graph_sha256 != record.graph_sha256 {
+        return Err(Box::new(
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "stored work graph identity does not match"})),
+            )
+                .into_response(),
+        ));
+    }
+    Ok(graph)
+}
+
+async fn get_agentic_plan(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.intake_request(&id).await {
+        Ok(_) => {}
+        Err(error) => return api_error(error),
+    }
+    match app.db.agentic_work_graph(&id).await {
+        Ok(record) => Json(json!({"graph": record})).into_response(),
+        Err(Error::NotFound) => Json(json!({"graph": null})).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn plan_agentic_request(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    let context = match agentic_triage_context(&app, &record).await {
+        Ok(context) => context,
+        Err(error) => return api_error(error),
+    };
+    if matches!(
+        context.triage.route,
+        factory_native::agentic::ChangeRoute::NoAgent
+    ) {
+        return agentic_conflict(
+            "PLANNER_NOT_APPLICABLE",
+            "informational requests do not compile a Planner WorkGraph",
+        );
+    }
+    if app.db.agentic_spec(&record.id).await.is_ok() {
+        return agentic_conflict(
+            "PLAN_ALREADY_SPECIFIED",
+            "a specification already binds this plan; a material change requires a new request or spec revision",
+        );
+    }
+    let config = match app.db.project_config(&record.project_id).await {
+        Ok(config) => config,
+        Err(error) => return api_error(error),
+    };
+    let schema = factory_native::model_output::work_graph_schema();
+    let schema_sha256 = factory_native::model_output::work_graph_schema_sha256();
+    let system_prompt = format!(
+        "You are the bounded Software Factory Planner. Return ONLY one JSON object that validates against the JSON Schema below. Do not add prose, markdown, comments or unknown fields. You are read-only: you cannot use tools, write files, grant authority, approve work or change a frozen specification. Decompose the objective into 1-24 work units. Use lowercase slug ids. Each unit must have one responsibility, explicit dependsOn ids, 1-32 project-relative paths inside the project allowedPaths, and at least one observable acceptance statement. Independent units must not share a write path. Never invent a file, dependency or technology. Keep the graph acyclic and within the stated budget.
+
+JSON Schema:
+{schema}"
+    );
+    let user_prompt = serde_json::json!({
+        "objective": record.objective,
+        "route": context.triage.route,
+        "assurance": context.assurance(),
+        "risk": format!("{:?}", context.risk),
+        "projectConfig": {
+            "repository": config.repository,
+            "baseCommit": config.base_commit,
+            "allowedPaths": config.allowed_paths,
+            "capabilities": config.capabilities,
+            "qualityProfile": config.quality_profile,
+        },
+        "stack": context.stack,
+        "existingProposal": context.proposal.as_ref().map(|proposal| serde_json::json!({
+            "class": proposal.class,
+            "riskClass": proposal.risk_class,
+            "workUnits": proposal.work_units.iter().map(|unit| serde_json::json!({
+                "id": unit.id,
+                "description": unit.description,
+                "dependsOn": unit.depends_on,
+                "allowedPaths": unit.allowed_paths,
+                "capabilities": unit.capabilities,
+            })).collect::<Vec<_>>(),
+            "acceptanceCriteria": proposal.acceptance_criteria,
+            "negativeCases": proposal.negative_cases,
+            "assumptions": proposal.assumptions,
+            "risks": proposal.risks,
+        })),
+        "limits": {
+            "maxUnits": factory_native::agentic::MAX_WORK_UNITS,
+            "maxPathsPerUnit": factory_native::agentic::MAX_UNIT_PATHS,
+            "independentUnitsMayNotSharePaths": true,
+        }
+    })
+    .to_string();
+    let result = match call_agentic_lead_model(
+        &app,
+        &record,
+        "agentic_planner",
+        &system_prompt,
+        &user_prompt,
+        4_096,
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(response) => return response,
+    };
+    let model = match factory_native::model_output::decode_work_graph(result.content.as_bytes()) {
+        Ok(model) => model,
+        Err(error) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({
+                    "error": error.to_string(),
+                    "code": "AGENTIC_PLAN_OUTPUT_INVALID",
+                })),
+            )
+                .into_response();
+        }
+    };
+    let graph = match factory_native::agentic::validate_work_graph(&model, &config.allowed_paths) {
+        Ok(graph) => graph,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": error, "code": "AGENTIC_PLAN_INVALID"})),
+            )
+                .into_response();
+        }
+    };
+    match app
+        .db
+        .save_agentic_work_graph(&factory_native::db::NewAgenticWorkGraph {
+            request_id: &record.id,
+            graph: &graph,
+            provider: &result.provider,
+            model: &result.model,
+            schema_sha256: &schema_sha256,
+            request_sha256: &result.request_sha256,
+            input_tokens: result.input_tokens,
+            output_tokens: result.output_tokens,
+            total_tokens: result.total_tokens,
+            cost_micros: result.cost_micros,
+            usage_known: result.usage_known,
+        })
+        .await
+    {
+        Ok(record) => Json(json!({
+            "graph": record,
+            "validated": graph,
+            "provider": result.provider,
+            "model": result.model,
+            "usage": {
+                "inputTokens": result.input_tokens,
+                "outputTokens": result.output_tokens,
+                "totalTokens": result.total_tokens,
+                "costMicros": result.cost_micros,
+                "usageKnown": result.usage_known,
+            }
+        }))
+        .into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn get_agentic_spec(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    let frozen = app
+        .db
+        .agentic_spec(&record.id)
+        .await
+        .ok()
+        .filter(|spec| spec.state == "FROZEN");
+    let draft = app.db.agentic_spec_draft(&record.id).await.ok();
+    let graph = app.db.agentic_work_graph(&record.id).await.ok();
+    let publication = app
+        .db
+        .agentic_spec_publication(
+            frozen
+                .as_ref()
+                .map(|spec| spec.id.as_str())
+                .unwrap_or_default(),
+        )
+        .await
+        .ok();
+    let issues = match &frozen {
+        Some(spec) => app
+            .db
+            .agentic_spec_issues(&spec.id)
+            .await
+            .unwrap_or_default(),
+        None => Vec::new(),
+    };
+    let github_bound = app
+        .db
+        .project_github_binding(&record.project_id)
+        .await
+        .is_ok();
+    Json(json!({
+        "frozen": frozen.map(|spec| {
+            let parsed = spec
+                .frozen_json
+                .as_deref()
+                .and_then(|json| serde_json::from_str::<factory_native::agentic::FrozenSpec>(json).ok());
+            json!({"record": spec, "spec": parsed})
+        }),
+        "draft": draft.map(|spec| {
+            let preview = serde_json::from_str::<factory_native::agentic::SpecDraftModel>(&spec.draft_json)
+                .ok()
+                .and_then(|draft| factory_native::agentic::compile_spec(&draft, spec.revision).ok());
+            json!({"record": spec, "preview": preview})
+        }),
+        "graph": graph,
+        "publication": publication,
+        "issues": issues,
+        "githubBound": github_bound,
+    }))
+    .into_response()
+}
+
+async fn author_agentic_spec(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    let context = match agentic_triage_context(&app, &record).await {
+        Ok(context) => context,
+        Err(error) => return api_error(error),
+    };
+    if !matches!(
+        context.triage.route,
+        factory_native::agentic::ChangeRoute::FormalSpec
+    ) {
+        return agentic_conflict(
+            "SPEC_NOT_REQUIRED",
+            "the Spec Manager authors only FORMAL_SPEC requests",
+        );
+    }
+    let graph_record = match app.db.agentic_work_graph(&record.id).await {
+        Ok(graph) => graph,
+        Err(Error::NotFound) => {
+            return agentic_conflict(
+                "WORK_GRAPH_REQUIRED",
+                "a validated Planner WorkGraph is required before specification",
+            );
+        }
+        Err(error) => return api_error(error),
+    };
+    let graph = match parse_graph_record(&graph_record) {
+        Ok(graph) => graph,
+        Err(response) => return *response,
+    };
+    let current = app.db.agentic_spec(&record.id).await.ok();
+    let (revision, has_frozen) = match &current {
+        Some(spec) if spec.state == "FROZEN" => (spec.revision + 1, true),
+        Some(spec) => (spec.revision, false),
+        None => (1, false),
+    };
+    let config = app.db.project_config(&record.project_id).await.ok();
+    let schema = factory_native::model_output::spec_draft_schema();
+    let schema_sha256 = factory_native::model_output::spec_draft_schema_sha256();
+    let system_prompt = format!(
+        "You are the bounded Software Factory Spec Manager. Return ONLY one JSON object that validates against the JSON Schema below. Do not add prose, markdown, comments or unknown fields. You are read-only: you cannot use tools, write files, grant authority, approve work or change a frozen specification. Author observable formal requirements for a FORMAL_SPEC request. Every requirement must state an observable behavior and carry at least one acceptance case and at least one negative case. Acceptance and negative cases must be concrete and testable, not implementation instructions. Do not invent scope outside the objective and WorkGraph. Requirements are numbered deterministically by Core after you return; assertion and check identities are also compiled by Core.
+
+JSON Schema:
+{schema}"
+    );
+    let user_prompt = serde_json::json!({
+        "objective": record.objective,
+        "route": context.triage.route,
+        "assurance": context.assurance(),
+        "risk": format!("{:?}", context.risk),
+        "revision": revision,
+        "supersedesFrozenRevision": has_frozen,
+        "workGraph": {
+            "units": graph.units,
+            "topologicalOrder": graph.topological_order,
+        },
+        "stack": context.stack,
+        "projectConfig": config.as_ref().map(|config| serde_json::json!({
+            "repository": config.repository,
+            "baseCommit": config.base_commit,
+            "allowedPaths": config.allowed_paths,
+            "capabilities": config.capabilities,
+            "qualityProfile": config.quality_profile,
+        })),
+        "existingProposal": context.proposal.as_ref().map(|proposal| serde_json::json!({
+            "acceptanceCriteria": proposal.acceptance_criteria,
+            "negativeCases": proposal.negative_cases,
+            "assumptions": proposal.assumptions,
+            "risks": proposal.risks,
+        })),
+        "limits": {
+            "maxRequirements": factory_native::agentic::MAX_SPEC_REQUIREMENTS,
+            "maxCasesPerRequirement": factory_native::agentic::MAX_SPEC_CASES,
+        }
+    })
+    .to_string();
+    let result = match call_agentic_lead_model(
+        &app,
+        &record,
+        "agentic_spec_manager",
+        &system_prompt,
+        &user_prompt,
+        6_144,
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(response) => return response,
+    };
+    let draft = match factory_native::model_output::decode_spec_draft(result.content.as_bytes()) {
+        Ok(draft) => draft,
+        Err(error) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({
+                    "error": error.to_string(),
+                    "code": "AGENTIC_SPEC_OUTPUT_INVALID",
+                })),
+            )
+                .into_response();
+        }
+    };
+    if let Err(error) = factory_native::agentic::compile_spec(&draft, revision) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": error, "code": "AGENTIC_SPEC_INVALID"})),
+        )
+            .into_response();
+    }
+    let draft_json = match serde_json::to_string(&draft) {
+        Ok(json) => json,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "spec draft could not be encoded"})),
+            )
+                .into_response();
+        }
+    };
+    match app
+        .db
+        .save_agentic_spec_draft(&factory_native::db::NewAgenticSpecDraft {
+            request_id: &record.id,
+            draft_json: &draft_json,
+            provider: &result.provider,
+            model: &result.model,
+            schema_sha256: &schema_sha256,
+            request_sha256: &result.request_sha256,
+            input_tokens: result.input_tokens,
+            output_tokens: result.output_tokens,
+            total_tokens: result.total_tokens,
+            cost_micros: result.cost_micros,
+            usage_known: result.usage_known,
+        })
+        .await
+    {
+        Ok(spec) => {
+            let preview = factory_native::agentic::compile_spec(&draft, spec.revision).ok();
+            Json(json!({
+                "spec": spec,
+                "preview": preview,
+                "provider": result.provider,
+                "model": result.model,
+                "usage": {
+                    "inputTokens": result.input_tokens,
+                    "outputTokens": result.output_tokens,
+                    "totalTokens": result.total_tokens,
+                    "costMicros": result.cost_micros,
+                    "usageKnown": result.usage_known,
+                }
+            }))
+            .into_response()
+        }
+        Err(error) => api_error(error),
+    }
+}
+
+async fn freeze_agentic_spec(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<AgenticSpecFreezeRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if input.expected_spec_sha256.len() != 64
+        || !input
+            .expected_spec_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        return api_error(Error::Invalid("expected spec sha256"));
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    let draft = match app.db.agentic_spec_draft(&record.id).await {
+        Ok(draft) => draft,
+        Err(Error::NotFound) => {
+            return agentic_conflict(
+                "SPEC_DRAFT_REQUIRED",
+                "there is no draft specification to freeze",
+            );
+        }
+        Err(error) => return api_error(error),
+    };
+    let graph_record = match app.db.agentic_work_graph(&record.id).await {
+        Ok(graph) => graph,
+        Err(error) => return api_error(error),
+    };
+    let graph = match parse_graph_record(&graph_record) {
+        Ok(graph) => graph,
+        Err(response) => return *response,
+    };
+    let draft_model =
+        match serde_json::from_str::<factory_native::agentic::SpecDraftModel>(&draft.draft_json) {
+            Ok(draft) => draft,
+            Err(_) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": "stored spec draft is not decodable"})),
+                )
+                    .into_response();
+            }
+        };
+    let frozen = match factory_native::agentic::compile_spec(&draft_model, draft.revision) {
+        Ok(frozen) => frozen,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": error, "code": "AGENTIC_SPEC_INVALID"})),
+            )
+                .into_response();
+        }
+    };
+    if frozen.spec_sha256 != input.expected_spec_sha256 {
+        return agentic_conflict(
+            "SPEC_REVISION_CHANGED",
+            "the draft specification changed; reload before freezing",
+        );
+    }
+    match app.db.freeze_agentic_spec(&draft.id, &frozen, &graph).await {
+        Ok(spec) => Json(json!({"spec": spec, "frozen": frozen})).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn publish_agentic_spec(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<AgenticSpecPublishRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if !input.confirm {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "explicit confirmation is required before publishing spec issues",
+                "code": "SPEC_PUBLISH_CONFIRMATION_REQUIRED",
+            })),
+        )
+            .into_response();
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    let spec = match app.db.agentic_spec(&record.id).await {
+        Ok(spec) if spec.state == "FROZEN" => spec,
+        Ok(_) => {
+            return agentic_conflict(
+                "SPEC_NOT_FROZEN",
+                "only a frozen specification can be published",
+            );
+        }
+        Err(Error::NotFound) => {
+            return agentic_conflict(
+                "SPEC_NOT_FROZEN",
+                "there is no frozen specification to publish",
+            );
+        }
+        Err(error) => return api_error(error),
+    };
+    let binding = app.db.project_github_binding(&record.project_id).await.ok();
+    if input.local || binding.is_none() {
+        let repository = binding
+            .as_ref()
+            .map(|binding| binding.repo_full_name.clone())
+            .unwrap_or_else(|| "local-board".into());
+        return match app
+            .db
+            .upsert_agentic_spec_publication(&factory_native::db::NewAgenticSpecPublication {
+                spec_id: &spec.id,
+                project_id: &record.project_id,
+                provider: "LOCAL",
+                repository: &repository,
+                status: "LOCAL",
+                drift_status: "UNKNOWN",
+                last_error: None,
+            })
+            .await
+        {
+            Ok(publication) => Json(json!({
+                "publication": publication,
+                "issues": app.db.agentic_spec_issues(&spec.id).await.unwrap_or_default(),
+                "local": true,
+            }))
+            .into_response(),
+            Err(error) => api_error(error),
+        };
+    }
+    let binding = binding.expect("binding checked");
+    let credential = match load_github_credential(&app).await {
+        Ok(credential) => credential,
+        Err(response) => return response,
+    };
+    let _ = app
+        .db
+        .upsert_agentic_spec_publication(&factory_native::db::NewAgenticSpecPublication {
+            spec_id: &spec.id,
+            project_id: &record.project_id,
+            provider: "GITHUB",
+            repository: &binding.repo_full_name,
+            status: "PENDING",
+            drift_status: "UNKNOWN",
+            last_error: None,
+        })
+        .await;
+    match factory_native::spec_publish::publish_spec(
+        &app.db,
+        &app.github,
+        &credential,
+        &spec,
+        &record.objective,
+        &binding.owner,
+        &binding.repo,
+    )
+    .await
+    {
+        Ok(issues) => match app
+            .db
+            .upsert_agentic_spec_publication(&factory_native::db::NewAgenticSpecPublication {
+                spec_id: &spec.id,
+                project_id: &record.project_id,
+                provider: "GITHUB",
+                repository: &binding.repo_full_name,
+                status: "PUBLISHED",
+                drift_status: "IN_SYNC",
+                last_error: None,
+            })
+            .await
+        {
+            Ok(publication) => {
+                Json(json!({"publication": publication, "issues": issues})).into_response()
+            }
+            Err(error) => api_error(error),
+        },
+        Err(error) => {
+            let message = error.to_string();
+            let _ = app
+                .db
+                .upsert_agentic_spec_publication(&factory_native::db::NewAgenticSpecPublication {
+                    spec_id: &spec.id,
+                    project_id: &record.project_id,
+                    provider: "GITHUB",
+                    repository: &binding.repo_full_name,
+                    status: "FAILED",
+                    drift_status: "UNKNOWN",
+                    last_error: Some(&message),
+                })
+                .await;
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({
+                    "error": message,
+                    "code": "SPEC_PUBLISH_FAILED",
+                })),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn refresh_agentic_spec(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    let spec = match app.db.agentic_spec(&record.id).await {
+        Ok(spec) if spec.state == "FROZEN" => spec,
+        _ => {
+            return agentic_conflict(
+                "SPEC_NOT_FROZEN",
+                "there is no frozen specification to refresh",
+            );
+        }
+    };
+    let binding = match app.db.project_github_binding(&record.project_id).await {
+        Ok(binding) => binding,
+        Err(Error::NotFound) => {
+            return agentic_conflict(
+                "GITHUB_NOT_BOUND",
+                "the project is not bound to a GitHub repository",
+            );
+        }
+        Err(error) => return api_error(error),
+    };
+    let credential = match load_github_credential(&app).await {
+        Ok(credential) => credential,
+        Err(response) => return response,
+    };
+    let in_sync = match factory_native::spec_publish::refresh_publication(
+        &app.db,
+        &app.github,
+        &credential,
+        &spec,
+        &binding.owner,
+        &binding.repo,
+    )
+    .await
+    {
+        Ok(in_sync) => in_sync,
+        Err(factory_native::spec_publish::SpecPublishError::GitHub(error)) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"error": error.to_string(), "code": "SPEC_REFRESH_FAILED"})),
+            )
+                .into_response();
+        }
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": error.to_string(), "code": "SPEC_REFRESH_INVALID"})),
+            )
+                .into_response();
+        }
+    };
+    match app
+        .db
+        .upsert_agentic_spec_publication(&factory_native::db::NewAgenticSpecPublication {
+            spec_id: &spec.id,
+            project_id: &record.project_id,
+            provider: "GITHUB",
+            repository: &binding.repo_full_name,
+            status: "PUBLISHED",
+            drift_status: if in_sync { "IN_SYNC" } else { "DRIFTED" },
+            last_error: None,
+        })
+        .await
+    {
+        Ok(publication) => {
+            Json(json!({"publication": publication, "inSync": in_sync})).into_response()
+        }
+        Err(error) => api_error(error),
+    }
+}
+
+async fn agentic_spec_board(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let specs = match app.db.frozen_agentic_specs().await {
+        Ok(specs) => specs,
+        Err(error) => return api_error(error),
+    };
+    let mut cards = Vec::with_capacity(specs.len());
+    for spec in specs {
+        let record = match app.db.intake_request(&spec.request_id).await {
+            Ok(record) => record,
+            Err(_) => continue,
+        };
+        let operation = app.db.agentic_operation_for_request(&record.id).await.ok();
+        let publication = app.db.agentic_spec_publication(&spec.id).await.ok();
+        let issues = app
+            .db
+            .agentic_spec_issues(&spec.id)
+            .await
+            .unwrap_or_default();
+        let campaign_status = match &record.campaign_id {
+            Some(campaign_id) => app.db.campaign_status_and_gate(campaign_id).await.ok(),
+            None => None,
+        };
+        let gate = campaign_status.as_ref().and_then(|(_, gate)| gate.clone());
+        let campaign = campaign_status.as_ref().map(|(status, _)| status.clone());
+        let column = match (
+            campaign.as_deref(),
+            gate.as_deref(),
+            operation
+                .as_ref()
+                .map(|operation| operation.status.as_str()),
+        ) {
+            (Some("CANCELLED"), _, _) => "CANCELLED",
+            (Some("FAILED"), _, _) | (_, Some("REJECTED" | "REPAIR_REQUIRED"), _) => "BLOCKED",
+            (_, Some("ACCEPTED"), _) => "ACCEPTED",
+            (Some(_), _, Some("EXECUTING" | "STARTING")) => "RUNNING",
+            (Some(_), _, _) => "QUEUED",
+            (None, _, _) => "FROZEN",
+        };
+        let graph = spec.graph_json.as_deref().and_then(|json| {
+            serde_json::from_str::<factory_native::agentic::ValidatedWorkGraph>(json).ok()
+        });
+        let frozen = spec.frozen_json.as_deref().and_then(|json| {
+            serde_json::from_str::<factory_native::agentic::FrozenSpec>(json).ok()
+        });
+        cards.push(json!({
+            "specId": spec.id,
+            "requestId": record.id,
+            "projectId": record.project_id,
+            "objective": record.objective,
+            "revision": spec.revision,
+            "summary": frozen.as_ref().map(|frozen| frozen.summary.clone()),
+            "specSha256": spec.spec_sha256,
+            "graphSha256": spec.graph_sha256,
+            "frozenAt": spec.frozen_at,
+            "column": column,
+            "campaignStatus": campaign,
+            "gateOutcome": gate,
+            "operation": operation,
+            "publication": publication,
+            "issues": issues,
+            "units": graph.map(|graph| graph.units).unwrap_or_default(),
+        }));
+    }
+    Json(json!({
+        "columns": ["FROZEN", "QUEUED", "RUNNING", "ACCEPTED", "BLOCKED", "CANCELLED"],
+        "specs": cards,
+    }))
+    .into_response()
 }
 
 async fn assess_agentic_request(
@@ -14266,6 +15274,66 @@ mod tests {
         assert_eq!(
             router.oneshot(request).await.unwrap().status(),
             StatusCode::NOT_FOUND
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn agentic_plan_and_spec_routes_require_operator_credentials() {
+        use tower::ServiceExt;
+        let path = std::env::temp_dir().join(format!(
+            "factory-core-agentic-spec-routes-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let router = build_router(test_app(&path).await);
+        let zeros = "0".repeat(64);
+        let routes = [
+            ("GET", "/agentic/specs/board", "{}".to_string()),
+            ("GET", "/agentic/requests/missing/plan", "{}".to_string()),
+            ("POST", "/agentic/requests/missing/plan", "{}".to_string()),
+            ("GET", "/agentic/requests/missing/spec", "{}".to_string()),
+            ("POST", "/agentic/requests/missing/spec", "{}".to_string()),
+            (
+                "POST",
+                "/agentic/requests/missing/spec/freeze",
+                format!(r#"{{"expected_spec_sha256":"{zeros}"}}"#),
+            ),
+            (
+                "POST",
+                "/agentic/requests/missing/spec/publish",
+                r#"{"confirm":false}"#.to_string(),
+            ),
+            (
+                "POST",
+                "/agentic/requests/missing/spec/refresh",
+                "{}".to_string(),
+            ),
+        ];
+        for (method, uri, body) in routes {
+            let request = axum::http::Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(body))
+                .unwrap();
+            assert_eq!(
+                router.clone().oneshot(request).await.unwrap().status(),
+                StatusCode::UNAUTHORIZED,
+                "{method} {uri} must require the operator credential"
+            );
+        }
+        let request = axum::http::Request::builder()
+            .uri("/agentic/requests/missing/spec/freeze")
+            .method("POST")
+            .header("authorization", "Bearer operator-token")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                r#"{"expected_spec_sha256":"not-a-sha"}"#,
+            ))
+            .unwrap();
+        assert_eq!(
+            router.oneshot(request).await.unwrap().status(),
+            StatusCode::BAD_REQUEST
         );
         let _ = std::fs::remove_file(path);
     }

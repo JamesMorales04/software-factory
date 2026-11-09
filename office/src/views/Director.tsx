@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import { Badge } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
 import { Input } from "../components/ui/Field";
@@ -15,12 +15,16 @@ import {
   type AgenticPortfolioEntry,
   type AgenticRequestDetail,
   type AgenticRoute,
+  type AgenticSpecDetail,
+  type AgenticWorkGraph,
+  type AgenticWorkGraphRecord,
   CoreApiError,
   coreApi,
 } from "../coreApi";
 import { shortId } from "../format";
 import { useI18n } from "../i18n";
 import "./director.css";
+import "./specs.css";
 
 function errorText(cause: unknown, fallback: string): string {
   return cause instanceof CoreApiError ? cause.message : fallback;
@@ -80,6 +84,14 @@ export function Director() {
   const [priorityBusy, setPriorityBusy] = useState(false);
   const [priorityError, setPriorityError] = useState<string | null>(null);
   const [priorityNotice, setPriorityNotice] = useState<string | null>(null);
+  const [plan, setPlan] = useState<AgenticWorkGraphRecord | null>(null);
+  const [planBusy, setPlanBusy] = useState(false);
+  const [planError, setPlanError] = useState<string | null>(null);
+  const [planNotice, setPlanNotice] = useState<string | null>(null);
+  const [spec, setSpec] = useState<AgenticSpecDetail | null>(null);
+  const [specBusy, setSpecBusy] = useState<string | null>(null);
+  const [specError, setSpecError] = useState<string | null>(null);
+  const [specNotice, setSpecNotice] = useState<string | null>(null);
 
   const loadPortfolio = useCallback(async () => {
     try {
@@ -110,6 +122,15 @@ export function Director() {
     return () => window.clearInterval(timer);
   }, []);
 
+  const graph = useMemo<AgenticWorkGraph | null>(() => {
+    if (!plan) return null;
+    try {
+      return JSON.parse(plan.graphJson) as AgenticWorkGraph;
+    } catch {
+      return null;
+    }
+  }, [plan]);
+
   const activeId =
     selectedId ||
     (portfolio !== null && portfolio.length > 0 ? portfolio[0].id : "");
@@ -139,6 +160,38 @@ export function Director() {
       .finally(() => {
         if (active) setDetailLoading(false);
       });
+    return () => {
+      active = false;
+    };
+  }, [activeId, t]);
+
+  useEffect(() => {
+    if (!activeId) {
+      setPlan(null);
+      setSpec(null);
+      return;
+    }
+    let active = true;
+    setPlanError(null);
+    setSpecError(null);
+    Promise.allSettled([
+      coreApi.getAgenticPlan(activeId),
+      coreApi.getAgenticSpec(activeId),
+    ]).then(([planResult, specResult]) => {
+      if (!active) return;
+      if (planResult.status === "fulfilled") {
+        setPlan(planResult.value.graph);
+      } else {
+        setPlan(null);
+        setPlanError(errorText(planResult.reason, t("director.plan.error")));
+      }
+      if (specResult.status === "fulfilled") {
+        setSpec(specResult.value);
+      } else {
+        setSpec(null);
+        setSpecError(errorText(specResult.reason, t("director.spec.error")));
+      }
+    });
     return () => {
       active = false;
     };
@@ -180,6 +233,62 @@ export function Director() {
       setPriorityError(errorText(cause, t("director.priority.error")));
     } finally {
       setPriorityBusy(false);
+    }
+  }
+
+  async function compilePlan() {
+    if (!activeId) return;
+    setPlanBusy(true);
+    setPlanError(null);
+    setPlanNotice(null);
+    try {
+      const result = await coreApi.planAgenticRequest(activeId);
+      setPlan(result.graph);
+      setPlanNotice(t("director.plan.success"));
+      setDetail(await coreApi.getAgenticRequest(activeId));
+    } catch (cause) {
+      setPlanError(errorText(cause, t("director.plan.error")));
+    } finally {
+      setPlanBusy(false);
+    }
+  }
+
+  async function authorSpec() {
+    if (!activeId) return;
+    setSpecBusy("author");
+    setSpecError(null);
+    setSpecNotice(null);
+    try {
+      const result = await coreApi.authorAgenticSpec(activeId);
+      setSpec(await coreApi.getAgenticSpec(activeId));
+      setSpecNotice(
+        t("director.spec.success", { revision: result.spec.revision }),
+      );
+    } catch (cause) {
+      setSpecError(errorText(cause, t("director.spec.error")));
+    } finally {
+      setSpecBusy(null);
+    }
+  }
+
+  async function freezeSpec() {
+    if (!activeId || !spec?.draft?.preview) return;
+    setSpecBusy("freeze");
+    setSpecError(null);
+    setSpecNotice(null);
+    try {
+      const result = await coreApi.freezeAgenticSpec(
+        activeId,
+        spec.draft.preview.specSha256,
+      );
+      setSpec(await coreApi.getAgenticSpec(activeId));
+      setSpecNotice(
+        t("director.spec.freezeSuccess", { revision: result.spec.revision }),
+      );
+    } catch (cause) {
+      setSpecError(errorText(cause, t("director.spec.freezeError")));
+    } finally {
+      setSpecBusy(null);
     }
   }
 
@@ -505,6 +614,178 @@ export function Director() {
                         queued: scheduler.queued,
                       })}
                     </p>
+                  )}
+                </Panel>
+
+                <Panel>
+                  <div className="section-heading">
+                    <h2>{t("director.plan.title")}</h2>
+                    {plan && (
+                      <Badge tone="success">
+                        {t("director.plan.units", {
+                          count: graph?.units.length ?? 0,
+                        })}
+                      </Badge>
+                    )}
+                  </div>
+                  {planError && (
+                    <p className="ui-callout ui-callout--danger" role="alert">
+                      {planError}
+                    </p>
+                  )}
+                  {planNotice && (
+                    <p className="notice" role="status">
+                      {planNotice}
+                    </p>
+                  )}
+                  {plan && graph ? (
+                    <>
+                      <dl className="director-facts">
+                        <div>
+                          <dt>{t("director.plan.graphSha")}</dt>
+                          <dd>
+                            <code>{shortId(plan.graphSha256, 16)}</code>
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>{t("director.plan.order")}</dt>
+                          <dd>{graph.topologicalOrder.join(" → ")}</dd>
+                        </div>
+                      </dl>
+                      <ul className="specs-units">
+                        {graph.units.map((unit) => (
+                          <li key={unit.id}>
+                            <div className="specs-unit-heading">
+                              <code>{unit.id}</code>
+                              <strong>{unit.title}</strong>
+                            </div>
+                            <p className="muted">{unit.objective}</p>
+                            <p className="muted">
+                              {unit.paths.join(", ")}
+                              {unit.dependsOn.length > 0
+                                ? ` · ${t("specs.detail.dependsOn")}: ${unit.dependsOn.join(", ")}`
+                                : ""}
+                            </p>
+                          </li>
+                        ))}
+                      </ul>
+                    </>
+                  ) : (
+                    <p className="muted">{t("director.plan.empty")}</p>
+                  )}
+                  <div className="director-priority">
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      busy={planBusy}
+                      disabled={
+                        planBusy ||
+                        detail.triage.route === "NO_AGENT" ||
+                        Boolean(spec?.frozen || spec?.draft)
+                      }
+                      onClick={() => void compilePlan()}
+                    >
+                      {planBusy
+                        ? t("director.plan.compiling")
+                        : t("director.plan.compile")}
+                    </Button>
+                  </div>
+                  {Boolean(spec?.frozen || spec?.draft) && (
+                    <p className="muted">{t("director.plan.frozen")}</p>
+                  )}
+                </Panel>
+
+                <Panel>
+                  <div className="section-heading">
+                    <h2>{t("director.spec.title")}</h2>
+                    {spec?.frozen && (
+                      <Badge tone="success">
+                        {t("director.spec.frozen", {
+                          revision: spec.frozen.record.revision,
+                        })}
+                      </Badge>
+                    )}
+                    {spec?.draft && (
+                      <Badge tone="attention">
+                        {t("director.spec.draft", {
+                          revision: spec.draft.record.revision,
+                        })}
+                      </Badge>
+                    )}
+                  </div>
+                  {specError && (
+                    <p className="ui-callout ui-callout--danger" role="alert">
+                      {specError}
+                    </p>
+                  )}
+                  {specNotice && (
+                    <p className="notice" role="status">
+                      {specNotice}
+                    </p>
+                  )}
+                  {detail.triage.route !== "FORMAL_SPEC" ? (
+                    <p className="muted">{t("director.spec.notRequired")}</p>
+                  ) : (
+                    <>
+                      {spec?.frozen?.spec && (
+                        <>
+                          <p>{spec.frozen.spec.summary}</p>
+                          <p className="muted">
+                            {t("director.spec.frozenNotice", {
+                              revision: spec.frozen.record.revision,
+                            })}
+                          </p>
+                          <Link
+                            className="button button--secondary button--md"
+                            to="/specs"
+                          >
+                            {t("director.spec.openBoard")}
+                          </Link>
+                        </>
+                      )}
+                      {spec?.draft?.preview && (
+                        <div className="specs-draft">
+                          <p>{spec.draft.preview.summary}</p>
+                          <p className="muted">
+                            {spec.draft.preview.requirements.length}{" "}
+                            {t("specs.detail.traceability")}
+                          </p>
+                          <p className="muted">
+                            <code>
+                              {shortId(spec.draft.preview.specSha256, 16)}
+                            </code>
+                          </p>
+                          <Button
+                            size="sm"
+                            busy={specBusy === "freeze"}
+                            disabled={specBusy !== null}
+                            onClick={() => void freezeSpec()}
+                          >
+                            {specBusy === "freeze"
+                              ? t("director.spec.freezing")
+                              : t("director.spec.freeze")}
+                          </Button>
+                        </div>
+                      )}
+                      {!spec?.frozen && !spec?.draft && (
+                        <p className="muted">
+                          {t("director.spec.notRequired")}
+                        </p>
+                      )}
+                      <div className="director-priority">
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          busy={specBusy === "author"}
+                          disabled={specBusy !== null || !plan}
+                          onClick={() => void authorSpec()}
+                        >
+                          {specBusy === "author"
+                            ? t("director.spec.authoring")
+                            : t("director.spec.author")}
+                        </Button>
+                      </div>
+                    </>
                   )}
                 </Panel>
 

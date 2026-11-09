@@ -3,6 +3,7 @@ import {
   Activity,
   Bot,
   ClipboardList,
+  FileText,
   FolderGit2,
   Inbox,
   ListChecks,
@@ -79,6 +80,13 @@ export const NAV_GROUPS: NavGroup[] = [
         labelKey: "nav.issues",
         icon: ListChecks,
         keywords: "github issues sync repository labels triage backlog intake",
+      },
+      {
+        to: "/specs",
+        labelKey: "nav.specs",
+        icon: FileText,
+        keywords:
+          "specifications specs formal frozen workgraph work graph requirements acceptance checks kanban board github",
       },
       {
         to: "/agents",

@@ -1,0 +1,133 @@
+{
+  "schema": "factory.spec-board.v1",
+  "schema_version": 1,
+  "result": "PARTIAL",
+  "kind": "implementer-browser-and-real-model-self-test",
+  "captured_at": "2026-11-09T05:55:00Z",
+  "candidate": "branch factory/agentic-flow-20261108; exact code commit is recorded in pull request #96",
+  "environment": {
+    "runtime": "rootless Podman Compose developer-preview stack",
+    "office": "http://127.0.0.1:8893",
+    "browser": "Chromium 1248 via Playwright",
+    "provider": "OpenCode Go / deepseek-v4.1-flash",
+    "profile": "Wave 3 Minimal Acceptance revision 28"
+  },
+  "request": {
+    "id": "659636fa-7a7e-462b-b457-4c562a43b0dd",
+    "mode": "REVIEW_PLAN",
+    "objective": "Add a public ICS export API across the calendar model and HTTP layer, including validation and regression tests.",
+    "route": "FORMAL_SPEC",
+    "assurance": "ELEVATED"
+  },
+  "plan": {
+    "graph_sha256": "448f0889d486952dd1f6d6cb6db060e027fb9d8814fff3f67187d6a029a51802",
+    "units": [
+      "ics-serialization",
+      "export-api-validation",
+      "export-regression-tests"
+    ],
+    "mechanism": "real Planner model call through the frozen Lead route; Core validated dependencies, paths and scope"
+  },
+  "spec": {
+    "id": "2d14dc73-f196-4a27-b07c-9ef458b1c4ec",
+    "revision": 2,
+    "spec_sha256": "9c3050e7a03df0992dd34c67a39a67fdf563f7857ae6310827b744a43ad28272",
+    "requirements": 6,
+    "assertions": {
+      "acceptance": 12,
+      "negative": 8
+    },
+    "provider": "opencode-go",
+    "model": "deepseek-v4.1-flash",
+    "usage": {
+      "input_tokens": 1476,
+      "output_tokens": 4725,
+      "total_tokens": 6201,
+      "cost_micros": 3057,
+      "usage_known": true
+    },
+    "revision_history": "Revision 1 was frozen first; a second real Spec Manager call authored revision 2, which was frozen and superseded revision 1 without mutating it.",
+    "traceability": "REQ-001..REQ-006 each compile deterministic ASR-* assertion and CHK-* check identities"
+  },
+  "publication": {
+    "provider": "LOCAL",
+    "status": "LOCAL",
+    "repository": "local-board",
+    "reason": "This Project has no GitHub binding. The local board fallback was exercised from the browser.",
+    "github_live": "NOT_TESTED"
+  },
+  "ui_matrix": [
+    {
+      "id": "P1",
+      "surface": "/director / Planner WorkGraph",
+      "control_or_state": "Compile plan",
+      "expected": "A real Planner call returns a typed graph; Core validates units, dependencies, paths and scope and records the graph digest.",
+      "result": "PASS",
+      "evidence": "plan-1440.png; request 659636fa"
+    },
+    {
+      "id": "P2",
+      "surface": "/director / Formal specification",
+      "control_or_state": "Author specification",
+      "expected": "A real Spec Manager call returns a typed draft; Core compiles deterministic requirement, assertion and check identities.",
+      "result": "PASS",
+      "evidence": "spec-frozen-1440.png; record 2d14dc73"
+    },
+    {
+      "id": "P3",
+      "surface": "/director / Formal specification",
+      "control_or_state": "Freeze revision 1 then author and freeze revision 2",
+      "expected": "The expected draft digest is required; freezing supersedes the previous frozen revision without mutating it.",
+      "result": "PASS",
+      "evidence": "director-spec-1440.png; revision 2 frozen"
+    },
+    {
+      "id": "P4",
+      "surface": "/director / Formal specification",
+      "control_or_state": "Frozen and newer draft badges",
+      "expected": "When a frozen revision and a newer draft coexist, both revisions are visible.",
+      "result": "PASS",
+      "evidence": "Director.test.tsx; director-spec-1440.png"
+    },
+    {
+      "id": "P5",
+      "surface": "/specs / kanban",
+      "control_or_state": "Load the frozen specification board",
+      "expected": "Cards are derived from Core records and appear in the FROZEN column with revision, unit count and projection state.",
+      "result": "PASS",
+      "evidence": "spec-board-1440.png"
+    },
+    {
+      "id": "P6",
+      "surface": "/specs / detail",
+      "control_or_state": "Inspect requirements",
+      "expected": "REQ → ASR → CHK traceability, unit paths/dependencies and the exact digests are visible.",
+      "result": "PASS",
+      "evidence": "spec-board-1440.png; REQ-001..REQ-006"
+    },
+    {
+      "id": "P7",
+      "surface": "/specs / projection",
+      "control_or_state": "Use local board",
+      "expected": "Without a GitHub binding, the operator can record the local board fallback and no external effect is attempted.",
+      "result": "PASS",
+      "evidence": "spec-board-1440.png; publication LOCAL"
+    },
+    {
+      "id": "P8",
+      "surface": "/specs and /director at 390 px",
+      "control_or_state": "Responsive board and specification detail",
+      "expected": "No horizontal overflow and the controls remain usable.",
+      "result": "PASS",
+      "evidence": "spec-board-390.png; director-spec-390.png; scrollWidth=390/clientWidth=390"
+    }
+  ],
+  "console_errors": [],
+  "unexpected_http_errors": [],
+  "limitations": [
+    "This is implementer self-test evidence, not independent acceptance.",
+    "GitHub issue publication and drift refresh were not exercised against a live GitHub binding; the local projection was exercised.",
+    "The Planner and Spec Manager use the frozen Lead route with distinct purpose and typed schemas; they do not have separate provider roles yet.",
+    "The board currently derives the column from the whole operation/Campaign/Gate; per-WorkUnit delivery state remains pending for dynamic fleets."
+  ]
+}

@@ -64,6 +64,60 @@ pub fn decode_agentic_triage(
     serde_json::from_value(value).map_err(ModelOutputError::Json)
 }
 
+pub fn work_graph_schema() -> Value {
+    serde_json::to_value(schema_for!(crate::agentic::WorkGraphModel))
+        .expect("generated work graph schema is serializable")
+}
+
+pub fn work_graph_schema_sha256() -> String {
+    let bytes = serde_json::to_vec(&work_graph_schema())
+        .expect("generated work graph schema is serializable");
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// Schema-validate a Planner proposal. Core validates graph semantics
+/// separately with `agentic::validate_work_graph`.
+pub fn decode_work_graph(raw: &[u8]) -> Result<crate::agentic::WorkGraphModel, ModelOutputError> {
+    let value: Value = serde_json::from_slice(raw)?;
+    let schema = work_graph_schema();
+    let validator = jsonschema::validator_for(&schema)
+        .map_err(|error| ModelOutputError::Schema(error.to_string()))?;
+    validator
+        .validate(&value)
+        .map_err(|error| ModelOutputError::Schema(error.to_string()))?;
+    serde_json::from_value(value).map_err(ModelOutputError::Json)
+}
+
+pub fn spec_draft_schema() -> Value {
+    serde_json::to_value(schema_for!(crate::agentic::SpecDraftModel))
+        .expect("generated spec draft schema is serializable")
+}
+
+pub fn spec_draft_schema_sha256() -> String {
+    let bytes = serde_json::to_vec(&spec_draft_schema())
+        .expect("generated spec draft schema is serializable");
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// Schema-validate a Spec Manager draft. Deterministic compilation and
+/// freezing are separate Core steps.
+pub fn decode_spec_draft(raw: &[u8]) -> Result<crate::agentic::SpecDraftModel, ModelOutputError> {
+    let value: Value = serde_json::from_slice(raw)?;
+    let schema = spec_draft_schema();
+    let validator = jsonschema::validator_for(&schema)
+        .map_err(|error| ModelOutputError::Schema(error.to_string()))?;
+    validator
+        .validate(&value)
+        .map_err(|error| ModelOutputError::Schema(error.to_string()))?;
+    serde_json::from_value(value).map_err(ModelOutputError::Json)
+}
+
 pub fn semantic_review_schema() -> Value {
     serde_json::to_value(schema_for!(SemanticReview))
         .expect("generated semantic review schema is serializable")

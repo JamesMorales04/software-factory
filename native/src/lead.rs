@@ -1847,6 +1847,10 @@ pub fn is_safe_relative_path(path: &str) -> bool {
         .all(|component| !component.is_empty() && component != ".." && component != ".")
 }
 
+pub(crate) fn path_within(path: &str, granted: &str) -> bool {
+    path == granted || path.starts_with(&format!("{granted}/"))
+}
+
 fn covered_by(path: &str, granted: &[String]) -> bool {
     granted
         .iter()
