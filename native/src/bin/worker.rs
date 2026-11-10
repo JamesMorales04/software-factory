@@ -722,25 +722,19 @@ struct DependencyAcquisitionState {
 
 fn dependency_acquisition_request(
     action_spec: &ActionSpec,
-    directory: &str,
+    _directory: &str,
 ) -> Result<Option<factory_native::dependency_service::DependencyAcquireRequest>, String> {
+    if action_spec.dependencies_required && action_spec.dependency_plan.is_none() {
+        return Err(
+            "the frozen assignment requires dependency acquisition but no dependency plan was attached"
+                .into(),
+        );
+    }
     let Some(plan) = action_spec.dependency_plan.as_ref() else {
         return Ok(None);
     };
     plan.validate()
         .map_err(|error| format!("frozen dependency plan is invalid: {error}"))?;
-    if plan.acquisition.uses_vendor() && !plan.acquisition.uses_broker() {
-        let vendor = plan
-            .rust
-            .as_ref()
-            .map(|rust| rust.vendor_path.as_str())
-            .unwrap_or("vendor");
-        if !std::path::Path::new(directory).join(vendor).is_dir() {
-            return Err(format!(
-                "dependency plan requires a pre-vendored `{vendor}` cache that is not present"
-            ));
-        }
-    }
     if !plan.acquisition.uses_broker() {
         return Ok(None);
     }
@@ -5103,6 +5097,7 @@ mod tests {
                 allowed_paths: vec!["src".into()],
                 checks: Vec::new(),
                 dependency_plan: None,
+                dependencies_required: false,
             },
             action_spec_sha256: "c".repeat(64),
             repository: "/repo".into(),
@@ -5670,5 +5665,94 @@ mod tests {
             vec!["/dependencies".to_string()]
         );
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn dependency_requirement_without_plan_blocks_and_no_requirement_proceeds() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let base = reqwest::Url::parse(&format!("http://{address}")).unwrap();
+        let fixture = DependencyFixture {
+            fail: false,
+            paths: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+        };
+        let paths = fixture.paths.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, dependency_fixture_router(fixture))
+                .await
+                .unwrap();
+        });
+        let assignment = assignment_for_progress();
+        let (client, provider_session, usage_tracker, supervisor) =
+            dependency_context(&assignment, base.clone()).await;
+        let handle = WorkspaceHandle {
+            workspace_id: "ws".into(),
+            attempt_id: "attempt".into(),
+            base_commit: "a".repeat(40),
+            generation: 1,
+            status: WorkspaceStatus::Allocated,
+            candidate: None,
+            capability: "capability".into(),
+            capability_expires_at_ms: 0,
+        };
+        let context = ProviderContext {
+            client: &client,
+            core: &base,
+            session_token: "session",
+            worker_id: "worker",
+            session_record_id: "session",
+            base_url: "",
+            password: "",
+            directory: "/tmp",
+            api_directory: "",
+            provider_kind: "fixture",
+            provider_session: &provider_session,
+            usage_tracker: &usage_tracker,
+            turn_policy: None,
+            assignment: &assignment,
+            supervisor: &supervisor,
+            enforce_check_completion: false,
+        };
+        let mut state = DependencyAcquisitionState::default();
+        finalize_candidate(&context, &handle, &mut state)
+            .await
+            .expect("no-dependency assignment proceeds");
+        assert_eq!(*paths.lock().unwrap(), vec!["/finalize".to_string()]);
+        server.abort();
+
+        let mut missing = assignment_for_progress();
+        missing.action_spec.dependencies_required = true;
+        missing.action_spec.dependency_plan = None;
+        let (client, provider_session, usage_tracker, supervisor) =
+            dependency_context(&missing, reqwest::Url::parse("http://127.0.0.1:9").unwrap()).await;
+        let core = reqwest::Url::parse("http://127.0.0.1:9").unwrap();
+        let context = ProviderContext {
+            client: &client,
+            core: &core,
+            session_token: "session",
+            worker_id: "worker",
+            session_record_id: "session",
+            base_url: "",
+            password: "",
+            directory: "/tmp",
+            api_directory: "",
+            provider_kind: "fixture",
+            provider_session: &provider_session,
+            usage_tracker: &usage_tracker,
+            turn_policy: None,
+            assignment: &missing,
+            supervisor: &supervisor,
+            enforce_check_completion: false,
+        };
+        let mut state = DependencyAcquisitionState::default();
+        let error = finalize_candidate(&context, &handle, &mut state)
+            .await
+            .expect_err("missing dependency plan must block");
+        assert!(
+            error
+                .to_string()
+                .contains("requires dependency acquisition"),
+            "error: {error}"
+        );
     }
 }

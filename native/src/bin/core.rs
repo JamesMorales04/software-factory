@@ -10695,6 +10695,27 @@ async fn ensure_planning_workflow(
     Ok(run_id)
 }
 
+fn repository_file_sha256(
+    repository: &std::path::Path,
+    base_commit: &str,
+    path: &str,
+) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let output = std::process::Command::new("git")
+        .args([
+            "-C",
+            repository.to_str()?,
+            "show",
+            &format!("{base_commit}:{path}"),
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(format!("{:x}", Sha256::digest(&output.stdout)))
+}
+
 async fn persist_planning_plan(
     app: &App,
     record: &factory_native::db::IntakeRequestRecord,
@@ -10711,7 +10732,7 @@ async fn persist_planning_plan(
         .await
         .map_err(api_error)?;
     let repository = PathBuf::from(&config.repository);
-    let stack = match factory_native::planning::stack::build_stack_decision(
+    let mut stack = match factory_native::planning::stack::build_stack_decision(
         lane,
         &context.stack,
         &factory_native::planning::route::UserPlanningConstraints::default(),
@@ -10729,6 +10750,55 @@ async fn persist_planning_plan(
             return Err(api_error(Error::Validation(error.to_string())));
         }
     };
+    let lockfile_sha256 = repository_file_sha256(&repository, &config.base_commit, "Cargo.lock");
+    if stack.dependency_plan.strategy == factory_native::planning::DependencyStrategy::VendorCache
+        && !repository.join("vendor").is_dir()
+        && lockfile_sha256.is_some()
+    {
+        // A repository with a lockfile but no committed vendor tree can use
+        // the brokered fetch; the frozen lockfile digest binds the request.
+        stack.dependency_plan.strategy =
+            factory_native::planning::DependencyStrategy::BrokeredFetch;
+    }
+    stack
+        .validate(lane)
+        .map_err(|error| api_error(Error::Validation(error)))?;
+    let vendor_path = if stack.dependency_plan.cache_ref.trim().is_empty() {
+        "vendor"
+    } else {
+        stack.dependency_plan.cache_ref.as_str()
+    };
+    let execution_plan = match factory_native::dependencies::from_frozen_planning(
+        &stack.dependency_plan,
+        factory_native::dependencies::DependencyKind::Rust,
+        lockfile_sha256.as_deref(),
+        vendor_path,
+        &stack.dependency_plan.sbom_ref,
+    ) {
+        Ok(plan) => plan,
+        Err(error) => {
+            return Ok(json!({
+                "code": "DEPENDENCY_PLAN_INVALID",
+                "message": format!("the frozen dependency plan is not executable: {error}"),
+            }));
+        }
+    };
+    let dependencies_required =
+        stack.dependency_plan.strategy != factory_native::planning::DependencyStrategy::NotRequired;
+    if let Err(error) = app
+        .db
+        .set_action_dependency_plan(
+            &record.action_id,
+            execution_plan.as_ref(),
+            dependencies_required,
+        )
+        .await
+    {
+        return Ok(json!({
+            "code": "DEPENDENCY_PLAN_REQUIRED",
+            "message": format!("the frozen dependency plan could not be attached before authorization: {error}"),
+        }));
+    }
     let architecture = factory_native::planning::architecture::build_architecture_plan(
         &record.objective,
         graph,
@@ -19911,6 +19981,7 @@ mod tests {
                 allowed_paths: config.allowed_paths.clone(),
                 checks: checks(),
                 dependency_plan: None,
+                dependencies_required: false,
             };
             let (assessment, proposal) = factory_native::lead::fixture_lead_assessment(
                 &lead.id,
@@ -20379,6 +20450,7 @@ mod tests {
                 allowed_paths: config.allowed_paths.clone(),
                 checks: checks(),
                 dependency_plan: None,
+                dependencies_required: false,
             };
             let (assessment, _) = factory_native::lead::fixture_lead_assessment(
                 &lead.id,

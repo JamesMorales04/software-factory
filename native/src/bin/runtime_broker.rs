@@ -656,7 +656,7 @@ impl App {
                 "network",
                 "inspect",
                 "--format",
-                "{{(index .Subnets 0).Gateway}} {{(index .Subnets 0).Subnet}}",
+                "{{json .}}",
                 network.as_str(),
             ])
             .await?;
@@ -666,17 +666,51 @@ impl App {
                 stderr(&output)
             ));
         }
-        let inspected = String::from_utf8_lossy(&output.stdout);
-        let mut fields = inspected.split_whitespace();
-        let observed_gateway = fields.next().unwrap_or_default();
-        let observed_subnet = fields.next().unwrap_or_default();
-        if observed_gateway != gateway.to_string() || observed_subnet != subnet {
-            return Err(format!(
-                "dependency egress network does not match its fixed gateway/subnet: {observed_gateway} {observed_subnet}"
-            ));
-        }
+        let inspected: serde_json::Value =
+            serde_json::from_slice(&output.stdout).map_err(|error| {
+                format!("dependency egress network inspection is not JSON: {error}")
+            })?;
+        validate_egress_network_inspection(&inspected, &gateway.to_string(), &subnet)?;
         Ok((network, SocketAddr::new(gateway, port)))
     }
+}
+
+fn validate_egress_network_inspection(
+    inspected: &serde_json::Value,
+    expected_gateway: &str,
+    expected_subnet: &str,
+) -> Result<(), String> {
+    if inspected
+        .get("internal")
+        .and_then(serde_json::Value::as_bool)
+        != Some(true)
+    {
+        return Err("dependency egress network must be an internal network".into());
+    }
+    if inspected
+        .pointer("/labels/io.software-factory.managed")
+        .and_then(serde_json::Value::as_str)
+        != Some("true")
+    {
+        return Err(
+            "dependency egress network is missing the managed label; refusing an unmanaged network"
+                .into(),
+        );
+    }
+    let observed_gateway = inspected
+        .pointer("/subnets/0/gateway")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let observed_subnet = inspected
+        .pointer("/subnets/0/subnet")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    if observed_gateway != expected_gateway || observed_subnet != expected_subnet {
+        return Err(format!(
+            "dependency egress network does not match its fixed gateway/subnet: {observed_gateway} {observed_subnet}"
+        ));
+    }
+    Ok(())
 }
 
 fn valid_network_name(value: &str) -> bool {
@@ -1503,6 +1537,36 @@ mod tests {
         assert!(parse_registries("a,b".into()).is_ok());
         assert!(parse_registries("a,,b".into()).is_err());
         assert!(parse_registries("a b".into()).is_err());
+    }
+
+    #[test]
+    fn existing_egress_network_must_remain_internal_and_managed() {
+        let valid = json!({
+            "name": "factory-deps-egress",
+            "driver": "bridge",
+            "internal": true,
+            "subnets": [{"subnet": "10.90.0.0/24", "gateway": "10.90.0.1"}],
+            "labels": {"io.software-factory.managed": "true"}
+        });
+        assert!(validate_egress_network_inspection(&valid, "10.90.0.1", "10.90.0.0/24").is_ok());
+
+        let mut non_internal = valid.clone();
+        non_internal["internal"] = json!(false);
+        let error = validate_egress_network_inspection(&non_internal, "10.90.0.1", "10.90.0.0/24")
+            .expect_err("non-internal network must be rejected");
+        assert!(error.contains("internal network"), "{error}");
+
+        let mut unmanaged = valid.clone();
+        unmanaged["labels"] = json!({});
+        let error = validate_egress_network_inspection(&unmanaged, "10.90.0.1", "10.90.0.0/24")
+            .expect_err("unmanaged network must be rejected");
+        assert!(error.contains("managed label"), "{error}");
+
+        let mut wrong_subnet = valid;
+        wrong_subnet["subnets"][0]["gateway"] = json!("10.90.0.2");
+        assert!(
+            validate_egress_network_inspection(&wrong_subnet, "10.90.0.1", "10.90.0.0/24").is_err()
+        );
     }
 
     #[test]

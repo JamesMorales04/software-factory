@@ -378,6 +378,7 @@ impl Database {
                 "assignment has no frozen allowed-path scope".into(),
             ));
         }
+        super::validate_dependency_requirement(&spec)?;
         let skills = self.adopted_skills_for_campaign(&campaign_id).await?;
         Ok(WorkerAssignment {
             lease: lease.clone(),

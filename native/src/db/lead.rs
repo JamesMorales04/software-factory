@@ -3065,6 +3065,7 @@ fn derive_root_action_spec(
         allowed_paths,
         checks,
         dependency_plan: None,
+        dependencies_required: false,
     })
 }
 
@@ -3328,6 +3329,7 @@ fn unit_action_spec(
         allowed_paths: unit.allowed_paths.clone(),
         checks,
         dependency_plan: None,
+        dependencies_required: false,
     })
 }
 
@@ -3808,6 +3810,7 @@ async fn ensure_integration(
         allowed_paths: allowed_paths.into_iter().collect(),
         checks,
         dependency_plan: None,
+        dependencies_required: false,
     };
     let spec_json = serde_json::to_string(&spec)
         .map_err(|_| Error::Invalid("integration ActionSpec encoding"))?;
@@ -5433,6 +5436,7 @@ mod tests {
             allowed_paths: config.allowed_paths.clone(),
             checks: acceptance.into_iter().chain(negative).collect(),
             dependency_plan: None,
+            dependencies_required: false,
         };
         let binding = ActionBinding {
             id: request.action_id.clone(),

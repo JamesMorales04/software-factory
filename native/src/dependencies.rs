@@ -969,6 +969,68 @@ impl DependencyPlan {
     }
 }
 
+/// Build a frozen execution plan from the planning contract. Planning evidence
+/// hashes are placeholders (`0` repeated) until the acquisition produces the
+/// candidate-bound evidence; a brokered strategy requires the exact frozen
+/// lockfile digest supplied by the caller.
+pub fn from_frozen_planning(
+    planning: &PlanningDependencyPlan,
+    kind: DependencyKind,
+    lockfile_sha256: Option<&str>,
+    vendor_path: &str,
+    sbom_ref: &str,
+) -> Result<Option<DependencyPlan>, DependencyError> {
+    if planning.strategy == DependencyStrategy::NotRequired {
+        return Ok(None);
+    }
+    let broker = matches!(
+        planning.strategy,
+        DependencyStrategy::BrokeredFetch | DependencyStrategy::Both
+    );
+    let lockfile_sha256 = match (broker, lockfile_sha256) {
+        (true, None) => {
+            return Err(DependencyError::Invalid(
+                "a brokered dependency plan requires a frozen Cargo.lock digest".into(),
+            ));
+        }
+        (_, Some(value)) => {
+            validate_sha256("lockfile", value)?;
+            value.to_owned()
+        }
+        (false, None) => "0".repeat(64),
+    };
+    let zero = "0".repeat(64);
+    let evidence = DependencyEvidence {
+        lockfile_sha256: lockfile_sha256.clone(),
+        vendor_sha256: zero.clone(),
+        sbom_ref: if sbom_ref.trim().is_empty() {
+            "artifacts/sbom.json".into()
+        } else {
+            sbom_ref.into()
+        },
+        sbom_sha256: zero.clone(),
+        license_report_ref: "artifacts/licenses.json".into(),
+        license_report_sha256: zero.clone(),
+        advisory_report_ref: "artifacts/advisories.json".into(),
+        advisory_report_sha256: zero,
+    };
+    let rust = RustDependencyPlan::new(planning.items.iter().map(RustDependency::from).collect())
+        .with_vendor_path(vendor_path);
+    let fetch = broker.then(|| {
+        BrokeredFetch::new(
+            DEFAULT_ALLOWED_REGISTRIES[1],
+            "Cargo.lock",
+            lockfile_sha256,
+            vendor_path,
+        )
+    });
+    let mut builder = DependencyPlanBuilder::new(planning, kind, evidence).rust(rust);
+    if let Some(fetch) = fetch {
+        builder = builder.brokered_fetch(fetch);
+    }
+    builder.build().map(Some)
+}
+
 pub struct DependencyPlanBuilder<'a> {
     planning: &'a PlanningDependencyPlan,
     kind: DependencyKind,
@@ -1672,6 +1734,64 @@ mod tests {
         assert!(plan.validate().is_ok());
         assert!(plan.rust.is_none());
         assert!(plan.commands().is_none());
+    }
+
+    #[test]
+    fn frozen_planning_converts_to_an_execution_plan_or_blocks() {
+        let planning = planning_plan(DependencyStrategy::VendorCache);
+        let plan = from_frozen_planning(
+            &planning,
+            DependencyKind::Rust,
+            None,
+            "vendor",
+            "artifacts/sbom.json",
+        )
+        .unwrap()
+        .expect("vendor plan");
+        assert_eq!(plan.acquisition, DependencyAcquisition::VendorCache);
+        assert!(plan.brokered_fetch.is_none());
+        assert_eq!(plan.rust.as_ref().expect("rust plan").vendor_path, "vendor");
+
+        let broker = planning_plan(DependencyStrategy::BrokeredFetch);
+        assert!(
+            from_frozen_planning(
+                &broker,
+                DependencyKind::Rust,
+                None,
+                "vendor",
+                "artifacts/sbom.json"
+            )
+            .is_err()
+        );
+        let plan = from_frozen_planning(
+            &broker,
+            DependencyKind::Rust,
+            Some(&"a".repeat(64)),
+            "vendor",
+            "artifacts/sbom.json",
+        )
+        .unwrap()
+        .expect("brokered plan");
+        assert_eq!(plan.acquisition, DependencyAcquisition::BrokeredFetch);
+        assert_eq!(
+            plan.brokered_fetch
+                .as_ref()
+                .expect("fetch contract")
+                .lockfile_sha256,
+            "a".repeat(64)
+        );
+
+        assert!(
+            from_frozen_planning(
+                &planning_plan(DependencyStrategy::NotRequired),
+                DependencyKind::Rust,
+                None,
+                "vendor",
+                ""
+            )
+            .unwrap()
+            .is_none()
+        );
     }
 
     #[test]

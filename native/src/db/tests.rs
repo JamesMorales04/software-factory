@@ -657,6 +657,68 @@ async fn fixture_assignment_claim_does_not_require_provider_route_identity() {
 }
 
 #[tokio::test]
+async fn dependency_plan_attaches_before_campaign_and_missing_plan_blocks() {
+    let (path, db) = temp_db("factory-dependency-plan-attach").await;
+    insert_project(&db, "project", "/fixture", "base").await;
+    let action = db
+        .create_action_with_spec(
+            "project",
+            "objective",
+            "codex",
+            "model",
+            "action-key",
+            ActionSpecInput {
+                allowed_paths: &["src".to_string()],
+                checks: &[],
+                dependency_plan: None,
+            },
+        )
+        .await
+        .unwrap();
+    let mut missing = action.spec.clone();
+    missing.dependencies_required = true;
+    missing.dependency_plan = None;
+    assert!(crate::db::validate_dependency_requirement(&missing).is_err());
+
+    let planning = crate::planning::DependencyPlan {
+        strategy: crate::planning::DependencyStrategy::VendorCache,
+        items: Vec::new(),
+        cache_ref: "vendor".into(),
+        sbom_ref: "artifacts/sbom.json".into(),
+        owner_approval: None,
+    };
+    let plan = crate::dependencies::from_frozen_planning(
+        &planning,
+        crate::dependencies::DependencyKind::Rust,
+        None,
+        "vendor",
+        "artifacts/sbom.json",
+    )
+    .unwrap()
+    .expect("vendor plan");
+    let updated = db
+        .set_action_dependency_plan(&action.id, Some(&plan), true)
+        .await
+        .unwrap();
+    assert!(updated.spec.dependencies_required);
+    assert_eq!(updated.spec.dependency_plan, Some(plan.clone()));
+    let loaded = db.action(&action.id).await.unwrap();
+    assert_eq!(loaded.spec.dependency_plan, Some(plan));
+    assert!(crate::db::validate_dependency_requirement(&loaded.spec).is_ok());
+
+    let _campaign = db
+        .create_campaign(&action.id, "campaign-key")
+        .await
+        .unwrap();
+    assert!(matches!(
+        db.set_action_dependency_plan(&action.id, None, false).await,
+        Err(Error::Conflict(_))
+    ));
+    db.close().await;
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
 async fn heartbeat_does_not_shorten_a_longer_claim_lease() {
     let path = temp_path("factory-lease-no-shorten");
     let db = Database::open(&path).await.unwrap();

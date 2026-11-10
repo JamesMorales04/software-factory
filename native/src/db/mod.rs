@@ -123,6 +123,11 @@ pub struct ActionSpec {
     /// before persistence and is carried to the Worker assignment.
     #[serde(default)]
     pub dependency_plan: Option<crate::dependencies::DependencyPlan>,
+    /// True when the frozen planning decision requires dependency acquisition
+    /// or a vendor cache. Core and the Worker refuse to authorize/execute when
+    /// this is true but `dependency_plan` is absent.
+    #[serde(default)]
+    pub dependencies_required: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -130,6 +135,18 @@ pub struct ActionSpecInput<'a> {
     pub allowed_paths: &'a [String],
     pub checks: &'a [SpecCheck],
     pub dependency_plan: Option<&'a crate::dependencies::DependencyPlan>,
+}
+
+/// Deterministic dependency-requirement check shared by assignment dispatch and
+/// authorization. A plan marked as required must carry its frozen execution
+/// plan; absence is a hard refusal, not a silent skip.
+pub fn validate_dependency_requirement(spec: &ActionSpec) -> Result<(), Error> {
+    if spec.dependencies_required && spec.dependency_plan.is_none() {
+        return Err(Error::Forbidden(
+            "frozen work requires dependency acquisition but has no dependency plan".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -995,6 +995,7 @@ mod tests {
                 timeout_secs: 60,
             }],
             dependency_plan: None,
+            dependencies_required: false,
         };
         let _action = db
             .create_action_with_spec(
