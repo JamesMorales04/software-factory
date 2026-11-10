@@ -173,18 +173,6 @@ impl ActiveExecutions {
     }
 }
 
-struct ActiveExecutionGuard {
-    active: Arc<ActiveExecutions>,
-    volume: String,
-    container: String,
-}
-
-impl Drop for ActiveExecutionGuard {
-    fn drop(&mut self) {
-        self.active.remove(&self.volume, &self.container);
-    }
-}
-
 /// Exact per-resource-name async locks. The exact table is permanently bounded.
 /// Entries are never reclaimed: a name that once fell back to the overflow lock
 /// must keep that identity forever, because reclaiming an idle exact entry could
@@ -667,6 +655,27 @@ impl App {
         let lock = self.resource_lock(container);
         let _guard = lock.lock().await;
         self.remove_container_locked(container, owner).await
+    }
+
+    /// Remove the execution container and confirm it is absent before its
+    /// volume active marker may be released. Any uncertainty keeps the volume
+    /// blocked.
+    async fn confirm_execution_cleanup(&self, container: &str, owner: ResourceOwner) -> bool {
+        if let Err(error) = self.remove_container_for(container, owner).await {
+            tracing::warn!(%container, %error, "execution cleanup removal failed; volume remains blocked");
+            return false;
+        }
+        match self.podman_output(["container", "exists", container]).await {
+            Ok(output) if output.status.code() == Some(1) => true,
+            Ok(_) => {
+                tracing::warn!(%container, "execution container still present; volume remains blocked");
+                false
+            }
+            Err(error) => {
+                tracing::warn!(%container, %error, "execution cleanup could not be confirmed; volume remains blocked");
+                false
+            }
+        }
     }
 
     async fn require_volume_owner(
@@ -1239,7 +1248,7 @@ async fn export_volume(
         .into_response()
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct RunContainer {
     volume: String,
@@ -1286,33 +1295,75 @@ async fn run_container(
     if !app.active.register(&input.volume, &input.container) {
         return conflict("volume already has an active execution");
     }
-    let _execution = ActiveExecutionGuard {
-        active: Arc::clone(&app.active),
-        volume: input.volume.clone(),
-        container: input.container.clone(),
-    };
     drop(volume_guard);
     drop(lock);
-    tracing::info!(container=%input.container, volume=%input.volume, "child execution started");
-    let result = run_child(&app, &input, owner).await;
-    match &result {
-        Ok(output) => tracing::info!(
-            container=%input.container,
-            exit_code=?output.exit_code,
-            "child execution finished"
-        ),
-        Err(error) => tracing::warn!(container=%input.container, %error, "child execution failed"),
-    }
-    match result {
-        Ok(output) => Json(json!({
-            "exitCode": output.exit_code,
-            "stdout": String::from_utf8_lossy(&output.stdout),
-            "stderr": String::from_utf8_lossy(&output.stderr),
-            "stdoutTruncated": output.stdout_truncated,
-            "stderrTruncated": output.stderr_truncated
-        }))
-        .into_response(),
-        Err(error) => operation_error(error),
+    let task_app = Arc::clone(&app);
+    let task_input = input.clone();
+    let task = tokio::spawn(async move {
+        tracing::info!(container=%task_input.container, volume=%task_input.volume, "child execution started");
+        let result = run_child(&task_app, &task_input, owner).await;
+        let confirmed = task_app
+            .confirm_execution_cleanup(&task_input.container, owner)
+            .await;
+        if confirmed {
+            task_app
+                .active
+                .remove(&task_input.volume, &task_input.container);
+        } else {
+            tracing::error!(
+                container=%task_input.container,
+                volume=%task_input.volume,
+                "execution cleanup unconfirmed; volume remains blocked"
+            );
+        }
+        match &result {
+            Ok(output) => tracing::info!(
+                container=%task_input.container,
+                exit_code=?output.exit_code,
+                "child execution finished"
+            ),
+            Err(error) => {
+                tracing::warn!(container=%task_input.container, %error, "child execution failed")
+            }
+        }
+        (result, confirmed)
+    });
+    // The execution task is detached from this request. If the client cancels,
+    // the task still runs cleanup and only then releases the volume marker.
+    match task.await {
+        Ok((result, confirmed)) => {
+            if !confirmed {
+                return operation_error(
+                    "execution cleanup could not be confirmed; volume remains blocked",
+                );
+            }
+            match result {
+                Ok(output) => Json(json!({
+                    "exitCode": output.exit_code,
+                    "stdout": String::from_utf8_lossy(&output.stdout),
+                    "stderr": String::from_utf8_lossy(&output.stderr),
+                    "stdoutTruncated": output.stdout_truncated,
+                    "stderrTruncated": output.stderr_truncated
+                }))
+                .into_response(),
+                Err(error) => operation_error(error),
+            }
+        }
+        Err(error) => {
+            tracing::error!(%error, "execution task failed; scheduling cleanup confirmation");
+            let cleanup_app = Arc::clone(&app);
+            let container = input.container.clone();
+            let volume = input.volume.clone();
+            tokio::spawn(async move {
+                if cleanup_app
+                    .confirm_execution_cleanup(&container, owner)
+                    .await
+                {
+                    cleanup_app.active.remove(&volume, &container);
+                }
+            });
+            operation_error("execution task failed; cleanup is being confirmed")
+        }
     }
 }
 
@@ -2463,18 +2514,14 @@ exit 1
         assert_eq!(delete_response.status(), StatusCode::NO_CONTENT);
         let log = std::fs::read_to_string(&log).unwrap();
         let lines: Vec<&str> = log.lines().collect();
-        assert_eq!(
-            lines,
-            vec![
-                "inspect-start",
-                "inspect-end",
-                "rm",
-                "inspect-start",
-                "inspect-end",
-                "rm"
-            ],
-            "execution cleanup interleaved with container deletion: {lines:?}"
-        );
+        assert!(!lines.is_empty() && lines.len().is_multiple_of(3));
+        for chunk in lines.chunks(3) {
+            assert_eq!(
+                chunk,
+                ["inspect-start", "inspect-end", "rm"],
+                "execution cleanup interleaved with container deletion: {lines:?}"
+            );
+        }
         let _ = std::fs::remove_file(&log);
     }
 
@@ -2595,6 +2642,185 @@ exit 1
         .await;
         assert_eq!(created.status(), StatusCode::CONFLICT);
         assert_eq!(run.await.status(), StatusCode::OK);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn cancelled_execution_keeps_volume_blocked_until_cleanup_is_confirmed() {
+        let volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let container = format!("factory-exec-{}", uuid::Uuid::new_v4());
+        let log =
+            std::env::temp_dir().join(format!("factory-cancel-exec-log-{}", uuid::Uuid::new_v4()));
+        let state = std::env::temp_dir().join(format!(
+            "factory-cancel-exec-state-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let cleanup = std::env::temp_dir().join(format!(
+            "factory-cancel-exec-cleanup-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let script = format!(
+            r#"#!/bin/sh
+log="{log}"
+state="{state}"
+cleanup="{cleanup}"
+if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then
+  printf '%s\n' '[{{"Name":"{volume}","Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor"}}}}]'
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "rm" ]; then
+  exit 0
+fi
+if [ "$1" = "run" ]; then
+  echo run-start >> "$log"
+  touch "$state"
+  sleep 0.5
+  exit 0
+fi
+if [ "$1" = "inspect" ]; then
+  if [ ! -f "$state" ]; then exit 1; fi
+  printf '%s\n' '[{{"Config":{{"Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor"}}}}}}]'
+  exit 0
+fi
+if [ "$1" = "rm" ]; then
+  rm -f "$state"
+  touch "$cleanup"
+  exit 0
+fi
+if [ "$1" = "container" ] && [ "$2" = "exists" ]; then
+  if [ -f "$state" ]; then exit 0; else exit 1; fi
+fi
+exit 1
+"#,
+            log = log.display(),
+            state = state.display(),
+            cleanup = cleanup.display()
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app(podman);
+        let handler = tokio::spawn(run_container(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Supervisor),
+            Json(RunContainer {
+                volume: volume.clone(),
+                container,
+                image: "test/image:1".into(),
+                argv: vec!["/bin/true".into()],
+                timeout_secs: 10,
+            }),
+        ));
+        for _ in 0..100 {
+            if std::fs::read_to_string(&log)
+                .map(|log| log.contains("run-start"))
+                .unwrap_or(false)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        handler.abort();
+        let _ = handler.await;
+
+        let blocked = remove_volume(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Supervisor),
+            AxumPath(volume.clone()),
+        )
+        .await;
+        assert_eq!(
+            blocked.status(),
+            StatusCode::CONFLICT,
+            "cancelled execution released the volume before cleanup confirmation"
+        );
+
+        let mut released = None;
+        for _ in 0..100 {
+            let response = remove_volume(
+                State(Arc::clone(&app)),
+                test_headers(ResourceOwner::Supervisor),
+                AxumPath(volume.clone()),
+            )
+            .await;
+            if response.status() == StatusCode::NO_CONTENT {
+                released = Some(response.status());
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(released, Some(StatusCode::NO_CONTENT));
+        assert!(cleanup.exists());
+        let _ = std::fs::remove_file(&log);
+        let _ = std::fs::remove_file(&cleanup);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn normal_execution_releases_the_volume_marker_after_cleanup() {
+        let volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let container = format!("factory-exec-{}", uuid::Uuid::new_v4());
+        let state = std::env::temp_dir().join(format!(
+            "factory-normal-exec-state-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let cleanup = std::env::temp_dir().join(format!(
+            "factory-normal-exec-cleanup-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let script = format!(
+            r#"#!/bin/sh
+state="{state}"
+cleanup="{cleanup}"
+if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then
+  printf '%s\n' '[{{"Name":"{volume}","Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor"}}}}]'
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "rm" ]; then
+  exit 0
+fi
+if [ "$1" = "run" ]; then
+  touch "$state"
+  exit 0
+fi
+if [ "$1" = "inspect" ]; then
+  if [ ! -f "$state" ]; then exit 1; fi
+  printf '%s\n' '[{{"Config":{{"Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor"}}}}}}]'
+  exit 0
+fi
+if [ "$1" = "rm" ]; then
+  rm -f "$state"
+  touch "$cleanup"
+  exit 0
+fi
+if [ "$1" = "container" ] && [ "$2" = "exists" ]; then
+  if [ -f "$state" ]; then exit 0; else exit 1; fi
+fi
+exit 1
+"#,
+            state = state.display(),
+            cleanup = cleanup.display()
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app(podman);
+        let response = run_container(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Supervisor),
+            Json(RunContainer {
+                volume: volume.clone(),
+                container,
+                image: "test/image:1".into(),
+                argv: vec!["/bin/true".into()],
+                timeout_secs: 10,
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(cleanup.exists());
+        let removed = remove_volume(
+            State(app),
+            test_headers(ResourceOwner::Supervisor),
+            AxumPath(volume),
+        )
+        .await;
+        assert_eq!(removed.status(), StatusCode::NO_CONTENT);
+        let _ = std::fs::remove_file(&cleanup);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

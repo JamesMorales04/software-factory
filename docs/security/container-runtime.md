@@ -161,10 +161,13 @@ why the engine is trusted infrastructure and why SEC-01 remains blocked.
   overflow lock). Execution takes the volume lock only to validate and register
   an active-execution entry, then releases it for the run. Volume
   delete/reset/import/export is rejected while the registry marks the volume
-  active. Cleanup takes the container lock after the volume lock is released,
-  so volume -> container ordering is preserved and an overflowed volume/container
-  pair cannot self-deadlock. Unrelated resources within the exact table are not
-  serialized; overflow names intentionally serialize.
+  active. The execution lifecycle is detached from the client request; cleanup
+  removes the container, confirms `container exists` is absent, and only then
+  removes the active marker. If confirmation fails, the marker is kept and the
+  volume remains blocked. Cleanup takes the container lock after the volume lock
+  is released, so volume -> container ordering is preserved and an overflowed
+  volume/container pair cannot self-deadlock. Unrelated resources within the exact
+  table are not serialized; overflow names intentionally serialize.
 - Provider session cleanup returned `container_removed_verified_absent` in the
   fixture journey.
 
