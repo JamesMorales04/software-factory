@@ -10,6 +10,23 @@ type CampaignRow = (
     String,
 );
 
+/// Effective Campaign status shared by the Campaign list, Campaign detail and
+/// Project summary projections. Terminal Campaign states win; an active Run
+/// keeps the raw Campaign state; otherwise the latest immutable Gate outcome is
+/// authoritative. Keep every projection on this single definition.
+pub(super) const CAMPAIGN_EFFECTIVE_STATUS_SQL: &str = "CASE
+  WHEN c.status IN ('CANCELLED','FAILED') THEN c.status
+  WHEN EXISTS (SELECT 1 FROM runs ar WHERE ar.campaign_id=c.id AND ar.status IN ('PENDING','RUNNING')) THEN c.status
+  ELSE COALESCE((
+    SELECT gd.outcome FROM gate_decisions_current gd
+    JOIN candidates ca ON ca.id=gd.candidate_id
+    JOIN attempts at ON at.id=ca.attempt_id
+    JOIN runs r ON r.id=at.run_id
+    WHERE r.campaign_id=c.id
+    ORDER BY gd.decided_at DESC LIMIT 1
+  ), c.status)
+END";
+
 use chrono::Utc;
 use sqlx_sqlite::SqliteConnection;
 use uuid::Uuid;
@@ -237,25 +254,13 @@ impl Database {
     }
 
     pub async fn campaigns(&self) -> Result<Vec<Campaign>, Error> {
-        let rows: Vec<CampaignRow> = sqlx::query_as::query_as(
+        let sql = format!(
             "SELECT c.id,c.action_id,c.status,c.created_at,a.objective,a.project_id,
-                    CASE
-                      WHEN c.status IN ('CANCELLED','FAILED') THEN c.status
-                      WHEN EXISTS (SELECT 1 FROM runs ar WHERE ar.campaign_id=c.id AND ar.status IN ('PENDING','RUNNING')) THEN c.status
-                      ELSE COALESCE((
-                        SELECT gd.outcome FROM gate_decisions_current gd
-                        JOIN candidates ca ON ca.id=gd.candidate_id
-                        JOIN attempts at ON at.id=ca.attempt_id
-                        JOIN runs r ON r.id=at.run_id
-                        WHERE r.campaign_id=c.id
-                        ORDER BY gd.decided_at DESC LIMIT 1
-                      ), c.status)
-                    END
+                    {CAMPAIGN_EFFECTIVE_STATUS_SQL}
                  FROM campaigns c LEFT JOIN actions a ON a.id=c.action_id
-                 ORDER BY c.created_at,c.id",
-        )
-        .fetch_all(&self.pool)
-        .await?;
+                 ORDER BY c.created_at,c.id"
+        );
+        let rows: Vec<CampaignRow> = sqlx::query_as::query_as(&sql).fetch_all(&self.pool).await?;
         Ok(rows
             .into_iter()
             .map(
@@ -331,25 +336,15 @@ pub(super) async fn load_campaign(
     connection: &mut SqliteConnection,
     id: &str,
 ) -> Result<Campaign, Error> {
-    let row: Option<CampaignRow> = sqlx::query_as::query_as(
+    let sql = format!(
         "SELECT c.id,c.action_id,c.status,c.created_at,a.objective,a.project_id,
-                CASE
-                  WHEN c.status IN ('CANCELLED','FAILED') THEN c.status
-                  WHEN EXISTS (SELECT 1 FROM runs ar WHERE ar.campaign_id=c.id AND ar.status IN ('PENDING','RUNNING')) THEN c.status
-                  ELSE COALESCE((
-                    SELECT gd.outcome FROM gate_decisions_current gd
-                    JOIN candidates ca ON ca.id=gd.candidate_id
-                    JOIN attempts at ON at.id=ca.attempt_id
-                    JOIN runs r ON r.id=at.run_id
-                    WHERE r.campaign_id=c.id
-                    ORDER BY gd.decided_at DESC LIMIT 1
-                  ), c.status)
-                END
-         FROM campaigns c LEFT JOIN actions a ON a.id=c.action_id WHERE c.id=?1",
-    )
-    .bind(id)
-    .fetch_optional(connection)
-    .await?;
+                {CAMPAIGN_EFFECTIVE_STATUS_SQL}
+         FROM campaigns c LEFT JOIN actions a ON a.id=c.action_id WHERE c.id=?1"
+    );
+    let row: Option<CampaignRow> = sqlx::query_as::query_as(&sql)
+        .bind(id)
+        .fetch_optional(connection)
+        .await?;
     let (id, action_id, status, created_at, objective, project_id, effective_status) =
         row.ok_or(Error::NotFound)?;
     Ok(Campaign {

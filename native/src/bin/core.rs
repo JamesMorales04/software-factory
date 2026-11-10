@@ -4269,12 +4269,7 @@ async fn project_summary(
     };
     let active_campaigns: Vec<_> = campaigns
         .iter()
-        .filter(|campaign| {
-            !matches!(
-                campaign.status.as_str(),
-                "CANCELLED" | "FAILED" | "COMPLETED" | "ACCEPTED" | "REJECTED"
-            )
-        })
+        .filter(|campaign| campaign.is_active())
         .cloned()
         .collect();
     let decisions = match build_decisions(&app).await {

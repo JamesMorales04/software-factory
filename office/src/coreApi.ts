@@ -99,7 +99,10 @@ export interface ProjectCampaignSummary {
   id: string;
   actionId: string;
   objective: string;
+  /** Raw durable Campaign state, retained for history. */
   status: string;
+  /** Terminal Campaign status, active Run state or latest Gate outcome. */
+  effectiveStatus: string;
   createdAt: string;
 }
 

@@ -704,6 +704,111 @@ async fn campaign_is_durable_but_requires_authorization_for_a_run() {
     let _ = std::fs::remove_file(path);
 }
 
+#[tokio::test]
+async fn project_campaigns_project_gate_effective_status_and_active_state() {
+    let (path, db) = temp_db("factory-project-campaign-effective").await;
+    insert_project(&db, "project", "/fixture", "base").await;
+    let action = db
+        .create_action(
+            "project",
+            "projection objective",
+            "opencode",
+            "model",
+            "action-key",
+        )
+        .await
+        .unwrap();
+    let accepted = db
+        .create_campaign(&action.id, "accepted-campaign")
+        .await
+        .unwrap();
+    let running = db
+        .create_campaign(&action.id, "running-campaign")
+        .await
+        .unwrap();
+    let cancelled = db
+        .create_campaign(&action.id, "cancelled-campaign")
+        .await
+        .unwrap();
+    let failed = db
+        .create_campaign(&action.id, "failed-campaign")
+        .await
+        .unwrap();
+    for (campaign_id, status) in [
+        (&accepted.id, "AUTHORIZED"),
+        (&running.id, "AUTHORIZED"),
+        (&cancelled.id, "CANCELLED"),
+        (&failed.id, "FAILED"),
+    ] {
+        sqlx::query::query("UPDATE campaigns SET status=?1 WHERE id=?2")
+            .bind(status)
+            .bind(campaign_id.as_str())
+            .execute(&db.pool)
+            .await
+            .unwrap();
+    }
+    let spec_sha256 = action.spec_sha256.as_str();
+    seed_run(
+        &db,
+        SeedRun {
+            run_id: "run-accepted",
+            campaign_id: &accepted.id,
+            run_status: "QUEUED",
+            attempt_id: "attempt-accepted",
+            attempt_status: "CANDIDATE_READY",
+            spec_sha256,
+            candidate_and_gate: Some(("candidate-accepted", "ACCEPTED")),
+        },
+    )
+    .await;
+    seed_run(
+        &db,
+        SeedRun {
+            run_id: "run-running",
+            campaign_id: &running.id,
+            run_status: "RUNNING",
+            attempt_id: "attempt-running",
+            attempt_status: "LEASED",
+            spec_sha256,
+            candidate_and_gate: None,
+        },
+    )
+    .await;
+
+    let campaigns = db.project_campaigns("project").await.unwrap();
+    assert_eq!(campaigns.len(), 4);
+    let accepted_summary = campaigns
+        .iter()
+        .find(|campaign| campaign.id == accepted.id)
+        .expect("accepted campaign");
+    assert_eq!(accepted_summary.status, "AUTHORIZED");
+    assert_eq!(accepted_summary.effective_status, "ACCEPTED");
+    assert!(!accepted_summary.is_active());
+    let running_summary = campaigns
+        .iter()
+        .find(|campaign| campaign.id == running.id)
+        .expect("running campaign");
+    assert_eq!(running_summary.effective_status, "AUTHORIZED");
+    assert!(running_summary.is_active());
+    let cancelled_summary = campaigns
+        .iter()
+        .find(|campaign| campaign.id == cancelled.id)
+        .expect("cancelled campaign");
+    assert_eq!(cancelled_summary.status, "CANCELLED");
+    assert_eq!(cancelled_summary.effective_status, "CANCELLED");
+    assert!(!cancelled_summary.is_active());
+    let failed_summary = campaigns
+        .iter()
+        .find(|campaign| campaign.id == failed.id)
+        .expect("failed campaign");
+    assert_eq!(failed_summary.status, "FAILED");
+    assert_eq!(failed_summary.effective_status, "FAILED");
+    assert!(!failed_summary.is_active());
+
+    db.close().await;
+    let _ = std::fs::remove_file(path);
+}
+
 async fn authorized_attempt(db: &Database) -> String {
     insert_project(db, "project", "/fixture", "base").await;
     let action = db
