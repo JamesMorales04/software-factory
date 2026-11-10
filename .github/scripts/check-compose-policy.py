@@ -20,6 +20,12 @@ REVIEWER_SERVICES = {
     "reviewer-testing",
     "reviewer-operability",
 }
+# Core's full control listener binds only these factory-control/factory-egress
+# aliases. The plain `core` service name is attached to both networks and can
+# resolve to an address where the control listener is not bound.
+CANONICAL_CORE_CONTROL_URL = "http://core-control:8765"
+LEGACY_CORE_CONTROL_HOST = "core"
+LEGACY_CORE_CONTROL_PORT = 8765
 PERMANENT = {"core", "supervisor", "worker", "verifier"} | REVIEWER_SERVICES
 CONFIG_VOLUMES = {
     "runtime": "factory-config-runtime",
@@ -130,6 +136,17 @@ def network_names(service):
 
 def bind_entries(value):
     return [entry.strip() for entry in str(value or "").split(",") if entry.strip()]
+
+
+def targets_legacy_core_control(value):
+    try:
+        parsed = urlsplit(value)
+        return (
+            parsed.hostname == LEGACY_CORE_CONTROL_HOST
+            and parsed.port == LEGACY_CORE_CONTROL_PORT
+        )
+    except ValueError:
+        return False
 
 
 def core_alias_networks(services):
@@ -244,6 +261,22 @@ def main(path: str) -> int:
             normalized = str(option).replace(" ", "")
             if normalized != "no-new-privileges:true":
                 fail(f"{name}: unsupported security_opt {option!r}")
+
+        environment = service.get("environment") or {}
+        for key, value in environment.items():
+            if isinstance(value, str) and targets_legacy_core_control(value):
+                fail(
+                    f"{name}: {key} must use the canonical core-control control host, "
+                    "not the ambiguous core service name"
+                )
+        if "FACTORY_CORE_URL" in environment:
+            if environment["FACTORY_CORE_URL"] != CANONICAL_CORE_CONTROL_URL:
+                fail(
+                    f"{name}: FACTORY_CORE_URL must be "
+                    f"{CANONICAL_CORE_CONTROL_URL} on the control network"
+                )
+            if "factory-control" not in network_names(service):
+                fail(f"{name}: FACTORY_CORE_URL requires the factory-control network")
 
         for volume in service.get("volumes", []) or []:
             source = str(volume.get("source", ""))
@@ -389,8 +422,11 @@ def main(path: str) -> int:
                     f"{sorted(actual_networks)}"
                 )
             environment = job.get("environment") or {}
-            if environment.get("FACTORY_CORE_URL") != "http://core:8765":
-                fail("openspec-validate: FACTORY_CORE_URL must target Core on the control network")
+            if environment.get("FACTORY_CORE_URL") != CANONICAL_CORE_CONTROL_URL:
+                fail(
+                    "openspec-validate: FACTORY_CORE_URL must target Core on the "
+                    "control network via core-control"
+                )
             if environment.get("FACTORY_OPERATOR_TOKEN_FILE") != "/config/operator.token":
                 fail("openspec-validate: the operator token must be read from its file")
             if environment.get("FACTORY_OPENSPEC_WORKSPACE") != "/workspace":

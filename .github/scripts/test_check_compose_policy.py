@@ -54,6 +54,37 @@ class ComposePolicyTests(unittest.TestCase):
             os.unlink(path)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_rejects_ambiguous_core_service_control_url(self):
+        self.assert_rejected(
+            lambda c: c["services"]["worker"]["environment"].__setitem__(
+                "FACTORY_CORE_URL", "http://core:8765"
+            ),
+            "must use the canonical core-control control host",
+        )
+
+    def test_rejects_control_url_without_the_control_network(self):
+        def drop_control_network(config):
+            networks = config["services"]["worker"]["networks"]
+            if isinstance(networks, dict):
+                networks.pop("factory-control", None)
+            else:
+                networks.remove("factory-control")
+
+        self.assert_rejected(
+            drop_control_network,
+            "FACTORY_CORE_URL requires the factory-control network",
+        )
+
+    def test_rejects_openspec_validation_on_the_ambiguous_core_name(self):
+        if "openspec-validate" not in base_config()["services"]:
+            self.skipTest("OpenSpec validation profile is not active in this config")
+        self.assert_rejected(
+            lambda c: c["services"]["openspec-validate"]["environment"].__setitem__(
+                "FACTORY_CORE_URL", "http://core:8765"
+            ),
+            "must use the canonical core-control control host",
+        )
+
     def test_rejects_worker_extra_capability(self):
         self.assert_rejected(
             lambda c: c["services"]["worker"].__setitem__("cap_add", ["SYS_ADMIN"]),

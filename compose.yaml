@@ -19,7 +19,10 @@ x-restricted: &restricted
   restart: unless-stopped
 
 x-control-env: &control-env
-  FACTORY_CORE_URL: http://core:8765
+  # `core` is attached to both factory-control and factory-egress, so it can
+  # resolve to an address where the full control listener is not bound. Every
+  # control-plane caller uses Core's canonical factory-control alias instead.
+  FACTORY_CORE_URL: http://core-control:8765
   FACTORY_CONTAINER_MODE: "1"
 
 # Every reviewer role runs as its own process with its own token file,
@@ -552,7 +555,7 @@ services:
     volumes:
       - factory-config-openspec:/config:ro
     environment:
-      FACTORY_CORE_URL: http://core:8765
+      FACTORY_CORE_URL: http://core-control:8765
       FACTORY_OPERATOR_TOKEN_FILE: /config/operator.token
       FACTORY_OPENSPEC_REQUEST_ID: ${FACTORY_OPENSPEC_REQUEST_ID:-}
       FACTORY_OPENSPEC_WORKSPACE: /workspace

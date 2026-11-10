@@ -136,7 +136,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let core = validated_loopback_url(
         &env::var("FACTORY_CORE_URL").unwrap_or_else(|_| "http://127.0.0.1:8765".into()),
         "FACTORY_CORE_URL",
-        &["core"],
+        &["core-control"],
     )?;
     let supervisor = Supervisor {
         client: reqwest::Client::builder()

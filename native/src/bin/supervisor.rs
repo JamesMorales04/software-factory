@@ -339,7 +339,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &env::var("FACTORY_CORE_URL").map_err(|_| "FACTORY_CORE_URL required")?,
         "FACTORY_CORE_URL",
         container_mode,
-        &["core"],
+        &["core-control"],
     )?;
     let workspace_root = required_path("FACTORY_SUPERVISOR_WORKSPACE_ROOT")?;
     let state_root = required_path("FACTORY_SUPERVISOR_STATE_ROOT")?;

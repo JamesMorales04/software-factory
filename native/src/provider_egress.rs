@@ -99,7 +99,7 @@ impl TurnBinder {
             core.as_str(),
             "provider turn binder Core URL",
             container_mode,
-            &["core"],
+            &["core-control"],
         )
         .is_err()
             || session_token.len() < 16
