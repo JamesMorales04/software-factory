@@ -7,7 +7,8 @@ used.
 
 - Branch: `factory/quality-wp5-provider-chaos`
 - Baseline commit: `bcb8b5b`
-- Review-repair candidate: `2292044dfc5bfab83c40e34ea2b96b46c24e07d0`
+- Review-repair candidate: `d9d8fbefa17c0161a14a8843dd1477d686641406`
+- Prior review-repair candidate: `2292044`
 - Prior implementation candidate: `77d047f`
 - Scope: provider/stream/structured-output reliability only
 - Office capability impact: `none` (internal runtime reliability; no new
@@ -16,8 +17,9 @@ used.
 
 This revision repairs the independent review findings: provider failures can no
 longer salvage a candidate, duplicate suppression covers a bounded replay
-window rather than only the immediately previous id, and Worker-to-Core turn
-settlement/release/cleanup requests have production-path HTTP fixture tests.
+window rather than only the immediately previous id, Worker-to-Core turn
+settlement/release/cleanup requests have production-path HTTP fixture tests, and
+the reservation fixture now enforces exclusive terminal transitions.
 
 ## What changed
 
@@ -51,7 +53,7 @@ settlement/release/cleanup requests have production-path HTTP fixture tests.
 |---|---|
 | P1: provider failure could still produce a candidate after frozen checks passed | **Fixed.** `finalize_written_provider_work` and every error-branch salvage call were removed. Reconnect exhaustion, submit failure, missing assistant message and failed/cancelled terminals now return an error without creating a candidate. The normal final path calls `candidate_allowed(Completed, written, all_checks_passed)`. |
 | P2: duplicate suppression only covered consecutive ids | **Fixed.** `SseCursor` now keeps a bounded `VecDeque` replay window of 4,096 unique ids. `e1, e2, e1` applies `e1` once. |
-| P2: reservation and cleanup tests did not exercise production lifecycle | **Fixed for HTTP lifecycle.** `native/src/provider_lifecycle.rs` builds the exact Worker-to-Core requests and is covered by local Core fixtures for settle, release, terminal and cleanup reconciliation. The container/Podman external cleanup and ProviderSession state machine remain separately scoped; the matrix below no longer claims they prove live orphan reconciliation. |
+| P2: reservation and cleanup tests did not exercise production lifecycle | **Fixed for HTTP lifecycle and transition exclusivity.** `native/src/provider_lifecycle.rs` builds the exact Worker-to-Core requests and is covered by local Core fixtures for settle, release, terminal and cleanup reconciliation. The fixture now accepts separate settle/release reservation ids and rejects a second terminal transition for the same id. The container/Podman external cleanup and ProviderSession state machine remain separately scoped; the matrix below no longer claims they prove live orphan reconciliation. |
 
 ## Fault-injection matrix
 
@@ -73,7 +75,9 @@ below passed.
 | 8 | Stream closes before a terminal event | Two connections emit a non-terminal event and end; one reconnect is allowed. | `missing_terminal_event_returns_no_candidate` | PASS — `ReconnectExhausted { attempts: 1 }`; zero candidates; replay cursor retained. |
 | 9 | Reconnect exhaustion after writes and checks pass | Two cut connections with one reconnect allowed; gate is evaluated with `wrote = true`, `all_checks_passed = true`. | `reconnect_exhaustion_after_checks_pass_yields_no_candidate` | PASS — no terminal; `candidate_allowed(Missing, true, true) == false`; zero candidates. |
 | 10 | Provider error terminal | Non-terminal event followed by `session.error`. | `provider_error_terminal_is_not_a_completed_candidate` | PASS — `Failed` terminal, zero completed candidates. |
-| 11 | Reservation settlement/release production HTTP | Worker lifecycle client sends settle and release to a local Core fixture. | `production_worker_http_lifecycle_settles_releases_and_reconciles_cleanup` | PASS — exact reservation/session/generation/usage payloads observed; settle 200, release 204. State-machine release/settle exactly-once is also covered by `failed_turn_releases_or_settles_a_reservation_exactly_once`. |
+| 11 | Reservation settlement/release production HTTP | Worker lifecycle client settles one reservation and releases a different reservation against a local Core fixture that enforces exclusive terminal states. | `production_worker_http_lifecycle_settles_releases_and_reconciles_cleanup` | PASS — exact reservation/session/generation/usage payloads observed; settle 200, release 204. |
+| 11b | Settle-then-release of the same reservation | Fixture accepts settle for `reservation-both`, then the Worker attempts release of the same id. | `settle_then_release_of_the_same_reservation_is_rejected` | PASS — release receives HTTP 409; typed `Refused`; reservation remains `SETTLED`; no accepted release effect. |
+| 11c | Reservation policy exactly-once | A reserved turn is released once; a separate turn is settled once; terminal transitions reject a second effect. | `failed_turn_releases_or_settles_a_reservation_exactly_once` | PASS — settle XOR release exactly once. |
 | 12 | Cleanup reconciliation production HTTP | Worker recovery loop lists one unresolved session, obtains a receipt, and posts cleanup to a local Core fixture. | `production_worker_http_lifecycle_settles_releases_and_reconciles_cleanup` | PASS — GET unresolved then POST cleanup with session id, generation 7 and `container_removed_verified_absent`. |
 | 13 | Failed cleanup receipt | Receipt provider returns an error. | `failed_cleanup_receipt_never_claims_an_orphan_is_cleaned` | PASS — typed failure; only the unresolved GET occurred; no cleanup claim was posted. |
 | 14 | Provider session state machine | Session cut before terminal, reconnect with same identity, terminal, cleanup receipt. | `provider_session_reconnect_and_cleanup_are_exactly_once` | PASS — wrong identity rejected; identical terminal replay idempotent; second terminal rejected after cleanup state; cleanup receipt required and single-use. **Scope:** state-machine behavior only, not live container cleanup. |
@@ -81,23 +85,23 @@ below passed.
 
 ## Exact commands and results
 
-From the repository root, at review-repair candidate `2292044`:
+From the repository root, at review-repair candidate `d9d8fbe`:
 
 ```text
 cargo fmt --all -- --check
 fmt-check: clean
 
 cargo test -p factory-native --test provider_chaos
-running 15 tests
-test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+running 16 tests
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
 # Ten consecutive runs of the new suite:
 for run in $(seq 1 10); do cargo test -p factory-native --test provider_chaos --quiet; done
-run 1 ... run 10: 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+run 1 ... run 10: 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 10/10 runs passed; no retry was used to turn a failure green.
 
 cargo test -p factory-native --lib
-test result: ok. 738 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 115.00s
+test result: ok. 738 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 127.22s
 
 cargo clippy -p factory-native --all-targets --all-features -- -D warnings
 Finished `dev` profile [unoptimized + debuginfo] target(s)
