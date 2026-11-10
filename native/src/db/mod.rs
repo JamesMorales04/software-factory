@@ -1051,6 +1051,8 @@ pub use planning::{
     NewPlanReview, OpenSpecProjectionRecord, PlanReviewRecord, PlanningArtifactRecord,
     SkillPackRecord,
 };
+#[cfg(feature = "test-support")]
+pub use wave12_fixture::TRACE_RETRY_REQUEST as WAVE12_TRACE_RETRY_REQUEST;
 mod quality;
 mod workers;
 mod workflow;

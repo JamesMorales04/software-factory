@@ -9,7 +9,7 @@ pending. No paid model inference was used.
   Wave 1/2 Office surfaces (with WP12-style per-option evidence)
 - Branch: `factory/quality-wp10-browser-acceptance`
 - Base/integrated commit: `452bb40`
-- Code candidate: `ab8fbc348b5d4564d2bd3866753a22832d834860`
+- Code candidate: `71b63fd4640a4ca34e28441e4c79b0bd9759adc4`
 - Evidence run date: 2026-11-10 UTC
 - Evidence directory:
   [`docs/evidence/wave12-office-acceptance-2026-11-10/`](../evidence/wave12-office-acceptance-2026-11-10/)
@@ -19,7 +19,7 @@ pending. No paid model inference was used.
 The manifest records the exact code candidate SHA, browser version, node
 version, seeded request IDs, all 39 matrix rows, every screenshot and every
 expected/unexpected HTTP status. The commit containing this document records
-the evidence snapshot; the code candidate is `ab8fbc3`.
+the evidence snapshot; the code candidate is `71b63fd`.
 
 ## 1. Scope and claim boundary
 
@@ -185,6 +185,30 @@ keeps Core as the authority: the browser cannot choose its principal, the
 decision must be scoped to the request or project and the authenticated owner
 must have approved it.
 
+### Independent review repairs (2026-11-10)
+
+The independent Codex GPT-6 Luna review at `fea8169` found two additional
+issues. Both were repaired in the new code candidate.
+
+| Finding | Resolution | Evidence |
+|---|---|---|
+| P2 — refutation accepted an unrelated owner approval | Core now requires the exact owner-decision matter `FINDING_REFUTATION`, the exact selected option `APPROVE_REFUTATION`, membership of that option in the decision's resolved option set, the authenticated owner, the `APPROVED` status and request/project scope. Unrelated matters, unrelated options and a missing option-set entry are negative tests. | `refutation_requires_the_authenticated_owners_approved_decision` |
+| P3 — debug test-support trace-fault map was unbounded | The endpoint accepts only the seeded retry request (`bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb`), is bounded to one map entry, rejects unknown IDs with `400 TEST_TRACE_FAULT_ID_INVALID`, and returns `429 TEST_TRACE_FAULT_BOUNDED` if the bound is already occupied. It remains authenticated and test-support-only. | `trace_fault_is_bounded_and_restricted_to_the_seeded_retry_request` |
+
+The exact refutation contract is therefore:
+
+```text
+matter          = FINDING_REFUTATION
+status          = APPROVED
+selected_option = APPROVE_REFUTATION
+options         contains APPROVE_REFUTATION
+resolved_by     = authenticated owner principal
+scope           = the same request, or a project decision for the same project
+```
+
+A generic owner approval for deployment, policy or another matter cannot close a
+reviewer finding.
+
 ## 6. Commands and results
 
 All commands ran in this worktree on the code candidate unless stated.
@@ -209,8 +233,19 @@ cargo test -p factory-native --lib
 cargo test -p factory-native --lib --features test-support wave12_fixture
   1 passed; 0 failed
 
+cargo test -p factory-native --bin factory-core
+  39 passed; 0 failed
+
 cargo test -p factory-native --bin factory-core --features test-support
-  42 passed; 0 failed
+  43 passed; 0 failed
+
+cargo test -p factory-native --bin factory-core --features test-support \
+  refutation_requires
+  1 passed; 0 failed
+
+cargo test -p factory-native --bin factory-core --features test-support \
+  trace_fault_is_bounded
+  1 passed; 0 failed
 ```
 
 An earlier full-lib run failed with `database or disk is full` because the
@@ -225,7 +260,11 @@ cleanup, not a code or test change.
 cd office
 
 npm test -- --run
-  46 files, 317 tests passed
+  46 files, 317 tests passed (three consecutive clean runs)
+
+An earlier run launched in parallel with typecheck and lint showed one
+transient failure that did not reproduce in the three consecutive isolated
+runs. The final isolated result is green.
 
 npm run typecheck
   PASS
@@ -246,7 +285,7 @@ node office/e2e-browser/wave12-acceptance.mjs
 The script starts its own isolated Core and Vite processes, seeds the fixture
 after device enrollment, drives Chromium, captures screenshots and writes the
 manifest. It does not touch the installed Compose stack. It was run after the
-code candidate commit so the manifest is candidate-bound to `ab8fbc3`.
+code candidate commit so the manifest is candidate-bound to `71b63fd`.
 
 ## 7. Evidence inventory
 
