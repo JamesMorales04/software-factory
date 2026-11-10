@@ -513,6 +513,7 @@ struct CargoPackage {
     name: String,
     version: String,
     checksum: Option<String>,
+    source: Option<String>,
 }
 
 /// Deterministic evidence producer for Cargo vendor trees. It reads the
@@ -555,18 +556,26 @@ fn write_json(path: &Path, value: &serde_json::Value) -> Result<(), String> {
     std::fs::write(path, bytes).map_err(|error| format!("cannot write evidence: {error}"))
 }
 
+type RawCargoPackage = (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
 fn parse_cargo_lock(bytes: &[u8]) -> Result<Vec<CargoPackage>, String> {
     let text = std::str::from_utf8(bytes).map_err(|_| "Cargo.lock is not UTF-8".to_string())?;
     let mut packages = Vec::new();
-    let mut current: Option<(Option<String>, Option<String>, Option<String>)> = None;
-    let mut finish = |package: Option<(Option<String>, Option<String>, Option<String>)>| {
-        if let Some((name, version, checksum)) = package {
+    let mut current: Option<RawCargoPackage> = None;
+    let mut finish = |package: Option<RawCargoPackage>| {
+        if let Some((name, version, checksum, source)) = package {
             match (name, version) {
                 (Some(name), Some(version)) if !name.is_empty() && !version.is_empty() => {
                     packages.push(CargoPackage {
                         name,
                         version,
                         checksum,
+                        source,
                     });
                 }
                 _ => {
@@ -580,7 +589,7 @@ fn parse_cargo_lock(bytes: &[u8]) -> Result<Vec<CargoPackage>, String> {
         let line = strip_toml_comment(raw).trim();
         if line == "[[package]]" {
             finish(current.take())?;
-            current = Some((None, None, None));
+            current = Some((None, None, None, None));
             continue;
         }
         if line.starts_with('[') {
@@ -597,11 +606,40 @@ fn parse_cargo_lock(bytes: &[u8]) -> Result<Vec<CargoPackage>, String> {
             "name" => package.0 = parse_toml_string(value.trim()),
             "version" => package.1 = parse_toml_string(value.trim()),
             "checksum" => package.2 = parse_toml_string(value.trim()),
+            "source" => package.3 = parse_toml_string(value.trim()),
             _ => {}
         }
     }
     finish(current.take())?;
     Ok(packages)
+}
+
+/// Verify every registry source recorded in the lockfile is allowlisted and
+/// reject git sources. The acquisition path has no owner-approval channel, so a
+/// git dependency fails closed instead of silently widening egress.
+pub fn validate_lockfile_sources(
+    lockfile: &[u8],
+    allowed_registries: &[String],
+) -> Result<(), String> {
+    for package in parse_cargo_lock(lockfile)? {
+        let Some(source) = package.source else {
+            continue;
+        };
+        let normalized = source.trim().to_ascii_lowercase();
+        if normalized.starts_with("git+") {
+            return Err(format!(
+                "git dependency `{}` is not supported by brokered acquisition",
+                package.name
+            ));
+        }
+        if !crate::dependencies::registry_allowed(&source, allowed_registries) {
+            return Err(format!(
+                "dependency `{}` uses a non-allowlisted source `{source}`",
+                package.name
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn strip_toml_comment(line: &str) -> &str {
@@ -798,6 +836,7 @@ fn deterministic_uuid(seed_hex: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dependencies::DEFAULT_ALLOWED_REGISTRIES;
 
     struct FakeRunner {
         fail: bool,
@@ -986,6 +1025,22 @@ mod tests {
             "old"
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn lockfile_sources_are_allowlisted_and_git_is_rejected() {
+        let allowed = DEFAULT_ALLOWED_REGISTRIES
+            .iter()
+            .map(|registry| (*registry).to_string())
+            .collect::<Vec<_>>();
+        let registry = b"version = 4\n\n[[package]]\nname = \"demo\"\nversion = \"1.0.0\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n";
+        assert!(validate_lockfile_sources(registry, &allowed).is_ok());
+        let local = b"version = 4\n\n[[package]]\nname = \"demo\"\nversion = \"1.0.0\"\n";
+        assert!(validate_lockfile_sources(local, &allowed).is_ok());
+        let unlisted = b"version = 4\n\n[[package]]\nname = \"demo\"\nversion = \"1.0.0\"\nsource = \"registry+https://example.invalid/index\"\n";
+        assert!(validate_lockfile_sources(unlisted, &allowed).is_err());
+        let git = b"version = 4\n\n[[package]]\nname = \"demo\"\nversion = \"1.0.0\"\nsource = \"git+https://example.invalid/repo\"\n";
+        assert!(validate_lockfile_sources(git, &allowed).is_err());
     }
 
     #[test]

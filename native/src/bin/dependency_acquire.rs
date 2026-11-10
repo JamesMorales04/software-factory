@@ -66,6 +66,14 @@ fn run() -> Result<DependencyAcquireReceipt, String> {
     {
         return Err("dependency registry is not in the image allowlist".into());
     }
+    let allowed: Vec<String> = DEFAULT_ALLOWED_REGISTRIES
+        .iter()
+        .map(|registry| (*registry).to_string())
+        .collect();
+    let lockfile_path = lockfile_path(&args.root, &args.workdir, &args.lockfile)?;
+    let lockfile = std::fs::read(&lockfile_path)
+        .map_err(|error| format!("dependency lockfile is unavailable: {error}"))?;
+    dependency_broker::validate_lockfile_sources(&lockfile, &allowed)?;
     let cargo = std::env::var("FACTORY_DEPENDENCY_CARGO")
         .unwrap_or_else(|_| "/usr/local/cargo/bin/cargo".into());
     let rustup_home = std::env::var("FACTORY_DEPENDENCY_RUSTUP_HOME")
@@ -84,6 +92,30 @@ fn run() -> Result<DependencyAcquireReceipt, String> {
     let evidence = dependency_broker::acquire(&request, &runner, &CargoEvidenceProducer)
         .map_err(|error| format!("dependency acquisition failed: {error}"))?;
     receipt(&request, &evidence)
+}
+
+fn lockfile_path(root: &std::path::Path, workdir: &str, lockfile: &str) -> Result<PathBuf, String> {
+    use std::path::Component;
+    let lockfile = std::path::Path::new(lockfile);
+    if lockfile.is_absolute()
+        || lockfile
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err("--lockfile must be a safe relative path".into());
+    }
+    if workdir.is_empty() || workdir == "." {
+        return Ok(root.join(lockfile));
+    }
+    let workdir = std::path::Path::new(workdir);
+    if workdir.is_absolute()
+        || workdir
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err("--workdir must be a safe relative path".into());
+    }
+    Ok(root.join(workdir).join(lockfile))
 }
 
 fn receipt(
