@@ -7,9 +7,12 @@ pending. No paid model inference was used.
 
 - Work package: WP10 — real browser acceptance for the integrated Quality-first
   Wave 1/2 Office surfaces (with WP12-style per-option evidence)
-- Branch: `factory/quality-wp10-browser-acceptance`
+- Branch: `factory/quality-wp10-browser-acceptance` (`9abbf08`)
+- Integration merge: `f26db7a`
 - Base/integrated commit: `452bb40`
-- Code candidate: `71b63fd4640a4ca34e28441e4c79b0bd9759adc4`
+- Original code candidate: `71b63fd4640a4ca34e28441e4c79b0bd9759adc4`
+- Final integration rerun candidate: `03287aa684f2e8419d6b729f7ff8d61fd7796819`
+  (39/39 checks, regenerated manifest and screenshots)
 - Evidence run date: 2026-11-10 UTC
 - Evidence directory:
   [`docs/evidence/wave12-office-acceptance-2026-11-10/`](../evidence/wave12-office-acceptance-2026-11-10/)

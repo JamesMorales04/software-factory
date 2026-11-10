@@ -7,10 +7,14 @@ it and to the command that runs it. Live, paid, browser-only and real-Podman
 paths that the deterministic suite cannot prove are recorded as `NOT_TESTED`
 instead of being counted as passes.
 
-- Branch: `factory/quality-wave12-chaos-matrix`
+- Branch: `factory/quality-wave12-chaos-matrix` (`693d08d`)
+- Integration merge: `979a1ef`
 - Baseline: `452bb40` (`factory/quality-wave12-integration`)
-- Candidate: `ec4519ec293f0fd8d49f94ee6a2ff52e9143210d` (tree
-  `25d72c49e61ff9b5cfced8012a666ade924c1d50`, clean)
+- Original branch candidate: `ec4519ec293f0fd8d49f94ee6a2ff52e9143210d`
+  (tree `25d72c49e61ff9b5cfced8012a666ade924c1d50`, clean)
+- Final integration rerun candidate:
+  `03287aa684f2e8419d6b729f7ff8d61fd7796819` (tree
+  `6ac7e20e241f92a7e4872543edce6adc74558ead`, clean; 20/20 steps PASS)
 - Acceptance script: [`scripts/quality-wave12-acceptance.sh`](../../scripts/quality-wave12-acceptance.sh)
 - Candidate-bound evidence: [`docs/evidence/quality-wave12-chaos-2026-11-10/manifest.json`](../evidence/quality-wave12-chaos-2026-11-10/manifest.json)
 - Related evidence: [WP5 provider chaos](wp5-provider-chaos-evidence.md),

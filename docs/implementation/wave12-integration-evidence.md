@@ -1,10 +1,11 @@
 # Wave 12 integration evidence
 
 **Status:** implementation integrated on
-`factory/quality-wave12-integration`; **not accepted, certified or deployed**.
-This document records the integration owner's merge, conflict resolution and
-validation evidence. It is implementer evidence only. WP10/WP12 acceptance and
-all independent acceptance remain pending. No paid model inference was used.
+`factory/quality-wave12-integration` through WP3-WP12; **not accepted, certified
+or deployed**. This document records the integration owner's merge, conflict
+resolution and validation evidence. WP10/WP12 implementer acceptance harnesses
+have run; independent acceptance, Product Owner visual approval and Compose
+certification remain pending. No paid model inference was used.
 
 - Baseline: `bcb8b5b` (`factory/agentic-flow-20261108`)
 - Integration branch: `factory/quality-wave12-integration`
@@ -24,10 +25,105 @@ All branches were merged with `git merge --no-ff` in this order.
 | WP3 | `factory/quality-wp3-skill-refresh` | `35fcae7` | `487b0b8` | Skill-pack refresh scheduler, migrations `0067`/`0068`, Office Skills panel |
 | WP6 | `factory/quality-wp6-workspace-recovery` | `b5dd282` | `40bce21` | Per-owner runtime-broker credentials, exact resource locks, active registry, reconciliation |
 | WP4 | `factory/quality-wp4-dependency-broker` | `6cde43c` | `cce868e` | Dependency acquisition endpoint, internal egress proxy, image pinning, migration `0069` |
+| WP12 | `factory/quality-wp12-chaos-matrix` | `693d08d` | `979a1ef` | Deterministic chaos/cross-workstream matrix and repeat-run acceptance script |
+| WP10 | `factory/quality-wp10-browser-acceptance` | `9abbf08` | `f26db7a` | Plan-review, reviewer, finding, trace and Skills browser acceptance; Core refutation repair |
 
-WP3, WP5, WP7, WP9 and WP11 were already merged on the integration branch
-before this run. WP6 and WP4 were merged last because both change the runtime
-broker and execution path.
+WP3, WP5, WP7, WP9 and WP11 were merged first. WP6 and WP4 followed because
+both change the runtime broker and execution path. WP12 and WP10 were merged
+after those integration repairs, with WP10's review repairs merged as
+`f26db7a`.
+
+## 1.1 Final integrated acceptance
+
+The final integrated code candidate was `03287aa684f2e8419d6b729f7ff8d61fd7796819`
+(clean tree `6ac7e20e241f92a7e4872543edce6adc74558ead`). Docs/evidence commits
+after that candidate do not change runtime code.
+
+`scripts/quality-wave12-acceptance.sh --require-clean`:
+
+```text
+PASS: 20
+FAIL: 0
+SKIPPED: 0
+RESULT: PASS
+```
+
+Required steps: self-test, fmt, lib, bins, targeted integration, workflow,
+quality, trace, review_roles, gate, three provider_chaos repeats, clippy,
+Office install/test/typecheck/lint, base and OpenSpec Compose config, and both
+Compose policy checks. The per-step logs are under
+`target/quality-wave12/`; the candidate-bound matrix is
+[docs/evidence/quality-wave12-chaos-2026-11-10/manifest.json](../evidence/quality-wave12-chaos-2026-11-10/manifest.json).
+
+Final harness counts:
+
+```text
+cargo test -p factory-native --lib
+831 passed; 0 failed; 4 ignored
+
+cargo test -p factory-native --bins
+128 passed; 0 failed
+
+targeted integration suites
+29 passed; 0 failed
+(planning 1, provider chaos 16, dependency HTTP 6, OpenSpec 5, migration 1)
+
+focused filters
+workflow 16; quality 12; trace 17; review_roles 9; gate 18; all passed
+
+provider_chaos repeat
+3/3 runs; 16 passed each; 0 failed
+
+cargo clippy -p factory-native --locked --all-targets --all-features -- -D warnings
+clean
+
+cd office && npm test -- --run
+317 passed across 46 files
+
+npm run typecheck
+clean
+
+npm run lint
+clean (164 files)
+
+podman compose -f compose.yaml config
+PASS
+
+podman compose --profile openspec-validation -f compose.yaml config
+PASS
+
+compose policy base/profile
+PASS/PASS; 36 policy tests each (8/5 profile-specific skips)
+```
+
+The four ignored library tests are the opt-in real-rootless-Podman execution
+tests and are `SKIPPED`, not passes.
+
+### Browser acceptance
+
+After building the test-support Core:
+
+```text
+cargo build -p factory-native --locked --bin factory-core --features test-support
+node office/e2e-browser/wave12-acceptance.mjs
+```
+
+Result:
+
+```json
+{"ok":true,"checks":39,"failed":[]}
+```
+
+The run exercised the real Office Vite application against an isolated real
+Core process with seeded test-support rows, not paid model inference. It
+recorded 39/39 checks and regenerated:
+
+- [manifest.json](../evidence/wave12-office-acceptance-2026-11-10/manifest.json)
+- [screenshots](../evidence/wave12-office-acceptance-2026-11-10/)
+
+The browser harness is implementer self-test evidence. It does not prove a
+model-produced planning Campaign, the Compose topology, independent acceptance
+or Product Owner visual approval.
 
 ## 2. Conflict resolutions
 
@@ -345,22 +441,23 @@ No paid inference was used.
 ## 7. Documentation integration
 
 - `docs/implementation/quality-first-planning-status.md` records every merged
-  WP, the combined verification results and the remaining NOT_TESTED items. It
-  states implementation integration only and keeps WP10/WP12 acceptance
-  pending.
+  WP, the combined verification results, the 20/20 acceptance harness, the
+  39/39 implementer browser run and the remaining NOT_TESTED items. It keeps
+  independent acceptance pending.
 - `docs/product/office-parity.json` updates the planning capability notes for
-  the runtime-broker owner tokens, reviewer fleet, skill refresh, OpenSpec job
-  and dependency acquisition; those internal steps are explicitly not presented
-  as new Office actions, and browser acceptance remains NOT_TESTED.
-- `docs/product/capabilities.yaml` links the WP3/WP4/WP5/WP6/WP7/WP9/WP11
-  implementation evidence and limitations without changing acceptance status;
-  `docs/roadmap/ROADMAP.md` was regenerated from the registry.
+  the runtime-broker owner tokens, reviewer fleet, skill refresh, OpenSpec job,
+  dependency acquisition and the final 39/39 WP10 browser rerun.
+- `docs/product/capabilities.yaml` links the WP3-WP12 implementation evidence
+  and limitations without changing acceptance status; `docs/roadmap/ROADMAP.md`
+  was regenerated from the registry.
 - `docs/README.md` indexes this evidence document.
 
 ## 8. Remaining integration work and NOT_TESTED items
 
-- WP10/WP12 acceptance: real Core/Compose browser acceptance, per-option
-  matrix, visual review and Product Owner approval are pending.
+- WP10/WP12: the per-option browser matrix is implemented and passed 39/39 in
+  the isolated real-Core/Vite/Chromium harness. Real Compose browser acceptance,
+  independent acceptance, Product Owner visual approval and certification
+  remain pending.
 - WP4: real Compose dependency acquisition through the internal network and
   allowlisted proxy; the real-Podman/live-registry tests are opt-in and were not
   enabled.
@@ -370,11 +467,13 @@ No paid inference was used.
   post-integration P1 repair is deterministically covered but not independently
   re-accepted.
 - WP3: real Compose scheduler/restart evidence, content review of remaining
-  catalog packs and independent browser acceptance of the Skills refresh panel.
+  catalog packs and independent acceptance of the implementer-tested Skills
+  refresh panel.
 - WP7: OpenSpec Compose validation against a projection produced by the real
   Core planning pipeline; current coverage uses a Core-rendered fixture.
 - WP9: a real Campaign with two or more reviewer role receipts aggregated by
   the Gate; only deterministic DB/plan/Gate coverage ran.
-- WP11: real Core/Compose browser acceptance of the trace view.
+- WP11: independent acceptance of the implementer-tested trace view and real
+  Compose browser acceptance.
 - No isolation, deployment or certification claim is made. `SEC-01-ISOLATED`
   remains out of scope under ADR-0035 and isolated dispatch remains fail-closed.

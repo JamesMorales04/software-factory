@@ -1,19 +1,21 @@
 # Quality-first planning implementation status
 
 **Status:** implementation integrated on
-`factory/quality-wave12-integration` through WP3, WP4, WP5, WP6, WP7, WP9 and
-WP11; **not certified and not accepted**. WP10 implementation and WP12
-browser/independent acceptance remain pending. WP12 adds a deterministic
-chaos/cross-workstream matrix and a repeat-run acceptance script; its
-candidate-bound results are implementer evidence only. This document records
-what is implemented, what was tested, and what remains unverified. It is not
-acceptance evidence and does not claim `TRUSTED_LOCAL` isolation. Exact merge
-commits, conflicts and validation results are in
-[Wave 12 integration evidence](wave12-integration-evidence.md).
+`factory/quality-wave12-integration` through WP3-WP12; **not certified and not
+accepted**. WP10's per-option Office browser harness passed 39/39 and WP12's
+deterministic acceptance harness passed 20/20 on the integrated code candidate;
+both are implementer evidence only. Independent acceptance, Product Owner visual
+approval and Compose certification remain pending. This document records what is
+implemented, what was tested, and what remains unverified. It does not claim
+`TRUSTED_LOCAL` isolation. Exact merge commits, conflicts and validation results
+are in [Wave 12 integration evidence](wave12-integration-evidence.md).
 
 - Branch: `factory/quality-wave12-integration`
-- WP12 branch: `factory/quality-wp12-chaos-matrix` (base `452bb40`)
+- WP12 branch: `factory/quality-wp12-chaos-matrix` (`693d08d`, merge `979a1ef`)
+- WP10 branch: `factory/quality-wp10-browser-acceptance` (`9abbf08`, merge
+  `f26db7a`)
 - WP12 matrix: [deterministic chaos and cross-workstream matrix](wp12-chaos-matrix.md)
+- WP10 browser evidence: [Office browser acceptance](wp10-browser-acceptance-evidence.md)
 - Baseline: `bcb8b5b` (`factory/agentic-flow-20261108`)
 - Merged work packages: WP3 `35fcae7`, WP5 `bd81c27`, WP7 `0b7fc3d`, WP9
   `55c43e8`, WP11 `fbc105c`, WP6 `b5dd282`, WP4 `6cde43c`
@@ -36,9 +38,9 @@ commits, conflicts and validation results are in
 | WP7 | Implemented and integrated | Canonical `## ADDED Requirements` / `### Requirement:` / `#### Scenario:` and numeric task IDs; pinned OpenSpec CLI `1.16.1` validator and container image; profile-gated Compose validation job against a Core-rendered fixture; Core-owned idempotent archive transition and drift/immutability checks | Real Core-backed Compose run against a projection produced by the model planning pipeline |
 | WP8 | Implemented | Deterministic Finding Router, durable OPEN dispositions, Gate blocks missing/OPEN findings even on reviewer PASS, authenticated resolve/refute, durable owner-decision validation, immutable closed dispositions | Browser acceptance of finding actions |
 | WP9 | Implemented and integrated | Role definitions, bounded role prompts, identity-based independence validation, six-service Compose reviewer fleet with per-identity tokens/principals/roles, reviewer identity registry, authenticated role binding, participant-plan role preservation, exact frozen role-to-principal assignment set, fail-closed Gate when assignments are missing/unexpected or a receipt is roleless/unrequired, Director per-role receipts, migrations `0065`/`0066` | Real two-reviewer Campaign/E2E with the fixture provider; independent acceptance |
-| WP10 | Implemented; acceptance pending | Director plan-review panel, lane/artifact/stack/architecture/docs/skills/DoD/OpenSpec summaries, approve/request-changes/reject, finding list and disposition form | Real Core/Compose browser acceptance and visual review |
+| WP10 | Implemented; implementer browser acceptance passed | Director plan-review panel, lane/artifact/stack/architecture/docs/skills/DoD/OpenSpec summaries, approve/request-changes/reject, finding list and disposition form, plus the 39/39 Chromium matrix against an isolated real Core | Real Compose browser acceptance, independent acceptance and Product Owner visual review |
 | WP11 | Implemented and integrated | Deterministic replay trace, bounded steps/events, redaction, comparison, typed alerts, operator-authenticated `GET /agentic/requests/{id}/trace` and the Office Request trace view | Real Core/Compose browser acceptance; independent acceptance |
-| WP12 | Deterministic matrix implemented and run; acceptance pending | Reproducible chaos/fault-injection and cross-workstream matrix, repeat-run acceptance script, golden planning-pipeline integration test, workflow/provider/workspace/dependency/reviewer/OpenSpec/trace tests, existing Rust/Office suites and Compose policy checks | Independent acceptance and real Core/Compose browser acceptance of the WP10-owned Office surfaces; live/paid/provider/Podman paths remain `NOT_TESTED` |
+| WP12 | Implemented and run; independent acceptance pending | Reproducible chaos/fault-injection and cross-workstream matrix, repeat-run acceptance script (20/20), golden planning-pipeline integration test, workflow/provider/workspace/dependency/reviewer/OpenSpec/trace tests, existing Rust/Office suites and Compose policy checks | Independent acceptance and real Compose browser acceptance; live/paid/provider/Podman paths remain `NOT_TESTED` |
 
 ## Verification run
 
@@ -50,11 +52,10 @@ From `native/`:
 
 ```text
 cargo test -p factory-native --lib
-830 passed; 0 failed; 4 ignored
+831 passed; 0 failed; 4 ignored
 
 cargo test -p factory-native --bins
-all binary suites passed (Core 38, Supervisor 9, Verifier 7, Worker 19,
-runtime broker 29)
+128 passed; 0 failed
 
 cargo test -p factory-native --test planning_pipeline --test provider_chaos \
   --test dependency_broker_http --test openspec_compose_validation \
@@ -80,7 +81,7 @@ npm run typecheck
 clean
 
 npm run lint
-clean
+clean (164 files)
 ```
 
 Compose policy:
@@ -97,11 +98,12 @@ Migration smoke: fresh and upgrade-from-0064 databases apply migrations
 
 ### WP12 acceptance run
 
-Candidate `ec4519ec293f0fd8d49f94ee6a2ff52e9143210d` (clean tree
-`25d72c49e61ff9b5cfced8012a666ade924c1d50`) was exercised with
+Final integrated candidate `03287aa684f2e8419d6b729f7ff8d61fd7796819` (clean
+tree `6ac7e20e241f92a7e4872543edce6adc74558ead`) was exercised with
 `scripts/quality-wave12-acceptance.sh --require-clean`. Exact results and the
 per-step logs are recorded in the
-[WP12 manifest](../evidence/quality-wave12-chaos-2026-11-10/manifest.json).
+[WP12 manifest](../evidence/quality-wave12-chaos-2026-11-10/manifest.json); the
+earlier WP12 branch manifest remains provenance.
 
 ```text
 scripts/quality-wave12-acceptance.sh --require-clean
@@ -111,10 +113,10 @@ scripts/quality-wave12-acceptance.test.sh
 PASS (PASS/PARTIAL/FAIL results; missing/stale/fresh --no-install dependencies)
 
 cargo test -p factory-native --locked --lib
-830 passed; 0 failed; 4 ignored
+831 passed; 0 failed; 4 ignored
 
 cargo test -p factory-native --locked --bins
-125 passed; 0 failed
+128 passed; 0 failed
 
 targeted integration suites
 29 passed; 0 failed
@@ -136,7 +138,7 @@ npm run typecheck
 clean
 
 npm run lint
-clean (163 files)
+clean (164 files)
 
 podman compose -f compose.yaml config
 PASS (14 services)
@@ -157,9 +159,12 @@ asserts those control-flow cases without running the full suite. The four
 ignored library tests are the opt-in real-Podman tests and are `SKIPPED`, not
 passes.
 Live provider inference, real Compose dependency acquisition, a real
-multi-reviewer Campaign, a real Core-backed OpenSpec projection, browser
-acceptance and independent acceptance remain `NOT_TESTED`/`BLOCKED` as listed
-in the manifest. No paid inference was used.
+multi-reviewer Campaign, a real Core-backed OpenSpec projection, real Compose
+browser acceptance and independent acceptance remain `NOT_TESTED`/`BLOCKED` as
+listed in the manifest. The WP10 implementer browser harness passed 39/39
+against an isolated real Core and regenerated
+[docs/evidence/wave12-office-acceptance-2026-11-10/manifest.json](../evidence/wave12-office-acceptance-2026-11-10/manifest.json);
+it is not independent acceptance. No paid inference was used.
 
 Independent read-only Codex reviews at the work-package review-fix commits
 reported no remaining findings for WP0, WP1, WP2, WP3, WP4, WP7, WP8, WP9 and
