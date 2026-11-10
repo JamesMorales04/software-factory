@@ -5,7 +5,8 @@ acceptance, certification or an isolation claim. Core remains authoritative.
 
 - Branch: `factory/quality-wp7-openspec-compose`
 - Baseline: `bcb8b5b`
-- Evidence commit: recorded in the follow-up docs commit on this branch.
+- Implementation commit: `85c2bae` (this follow-up docs commit records that
+  exact code candidate; the code is unchanged by the docs commit).
 - Scope: an operator-authenticated Core read projection, a profile-gated
   Compose validation job using the pinned OpenSpec 1.16.1 image, a bounded
   container-side validation script, deterministic contract tests and static

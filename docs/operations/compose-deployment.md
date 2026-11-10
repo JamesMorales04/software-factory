@@ -280,6 +280,7 @@ podman compose -p software-factory-e2e -f compose.yaml -f compose.e2e.yaml down 
 | Runtime | `quay.io/podman/stable:v5.8.9` + VFS |
 | Office build | Node `22.23.2`, React/Vite pinned by `office/package-lock.json` |
 | Provider | Node `22.23.2`, OpenCode `1.18.32`, Codex `0.156.1` |
+| OpenSpec validation | Node `22.23.2`, `@fission-ai/openspec@1.16.1` |
 
 Base images are pinned by version tag. Digest pinning is not enforced; record
 local image digests for any certification. The provider image is not published;
