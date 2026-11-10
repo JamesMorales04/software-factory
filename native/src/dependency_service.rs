@@ -170,17 +170,19 @@ pub struct DependencyService {
     guard: Option<std::sync::Arc<dyn DependencyGuard>>,
 }
 
+/// Opaque broker lease held for the duration of one acquisition. Dropping it
+/// releases the broker's active-volume registration.
+pub type DependencyLease = Box<dyn std::any::Any + Send>;
+pub type DependencyGuardFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<DependencyLease, String>> + Send + 'a>>;
+
 /// Broker-owned admission check for one acquisition. The returned value is
 /// dropped after the acquisition finishes; a broker implementation uses it to
 /// release its active-volume registration. The guard runs after authentication
 /// and shape validation so a caller cannot bypass the broker's owner and
 /// per-volume exclusion checks by addressing the dependency route directly.
 pub trait DependencyGuard: Send + Sync {
-    fn enter<'a>(
-        &'a self,
-        volume: &'a str,
-        container: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Box<dyn std::any::Any + Send>, String>> + Send + 'a>>;
+    fn enter<'a>(&'a self, volume: &'a str, container: &'a str) -> DependencyGuardFuture<'a>;
 }
 
 impl std::fmt::Debug for DependencyService {
@@ -1101,6 +1103,45 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn admission_guard_blocks_before_acquisition() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        struct RejectGuard;
+
+        impl DependencyGuard for RejectGuard {
+            fn enter<'a>(
+                &'a self,
+                _volume: &'a str,
+                _container: &'a str,
+            ) -> DependencyGuardFuture<'a> {
+                Box::pin(async { Err("workspace volume is busy".into()) })
+            }
+        }
+
+        let service = service().with_guard(std::sync::Arc::new(RejectGuard));
+        let router = std::sync::Arc::new(service).router();
+        let body = serde_json::to_vec(&wire_request()).unwrap();
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(DEPENDENCY_ACQUIRE_ROUTE)
+                    .header("content-type", "application/json")
+                    .header(
+                        "authorization",
+                        "Bearer dependency-service-token-0123456789abcdef",
+                    )
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
     }
 
     #[tokio::test]

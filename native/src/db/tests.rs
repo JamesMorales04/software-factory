@@ -2,7 +2,7 @@ use super::*;
 
 use chrono::Utc;
 use sqlx::connection::Connection as SqlxConnection;
-use sqlx_sqlite::{SqliteConnectOptions, SqliteConnection};
+use sqlx_sqlite::{SqliteConnectOptions, SqliteConnection, SqlitePoolOptions};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -165,6 +165,122 @@ async fn p1_p2_fresh_schema_uses_migrations_and_reopen_is_stable() {
     );
     assert_eq!(count(&reopened, "SELECT COUNT(*) FROM projects").await, 1);
     reopened.close().await;
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn wave12_fresh_database_applies_latest_migrations() {
+    let path = temp_path("factory-wave12-fresh");
+    let db = Database::open(&path).await.unwrap();
+    let versions: Vec<(i64,)> = sqlx::query_as::query_as(
+        "SELECT version FROM _sqlx_migrations
+         WHERE version BETWEEN 65 AND 69 ORDER BY version",
+    )
+    .fetch_all(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        versions
+            .into_iter()
+            .map(|(version,)| version)
+            .collect::<Vec<_>>(),
+        vec![65, 66, 67, 68, 69]
+    );
+    for schema_query in [
+        "SELECT reviewer_role FROM quality_receipts LIMIT 0",
+        "SELECT required_assignments_json FROM campaign_review_requirements LIMIT 0",
+        "SELECT project_offset, updated_at FROM skill_refresh_state LIMIT 0",
+        "SELECT source_checked_at, content_reviewed_at FROM skill_packs LIMIT 0",
+        "SELECT name FROM sqlite_master
+         WHERE type='trigger' AND name='action_specs_immutable_update'",
+    ] {
+        sqlx::query::query(schema_query)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+    }
+    db.close().await;
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn wave12_upgraded_database_applies_only_pending_migrations() {
+    let repo_migrations = Path::new(env!("CARGO_MANIFEST_DIR")).join("../migrations");
+    let subset = std::env::temp_dir().join(format!("factory-migrations-0064-{}", Uuid::new_v4()));
+    std::fs::create_dir_all(&subset).unwrap();
+    let mut applied = 0u32;
+    for entry in std::fs::read_dir(&repo_migrations).unwrap() {
+        let entry = entry.unwrap();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let Some(version) = name
+            .split_once('_')
+            .and_then(|(prefix, _)| prefix.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if version <= 64 && name.ends_with(".sql") {
+            std::fs::copy(entry.path(), subset.join(name.as_ref())).unwrap();
+            applied += 1;
+        }
+    }
+    assert!(applied >= 63);
+    let path = temp_path("factory-wave12-upgrade");
+    let options = SqliteConnectOptions::new()
+        .filename(&path)
+        .create_if_missing(true)
+        .foreign_keys(true);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .unwrap();
+    sqlx::migrate::Migrator::new(subset.as_path())
+        .await
+        .unwrap()
+        .run(&pool)
+        .await
+        .unwrap();
+    let (pending,): (i64,) = sqlx::query_as::query_as(
+        "SELECT COUNT(*) FROM _sqlx_migrations WHERE version BETWEEN 65 AND 69",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(pending, 0);
+    sqlx::query::query(
+        "INSERT INTO projects(id,repository,base_commit,created_at,identity)
+         VALUES ('project','/fixture','base',?1,'')",
+    )
+    .bind(Utc::now().to_rfc3339())
+    .execute(&pool)
+    .await
+    .unwrap();
+    pool.close().await;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    let db = Database::open(&path).await.unwrap();
+    let versions: Vec<(i64,)> = sqlx::query_as::query_as(
+        "SELECT version FROM _sqlx_migrations
+         WHERE version BETWEEN 65 AND 69 ORDER BY version",
+    )
+    .fetch_all(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        versions
+            .into_iter()
+            .map(|(version,)| version)
+            .collect::<Vec<_>>(),
+        vec![65, 66, 67, 68, 69]
+    );
+    assert_eq!(count(&db, "SELECT COUNT(*) FROM projects").await, 1);
+    db.close().await;
+    let _ = std::fs::remove_dir_all(subset);
     let _ = std::fs::remove_file(path);
 }
 

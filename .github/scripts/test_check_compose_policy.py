@@ -250,7 +250,7 @@ class ComposePolicyTests(unittest.TestCase):
         self.assert_rejected(mutate, "host bind")
 
     def test_rejects_office_socket_volume_on_unapproved_services(self):
-        for name in ("supervisor", "worker", "verifier", "reviewer", "runtime"):
+        for name in ("supervisor", "worker", "verifier", "reviewer-functional", "runtime"):
             with self.subTest(service=name):
                 def mount_protected_volume(config):
                     config["volumes"]["factory-office-socket"] = {}
@@ -329,6 +329,101 @@ class ComposePolicyTests(unittest.TestCase):
                     "Office socket volume is restricted to init, core, and tailscale",
                 )
 
+
+    def test_rejects_missing_or_networked_dependency_bundle(self):
+        self.assert_rejected(
+            lambda c: c["services"].pop("dependency-bundle"),
+            "missing services: ['dependency-bundle']",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["dependency-bundle"].__setitem__(
+                "network_mode", "bridge"
+            ),
+            "dependency-bundle: one-shot initialization must use network_mode none",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["dependency-bundle"]["volumes"].append(
+                {
+                    "type": "volume",
+                    "source": "factory-projects",
+                    "target": "/projects",
+                    "read_only": True,
+                }
+            ),
+            "dependency-bundle: exactly one image bundle mount is allowed",
+        )
+
+    def test_rejects_reviewer_identity_or_cross_role_state(self):
+        def wrong_principal(config):
+            config["services"]["reviewer-security"]["environment"][
+                "FACTORY_REVIEWER_PRINCIPAL"
+            ] = "reviewer-functional-process"
+
+        self.assert_rejected(
+            wrong_principal,
+            "reviewer-security: must use its own reviewer principal",
+        )
+
+        def wrong_role(config):
+            config["services"]["reviewer-testing"]["environment"][
+                "FACTORY_REVIEWER_ROLE"
+            ] = "FUNCTIONAL"
+
+        self.assert_rejected(
+            wrong_role,
+            "reviewer-testing: must use its assigned reviewer role",
+        )
+
+        def wrong_token_file(config):
+            config["services"]["reviewer-operability"]["environment"][
+                "FACTORY_REVIEWER_TOKEN_FILE"
+            ] = "/config/reviewer-functional.token"
+
+        self.assert_rejected(
+            wrong_token_file,
+            "reviewer-operability: must read its own reviewer token file",
+        )
+
+        def cross_state(config):
+            for volume in config["services"]["reviewer-architecture"]["volumes"]:
+                if volume.get("source") == "factory-reviewer-architecture-state":
+                    volume["source"] = "factory-reviewer-functional-state"
+
+        self.assert_rejected(
+            cross_state,
+            "reviewer-architecture: must mount only its own reviewer state volume",
+        )
+
+    def test_rejects_reviewer_cross_role_config_volume(self):
+        def mutate(config):
+            for volume in config["services"]["reviewer-code-quality"]["volumes"]:
+                if volume.get("source") == "factory-config-reviewer-code-quality":
+                    volume["source"] = "factory-config-reviewer-functional"
+
+        self.assert_rejected(
+            mutate,
+            "reviewer-code-quality: must mount only factory-config-reviewer-code-quality",
+        )
+
+    def test_rejects_runtime_dependency_policy_drift(self):
+        self.assert_rejected(
+            lambda c: c["services"]["runtime"]["environment"].__setitem__(
+                "FACTORY_RUNTIME_DEPENDENCY_IMAGE", "docker.io/evil:latest"
+            ),
+            "runtime: the pinned dependency image is required",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["runtime"]["environment"].__setitem__(
+                "FACTORY_RUNTIME_DEPENDENCY_EGRESS_NETWORK", "host"
+            ),
+            "runtime: dependency acquisition must use its dedicated internal network",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["runtime"]["environment"].__setitem__(
+                "FACTORY_RUNTIME_BROKER_TOKEN", "supervisor-token-value"
+            ),
+            "runtime: broker secrets must be file-backed",
+        )
 
     def test_tailscale_serve_config_is_private_https_only(self):
         if "tailscale" not in base_config()["services"]:

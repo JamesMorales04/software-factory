@@ -1212,13 +1212,7 @@ impl factory_native::dependency_service::DependencyGuard for BrokerDependencyGua
         &'a self,
         volume: &'a str,
         container: &'a str,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<Box<dyn std::any::Any + Send>, String>>
-                + Send
-                + 'a,
-        >,
-    > {
+    ) -> factory_native::dependency_service::DependencyGuardFuture<'a> {
         Box::pin(async move {
             let lock = self.app.resource_lock(volume);
             let guard = lock.lock_owned().await;
@@ -1228,9 +1222,9 @@ impl factory_native::dependency_service::DependencyGuard for BrokerDependencyGua
             if !resource_owner_matches(&labels, ResourceOwner::Supervisor) {
                 return Err("workspace volume is not owned by the authenticated service".into());
             }
-            if !labels
+            if labels
                 .get("io.software-factory.workspace")
-                .is_some_and(|workspace| !workspace.is_empty())
+                .is_none_or(|workspace| workspace.is_empty())
             {
                 return Err("workspace volume is not bound to a workspace".into());
             }

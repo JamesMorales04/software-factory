@@ -523,9 +523,13 @@ capabilities:
     source:
     - native/src/provider_session.rs
     - native/src/provider_patch.rs
+    - native/src/provider_stream.rs
+    - native/src/provider_reliability.rs
+    - native/src/provider_lifecycle.rs
     - native/src/bin/worker.rs
     test:
     - native/tests/e2e_fixture_dispatch.rs
+    - native/tests/provider_chaos.rs
     - native/src/db/provider_sessions.rs
   acceptance:
     deterministic: Applicable worker and direct-provider integration contract, negative and regression checks pass on an
@@ -547,6 +551,10 @@ capabilities:
     test-only GPT-6 Luna proxy record. A reviewer-only native Codex App Server `review/start` transport and
     dedicated ChatGPT credential volume are implemented behind `FACTORY_ENABLE_CODEX_REVIEW=1`; real ChatGPT
     login, live Luna review and ISOLATED dispatch remain NOT_TESTED.
+  - WP5 adds bounded SSE reconnect with `Last-Event-ID`, a nonconsecutive duplicate window, no hidden turn deadline,
+    exclusive reservation settlement/release and no candidate on provider failure or reconnect exhaustion. The
+    deterministic offline fault matrix passes; a live long-turn/SSE-cut UAT remains NOT_TESTED. See
+    docs/implementation/wp5-provider-chaos-evidence.md.
   - SEC-01-ISOLATED is out of scope for the current TRUSTED_LOCAL product (ADR-0035); no isolation is claimed and
     isolated dispatch remains fail-closed.
   blockers:
@@ -577,8 +585,12 @@ capabilities:
     - docs/contracts/quality-pipeline-s4a.md
     source:
     - native/src/workspace.rs
+    - native/src/workspace_archive.rs
+    - native/src/execution.rs
     test:
     - native/src/workspace.rs
+    - native/src/workspace_archive.rs
+    - native/src/execution.rs
   acceptance:
     deterministic: Applicable candidate revision lineage contract, negative and regression checks pass on an exact
       candidate.
@@ -593,7 +605,10 @@ capabilities:
     uat: []
     deployment: []
     isolation: []
-  limitations: []
+  limitations:
+  - Workspace snapshots exclude generated targets, reject symlinks/unsafe archives and reconcile only
+    supervisor-owned orphan volumes/containers. Compose end-to-end restart and HTTP inventory acceptance remain
+    NOT_TESTED. See docs/implementation/wp6-workspace-recovery-evidence.md.
   blockers: []
 - id: CAP-006
   name: Independent verification and review
@@ -919,8 +934,11 @@ capabilities:
     source:
     - native/src/telemetry.rs
     - native/src/observability.rs
+    - native/src/trace.rs
+    - native/src/replay.rs
     test:
     - native/src/telemetry.rs
+    - native/src/trace.rs
     - native/tests/observability.rs
   acceptance:
     deterministic: Applicable durable events and telemetry contract, negative and regression checks pass on an exact
@@ -938,6 +956,9 @@ capabilities:
     isolation: []
   limitations:
   - Metrics completeness and end-to-end telemetry coverage are not established.
+  - The operator-authenticated request trace endpoint and Office view are implemented with bounded steps/events,
+    redaction and typed alerts. Endpoint and component tests pass; real Core/Compose browser acceptance remains
+    NOT_TESTED. See docs/implementation/wp11-trace-view-evidence.md.
   blockers: []
 - id: CAP-013
   name: Intelligent Lead
@@ -2942,15 +2963,14 @@ capabilities:
     - docs/architecture/decisions/ADR-0037-agent-topology-context-and-composition.md
     contract:
     - docs/contracts/agentic-flow.md
-    source: [native/src/agentic.rs, native/src/db/agentic_plans.rs, native/src/db/planning.rs, native/src/planning, native/src/dependencies.rs, native/src/openspec.rs, native/src/openspec_cli.rs, native/src/bin/core.rs, deploy/openspec, office/src/views/Director.tsx]
-    test: [native/src/agentic.rs, native/src/db/intake.rs, native/src/db/planning.rs, native/src/db/quality.rs, native/tests/planning_pipeline.rs, native/tests/openspec_compose_validation.rs, deploy/openspec/validate.test.mjs, office/src/views/Director.test.tsx]
+    source: [native/src/agentic.rs, native/src/db/agentic_plans.rs, native/src/db/planning.rs, native/src/planning/mod.rs, native/src/planning/skill_refresh.rs, native/src/dependencies.rs, native/src/dependency_broker.rs, native/src/dependency_service.rs, native/src/dependency_egress.rs, native/src/openspec.rs, native/src/openspec_cli.rs, native/src/bin/core.rs, native/src/bin/worker.rs, native/src/bin/supervisor.rs, native/src/bin/runtime_broker.rs, deploy/openspec/validate.mjs, deploy/openspec/Dockerfile, office/src/views/Director.tsx]
+    test: [native/src/agentic.rs, native/src/db/intake.rs, native/src/db/planning.rs, native/src/db/quality.rs, native/src/db/tests.rs, native/tests/planning_pipeline.rs, native/tests/openspec_compose_validation.rs, native/tests/dependency_broker_http.rs, native/tests/dependency_broker_podman.rs, deploy/openspec/validate.test.mjs, office/src/views/Director.test.tsx]
   acceptance:
-    deterministic: Core derives a planning lane floor, persists exact stack/architecture/documentation/skill/DoD artifacts, and requires a plan review for every lane with policy-bounded auto-approval; the Planner proposes a WorkGraph that Core validates for cycles, paths, dependencies, competence and budget; the Spec Manager authors observable acceptance and negative cases only for FORMAL_SPEC; deterministic compilation freezes exact requirement, assertion and check identities; every reviewer finding is a durable disposition and an OPEN finding blocks the Gate; post-freeze changes require a new revision.
+    deterministic: Core derives a planning lane floor, persists exact stack/architecture/documentation/skill/DoD artifacts, and requires a plan review for every lane with policy-bounded auto-approval; the Planner proposes a WorkGraph that Core validates for cycles, paths, dependencies, competence and budget; a dependency-requiring plan is frozen onto the ActionSpec before Campaign authorization and can only be acquired after provider writes and before offline checks; the Spec Manager authors observable acceptance and negative cases only for FORMAL_SPEC; deterministic compilation freezes exact requirement, assertion and check identities; every reviewer finding is a durable disposition and an OPEN finding blocks the Gate; post-freeze changes require a new revision.
     real: A multi-unit browser operation is planned, specified, frozen and executed without the model changing a frozen requirement.
   evidence:
     deterministic:
     - docs/evidence/spec-board-2026-11-09/deterministic.json
-    - docs/implementation/wp7-openspec-compose-evidence.md
     live_agent: []
     uat: []
     deployment: []
@@ -2958,8 +2978,11 @@ capabilities:
   limitations:
   - The Planner and Spec Manager are bounded Lead-route model calls with distinct purpose and typed schemas; they do not have separate provider roles yet.
   - Plan review and finding disposition are implemented in Core and Office; real browser acceptance for the new surfaces remains NOT_TESTED.
+  - Skill-pack source availability and content review are separate; only content-reviewed packs count as fresh. The Core refresh scheduler uses durable idempotent events and a rotating project cursor. Real Compose scheduler/restart evidence and browser acceptance of the Skills refresh surface remain NOT_TESTED. See docs/implementation/wp3-skill-refresh-evidence.md.
   - The OpenSpec projection uses canonical ADDED Requirements/Requirement/Scenario headings and numeric task IDs; the pinned CLI 1.16.1 validator runs as a profile-gated Compose job against a Core-rendered fixture; Core exposes an idempotent archive transition for the latest validated revision with stored-artifact digest and projection drift checks; a real Core-backed run against a projection produced by the model planning pipeline remains NOT_TESTED. See docs/implementation/wp7-openspec-compose-evidence.md.
+  - Dependency acquisition is wired through the runtime broker with an internal deny-by-default network, an allowlisted CONNECT proxy, image-ID pinning, operation grants, a per-workspace lock and a Core authorization guard. Deterministic HTTP and opt-in real-Podman/live-registry tests pass, but a real Compose acquisition and independent acceptance remain NOT_TESTED. See docs/implementation/wp4-dependency-broker-evidence.md.
   - A real-model browser self-test planned and froze revisions 1 and 2, and the full E2E campaign consumed the frozen plan, but independent live certification is pending.
+  - Wave 12 integration evidence and exact command results are recorded in docs/implementation/wave12-integration-evidence.md; it is implementer evidence, not acceptance.
   blockers:
   - Per-WorkUnit execution state and the full planned-specified-executed journey remain pending.
 
@@ -3079,14 +3102,13 @@ capabilities:
   evidence:
     deterministic:
     - docs/evidence/dynamic-fleets-2026-11-09/deterministic.json
-    - docs/implementation/wp9-reviewer-independence-evidence.md
     live_agent: []
     uat: []
     deployment: []
     isolation: []
   limitations:
   - Provider/model diversity is neither required nor sufficient for independence; two reviewers with the same model are independent when their authenticated principals and processes differ.
-  - The Compose topology provisions six reviewer services with separate tokens, principals, roles and state volumes; Core derives the principal/role from trusted identity configuration and rejects a caller-selected mismatch.
+  - The Compose topology provisions six reviewer services with separate tokens, principals, roles and state volumes; Core derives the principal/role from trusted identity configuration and rejects a caller-selected mismatch. See docs/implementation/wp9-reviewer-independence-evidence.md.
   - A live Campaign with two or more reviewer role receipts was not run in this slice; role coverage, same-model acceptance, duplicate-principal rejection and single-receipt deferral are deterministically tested.
   blockers:
   - Real multi-unit Campaign, two-reviewer aggregation and per-unit execution state remain pending.

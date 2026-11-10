@@ -12,14 +12,27 @@ import sys
 from pathlib import Path
 from urllib.parse import urlsplit
 
-PERMANENT = {"core", "supervisor", "worker", "verifier", "reviewer"}
+REVIEWER_SERVICES = {
+    "reviewer-functional",
+    "reviewer-architecture",
+    "reviewer-code-quality",
+    "reviewer-security",
+    "reviewer-testing",
+    "reviewer-operability",
+}
+PERMANENT = {"core", "supervisor", "worker", "verifier"} | REVIEWER_SERVICES
 CONFIG_VOLUMES = {
     "runtime": "factory-config-runtime",
     "core": "factory-config-core",
     "supervisor": "factory-config-supervisor",
     "worker": "factory-config-worker",
     "verifier": "factory-config-verifier",
-    "reviewer": "factory-config-reviewer",
+    "reviewer-functional": "factory-config-reviewer-functional",
+    "reviewer-architecture": "factory-config-reviewer-architecture",
+    "reviewer-code-quality": "factory-config-reviewer-code-quality",
+    "reviewer-security": "factory-config-reviewer-security",
+    "reviewer-testing": "factory-config-reviewer-testing",
+    "reviewer-operability": "factory-config-reviewer-operability",
 }
 # Profile-gated one-shot jobs are not part of the steady-state stack, but they
 # still need explicit credential, mount, network and privilege rules.
@@ -34,10 +47,47 @@ EXPECTED_NETWORKS = {
     "supervisor": {"factory-control"},
     "worker": {"factory-control", "factory-egress"},
     "verifier": {"factory-control"},
-    # The reviewer owns the dedicated Codex ChatGPT credential and needs
-    # outbound access to the official App Server auth/review endpoints.
-    "reviewer": {"factory-control", "factory-egress"},
+    # Reviewers own dedicated Codex ChatGPT credentials and need outbound
+    # access to the official App Server auth/review endpoints.
+    "reviewer-functional": {"factory-control", "factory-egress"},
+    "reviewer-architecture": {"factory-control", "factory-egress"},
+    "reviewer-code-quality": {"factory-control", "factory-egress"},
+    "reviewer-security": {"factory-control", "factory-egress"},
+    "reviewer-testing": {"factory-control", "factory-egress"},
+    "reviewer-operability": {"factory-control", "factory-egress"},
     "runtime": {"factory-control", "factory-egress"},
+}
+REVIEWER_IDENTITIES = {
+    "reviewer-functional": (
+        "/config/reviewer-functional.token",
+        "reviewer-functional-process",
+        "FUNCTIONAL",
+    ),
+    "reviewer-architecture": (
+        "/config/reviewer-architecture.token",
+        "reviewer-architecture-process",
+        "ARCHITECTURE",
+    ),
+    "reviewer-code-quality": (
+        "/config/reviewer-code-quality.token",
+        "reviewer-code-quality-process",
+        "CODE_QUALITY",
+    ),
+    "reviewer-security": (
+        "/config/reviewer-security.token",
+        "reviewer-security-process",
+        "SECURITY",
+    ),
+    "reviewer-testing": (
+        "/config/reviewer-testing.token",
+        "reviewer-testing-process",
+        "TESTING",
+    ),
+    "reviewer-operability": (
+        "/config/reviewer-operability.token",
+        "reviewer-operability-process",
+        "OPERABILITY",
+    ),
 }
 ALLOWED_RUNTIME_CAPS = {
     "CHOWN",
@@ -152,11 +202,18 @@ def main(path: str) -> int:
     def fail(message: str) -> None:
         errors.append(message)
 
-    missing = (PERMANENT | {"init", "provider-bundle", "runtime"}) - set(services)
+    missing = (
+        PERMANENT | {"init", "provider-bundle", "dependency-bundle", "runtime"}
+    ) - set(services)
     if missing:
         fail(f"missing services: {sorted(missing)}")
     has_tailscale = "tailscale" in services
-    expected_services = PERMANENT | {"init", "provider-bundle", "runtime"}
+    expected_services = PERMANENT | {
+        "init",
+        "provider-bundle",
+        "dependency-bundle",
+        "runtime",
+    }
     if has_tailscale:
         expected_services.add("tailscale")
     if "openspec-validate" in services:
@@ -259,6 +316,31 @@ def main(path: str) -> int:
                 fail(
                     f"{name}: networks {sorted(actual_networks)} do not match {sorted(expected_networks)}"
                 )
+            if name in REVIEWER_IDENTITIES:
+                token_file, principal, role = REVIEWER_IDENTITIES[name]
+                environment = service.get("environment") or {}
+                if environment.get("FACTORY_REVIEWER_TOKEN_FILE") != token_file:
+                    fail(f"{name}: must read its own reviewer token file")
+                if environment.get("FACTORY_REVIEWER_PRINCIPAL") != principal:
+                    fail(f"{name}: must use its own reviewer principal")
+                if environment.get("FACTORY_REVIEWER_ROLE") != role:
+                    fail(f"{name}: must use its assigned reviewer role")
+                if environment.get("FACTORY_REVIEW_MECHANISM") not in {"AUTO", "MANUAL"}:
+                    fail(f"{name}: reviewer mechanism must be explicit")
+                if any(
+                    key.upper().endswith(("TOKEN", "KEY", "SECRET"))
+                    and str(value or "").strip()
+                    for key, value in environment.items()
+                ):
+                    fail(f"{name}: reviewer secrets must be file-backed, not environment values")
+                state_volume = f"factory-{name}-state"
+                state_mounts = {
+                    str(volume.get("source", ""))
+                    for volume in service.get("volumes", []) or []
+                    if str(volume.get("target", "")) == "/state"
+                }
+                if state_mounts != {state_volume}:
+                    fail(f"{name}: must mount only its own reviewer state volume")
 
         if "openspec-validate" in services:
             job = services["openspec-validate"]
@@ -401,7 +483,7 @@ def main(path: str) -> int:
         if core_environment.get("FACTORY_OFFICE_ACCESS_BIND") is not None:
             fail("core: the Office listener must not bind a TCP port")
 
-    for name in ("init", "provider-bundle"):
+    for name in ("init", "provider-bundle", "dependency-bundle"):
         service = services.get(name, {})
         if service.get("network_mode") != "none":
             fail(f"{name}: one-shot initialization must use network_mode none")
@@ -422,6 +504,19 @@ def main(path: str) -> int:
         unexpected = as_set(service, "cap_add") - allowed_caps
         if unexpected:
             fail(f"{name}: unsupported one-shot capabilities {sorted(unexpected)}")
+        if name in {"provider-bundle", "dependency-bundle"}:
+            volumes = service.get("volumes") or []
+            if len(volumes) != 1:
+                fail(f"{name}: exactly one image bundle mount is allowed")
+            else:
+                volume = volumes[0]
+                if (
+                    str(volume.get("source", "")) != "factory-image-bundle"
+                    or str(volume.get("target", "")) != "/bundle"
+                    or str(volume.get("type", "")) != "volume"
+                    or volume.get("read_only") is True
+                ):
+                    fail(f"{name}: must write only the shared image-bundle volume at /bundle")
 
     init_socket = [
         volume
@@ -464,6 +559,31 @@ def main(path: str) -> int:
     }
     if runtime_config != {"factory-config-runtime"}:
         fail(f"runtime: must mount only its own config volume; got {sorted(runtime_config)}")
+    runtime_environment = runtime.get("environment") or {}
+    if runtime_environment.get("FACTORY_RUNTIME_BROKER_TOKEN_DIR") != "/config":
+        fail("runtime: owner tokens must be read from its private config volume")
+    if runtime_environment.get("FACTORY_RUNTIME_DEPENDENCY_IMAGE") != (
+        "localhost/software-factory-dependency:dev"
+    ):
+        fail("runtime: the pinned dependency image is required")
+    if runtime_environment.get("FACTORY_RUNTIME_DEPENDENCY_BUNDLE") != (
+        "/bundles/dependency-rootfs.tar"
+    ):
+        fail("runtime: the dependency image bundle is required")
+    if runtime_environment.get("FACTORY_RUNTIME_DEPENDENCY_EGRESS_NETWORK") != (
+        "factory-deps-egress"
+    ):
+        fail("runtime: dependency acquisition must use its dedicated internal network")
+    if runtime_environment.get("FACTORY_RUNTIME_DEPENDENCY_EGRESS_SUBNET") != "10.90.0.0/24":
+        fail("runtime: dependency acquisition must use a fixed private subnet")
+    if runtime_environment.get("FACTORY_RUNTIME_DEPENDENCY_EGRESS_GATEWAY") != "10.90.0.1":
+        fail("runtime: dependency acquisition must use its fixed proxy gateway")
+    if any(
+        key.upper().endswith(("TOKEN", "KEY", "SECRET"))
+        and str(value or "").strip()
+        for key, value in runtime_environment.items()
+    ):
+        fail("runtime: broker secrets must be file-backed, not environment values")
 
     if has_tailscale:
         tailscale = services["tailscale"]
@@ -652,9 +772,15 @@ def main(path: str) -> int:
         "factory-image-bundle",
         "factory-engine",
         "factory-office-socket",
+        "factory-codex-home",
+        "factory-supervisor-state",
+        "factory-verifier-state",
     ):
         if required not in named_volumes:
             fail(f"missing durable volume {required}")
+    for service in REVIEWER_SERVICES:
+        if f"factory-{service}-state" not in named_volumes:
+            fail(f"missing reviewer state volume for {service}")
 
     if errors:
         for error in errors:

@@ -1,6 +1,6 @@
 {
  "schema_version": 1,
- "updated_at": "2026-11-10T02:30:00Z",
+ "updated_at": "2026-11-10T05:00:00Z",
  "route_base_note": "Current Office uses hash routes. The design-foundation slice moves to a stable /office browser base while preserving these logical routes.",
  "capabilities": {
   "CAP-011": {
@@ -862,7 +862,7 @@
     "native/tests/planning_pipeline.rs",
     "docs/evidence/spec-board-2026-11-09/manifest.json"
    ],
-   "notes": "The Planner and Spec Manager are bounded Lead-route model calls with distinct purpose and typed schemas. Core validates the graph and compiles the frozen identities deterministically. Planning is lane-routed and every lane requires a plan review; Core auto-approves only within the frozen policy and otherwise requires an authenticated owner decision. Planning artifacts are exact revisions bound to a SHA-256. Reviewer findings are durable dispositions and an OPEN finding blocks the Gate even when the reviewer receipt passed. A frozen specification is immutable; authoring creates a new revision. Browser acceptance for the new plan-review and finding surfaces remains NOT_TESTED."
+   "notes": "The Planner and Spec Manager are bounded Lead-route model calls with distinct purpose and typed schemas. Core validates the graph and compiles the frozen identities deterministically. Planning is lane-routed and every lane requires a plan review; Core auto-approves only within the frozen policy and otherwise requires an authenticated owner decision. Planning artifacts are exact revisions bound to a SHA-256. Reviewer findings are durable dispositions and an OPEN finding blocks the Gate even when the reviewer receipt passed. A frozen specification is immutable; authoring creates a new revision. Wave 12 integration adds the supervisor/verifier/provider runtime-broker owner tokens, the six-reviewer fleet, the skill-pack refresh scheduler (source availability is separate from content review), the profile-gated OpenSpec validation job, and brokered dependency acquisition with an internal allowlisted egress proxy. Dependency acquisition is dispatched after provider writes and before offline checks; it is not visible as a new Office action. Browser acceptance for the new plan-review, finding, Skills refresh and trace surfaces remains NOT_TESTED."
   },
   "CAP-061": {
    "name": "Spec issue projection and kanban",
