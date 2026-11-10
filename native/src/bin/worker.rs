@@ -31,9 +31,16 @@ use factory_native::provider_egress::{EgressConfig, SharedTurnPolicy, TurnPolicy
 use factory_native::provider_patch::{
     ProviderAction, ProviderUsage, extract_action, extract_action_text, extract_plan, extract_usage,
 };
+use factory_native::provider_reliability::{
+    MAX_STRUCTURED_REPAIRS, SseReconnectPolicy, StructuredOutputError, StructuredOutputRepair,
+    decode_structured_output,
+};
 use factory_native::provider_sandbox::{
     ContainerProviderSandbox, ContainerSandboxConfig, ProviderSandbox, ProviderSandboxConfig,
     SandboxTransport,
+};
+use factory_native::provider_stream::{
+    EventStreamConnector, ProviderStreamError, ReconnectWaiter, SystemClock, TerminalDecision,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -2061,56 +2068,36 @@ async fn persist_final_progress_checkpoint(
     Ok(())
 }
 
-type ProviderEventStream = std::pin::Pin<
-    Box<dyn futures_util::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send>,
->;
+type ProviderEventStream = factory_native::provider_stream::BoxEventStream;
+type ProviderWaiter = ReconnectWaiter<factory_native::runtime::OpenCodeEventConnector>;
 
 /// Wait for a provider terminal event with bounded SSE reconnect. A reconnect
-/// reopens the same session stream; it never creates a second provider session
-/// and never treats an HTTP reconnect as task success.
+/// reopens the same session stream from the last complete event id; it never
+/// creates a second provider session and never treats an HTTP reconnect as task
+/// success.
 async fn wait_for_provider_terminal(
-    http: &reqwest::Client,
-    context: &ProviderContext<'_>,
+    waiter: &mut ProviderWaiter,
     session_id: &str,
-    stream: &mut ProviderEventStream,
-    parser: &mut factory_native::sse::SseParser,
     cancel_requested: bool,
 ) -> Result<factory_native::runtime::OpenCodePromptTerminal, Box<dyn std::error::Error>> {
-    let policy = factory_native::provider_reliability::SseReconnectPolicy::default();
-    let mut attempts = 0;
-    loop {
-        match factory_native::runtime::wait_for_opencode_prompt_terminal(
-            stream,
-            parser,
-            session_id,
-            cancel_requested,
-        )
-        .await
-        {
-            Ok(terminal) => return Ok(terminal),
-            Err(error) => {
-                let reconnectable = matches!(
-                    &error,
-                    factory_native::runtime::Error::Incompatible(message)
-                        if message.contains("SSE ended") || message.contains("SSE read failed")
-                );
-                if !reconnectable || !policy.can_retry(attempts) {
-                    return Err(error.into());
+    let clock = SystemClock;
+    let terminal = waiter
+        .wait(
+            &clock,
+            |event| match factory_native::runtime::classify_opencode_terminal_event(
+                event,
+                session_id,
+                cancel_requested,
+            ) {
+                Ok(Some(terminal)) => TerminalDecision::Terminal(terminal),
+                Ok(None) => TerminalDecision::Continue,
+                Err(error) => {
+                    TerminalDecision::Fatal(ProviderStreamError::Protocol(error.to_string()))
                 }
-                attempts = attempts.saturating_add(1);
-                tokio::time::sleep(policy.delay(attempts)).await;
-                let response = factory_native::runtime::open_opencode_event_stream(
-                    http,
-                    context.base_url,
-                    context.password,
-                    context.api_directory,
-                )
-                .await?;
-                *stream = Box::pin(response.bytes_stream());
-                *parser = factory_native::sse::SseParser::new(1_048_576);
-            }
-        }
-    }
+            },
+        )
+        .await?;
+    Ok(terminal)
 }
 
 async fn run_provider_tool_loop(
@@ -2118,14 +2105,15 @@ async fn run_provider_tool_loop(
 ) -> Result<ProviderRun, Box<dyn std::error::Error>> {
     let directory = context.directory.to_owned();
     let http = factory_native::runtime::opencode_http_client(Duration::ZERO)?;
-    let event_response = factory_native::runtime::open_opencode_event_stream(
-        &http,
+    let mut connector = factory_native::runtime::OpenCodeEventConnector::new(
+        http.clone(),
         context.base_url,
         context.password,
         context.api_directory,
-    )
-    .await?;
-    let mut event_stream: ProviderEventStream = Box::pin(event_response.bytes_stream());
+    )?;
+    let mut event_stream: ProviderEventStream = EventStreamConnector::connect(&mut connector, None)
+        .await
+        .map_err(|error| -> Box<dyn std::error::Error> { Box::new(error) })?;
     let mut parser = factory_native::sse::SseParser::new(1_048_576);
     let created = factory_native::runtime::create_opencode_session(
         &http,
@@ -2168,6 +2156,8 @@ async fn run_provider_tool_loop(
         &session_id,
     )
     .await?;
+    let mut waiter =
+        ReconnectWaiter::new(connector, SseReconnectPolicy::default()).with_stream(event_stream);
 
     let allocation = WorkspaceAllocation {
         attempt_id: context.assignment.lease.attempt_id.clone(),
@@ -2228,6 +2218,7 @@ async fn run_provider_tool_loop(
     let mut passed_checks = std::collections::BTreeSet::new();
     let mut last_message_id = String::new();
     let mut call_ids = std::collections::BTreeSet::new();
+    let mut structured_output = StructuredOutputRepair::new(MAX_STRUCTURED_REPAIRS)?;
     let mut progress = TurnProgress::new(context);
     loop {
         if let Some(request) = progress.checkpoint_request() {
@@ -2283,16 +2274,7 @@ async fn run_provider_tool_loop(
         }
         // No total model-request deadline. The provider may take as long as
         // it needs; latency and progress are telemetry.
-        let terminal = match wait_for_provider_terminal(
-            &http,
-            context,
-            &session_id,
-            &mut event_stream,
-            &mut parser,
-            false,
-        )
-        .await
-        {
+        let terminal = match wait_for_provider_terminal(&mut waiter, &session_id, false).await {
             Ok(terminal) => terminal,
             Err(error) => {
                 if let Some(turn) = &turn {
@@ -2410,24 +2392,33 @@ async fn run_provider_tool_loop(
         if let Ok(mut tracker) = context.usage_tracker.lock() {
             *tracker = usage;
         }
-        let action = match extract_action(&message) {
+        let action = match decode_structured_output(&mut structured_output, || {
+            extract_action(&message).map_err(|error| error.to_string())
+        }) {
             Ok(action) => action,
-            Err(error) => {
+            Err(StructuredOutputError::Repair {
+                attempt,
+                max_repairs,
+                detail,
+            }) => {
                 post_tool_event(
                     context,
                     "invalid-action",
                     "final",
                     "ERROR",
-                    &format!("invalid provider action: {error}"),
+                    &format!("invalid provider action (repair {attempt}/{max_repairs}): {detail}"),
                 )
                 .await?;
                 prompt = json!({
                     "model": {"providerID": context.assignment.provider, "modelID": context.assignment.model},
                     "parts": [{"type": "text", "text": format!(
-                        "Your previous response was rejected: {error}. Return exactly one JSON object. Use a write_file tool_request for every file change. Finish with {{\"type\":\"final\",\"files\":[],\"explanation\":\"...\"}} and keep `files` empty."
+                        "Your previous response was rejected: {detail}. Return exactly one JSON object. Use a write_file tool_request for every file change. Finish with {{\"type\":\"final\",\"files\":[],\"explanation\":\"...\"}} and keep `files` empty."
                     )}]
                 });
                 continue;
+            }
+            Err(error @ StructuredOutputError::Exhausted { .. }) => {
+                return Err(format!("provider structured output rejected: {error}").into());
             }
         };
         match action {
@@ -4138,14 +4129,15 @@ async fn run_provider_patch(
         }]
     });
     let http = factory_native::runtime::opencode_http_client(Duration::ZERO)?;
-    let event_response = factory_native::runtime::open_opencode_event_stream(
-        &http,
+    let mut connector = factory_native::runtime::OpenCodeEventConnector::new(
+        http.clone(),
         context.base_url,
         context.password,
         context.api_directory,
-    )
-    .await?;
-    let mut event_stream: ProviderEventStream = Box::pin(event_response.bytes_stream());
+    )?;
+    let mut event_stream: ProviderEventStream = EventStreamConnector::connect(&mut connector, None)
+        .await
+        .map_err(|error| -> Box<dyn std::error::Error> { Box::new(error) })?;
     let mut parser = factory_native::sse::SseParser::new(1_048_576);
     let created = factory_native::runtime::create_opencode_session(
         &http,
@@ -4199,6 +4191,8 @@ async fn run_provider_patch(
         &provider_session_id,
     )
     .await?;
+    let mut waiter =
+        ReconnectWaiter::new(connector, SseReconnectPolicy::default()).with_stream(event_stream);
     let turn = if context.turn_policy.is_some() {
         Some(authorize_provider_turn(context, &prompt).await?)
     } else {
@@ -4219,15 +4213,7 @@ async fn run_provider_patch(
         }
         return Err(error.into());
     }
-    let terminal = match wait_for_provider_terminal(
-        &http,
-        context,
-        &provider_session_id,
-        &mut event_stream,
-        &mut parser,
-        false,
-    )
-    .await
+    let terminal = match wait_for_provider_terminal(&mut waiter, &provider_session_id, false).await
     {
         Ok(terminal) => terminal,
         Err(error) => {

@@ -96,6 +96,13 @@ impl SseCursor {
         self.reconnects = self.reconnects.saturating_add(1);
         Ok(policy.delay(self.reconnects))
     }
+
+    /// Start a new wait/turn with a fresh reconnect budget. The replay cursor
+    /// (`last_event_id`) is retained: a later reconnect must still resume from
+    /// the last event observed across turns.
+    pub fn reset_reconnects(&mut self) {
+        self.reconnects = 0;
+    }
 }
 
 impl Default for SseCursor {
@@ -173,6 +180,70 @@ impl StructuredOutputRepair {
     pub fn attempts(&self) -> u8 {
         self.repairs
     }
+
+    pub fn max_repairs(&self) -> u8 {
+        self.max_repairs
+    }
+
+    /// A valid structured response ends the current repair sequence. The next
+    /// malformed response gets a fresh bounded repair budget.
+    pub fn reset(&mut self) {
+        self.repairs = 0;
+    }
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum StructuredOutputError {
+    #[error("structured-output repair {attempt}/{max_repairs} required after rejection: {detail}")]
+    Repair {
+        attempt: u8,
+        max_repairs: u8,
+        detail: String,
+    },
+    #[error("structured-output repair attempts exhausted after {attempts}: {detail}")]
+    Exhausted { attempts: u8, detail: String },
+}
+
+/// Decode one machine-readable model result with a bounded repair sequence.
+///
+/// A malformed result returns `Repair` while the policy still allows another
+/// attempt; the caller must submit the bounded repair prompt and try again. An
+/// exhausted policy returns `Exhausted`, which is a typed failure, never a
+/// free-text fallback or an accepted partial object.
+pub fn decode_structured_output<T, F>(
+    repair: &mut StructuredOutputRepair,
+    decode: F,
+) -> Result<T, StructuredOutputError>
+where
+    F: FnOnce() -> Result<T, String>,
+{
+    match decode() {
+        Ok(value) => {
+            repair.reset();
+            Ok(value)
+        }
+        Err(detail) => {
+            if repair.can_repair() {
+                let attempt =
+                    repair
+                        .record_repair()
+                        .map_err(|_| StructuredOutputError::Exhausted {
+                            attempts: repair.attempts(),
+                            detail: detail.clone(),
+                        })?;
+                Err(StructuredOutputError::Repair {
+                    attempt,
+                    max_repairs: repair.max_repairs(),
+                    detail,
+                })
+            } else {
+                Err(StructuredOutputError::Exhausted {
+                    attempts: repair.attempts(),
+                    detail,
+                })
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -222,5 +293,55 @@ mod tests {
         assert!(!repair.can_repair());
         assert!(repair.record_repair().is_err());
         assert!(StructuredOutputRepair::new(MAX_STRUCTURED_REPAIRS + 1).is_err());
+    }
+
+    #[test]
+    fn malformed_structured_output_is_repaired_then_accepted() {
+        let mut repair = StructuredOutputRepair::new(MAX_STRUCTURED_REPAIRS).unwrap();
+        let malformed =
+            decode_structured_output(&mut repair, || Err::<&str, _>("truncated JSON".into()))
+                .unwrap_err();
+        assert_eq!(
+            malformed,
+            StructuredOutputError::Repair {
+                attempt: 1,
+                max_repairs: MAX_STRUCTURED_REPAIRS,
+                detail: "truncated JSON".into(),
+            }
+        );
+        let value = decode_structured_output(&mut repair, || Ok::<_, String>("valid")).unwrap();
+        assert_eq!(value, "valid");
+        assert_eq!(repair.attempts(), 0, "success resets the repair sequence");
+    }
+
+    #[test]
+    fn structured_output_repair_exhaustion_is_a_typed_failure() {
+        let mut repair = StructuredOutputRepair::new(1).unwrap();
+        assert!(matches!(
+            decode_structured_output(&mut repair, || Err::<(), _>("bad".into())),
+            Err(StructuredOutputError::Repair { attempt: 1, .. })
+        ));
+        assert_eq!(
+            decode_structured_output(&mut repair, || Err::<(), _>("still bad".into())),
+            Err(StructuredOutputError::Exhausted {
+                attempts: 1,
+                detail: "still bad".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn reconnect_budget_resets_without_losing_the_replay_cursor() {
+        let policy = SseReconnectPolicy::default();
+        let mut cursor = SseCursor::new();
+        cursor.observe(Some("event-7")).unwrap();
+        for _ in 0..policy.max_attempts {
+            cursor.reconnect(&policy).unwrap();
+        }
+        assert!(cursor.reconnect(&policy).is_err());
+        cursor.reset_reconnects();
+        assert_eq!(cursor.reconnects, 0);
+        assert_eq!(cursor.last_event_id.as_deref(), Some("event-7"));
+        cursor.reconnect(&policy).unwrap();
     }
 }

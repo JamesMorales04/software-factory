@@ -46,6 +46,7 @@ pub mod provider_reliability;
 pub mod provider_sandbox;
 pub mod provider_secrets;
 pub mod provider_session;
+pub mod provider_stream;
 pub mod quality;
 pub mod recovery;
 pub mod replay;

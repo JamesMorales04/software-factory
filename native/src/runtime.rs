@@ -19,6 +19,9 @@ use crate::protocol::{
     JsonRpc, RpcError, ThreadListParams, ThreadLoadedListParams, ThreadSummary,
     TurnCompletedParams, TurnWaitOutcome,
 };
+use crate::provider_stream::{
+    BoxEventStream, EventStreamConnector, ProviderStreamError, StreamTransportError,
+};
 use crate::sse::{OpenCodeEvent, SseParser};
 
 #[derive(Debug, thiserror::Error)]
@@ -534,14 +537,33 @@ pub async fn open_opencode_event_stream(
     password: &str,
     directory: &str,
 ) -> Result<reqwest::Response, Error> {
+    open_opencode_event_stream_with_cursor(client, base_url, password, directory, None).await
+}
+
+/// Reconnects the OpenCode event stream from the last complete event id. The
+/// cursor is sent as the standard `Last-Event-ID` header; an empty or unbounded
+/// cursor fails closed before any request is made.
+pub async fn open_opencode_event_stream_with_cursor(
+    client: &reqwest::Client,
+    base_url: &str,
+    password: &str,
+    directory: &str,
+    last_event_id: Option<&str>,
+) -> Result<reqwest::Response, Error> {
     let base_url = validate_opencode_base_url(base_url)?;
-    let response = client
+    if last_event_id.is_some_and(|id| id.trim().is_empty() || id.len() > 512 || id.contains('\0')) {
+        return Err(Error::Incompatible(
+            "OpenCode SSE replay cursor is empty or unbounded".into(),
+        ));
+    }
+    let mut request = client
         .get(format!("{base_url}/event"))
         .basic_auth("opencode", Some(password))
-        .query(&[("directory", directory)])
-        .send()
-        .await?
-        .error_for_status()?;
+        .query(&[("directory", directory)]);
+    if let Some(last_event_id) = last_event_id {
+        request = request.header("Last-Event-ID", last_event_id);
+    }
+    let response = request.send().await?.error_for_status()?;
     if !response
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
@@ -553,6 +575,61 @@ pub async fn open_opencode_event_stream(
         ));
     }
     Ok(response)
+}
+
+/// Production connector for the reconnect waiter. It forwards the replay
+/// cursor and maps transport failures into the transport-independent stream
+/// error used by the waiter.
+pub struct OpenCodeEventConnector {
+    client: reqwest::Client,
+    base_url: String,
+    password: String,
+    directory: String,
+}
+
+impl OpenCodeEventConnector {
+    pub fn new(
+        client: reqwest::Client,
+        base_url: &str,
+        password: &str,
+        directory: &str,
+    ) -> Result<Self, Error> {
+        Ok(Self {
+            client,
+            base_url: validate_opencode_base_url(base_url)?,
+            password: password.to_owned(),
+            directory: directory.to_owned(),
+        })
+    }
+}
+
+impl EventStreamConnector for OpenCodeEventConnector {
+    fn connect(
+        &mut self,
+        last_event_id: Option<&str>,
+    ) -> impl std::future::Future<Output = Result<BoxEventStream, ProviderStreamError>> + Send {
+        let client = self.client.clone();
+        let base_url = self.base_url.clone();
+        let password = self.password.clone();
+        let directory = self.directory.clone();
+        let last_event_id = last_event_id.map(str::to_owned);
+        async move {
+            let response = open_opencode_event_stream_with_cursor(
+                &client,
+                &base_url,
+                &password,
+                &directory,
+                last_event_id.as_deref(),
+            )
+            .await
+            .map_err(|error| ProviderStreamError::Connect(error.to_string()))?;
+            Ok(Box::pin(
+                response
+                    .bytes_stream()
+                    .map(|item| item.map_err(|error| StreamTransportError::new(error.to_string()))),
+            ) as BoxEventStream)
+        }
+    }
 }
 
 /// Creates one OpenCode session through the loopback provider API and checks
@@ -925,6 +1002,43 @@ where
     .map_err(|_| Error::Timeout)?
 }
 
+/// Classifies one OpenCode SSE frame as terminal evidence for one exact
+/// session. Non-terminal frames and frames for another session return
+/// `Ok(None)`. Malformed event data is a protocol error, never completion.
+pub fn classify_opencode_terminal_event(
+    frame: &crate::sse::SseEvent,
+    session_id: &str,
+    cancel_requested: bool,
+) -> Result<Option<OpenCodePromptTerminal>, Error> {
+    let event = OpenCodeEvent::parse(&frame.data)
+        .map_err(|error| Error::Incompatible(error.to_string()))?;
+    if !matches!(event.kind.as_str(), "session.idle" | "session.error") {
+        return Ok(None);
+    }
+    if event.session_id.as_deref() != Some(session_id) {
+        return Ok(None);
+    }
+    event
+        .require_session(session_id)
+        .map_err(|error| Error::Incompatible(error.to_string()))?;
+    if event.kind == "session.error" {
+        let value: serde_json::Value = serde_json::from_str(&frame.data)
+            .map_err(|_| Error::Incompatible("OpenCode SSE data is not JSON".into()))?;
+        let error = value
+            .pointer("/properties/error")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        return Ok(Some(OpenCodePromptTerminal::Failed {
+            session_id: session_id.to_owned(),
+            error,
+        }));
+    }
+    Ok(Some(OpenCodePromptTerminal::Idle {
+        session_id: session_id.to_owned(),
+        cancel_requested,
+    }))
+}
+
 /// Waits for terminal SSE evidence for one exact OpenCode session. `cancel_requested`
 /// records that the caller requested abort; `session.idle` does not prove
 /// cancellation because normal completion can race with the abort request.
@@ -958,33 +1072,11 @@ where
             .push(chunk.as_ref())
             .map_err(|error| Error::Incompatible(error.to_string()))?
         {
-            let event = OpenCodeEvent::parse(&frame.data)
-                .map_err(|error| Error::Incompatible(error.to_string()))?;
-            if !matches!(event.kind.as_str(), "session.idle" | "session.error") {
-                continue;
+            if let Some(terminal) =
+                classify_opencode_terminal_event(&frame, session_id, cancel_requested)?
+            {
+                return Ok(terminal);
             }
-            if event.session_id.as_deref() != Some(session_id) {
-                continue;
-            }
-            event
-                .require_session(session_id)
-                .map_err(|error| Error::Incompatible(error.to_string()))?;
-            if event.kind == "session.error" {
-                let value: serde_json::Value = serde_json::from_str(&frame.data)
-                    .map_err(|_| Error::Incompatible("OpenCode SSE data is not JSON".into()))?;
-                let error = value
-                    .pointer("/properties/error")
-                    .cloned()
-                    .unwrap_or(serde_json::Value::Null);
-                return Ok(OpenCodePromptTerminal::Failed {
-                    session_id: session_id.to_owned(),
-                    error,
-                });
-            }
-            return Ok(OpenCodePromptTerminal::Idle {
-                session_id: session_id.to_owned(),
-                cancel_requested,
-            });
         }
     }
     Err(Error::Incompatible(
