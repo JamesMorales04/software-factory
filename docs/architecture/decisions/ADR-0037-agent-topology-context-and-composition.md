@@ -71,6 +71,20 @@ The Product Owner approved the following direction:
    Manager act within the charter; they cannot change their own authority,
    trust gates, credentials or delivery policy.
 
+### Amendment 2026-11-09 — reviewer independence
+
+Reviewer independence is defined by **identity, process, token and authenticated
+principal**, not by provider or model diversity. Each required reviewer role is
+staffed by a distinct configured identity; Core derives the principal and role
+from trusted configuration, and a receipt whose `principal_id` or reviewer role
+does not match the authenticated identity is rejected. The ParticipantPlan and
+Gate preserve the required reviewer count and role assignments. Two reviewers
+using the same provider/model are independent when their principals and
+processes differ. Provider/model diversity may be recorded as a non-blocking
+observation only; it never gates a plan or acceptance. If the deployment cannot
+staff every required role, Core fails closed with
+`REVIEWER_INDEPENDENCE_REQUIRED` rather than silently reducing the plan.
+
 ## Consequences
 
 - The current single-Lead request remains a valid DIRECT path; it becomes one

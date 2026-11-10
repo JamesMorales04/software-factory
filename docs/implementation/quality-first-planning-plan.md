@@ -433,12 +433,13 @@ The ParticipantPlan defines required reviewer roles by lane/assurance:
 | Testing/Traceability | Requirement→check→test→evidence, coverage gaps | optional | required | required |
 | Operability/Performance | Runtime, observability, resource limits, NFRs | optional | optional | when applicable |
 
-Each role is a separate read-only session and principal with a role-specific
-prompt and evidence. The Gate requires every required role to return an
-executed PASS with zero open findings. The current single reviewer token is a
-temporary deployment limitation; the plan must provision multiple reviewer
-identities. Same model family is allowed, but critical work should use a
-different provider/model where available. No implementer self-review.
+Each role is a separate read-only process, token and authenticated principal
+with a role-specific prompt and evidence. The Gate requires every required role
+to return an executed PASS with zero open findings and rejects a receipt whose
+principal/role does not match the assigned identity. Independence is identity,
+process, token and authenticated principal; provider/model diversity is not a
+requirement and may only appear as a non-blocking observation. No implementer,
+verifier or duplicate reviewer principal can satisfy a reviewer role.
 
 The reviewer bundle includes: frozen spec, OpenSpec change, stack decision,
 architecture, docs plan, DoD, traceability matrix, diff, source and verifier
@@ -599,8 +600,9 @@ no container-as-isolation claim; no acceptance with open findings.
 
 **Open owner decisions:**
 
-1. Reviewer role minimum per lane/assurance, and whether critical work requires
-   a different provider/model.
+1. Reviewer role minimum per lane/assurance is defined by `ReviewerPlan`.
+   Critical/elevated work requires independent authenticated reviewer
+   identities/processes; it does not require a different provider/model.
 2. Auto-repair/replan budget and the exact owner-escalation threshold.
 3. OpenSpec toolchain packaging: pinned Node image, cached npm package, or a
    Rust renderer/validator subset.

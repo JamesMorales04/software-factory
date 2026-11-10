@@ -1595,6 +1595,37 @@ export interface AgenticUnitAssignment {
   providerMode: string | null;
 }
 
+export type AgenticReviewerRole =
+  | "FUNCTIONAL"
+  | "ARCHITECTURE"
+  | "CODE_QUALITY"
+  | "SECURITY"
+  | "TESTING"
+  | "OPERABILITY";
+
+export interface AgenticReviewerAssignment {
+  role: AgenticReviewerRole;
+  principalId: string;
+  provider: string;
+  model: string;
+}
+
+export interface AgenticReviewerReceipt {
+  receiptId: string;
+  principalId: string;
+  role: AgenticReviewerRole | null;
+  result: string;
+  evidence: string;
+}
+
+export interface AgenticReviewerEvidence {
+  requiredReviewerCount: number;
+  requiredRoles: AgenticReviewerRole[];
+  assignedPrincipals: AgenticReviewerAssignment[];
+  independentReviewerCount: number;
+  receipts: AgenticReviewerReceipt[];
+}
+
 export interface AgenticParticipantPlan {
   route: AgenticRoute;
   assurance: AgenticAssurance;
@@ -1603,6 +1634,8 @@ export interface AgenticParticipantPlan {
   reasons: string[];
   unitAssignments: AgenticUnitAssignment[];
   reviewerCount: number;
+  reviewerRoles: AgenticReviewerRole[];
+  reviewerAssignments: AgenticReviewerAssignment[];
 }
 
 export interface AgenticSpecification {
@@ -1789,6 +1822,7 @@ export interface AgenticRequestDetail {
   findings: FindingDispositionRecord[];
   stack: AgenticStackProfile;
   participants: AgenticParticipantPlan;
+  reviewerEvidence: AgenticReviewerEvidence;
   specifications: AgenticSpecification[];
   plan: null | {
     id: string;

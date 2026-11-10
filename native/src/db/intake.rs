@@ -2432,7 +2432,7 @@ mod tests {
             .save_agentic_participant_plan(&request.id, Some(&graph.graph_sha256), &plan)
             .await
             .unwrap();
-        assert_eq!(plan_record.reviewer_count, 2);
+        assert_eq!(plan_record.reviewer_count, 6);
         assert_eq!(plan_record.work_units, 2);
         assert_eq!(
             plan_record.graph_sha256.as_deref(),

@@ -313,6 +313,8 @@ mod tests {
         let elevated = required_reviewers(PlanningLane::FormalSpec, Assurance::Elevated);
         assert!(elevated.validate().is_ok());
         assert!(elevated.roles.contains(&ReviewerRole::Operability));
+        assert!(elevated.required.contains(&ReviewerRole::Operability));
+        assert_eq!(elevated.required_count(), 6);
 
         let direct = required_reviewers(PlanningLane::Direct, Assurance::None);
         assert_eq!(

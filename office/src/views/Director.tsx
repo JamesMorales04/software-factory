@@ -774,7 +774,54 @@ export function Director() {
                           <dt>{t("director.participants.reviewers")}</dt>
                           <dd>{detail.participants.reviewerCount}</dd>
                         </div>
+                        <div>
+                          <dt>
+                            {t(
+                              "director.participants.independentReceiptsLabel",
+                            )}
+                          </dt>
+                          <dd>
+                            {detail.reviewerEvidence
+                              ?.independentReviewerCount ?? 0}
+                          </dd>
+                        </div>
                       </dl>
+                      <div className="director-reviewers">
+                        <h3>{t("director.participants.requiredRoles")}</h3>
+                        {detail.participants.reviewerRoles.length > 0 ? (
+                          <ul>
+                            {detail.participants.reviewerRoles.map((role) => {
+                              const assignment =
+                                detail.participants.reviewerAssignments.find(
+                                  (candidate) => candidate.role === role,
+                                );
+                              return (
+                                <li key={role}>
+                                  <Badge tone="info">
+                                    {t(`director.reviewerRole.${role}`)}
+                                  </Badge>{" "}
+                                  <code>
+                                    {assignment?.principalId ??
+                                      t("director.participants.unassigned")}
+                                  </code>
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        ) : (
+                          <p className="muted">
+                            {t("director.participants.noRoles")}
+                          </p>
+                        )}
+                        <p className="muted">
+                          {t("director.participants.independentReceipts", {
+                            count:
+                              detail.reviewerEvidence
+                                ?.independentReviewerCount ?? 0,
+                            required: detail.participants.reviewerCount,
+                          })}
+                        </p>
+                      </div>
                       {detail.participants.unitAssignments.length > 0 && (
                         <div className="director-unit-routing">
                           <h3>{t("director.participants.unitRouting")}</h3>

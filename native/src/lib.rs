@@ -52,6 +52,7 @@ pub mod replay;
 pub mod repository;
 pub mod review;
 pub mod review_roles;
+pub mod reviewer_identity;
 pub mod runtime;
 pub mod runtime_broker;
 pub mod sandbox;

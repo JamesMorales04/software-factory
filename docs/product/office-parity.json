@@ -971,12 +971,13 @@
   "CAP-063": {
    "name": "Dynamic participant composition and cheap operations",
    "user_facing": true,
-   "job": "Inspect the deterministic participant plan, unit routing, reviewer count and the observation-only Cheap Ops interpretation of candidate receipts.",
+   "job": "Inspect the deterministic participant plan, unit routing, required reviewer roles, assigned principals, independent receipt count and the observation-only Cheap Ops interpretation of candidate receipts.",
    "routes": [
     "/director",
     "/campaigns/:campaignId"
    ],
    "core_api": [
+    "GET /agentic/requests/{id}",
     "GET /agentic/requests/{id}/participants",
     "POST /agentic/requests/{id}/participants",
     "GET /quality/candidates/{id}/interpretation"
@@ -984,7 +985,7 @@
    "user_actions": [
     "record the participant plan",
     "inspect unit specialization and provider/model routing",
-    "inspect the number of independent reviewers",
+    "inspect required reviewer roles, assigned principals and the independent receipt count",
     "interpret verifier and reviewer receipts without changing the Gate"
    ],
    "states": [
@@ -992,6 +993,8 @@
     "plan-recorded",
     "no-plan",
     "no-work-graph",
+    "roles-assigned",
+    "roles-unassigned",
     "multi-reviewer",
     "observation-only",
     "error",
@@ -1000,9 +1003,9 @@
    "acceptance": [
     "office/src/views/Director.test.tsx",
     "office/src/components/office/CheapOpsPanel.test.tsx",
-    "docs/evidence/dynamic-fleets-2026-11-09/manifest.json"
+    "docs/implementation/wp9-reviewer-independence-evidence.md"
    ],
-   "notes": "The plan is deterministic and cannot be widened by a model. Cheap Ops is OBSERVATION_ONLY: it restates receipts and the Gate but cannot accept, repair or fail a candidate."
+   "notes": "The plan is deterministic and cannot be widened by a model. Reviewer independence is the authenticated identity/process, not provider/model choice; the Office shows required roles, assigned principals and distinct PASS receipts from Core. Cheap Ops is OBSERVATION_ONLY: it restates receipts and the Gate but cannot accept, repair or fail a candidate."
   },
   "CAP-065": {
    "name": "Owner charter and delegated autonomy",

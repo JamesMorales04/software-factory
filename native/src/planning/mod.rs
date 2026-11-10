@@ -588,6 +588,31 @@ pub enum ReviewerRole {
     Operability,
 }
 
+impl ReviewerRole {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Functional => "FUNCTIONAL",
+            Self::Architecture => "ARCHITECTURE",
+            Self::CodeQuality => "CODE_QUALITY",
+            Self::Security => "SECURITY",
+            Self::Testing => "TESTING",
+            Self::Operability => "OPERABILITY",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "FUNCTIONAL" => Some(Self::Functional),
+            "ARCHITECTURE" => Some(Self::Architecture),
+            "CODE_QUALITY" => Some(Self::CodeQuality),
+            "SECURITY" => Some(Self::Security),
+            "TESTING" => Some(Self::Testing),
+            "OPERABILITY" => Some(Self::Operability),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ReviewerPlan {
@@ -600,7 +625,7 @@ pub struct ReviewerPlan {
 
 impl ReviewerPlan {
     pub fn for_lane(lane: PlanningLane, elevated: bool) -> Self {
-        let required = match lane {
+        let mut required = match lane {
             PlanningLane::Direct => vec![ReviewerRole::Functional, ReviewerRole::CodeQuality],
             PlanningLane::Delegated => vec![
                 ReviewerRole::Functional,
@@ -618,7 +643,8 @@ impl ReviewerPlan {
             PlanningLane::Repair => vec![ReviewerRole::Functional, ReviewerRole::CodeQuality],
         };
         let mut roles = required.clone();
-        if elevated && !roles.contains(&ReviewerRole::Operability) {
+        if elevated && !required.contains(&ReviewerRole::Operability) {
+            required.push(ReviewerRole::Operability);
             roles.push(ReviewerRole::Operability);
         }
         Self {
@@ -626,6 +652,12 @@ impl ReviewerPlan {
             required,
             independent_principals: true,
         }
+    }
+
+    /// The authoritative number of independent reviewer identities required
+    /// by this plan. Optional roles in [`Self::roles`] never inflate it.
+    pub fn required_count(&self) -> usize {
+        self.required.len()
     }
 
     pub fn validate(&self) -> Result<(), String> {

@@ -27,6 +27,10 @@ pub fn optional(name: &str) -> Result<Option<String>, String> {
     }
 }
 
+pub(crate) fn read_restricted_file(name: &str, path: &str) -> Result<String, String> {
+    read_file(name, path)
+}
+
 fn read_file(name: &str, path: &str) -> Result<String, String> {
     let path = Path::new(path);
     if !path.is_absolute() || !path.is_file() {

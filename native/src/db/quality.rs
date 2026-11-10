@@ -8,6 +8,7 @@ use crate::semantic_review::ReviewerSelection;
 use chrono::Utc;
 use sqlx::row::Row;
 use sqlx_sqlite::{SqliteConnection, SqliteRow};
+use std::collections::BTreeMap;
 use std::path::Path;
 use uuid::Uuid;
 
@@ -162,7 +163,7 @@ impl Database {
         role: QualityRole,
         input: &QualityReceiptInput,
     ) -> Result<QualityIngestResult, Error> {
-        validate_receipt_input(input)?;
+        validate_receipt_input(role, input)?;
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin().await?;
         let candidate = validate_receipt_binding(&mut transaction, candidate_id, input).await?;
@@ -231,6 +232,72 @@ impl Database {
             .fetch_all(&self.pool)
             .await?;
         Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
+
+    /// Candidates that this authenticated reviewer identity may still review:
+    /// the verifier must have passed, the Gate must be undecided, the
+    /// candidate must still need this role, and neither this principal nor
+    /// this role may already have a receipt. This prevents a fleet from
+    /// double-reviewing a role while Core remains the authority.
+    pub async fn pending_quality_candidates_for_reviewer(
+        &self,
+        principal_id: &str,
+        reviewer_role: crate::planning::ReviewerRole,
+    ) -> Result<Vec<String>, Error> {
+        if principal_id.trim().is_empty() {
+            return Err(Error::Invalid("reviewer principal"));
+        }
+        let rows: Vec<(String,)> = sqlx::query_as::query_as(
+            "SELECT c.id FROM candidates c
+             WHERE NOT EXISTS (SELECT 1 FROM gate_decisions g WHERE g.candidate_id=c.id)
+               AND EXISTS (SELECT 1 FROM quality_receipts vr
+                           WHERE vr.candidate_id=c.id AND vr.role='verifier' AND vr.result='PASS')
+               AND NOT EXISTS (SELECT 1 FROM quality_receipts r
+                               WHERE r.candidate_id=c.id AND r.role='reviewer'
+                                 AND (r.principal_id=?1 OR r.reviewer_role=?2))
+             ORDER BY c.created_at ASC
+             LIMIT 32",
+        )
+        .bind(principal_id)
+        .bind(reviewer_role.as_str())
+        .fetch_all(&self.pool)
+        .await?;
+        let mut pending = Vec::new();
+        for (candidate_id,) in rows {
+            let requirement = {
+                let mut connection = self.pool.acquire().await?;
+                reviewer_requirement_for_candidate(&mut connection, &candidate_id).await?
+            };
+            if !requirement.roles.is_empty() && !requirement.roles.contains(&reviewer_role) {
+                continue;
+            }
+            let receipts = self.quality_receipts(&candidate_id).await?;
+            let covered = receipts.iter().any(|receipt| {
+                receipt.role == QualityRole::Reviewer
+                    && (receipt.principal_id == principal_id
+                        || receipt.reviewer_role == Some(reviewer_role))
+            });
+            let independent = receipts
+                .iter()
+                .filter(|receipt| receipt.role == QualityRole::Reviewer)
+                .map(|receipt| receipt.principal_id.as_str())
+                .collect::<std::collections::BTreeSet<_>>()
+                .len();
+            let covered_roles = receipts
+                .iter()
+                .filter(|receipt| receipt.role == QualityRole::Reviewer)
+                .filter_map(|receipt| receipt.reviewer_role)
+                .filter(|role| requirement.roles.contains(role))
+                .collect::<std::collections::BTreeSet<_>>();
+            let role_missing =
+                !requirement.roles.is_empty() && !covered_roles.contains(&reviewer_role);
+            let count_missing = independent < requirement.count;
+            if !covered && (role_missing || count_missing) {
+                pending.push(candidate_id);
+            }
+        }
+        pending.truncate(8);
+        Ok(pending)
     }
 
     pub async fn candidate_inspection(&self, id: &str) -> Result<CandidateInspection, Error> {
@@ -608,9 +675,9 @@ impl Database {
         candidate_id: &str,
     ) -> Result<Vec<QualityReceiptRecord>, Error> {
         let rows = sqlx::query::query(
-            "SELECT receipt_id,candidate_id,role,principal_id,action_spec_sha256,commit_sha,tree_sha,
-                    result,evidence,findings_json,mechanism,model_provider,model_name,
-                    model_reservation_id,model_request_sha256,input_tokens,output_tokens,
+            "SELECT receipt_id,candidate_id,role,principal_id,reviewer_role,action_spec_sha256,
+                    commit_sha,tree_sha,result,evidence,findings_json,mechanism,model_provider,
+                    model_name,model_reservation_id,model_request_sha256,input_tokens,output_tokens,
                     total_tokens,cost_micros,usage_known,received_at
              FROM quality_receipts WHERE candidate_id=?1 ORDER BY role",
         )
@@ -749,7 +816,7 @@ fn validate_candidate_input(input: &NewCandidate) -> Result<(), Error> {
     Ok(())
 }
 
-fn validate_receipt_input(input: &QualityReceiptInput) -> Result<(), Error> {
+fn validate_receipt_input(role: QualityRole, input: &QualityReceiptInput) -> Result<(), Error> {
     if input.receipt_id.trim().is_empty()
         || input.receipt_id.len() > 128
         || input.principal_id.trim().is_empty()
@@ -759,6 +826,11 @@ fn validate_receipt_input(input: &QualityReceiptInput) -> Result<(), Error> {
         || !is_git_oid(&input.tree_sha)
     {
         return Err(Error::Invalid("quality receipt"));
+    }
+    if role == QualityRole::Verifier && input.reviewer_role.is_some() {
+        return Err(Error::Invalid(
+            "a verifier receipt cannot claim a reviewer role",
+        ));
     }
     crate::semantic_review::validate_findings(&input.findings)
         .map_err(|_| Error::Invalid("quality receipt findings"))?;
@@ -870,6 +942,16 @@ async fn ensure_receipt_available(
                 "candidate already has this reviewer's independent receipt",
             ));
         }
+        QualityRole::Reviewer
+            if input.reviewer_role.is_some()
+                && existing
+                    .iter()
+                    .any(|receipt| receipt.reviewer_role == input.reviewer_role) =>
+        {
+            return Err(Error::Conflict(
+                "candidate already has a receipt for this reviewer role",
+            ));
+        }
         _ => {}
     }
     let other_role = match role {
@@ -956,6 +1038,7 @@ async fn insert_receipt(
         candidate_id: candidate_id.to_owned(),
         role,
         principal_id: input.principal_id.clone(),
+        reviewer_role: input.reviewer_role,
         action_spec_sha256: input.action_spec_sha256.clone(),
         commit_sha: candidate.commit_sha.clone(),
         tree_sha: candidate.tree_sha.clone(),
@@ -976,16 +1059,22 @@ async fn insert_receipt(
     };
     sqlx::query::query(
         "INSERT INTO quality_receipts
-         (receipt_id,candidate_id,role,principal_id,action_spec_sha256,commit_sha,tree_sha,
-          result,evidence,findings_json,mechanism,model_provider,model_name,
+         (receipt_id,candidate_id,role,principal_id,reviewer_role,action_spec_sha256,commit_sha,
+          tree_sha,result,evidence,findings_json,mechanism,model_provider,model_name,
           model_reservation_id,model_request_sha256,input_tokens,output_tokens,total_tokens,
           cost_micros,usage_known,received_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)",
     )
     .bind(&receipt.receipt_id)
     .bind(&receipt.candidate_id)
     .bind(role.as_str())
     .bind(&receipt.principal_id)
+    .bind(
+        receipt
+            .reviewer_role
+            .map(|role| role.as_str())
+            .unwrap_or(""),
+    )
     .bind(&receipt.action_spec_sha256)
     .bind(&receipt.commit_sha)
     .bind(&receipt.tree_sha)
@@ -1288,18 +1377,30 @@ async fn reviewer_selection_for_candidate(
     reviewer_selection_for_candidate_in_tx(connection, candidate_id).await
 }
 
+#[derive(Debug, Clone, Default)]
+struct ReviewerRequirement {
+    count: usize,
+    roles: Vec<crate::planning::ReviewerRole>,
+    assignments: BTreeMap<crate::planning::ReviewerRole, String>,
+}
+
 async fn reviewer_requirement_for_candidate(
     connection: &mut SqliteConnection,
     candidate_id: &str,
-) -> Result<usize, Error> {
-    let required: Option<(i64,)> = sqlx::query_as::query_as(
+) -> Result<ReviewerRequirement, Error> {
+    let row: Option<(i64, Option<String>, Option<String>)> = sqlx::query_as::query_as(
         "SELECT COALESCE(
            (SELECT rr.reviewer_count FROM campaign_review_requirements rr
             WHERE rr.campaign_id=c.id),
            (SELECT pp.reviewer_count FROM intake_requests ir
             JOIN agentic_participant_plans pp ON pp.request_id=ir.id
             WHERE ir.campaign_id=c.id),
-           1)
+           1),
+           (SELECT rr.required_roles_json FROM campaign_review_requirements rr
+            WHERE rr.campaign_id=c.id),
+           (SELECT pp.plan_json FROM intake_requests ir
+            JOIN agentic_participant_plans pp ON pp.request_id=ir.id
+            WHERE ir.campaign_id=c.id)
          FROM candidates cd
          JOIN attempts a ON a.id=cd.attempt_id
          JOIN runs r ON r.id=a.run_id
@@ -1309,8 +1410,33 @@ async fn reviewer_requirement_for_candidate(
     .bind(candidate_id)
     .fetch_optional(&mut *connection)
     .await?;
-    let required = required.map(|(value,)| value).unwrap_or(1);
-    Ok(usize::try_from(required).unwrap_or(1).max(1))
+    let (stored_count, roles_json, plan_json) = row.unwrap_or((1, None, None));
+    let mut requirement = ReviewerRequirement {
+        count: usize::try_from(stored_count).unwrap_or(1).max(1),
+        ..ReviewerRequirement::default()
+    };
+    if let Some(roles_json) = roles_json
+        && let Ok(values) = serde_json::from_str::<Vec<String>>(&roles_json)
+    {
+        requirement.roles = values
+            .iter()
+            .filter_map(|value| crate::planning::ReviewerRole::parse(value))
+            .collect();
+    }
+    if let Some(plan_json) = plan_json
+        && let Ok(plan) = serde_json::from_str::<crate::agentic::ParticipantPlan>(&plan_json)
+    {
+        if requirement.roles.is_empty() {
+            requirement.roles = plan.reviewer_roles;
+        }
+        requirement.assignments = plan
+            .reviewer_assignments
+            .into_iter()
+            .map(|assignment| (assignment.role, assignment.principal_id))
+            .collect();
+    }
+    requirement.count = requirement.count.max(requirement.roles.len());
+    Ok(requirement)
 }
 
 async fn decide_gate(
@@ -1324,13 +1450,36 @@ async fn decide_gate(
     };
     let reviewer_records =
         load_receipts_by_role(connection, candidate_id, QualityRole::Reviewer).await?;
-    let required_reviewers = reviewer_requirement_for_candidate(connection, candidate_id).await?;
+    let requirement = reviewer_requirement_for_candidate(connection, candidate_id).await?;
     let reviewer_failed = reviewer_records.iter().any(|receipt| {
         matches!(
             receipt.result,
             ReceiptResult::Fail | ReceiptResult::ChangesRequested
         )
     });
+    let mut principals = std::collections::BTreeSet::new();
+    let mut covered_roles = std::collections::BTreeSet::new();
+    let mut assignment_mismatch = false;
+    for receipt in &reviewer_records {
+        // The same principal never counts twice, even if historical or
+        // malformed rows exist.
+        principals.insert(receipt.principal_id.as_str());
+        let Some(role) = receipt.reviewer_role else {
+            continue;
+        };
+        if !requirement.roles.contains(&role) {
+            continue;
+        }
+        if let Some(expected) = requirement.assignments.get(&role)
+            && expected != &receipt.principal_id
+        {
+            assignment_mismatch = true;
+        }
+        covered_roles.insert(role);
+    }
+    let coverage_ok = !assignment_mismatch
+        && principals.len() >= requirement.count
+        && covered_roles.len() >= requirement.roles.len();
 
     let policy = load_gate_policy(connection, candidate_id).await?;
     let reviewer_values = reviewer_records
@@ -1352,11 +1501,18 @@ async fn decide_gate(
         &reviewer_refs,
         policy,
     );
+    if assignment_mismatch {
+        decision = crate::quality::GateDecision {
+            outcome: GateOutcome::Blocked,
+            reasons: vec!["reviewer principal does not match the frozen role assignment".into()],
+        };
+    }
     // A passing reviewer set waits until the deterministic plan's reviewer
-    // requirement is satisfied, so an incoming independent reviewer cannot be
-    // invalidated by an early Gate. A failing verifier or reviewer, malformed
-    // evidence or an unknown receipt still decides immediately.
-    if reviewer_records.len() < required_reviewers && !reviewer_failed {
+    // count and required role coverage are satisfied, so an incoming
+    // independent reviewer cannot be invalidated by an early Gate. A failing
+    // verifier or reviewer, malformed evidence or an unknown receipt still
+    // decides immediately.
+    if !coverage_ok && !reviewer_failed {
         let only_missing_reviewer = decision.outcome == GateOutcome::NotTested
             && decision
                 .reasons
@@ -1770,6 +1926,7 @@ async fn load_candidate_for_attempt(
 
 fn receipt_from_row(row: &SqliteRow) -> Result<QualityReceiptRecord, Error> {
     let role: String = row.try_get("role")?;
+    let reviewer_role: String = row.try_get("reviewer_role")?;
     let result: String = row.try_get("result")?;
     let evidence: String = row.try_get("evidence")?;
     let findings: String = row.try_get("findings_json")?;
@@ -1785,6 +1942,14 @@ fn receipt_from_row(row: &SqliteRow) -> Result<QualityReceiptRecord, Error> {
         role: parse_role(&role)
             .map_err(|()| Error::Invalid("stored quality receipt role is invalid"))?,
         principal_id: row.try_get("principal_id")?,
+        reviewer_role: if reviewer_role.is_empty() {
+            None
+        } else {
+            Some(
+                crate::planning::ReviewerRole::parse(&reviewer_role)
+                    .ok_or(Error::Invalid("stored reviewer role is invalid"))?,
+            )
+        },
         action_spec_sha256: row.try_get("action_spec_sha256")?,
         commit_sha: row.try_get("commit_sha")?,
         tree_sha: row.try_get("tree_sha")?,
@@ -1819,9 +1984,9 @@ async fn load_receipt_by_id(
     receipt_id: &str,
 ) -> Result<Option<QualityReceiptRecord>, Error> {
     let row = sqlx::query::query(
-        "SELECT receipt_id,candidate_id,role,principal_id,action_spec_sha256,commit_sha,tree_sha,
-                result,evidence,findings_json,mechanism,model_provider,model_name,
-                model_reservation_id,model_request_sha256,input_tokens,output_tokens,
+        "SELECT receipt_id,candidate_id,role,principal_id,reviewer_role,action_spec_sha256,
+                commit_sha,tree_sha,result,evidence,findings_json,mechanism,model_provider,
+                model_name,model_reservation_id,model_request_sha256,input_tokens,output_tokens,
                 total_tokens,cost_micros,usage_known,received_at
          FROM quality_receipts WHERE receipt_id=?1",
     )
@@ -1837,9 +2002,9 @@ async fn load_receipts_by_role(
     role: QualityRole,
 ) -> Result<Vec<QualityReceiptRecord>, Error> {
     let rows = sqlx::query::query(
-        "SELECT receipt_id,candidate_id,role,principal_id,action_spec_sha256,commit_sha,tree_sha,
-                result,evidence,findings_json,mechanism,model_provider,model_name,
-                model_reservation_id,model_request_sha256,input_tokens,output_tokens,
+        "SELECT receipt_id,candidate_id,role,principal_id,reviewer_role,action_spec_sha256,
+                commit_sha,tree_sha,result,evidence,findings_json,mechanism,model_provider,
+                model_name,model_reservation_id,model_request_sha256,input_tokens,output_tokens,
                 total_tokens,cost_micros,usage_known,received_at
          FROM quality_receipts WHERE candidate_id=?1 AND role=?2
          ORDER BY received_at ASC,receipt_id ASC",
@@ -1864,6 +2029,7 @@ async fn load_receipt_by_role(
 
 fn receipt_matches(existing: &QualityReceiptRecord, input: &QualityReceiptInput) -> bool {
     existing.principal_id == input.principal_id
+        && existing.reviewer_role == input.reviewer_role
         && existing.action_spec_sha256 == input.action_spec_sha256
         && existing.commit_sha.eq_ignore_ascii_case(&input.commit_sha)
         && existing.tree_sha.eq_ignore_ascii_case(&input.tree_sha)

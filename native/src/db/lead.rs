@@ -2493,8 +2493,11 @@ async fn start_lead_campaign_in_tx(
         .await?;
     }
     sqlx::query::query(
-        "INSERT INTO campaign_review_requirements (campaign_id,reviewer_count,created_at)
-         SELECT ?1,pp.reviewer_count,?2 FROM agentic_participant_plans pp WHERE pp.request_id=?3
+        "INSERT INTO campaign_review_requirements
+           (campaign_id,reviewer_count,required_roles_json,created_at)
+         SELECT ?1,pp.reviewer_count,
+                COALESCE(json_extract(pp.plan_json,'$.reviewerRoles'),'[]'),?2
+         FROM agentic_participant_plans pp WHERE pp.request_id=?3
          ON CONFLICT(campaign_id) DO NOTHING",
     )
     .bind(&campaign.id)

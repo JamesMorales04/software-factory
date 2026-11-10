@@ -136,6 +136,56 @@ const detail: AgenticRequestDetail = {
       },
     ],
     reviewerCount: 2,
+    reviewerRoles: ["FUNCTIONAL", "CODE_QUALITY"],
+    reviewerAssignments: [
+      {
+        role: "FUNCTIONAL",
+        principalId: "reviewer-functional-process",
+        provider: "opencode",
+        model: "deepseek-v4.1-flash",
+      },
+      {
+        role: "CODE_QUALITY",
+        principalId: "reviewer-code-quality-process",
+        provider: "opencode",
+        model: "deepseek-v4.1-flash",
+      },
+    ],
+  },
+  reviewerEvidence: {
+    requiredReviewerCount: 2,
+    requiredRoles: ["FUNCTIONAL", "CODE_QUALITY"],
+    assignedPrincipals: [
+      {
+        role: "FUNCTIONAL",
+        principalId: "reviewer-functional-process",
+        provider: "opencode",
+        model: "deepseek-v4.1-flash",
+      },
+      {
+        role: "CODE_QUALITY",
+        principalId: "reviewer-code-quality-process",
+        provider: "opencode",
+        model: "deepseek-v4.1-flash",
+      },
+    ],
+    independentReviewerCount: 2,
+    receipts: [
+      {
+        receiptId: "receipt-functional",
+        principalId: "reviewer-functional-process",
+        role: "FUNCTIONAL",
+        result: "PASS",
+        evidence: "EXECUTED",
+      },
+      {
+        receiptId: "receipt-code-quality",
+        principalId: "reviewer-code-quality-process",
+        role: "CODE_QUALITY",
+        result: "PASS",
+        evidence: "EXECUTED",
+      },
+    ],
   },
   specifications: [
     {
@@ -326,6 +376,39 @@ describe("Director", () => {
       await screen.findByText(
         "The Planner WorkGraph was validated and recorded.",
       ),
+    ).toBeDefined();
+  });
+
+  it("shows required reviewer roles, assigned principals and independent receipts", async () => {
+    renderDirector();
+    expect(await screen.findByText("Required reviewer roles")).toBeDefined();
+    expect(screen.getByText("Functional")).toBeDefined();
+    expect(screen.getByText("Code quality")).toBeDefined();
+    expect(screen.getByText("reviewer-functional-process")).toBeDefined();
+    expect(
+      screen.getByText("2 of 2 independent reviewer receipts recorded"),
+    ).toBeDefined();
+    expect(screen.queryByText(/model diversity/i)).toBeNull();
+  });
+
+  it("shows unassigned required roles without inventing a principal", async () => {
+    mocks.getAgenticRequest.mockResolvedValue({
+      ...detail,
+      participants: {
+        ...detail.participants,
+        reviewerAssignments: [],
+      },
+      reviewerEvidence: {
+        ...detail.reviewerEvidence,
+        independentReviewerCount: 0,
+        receipts: [],
+      },
+    });
+    renderDirector();
+    await screen.findAllByText("Implement the ICS exporter");
+    expect(screen.getAllByText("Not assigned").length).toBe(2);
+    expect(
+      screen.getByText("0 of 2 independent reviewer receipts recorded"),
     ).toBeDefined();
   });
 

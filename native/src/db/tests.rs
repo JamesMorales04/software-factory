@@ -1185,6 +1185,7 @@ fn quality_receipt(fixture: &CandidateFixture, id: &str, principal: &str) -> Qua
     QualityReceiptInput {
         receipt_id: id.into(),
         principal_id: principal.into(),
+        reviewer_role: None,
         action_spec_sha256: fixture.spec_sha256.clone(),
         commit_sha: fixture.commit_sha.clone(),
         tree_sha: fixture.tree_sha.clone(),
@@ -1202,6 +1203,53 @@ fn quality_receipt(fixture: &CandidateFixture, id: &str, principal: &str) -> Qua
         cost_micros: 0,
         usage_known: false,
     }
+}
+
+fn quality_reviewer_receipt(
+    fixture: &CandidateFixture,
+    id: &str,
+    principal: &str,
+    role: crate::planning::ReviewerRole,
+) -> QualityReceiptInput {
+    let mut receipt = quality_receipt(fixture, id, principal);
+    receipt.reviewer_role = Some(role);
+    // Same provider/model is explicitly allowed. Independence comes from the
+    // authenticated principal, not from the model route.
+    receipt.model_provider = "opencode".into();
+    receipt.model_name = "deepseek-v4.1-flash".into();
+    receipt
+}
+
+async fn set_reviewer_requirement(
+    db: &Database,
+    candidate_id: &str,
+    count: i64,
+    roles: &[crate::planning::ReviewerRole],
+) {
+    let (campaign_id,): (String,) = sqlx::query_as::query_as(
+        "SELECT r.campaign_id FROM candidates cd
+         JOIN attempts a ON a.id=cd.attempt_id
+         JOIN runs r ON r.id=a.run_id
+         WHERE cd.id=?1",
+    )
+    .bind(candidate_id)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    let roles_json =
+        serde_json::to_string(&roles.iter().map(|role| role.as_str()).collect::<Vec<_>>()).unwrap();
+    sqlx::query::query(
+        "INSERT INTO campaign_review_requirements
+           (campaign_id,reviewer_count,required_roles_json,created_at)
+         VALUES (?1,?2,?3,?4)",
+    )
+    .bind(campaign_id)
+    .bind(count)
+    .bind(roles_json)
+    .bind(Utc::now().to_rfc3339())
+    .execute(&db.pool)
+    .await
+    .unwrap();
 }
 
 async fn settled_reviewer_model_call(
@@ -1280,6 +1328,7 @@ fn model_review_receipt(
     QualityReceiptInput {
         receipt_id: id.into(),
         principal_id: "reviewer-model".into(),
+        reviewer_role: None,
         action_spec_sha256: fixture.spec_sha256.clone(),
         commit_sha: fixture.commit_sha.clone(),
         tree_sha: fixture.tree_sha.clone(),
@@ -1362,6 +1411,193 @@ async fn multiple_independent_reviewers_are_aggregated_into_one_gate() {
         .await
         .unwrap();
     assert_eq!(reviewers.len(), 2);
+    fixture.db.close().await;
+    let _ = std::fs::remove_file(fixture.root.join("factory.sqlite"));
+}
+
+#[tokio::test]
+async fn gate_accepts_distinct_principals_with_the_same_model_and_required_roles() {
+    use crate::planning::ReviewerRole;
+    let fixture = candidate_fixture().await;
+    set_reviewer_requirement(
+        &fixture.db,
+        &fixture.candidate_id,
+        2,
+        &[ReviewerRole::Functional, ReviewerRole::CodeQuality],
+    )
+    .await;
+    fixture
+        .db
+        .record_quality_receipt(
+            &fixture.candidate_id,
+            QualityRole::Verifier,
+            &quality_receipt(&fixture, "verifier-role-coverage", "verifier-1"),
+        )
+        .await
+        .unwrap();
+    let first = quality_reviewer_receipt(
+        &fixture,
+        "reviewer-functional-role",
+        "reviewer-a",
+        ReviewerRole::Functional,
+    );
+    let ingested = fixture
+        .db
+        .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &first)
+        .await
+        .unwrap();
+    assert!(
+        ingested.gate.is_none(),
+        "one of two required roles must not decide the Gate"
+    );
+    let second = quality_reviewer_receipt(
+        &fixture,
+        "reviewer-code-quality-role",
+        "reviewer-b",
+        ReviewerRole::CodeQuality,
+    );
+    let ingested = fixture
+        .db
+        .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &second)
+        .await
+        .unwrap();
+    assert_eq!(ingested.gate.unwrap().outcome, GateOutcome::Accepted);
+    let receipts = fixture
+        .db
+        .quality_receipts(&fixture.candidate_id)
+        .await
+        .unwrap();
+    let reviewers = receipts
+        .iter()
+        .filter(|receipt| receipt.role == QualityRole::Reviewer)
+        .collect::<Vec<_>>();
+    assert_eq!(reviewers.len(), 2);
+    assert!(
+        reviewers
+            .iter()
+            .all(|receipt| receipt.model_provider == "opencode"
+                && receipt.model_name == "deepseek-v4.1-flash")
+    );
+    assert_eq!(
+        reviewers
+            .iter()
+            .map(|receipt| receipt.principal_id.as_str())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        2
+    );
+    fixture.db.close().await;
+    let _ = std::fs::remove_file(fixture.root.join("factory.sqlite"));
+}
+
+#[tokio::test]
+async fn gate_rejects_a_second_receipt_from_the_same_principal() {
+    use crate::planning::ReviewerRole;
+    let fixture = candidate_fixture().await;
+    set_reviewer_requirement(
+        &fixture.db,
+        &fixture.candidate_id,
+        2,
+        &[ReviewerRole::Functional, ReviewerRole::CodeQuality],
+    )
+    .await;
+    fixture
+        .db
+        .record_quality_receipt(
+            &fixture.candidate_id,
+            QualityRole::Verifier,
+            &quality_receipt(&fixture, "verifier-duplicate-principal", "verifier-1"),
+        )
+        .await
+        .unwrap();
+    let first = quality_reviewer_receipt(
+        &fixture,
+        "reviewer-duplicate-principal-one",
+        "reviewer-a",
+        ReviewerRole::Functional,
+    );
+    fixture
+        .db
+        .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &first)
+        .await
+        .unwrap();
+    let duplicate = quality_reviewer_receipt(
+        &fixture,
+        "reviewer-duplicate-principal-two",
+        "reviewer-a",
+        ReviewerRole::CodeQuality,
+    );
+    assert!(matches!(
+        fixture
+            .db
+            .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &duplicate)
+            .await,
+        Err(Error::Conflict(_))
+    ));
+    fixture.db.close().await;
+    let _ = std::fs::remove_file(fixture.root.join("factory.sqlite"));
+}
+
+#[tokio::test]
+async fn gate_waits_for_role_coverage_even_when_the_count_is_met() {
+    use crate::planning::ReviewerRole;
+    let fixture = candidate_fixture().await;
+    set_reviewer_requirement(
+        &fixture.db,
+        &fixture.candidate_id,
+        2,
+        &[ReviewerRole::Functional, ReviewerRole::CodeQuality],
+    )
+    .await;
+    fixture
+        .db
+        .record_quality_receipt(
+            &fixture.candidate_id,
+            QualityRole::Verifier,
+            &quality_receipt(&fixture, "verifier-role-gap", "verifier-1"),
+        )
+        .await
+        .unwrap();
+    // Two distinct principals satisfy the count, but the second receipt claims
+    // Security, which is not one of this plan's required roles. Code Quality is
+    // still uncovered, so the Gate must wait.
+    for (id, principal, role) in [
+        (
+            "reviewer-role-gap-a",
+            "reviewer-a",
+            ReviewerRole::Functional,
+        ),
+        ("reviewer-role-gap-b", "reviewer-b", ReviewerRole::Security),
+    ] {
+        let receipt = quality_reviewer_receipt(&fixture, id, principal, role);
+        let ingested = fixture
+            .db
+            .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &receipt)
+            .await
+            .unwrap();
+        assert!(ingested.gate.is_none());
+    }
+    let pending = fixture
+        .db
+        .pending_quality_candidates_for_reviewer(
+            "reviewer-code-quality-process",
+            ReviewerRole::CodeQuality,
+        )
+        .await
+        .unwrap();
+    assert!(pending.contains(&fixture.candidate_id));
+    let final_receipt = quality_reviewer_receipt(
+        &fixture,
+        "reviewer-role-gap-c",
+        "reviewer-c",
+        ReviewerRole::CodeQuality,
+    );
+    let ingested = fixture
+        .db
+        .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &final_receipt)
+        .await
+        .unwrap();
+    assert_eq!(ingested.gate.unwrap().outcome, GateOutcome::Accepted);
     fixture.db.close().await;
     let _ = std::fs::remove_file(fixture.root.join("factory.sqlite"));
 }
