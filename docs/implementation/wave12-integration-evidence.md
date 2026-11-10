@@ -160,7 +160,7 @@ all binary suites passed:
   factory-runtime-broker 29 passed
   factory-supervisor  9 passed
   factory-verifier    7 passed
-  factory-worker     17 passed
+  factory-worker     18 passed
   other binaries      0 tests
 
 cargo test -p factory-native --test planning_pipeline --test provider_chaos \
@@ -238,7 +238,54 @@ cargo run --manifest-path native/Cargo.toml \
 architecture governance: PASS
 ```
 
-## 6. Documentation integration
+## 6. Post-integration review repair
+
+Independent Codex GPT-6 Luna review of `452bb40` found a P1 regression: the WP4
+merge had restored `finalize_written_provider_work`, which created a candidate
+from a provider error whenever a write existed and frozen checks had passed (or
+check enforcement was off). That contradicted WP5.
+
+The repair:
+
+- deletes `finalize_written_provider_work` entirely;
+- removes all four provider-error salvage calls (prompt submission failure,
+  terminal-wait failure, assistant-message read failure, and failed/cancelled
+  terminal);
+- returns the provider error directly in every case;
+- keeps the successful final path unchanged, including `candidate_allowed`,
+  dependency acquisition, final progress checkpoint, session deletion,
+  `finalize_candidate` and cleanup;
+- adds a Worker-level regression test
+  `provider_failure_after_write_and_passing_checks_does_not_submit_candidate`.
+  The test runs the real `run_provider_tool_loop` against a local fake OpenCode
+  SSE provider and fake Core/Supervisor: the first turn applies a write with
+  completion enforcement on and no missing frozen checks; the next turn returns
+  a provider error. The test asserts the write happened, the provider error is
+  returned, and the Supervisor `/finalize` endpoint was never called.
+
+Repair validation:
+
+```text
+cargo fmt --all -- --check
+clean
+
+cargo test -p factory-native --bin factory-worker
+18 passed; 0 failed
+
+cargo test -p factory-native --test provider_chaos
+16 passed; 0 failed
+
+cargo test -p factory-native --lib
+829 passed; 0 failed; 4 ignored
+
+cargo clippy -p factory-native --all-targets --all-features -- -D warnings
+clean
+```
+
+The repair commit is `fix(worker): reject candidates after provider failure`.
+No paid inference was used.
+
+## 7. Documentation integration
 
 - `docs/implementation/quality-first-planning-status.md` records every merged
   WP, the combined verification results and the remaining NOT_TESTED items. It
@@ -253,7 +300,7 @@ architecture governance: PASS
   `docs/roadmap/ROADMAP.md` was regenerated from the registry.
 - `docs/README.md` indexes this evidence document.
 
-## 7. Remaining integration work and NOT_TESTED items
+## 8. Remaining integration work and NOT_TESTED items
 
 - WP10/WP12 acceptance: real Core/Compose browser acceptance, per-option
   matrix, visual review and Product Owner approval are pending.
@@ -262,7 +309,9 @@ architecture governance: PASS
   enabled.
 - WP6: Compose end-to-end restart and HTTP inventory acceptance; independent
   acceptance.
-- WP5: live provider long-turn/SSE-cut UAT; independent acceptance.
+- WP5: live provider long-turn/SSE-cut UAT; independent acceptance. The
+  post-integration P1 repair is deterministically covered but not independently
+  re-accepted.
 - WP3: real Compose scheduler/restart evidence, content review of remaining
   catalog packs and independent browser acceptance of the Skills refresh panel.
 - WP7: OpenSpec Compose validation against a projection produced by the real

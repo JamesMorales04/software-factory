@@ -1814,65 +1814,6 @@ async fn wait_for_opencode_health(
     }
 }
 
-#[allow(clippy::too_many_arguments)] // Threads exact session identity, usage and check state through one recovery path.
-async fn finalize_written_provider_work(
-    context: &ProviderContext<'_>,
-    http: &reqwest::Client,
-    handle: &WorkspaceHandle,
-    session_id: &str,
-    last_message_id: &str,
-    usage: ProviderUsage,
-    error: &str,
-    passed_checks: &std::collections::BTreeSet<String>,
-    dependencies: &mut DependencyAcquisitionState,
-) -> Result<Option<ProviderRun>, Box<dyn std::error::Error>> {
-    if provider_state(context).await? == "CANCEL_REQUESTED" {
-        return Ok(None);
-    }
-    eprintln!("worker: provider turn ended after writes: {error}");
-    if context.enforce_check_completion
-        && let Some(instructions) = missing_check_instructions(
-            &context.assignment.action_spec.checks,
-            &context.assignment.allowed_tools,
-            passed_checks,
-        )
-    {
-        eprintln!(
-            "worker: provider turn ended before all frozen checks passed; refusing a partial candidate: {error}"
-        );
-        return Err(format!(
-            "provider turn ended before all frozen acceptance checks passed; no candidate was created: {instructions}"
-        )
-        .into());
-    }
-    post_tool_event(
-        context,
-        "provider-turn-error",
-        "final",
-        "RESULT",
-        &format!(
-            "provider turn ended with an error after at least one applied write; preserving the applied writes for independent verification: {error}"
-        ),
-    )
-    .await?;
-    factory_native::runtime::delete_opencode_session(
-        http,
-        context.base_url,
-        context.password,
-        context.api_directory,
-        session_id,
-    )
-    .await?;
-    let candidate = finalize_candidate(context, handle, dependencies).await?;
-    cleanup(context.supervisor, &handle.workspace_id, &handle.capability).await?;
-    Ok(Some(ProviderRun {
-        candidate,
-        provider_session_id: session_id.to_owned(),
-        turn_id: last_message_id.to_owned(),
-        usage,
-    }))
-}
-
 fn operation_limits(context: &ProviderContext<'_>) -> OperationLimits {
     context
         .assignment
@@ -2341,7 +2282,7 @@ async fn run_provider_tool_loop(
     let mut written = false;
     let mut passed_checks = std::collections::BTreeSet::new();
     let mut dependencies = DependencyAcquisitionState::default();
-    let mut last_message_id = String::new();
+    let mut last_message_id: String;
     let mut call_ids = std::collections::BTreeSet::new();
     let mut structured_output = StructuredOutputRepair::new(MAX_STRUCTURED_REPAIRS)?;
     let mut progress = TurnProgress::new(context);
@@ -2380,22 +2321,6 @@ async fn run_provider_tool_loop(
             if let Some(turn) = &turn {
                 release_provider_turn(context, &turn.reservation_id).await;
             }
-            if written
-                && let Some(run) = finalize_written_provider_work(
-                    context,
-                    &http,
-                    &handle,
-                    &session_id,
-                    &last_message_id,
-                    usage,
-                    &error.to_string(),
-                    &passed_checks,
-                    &mut dependencies,
-                )
-                .await?
-            {
-                return Ok(run);
-            }
             return Err(error.into());
         }
         // No total model-request deadline. The provider may take as long as
@@ -2405,22 +2330,6 @@ async fn run_provider_tool_loop(
             Err(error) => {
                 if let Some(turn) = &turn {
                     release_provider_turn(context, &turn.reservation_id).await;
-                }
-                if written
-                    && let Some(run) = finalize_written_provider_work(
-                        context,
-                        &http,
-                        &handle,
-                        &session_id,
-                        &last_message_id,
-                        usage,
-                        &error.to_string(),
-                        &passed_checks,
-                        &mut dependencies,
-                    )
-                    .await?
-                {
-                    return Ok(run);
                 }
                 return Err(error);
             }
@@ -2443,22 +2352,6 @@ async fn run_provider_tool_loop(
                     if let Some(turn) = &turn {
                         release_provider_turn(context, &turn.reservation_id).await;
                     }
-                    if written
-                        && let Some(run) = finalize_written_provider_work(
-                            context,
-                            &http,
-                            &handle,
-                            &session_id,
-                            &last_message_id,
-                            usage,
-                            &error.to_string(),
-                            &passed_checks,
-                            &mut dependencies,
-                        )
-                        .await?
-                    {
-                        return Ok(run);
-                    }
                     return Err(error.into());
                 }
             },
@@ -2476,22 +2369,6 @@ async fn run_provider_tool_loop(
                     } => "provider cancellation was requested".into(),
                     _ => "provider turn did not complete normally".into(),
                 };
-                if written
-                    && let Some(run) = finalize_written_provider_work(
-                        context,
-                        &http,
-                        &handle,
-                        &session_id,
-                        &last_message_id,
-                        usage,
-                        &detail,
-                        &passed_checks,
-                        &mut dependencies,
-                    )
-                    .await?
-                {
-                    return Ok(run);
-                }
                 return Err(detail.into());
             }
         };
@@ -5369,6 +5246,287 @@ mod tests {
         );
         assert!(validated_loopback_url("http://localhost:8765", "TEST", &[]).is_ok());
         assert!(validated_loopback_url("http://127.0.0.1:8765/path", "TEST", &[]).is_err());
+    }
+
+    #[tokio::test]
+    async fn provider_failure_after_write_and_passing_checks_does_not_submit_candidate() {
+        use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
+        use axum::routing::{delete, get, post};
+        use axum::{Json, Router};
+        use futures_util::StreamExt;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Mutex};
+        use tokio::sync::broadcast;
+
+        #[derive(Clone)]
+        struct ProviderState {
+            session: String,
+            prompts: Arc<AtomicUsize>,
+            events: broadcast::Sender<String>,
+        }
+
+        async fn events(
+            axum::extract::State(state): axum::extract::State<ProviderState>,
+        ) -> Sse<impl futures_util::Stream<Item = Result<SseEvent, std::convert::Infallible>>>
+        {
+            let created = format!(
+                "{{\"id\":\"evt-created\",\"type\":\"session.created\",\"properties\":{{\"sessionID\":\"{}\",\"info\":{{\"id\":\"{}\"}}}}}}",
+                state.session, state.session
+            );
+            let receiver = state.events.subscribe();
+            let initial = futures_util::stream::once(async move {
+                Ok::<_, std::convert::Infallible>(SseEvent::default().data(created))
+            });
+            let rest = futures_util::stream::unfold(receiver, |mut receiver| async move {
+                loop {
+                    match receiver.recv().await {
+                        Ok(data) => {
+                            return Some((
+                                Ok::<_, std::convert::Infallible>(SseEvent::default().data(data)),
+                                receiver,
+                            ));
+                        }
+                        Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(broadcast::error::RecvError::Closed) => return None,
+                    }
+                }
+            });
+            Sse::new(initial.chain(rest)).keep_alive(KeepAlive::default())
+        }
+
+        async fn create_session(
+            axum::extract::State(state): axum::extract::State<ProviderState>,
+        ) -> Json<serde_json::Value> {
+            Json(serde_json::json!({"id": state.session}))
+        }
+
+        async fn prompt(
+            axum::extract::State(state): axum::extract::State<ProviderState>,
+        ) -> axum::http::StatusCode {
+            let turn = state.prompts.fetch_add(1, Ordering::SeqCst) + 1;
+            let frame = if turn == 1 {
+                format!(
+                    "{{\"type\":\"session.idle\",\"properties\":{{\"sessionID\":\"{}\"}}}}",
+                    state.session
+                )
+            } else {
+                format!(
+                    "{{\"type\":\"session.error\",\"properties\":{{\"sessionID\":\"{}\",\"error\":{{\"name\":\"ProviderError\"}}}}}}",
+                    state.session
+                )
+            };
+            let _ = state.events.send(frame);
+            axum::http::StatusCode::NO_CONTENT
+        }
+
+        async fn assistant_message(
+            axum::extract::State(state): axum::extract::State<ProviderState>,
+        ) -> Json<serde_json::Value> {
+            let action = serde_json::json!({
+                "type": "tool_request",
+                "call_id": "call-1",
+                "tool": "write_file",
+                "path": "src/lib.rs",
+                "content": "fixed\n"
+            });
+            Json(serde_json::json!([{
+                "info": {
+                    "id": "msg-1",
+                    "sessionID": state.session,
+                    "role": "assistant",
+                    "tokens": {"input": 1, "output": 1, "total": 2},
+                    "cost": 0.0
+                },
+                "parts": [{"type": "text", "text": action.to_string()}]
+            }]))
+        }
+
+        let prompts = Arc::new(AtomicUsize::new(0));
+        let provider_state = ProviderState {
+            session: "ses_failure".into(),
+            prompts: Arc::clone(&prompts),
+            events: broadcast::channel(16).0,
+        };
+        let provider_router = Router::new()
+            .route("/event", get(events))
+            .route("/session", post(create_session))
+            .route("/session/{session}/prompt_async", post(prompt))
+            .route("/session/{session}/message", get(assistant_message))
+            .with_state(provider_state);
+        let provider_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let provider_addr = provider_listener.local_addr().unwrap();
+        let provider_server = tokio::spawn(async move {
+            axum::serve(provider_listener, provider_router)
+                .await
+                .unwrap();
+        });
+
+        #[derive(Clone)]
+        struct BackendState {
+            finalize_calls: Arc<AtomicUsize>,
+            write_calls: Arc<AtomicUsize>,
+            base: String,
+        }
+
+        async fn provider_active() -> Json<serde_json::Value> {
+            Json(serde_json::json!({}))
+        }
+        async fn agent_state() -> Json<serde_json::Value> {
+            Json(serde_json::json!({"state": "RUNNING"}))
+        }
+        async fn tool_event() -> axum::http::StatusCode {
+            axum::http::StatusCode::NO_CONTENT
+        }
+        async fn progress_checkpoint() -> Json<serde_json::Value> {
+            Json(serde_json::json!({
+                "checkpointId": "checkpoint",
+                "decision": "CONTINUE",
+                "classification": "PROVISIONAL",
+                "stagnantCheckpoints": 0,
+                "unsuccessfulReplans": 0,
+                "holdOpen": false
+            }))
+        }
+        async fn workspace_operation() -> Json<serde_json::Value> {
+            Json(serde_json::json!({"grant": "grant"}))
+        }
+        async fn allocate(
+            axum::extract::State(state): axum::extract::State<BackendState>,
+        ) -> Json<serde_json::Value> {
+            Json(serde_json::json!({
+                "workspaceId": "ws",
+                "attemptId": "attempt-failure",
+                "baseCommit": state.base,
+                "generation": 1,
+                "status": "ALLOCATED",
+                "candidate": null,
+                "capability": "capability"
+            }))
+        }
+        async fn write(
+            axum::extract::State(state): axum::extract::State<BackendState>,
+        ) -> axum::http::StatusCode {
+            state.write_calls.fetch_add(1, Ordering::SeqCst);
+            axum::http::StatusCode::NO_CONTENT
+        }
+        async fn finalize(
+            axum::extract::State(state): axum::extract::State<BackendState>,
+        ) -> Json<serde_json::Value> {
+            state.finalize_calls.fetch_add(1, Ordering::SeqCst);
+            Json(serde_json::json!({
+                "commitSha": "c".repeat(40),
+                "treeSha": "d".repeat(40)
+            }))
+        }
+        async fn cleanup_workspace() -> axum::http::StatusCode {
+            axum::http::StatusCode::NO_CONTENT
+        }
+
+        let root = std::env::temp_dir().join(format!(
+            "factory-worker-provider-failure-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/lib.rs"), "base\n").unwrap();
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .current_dir(&root)
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.invalid")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.invalid")
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "git {args:?}: {:?}", output);
+            String::from_utf8_lossy(&output.stdout).trim().to_owned()
+        };
+        git(&["init", "-q"]);
+        git(&["add", "src/lib.rs"]);
+        git(&["commit", "-qm", "base"]);
+        let base = git(&["rev-parse", "HEAD"]);
+
+        let backend_state = BackendState {
+            finalize_calls: Arc::new(AtomicUsize::new(0)),
+            write_calls: Arc::new(AtomicUsize::new(0)),
+            base: base.clone(),
+        };
+        let backend_router = Router::new()
+            .route("/worker/provider_active", post(provider_active))
+            .route("/worker/provider_state", post(agent_state))
+            .route("/worker/provider_tool_event", post(tool_event))
+            .route("/worker/progress_checkpoint", post(progress_checkpoint))
+            .route("/worker/workspace_operation", post(workspace_operation))
+            .route("/v1/workspaces", post(allocate))
+            .route("/v1/workspaces/ws/write", post(write))
+            .route("/v1/workspaces/ws/finalize", post(finalize))
+            .route("/v1/workspaces/ws", delete(cleanup_workspace))
+            .with_state(backend_state.clone());
+        let backend_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let backend_addr = backend_listener.local_addr().unwrap();
+        let backend_server = tokio::spawn(async move {
+            axum::serve(backend_listener, backend_router).await.unwrap();
+        });
+
+        let client = reqwest::Client::new();
+        let backend_url = reqwest::Url::parse(&format!("http://{backend_addr}")).unwrap();
+        let supervisor = Supervisor {
+            client: client.clone(),
+            base: backend_url.clone(),
+            token: "supervisor-token".into(),
+            image: "test/image:1".into(),
+            timeout_secs: 30,
+        };
+        let provider_session = Arc::new(Mutex::new(None));
+        let usage_tracker = Arc::new(Mutex::new(ProviderUsage::default()));
+        let mut assignment = assignment_for_progress();
+        assignment.repository = root.to_string_lossy().into_owned();
+        assignment.action_spec.repository = assignment.repository.clone();
+        assignment.action_spec.base_commit = base;
+        assignment.action_spec.allowed_paths = vec!["src".into()];
+        // The old salvage path finalized a candidate whenever all frozen
+        // checks passed. With an empty check set, `missing_check_instructions`
+        // reports every frozen check as satisfied while completion enforcement
+        // stays on, which is exactly the regression condition.
+        assignment.action_spec.checks.clear();
+        assignment.allowed_tools = vec!["write_file".into(), "run_command".into()];
+        assignment.lease.attempt_id = "attempt-failure".into();
+        let directory = root.to_string_lossy().into_owned();
+        let provider_url = format!("http://{provider_addr}");
+        let context = ProviderContext {
+            client: &client,
+            core: &backend_url,
+            session_token: "session-token",
+            worker_id: "worker",
+            session_record_id: "session-record",
+            base_url: &provider_url,
+            password: "provider-password",
+            directory: &directory,
+            api_directory: "",
+            provider_kind: "opencode",
+            provider_session: &provider_session,
+            usage_tracker: &usage_tracker,
+            turn_policy: None,
+            assignment: &assignment,
+            supervisor: &supervisor,
+            enforce_check_completion: true,
+        };
+        let result = super::run_provider_tool_loop(&context).await;
+        assert!(result.is_err(), "provider failure must not produce a run");
+        assert_eq!(
+            backend_state.write_calls.load(Ordering::SeqCst),
+            1,
+            "the provider must have applied a write before the failing terminal"
+        );
+        assert_eq!(
+            backend_state.finalize_calls.load(Ordering::SeqCst),
+            0,
+            "a provider failure must not submit a candidate"
+        );
+        assert_eq!(prompts.load(Ordering::SeqCst), 2);
+        provider_server.abort();
+        backend_server.abort();
+        let _ = std::fs::remove_dir_all(root);
     }
 
     fn dependency_plan() -> factory_native::dependencies::DependencyPlan {
