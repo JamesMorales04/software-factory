@@ -5,18 +5,45 @@ completion claim. No paid model inference was run. The stale/missing skill gate
 was not weakened.
 
 - Branch: `factory/quality-wp3-skill-refresh`
-- Implementation commit: `56fd7dcb8c2cf62e703c8ecf9719de20b7b31352`
+- Implementation commit: `cbf45fd960fe6468feab96461cc99fbded777527`
 - Baseline: `bcb8b5b`
 - Design authority:
   [ADR-0039](../architecture/decisions/ADR-0039-quality-first-planning-and-stack-selection.md)
 - Delivery plan:
   [quality-first-delivery-plan.md](quality-first-delivery-plan.md) (WP3)
 
+## Review-finding repairs
+
+Independent review at `c91ea78` found five valid issues. The repair commit
+addresses them as follows:
+
+1. **Python/pip blocking:** added a cited `pip` pack
+   (`pip.pypa.io` and `packaging.python.org`) and Python-manifest coverage tests
+   that prove Django/Flask/Pytest/Ruff projects no longer fail with `Missing`.
+2. **Unsupported freshness dates:** added
+   [skill-pack catalog review evidence](../evidence/skill-pack-catalog-2026-11-09/review.json)
+   covering every pack and cited source URL. On 2026-11-09 each URL was checked
+   by HTTP GET (redirects followed) and returned HTTP 200. A test fails if a
+   pack, source URL or `reviewedAt` date diverges from that manifest. This is
+   source availability/identity verification, not a claim of deep content
+   re-review; the limitation is recorded below.
+3. **Docker aliases used Podman guidance:** `docker` and `docker-compose` now
+   cite `docs.docker.com` and use `docker compose config`; a test rejects
+   Podman sources or commands for those names.
+4. **Hidden project truncation:** the refresh scan now uses a durable rotating
+   cursor (`migrations/0065_skill_refresh_cursor.sql`) with at most 64
+   non-overlapping projects per pass. Status and reports expose
+   `projectTotal`, `projectsChecked`, `projectsSkipped` and `projectOffset`.
+   Tests cover a 70-project rotation across two passes.
+5. **Missing Office states:** component tests now cover refresh-status loading,
+   load failure, refresh-action failure, technology truncation and deferred
+   projects.
+
 ## What changed
 
 ### Deterministic refresh policy
 
-`native/src/planning/skills.rs` now classifies each required technology from the
+`native/src/planning/skills.rs` classifies each required technology from the
 latest persisted revision and the curated builtin catalog:
 
 | State | Meaning | Blocks planning |
@@ -43,8 +70,11 @@ invented.
 - one task only, with `watch`-based shutdown and an idempotent
   `shutdown_scheduler()` awaited before the database closes;
 - serializes passes with a process-wide async mutex;
-- scans at most 64 registered project roots, caps status output at 256
-  technologies and caps event detail at 700 characters;
+- scans at most 64 registered project roots per pass using a durable rotating
+  cursor, caps status output at 256 technologies and caps event detail at 700
+  characters;
+- reports checked/skipped/total projects in every status and report so a
+  bounded pass never implies full coverage;
 - refreshes only a due persisted revision when the builtin revision is newer
   and different; it does not pre-seed the whole catalog;
 - records durable idempotent events through `Database::record_event_once`
@@ -55,17 +85,17 @@ invented.
 Operator-authenticated endpoints:
 
 - `GET /agentic/skills/refresh` — current classification, due/blocked counts,
-  interval, last/next run, last outcome and bounded status list.
+  interval, project window, last/next run, last outcome and bounded status list.
 - `POST /agentic/skills/refresh` — explicit deterministic refresh pass.
 
-A blocked `FORMAL_SPEC` plan now also records one idempotent
+A blocked `FORMAL_SPEC` plan also records one idempotent
 `skill.pack.refresh_blocked` event on the request while preserving the existing
 `SKILL_PACK_REQUIRED` response. The scheduler never approves a plan, hides a
 stale pack, lowers a lane or grants authority.
 
 ### Broader stack detection and catalog
 
-Stack detection in `native/src/agentic.rs` now recognizes Java/Gradle/Maven,
+Stack detection in `native/src/agentic.rs` recognizes Java/Gradle/Maven,
 Kotlin, C#/.NET/NuGet, Ruby/Bundler/Rails, PHP/Composer/Laravel, Swift,
 Vue/Svelte/Angular, Django/Flask, PostgreSQL/MySQL/Redis,
 Kubernetes/Terraform/GitHub Actions, pnpm/yarn/bun/Deno, Tauri/Electron and the
@@ -74,32 +104,35 @@ Detection remains bounded to root manifests and at most 512 root entries; it
 does not recurse.
 
 The curated catalog moved to
-`native/src/planning/skills/catalog.rs` and now has 64 canonical entries. New
-official-source packs include: `actix-web`, `angular`, `bun`, `bundler`,
-`composer`, `csharp`, `deno`, `diesel`, `django`, `dotnet`, `electron`,
-`flask`, `github-actions`, `gradle`, `hyper`, `java`, `kotlin`, `kubernetes`,
-`laravel`, `maven`, `mysql`, `nuget`, `php`, `pnpm`, `postgresql`, `rails`,
-`redis`, `reqwest`, `rocket`, `ruby`, `serde`, `svelte`, `swift`, `tauri`,
-`terraform`, `tonic`, `tracing`, `vue` and `yarn`. `docker`, `docker-compose`
-and `podman` resolve to distinct self-named compatibility packs so a persisted
-technology name cannot silently diverge from its planning need.
+`native/src/planning/skills/catalog.rs` and now has 65 canonical entries plus
+three self-named compatibility aliases. New official-source packs include:
+`actix-web`, `angular`, `bun`, `bundler`, `composer`, `csharp`, `deno`,
+`diesel`, `django`, `dotnet`, `electron`, `flask`, `github-actions`, `gradle`,
+`hyper`, `java`, `kotlin`, `kubernetes`, `laravel`, `maven`, `mysql`, `nuget`,
+`php`, `pip`, `pnpm`, `postgresql`, `rails`, `redis`, `reqwest`, `rocket`,
+`ruby`, `serde`, `svelte`, `swift`, `tauri`, `terraform`, `tonic`, `tracing`,
+`vue` and `yarn`. `docker`, `docker-compose` and `podman` resolve to distinct
+self-named compatibility packs so a persisted technology name cannot silently
+diverge from its planning need. Docker aliases use Docker-specific sources and
+commands.
 
 Every pack validates with HTTPS official sources, best practices,
 anti-patterns, security notes, commands, `last_verified_at` and `review_after`.
-Coverage tests fail if a detected technology lacks a pack.
+Coverage tests fail if a detected technology lacks a pack or if the reviewed
+source manifest drifts from the catalog.
 
 ### Office
 
-The existing Core-backed Skills route now has a “Technology knowledge packs”
-panel:
+The existing Core-backed Skills route has a “Technology knowledge packs” panel:
 
-- shows interval, last/next pass, due/refreshable count, blocking count and the
-  last outcome;
+- shows interval, last/next pass, due/refreshable count, blocking count,
+  projects scanned/deferred and the last outcome;
 - lists only non-fresh packs with state badges, reason and review deadline;
 - exposes an explicit “Run refresh pass” action that calls the authenticated
   Core POST;
-- adds English and Spanish strings and component tests for due/blocked states
-  and the refresh action.
+- adds English and Spanish strings and component tests for loading, load
+  failure, action failure, due/blocked states, truncated technologies, deferred
+  projects and the refresh action.
 
 The panel does not invent state or offer a decorative action. The agentic skill
 registry remains separate and unchanged in authority.
@@ -110,16 +143,19 @@ registry remains separate and unchanged in authority.
 - `native/src/bin/core.rs`
 - `native/src/db/mod.rs`
 - `native/src/db/planning.rs`
+- `native/src/db/projects.rs`
 - `native/src/planning/mod.rs`
 - `native/src/planning/skill_refresh.rs` (new)
 - `native/src/planning/skills.rs`
 - `native/src/planning/skills/catalog.rs` (new)
+- `migrations/0065_skill_refresh_cursor.sql` (new)
 - `office/src/coreApi.ts`
 - `office/src/i18n/catalog.en.ts`
 - `office/src/i18n/catalog.es.ts`
 - `office/src/views/Skills.test.tsx`
 - `office/src/views/Skills.tsx`
 - `office/src/views/knowledge.css`
+- `docs/evidence/skill-pack-catalog-2026-11-09/review.json` (new)
 - `docs/product/office-parity.json` (CAP-038 only)
 - `docs/implementation/quality-first-planning-status.md` (WP3 row)
 - `docs/implementation/wp3-skill-refresh-evidence.md` (this file)
@@ -133,13 +169,13 @@ cargo fmt --all -- --check
 clean
 
 cargo test -p factory-native --lib planning::skills
-5 passed; 0 failed
+8 passed; 0 failed
 
 cargo test -p factory-native --lib planning::skill_refresh
-4 passed; 0 failed
+6 passed; 0 failed
 
 cargo test -p factory-native --lib
-738 passed; 0 failed; 2 ignored
+743 passed; 0 failed; 2 ignored
 
 cargo test -p factory-native --test planning_pipeline
 1 passed; 0 failed
@@ -157,11 +193,8 @@ ignored.
 From `office/`:
 
 ```text
-npm ci --ignore-scripts
-214 packages installed (local dependency install only; not acceptance)
-
 npm test -- --run
-298 passed across 45 files
+302 passed across 45 files
 
 npm run typecheck
 clean
@@ -177,31 +210,41 @@ podman compose config
 exit 0
 ```
 
+Catalog review evidence: 68 pack entries and 74 unique source URLs were checked
+on 2026-11-09; all returned HTTP 200. The manifest records each pack’s reviewed
+date and source statuses. No paid inference was used.
+
 Covered tests include FRESH/DUE/REFRESHABLE/STALE/MISSING classification,
 immutable refresh revision, idempotent scheduler pass and events, scheduler
-shutdown, missing-technology fail-closed behavior, detected-stack catalog
-coverage, endpoint authentication/bounds and the Office due/blocked/refresh
+shutdown, missing-technology fail-closed behavior, Python/pip planning,
+detected-stack catalog coverage, catalog review-manifest integrity, Docker
+source correctness, durable project rotation with skipped counts, endpoint
+authentication/bounds and the Office loading/error/action/truncation/deferred
 states.
 
 ## Limitations and NOT_TESTED
 
 - **NOT_TESTED:** a real Compose Core restart with the scheduler active, the
-  scheduler interval boundary in a running container, and durable event
-  inspection through the Compose stack. Only `podman compose config` was run.
+  scheduler interval boundary in a running container, migration `0065` on an
+  upgraded Compose volume, and durable event inspection through the Compose
+  stack. Only `podman compose config` was run.
 - **NOT_TESTED:** real browser acceptance of the Skills technology-pack panel
   and a real operator-token POST from the browser. Component tests only.
-- **NOT_TESTED:** live upstream documentation verification. Builtin sources are
-  curated official URLs; the scheduler does not fetch the network. Refreshing a
-  builtin catalog revision still requires a reviewed code change, not a web
-  fetch.
 - **NOT_TESTED:** paid model inference. It was explicitly not run.
 - **NOT_TESTED:** independent verifier, reviewer and owner acceptance; this
   document is implementer evidence, not certification.
+- **KNOWN LIMITATION:** freshness evidence verifies that every cited official
+  source URL was reachable on 2026-11-09. It does not claim a deep re-read of
+  every document; the curated pack text and the 90-day review window remain the
+  maintenance trigger.
 - **KNOWN LIMITATION:** the catalog uses `version = "current"` rather than a
   per-release version matrix.
 - **KNOWN LIMITATION:** an unreadable or corrupt persisted pack is logged and not
   trusted by the scheduler; it does not invent a replacement beyond the normal
   builtin classification path.
+- **KNOWN LIMITATION:** a project scan checks at most 64 projects per pass. The
+  durable rotating cursor and explicit skipped count make the partial coverage
+  visible; full coverage arrives across successive passes.
 - **KNOWN LIMITATION:** the scheduler is an in-process Core task, not a separate
   service. This follows the service-placement default and adds no new process,
   credential boundary or Compose dependency.
@@ -214,10 +257,14 @@ No items are marked `BLOCKED` for this WP.
   `office_api_router`; startup/shutdown calls and the planning-blocked event are
   registered there.
 - `native/src/db/mod.rs`: three event kinds and `record_event_once` were added.
-- `native/src/db/planning.rs`: skill-pack reads now use `rowid` as the
-  insertion-order tiebreaker for the latest immutable revision.
+- `native/src/db/planning.rs`: skill-pack reads use `rowid` as the
+  insertion-order tiebreaker, and the durable project cursor accessors live
+  there.
+- `native/src/db/projects.rs`: project listing is ordered by `created_at,id` so
+  the rotating scan is deterministic.
 - `native/src/planning/mod.rs`: `skill_refresh` module registration.
-- No migration was added.
+- `migrations/0065_skill_refresh_cursor.sql`: new durable cursor table. The
+  migration owner should keep this number when merging the wave.
 
 ## Authority and security
 
