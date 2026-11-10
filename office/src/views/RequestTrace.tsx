@@ -104,35 +104,35 @@ function operationalIdText(value: string | null): string {
   return value !== null && isStepId(value) ? shortId(value) : "[REDACTED]";
 }
 
-const CANONICAL_PAYLOAD_KEYS: Record<string, string> = {
-  kind: "kind",
-  state: "state",
-  statefrom: "stateFrom",
-  stateto: "stateTo",
-  status: "status",
-  outcome: "outcome",
-  sequence: "sequence",
-  stepid: "stepId",
-  runid: "runId",
-  requestid: "requestId",
-  attempt: "attempt",
-  count: "count",
-  durationms: "durationMs",
-  bytes: "bytes",
-  sha256: "sha256",
-  payloadsha256: "payloadSha256",
-  terminal: "terminal",
-  token: "token",
-  password: "password",
-  secret: "secret",
-  authorization: "authorization",
-  apikey: "api_key",
-  prompt: "prompt",
-  content: "content",
-};
+const CANONICAL_PAYLOAD_KEYS = new Map<string, string>([
+  ["kind", "kind"],
+  ["state", "state"],
+  ["statefrom", "stateFrom"],
+  ["stateto", "stateTo"],
+  ["status", "status"],
+  ["outcome", "outcome"],
+  ["sequence", "sequence"],
+  ["stepid", "stepId"],
+  ["runid", "runId"],
+  ["requestid", "requestId"],
+  ["attempt", "attempt"],
+  ["count", "count"],
+  ["durationms", "durationMs"],
+  ["bytes", "bytes"],
+  ["sha256", "sha256"],
+  ["payloadsha256", "payloadSha256"],
+  ["terminal", "terminal"],
+  ["token", "token"],
+  ["password", "password"],
+  ["secret", "secret"],
+  ["authorization", "authorization"],
+  ["apikey", "api_key"],
+  ["prompt", "prompt"],
+  ["content", "content"],
+]);
 
 function displayPayloadKey(key: string): string {
-  const canonical = CANONICAL_PAYLOAD_KEYS[normalizePayloadKey(key)];
+  const canonical = CANONICAL_PAYLOAD_KEYS.get(normalizePayloadKey(key));
   if (canonical) return canonical;
   if (/^redacted_[a-f0-9]{12}$/.test(key)) return key;
   return "[redacted]";

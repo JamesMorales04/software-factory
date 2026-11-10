@@ -297,6 +297,27 @@ describe("RequestTrace", () => {
     expect(screen.queryByText(/sensitive-key-value/)).toBeNull();
   });
 
+  it("does not crash on an inherited constructor payload key", async () => {
+    mocks.getRequestTrace.mockResolvedValue(
+      runningTrace({
+        events: [
+          event(1, "workflow.event", {
+            payload: {
+              constructor: "sensitive-constructor-value",
+              state: "EXECUTING",
+            },
+          }),
+        ],
+      }),
+    );
+    renderTrace();
+
+    expect(await screen.findByText("Workflow trace")).toBeDefined();
+    expect(screen.queryByText("constructor")).toBeNull();
+    expect(screen.queryByText(/sensitive-constructor-value/)).toBeNull();
+    expect(screen.getByText("EXECUTING")).toBeDefined();
+  });
+
   it("renders a rejected replay as unknown rather than in progress", async () => {
     const base = runningTrace();
     mocks.getRequestTrace.mockResolvedValue({
