@@ -1,8 +1,11 @@
 # WP9 — Reviewer independence and Compose reviewer fleet evidence
 
 **Status:** implementer self-test evidence; **not independent acceptance and not
-certification**. Implementation candidate: `d027bf2ea30d11ace72bbb962c70112dfaa81b3a`
-on branch `factory/quality-wp9-reviewer-fleet` (baseline `bcb8b5b`).
+certification**. Implementation candidate: `de48c3b021a547a9d569e41f8d8421d0e000629b`
+on branch `factory/quality-wp9-reviewer-fleet` (baseline `bcb8b5b`). This
+supersedes the earlier WP9 candidate `d027bf2` after the independent Codex
+GPT-6 Luna review found P1 (Gate could count roles without a frozen principal
+assignment) and P2 (Director did not show individual receipts).
 
 ## Policy implemented
 
@@ -23,8 +26,31 @@ principal**, not provider/model diversity.
 - A reviewer receipt records its role. The Gate requires the configured
   reviewer count, distinct principals, every required role covered exactly once,
   and the receipt principal matching the frozen role assignment.
-- Office shows required roles, assigned principals and independent PASS-receipt
-  count from Core. No "model diversity required" wording exists.
+- The Campaign reviewer requirement freezes the exact role-to-principal
+  assignment set (`required_assignments_json`). The Gate blocks when a required
+  role has no assignment, when the assignment set contains an unexpected role,
+  or when the frozen plan is unreadable. A role name alone can never satisfy a
+  requirement.
+- Office shows required roles, assigned principals, per-role receipt
+  result/evidence, missing receipts, a frozen-plan mismatch alert and the
+  independent PASS-receipt count from Core. No "model diversity required"
+  wording exists.
+
+## Independent-review repair
+
+- **P1 — frozen principal assignments:** the Campaign requirement now stores
+  `required_assignments_json`. The Gate rejects an assignment role set that is
+  not exactly the required role set, including a missing assignment for any
+  required role or an unexpected assignment role. It decides `BLOCKED` with
+  “reviewer plan does not bind every required role to an authenticated
+  principal”, and does not count receipts by role name alone. This also covers
+  an older plan whose roles are readable but assignments are absent/unreadable.
+- **P2 — individual receipts in Director:** each required role now renders its
+  assigned principal, the matching receipt result and evidence, or an explicit
+  “No receipt” state. A failing/changes-requested receipt gets a danger badge.
+  A role/assignment set mismatch renders an alert explaining that acceptance is
+  blocked until Core records an exact assignment set. Core remains the authority;
+  the UI displays only its projection.
 
 ## Compose identities and provisioning
 
@@ -65,8 +91,10 @@ cargo test -p factory-native --lib planning
 45 passed; 0 failed
 
 cargo test -p factory-native --lib db::tests::gate_
-15 passed; 0 failed
-  includes gate_accepts_distinct_principals_with_the_same_model_and_required_roles,
+17 passed; 0 failed
+  includes gate_accepts_distinct_principals_with_same_model_and_exact_role_assignments,
+  gate_blocks_required_roles_without_frozen_principal_assignments,
+  gate_rejects_an_assignment_set_with_an_unexpected_role,
   gate_rejects_a_second_receipt_from_the_same_principal and
   gate_waits_for_role_coverage_even_when_the_count_is_met
 
@@ -75,7 +103,7 @@ cargo test -p factory-native --bin factory-core
   includes quality_receipt_rejects_caller_selected_principal_or_role
 
 cargo test -p factory-native --lib
-741 passed; 0 failed; 2 ignored
+743 passed; 0 failed; 2 ignored
 
 cargo clippy -p factory-native --all-targets --all-features -- -D warnings
 clean
@@ -100,7 +128,7 @@ mounted:
 
 ```text
 npm test -- --run
-45 files passed; 299 tests passed
+45 files passed; 301 tests passed
 
 npm run typecheck
 clean
@@ -108,6 +136,13 @@ clean
 npm run lint
 clean
 ```
+
+The first full Office run after the P2 change reported one failure in
+`Home.test.tsx` (`Keep existing clients working.`); an immediate rerun of the
+same suite passed 301/301. The failure was not reproduced and is not claimed as
+fixed. The Director suite itself passed 12/12 on both runs. The new component
+cases cover all roles covered, a required role with no receipt, a
+changes-requested receipt with evidence, and unassigned/frozen-plan mismatch.
 
 `docs/product/office-parity.json` parsed as JSON and
 `docs/product/capabilities.yaml` parsed as YAML (66 capability entries).
@@ -118,11 +153,18 @@ High-level: `native/src/review_roles.rs`, `native/src/reviewer_identity.rs`
 (new), `native/src/planning/{mod,route}.rs`, `native/src/agentic.rs`,
 `native/src/db/{mod,quality,lead,tests,intake}.rs`,
 `native/src/bin/{core,reviewer,compose_init}.rs`,
-`migrations/0065_reviewer_role_coverage.sql`, `compose.yaml`,
+`migrations/0065_reviewer_role_coverage.sql`,
+`migrations/0066_reviewer_role_assignments.sql`, `compose.yaml`,
 `office/src/{coreApi.ts,views/Director.tsx,views/Director.test.tsx,i18n/*}`,
 `docs/architecture/decisions/ADR-0037-*`, the quality-first status/plan
 documents, Office parity, capability registry, roadmap, Compose/Codex runbooks
 and `native/README.md`.
+
+The repair commit changed `native/src/db/{quality,lead,tests}.rs`,
+`migrations/0066_reviewer_role_assignments.sql`,
+`office/src/views/{Director.tsx,Director.test.tsx}`,
+`office/src/i18n/catalog.{en,es}.ts`, the quality-first status document,
+capability registry and Office parity.
 
 ## Security and authorization impact
 
@@ -134,6 +176,9 @@ and `native/README.md`.
   roles, mounted read-only and redacted from telemetry.
 - Independence rejects implementer/verifier collusion and duplicate reviewer
   principals. The same principal cannot count twice.
+- A required role without an exact frozen principal assignment cannot satisfy
+  the Gate, so a missing or unreadable assignment set fails closed rather than
+  degrading to role-name counting.
 - The existing Gate policy, candidate binding, finding disposition and
   authorization rules were not relaxed.
 
@@ -143,8 +188,9 @@ and `native/README.md`.
   and Gate aggregation. This slice ran deterministic DB/plan/Gate tests, Compose
   config validation and Compose-init provisioning; it did not start the full
   Compose stack.
-- `NOT_TESTED`: real browser acceptance of the new Director roles/principals
-  display. Component tests and the containerized Office suite passed.
+- `NOT_TESTED`: real browser acceptance of the Director roles/principals and
+  per-role receipt display. Component tests and the containerized Office suite
+  passed.
 - `NOT_TESTED`: live paid model inference or Codex App Server review; none was
   run.
 - `BLOCKED` for independent acceptance: an independent verifier/reviewer and
