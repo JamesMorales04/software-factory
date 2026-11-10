@@ -326,6 +326,9 @@ exit 0; 411 lines rendered
 | Foreign owner / unlabelled / provider resources | `reconcile_removes_only_owned_unreferenced_managed_resources` | Preserved and counted |
 | Wrong/missing owner token or resource owner | broker handler tests with fake Podman | `401`/`403`/`409`; no mutation invoked |
 | Pre-existing foreign volume on create | broker handler test, execution backend test, real Podman probe | Preserved; request fails closed; no `rm`/`create` |
+| Legacy managed volume with exact same workspace | `create_volume_adopts_a_matching_legacy_workspace_volume` | Removed through checked path; recreated with authenticated owner label |
+| Legacy volume with different workspace, active volume, unlabelled volume | `create_volume_preserves_a_legacy_volume_for_another_workspace`, `create_volume_rejects_an_active_legacy_volume`, `create_volume_preserves_an_unlabelled_volume` | `409`; no `rm`/`create` |
+| Legacy execution container during explicit cleanup | `execution_cleanup_adopts_a_matching_legacy_container`, `execution_cleanup_preserves_a_legacy_container_for_another_workspace` | Matching workspace adopted; different workspace preserved |
 | Concurrent create for different owners | `concurrent_create_for_different_owners_serializes_per_name` | One success, one conflict; ownership consistent |
 | Concurrent delete/reset | `concurrent_delete_and_reset_never_removes_the_replacement` | Serialized; no interleaved delete |
 | Execution cleanup vs container delete | `execution_cleanup_serializes_with_container_delete` | Strict inspect/remove sequences; no replacement race |
@@ -354,8 +357,13 @@ exit 0; 411 lines rendered
 - The broker inventory is read-only, authenticated, argument-free and scoped to
   the authenticated owner.
 - Deletion is owner-scoped and verifies the stored label after acquiring the
-  per-name lock. Creation resets only a managed, same-owner, same-workspace
-  volume; foreign/unlabelled resources are preserved.
+  per-name lock. Creation resets a managed, same-owner, same-workspace volume
+  and also performs a one-time adoption of a managed volume that has the exact
+  same workspace label but no owner label. The latter is removed through a
+  checked path that re-reads the labels and active-execution registry and then
+  recreates the volume with the authenticated owner label. A different
+  workspace, an existing owner, a missing managed label, unlabelled volumes and
+  foreign volumes remain conflicts and are preserved.
 - Mutations use exact per-resource locks with a permanent 4096-entry table.
   Entries are never reclaimed so a name cannot change lock identity; names
   beyond capacity permanently share one overflow lock and serialize. An
@@ -368,8 +376,14 @@ exit 0; 411 lines rendered
   workspace labels to match. Unconfirmed cleanup keeps the volume blocked.
   Cleanup takes only the container lock, so an overflowed volume/container pair
   cannot self-deadlock.
-- Legacy managed resources without an owner label are never deleted. They require
-  explicit manual cleanup; this is intentional (`never remove unlabelled`).
+- Legacy managed resources without an owner label are never swept or removed by
+  reconciliation. A legacy workspace volume is adopted only when `create_volume`
+  requests that exact same workspace identity and the volume is not active; the
+  checked path re-reads `managed=true`, the exact workspace label and the
+  absence/emptiness of the owner label before removal. A legacy execution
+  container is adopted only during explicit Supervisor cleanup when it carries
+  `managed=true`, a valid workspace volume label and no owner label. All other
+  legacy, unlabelled and foreign resources remain preserved.
 - Provider containers are owned by Worker recovery, not by Supervisor
   reconciliation, so a Supervisor sweep cannot kill a provider session.
 

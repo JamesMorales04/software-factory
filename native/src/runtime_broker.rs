@@ -247,6 +247,22 @@ pub fn volume_identity_matches(
         && labels.get(WORKSPACE_LABEL_KEY).map(String::as_str) == Some(workspace_id)
 }
 
+/// Legacy resources created before owner labels were introduced are adoptable
+/// only when they are managed, carry the exact same non-empty workspace
+/// identity and have no owner label (or an empty one). A different workspace,
+/// an existing owner or a missing managed label must remain a conflict.
+pub fn legacy_workspace_identity_matches(
+    labels: &BTreeMap<String, String>,
+    workspace_id: &str,
+) -> bool {
+    !workspace_id.is_empty()
+        && is_managed(labels)
+        && labels.get(WORKSPACE_LABEL_KEY).map(String::as_str) == Some(workspace_id)
+        && labels
+            .get(OWNER_LABEL_KEY)
+            .is_none_or(|owner| owner.is_empty())
+}
+
 /// Extract the label map from `podman volume inspect --format json`.
 pub fn parse_volume_labels(bytes: &[u8]) -> Result<BTreeMap<String, String>, String> {
     if bytes.len() > MAX_RESOURCE_INVENTORY_BYTES {
@@ -853,6 +869,14 @@ mod tests {
             ResourceOwner::Supervisor,
             "workspace-a"
         ));
+        assert!(legacy_workspace_identity_matches(&labels, "workspace-a"));
+        assert!(!legacy_workspace_identity_matches(&labels, "workspace-b"));
+        labels.insert(OWNER_LABEL_KEY.into(), String::new());
+        assert!(legacy_workspace_identity_matches(&labels, "workspace-a"));
+        labels.insert(OWNER_LABEL_KEY.into(), "supervisor".into());
+        assert!(!legacy_workspace_identity_matches(&labels, "workspace-a"));
+        labels.insert(MANAGED_LABEL_KEY.into(), "false".into());
+        assert!(!legacy_workspace_identity_matches(&labels, "workspace-a"));
     }
 
     #[test]

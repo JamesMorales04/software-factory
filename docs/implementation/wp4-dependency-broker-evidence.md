@@ -154,11 +154,25 @@ the network gateway (`10.90.0.1:18080` by default). The proxy:
 
 The acquisition container receives only a fixed environment:
 `HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY` and `CARGO_HTTP_PROXY` point at the
-proxy; `NO_PROXY` is empty. It has no other route. Broker startup fails closed
-when the dependency image is configured but the internal network cannot be
-created/inspected or the proxy cannot bind. The acquirer refuses when the proxy
-readiness flag is false, and the container cannot bypass the proxy because
-there is no external route even if Cargo ignored the proxy variables.
+proxy; `NO_PROXY` is empty. It has no other route. Dependency acquisition is
+optional: if the dependency bundle/image, internal network inspection or proxy
+bind fails, the broker logs one bounded warning, disables only
+`POST /v1/dependencies/acquire`, and continues serving health, volume,
+check-container and provider-session operations. `/health` exposes
+`dependencyAcquisition` with `enabled`, `code` and a bounded `reason`; a
+disabled acquisition request fails closed with HTTP `503` and
+`DEPENDENCY_EGRESS_UNAVAILABLE` or `DEPENDENCY_RUNTIME_UNAVAILABLE`. There is no
+direct-egress fallback. The acquirer refuses when the proxy readiness flag is
+false, and the container cannot bypass the proxy because there is no external
+route even if Cargo ignored the proxy variables.
+
+Rootless nested Podman creates the bridge interface only when a container is
+attached, so the runtime entrypoint makes the container-local `/proc/sys` mount
+writable for namespaced bridge sysctls. If the configured gateway address does
+not exist at broker startup, the proxy binds a wildcard listener and accepts
+only peers inside the configured dependency subnet. The acquisition container
+still receives the fixed gateway proxy URL; other runtime networks are dropped
+before any HTTP request is parsed.
 
 The check container is unchanged: `--network=none`, `cargo build/test
 --locked --offline`. Acquisition is a separate network-enabled step and does
@@ -373,11 +387,13 @@ Remaining integration work for the integration owner:
 
 ## Not tested / blocked / limitations
 
-- `NOT_TESTED`: the full nested engine startup path (bundle import, internal
-  network creation and proxy bind inside the Compose runtime container) and a
-  Worker-to-Core-to-nested-broker acquisition. The actual `dependency` image
-  built successfully; the acquirer, proxy and network boundary were exercised
-  with real host rootless Podman.
+- `PARTIAL` (2026-11-10 repair): the Compose runtime broker now starts with a
+  healthy `/health`, imports/pins the dependency image, and exposes the
+  dependency proxy from the internal network even when rootless netavark creates
+  the bridge only on attachment. The full nested-engine
+  Worker-to-Core-to-nested-broker acquisition remains `NOT_TESTED`. The actual
+  `dependency` image built successfully; the acquirer, proxy and network
+  boundary were exercised with real host rootless Podman.
 - `NOT_TESTED`: the full browser/Compose intake planning and plan-review
   journey. The planner conversion, pre-authorization DB attachment, Core
   blocker and Worker blocker are covered by focused tests.

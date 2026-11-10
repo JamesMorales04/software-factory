@@ -69,8 +69,12 @@ required and reviewed together:
 3. cgroup2 remount read-write **inside the runtime container's cgroup
    namespace** — enforce child CPU/memory/PID limits. The engine does not gain
    host cgroup authority.
-4. VFS storage — avoids `/dev/fuse` and overlay-on-overlay; slower and larger.
-5. No `--privileged`, no host Podman socket, no host network, no `/dev/fuse`
+4. `/proc/sys` remount read-write **inside the runtime container's network
+   namespace** — lets rootless netavark apply per-bridge sysctls when it creates
+   the private dependency network on first container attachment. No host
+   sysctl is changed.
+5. VFS storage — avoids `/dev/fuse` and overlay-on-overlay; slower and larger.
+6. No `--privileged`, no host Podman socket, no host network, no `/dev/fuse`
    device grant.
 
 These are not silently enabled: they are visible in `compose.yaml` and are a

@@ -14,10 +14,10 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     env,
-    net::SocketAddr,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
     process::Stdio,
-    sync::Arc,
+    sync::{Arc, RwLock},
     time::Duration,
 };
 
@@ -29,7 +29,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use factory_native::dependency_egress::{self, EgressAllowlist};
+use factory_native::dependency_egress::{self, EgressAllowlist, PeerSubnet};
 use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -42,8 +42,8 @@ use tokio::{
 use factory_native::runtime_broker::{
     MAX_RESOURCE_INVENTORY_BYTES, ManagedResources, ResourceOwner, is_valid_container_name,
     is_valid_exec_container_name, is_valid_provider_container_name, is_valid_volume_name,
-    parse_container_inventory, parse_container_labels, parse_volume_inventory, parse_volume_labels,
-    resource_owner_matches, volume_identity_matches,
+    legacy_workspace_identity_matches, parse_container_inventory, parse_container_labels,
+    parse_volume_inventory, parse_volume_labels, resource_owner_matches, volume_identity_matches,
 };
 
 const MAX_JSON_BYTES: usize = 2 * 1024 * 1024;
@@ -62,6 +62,9 @@ const WORKSPACE_LABEL: &str = "io.software-factory.workspace";
 const OWNER_LABEL: &str = "io.software-factory.owner";
 const RESOURCE_LOCK_ENTRIES: usize = 4096;
 const MAX_ACTIVE_EXECUTIONS: usize = 4096;
+const DEPENDENCY_EGRESS_UNAVAILABLE: &str = "DEPENDENCY_EGRESS_UNAVAILABLE";
+const DEPENDENCY_RUNTIME_UNAVAILABLE: &str = "DEPENDENCY_RUNTIME_UNAVAILABLE";
+const MAX_DEPENDENCY_HEALTH_REASON: usize = 512;
 const OWNER_TOKEN_FILES: [(ResourceOwner, &str); 3] = [
     (ResourceOwner::Supervisor, "runtime-broker-supervisor.token"),
     (ResourceOwner::Verifier, "runtime-broker-verifier.token"),
@@ -239,6 +242,76 @@ impl std::fmt::Display for MutationError {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum DependencyAcquisitionState {
+    Enabled {
+        network: String,
+        proxy_url: String,
+        binding: &'static str,
+    },
+    Disabled {
+        code: &'static str,
+        reason: String,
+    },
+}
+
+impl DependencyAcquisitionState {
+    fn enabled(network: String, proxy_url: String, binding: &'static str) -> Self {
+        Self::Enabled {
+            network,
+            proxy_url,
+            binding,
+        }
+    }
+
+    fn disabled(code: &'static str, reason: impl Into<String>) -> Self {
+        Self::Disabled {
+            code,
+            reason: bounded_dependency_reason(&reason.into()),
+        }
+    }
+
+    fn health_projection(&self) -> serde_json::Value {
+        match self {
+            Self::Enabled {
+                network,
+                proxy_url,
+                binding,
+            } => json!({
+                "enabled": true,
+                "network": network,
+                "proxy": proxy_url,
+                "binding": binding,
+            }),
+            Self::Disabled { code, reason } => json!({
+                "enabled": false,
+                "code": code,
+                "reason": reason,
+            }),
+        }
+    }
+}
+
+struct DependencySetup {
+    state: DependencyAcquisitionState,
+    service: Option<Arc<factory_native::dependency_service::DependencyService>>,
+    proxy: Option<dependency_egress::RunningProxy>,
+}
+
+struct DependencySetupFailure {
+    code: &'static str,
+    reason: String,
+}
+
+impl DependencySetupFailure {
+    fn new(code: &'static str, reason: impl Into<String>) -> Self {
+        Self {
+            code,
+            reason: reason.into(),
+        }
+    }
+}
+
 #[derive(Clone)]
 struct App {
     tokens: Arc<OwnerTokens>,
@@ -251,8 +324,7 @@ struct App {
     provider_kind: String,
     provider_session_root: PathBuf,
     import_images: Vec<(String, PathBuf)>,
-    dependency_image: Option<String>,
-    dependency_bundle: Option<PathBuf>,
+    dependency_acquisition: Arc<RwLock<DependencyAcquisitionState>>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -317,34 +389,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     let import_images =
         parse_import_images(env::var("FACTORY_RUNTIME_IMPORT_IMAGES").unwrap_or_default())?;
-    let dependency_image = match env::var("FACTORY_RUNTIME_DEPENDENCY_IMAGE") {
-        Ok(value) if !value.trim().is_empty() => {
-            let image = value.trim().to_owned();
-            if image.starts_with('-')
-                || image.chars().any(char::is_whitespace)
-                || image.contains("://")
-            {
-                return Err("FACTORY_RUNTIME_DEPENDENCY_IMAGE is invalid".into());
-            }
-            Some(image)
-        }
-        _ => None,
-    };
-    let dependency_bundle = match env::var("FACTORY_RUNTIME_DEPENDENCY_BUNDLE") {
-        Ok(value) if !value.trim().is_empty() => Some(PathBuf::from(value.trim())),
-        _ => None,
-    };
-    if dependency_image.is_some() != dependency_bundle.is_some() {
-        return Err(
-            "FACTORY_RUNTIME_DEPENDENCY_IMAGE and FACTORY_RUNTIME_DEPENDENCY_BUNDLE must be set together"
-                .into(),
-        );
-    }
-    if let Some(bundle) = &dependency_bundle
-        && (!bundle.is_absolute() || !bundle.is_file())
-    {
-        return Err("FACTORY_RUNTIME_DEPENDENCY_BUNDLE must be an absolute existing file".into());
-    }
     let bind = env::var("FACTORY_BIND").unwrap_or_else(|_| "0.0.0.0:8770".into());
     let addr: std::net::SocketAddr = bind.parse()?;
     let container_mode = env::var("FACTORY_CONTAINER_MODE").as_deref() == Ok("1");
@@ -365,69 +409,18 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         provider_kind,
         provider_session_root,
         import_images,
-        dependency_image,
-        dependency_bundle,
+        dependency_acquisition: Arc::new(RwLock::new(DependencyAcquisitionState::disabled(
+            DEPENDENCY_RUNTIME_UNAVAILABLE,
+            "dependency acquisition setup has not completed",
+        ))),
     });
     app.preflight().await?;
     app.prepull_images().await?;
 
-    let mut dependency_proxy = None;
-    let dependency_service = match app.dependency_image.as_deref() {
-        Some(image) => {
-            let registries = match env::var("FACTORY_RUNTIME_DEPENDENCY_REGISTRIES") {
-                Ok(value) if !value.trim().is_empty() => parse_registries(value)?,
-                _ => factory_native::dependencies::DEFAULT_ALLOWED_REGISTRIES
-                    .iter()
-                    .map(|registry| (*registry).to_string())
-                    .collect(),
-            };
-            let image_id = app
-                .dependency_image_id(image)
-                .await
-                .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
-            let (network, proxy_address) = app
-                .ensure_dependency_egress_network()
-                .await
-                .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
-            let allowlist = parse_egress_allowlist(
-                env::var("FACTORY_RUNTIME_DEPENDENCY_EGRESS_ALLOW").unwrap_or_else(|_| {
-                    "index.crates.io:443,static.crates.io:443,github.com:443,codeload.github.com:443"
-                        .into()
-                }),
-            )?;
-            let proxy = dependency_egress::spawn(proxy_address, allowlist)
-                .await
-                .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
-            let ready = proxy.ready();
-            let proxy_url = format!("http://{proxy_address}");
-            let acquirer = factory_native::dependency_service::PodmanDependencyAcquirer::new(
-                app.podman.clone(),
-                image_id.clone(),
-            )
-            .and_then(|acquirer| acquirer.with_egress(network.clone(), proxy_url.clone(), ready))
-            .map_err(|error| error.to_string())?;
-            dependency_proxy = Some(proxy);
-            tracing::info!(%image, %image_id, network=%network, %proxy_url, "dependency egress proxy ready");
-            Some(Arc::new(
-                factory_native::dependency_service::DependencyService::new(
-                    app.tokens
-                        .token(ResourceOwner::Supervisor)
-                        .ok_or("runtime broker supervisor token is unavailable")?
-                        .to_owned(),
-                    image.to_owned(),
-                    registries,
-                    Arc::new(acquirer),
-                )
-                .map_err(|error| error.to_string())?
-                .with_guard(Arc::new(BrokerDependencyGuard {
-                    app: Arc::clone(&app),
-                })),
-            ))
-        }
-        None => None,
-    };
+    let dependency_setup = setup_dependency_acquisition(&app).await;
+    app.set_dependency_acquisition(dependency_setup.state.clone());
 
-    let mut router = Router::new()
+    let mut base_router = Router::new()
         .route("/health", get(health))
         .route("/v1/resources", get(list_resources))
         .route("/v1/volumes", post(create_volume))
@@ -443,16 +436,20 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             axum::routing::delete(remove_container),
         )
         .route("/v1/containers/{container}/status", get(container_status))
-        .route("/v1/providers/start", post(start_provider))
+        .route("/v1/providers/start", post(start_provider));
+    if dependency_setup.service.is_none() {
+        base_router = base_router.route(
+            factory_native::dependency_service::DEPENDENCY_ACQUIRE_ROUTE,
+            post(dependency_unavailable),
+        );
+    }
+    let mut router = base_router
         .layer(DefaultBodyLimit::max(MAX_JSON_BYTES))
         .with_state(Arc::clone(&app));
-    if let Some(service) = dependency_service {
+    if let Some(service) = dependency_setup.service {
         router = router.merge(service.router());
-        tracing::info!("dependency acquisition endpoint enabled");
-    } else {
-        tracing::info!("dependency acquisition endpoint disabled; no dependency image configured");
     }
-    let _keep_dependency_proxy = dependency_proxy;
+    let _keep_dependency_proxy = dependency_setup.proxy;
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(%addr, "Factory runtime broker listening");
     axum::serve(listener, router)
@@ -517,6 +514,20 @@ fn parse_registries(raw: String) -> Result<Vec<String>, String> {
 }
 
 impl App {
+    fn dependency_acquisition(&self) -> DependencyAcquisitionState {
+        self.dependency_acquisition
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    fn set_dependency_acquisition(&self, state: DependencyAcquisitionState) {
+        *self
+            .dependency_acquisition
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = state;
+    }
+
     async fn preflight(&self) -> Result<(), Box<dyn std::error::Error>> {
         let uid_map = std::fs::read_to_string("/proc/self/uid_map").unwrap_or_default();
         if has_host_root_mapping(&uid_map) {
@@ -582,30 +593,12 @@ impl App {
             )
             .await?;
         }
-        if let (Some(image), Some(bundle)) = (&self.dependency_image, &self.dependency_bundle) {
-            self.import_bundle_image(
-                image,
-                bundle,
-                "/usr/local/bin/factory-dependency-acquire",
-                "/workspace",
-                "dependency-bundle.tar",
-            )
-            .await?;
-        }
         for image in self.provider_images.iter() {
             let output = self
                 .podman_output(["image", "exists", image.as_str()])
                 .await?;
             if !output.status.success() {
                 return Err(format!("provider image {image} is not available").into());
-            }
-        }
-        if let Some(image) = &self.dependency_image {
-            let output = self
-                .podman_output(["image", "exists", image.as_str()])
-                .await?;
-            if !output.status.success() {
-                return Err(format!("dependency image {image} is not available").into());
             }
         }
         Ok(())
@@ -762,6 +755,38 @@ impl App {
                 "volume is not owned by the authenticated service",
             ));
         }
+        self.remove_volume_checked_locked(volume).await
+    }
+
+    /// One-time migration for a managed workspace volume created before owner
+    /// labels existed. The caller holds the volume lock and has already checked
+    /// that the volume is not active. Labels are re-read immediately before
+    /// removal so an owner, workspace or managed-label change is still a
+    /// conflict.
+    async fn remove_legacy_volume_locked(
+        &self,
+        volume: &str,
+        workspace_id: &str,
+    ) -> Result<(), MutationError> {
+        if self.active.is_active(volume) {
+            return Err(MutationError::Conflict("volume has an active execution"));
+        }
+        let Some(labels) = self
+            .volume_labels(volume)
+            .await
+            .map_err(MutationError::Failed)?
+        else {
+            return Ok(());
+        };
+        if !legacy_workspace_identity_matches(&labels, workspace_id) {
+            return Err(MutationError::Conflict(
+                "volume exists with a different owner or workspace",
+            ));
+        }
+        self.remove_volume_checked_locked(volume).await
+    }
+
+    async fn remove_volume_checked_locked(&self, volume: &str) -> Result<(), MutationError> {
         let output = self
             .podman_output(["volume", "rm", "--force", volume])
             .await
@@ -814,7 +839,15 @@ impl App {
         else {
             return Ok(());
         };
-        if !resource_owner_matches(&labels, owner) {
+        let legacy_adoption = owner == ResourceOwner::Supervisor
+            && is_valid_exec_container_name(container)
+            && expected_workspace
+                .map(str::to_owned)
+                .or_else(|| labels.get(WORKSPACE_LABEL).cloned())
+                .filter(|workspace| is_valid_volume_name(workspace))
+                .as_deref()
+                .is_some_and(|workspace| legacy_workspace_identity_matches(&labels, workspace));
+        if !resource_owner_matches(&labels, owner) && !legacy_adoption {
             return Err(MutationError::Conflict(
                 "container is not owned by the authenticated service",
             ));
@@ -825,6 +858,14 @@ impl App {
             return Err(MutationError::Conflict(
                 "container does not belong to the execution workspace",
             ));
+        }
+        if legacy_adoption && !resource_owner_matches(&labels, owner) {
+            tracing::info!(
+                %container,
+                workspace = labels.get(WORKSPACE_LABEL).map(String::as_str).unwrap_or_default(),
+                owner = owner.as_str(),
+                "adopted legacy execution container"
+            );
         }
         let output = self
             .podman_output(["rm", "--force", "--time=0", container])
@@ -1112,7 +1153,9 @@ impl App {
             .ok_or_else(|| format!("dependency image {image} returned an invalid identity"))
     }
 
-    async fn ensure_dependency_egress_network(&self) -> Result<(String, SocketAddr), String> {
+    async fn ensure_dependency_egress_network(
+        &self,
+    ) -> Result<(String, SocketAddr, PeerSubnet), String> {
         let network = env::var("FACTORY_RUNTIME_DEPENDENCY_EGRESS_NETWORK")
             .unwrap_or_else(|_| "factory-deps-egress".into());
         if !valid_network_name(&network) {
@@ -1120,6 +1163,7 @@ impl App {
         }
         let subnet = env::var("FACTORY_RUNTIME_DEPENDENCY_EGRESS_SUBNET")
             .unwrap_or_else(|_| "10.90.0.0/24".into());
+        let peer_subnet = PeerSubnet::parse(&subnet).map_err(|error| error.to_string())?;
         let gateway = env::var("FACTORY_RUNTIME_DEPENDENCY_EGRESS_GATEWAY")
             .unwrap_or_else(|_| "10.90.0.1".into());
         let gateway: std::net::IpAddr = gateway
@@ -1183,7 +1227,219 @@ impl App {
                 format!("dependency egress network inspection is not JSON: {error}")
             })?;
         validate_egress_network_inspection(&inspected, &gateway.to_string(), &subnet)?;
-        Ok((network, SocketAddr::new(gateway, port)))
+        Ok((network, SocketAddr::new(gateway, port), peer_subnet))
+    }
+}
+
+fn dependency_configuration() -> Result<Option<(String, PathBuf)>, String> {
+    let image = match env::var("FACTORY_RUNTIME_DEPENDENCY_IMAGE") {
+        Ok(value) if !value.trim().is_empty() => {
+            let image = value.trim().to_owned();
+            if image.starts_with('-')
+                || image.chars().any(char::is_whitespace)
+                || image.contains("://")
+            {
+                return Err("FACTORY_RUNTIME_DEPENDENCY_IMAGE is invalid".into());
+            }
+            Some(image)
+        }
+        _ => None,
+    };
+    let bundle = match env::var("FACTORY_RUNTIME_DEPENDENCY_BUNDLE") {
+        Ok(value) if !value.trim().is_empty() => Some(PathBuf::from(value.trim())),
+        _ => None,
+    };
+    match (image, bundle) {
+        (None, None) => Ok(None),
+        (Some(image), Some(bundle)) => {
+            if !bundle.is_absolute() || !bundle.is_file() {
+                return Err(
+                    "FACTORY_RUNTIME_DEPENDENCY_BUNDLE must be an absolute existing file".into(),
+                );
+            }
+            Ok(Some((image, bundle)))
+        }
+        _ => Err(
+            "FACTORY_RUNTIME_DEPENDENCY_IMAGE and FACTORY_RUNTIME_DEPENDENCY_BUNDLE must be set together"
+                .into(),
+        ),
+    }
+}
+
+async fn setup_dependency_acquisition(app: &Arc<App>) -> DependencySetup {
+    let configuration = match dependency_configuration() {
+        Ok(configuration) => configuration,
+        Err(reason) => {
+            let reason = bounded_dependency_reason(&reason);
+            tracing::warn!(
+                code = DEPENDENCY_RUNTIME_UNAVAILABLE,
+                %reason,
+                "dependency acquisition disabled at startup"
+            );
+            return DependencySetup {
+                state: DependencyAcquisitionState::disabled(DEPENDENCY_RUNTIME_UNAVAILABLE, reason),
+                service: None,
+                proxy: None,
+            };
+        }
+    };
+    let Some((image, bundle)) = configuration else {
+        tracing::info!("dependency acquisition endpoint disabled; no dependency image configured");
+        return DependencySetup {
+            state: DependencyAcquisitionState::disabled(
+                DEPENDENCY_RUNTIME_UNAVAILABLE,
+                "no dependency image is configured",
+            ),
+            service: None,
+            proxy: None,
+        };
+    };
+    match try_setup_dependency_acquisition(app, &image, &bundle).await {
+        Ok(setup) => setup,
+        Err(failure) => {
+            let reason = bounded_dependency_reason(&failure.reason);
+            tracing::warn!(
+                code = failure.code,
+                %reason,
+                "dependency acquisition disabled at startup; runtime broker remains available"
+            );
+            DependencySetup {
+                state: DependencyAcquisitionState::disabled(failure.code, reason),
+                service: None,
+                proxy: None,
+            }
+        }
+    }
+}
+
+async fn try_setup_dependency_acquisition(
+    app: &Arc<App>,
+    image: &str,
+    bundle: &Path,
+) -> Result<DependencySetup, DependencySetupFailure> {
+    let runtime_failure =
+        |reason: String| DependencySetupFailure::new(DEPENDENCY_RUNTIME_UNAVAILABLE, reason);
+    let egress_failure =
+        |reason: String| DependencySetupFailure::new(DEPENDENCY_EGRESS_UNAVAILABLE, reason);
+
+    app.import_bundle_image(
+        image,
+        bundle,
+        "/usr/local/bin/factory-dependency-acquire",
+        "/workspace",
+        "dependency-bundle.tar",
+    )
+    .await
+    .map_err(|error| runtime_failure(error.to_string()))?;
+    let image_id = app
+        .dependency_image_id(image)
+        .await
+        .map_err(runtime_failure)?;
+    let registries = match env::var("FACTORY_RUNTIME_DEPENDENCY_REGISTRIES") {
+        Ok(value) if !value.trim().is_empty() => parse_registries(value),
+        _ => Ok(factory_native::dependencies::DEFAULT_ALLOWED_REGISTRIES
+            .iter()
+            .map(|registry| (*registry).to_string())
+            .collect()),
+    }
+    .map_err(runtime_failure)?;
+    let (network, proxy_address, peer_subnet) = app
+        .ensure_dependency_egress_network()
+        .await
+        .map_err(egress_failure)?;
+    let allowlist = parse_egress_allowlist(
+        env::var("FACTORY_RUNTIME_DEPENDENCY_EGRESS_ALLOW").unwrap_or_else(|_| {
+            "index.crates.io:443,static.crates.io:443,github.com:443,codeload.github.com:443".into()
+        }),
+    )
+    .map_err(egress_failure)?;
+    let (proxy, binding) = spawn_dependency_proxy(proxy_address, peer_subnet, allowlist)
+        .await
+        .map_err(egress_failure)?;
+    let proxy_url = format!("http://{proxy_address}");
+    let acquirer = match factory_native::dependency_service::PodmanDependencyAcquirer::new(
+        app.podman.clone(),
+        image_id.clone(),
+    )
+    .and_then(|acquirer| acquirer.with_egress(network.clone(), proxy_url.clone(), proxy.ready()))
+    {
+        Ok(acquirer) => acquirer,
+        Err(error) => {
+            proxy.abort();
+            return Err(runtime_failure(error.to_string()));
+        }
+    };
+    let Some(supervisor_token) = app.tokens.token(ResourceOwner::Supervisor) else {
+        proxy.abort();
+        return Err(runtime_failure(
+            "runtime broker supervisor token is unavailable".into(),
+        ));
+    };
+    let service = match factory_native::dependency_service::DependencyService::new(
+        supervisor_token.to_owned(),
+        image.to_owned(),
+        registries,
+        Arc::new(acquirer),
+    ) {
+        Ok(service) => Arc::new(service.with_guard(Arc::new(BrokerDependencyGuard {
+            app: Arc::clone(app),
+        }))),
+        Err(error) => {
+            proxy.abort();
+            return Err(runtime_failure(error.to_string()));
+        }
+    };
+    tracing::info!(
+        %image,
+        %image_id,
+        %network,
+        %proxy_url,
+        binding,
+        "dependency acquisition endpoint enabled"
+    );
+    Ok(DependencySetup {
+        state: DependencyAcquisitionState::enabled(network, proxy_url, binding),
+        service: Some(service),
+        proxy: Some(proxy),
+    })
+}
+
+async fn spawn_dependency_proxy(
+    address: SocketAddr,
+    peer_subnet: PeerSubnet,
+    allowlist: EgressAllowlist,
+) -> Result<(dependency_egress::RunningProxy, &'static str), String> {
+    match dependency_egress::spawn(address, allowlist.clone()).await {
+        Ok(proxy) => Ok((proxy, "gateway")),
+        Err(dependency_egress::EgressProxyError::Io(error))
+            if error.kind() == std::io::ErrorKind::AddrNotAvailable =>
+        {
+            let wildcard = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), address.port());
+            tracing::info!(
+                %address,
+                %wildcard,
+                "dependency egress gateway is not assigned; binding a subnet-scoped wildcard listener"
+            );
+            dependency_egress::spawn_scoped(wildcard, allowlist, Some(peer_subnet))
+                .await
+                .map(|proxy| (proxy, "wildcard-subnet-scoped"))
+                .map_err(|error| error.to_string())
+        }
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn bounded_dependency_reason(reason: &str) -> String {
+    let redacted = factory_native::telemetry::redact(reason);
+    let single_line = redacted.split_whitespace().collect::<Vec<_>>().join(" ");
+    let bounded: String = single_line
+        .chars()
+        .take(MAX_DEPENDENCY_HEALTH_REASON)
+        .collect();
+    if bounded.is_empty() {
+        "dependency acquisition setup failed".into()
+    } else {
+        bounded
     }
 }
 
@@ -1312,9 +1568,34 @@ async fn health(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
         "isolation_certified": false,
         "engine_exposed": false,
         "network": "none",
-        "dependency_acquisition": app.dependency_image.is_some(),
-        "dependency_network": "internal-egress-proxy-only"
+        "dependencyAcquisition": app.dependency_acquisition().health_projection(),
     }))
+}
+
+async fn dependency_unavailable(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if app.owner(&headers) != Some(ResourceOwner::Supervisor) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.dependency_acquisition() {
+        DependencyAcquisitionState::Disabled { code, reason } => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "code": code,
+                "error": format!("dependency acquisition unavailable: {reason}"),
+                "reason": reason,
+            })),
+        )
+            .into_response(),
+        DependencyAcquisitionState::Enabled { .. } => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "code": DEPENDENCY_RUNTIME_UNAVAILABLE,
+                "error": "dependency acquisition is not available",
+                "reason": "dependency acquisition endpoint is not mounted",
+            })),
+        )
+            .into_response(),
+    }
 }
 
 async fn list_resources(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
@@ -1490,11 +1771,28 @@ async fn create_volume(
     }
     match app.volume_labels(&input.volume).await {
         Ok(Some(labels)) => {
-            if !volume_identity_matches(&labels, owner, &input.workspace_id) {
+            if volume_identity_matches(&labels, owner, &input.workspace_id) {
+                if let Err(error) = app.remove_volume_locked(&input.volume, owner).await {
+                    return mutation_error(error);
+                }
+            } else if legacy_workspace_identity_matches(&labels, &input.workspace_id) {
+                // A pre-owner managed volume for this exact workspace is safe
+                // to reset. The checked removal re-validates the labels and
+                // active registry under the same volume lock.
+                if let Err(error) = app
+                    .remove_legacy_volume_locked(&input.volume, &input.workspace_id)
+                    .await
+                {
+                    return mutation_error(error);
+                }
+                tracing::info!(
+                    volume = %input.volume,
+                    workspace = %input.workspace_id,
+                    owner = owner.as_str(),
+                    "adopted legacy workspace volume"
+                );
+            } else {
                 return conflict("volume exists with a different owner or workspace");
-            }
-            if let Err(error) = app.remove_volume_locked(&input.volume, owner).await {
-                return mutation_error(error);
             }
         }
         Ok(None) => {}
@@ -2201,6 +2499,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tower::ServiceExt;
 
     #[test]
     fn rootful_outer_user_namespace_is_rejected() {
@@ -2459,8 +2758,10 @@ mod tests {
             provider_kind: String::new(),
             provider_session_root: std::env::temp_dir(),
             import_images: Vec::new(),
-            dependency_image: None,
-            dependency_bundle: None,
+            dependency_acquisition: Arc::new(RwLock::new(DependencyAcquisitionState::disabled(
+                DEPENDENCY_RUNTIME_UNAVAILABLE,
+                "test configuration",
+            ))),
         })
     }
 
@@ -2767,6 +3068,197 @@ exit 1
     }
 
     #[tokio::test]
+    async fn create_volume_adopts_a_matching_legacy_workspace_volume() {
+        let volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let rm_marker =
+            std::env::temp_dir().join(format!("factory-fake-legacy-rm-{}", uuid::Uuid::new_v4()));
+        let create_marker = std::env::temp_dir().join(format!(
+            "factory-fake-legacy-create-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let args_file =
+            std::env::temp_dir().join(format!("factory-fake-legacy-args-{}", uuid::Uuid::new_v4()));
+        let script = format!(
+            r#"#!/bin/sh
+if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then
+  printf '%s\n' '[{{"Name":"{volume}","Labels":{{"io.software-factory.managed":"true","io.software-factory.workspace":"workspace-a"}}}}]'
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "rm" ]; then
+  touch "{rm_marker}"
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "create" ]; then
+  printf '%s\n' "$@" > "{args_file}"
+  touch "{create_marker}"
+  exit 0
+fi
+exit 1
+"#,
+            rm_marker = rm_marker.display(),
+            create_marker = create_marker.display(),
+            args_file = args_file.display()
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app(podman);
+        let response = create_volume(
+            State(app),
+            test_headers(ResourceOwner::Supervisor),
+            Json(NewVolume {
+                volume,
+                workspace_id: "workspace-a".into(),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        assert!(rm_marker.exists());
+        assert!(create_marker.exists());
+        let args = std::fs::read_to_string(&args_file).unwrap();
+        assert!(args.contains("io.software-factory.workspace=workspace-a"));
+        assert!(args.contains("io.software-factory.owner=supervisor"));
+        assert!(args.contains("io.software-factory.managed=true"));
+        let _ = std::fs::remove_file(&rm_marker);
+        let _ = std::fs::remove_file(&create_marker);
+        let _ = std::fs::remove_file(&args_file);
+    }
+
+    #[tokio::test]
+    async fn create_volume_preserves_a_legacy_volume_for_another_workspace() {
+        let volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let rm_marker = std::env::temp_dir().join(format!(
+            "factory-fake-legacy-mismatch-rm-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let create_marker = std::env::temp_dir().join(format!(
+            "factory-fake-legacy-mismatch-create-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let script = format!(
+            r#"#!/bin/sh
+if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then
+  printf '%s\n' '[{{"Name":"{volume}","Labels":{{"io.software-factory.managed":"true","io.software-factory.workspace":"workspace-b"}}}}]'
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "rm" ]; then
+  touch "{rm_marker}"
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "create" ]; then
+  touch "{create_marker}"
+  exit 0
+fi
+exit 1
+"#,
+            rm_marker = rm_marker.display(),
+            create_marker = create_marker.display()
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app(podman);
+        let response = create_volume(
+            State(app),
+            test_headers(ResourceOwner::Supervisor),
+            Json(NewVolume {
+                volume,
+                workspace_id: "workspace-a".into(),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(!rm_marker.exists());
+        assert!(!create_marker.exists());
+    }
+
+    #[tokio::test]
+    async fn create_volume_rejects_an_active_legacy_volume() {
+        let volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let container = format!("factory-exec-{}", uuid::Uuid::new_v4());
+        let rm_marker = std::env::temp_dir().join(format!(
+            "factory-fake-legacy-active-rm-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let create_marker = std::env::temp_dir().join(format!(
+            "factory-fake-legacy-active-create-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let script = format!(
+            r#"#!/bin/sh
+if [ "$1" = "volume" ] && [ "$2" = "rm" ]; then
+  touch "{rm_marker}"
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "create" ]; then
+  touch "{create_marker}"
+  exit 0
+fi
+exit 1
+"#,
+            rm_marker = rm_marker.display(),
+            create_marker = create_marker.display()
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app(podman);
+        assert!(app.active.register(&volume, &container));
+        let response = create_volume(
+            State(app),
+            test_headers(ResourceOwner::Supervisor),
+            Json(NewVolume {
+                volume,
+                workspace_id: "workspace-a".into(),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(!rm_marker.exists());
+        assert!(!create_marker.exists());
+    }
+
+    #[tokio::test]
+    async fn create_volume_preserves_an_unlabelled_volume() {
+        let volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let rm_marker = std::env::temp_dir().join(format!(
+            "factory-fake-unlabelled-rm-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let create_marker = std::env::temp_dir().join(format!(
+            "factory-fake-unlabelled-create-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let script = format!(
+            r#"#!/bin/sh
+if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then
+  printf '%s\n' '[{{"Name":"{volume}","Labels":{{}}}}]'
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "rm" ]; then
+  touch "{rm_marker}"
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "create" ]; then
+  touch "{create_marker}"
+  exit 0
+fi
+exit 1
+"#,
+            rm_marker = rm_marker.display(),
+            create_marker = create_marker.display()
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app(podman);
+        let response = create_volume(
+            State(app),
+            test_headers(ResourceOwner::Supervisor),
+            Json(NewVolume {
+                volume,
+                workspace_id: "workspace-a".into(),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(!rm_marker.exists());
+        assert!(!create_marker.exists());
+    }
+
+    #[tokio::test]
     async fn remove_container_requires_the_expected_owner_label() {
         let container = format!("factory-exec-{}", uuid::Uuid::new_v4());
         let marker = std::env::temp_dir().join(format!(
@@ -2815,6 +3307,75 @@ exit 1
         .await;
         assert_eq!(accepted.status(), StatusCode::NO_CONTENT);
         assert!(marker.exists());
+    }
+
+    #[tokio::test]
+    async fn execution_cleanup_adopts_a_matching_legacy_container() {
+        let volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let container = format!("factory-exec-{}", uuid::Uuid::new_v4());
+        let rm_marker = std::env::temp_dir().join(format!(
+            "factory-fake-legacy-container-rm-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let script = format!(
+            r#"#!/bin/sh
+if [ "$1" = "inspect" ]; then
+  printf '%s\n' '[{{"Config":{{"Labels":{{"io.software-factory.managed":"true","io.software-factory.workspace":"{volume}"}}}}}}]'
+  exit 0
+fi
+if [ "$1" = "rm" ]; then
+  touch "{rm_marker}"
+  exit 0
+fi
+if [ "$1" = "container" ] && [ "$2" = "exists" ]; then
+  exit 1
+fi
+exit 1
+"#,
+            rm_marker = rm_marker.display()
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app(podman);
+        assert!(
+            app.confirm_execution_cleanup(&container, ResourceOwner::Supervisor, &volume)
+                .await
+        );
+        assert!(rm_marker.exists());
+    }
+
+    #[tokio::test]
+    async fn execution_cleanup_preserves_a_legacy_container_for_another_workspace() {
+        let volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let other_volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let container = format!("factory-exec-{}", uuid::Uuid::new_v4());
+        let rm_marker = std::env::temp_dir().join(format!(
+            "factory-fake-legacy-container-mismatch-rm-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let script = format!(
+            r#"#!/bin/sh
+if [ "$1" = "inspect" ]; then
+  printf '%s\n' '[{{"Config":{{"Labels":{{"io.software-factory.managed":"true","io.software-factory.workspace":"{other_volume}"}}}}}}]'
+  exit 0
+fi
+if [ "$1" = "rm" ]; then
+  touch "{rm_marker}"
+  exit 0
+fi
+if [ "$1" = "container" ] && [ "$2" = "exists" ]; then
+  exit 0
+fi
+exit 1
+"#,
+            rm_marker = rm_marker.display()
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app(podman);
+        assert!(
+            !app.confirm_execution_cleanup(&container, ResourceOwner::Supervisor, &volume)
+                .await
+        );
+        assert!(!rm_marker.exists());
     }
 
     #[tokio::test]
@@ -3633,5 +4194,115 @@ exit 1
         );
         let _ = std::fs::remove_file(&state);
         let _ = std::fs::remove_file(&log);
+    }
+
+    #[test]
+    fn dependency_health_projection_reports_enabled_and_disabled_state() {
+        let enabled = DependencyAcquisitionState::enabled(
+            "factory-deps-egress".into(),
+            "http://10.90.0.1:18080".into(),
+            "wildcard-subnet-scoped",
+        );
+        let projection = enabled.health_projection();
+        assert_eq!(projection["enabled"], true);
+        assert_eq!(projection["network"], "factory-deps-egress");
+        assert_eq!(projection["proxy"], "http://10.90.0.1:18080");
+        assert_eq!(projection["binding"], "wildcard-subnet-scoped");
+
+        let disabled = DependencyAcquisitionState::disabled(
+            DEPENDENCY_EGRESS_UNAVAILABLE,
+            "dependency egress gateway 10.90.0.1:18080 is unavailable",
+        );
+        let projection = disabled.health_projection();
+        assert_eq!(projection["enabled"], false);
+        assert_eq!(projection["code"], DEPENDENCY_EGRESS_UNAVAILABLE);
+        assert_eq!(
+            projection["reason"],
+            "dependency egress gateway 10.90.0.1:18080 is unavailable"
+        );
+        assert!(projection.get("network").is_none());
+    }
+
+    #[tokio::test]
+    async fn disabled_dependency_route_returns_typed_unavailable_response() {
+        let app = test_app(std::env::current_exe().unwrap());
+        app.set_dependency_acquisition(DependencyAcquisitionState::disabled(
+            DEPENDENCY_EGRESS_UNAVAILABLE,
+            "dependency egress gateway is not assigned",
+        ));
+        let router = Router::new()
+            .route(
+                factory_native::dependency_service::DEPENDENCY_ACQUIRE_ROUTE,
+                post(dependency_unavailable),
+            )
+            .with_state(app);
+
+        let unauthorized = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri(factory_native::dependency_service::DEPENDENCY_ACQUIRE_ROUTE)
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+        let response = router
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri(factory_native::dependency_service::DEPENDENCY_ACQUIRE_ROUTE)
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {TEST_SUPERVISOR_TOKEN}"))
+                    .body(axum::body::Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body: serde_json::Value = serde_json::from_str(&response_body(response).await).unwrap();
+        assert_eq!(body["code"], DEPENDENCY_EGRESS_UNAVAILABLE);
+        assert!(
+            body["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("gateway is not assigned"))
+        );
+        assert_eq!(body["reason"], "dependency egress gateway is not assigned");
+    }
+
+    #[tokio::test]
+    async fn health_route_exposes_dependency_availability_reason() {
+        let app = test_app(std::env::current_exe().unwrap());
+        app.set_dependency_acquisition(DependencyAcquisitionState::disabled(
+            DEPENDENCY_RUNTIME_UNAVAILABLE,
+            "dependency image is not available",
+        ));
+        let router = Router::new().route("/health", get(health)).with_state(app);
+        let response = router
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/health")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_str(&response_body(response).await).unwrap();
+        assert_eq!(body["healthy"], true);
+        assert_eq!(body["dependencyAcquisition"]["enabled"], false);
+        assert_eq!(
+            body["dependencyAcquisition"]["code"],
+            DEPENDENCY_RUNTIME_UNAVAILABLE
+        );
+        assert_eq!(
+            body["dependencyAcquisition"]["reason"],
+            "dependency image is not available"
+        );
     }
 }

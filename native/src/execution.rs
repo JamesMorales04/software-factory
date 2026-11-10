@@ -481,6 +481,25 @@ impl RootlessPodmanVolumes {
         args.extend(argv.iter().map(OsString::from));
         Ok(args)
     }
+
+    async fn remove_volume_unchecked(&self, name: &str) -> Result<(), ExecutionError> {
+        let output = self
+            .podman(["--remote=false", "volume", "rm", "--force", name])
+            .await?;
+        if !output.status.success() {
+            let exists = self
+                .podman(["--remote=false", "volume", "exists", name])
+                .await?;
+            if exists.status.code() == Some(1) {
+                return Ok(());
+            }
+            return Err(ExecutionError::Volume(format!(
+                "volume removal failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        Ok(())
+    }
 }
 
 /// Broker-backed execution backend used by containerized trusted services.
@@ -644,10 +663,19 @@ impl VolumeBackend for RootlessPodmanVolumes {
         validate_volume_name(name)?;
         validate_workspace_id(workspace_id)?;
         if let Some(labels) = self.volume_labels(name).await? {
-            if !runtime_broker::volume_identity_matches(&labels, self.owner, workspace_id) {
+            if runtime_broker::volume_identity_matches(&labels, self.owner, workspace_id) {
+                self.remove_volume_unchecked(name).await?;
+            } else if runtime_broker::legacy_workspace_identity_matches(&labels, workspace_id) {
+                tracing::info!(
+                    volume = name,
+                    workspace = workspace_id,
+                    owner = self.owner.as_str(),
+                    "adopted legacy workspace volume"
+                );
+                self.remove_volume_unchecked(name).await?;
+            } else {
                 return Err(ExecutionError::Conflict);
             }
-            self.remove_volume(name).await?;
         }
         let output = self
             .podman([
@@ -678,21 +706,7 @@ impl VolumeBackend for RootlessPodmanVolumes {
             if !runtime_broker::resource_owner_matches(&labels, self.owner) {
                 return Err(ExecutionError::Conflict);
             }
-            let output = self
-                .podman(["--remote=false", "volume", "rm", "--force", name])
-                .await?;
-            if !output.status.success() {
-                let exists = self
-                    .podman(["--remote=false", "volume", "exists", name])
-                    .await?;
-                if exists.status.code() == Some(1) {
-                    return Ok(());
-                }
-                return Err(ExecutionError::Volume(format!(
-                    "volume removal failed: {}",
-                    String::from_utf8_lossy(&output.stderr).trim()
-                )));
-            }
+            self.remove_volume_unchecked(name).await?;
         }
         Ok(())
     }
