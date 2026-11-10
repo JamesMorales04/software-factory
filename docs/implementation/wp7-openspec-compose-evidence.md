@@ -5,8 +5,9 @@ acceptance, certification or an isolation claim. Core remains authoritative.
 
 - Branch: `factory/quality-wp7-openspec-compose`
 - Baseline: `bcb8b5b`
-- Implementation commit: `0377ced` (includes `85c2bae`; this docs commit
-  records that exact code candidate; the code is unchanged by the docs commit).
+- Implementation commit: `06d54e2` (includes `85c2bae` and `0377ced`; this docs
+  commit records that exact code candidate; the code is unchanged by the docs
+  commit).
 - Scope: an operator-authenticated Core read projection, a profile-gated
   Compose validation job using the pinned OpenSpec 1.16.1 image, a bounded
   container-side validation script, deterministic contract tests and static
@@ -92,8 +93,8 @@ not use host Node or a host OpenSpec installation.
 podman compose --profile openspec-validation -f compose.yaml build openspec-validate
 openspec --version -> 1.16.1
 image: localhost/software-factory-openspec:1.16.1
-image ID: b292b9514c79b05ddc6d2e0c51f1920b747b31860fb1313b88903b9a1b3a4981
-local digest: sha256:42862b5f859b74895f7f4a065df6f4a16170a8dc4acdc070956540f62992d29f
+image ID: 449864dea6e00bc239a7437e902fb4166a83037d044541704469b7b045db3d26
+local digest: sha256:eb3084625952f757a5efd9ee29935568bfe8720dcad2d8a56c5e0757933408d5
 ```
 
 The base image was moved from `node:22.12.0` to `node:22.23.2` after the first
