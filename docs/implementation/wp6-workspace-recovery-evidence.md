@@ -14,6 +14,7 @@ end-to-end coverage.
 - Third review-repair implementation: `22fd634`
 - Fourth review-repair implementation: `d6c53cb`
 - Fifth review-repair implementation: `cfaf20f`
+- Sixth review-repair implementation: `891f23e`
 - Worktree: `/home/james/Escritorio/Development/sf-quality-wave12/wp6`
 
 ## Scope
@@ -82,6 +83,15 @@ valid issues. All were repaired:
     registry. Cleanup takes only the container lock. A test with a zero-entry
     exact table (both names overflow) asserts no deadlock, and a mutation test
     asserts volume delete/reset are refused while the execution is active.
+11. **Cancellation-safe marker release.** The sixth review found that a
+    cancellation could drop the registry marker while the container might still
+    be running. The execution lifecycle is now a detached task; client
+    cancellation does not cancel it. The task removes the container under the
+    container lock, verifies `container exists` reports absent, and only then
+    removes the volume marker. If removal or confirmation fails, the marker is
+    kept, the volume stays blocked and the request returns `502`. Tests cover
+    cancellation during execution followed by a volume mutation, and normal
+    completion releasing the marker.
 
 ## Per-owner credential model
 
@@ -158,7 +168,10 @@ Authorization rules:
    and intentionally serialize. Execution takes the volume lock only to verify
    ownership and register an active-execution entry, then releases it for the
    run; volume delete/reset/import/export returns `409` while that registry entry
-   exists. Cleanup takes the container lock after the volume lock is released, so
+   exists. The execution lifecycle runs as a detached task that survives client
+   cancellation; it removes the container and verifies `container exists` is
+   absent before removing the marker. An unconfirmed cleanup keeps the marker and
+   returns `502`, so the volume stays blocked. Cleanup takes the container lock after the volume lock is released, so
    volume -> container ordering is preserved and an overflowed volume/container
    pair cannot self-deadlock. Concurrent create for different owners cannot
    return success for a volume owned by the other caller; concurrent
@@ -170,9 +183,10 @@ Limits: at most 4096 durable state records, 4096 inventory entries, 4096 exact
 resource-lock entries (entries are permanent; additional names permanently share
 one overflow lock and serialize), 4096 concurrently registered active executions,
 and 4 MiB of inventory/inspect subprocess output; Podman commands retain the
-existing 120 s command timeout. Inventory failure is reported
-(`sweepSupported: true`, `sweepError`) and does not delete anything; an
-unsupported backend reports `sweepSupported: false`.
+existing 120 s command timeout. An unconfirmed execution cleanup keeps its volume
+marker blocked rather than guessing; restart/owner reconciliation is required.
+Inventory failure is reported (`sweepSupported: true`, `sweepError`) and does not
+delete anything; an unsupported backend reports `sweepSupported: false`.
 
 ## Commands and results
 
@@ -186,7 +200,7 @@ cargo test -p factory-native --lib
 747 passed; 0 failed; 4 ignored
 
 cargo test -p factory-native --bin factory-runtime-broker
-23 passed; 0 failed
+25 passed; 0 failed
 
 cargo clippy -p factory-native --all-targets --all-features -- -D warnings
 clean
@@ -238,6 +252,11 @@ Concurrency tests (stateful fake Podman with a shared log):
 - `active_execution_blocks_volume_mutation_without_holding_the_lock` — an active
   execution refuses volume deletion and reset without holding a lock across the
   run.
+- `cancelled_execution_keeps_volume_blocked_until_cleanup_is_confirmed` — the
+  request is aborted after the child starts; volume deletion is `409` until the
+  detached task removes the container and confirms absence, then `204`.
+- `normal_execution_releases_the_volume_marker_after_cleanup` — normal completion
+  removes the marker only after cleanup and permits volume deletion.
 - `long_execution_does_not_block_an_unrelated_resource` — a create for another
   volume within exact-table capacity completes while an 800 ms execution is
   active.
@@ -295,6 +314,8 @@ exit 0; 411 lines rendered
 | Execution cleanup vs container delete | `execution_cleanup_serializes_with_container_delete` | Strict inspect/remove sequences; no replacement race |
 | Overflowed volume + container cleanup | `execution_cleanup_works_when_volume_and_container_share_overflow` | No self-deadlock on the shared overflow mutex |
 | Volume mutation during active execution | `active_execution_blocks_volume_mutation_without_holding_the_lock` | Delete/reset `409`; run continues |
+| Client cancellation during execution | `cancelled_execution_keeps_volume_blocked_until_cleanup_is_confirmed` | Volume stays `409` until detached cleanup confirms absence, then `204` |
+| Normal execution completion | `normal_execution_releases_the_volume_marker_after_cleanup` | Marker released after confirmed cleanup; delete `204` |
 | Long execution vs unrelated resource | `long_execution_does_not_block_an_unrelated_resource` | Unrelated create within exact-table capacity completes while the execution is active; overflow names intentionally serialize |
 | Inventory/inspect output overflow | `read_capped_stops_at_the_limit`, `inspect_output_is_bounded_before_parsing` | Stops at bound; process/response rejected |
 | Inventory unavailable or unsupported | `reconcile_handles_unsupported_and_failed_inventory` | No deletion; status/error reported |
@@ -320,9 +341,11 @@ exit 0; 411 lines rendered
   Entries are never reclaimed so a name cannot change lock identity; names
   beyond capacity permanently share one overflow lock and serialize. An
   execution holds the volume lock only for validation/registration and then
-  blocks volume delete/reset/import/export through the active-execution registry;
-  cleanup takes only the container lock. No lock is held across the run, so an
-  overflowed volume/container pair cannot self-deadlock.
+  blocks volume delete/reset/import/export through the active-execution registry.
+  The execution lifecycle is detached from the request; cleanup removes the
+  container, confirms `container exists` is absent, and only then releases the
+  marker. Unconfirmed cleanup keeps the volume blocked. Cleanup takes only the
+  container lock, so an overflowed volume/container pair cannot self-deadlock.
 - Legacy managed resources without an owner label are never deleted. They require
   explicit manual cleanup; this is intentional (`never remove unlabelled`).
 - Provider containers are owned by Worker recovery, not by Supervisor
