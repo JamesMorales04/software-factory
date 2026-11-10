@@ -3792,6 +3792,36 @@ export const es: Catalog = {
   "skills.revoke.action": "Revocar",
   "skills.revoke.required": "Se requiere un motivo de revocación.",
   "skills.revoke.done": "La habilidad fue revocada.",
+  "skills.refresh.title": "Paquetes de conocimiento tecnológico",
+  "skills.refresh.description":
+    "Core comprueba las fechas de revisión de los paquetes persistidos y curados. Un paquete obsoleto o ausente bloquea la planificación FORMAL_SPEC; este control solo ejecuta la pasada determinista de actualización.",
+  "skills.refresh.action": "Ejecutar actualización",
+  "skills.refresh.interval": "Intervalo de actualización",
+  "skills.refresh.hours": "{hours} h",
+  "skills.refresh.lastRun": "Última pasada",
+  "skills.refresh.nextRun": "Próxima pasada",
+  "skills.refresh.never": "aún no ejecutada",
+  "skills.refresh.notScheduled": "no programada",
+  "skills.refresh.due": "Pendientes o actualizables",
+  "skills.refresh.blocked": "Bloqueantes",
+  "skills.refresh.nextWindow": "Próxima ventana de escaneo",
+  "skills.refresh.nextWindowValue": "{checked} de {total}",
+  "skills.refresh.nextWindowDeferred": "Proyectos fuera de la próxima ventana",
+  "skills.refresh.nextWindowNote":
+    "La próxima pasada escaneará {checked} de {total} proyectos; {skipped} quedarán diferidos.",
+  "skills.refresh.lastPassProjects":
+    "La última pasada completada escaneó {checked} de {total} proyectos; {skipped} diferidos.",
+  "skills.refresh.sourceOnly": "Solo fuente; se requiere revisión de contenido",
+  "skills.refresh.reviewAfter": "revisar después de {date}",
+  "skills.refresh.allFresh": "Los {count} paquetes comprobados están vigentes.",
+  "skills.refresh.lastOutcome":
+    "Último resultado: {refreshed} actualizados, {blocked} bloqueados.",
+  "skills.refresh.truncated":
+    "Solo se muestran las primeras 256 tecnologías; la lista está acotada.",
+  "skills.refresh.unavailable":
+    "El estado de actualización no está disponible porque el planificador no se inició en este proceso.",
+  "skills.refresh.done":
+    "Actualización completada: {refreshed} actualizados, {blocked} bloqueados.",
   "cheapOps.title": "Interpretación de evidencia",
   "cheapOps.authority": "OBSERVATION_ONLY — nunca el Gate",
   "cheapOps.description":

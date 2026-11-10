@@ -48,6 +48,7 @@ type SkillPackRow = (
     String,
     String,
     String,
+    String,
 );
 type OpenSpecRow = (
     String,
@@ -397,7 +398,8 @@ pub struct SkillPackRecord {
     pub content_json: String,
     pub content_sha256: String,
     pub source_urls_json: String,
-    pub last_verified_at: String,
+    pub source_checked_at: String,
+    pub content_reviewed_at: String,
     pub review_after: String,
     pub license: String,
     pub provenance: String,
@@ -411,6 +413,11 @@ impl Database {
         &self,
         pack: &crate::planning::SkillPack,
     ) -> Result<SkillPackRecord, Error> {
+        if !pack.is_content_reviewed() {
+            return Err(Error::Validation(
+                "skill pack content has not been reviewed against its sources".into(),
+            ));
+        }
         pack.validate()
             .map_err(|error| Error::Validation(format!("skill pack: {error}")))?;
         let content_json = serde_json::to_string(pack)
@@ -437,7 +444,8 @@ impl Database {
                 content_json,
                 content_sha256,
                 source_urls_json,
-                last_verified_at: pack.last_verified_at.clone(),
+                source_checked_at: pack.source_checked_at.clone(),
+                content_reviewed_at: pack.content_reviewed_at.clone(),
                 review_after: pack.review_after.clone(),
                 license: pack.license.clone(),
                 provenance: pack.provenance.clone(),
@@ -448,8 +456,8 @@ impl Database {
         sqlx::query::query(
             "INSERT INTO skill_packs
              (id,technology,version,content_json,content_sha256,source_urls_json,
-              last_verified_at,review_after,license,provenance,created_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+              source_checked_at,content_reviewed_at,review_after,license,provenance,created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
         )
         .bind(&id)
         .bind(&pack.technology)
@@ -457,7 +465,8 @@ impl Database {
         .bind(&content_json)
         .bind(&content_sha256)
         .bind(&source_urls_json)
-        .bind(&pack.last_verified_at)
+        .bind(&pack.source_checked_at)
+        .bind(&pack.content_reviewed_at)
         .bind(&pack.review_after)
         .bind(&pack.license)
         .bind(&pack.provenance)
@@ -471,7 +480,8 @@ impl Database {
             content_json,
             content_sha256,
             source_urls_json,
-            last_verified_at: pack.last_verified_at.clone(),
+            source_checked_at: pack.source_checked_at.clone(),
+            content_reviewed_at: pack.content_reviewed_at.clone(),
             review_after: pack.review_after.clone(),
             license: pack.license.clone(),
             provenance: pack.provenance.clone(),
@@ -479,12 +489,87 @@ impl Database {
         })
     }
 
+    /// Durable rotating cursor for the bounded refresh project scan.
+    pub async fn skill_refresh_project_offset(&self) -> Result<usize, Error> {
+        let row: Option<(i64,)> =
+            sqlx::query_as::query_as("SELECT project_offset FROM skill_refresh_state WHERE id=1")
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row
+            .map(|(offset,)| usize::try_from(offset.max(0)).unwrap_or(0))
+            .unwrap_or(0))
+    }
+
+    pub async fn set_skill_refresh_project_offset(&self, offset: usize) -> Result<(), Error> {
+        let offset = i64::try_from(offset).map_err(|_| Error::Invalid("skill refresh offset"))?;
+        let _write = self.write_lock.lock().await;
+        sqlx::query::query(
+            "INSERT INTO skill_refresh_state(id,project_offset,updated_at) VALUES (1,?1,?2)
+             ON CONFLICT(id) DO UPDATE SET
+               project_offset=excluded.project_offset,
+               updated_at=excluded.updated_at",
+        )
+        .bind(offset)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn insert_skill_pack_json_for_test(
+        &self,
+        id: &str,
+        technology: &str,
+        content_json: &str,
+        source_checked_at: &str,
+        review_after: &str,
+    ) -> Result<(), Error> {
+        let content_sha256 = sha256_hex(content_json.as_bytes());
+        sqlx::query::query(
+            "INSERT INTO skill_packs
+             (id,technology,version,content_json,content_sha256,source_urls_json,
+              source_checked_at,content_reviewed_at,review_after,license,provenance,created_at)
+             VALUES (?1,?2,'1.90',?3,?4,'[]',?5,'',?6,'MIT','test fixture',
+                     '2026-01-01T00:00:00Z')",
+        )
+        .bind(id)
+        .bind(technology)
+        .bind(content_json)
+        .bind(content_sha256)
+        .bind(source_checked_at)
+        .bind(review_after)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn insert_project_for_test(
+        &self,
+        id: &str,
+        repository: &str,
+        created_at: &str,
+    ) -> Result<(), Error> {
+        sqlx::query::query(
+            "INSERT INTO projects(id,repository,base_commit,created_at,identity)
+             VALUES (?1,?2,?3,?4,'')",
+        )
+        .bind(id)
+        .bind(repository)
+        .bind("a".repeat(40))
+        .bind(created_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn latest_skill_pack(&self, technology: &str) -> Result<SkillPackRecord, Error> {
         let row: Option<SkillPackRow> = sqlx::query_as::query_as(
             "SELECT id,technology,version,content_json,content_sha256,source_urls_json,
-                    last_verified_at,review_after,license,provenance,created_at
+                    source_checked_at,content_reviewed_at,review_after,license,provenance,created_at
              FROM skill_packs WHERE technology=?1
-             ORDER BY created_at DESC,id DESC LIMIT 1",
+             ORDER BY created_at DESC,rowid DESC LIMIT 1",
         )
         .bind(technology)
         .fetch_optional(&self.pool)
@@ -495,8 +580,8 @@ impl Database {
     pub async fn skill_packs(&self) -> Result<Vec<SkillPackRecord>, Error> {
         let rows: Vec<SkillPackRow> = sqlx::query_as::query_as(
             "SELECT id,technology,version,content_json,content_sha256,source_urls_json,
-                    last_verified_at,review_after,license,provenance,created_at
-             FROM skill_packs ORDER BY technology,created_at,id",
+                    source_checked_at,content_reviewed_at,review_after,license,provenance,created_at
+             FROM skill_packs ORDER BY technology,created_at,rowid",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -512,11 +597,12 @@ fn skill_pack_from_row(row: SkillPackRow) -> Result<SkillPackRecord, Error> {
         content_json: row.3,
         content_sha256: row.4,
         source_urls_json: row.5,
-        last_verified_at: row.6,
-        review_after: row.7,
-        license: row.8,
-        provenance: row.9,
-        created_at: row.10,
+        source_checked_at: row.6,
+        content_reviewed_at: row.7,
+        review_after: row.8,
+        license: row.9,
+        provenance: row.10,
+        created_at: row.11,
     })
 }
 
@@ -890,7 +976,15 @@ mod tests {
         assert_eq!(first.content_sha256.len(), 64);
         let latest = db.latest_skill_pack("rust").await.unwrap();
         assert_eq!(latest.id, first.id);
+        assert_eq!(latest.source_checked_at, pack.source_checked_at);
+        assert_eq!(latest.content_reviewed_at, pack.content_reviewed_at);
         assert_eq!(db.skill_packs().await.unwrap().len(), 1);
+
+        let source_only = crate::planning::skills::builtin_skill_pack("angular").unwrap();
+        assert!(
+            db.save_skill_pack(&source_only).await.is_err(),
+            "source-availability-only packs must not be persisted as reviewed knowledge"
+        );
     }
 }
 

@@ -294,6 +294,9 @@ pub const EVENT_KINDS: &[&str] = &[
     "model.call_settled",
     "provider.settings_configured",
     "settings.runtime_updated",
+    "skill.pack.refresh_blocked",
+    "skill.pack.refresh_due",
+    "skill.pack.refreshed",
     "provider.session_active",
     "provider.tool_event",
     "provider.session_cancel_requested",
@@ -713,6 +716,35 @@ impl Database {
                 .await?;
         transaction.commit().await?;
         Ok(sequence)
+    }
+
+    /// Append one event only when the same subject, kind and bounded detail do
+    /// not already exist. Scheduler passes and retries therefore converge on one
+    /// durable alert instead of duplicating it.
+    pub async fn record_event_once(
+        &self,
+        subject_id: &str,
+        kind: &str,
+        detail: &str,
+    ) -> Result<bool, Error> {
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin().await?;
+        let existing: Option<(i64,)> = sqlx::query_as::query_as(
+            "SELECT sequence FROM events
+             WHERE subject_id=?1 AND kind=?2 AND detail=?3 LIMIT 1",
+        )
+        .bind(subject_id)
+        .bind(kind)
+        .bind(detail)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        if existing.is_some() {
+            transaction.commit().await?;
+            return Ok(false);
+        }
+        record_event(&mut transaction, subject_id, kind, detail).await?;
+        transaction.commit().await?;
+        Ok(true)
     }
 }
 

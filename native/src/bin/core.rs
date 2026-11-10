@@ -776,6 +776,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let container_mode = env::var("FACTORY_CONTAINER_MODE").as_deref() == Ok("1");
     let control_addrs = resolve_binds(&bind, container_mode).await?;
     let db = Database::open(Path::new(&database)).await?;
+    let skill_refresh_config =
+        factory_native::planning::skill_refresh::SkillRefreshConfig::from_env()?;
+    factory_native::planning::skill_refresh::start_scheduler(db.clone(), skill_refresh_config);
     let observability = match factory_native::observability::Config::from_env() {
         Ok(Some(config)) => match factory_native::observability::start(db.clone(), config) {
             Ok(handle) => handle,
@@ -897,6 +900,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     futures_util::future::try_join_all(servers).await?;
+    factory_native::planning::skill_refresh::shutdown_scheduler().await;
     app.observability.shutdown().await;
     app.db.close().await;
     Ok(())
@@ -1145,6 +1149,10 @@ fn office_api_router(app: Arc<App>) -> Router {
             post(adopt_agentic_skill),
         )
         .route("/agentic/skills", get(agentic_skills))
+        .route(
+            "/agentic/skills/refresh",
+            get(skill_refresh_status).post(run_skill_refresh_pass),
+        )
         .route("/agentic/skills/{id}/uses", post(record_agentic_skill_use))
         .route(
             "/agentic/skills/{id}/license",
@@ -1440,6 +1448,10 @@ fn api_router(app: Arc<App>) -> Router {
             post(adopt_agentic_skill),
         )
         .route("/agentic/skills", get(agentic_skills))
+        .route(
+            "/agentic/skills/refresh",
+            get(skill_refresh_status).post(run_skill_refresh_pass),
+        )
         .route("/agentic/skills/{id}/uses", post(record_agentic_skill_use))
         .route(
             "/agentic/skills/{id}/license",
@@ -10812,13 +10824,12 @@ async fn persist_planning_plan(
     let persisted = app.db.skill_packs().await.map_err(api_error)?;
     let mut persisted_packs = Vec::with_capacity(persisted.len());
     for record in &persisted {
-        let pack =
-            serde_json::from_str::<factory_native::planning::SkillPack>(&record.content_json)
-                .map_err(|_| {
-                    api_error(Error::Invalid(
-                        "stored skill pack is not a valid planning artifact",
-                    ))
-                })?;
+        let pack = factory_native::planning::SkillPack::from_persisted_json(&record.content_json)
+            .map_err(|_| {
+            api_error(Error::Invalid(
+                "stored skill pack is not a valid planning artifact",
+            ))
+        })?;
         persisted_packs.push(pack);
     }
     let now = chrono::Utc::now().to_rfc3339();
@@ -10829,6 +10840,14 @@ async fn persist_planning_plan(
     ) {
         Ok(plan) => plan,
         Err(error) => {
+            let _ = app
+                .db
+                .record_event_once(
+                    &format!("request:{}", record.id),
+                    "skill.pack.refresh_blocked",
+                    &format!("planning blocked: {error}"),
+                )
+                .await;
             return Ok(json!({
                 "code": "SKILL_PACK_REQUIRED",
                 "message": error.to_string(),
@@ -13056,6 +13075,28 @@ async fn agentic_skills(
                 .collect::<Vec<_>>();
             Json(json!({"skills": values})).into_response()
         }
+        Err(error) => api_error(error),
+    }
+}
+
+async fn skill_refresh_status(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let now = chrono::Utc::now().to_rfc3339();
+    match factory_native::planning::skill_refresh::status(&app.db, &now).await {
+        Ok(status) => Json(status).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn run_skill_refresh_pass(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let now = chrono::Utc::now().to_rfc3339();
+    match factory_native::planning::skill_refresh::run_now(&app.db, &now).await {
+        Ok(report) => Json(json!({"report": report})).into_response(),
         Err(error) => api_error(error),
     }
 }
@@ -18300,6 +18341,8 @@ mod tests {
                 "{}".to_string(),
             ),
             ("GET", "/agentic/skills", "{}".to_string()),
+            ("GET", "/agentic/skills/refresh", "{}".to_string()),
+            ("POST", "/agentic/skills/refresh", "{}".to_string()),
             (
                 "POST",
                 "/agentic/skills/skill/uses",
@@ -18335,6 +18378,43 @@ mod tests {
                 "{method} {uri} must require the operator credential"
             );
         }
+        let request = axum::http::Request::builder()
+            .uri("/agentic/skills/refresh")
+            .header("authorization", "Bearer operator-token")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let status: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(status["intervalSeconds"], 86_400);
+        assert!(status["packs"].as_array().unwrap().len() <= 256);
+        assert!(status["due"].as_u64().unwrap() <= 256);
+        assert!(status["blocked"].as_u64().unwrap() <= 256);
+        assert!(status["projectsChecked"].as_u64().unwrap() <= 64);
+        assert_eq!(status["projectsSkipped"], 0);
+        assert_eq!(status["projectsChecked"], status["projectTotal"]);
+
+        let request = axum::http::Request::builder()
+            .uri("/agentic/skills/refresh")
+            .method("POST")
+            .header("authorization", "Bearer operator-token")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let report: Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(report["report"]["checked"].as_u64().unwrap() <= 256);
+        assert!(report["report"]["projectsChecked"].as_u64().unwrap() <= 64);
+        assert_eq!(report["report"]["projectsSkipped"], 0);
+        assert!(report["report"]["refreshed"].as_array().unwrap().len() <= 256);
+        assert!(report["report"]["blocked"].as_array().unwrap().len() <= 256);
+
         let request = axum::http::Request::builder()
             .uri("/agentic/requests/missing/spec/freeze")
             .method("POST")

@@ -17,6 +17,7 @@ pub mod dod;
 pub mod findings;
 pub mod prompts;
 pub mod route;
+pub mod skill_refresh;
 pub mod skills;
 pub mod stack;
 
@@ -479,6 +480,18 @@ impl DocumentationPlan {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum SkillReviewBasis {
+    /// Only the cited URLs were checked for availability. This is not content
+    /// freshness and must remain blocking.
+    #[default]
+    SourceAvailabilityOnly,
+    /// The pack content was reviewed against the cited source sections on
+    /// `content_reviewed_at`.
+    ContentReviewed,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct SkillPack {
@@ -486,8 +499,17 @@ pub struct SkillPack {
     pub version: String,
     #[serde(default)]
     pub source_urls: Vec<String>,
-    pub last_verified_at: String,
+    pub source_checked_at: String,
+    #[serde(default)]
+    pub content_reviewed_at: String,
+    #[serde(default)]
+    pub review_basis: SkillReviewBasis,
+    #[serde(default)]
     pub review_after: String,
+    #[serde(default)]
+    pub review_scope: String,
+    #[serde(default)]
+    pub reviewed_sections: Vec<String>,
     #[serde(default)]
     pub best_practices: Vec<String>,
     #[serde(default)]
@@ -505,7 +527,74 @@ pub struct SkillPack {
     pub content_sha256: String,
 }
 
+/// Pre-review-separation persisted shape. It is decoded only to preserve
+/// historical rows as source-only knowledge; the legacy review window is never
+/// promoted to a content review.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacySkillPack {
+    technology: String,
+    version: String,
+    #[serde(default)]
+    source_urls: Vec<String>,
+    last_verified_at: String,
+    #[allow(dead_code)]
+    review_after: String,
+    #[serde(default)]
+    best_practices: Vec<String>,
+    #[serde(default)]
+    anti_patterns: Vec<String>,
+    #[serde(default)]
+    commands: Vec<String>,
+    #[serde(default)]
+    security_notes: Vec<String>,
+    #[serde(default)]
+    deprecations: Vec<String>,
+    license: String,
+    #[serde(default)]
+    provenance: String,
+    #[serde(default)]
+    content_sha256: String,
+}
+
 impl SkillPack {
+    /// Decode a current skill pack or a legacy pre-review-separation row.
+    ///
+    /// A legacy `lastVerifiedAt` was a source-availability check, not a content
+    /// review. The converted pack therefore has `content_reviewed_at` empty,
+    /// `review_after` empty and `review_basis = SOURCE_AVAILABILITY_ONLY`, so it
+    /// remains blocking until explicitly reviewed.
+    pub fn from_persisted_json(raw: &str) -> Result<Self, String> {
+        if let Ok(pack) = serde_json::from_str::<Self>(raw) {
+            return Ok(pack);
+        }
+        let legacy = serde_json::from_str::<LegacySkillPack>(raw).map_err(|_| {
+            "stored skill pack is not a valid current or legacy artifact".to_string()
+        })?;
+        let pack = Self {
+            technology: legacy.technology,
+            version: legacy.version,
+            source_urls: legacy.source_urls,
+            source_checked_at: legacy.last_verified_at,
+            content_reviewed_at: String::new(),
+            review_basis: SkillReviewBasis::SourceAvailabilityOnly,
+            review_after: String::new(),
+            review_scope: String::new(),
+            reviewed_sections: Vec::new(),
+            best_practices: legacy.best_practices,
+            anti_patterns: legacy.anti_patterns,
+            commands: legacy.commands,
+            security_notes: legacy.security_notes,
+            deprecations: legacy.deprecations,
+            license: legacy.license,
+            provenance: legacy.provenance,
+            content_sha256: legacy.content_sha256,
+        };
+        pack.validate()
+            .map_err(|error| format!("legacy skill pack: {error}"))?;
+        Ok(pack)
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         bounded_text("skill technology", &self.technology, 200)?;
         bounded_text("skill version", &self.version, 100)?;
@@ -519,12 +608,42 @@ impl SkillPack {
                 return Err("skill source URLs must use HTTPS".into());
             }
         }
-        let last_verified = chrono::DateTime::parse_from_rfc3339(&self.last_verified_at)
-            .map_err(|_| "skill last_verified_at must be RFC 3339")?;
-        let review_after = chrono::DateTime::parse_from_rfc3339(&self.review_after)
-            .map_err(|_| "skill review_after must be RFC 3339")?;
-        if review_after <= last_verified {
-            return Err("skill pack review_after must be after last_verified_at".into());
+        chrono::DateTime::parse_from_rfc3339(&self.source_checked_at)
+            .map_err(|_| "skill source_checked_at must be RFC 3339")?;
+        match self.review_basis {
+            SkillReviewBasis::ContentReviewed => {
+                let content_reviewed =
+                    chrono::DateTime::parse_from_rfc3339(&self.content_reviewed_at)
+                        .map_err(|_| "skill content_reviewed_at must be RFC 3339")?;
+                let review_after = chrono::DateTime::parse_from_rfc3339(&self.review_after)
+                    .map_err(|_| "skill review_after must be RFC 3339")?;
+                if review_after <= content_reviewed {
+                    return Err("skill pack review_after must be after content_reviewed_at".into());
+                }
+                bounded_text("skill review scope", &self.review_scope, MAX_SHORT_CHARS)?;
+                if self.reviewed_sections.is_empty() {
+                    return Err(
+                        "content-reviewed skill pack requires reviewed source sections".into(),
+                    );
+                }
+                bounded_list(
+                    "skill reviewed sections",
+                    &self.reviewed_sections,
+                    MAX_LIST_ITEMS,
+                )?;
+            }
+            SkillReviewBasis::SourceAvailabilityOnly => {
+                if !self.content_reviewed_at.is_empty()
+                    || !self.review_after.is_empty()
+                    || !self.review_scope.is_empty()
+                    || !self.reviewed_sections.is_empty()
+                {
+                    return Err(
+                        "source-availability-only skill pack must not claim a content review"
+                            .into(),
+                    );
+                }
+            }
         }
         bounded_list("skill best practices", &self.best_practices, MAX_LIST_ITEMS)?;
         bounded_list("skill anti-patterns", &self.anti_patterns, MAX_LIST_ITEMS)?;
@@ -537,7 +656,17 @@ impl SkillPack {
         Ok(())
     }
 
+    pub fn is_content_reviewed(&self) -> bool {
+        self.review_basis == SkillReviewBasis::ContentReviewed
+            && !self.content_reviewed_at.is_empty()
+    }
+
+    /// Content freshness only. Source availability alone is intentionally stale
+    /// so an HTTP check can never satisfy the planning gate.
     pub fn is_stale(&self, now: &str) -> bool {
+        if !self.is_content_reviewed() {
+            return true;
+        }
         let (Ok(now), Ok(review_after)) = (
             chrono::DateTime::parse_from_rfc3339(now),
             chrono::DateTime::parse_from_rfc3339(&self.review_after),
@@ -1031,8 +1160,14 @@ mod tests {
             technology: "rust".into(),
             version: "1.90".into(),
             source_urls: vec!["https://doc.rust-lang.org/".into()],
-            last_verified_at: "2026-11-01T00:00:00Z".into(),
+            source_checked_at: "2026-11-01T00:00:00Z".into(),
+            content_reviewed_at: "2026-11-01T00:00:00Z".into(),
+            review_basis: SkillReviewBasis::ContentReviewed,
             review_after: "2026-12-01T00:00:00Z".into(),
+            review_scope: "Rust ownership and tooling documentation".into(),
+            reviewed_sections: vec![
+                "https://doc.rust-lang.org/book/ :: The Rust Programming Language".into(),
+            ],
             best_practices: vec!["use cargo test".into()],
             anti_patterns: vec![],
             commands: vec![],
@@ -1044,5 +1179,34 @@ mod tests {
         };
         assert!(pack.validate().is_ok());
         assert!(pack.is_stale("2026-12-02T00:00:00Z"));
+
+        let legacy_json = r#"{
+            "technology":"rust",
+            "version":"1.90",
+            "sourceUrls":["https://doc.rust-lang.org/"],
+            "lastVerifiedAt":"2026-01-01T00:00:00Z",
+            "reviewAfter":"2026-04-01T00:00:00Z",
+            "bestPractices":["use cargo test"],
+            "antiPatterns":[],
+            "commands":[],
+            "securityNotes":[],
+            "deprecations":[],
+            "license":"CC-BY-4.0",
+            "provenance":"official",
+            "contentSha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }"#;
+        let legacy = SkillPack::from_persisted_json(legacy_json).unwrap();
+        assert_eq!(legacy.source_checked_at, "2026-01-01T00:00:00Z");
+        assert_eq!(legacy.content_reviewed_at, "");
+        assert_eq!(legacy.review_after, "");
+        assert_eq!(
+            legacy.review_basis,
+            SkillReviewBasis::SourceAvailabilityOnly
+        );
+        assert!(legacy.validate().is_ok());
+        assert!(
+            legacy.is_stale("2026-11-09T00:00:00Z"),
+            "a legacy availability date must not become content freshness"
+        );
     }
 }
