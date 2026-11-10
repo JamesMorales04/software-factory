@@ -286,6 +286,7 @@ impl Database {
             model: profile.roles.implementer.model.clone(),
             allowed_paths: config.allowed_paths,
             checks: Vec::new(),
+            dependency_plan: None,
         })
     }
 
@@ -2122,6 +2123,7 @@ mod tests {
             model: grant.route.model.clone(),
             allowed_paths: config.allowed_paths.clone(),
             checks: checks(),
+            dependency_plan: None,
         };
         let (assessment, proposal) = crate::lead::fixture_lead_assessment(
             &lead.id,
@@ -3412,6 +3414,7 @@ mod tests {
             model: grant.route.model.clone(),
             allowed_paths: config.allowed_paths.clone(),
             checks: checks(),
+            dependency_plan: None,
         };
         let (assessment, proposal) = crate::lead::fixture_lead_assessment(
             &lead.id,

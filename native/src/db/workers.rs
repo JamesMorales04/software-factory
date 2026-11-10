@@ -685,6 +685,8 @@ impl Database {
             || report.receipt_id.len() > 128
             || report.generation <= 0
             || !is_sha256(&report.result_sha256)
+            || report.reason.len() > 4_096
+            || report.reason.chars().any(|character| character == '\0')
             || !matches!(
                 report.terminal_status.as_str(),
                 "FAILED" | "CANCELLED" | "BLOCKED"
@@ -755,8 +757,10 @@ impl Database {
                 &run_id,
                 "run.status_changed",
                 &format!(
-                    "status={} attempt={}",
-                    report.terminal_status, report.attempt_id
+                    "status={} attempt={} reason={}",
+                    report.terminal_status,
+                    report.attempt_id,
+                    report.reason.chars().take(1_024).collect::<String>()
                 ),
             )
             .await?;
@@ -789,8 +793,10 @@ impl Database {
                 .bind(&campaign_id)
                 .bind(&work_item_id)
                 .bind(format!(
-                    "worker reported BLOCKED receipt={} result={}",
-                    report.receipt_id, report.result_sha256
+                    "worker reported BLOCKED receipt={} result={} reason={}",
+                    report.receipt_id,
+                    report.result_sha256,
+                    report.reason.chars().take(1_024).collect::<String>()
                 ))
                 .bind(Utc::now().to_rfc3339())
                 .execute(&mut *transaction)
@@ -800,7 +806,11 @@ impl Database {
             super::lead::fail_lead_work(
                 &mut transaction,
                 &report.attempt_id,
-                &format!("worker terminal {}", report.terminal_status),
+                &format!(
+                    "worker terminal {} reason={}",
+                    report.terminal_status,
+                    report.reason.chars().take(1_024).collect::<String>()
+                ),
             )
             .await?;
         }

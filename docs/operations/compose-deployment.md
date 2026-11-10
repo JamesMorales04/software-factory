@@ -76,10 +76,24 @@ executables and Node, so its bundle is large (about 1.5 GiB on the tested host).
 The `dependency` target is a separate credential-free Rust acquisition image.
 `dependency-bundle` exports its rootfs to the shared image-bundle volume and the
 runtime entrypoint waits for the bundle marker before starting the broker. The
-broker imports it into the dedicated engine and exposes only
-`POST /v1/dependencies/acquire`; the check container remains `--network=none`
-and `--offline`. Registry access is limited to the configured logical allowlist;
-network-level egress allowlisting is not implemented in this slice.
+broker imports it into the dedicated engine, pins the imported image ID and
+re-verifies that exact ID before every acquisition. It exposes only
+`POST /v1/dependencies/acquire`.
+
+Acquisition runs on a dedicated internal Podman network with no external route.
+The runtime broker runs a deny-by-default HTTPS CONNECT proxy on that network's
+gateway; the acquisition container receives only the proxy URL and can reach no
+other destination. Cargo's `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY` and
+`CARGO_HTTP_PROXY` are fixed to the proxy, and the proxy allows only the
+configured crates.io/GitHub hosts (`FACTORY_RUNTIME_DEPENDENCY_EGRESS_ALLOW`).
+Direct egress and non-allowlisted CONNECT destinations are refused; broker
+startup fails closed if the network or proxy cannot be established.
+
+The Worker carries a frozen dependency plan in its `ActionSpec` and acquisition
+runs after provider writes and before offline checks/finalization. A failed
+acquisition, a missing required vendor cache or invalid evidence blocks the
+candidate and is persisted as a terminal blocker reason. The check container
+remains `--network=none` and `--offline`.
 
 ## First-run enrollment
 

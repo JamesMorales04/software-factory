@@ -234,6 +234,7 @@ impl Database {
             ActionSpecInput {
                 allowed_paths: &[],
                 checks: &[],
+                dependency_plan: None,
             },
         )
         .await
@@ -248,14 +249,21 @@ impl Database {
         key: &str,
         spec_input: ActionSpecInput<'_>,
     ) -> Result<Action, Error> {
-        let allowed_paths = spec_input.allowed_paths;
-        let checks = spec_input.checks;
+        let ActionSpecInput {
+            allowed_paths,
+            checks,
+            dependency_plan,
+        } = spec_input;
         if !allowed_paths.is_empty() {
             crate::lead::validate_repository_paths("allowedPaths", allowed_paths)
                 .map_err(|error| Error::Delegation(error.to_string()))?;
         }
         crate::lead::validate_mixed_checks(checks)
             .map_err(|error| Error::Delegation(error.to_string()))?;
+        if let Some(plan) = dependency_plan {
+            plan.validate()
+                .map_err(|error| Error::Delegation(error.to_string()))?;
+        }
         if objective.trim().is_empty() || objective.len() > 20_000 {
             return Err(Error::Invalid("objective length"));
         }
@@ -265,18 +273,35 @@ impl Database {
         if model.trim().is_empty() || model.len() > 128 {
             return Err(Error::Invalid("model"));
         }
-        let request_digest = sha256_hex(
-            serde_json::to_string(&(
-                project_id,
-                objective,
-                provider,
-                model,
-                allowed_paths,
-                checks,
-            ))
-            .expect("action digest serializes")
-            .as_bytes(),
-        );
+        // Preserve the historical digest when no plan is present so existing
+        // idempotency keys remain replayable.
+        let request_digest = match dependency_plan {
+            Some(plan) => sha256_hex(
+                serde_json::to_string(&(
+                    project_id,
+                    objective,
+                    provider,
+                    model,
+                    allowed_paths,
+                    checks,
+                    plan,
+                ))
+                .expect("action digest serializes")
+                .as_bytes(),
+            ),
+            None => sha256_hex(
+                serde_json::to_string(&(
+                    project_id,
+                    objective,
+                    provider,
+                    model,
+                    allowed_paths,
+                    checks,
+                ))
+                .expect("action digest serializes")
+                .as_bytes(),
+            ),
+        };
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin().await?;
         if let Some(id) = replay(&mut transaction, key, "create_action", &request_digest).await? {
@@ -297,6 +322,7 @@ impl Database {
             model: model.into(),
             allowed_paths: allowed_paths.to_vec(),
             checks: checks.to_vec(),
+            dependency_plan: dependency_plan.cloned(),
         };
         let spec_json = serde_json::to_string(&spec).expect("ActionSpec serializes");
         let spec_sha256 = sha256_hex(spec_json.as_bytes());

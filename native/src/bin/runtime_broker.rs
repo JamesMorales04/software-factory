@@ -11,7 +11,10 @@
 //! namespace. It is a candidate TRUSTED_LOCAL boundary, not certified
 //! isolation. See docs/security/container-runtime.md.
 
-use std::{collections::BTreeSet, env, path::PathBuf, process::Stdio, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeSet, env, net::SocketAddr, path::PathBuf, process::Stdio, sync::Arc,
+    time::Duration,
+};
 
 use axum::{
     Json, Router,
@@ -21,6 +24,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use factory_native::dependency_egress::{self, EgressAllowlist};
 use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -188,6 +192,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     app.remove_managed_containers().await;
     app.prepull_images().await?;
 
+    let mut dependency_proxy = None;
     let dependency_service = match app.dependency_image.as_deref() {
         Some(image) => {
             let registries = match env::var("FACTORY_RUNTIME_DEPENDENCY_REGISTRIES") {
@@ -197,10 +202,33 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .map(|registry| (*registry).to_string())
                     .collect(),
             };
+            let image_id = app
+                .dependency_image_id(image)
+                .await
+                .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
+            let (network, proxy_address) = app
+                .ensure_dependency_egress_network()
+                .await
+                .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
+            let allowlist = parse_egress_allowlist(
+                env::var("FACTORY_RUNTIME_DEPENDENCY_EGRESS_ALLOW").unwrap_or_else(|_| {
+                    "index.crates.io:443,static.crates.io:443,github.com:443,codeload.github.com:443"
+                        .into()
+                }),
+            )?;
+            let proxy = dependency_egress::spawn(proxy_address, allowlist)
+                .await
+                .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
+            let ready = proxy.ready();
+            let proxy_url = format!("http://{proxy_address}");
             let acquirer = factory_native::dependency_service::PodmanDependencyAcquirer::new(
                 app.podman.clone(),
+                image_id.clone(),
             )
+            .and_then(|acquirer| acquirer.with_egress(network.clone(), proxy_url.clone(), ready))
             .map_err(|error| error.to_string())?;
+            dependency_proxy = Some(proxy);
+            tracing::info!(%image, %image_id, network=%network, %proxy_url, "dependency egress proxy ready");
             Some(Arc::new(
                 factory_native::dependency_service::DependencyService::new(
                     app.token.clone(),
@@ -238,6 +266,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         tracing::info!("dependency acquisition endpoint disabled; no dependency image configured");
     }
+    let _keep_dependency_proxy = dependency_proxy;
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(%addr, "Factory runtime broker listening");
     axum::serve(listener, router)
@@ -555,6 +584,117 @@ impl App {
         }
         Ok(output.stdout)
     }
+
+    async fn dependency_image_id(&self, image: &str) -> Result<String, String> {
+        let output = self
+            .podman_output(["image", "inspect", "--format", "{{.Id}}", image])
+            .await?;
+        if !output.status.success() {
+            return Err(format!(
+                "dependency image {image} is not available: {}",
+                stderr(&output)
+            ));
+        }
+        let id = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        factory_native::dependency_service::normalize_image_id(&id)
+            .ok_or_else(|| format!("dependency image {image} returned an invalid identity"))
+    }
+
+    async fn ensure_dependency_egress_network(&self) -> Result<(String, SocketAddr), String> {
+        let network = env::var("FACTORY_RUNTIME_DEPENDENCY_EGRESS_NETWORK")
+            .unwrap_or_else(|_| "factory-deps-egress".into());
+        if !valid_network_name(&network) {
+            return Err("FACTORY_RUNTIME_DEPENDENCY_EGRESS_NETWORK is invalid".into());
+        }
+        let subnet = env::var("FACTORY_RUNTIME_DEPENDENCY_EGRESS_SUBNET")
+            .unwrap_or_else(|_| "10.90.0.0/24".into());
+        let gateway = env::var("FACTORY_RUNTIME_DEPENDENCY_EGRESS_GATEWAY")
+            .unwrap_or_else(|_| "10.90.0.1".into());
+        let gateway: std::net::IpAddr = gateway
+            .parse()
+            .map_err(|_| "FACTORY_RUNTIME_DEPENDENCY_EGRESS_GATEWAY is invalid")?;
+        if gateway.is_unspecified() || gateway.is_multicast() {
+            return Err(
+                "FACTORY_RUNTIME_DEPENDENCY_EGRESS_GATEWAY must be a private network address"
+                    .into(),
+            );
+        }
+        let port: u16 = env::var("FACTORY_RUNTIME_DEPENDENCY_EGRESS_PORT")
+            .unwrap_or_else(|_| "18080".into())
+            .parse()
+            .map_err(|_| "FACTORY_RUNTIME_DEPENDENCY_EGRESS_PORT is invalid")?;
+        if port == 0 {
+            return Err("FACTORY_RUNTIME_DEPENDENCY_EGRESS_PORT is invalid".into());
+        }
+        let exists = self
+            .podman_output(["network", "exists", network.as_str()])
+            .await?;
+        if !exists.status.success() {
+            let output = self
+                .podman_output([
+                    "network",
+                    "create",
+                    "--internal",
+                    "--subnet",
+                    subnet.as_str(),
+                    "--gateway",
+                    &gateway.to_string(),
+                    "--label",
+                    MANAGED_LABEL,
+                    network.as_str(),
+                ])
+                .await?;
+            if !output.status.success() {
+                return Err(format!(
+                    "creating dependency egress network failed: {}",
+                    stderr(&output)
+                ));
+            }
+        }
+        let output = self
+            .podman_output([
+                "network",
+                "inspect",
+                "--format",
+                "{{(index .Subnets 0).Gateway}} {{(index .Subnets 0).Subnet}}",
+                network.as_str(),
+            ])
+            .await?;
+        if !output.status.success() {
+            return Err(format!(
+                "inspecting dependency egress network failed: {}",
+                stderr(&output)
+            ));
+        }
+        let inspected = String::from_utf8_lossy(&output.stdout);
+        let mut fields = inspected.split_whitespace();
+        let observed_gateway = fields.next().unwrap_or_default();
+        let observed_subnet = fields.next().unwrap_or_default();
+        if observed_gateway != gateway.to_string() || observed_subnet != subnet {
+            return Err(format!(
+                "dependency egress network does not match its fixed gateway/subnet: {observed_gateway} {observed_subnet}"
+            ));
+        }
+        Ok((network, SocketAddr::new(gateway, port)))
+    }
+}
+
+fn valid_network_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+}
+
+fn parse_egress_allowlist(raw: String) -> Result<EgressAllowlist, String> {
+    let entries: Vec<String> = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(str::to_owned)
+        .collect();
+    EgressAllowlist::new(entries).map_err(|error| error.to_string())
 }
 
 fn stderr(output: &std::process::Output) -> String {
@@ -573,7 +713,7 @@ async fn health(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
         "engine_exposed": false,
         "network": "none",
         "dependency_acquisition": app.dependency_image.is_some(),
-        "dependency_network": "brokered-acquisition-only"
+        "dependency_network": "internal-egress-proxy-only"
     }))
 }
 

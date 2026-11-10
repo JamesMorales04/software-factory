@@ -767,6 +767,8 @@ pub struct WorkspaceManager<B: VolumeBackend> {
     project_roots: Vec<PathBuf>,
     backend: B,
     lock: Arc<tokio::sync::Mutex<()>>,
+    operation_locks:
+        Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
     active: Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
     cancelled: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
 }
@@ -800,6 +802,7 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
             project_roots,
             backend,
             lock: Arc::new(tokio::sync::Mutex::new(())),
+            operation_locks: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             active: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             cancelled: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
         })
@@ -1045,6 +1048,11 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
     /// both directions so the vendor tree and evidence survive the next check
     /// snapshot. The broker remains the only network-enabled step; the check
     /// container stays offline.
+    ///
+    /// A per-workspace lock serializes acquisition for one workspace while the
+    /// global state lock is held only for short record transitions. The record
+    /// state is revalidated after every external call, so a concurrent
+    /// cancellation or reconciliation cannot publish a stale result.
     pub async fn acquire_dependencies(
         &self,
         workspace_id: &str,
@@ -1053,60 +1061,83 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
         validate_workspace_id(workspace_id)?;
         crate::dependency_service::validate_request_shape(input)
             .map_err(ExecutionError::Invalid)?;
-        let _write = self.lock.lock().await;
-        if self.cancelled.lock().unwrap().remove(workspace_id) {
-            return Err(ExecutionError::Conflict);
-        }
-        let mut record = self.find_by_id(workspace_id)?;
-        if record.status != WorkspaceStatus::Allocated {
-            return Err(ExecutionError::Conflict);
-        }
-        let workspace = self.open_existing(&record)?;
-        workspace.verify_identity((record.worktree_device, record.worktree_inode))?;
-        let snapshot = tokio::task::spawn_blocking({
-            let path = workspace.path().to_owned();
-            move || workspace_archive::snapshot(&path)
-        })
-        .await
-        .map_err(|error| ExecutionError::Invalid(format!("snapshot task: {error}")))??;
-        self.backend
-            .import_volume(&record.volume, &snapshot.bytes)
-            .await?;
+        let operation_lock = {
+            let mut locks = self.operation_locks.lock().unwrap();
+            locks
+                .entry(workspace_id.to_owned())
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                .clone()
+        };
+        let _operation = operation_lock.lock().await;
         let container = format!("{DEPENDENCY_CONTAINER_PREFIX}{}", Uuid::new_v4());
-        record.status = WorkspaceStatus::Running;
-        record.container = Some(container.clone());
-        record.updated_at_ms = now_ms();
-        self.write_record(&record)?;
+        let (workspace, volume) = {
+            let _write = self.lock.lock().await;
+            if self.cancelled.lock().unwrap().remove(workspace_id) {
+                return Err(ExecutionError::Conflict);
+            }
+            let mut record = self.find_by_id(workspace_id)?;
+            if record.status != WorkspaceStatus::Allocated {
+                return Err(ExecutionError::Conflict);
+            }
+            let workspace = self.open_existing(&record)?;
+            workspace.verify_identity((record.worktree_device, record.worktree_inode))?;
+            record.status = WorkspaceStatus::Running;
+            record.container = Some(container.clone());
+            record.updated_at_ms = now_ms();
+            self.write_record(&record)?;
+            (workspace, record.volume)
+        };
         self.active
             .lock()
             .unwrap()
             .insert(workspace_id.to_owned(), container.clone());
-        let result = self
-            .backend
-            .acquire_dependencies(&record.volume, &container, input)
-            .await;
+        let result: Result<
+            (crate::dependency_service::DependencyAcquireReceipt, Vec<u8>),
+            ExecutionError,
+        > = async {
+            let snapshot = tokio::task::spawn_blocking({
+                let path = workspace.path().to_owned();
+                move || workspace_archive::snapshot(&path)
+            })
+            .await
+            .map_err(|error| ExecutionError::Invalid(format!("snapshot task: {error}")))??;
+            self.backend.import_volume(&volume, &snapshot.bytes).await?;
+            let receipt = self
+                .backend
+                .acquire_dependencies(&volume, &container, input)
+                .await?;
+            let exported = self.backend.export_volume(&volume).await?;
+            Ok((receipt, exported))
+        }
+        .await;
         self.active.lock().unwrap().remove(workspace_id);
         let _ = self.backend.remove_container(&container).await;
-        record.container = None;
-        record.updated_at_ms = now_ms();
-        let receipt = match result {
-            Ok(receipt) => receipt,
+        if self.cancelled.lock().unwrap().remove(workspace_id) {
+            self.fail_dependency_acquisition(
+                workspace_id,
+                &container,
+                "dependency acquisition was cancelled",
+            )
+            .await;
+            return Err(ExecutionError::Conflict);
+        }
+        let (receipt, exported) = match result {
+            Ok(value) => value,
             Err(error) => {
-                record.status = WorkspaceStatus::Allocated;
-                record.error = Some(error.to_string());
-                let _ = self.write_record(&record);
+                self.fail_dependency_acquisition(workspace_id, &container, &error.to_string())
+                    .await;
                 return Err(error);
             }
         };
-        let exported = match self.backend.export_volume(&record.volume).await {
-            Ok(exported) => exported,
-            Err(error) => {
-                record.status = WorkspaceStatus::Allocated;
-                record.error = Some(error.to_string());
-                let _ = self.write_record(&record);
-                return Err(error);
+        {
+            let _write = self.lock.lock().await;
+            let record = self.find_by_id(workspace_id)?;
+            if record.status != WorkspaceStatus::Running
+                || record.container.as_deref() != Some(container.as_str())
+            {
+                return Err(ExecutionError::Conflict);
             }
-        };
+        }
         let staging = self
             .workspace_root
             .join(format!("stage-{}", Uuid::new_v4()));
@@ -1118,12 +1149,24 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
         .await
         .map_err(|error| ExecutionError::Invalid(format!("extract task: {error}")))?;
         if let Err(error) = extracted {
-            record.status = WorkspaceStatus::Allocated;
-            record.error = Some(error.to_string());
-            let _ = self.write_record(&record);
+            self.fail_dependency_acquisition(workspace_id, &container, &error.to_string())
+                .await;
             let _ = std::fs::remove_dir_all(&staging);
             return Err(ExecutionError::Archive(error));
         }
+        let _write = self.lock.lock().await;
+        if self.cancelled.lock().unwrap().remove(workspace_id) {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(ExecutionError::Conflict);
+        }
+        let mut record = self.find_by_id(workspace_id)?;
+        if record.status != WorkspaceStatus::Running
+            || record.container.as_deref() != Some(container.as_str())
+        {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(ExecutionError::Conflict);
+        }
+        let workspace = self.open_existing(&record)?;
         if let Err(error) = workspace
             .verify_identity((record.worktree_device, record.worktree_inode))
             .and_then(|()| workspace.replace_contents(&staging))
@@ -1132,15 +1175,35 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
             })
         {
             record.status = WorkspaceStatus::Allocated;
+            record.container = None;
             record.error = Some(error.to_string());
+            record.updated_at_ms = now_ms();
             let _ = self.write_record(&record);
             let _ = std::fs::remove_dir_all(&staging);
             return Err(ExecutionError::Workspace(error));
         }
         record.status = WorkspaceStatus::Allocated;
+        record.container = None;
         record.error = None;
+        record.updated_at_ms = now_ms();
         self.write_record(&record)?;
         Ok(receipt)
+    }
+
+    async fn fail_dependency_acquisition(&self, workspace_id: &str, container: &str, error: &str) {
+        let _write = self.lock.lock().await;
+        let Ok(mut record) = self.find_by_id(workspace_id) else {
+            return;
+        };
+        if record.status == WorkspaceStatus::Running
+            && record.container.as_deref() == Some(container)
+        {
+            record.status = WorkspaceStatus::Allocated;
+            record.container = None;
+            record.error = Some(error.to_owned());
+            record.updated_at_ms = now_ms();
+            let _ = self.write_record(&record);
+        }
     }
 
     /// Restore workspace paths outside the verified allowed scope after a
@@ -1840,6 +1903,7 @@ mod tests {
         volumes: Mutex<HashMap<String, PathBuf>>,
         root: Mutex<Option<PathBuf>>,
         children: Arc<Mutex<HashMap<String, u32>>>,
+        dependency_barrier: Option<Arc<tokio::sync::Barrier>>,
     }
 
     impl LocalBackend {
@@ -1848,6 +1912,15 @@ mod tests {
                 volumes: Mutex::new(HashMap::new()),
                 root: Mutex::new(Some(root)),
                 children: Arc::new(Mutex::new(HashMap::new())),
+                dependency_barrier: None,
+            }
+        }
+        fn with_dependency_barrier(root: PathBuf, barrier: Arc<tokio::sync::Barrier>) -> Self {
+            Self {
+                volumes: Mutex::new(HashMap::new()),
+                root: Mutex::new(Some(root)),
+                children: Arc::new(Mutex::new(HashMap::new())),
+                dependency_barrier: Some(barrier),
             }
         }
         fn volume_path(&self, name: &str) -> Result<PathBuf, ExecutionError> {
@@ -1953,6 +2026,9 @@ mod tests {
             request: &crate::dependency_service::DependencyAcquireRequest,
         ) -> Result<crate::dependency_service::DependencyAcquireReceipt, ExecutionError> {
             use sha2::{Digest, Sha256};
+            if let Some(barrier) = &self.dependency_barrier {
+                barrier.wait().await;
+            }
             let path = self.volume_path(volume)?;
             let vendor = path.join(&request.vendor_path);
             let evidence = vendor.join(crate::dependency_broker::EVIDENCE_DIR);
@@ -2512,5 +2588,96 @@ mod tests {
         assert!(!args.iter().any(|arg| arg == "--privileged"
             || arg == "--network=host"
             || arg.contains("podman.sock")));
+    }
+
+    #[tokio::test]
+    async fn dependency_acquisition_does_not_serialize_other_workspaces() {
+        let root = std::env::temp_dir().join(format!(
+            "factory-execution-deps-concurrency-{}",
+            Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let repository = root.join("repo");
+        fs::create_dir(&repository).unwrap();
+        git_test(&repository, &["init", "-q"]);
+        git_test(
+            &repository,
+            &["config", "user.email", "test@example.invalid"],
+        );
+        git_test(&repository, &["config", "user.name", "Test"]);
+        fs::write(repository.join("seed.txt"), "base\n").unwrap();
+        git_test(&repository, &["add", "seed.txt"]);
+        git_test(&repository, &["commit", "-qm", "base"]);
+        let base = String::from_utf8(
+            StdCommand::new("git")
+                .args(["-C", repository.to_str().unwrap(), "rev-parse", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_owned();
+        let volume_root = root.join("volumes");
+        fs::create_dir(&volume_root).unwrap();
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let manager = Arc::new(
+            WorkspaceManager::new(
+                root.join("work"),
+                root.join("state"),
+                [repository.clone()],
+                LocalBackend::with_dependency_barrier(volume_root, barrier),
+            )
+            .unwrap(),
+        );
+        let mut handles = Vec::new();
+        for attempt in ["attempt-a", "attempt-b"] {
+            handles.push(
+                manager
+                    .allocate(&WorkspaceAllocation {
+                        attempt_id: attempt.into(),
+                        repository: repository.to_string_lossy().into_owned(),
+                        base_commit: base.clone(),
+                        generation: 1,
+                        action_spec_sha256: "a".repeat(64),
+                        attempt_grant: String::new(),
+                    })
+                    .await
+                    .unwrap(),
+            );
+        }
+        let request = crate::dependency_service::DependencyAcquireRequest {
+            workdir: ".".into(),
+            lockfile_path: "Cargo.lock".into(),
+            lockfile_sha256: "a".repeat(64),
+            vendor_path: "vendor".into(),
+            registry: "sparse+https://index.crates.io/".into(),
+            timeout_secs: 60,
+        };
+        let first = tokio::spawn({
+            let manager = manager.clone();
+            let workspace = handles[0].workspace_id.clone();
+            let request = request.clone();
+            async move { manager.acquire_dependencies(&workspace, &request).await }
+        });
+        let second = tokio::spawn({
+            let manager = manager.clone();
+            let workspace = handles[1].workspace_id.clone();
+            let request = request.clone();
+            async move { manager.acquire_dependencies(&workspace, &request).await }
+        });
+        let (first, second) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(first, second)
+        })
+        .await
+        .expect("both dependency acquisitions should reach the backend concurrently");
+        assert!(first.unwrap().is_ok());
+        assert!(second.unwrap().is_ok());
+        for handle in &handles {
+            let worktree = manager.status(&handle.workspace_id).unwrap();
+            assert_eq!(worktree.status, WorkspaceStatus::Allocated);
+        }
+        drop(manager);
+        let _ = fs::remove_dir_all(root);
     }
 }

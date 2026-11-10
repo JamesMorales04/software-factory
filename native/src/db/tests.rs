@@ -221,6 +221,7 @@ async fn run_status_backfill_migration_is_conservative() {
             ActionSpecInput {
                 allowed_paths: &["seed.txt".to_string()],
                 checks: &[],
+                dependency_plan: None,
             },
         )
         .await
@@ -599,6 +600,7 @@ async fn authorized_attempt(db: &Database) -> String {
             ActionSpecInput {
                 allowed_paths: &["seed.txt".to_string()],
                 checks: &[],
+                dependency_plan: None,
             },
         )
         .await
@@ -713,6 +715,7 @@ async fn p7_p8_claim_is_fenced_expires_and_survives_restart() {
         receipt_id: "receipt-one".into(),
         result_sha256: "a".repeat(64),
         terminal_status: "FAILED".into(),
+        reason: "fixture terminal".into(),
     };
     assert!(matches!(
         db.report_terminal(
@@ -776,6 +779,7 @@ async fn worker_cancelled_report_projects_to_run() {
             receipt_id: "cancelled-receipt".into(),
             result_sha256: "c".repeat(64),
             terminal_status: "CANCELLED".into(),
+            reason: "cancelled".into(),
         },
         110,
     )
@@ -807,6 +811,7 @@ async fn p6_concurrent_workers_claim_distinct_attempts() {
             ActionSpecInput {
                 allowed_paths: &["seed.txt".to_string()],
                 checks: &[],
+                dependency_plan: None,
             },
         )
         .await
@@ -1106,6 +1111,7 @@ async fn candidate_fixture() -> CandidateFixture {
             ActionSpecInput {
                 allowed_paths: &["seed.txt".to_string()],
                 checks: &[],
+                dependency_plan: None,
             },
         )
         .await
@@ -2409,6 +2415,7 @@ async fn authorization_rejects_unratified_risk_and_execution_modes() {
             ActionSpecInput {
                 allowed_paths: &["src".to_string()],
                 checks: &[],
+                dependency_plan: None,
             },
         )
         .await
@@ -2474,6 +2481,7 @@ async fn candidate_outside_scope_and_symlink_are_rejected() {
             ActionSpecInput {
                 allowed_paths: &["src".to_string()],
                 checks: &[],
+                dependency_plan: None,
             },
         )
         .await

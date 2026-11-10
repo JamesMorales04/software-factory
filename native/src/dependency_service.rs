@@ -16,6 +16,8 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::process::Stdio;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use axum::{
@@ -420,6 +422,18 @@ fn valid_image(image: &str) -> bool {
         && !image.contains("://")
 }
 
+fn valid_image_id(value: &str) -> bool {
+    normalize_image_id(value).is_some()
+}
+
+/// Normalize a Podman image identity to `sha256:<64 hex>`. Podman's `{{.Id}}`
+/// prints the bare config digest for locally imported images.
+pub fn normalize_image_id(value: &str) -> Option<String> {
+    let hex = value.strip_prefix("sha256:").unwrap_or(value);
+    (hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .then(|| format!("sha256:{hex}"))
+}
+
 fn valid_volume_name(name: &str) -> bool {
     let Some(rest) = name.strip_prefix("factory-ws-") else {
         return false;
@@ -458,22 +472,80 @@ fn safe_workdir(value: &str) -> bool {
     value.is_empty() || value == "." || is_safe_relative_path(value)
 }
 
-/// Production acquirer. The dependency image is built by the repository and
-/// imported into the dedicated engine; the broker never pulls an arbitrary
-/// image. The container receives no request-controlled environment, no host
-/// mount and no credential.
+#[derive(Clone)]
+pub struct DependencyEgressConfig {
+    pub network: String,
+    pub proxy_url: String,
+    pub ready: Arc<AtomicBool>,
+}
+
+/// Production acquirer. The dependency image is pinned by its exact image ID
+/// and must be reached only through the deny-by-default egress proxy on the
+/// dedicated internal network. The container receives no request-controlled
+/// environment, no host mount and no credential.
 pub struct PodmanDependencyAcquirer {
     podman: PathBuf,
+    image_id: String,
+    egress: Option<DependencyEgressConfig>,
 }
 
 impl PodmanDependencyAcquirer {
-    pub fn new(podman: PathBuf) -> Result<Self, DependencyAcquireError> {
+    pub fn new(podman: PathBuf, image_id: String) -> Result<Self, DependencyAcquireError> {
         if !podman.is_absolute() || !podman.is_file() {
             return Err(DependencyAcquireError::Command(
                 "podman binary must be an absolute existing file".into(),
             ));
         }
-        Ok(Self { podman })
+        if !valid_image_id(&image_id) {
+            return Err(DependencyAcquireError::Command(
+                "dependency image ID must be sha256:<64 hex>".into(),
+            ));
+        }
+        Ok(Self {
+            podman,
+            image_id,
+            egress: None,
+        })
+    }
+
+    pub fn with_egress(
+        mut self,
+        network: String,
+        proxy_url: String,
+        ready: Arc<AtomicBool>,
+    ) -> Result<Self, DependencyAcquireError> {
+        if network.is_empty()
+            || network.len() > 64
+            || !network
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        {
+            return Err(DependencyAcquireError::Command(
+                "dependency egress network is invalid".into(),
+            ));
+        }
+        let url = reqwest::Url::parse(&proxy_url).map_err(|_| {
+            DependencyAcquireError::Command("dependency egress proxy URL is invalid".into())
+        })?;
+        if url.scheme() != "http"
+            || url.host_str().is_none()
+            || url.port().is_none()
+            || !matches!(url.path(), "" | "/")
+            || url.username() != ""
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            return Err(DependencyAcquireError::Command(
+                "dependency egress proxy must be a plain HTTP origin with an explicit port".into(),
+            ));
+        }
+        self.egress = Some(DependencyEgressConfig {
+            network,
+            proxy_url,
+            ready,
+        });
+        Ok(self)
     }
 
     async fn remove_container(&self, container: &str) {
@@ -484,6 +556,40 @@ impl PodmanDependencyAcquirer {
                 .output(),
         )
         .await;
+    }
+
+    async fn verify_image(&self, image: &str) -> Result<(), DependencyAcquireError> {
+        let output = time::timeout(
+            COMMAND_TIMEOUT,
+            self.command()
+                .args(["image", "inspect", "--format", "{{.Id}}", image])
+                .output(),
+        )
+        .await
+        .map_err(|_| {
+            DependencyAcquireError::Command("dependency image inspection timed out".into())
+        })?
+        .map_err(|error| {
+            DependencyAcquireError::Command(format!("dependency image inspection failed: {error}"))
+        })?;
+        if !output.status.success() {
+            return Err(DependencyAcquireError::Command(
+                "dependency image is not available in the engine".into(),
+            ));
+        }
+        let actual = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        let Some(actual) = normalize_image_id(&actual) else {
+            return Err(DependencyAcquireError::Command(
+                "dependency image returned an invalid identity".into(),
+            ));
+        };
+        if actual != self.image_id {
+            return Err(DependencyAcquireError::Command(format!(
+                "dependency image identity mismatch: expected {}, observed {actual}",
+                self.image_id
+            )));
+        }
+        Ok(())
     }
 
     fn command(&self) -> Command {
@@ -527,7 +633,25 @@ impl DependencyAcquirer for PodmanDependencyAcquirer {
                     "dependency acquisition identity is invalid".into(),
                 ));
             }
-            let args = dependency_command_args(volume, container, image, request);
+            let Some(egress) = &self.egress else {
+                return Err(DependencyAcquireError::Command(
+                    "deny-by-default dependency egress proxy is not configured".into(),
+                ));
+            };
+            if !egress.ready.load(Ordering::SeqCst) {
+                return Err(DependencyAcquireError::Command(
+                    "dependency egress proxy is unavailable".into(),
+                ));
+            }
+            self.verify_image(image).await?;
+            let args = dependency_command_args(
+                volume,
+                container,
+                image,
+                request,
+                &egress.network,
+                &egress.proxy_url,
+            );
             let mut child = self
                 .command()
                 .args(args.iter().map(String::as_str))
@@ -622,6 +746,8 @@ pub fn dependency_command_args(
     container: &str,
     image: &str,
     request: &DependencyAcquireRequest,
+    egress_network: &str,
+    egress_proxy_url: &str,
 ) -> Vec<String> {
     let workdir = if request.workdir.is_empty() || request.workdir == "." {
         "."
@@ -636,7 +762,7 @@ pub fn dependency_command_args(
         format!("--label=io.software-factory.workspace={volume}"),
         "--label=io.software-factory.dependency=acquire".into(),
         "--pull=never".into(),
-        "--network=bridge".into(),
+        format!("--network={egress_network}"),
         "--read-only".into(),
         "--tmpfs=/tmp:rw,noexec,nosuid,size=1g".into(),
         "--tmpfs=/cargo-home:rw,nodev,nosuid,size=4g".into(),
@@ -654,6 +780,12 @@ pub fn dependency_command_args(
         "--env=CARGO_TERM_COLOR=never".into(),
         "--env=RUSTUP_HOME=/usr/local/rustup".into(),
         format!("--env=FACTORY_DEPENDENCY_IMAGE={image}"),
+        format!("--env=HTTPS_PROXY={egress_proxy_url}"),
+        format!("--env=HTTP_PROXY={egress_proxy_url}"),
+        format!("--env=ALL_PROXY={egress_proxy_url}"),
+        format!("--env=CARGO_HTTP_PROXY={egress_proxy_url}"),
+        "--env=NO_PROXY=".into(),
+        format!("--env=FACTORY_DEPENDENCY_EGRESS_PROXY={egress_proxy_url}"),
         format!("--volume={volume}:/workspace:rw"),
         image.into(),
         "--workdir".into(),
@@ -847,9 +979,16 @@ mod tests {
             "factory-deps-123e4567-e89b-12d3-a456-426614174000",
             "localhost/software-factory-dependency:dev",
             &wire_request().request(),
+            "factory-deps-egress",
+            "http://10.90.0.1:18080",
         );
         let joined = args.join(" ");
-        assert!(joined.contains("--network=bridge"));
+        assert!(joined.contains("--network=factory-deps-egress"));
+        assert!(!joined.contains("--network=bridge"));
+        assert!(joined.contains("--env=HTTPS_PROXY=http://10.90.0.1:18080"));
+        assert!(joined.contains("--env=ALL_PROXY=http://10.90.0.1:18080"));
+        assert!(joined.contains("--env=CARGO_HTTP_PROXY=http://10.90.0.1:18080"));
+        assert!(joined.contains("--env=NO_PROXY="));
         for forbidden in [
             "--privileged",
             "--network=host",
@@ -877,7 +1016,7 @@ mod tests {
             .iter()
             .filter(|argument| argument.starts_with("--env="))
             .collect();
-        assert_eq!(env.len(), 7);
+        assert_eq!(env.len(), 13);
         assert!(env.iter().all(|entry| !entry.contains("TOKEN")));
         assert!(
             args.windows(2)
@@ -886,6 +1025,43 @@ mod tests {
         assert!(args.iter().any(|argument| {
             argument == "--name=factory-deps-123e4567-e89b-12d3-a456-426614174000"
         }));
+    }
+
+    #[test]
+    fn image_identity_and_egress_configuration_are_strict() {
+        let podman = std::env::current_exe().unwrap();
+        let image_id = format!("sha256:{}", "a".repeat(64));
+        let acquirer = PodmanDependencyAcquirer::new(podman.clone(), image_id.clone()).unwrap();
+        assert!(
+            acquirer
+                .with_egress(
+                    "factory-deps-egress".into(),
+                    "http://10.90.0.1:18080".into(),
+                    std::sync::Arc::new(AtomicBool::new(true)),
+                )
+                .is_ok()
+        );
+        assert!(PodmanDependencyAcquirer::new(podman.clone(), "not-a-digest".into()).is_err());
+        assert!(
+            PodmanDependencyAcquirer::new(podman.clone(), image_id.clone())
+                .unwrap()
+                .with_egress(
+                    "bad/network".into(),
+                    "http://10.90.0.1:18080".into(),
+                    std::sync::Arc::new(AtomicBool::new(true)),
+                )
+                .is_err()
+        );
+        assert!(
+            PodmanDependencyAcquirer::new(podman, image_id)
+                .unwrap()
+                .with_egress(
+                    "factory-deps-egress".into(),
+                    "https://10.90.0.1:18080".into(),
+                    std::sync::Arc::new(AtomicBool::new(true)),
+                )
+                .is_err()
+        );
     }
 
     #[tokio::test]

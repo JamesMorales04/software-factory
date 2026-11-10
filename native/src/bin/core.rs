@@ -238,6 +238,8 @@ struct NewAction {
     allowed_paths: Vec<String>,
     #[serde(default)]
     checks: Vec<factory_native::lead::SpecCheck>,
+    #[serde(default)]
+    dependency_plan: Option<factory_native::dependencies::DependencyPlan>,
 }
 
 #[derive(Deserialize)]
@@ -5900,6 +5902,7 @@ async fn create_action(
             factory_native::db::ActionSpecInput {
                 allowed_paths: &input.allowed_paths,
                 checks: &input.checks,
+                dependency_plan: input.dependency_plan.as_ref(),
             },
         )
         .await
@@ -18211,6 +18214,7 @@ mod tests {
                 factory_native::db::ActionSpecInput {
                     allowed_paths: &[],
                     checks: &[],
+                    dependency_plan: None,
                 },
             )
             .await
@@ -18925,6 +18929,7 @@ mod tests {
                 factory_native::db::ActionSpecInput {
                     allowed_paths: &allowed,
                     checks: &checks,
+                    dependency_plan: None,
                 },
             )
             .await
@@ -19905,6 +19910,7 @@ mod tests {
                 model: grant.route.model.clone(),
                 allowed_paths: config.allowed_paths.clone(),
                 checks: checks(),
+                dependency_plan: None,
             };
             let (assessment, proposal) = factory_native::lead::fixture_lead_assessment(
                 &lead.id,
@@ -20372,6 +20378,7 @@ mod tests {
                 model: grant.route.model.clone(),
                 allowed_paths: config.allowed_paths.clone(),
                 checks: checks(),
+                dependency_plan: None,
             };
             let (assessment, _) = factory_native::lead::fixture_lead_assessment(
                 &lead.id,

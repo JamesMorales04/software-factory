@@ -994,6 +994,7 @@ mod tests {
                 expect_exit: 0,
                 timeout_secs: 60,
             }],
+            dependency_plan: None,
         };
         let _action = db
             .create_action_with_spec(
@@ -1005,6 +1006,7 @@ mod tests {
                 ActionSpecInput {
                     allowed_paths: &spec.allowed_paths,
                     checks: &spec.checks,
+                    dependency_plan: None,
                 },
             )
             .await

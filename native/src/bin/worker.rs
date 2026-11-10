@@ -382,7 +382,8 @@ async fn report_terminal_failure(
             "generation": assignment.lease.generation,
             "receipt_id": Uuid::new_v4().to_string(),
             "result_sha256": sha256_hex(message.as_bytes()),
-            "terminal_status": terminal_status
+            "terminal_status": terminal_status,
+            "reason": message.chars().take(4_096).collect::<String>()
         }))
         .send()
         .await?;
@@ -709,6 +710,164 @@ struct ProviderContext<'a> {
     assignment: &'a Assignment,
     supervisor: &'a Supervisor,
     enforce_check_completion: bool,
+}
+
+/// Per-attempt dependency acquisition state. Acquisition runs at most once,
+/// lazily after provider writes and before the first offline check/finalize.
+#[derive(Default)]
+struct DependencyAcquisitionState {
+    attempted: bool,
+    receipt: Option<factory_native::dependency_service::DependencyAcquireReceipt>,
+}
+
+fn dependency_acquisition_request(
+    action_spec: &ActionSpec,
+    directory: &str,
+) -> Result<Option<factory_native::dependency_service::DependencyAcquireRequest>, String> {
+    let Some(plan) = action_spec.dependency_plan.as_ref() else {
+        return Ok(None);
+    };
+    plan.validate()
+        .map_err(|error| format!("frozen dependency plan is invalid: {error}"))?;
+    if plan.acquisition.uses_vendor() && !plan.acquisition.uses_broker() {
+        let vendor = plan
+            .rust
+            .as_ref()
+            .map(|rust| rust.vendor_path.as_str())
+            .unwrap_or("vendor");
+        if !std::path::Path::new(directory).join(vendor).is_dir() {
+            return Err(format!(
+                "dependency plan requires a pre-vendored `{vendor}` cache that is not present"
+            ));
+        }
+    }
+    if !plan.acquisition.uses_broker() {
+        return Ok(None);
+    }
+    let fetch = plan
+        .brokered_fetch
+        .as_ref()
+        .ok_or_else(|| "brokered dependency plan has no frozen acquisition contract".to_string())?;
+    Ok(Some(
+        factory_native::dependency_service::DependencyAcquireRequest {
+            workdir: ".".into(),
+            lockfile_path: fetch.lockfile_path.clone(),
+            lockfile_sha256: fetch.lockfile_sha256.clone(),
+            vendor_path: fetch.vendor_path.clone(),
+            registry: fetch.registry.clone(),
+            timeout_secs: 600,
+        },
+    ))
+}
+
+async fn supervisor_acquire_dependencies(
+    context: &ProviderContext<'_>,
+    workspace_id: &str,
+    capability: &str,
+    request: &factory_native::dependency_service::DependencyAcquireRequest,
+) -> Result<factory_native::dependency_service::DependencyAcquireReceipt, Box<dyn std::error::Error>>
+{
+    let digest = request.digest()?;
+    let operation = request_workspace_operation(WorkspaceOperation {
+        client: context.client,
+        core: context.core,
+        session_token: context.session_token,
+        worker_id: context.worker_id,
+        attempt_id: &context.assignment.lease.attempt_id,
+        generation: context.assignment.lease.generation,
+        workspace_id,
+        operation: "dependencies",
+        request_sha256: digest,
+    })
+    .await?;
+    let response = context
+        .supervisor
+        .client
+        .post(
+            context
+                .supervisor
+                .base
+                .join(&format!("v1/workspaces/{workspace_id}/dependencies"))?,
+        )
+        .bearer_auth(capability)
+        .header("x-factory-operation-grant", operation)
+        .json(request)
+        .send()
+        .await?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        let body = body.chars().take(1_000).collect::<String>();
+        return Err(format!("Supervisor dependency acquisition failed: {status}: {body}").into());
+    }
+    Ok(response.json().await?)
+}
+
+async fn ensure_dependencies(
+    context: &ProviderContext<'_>,
+    handle: &WorkspaceHandle,
+    state: &mut DependencyAcquisitionState,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if state.attempted {
+        return Ok(());
+    }
+    state.attempted = true;
+    let request =
+        match dependency_acquisition_request(&context.assignment.action_spec, context.directory) {
+            Ok(request) => request,
+            Err(error) => {
+                return Err(
+                    format!("dependency acquisition blocked the candidate: {error}").into(),
+                );
+            }
+        };
+    let Some(request) = request else {
+        return Ok(());
+    };
+    let receipt = supervisor_acquire_dependencies(
+        context,
+        &handle.workspace_id,
+        &handle.capability,
+        &request,
+    )
+    .await
+    .map_err(|error| format!("dependency acquisition blocked the candidate: {error}"))?;
+    let acquisition = context
+        .assignment
+        .action_spec
+        .dependency_plan
+        .as_ref()
+        .map(|plan| plan.acquisition)
+        .unwrap_or(factory_native::dependencies::DependencyAcquisition::NotRequired);
+    receipt.evidence().validate(acquisition).map_err(|error| {
+        format!("dependency acquisition evidence is invalid; candidate blocked: {error}")
+    })?;
+    if receipt.lockfile_sha256 != request.lockfile_sha256 {
+        return Err(
+            "dependency acquisition receipt does not bind the frozen lockfile; candidate blocked"
+                .into(),
+        );
+    }
+    let summary = serde_json::to_string(&receipt)?;
+    post_tool_event(
+        context,
+        "dependency-acquisition",
+        "dependencies",
+        "RESULT",
+        &bounded_tool_text(&summary),
+    )
+    .await?;
+    state.receipt = Some(receipt);
+    Ok(())
+}
+
+async fn finalize_candidate(
+    context: &ProviderContext<'_>,
+    handle: &WorkspaceHandle,
+    dependencies: &mut DependencyAcquisitionState,
+) -> Result<factory_native::workspace::CandidateRevision, Box<dyn std::error::Error>> {
+    ensure_dependencies(context, handle, dependencies).await?;
+    supervisor_finalize(context, &handle.workspace_id, &handle.capability).await
 }
 
 async fn execute_provider_assignment(
@@ -1694,6 +1853,7 @@ async fn finalize_written_provider_work(
     usage: ProviderUsage,
     error: &str,
     passed_checks: &std::collections::BTreeSet<String>,
+    dependencies: &mut DependencyAcquisitionState,
 ) -> Result<Option<ProviderRun>, Box<dyn std::error::Error>> {
     if provider_state(context).await? == "CANCEL_REQUESTED" {
         return Ok(None);
@@ -1732,7 +1892,7 @@ async fn finalize_written_provider_work(
         session_id,
     )
     .await?;
-    let candidate = supervisor_finalize(context, &handle.workspace_id, &handle.capability).await?;
+    let candidate = finalize_candidate(context, handle, dependencies).await?;
     cleanup(context.supervisor, &handle.workspace_id, &handle.capability).await?;
     Ok(Some(ProviderRun {
         candidate,
@@ -2226,6 +2386,7 @@ async fn run_provider_tool_loop(
     let mut usage = ProviderUsage::default();
     let mut written = false;
     let mut passed_checks = std::collections::BTreeSet::new();
+    let mut dependencies = DependencyAcquisitionState::default();
     let mut last_message_id = String::new();
     let mut call_ids = std::collections::BTreeSet::new();
     let mut progress = TurnProgress::new(context);
@@ -2274,6 +2435,7 @@ async fn run_provider_tool_loop(
                     usage,
                     &error.to_string(),
                     &passed_checks,
+                    &mut dependencies,
                 )
                 .await?
             {
@@ -2308,6 +2470,7 @@ async fn run_provider_tool_loop(
                         usage,
                         &error.to_string(),
                         &passed_checks,
+                        &mut dependencies,
                     )
                     .await?
                 {
@@ -2344,6 +2507,7 @@ async fn run_provider_tool_loop(
                             usage,
                             &error.to_string(),
                             &passed_checks,
+                            &mut dependencies,
                         )
                         .await?
                     {
@@ -2376,6 +2540,7 @@ async fn run_provider_tool_loop(
                         usage,
                         &detail,
                         &passed_checks,
+                        &mut dependencies,
                     )
                     .await?
                 {
@@ -2513,8 +2678,7 @@ async fn run_provider_tool_loop(
                     &session_id,
                 )
                 .await?;
-                let candidate =
-                    supervisor_finalize(context, &handle.workspace_id, &handle.capability).await?;
+                let candidate = finalize_candidate(context, &handle, &mut dependencies).await?;
                 cleanup(context.supervisor, &handle.workspace_id, &handle.capability).await?;
                 return Ok(ProviderRun {
                     candidate,
@@ -2617,6 +2781,7 @@ async fn run_provider_tool_loop(
                             "frozen check authorized",
                         )
                         .await?;
+                        ensure_dependencies(context, &handle, &mut dependencies).await?;
                         match supervisor_run(
                             context,
                             &handle.workspace_id,
@@ -2856,6 +3021,7 @@ struct CodexToolState {
     call_ids: std::collections::BTreeSet<String>,
     passed_checks: std::collections::BTreeSet<String>,
     written: bool,
+    dependencies: DependencyAcquisitionState,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2965,6 +3131,7 @@ async fn execute_codex_tool(
         }) => {
             let timeout_secs = effective_timeout;
             post_tool_event(context, call_id, tool, "ALLOW", "frozen check authorized").await?;
+            ensure_dependencies(context, handle, &mut tool_state.dependencies).await?;
             let run = tokio::time::timeout_at(
                 deadline,
                 supervisor_run(
@@ -3165,6 +3332,7 @@ async fn run_codex_tool_loop(
         call_ids: std::collections::BTreeSet::new(),
         passed_checks: std::collections::BTreeSet::new(),
         written: false,
+        dependencies: DependencyAcquisitionState::default(),
     };
     let mut last_turn_id = String::new();
     let mut active_reservation: Option<String> = None;
@@ -3539,9 +3707,12 @@ async fn run_codex_tool_loop(
                         rpc.archive_thread(&thread_id),
                     )
                     .await;
-                    let candidate =
-                        supervisor_finalize(context, &handle.workspace_id, &handle.capability)
-                            .await?;
+                    let candidate = finalize_candidate(
+                        context,
+                        &handle,
+                        &mut tool_state.dependencies,
+                    )
+                    .await?;
                     cleanup(context.supervisor, &handle.workspace_id, &handle.capability).await?;
                     return Ok(ProviderRun {
                         candidate,
@@ -4406,6 +4577,15 @@ async fn run_provider_patch(
         })
         .collect::<Vec<_>>();
     if context.assignment.allowed_tools.is_empty() {
+        if dependency_acquisition_request(&context.assignment.action_spec, context.directory)?
+            .is_some()
+        {
+            let _ = cleanup(context.supervisor, &handle.workspace_id, &handle.capability).await;
+            return Err(
+                "brokered dependency acquisition requires the write/run/finalize path; refusing an apply-only candidate"
+                    .into(),
+            );
+        }
         let apply = ApplyFilesRequest {
             allowed_paths: context.assignment.action_spec.allowed_paths.clone(),
             files,
@@ -4476,6 +4656,8 @@ async fn run_provider_patch(
         let _ = cleanup(context.supervisor, &handle.workspace_id, &handle.capability).await;
         return Err(format!("Supervisor provider write failed: {status} {body}").into());
     }
+    let mut dependencies = DependencyAcquisitionState::default();
+    ensure_dependencies(context, &handle, &mut dependencies).await?;
     for command in plan.commands {
         let response = context
             .supervisor
@@ -4510,6 +4692,7 @@ async fn run_provider_patch(
             .into());
         }
     }
+    ensure_dependencies(context, &handle, &mut dependencies).await?;
     let response = context
         .supervisor
         .client
@@ -4781,6 +4964,9 @@ fn validated_loopback_url(
 #[cfg(test)]
 mod tests {
     use super::opencode_sandbox_config;
+    use axum::response::IntoResponse;
+    use factory_native::provider_patch::ProviderUsage;
+    use std::time::Duration;
 
     #[test]
     fn opencode_provider_config_does_not_hardcode_retry_suppression() {
@@ -4798,10 +4984,11 @@ mod tests {
     }
 
     use super::{
-        ActionSpec, Assignment, ContinuationDecision, Lease, ProgressKind, TurnProgress,
-        WorkerProgressHalt, missing_check_instructions, opencode_first_action_instruction,
-        sha256_hex, strict_request_digest, submit_progress_checkpoint, validate_provider_tools,
-        validated_loopback_url,
+        ActionSpec, Assignment, ContinuationDecision, DependencyAcquisitionState, Lease,
+        ProgressKind, ProviderContext, Supervisor, TurnProgress, WorkerProgressHalt,
+        WorkspaceHandle, WorkspaceStatus, finalize_candidate, missing_check_instructions,
+        opencode_first_action_instruction, sha256_hex, strict_request_digest,
+        submit_progress_checkpoint, validate_provider_tools, validated_loopback_url,
     };
     use factory_native::db::ExecutionCheckReceiptRecord;
     use factory_native::lead::{CheckKind, SpecCheck};
@@ -4915,6 +5102,7 @@ mod tests {
                 model: "deepseek-v4.1-flash".into(),
                 allowed_paths: vec!["src".into()],
                 checks: Vec::new(),
+                dependency_plan: None,
             },
             action_spec_sha256: "c".repeat(64),
             repository: "/repo".into(),
@@ -5247,5 +5435,240 @@ mod tests {
         );
         assert!(validated_loopback_url("http://localhost:8765", "TEST", &[]).is_ok());
         assert!(validated_loopback_url("http://127.0.0.1:8765/path", "TEST", &[]).is_err());
+    }
+
+    fn dependency_plan() -> factory_native::dependencies::DependencyPlan {
+        use factory_native::dependencies::{
+            BrokeredFetch, DependencyEvidence, DependencyKind, DependencyPlan,
+        };
+        use factory_native::planning::{
+            DependencyItem, DependencyPlan as PlanningDependencyPlan, DependencyStrategy,
+        };
+        let planning = PlanningDependencyPlan {
+            strategy: DependencyStrategy::BrokeredFetch,
+            items: vec![DependencyItem {
+                name: "itoa".into(),
+                version: "1.0.17".into(),
+                source: "registry+https://github.com/rust-lang/crates.io-index".into(),
+                license: "MIT OR Apache-2.0".into(),
+                checksum: "a".repeat(64),
+                advisory_status: "no-known-advisories".into(),
+                sbom_ref: "artifacts/sbom.json".into(),
+            }],
+            cache_ref: "vendor".into(),
+            sbom_ref: "artifacts/sbom.json".into(),
+            owner_approval: None,
+        };
+        let evidence = DependencyEvidence {
+            lockfile_sha256: "b".repeat(64),
+            vendor_sha256: "c".repeat(64),
+            sbom_ref: "artifacts/sbom.json".into(),
+            sbom_sha256: "d".repeat(64),
+            license_report_ref: "artifacts/licenses.json".into(),
+            license_report_sha256: "e".repeat(64),
+            advisory_report_ref: "artifacts/advisories.json".into(),
+            advisory_report_sha256: "f".repeat(64),
+        };
+        let fetch = BrokeredFetch::new(
+            "registry+https://github.com/rust-lang/crates.io-index",
+            "Cargo.lock",
+            "b".repeat(64),
+            "vendor",
+        );
+        DependencyPlan::from_planning(&planning, DependencyKind::Rust, evidence, Some(fetch))
+            .expect("fixture dependency plan")
+    }
+
+    #[derive(Clone)]
+    struct DependencyFixture {
+        fail: bool,
+        paths: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    fn dependency_fixture_router(fixture: DependencyFixture) -> axum::Router {
+        use axum::{Json, extract::State, routing::post};
+        async fn operation() -> Json<serde_json::Value> {
+            Json(serde_json::json!({"grant": "test-grant"}))
+        }
+        async fn dependencies(
+            State(fixture): State<DependencyFixture>,
+            Json(body): Json<serde_json::Value>,
+        ) -> axum::response::Response {
+            fixture.paths.lock().unwrap().push("/dependencies".into());
+            if fixture.fail {
+                return (
+                    axum::http::StatusCode::BAD_GATEWAY,
+                    Json(serde_json::json!({"error": "egress proxy unavailable"})),
+                )
+                    .into_response();
+            }
+            let lockfile = body["lockfileSha256"].as_str().unwrap().to_owned();
+            Json(serde_json::json!({
+                "image": "localhost/software-factory-dependency:dev",
+                "lockfileSha256": lockfile,
+                "vendorSha256": "c".repeat(64),
+                "vendorEntries": 1,
+                "sbomPath": "vendor/.factory-supply-chain/sbom.cdx.json",
+                "sbomSha256": "d".repeat(64),
+                "licensePath": "vendor/.factory-supply-chain/licenses.json",
+                "licenseSha256": "e".repeat(64),
+                "advisoryPath": "vendor/.factory-supply-chain/advisories.json",
+                "advisorySha256": "f".repeat(64),
+                "stagingCleaned": true
+            }))
+            .into_response()
+        }
+        async fn finalize(State(fixture): State<DependencyFixture>) -> Json<serde_json::Value> {
+            fixture.paths.lock().unwrap().push("/finalize".into());
+            Json(serde_json::json!({
+                "commitSha": "c".repeat(40),
+                "treeSha": "d".repeat(40)
+            }))
+        }
+        axum::Router::new()
+            .route("/worker/workspace_operation", post(operation))
+            .route(
+                "/worker/provider_tool_event",
+                post(|| async { axum::http::StatusCode::NO_CONTENT }),
+            )
+            .route("/v1/workspaces/ws/dependencies", post(dependencies))
+            .route("/v1/workspaces/ws/finalize", post(finalize))
+            .with_state(fixture)
+    }
+
+    async fn dependency_context(
+        _assignment: &Assignment,
+        base: reqwest::Url,
+    ) -> (
+        reqwest::Client,
+        std::sync::Arc<std::sync::Mutex<Option<String>>>,
+        std::sync::Arc<std::sync::Mutex<ProviderUsage>>,
+        Supervisor,
+    ) {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let supervisor = Supervisor {
+            client: client.clone(),
+            base: base.clone(),
+            token: "supervisor-token".into(),
+            image: "test/image:1".into(),
+            timeout_secs: 60,
+        };
+        (
+            client,
+            std::sync::Arc::new(std::sync::Mutex::new(None)),
+            std::sync::Arc::new(std::sync::Mutex::new(ProviderUsage::default())),
+            supervisor,
+        )
+    }
+
+    #[tokio::test]
+    async fn dependency_fixture_assignment_acquires_before_finalize_and_blocks_on_failure() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let base = reqwest::Url::parse(&format!("http://{address}")).unwrap();
+        let fixture = DependencyFixture {
+            fail: false,
+            paths: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+        };
+        let paths = fixture.paths.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, dependency_fixture_router(fixture))
+                .await
+                .unwrap();
+        });
+        let mut assignment = assignment_for_progress();
+        assignment.action_spec.dependency_plan = Some(dependency_plan());
+        let (client, provider_session, usage_tracker, supervisor) =
+            dependency_context(&assignment, base.clone()).await;
+        let handle = WorkspaceHandle {
+            workspace_id: "ws".into(),
+            attempt_id: "attempt".into(),
+            base_commit: "a".repeat(40),
+            generation: 1,
+            status: WorkspaceStatus::Allocated,
+            candidate: None,
+            capability: "capability".into(),
+            capability_expires_at_ms: 0,
+        };
+        let context = ProviderContext {
+            client: &client,
+            core: &base,
+            session_token: "session",
+            worker_id: "worker",
+            session_record_id: "session",
+            base_url: "",
+            password: "",
+            directory: "/tmp",
+            api_directory: "",
+            provider_kind: "fixture",
+            provider_session: &provider_session,
+            usage_tracker: &usage_tracker,
+            turn_policy: None,
+            assignment: &assignment,
+            supervisor: &supervisor,
+            enforce_check_completion: false,
+        };
+        let mut state = DependencyAcquisitionState::default();
+        let candidate = finalize_candidate(&context, &handle, &mut state)
+            .await
+            .expect("fixture dependency candidate");
+        assert_eq!(candidate.commit_sha, "c".repeat(40));
+        assert_eq!(
+            *paths.lock().unwrap(),
+            vec!["/dependencies".to_string(), "/finalize".to_string()]
+        );
+        server.abort();
+
+        // A failed acquisition must block finalization with an explicit
+        // blocker and must never reach the finalize endpoint.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let base = reqwest::Url::parse(&format!("http://{address}")).unwrap();
+        let failed = DependencyFixture {
+            fail: true,
+            paths: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+        };
+        let failed_paths = failed.paths.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, dependency_fixture_router(failed))
+                .await
+                .unwrap();
+        });
+        let (client, provider_session, usage_tracker, supervisor) =
+            dependency_context(&assignment, base.clone()).await;
+        let context = ProviderContext {
+            client: &client,
+            core: &base,
+            session_token: "session",
+            worker_id: "worker",
+            session_record_id: "session",
+            base_url: "",
+            password: "",
+            directory: "/tmp",
+            api_directory: "",
+            provider_kind: "fixture",
+            provider_session: &provider_session,
+            usage_tracker: &usage_tracker,
+            turn_policy: None,
+            assignment: &assignment,
+            supervisor: &supervisor,
+            enforce_check_completion: false,
+        };
+        let mut state = DependencyAcquisitionState::default();
+        let error = finalize_candidate(&context, &handle, &mut state)
+            .await
+            .expect_err("failed dependency acquisition must block finalize");
+        assert!(
+            error.to_string().contains("dependency acquisition blocked"),
+            "error: {error}"
+        );
+        assert_eq!(
+            *failed_paths.lock().unwrap(),
+            vec!["/dependencies".to_string()]
+        );
+        server.abort();
     }
 }

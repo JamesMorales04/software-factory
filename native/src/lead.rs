@@ -2634,6 +2634,7 @@ mod tests {
             model: "deepseek-v4.1-flash".into(),
             allowed_paths: vec!["src".into()],
             checks: checks().0.into_iter().chain(checks().1).collect(),
+            dependency_plan: None,
         };
         let (assessment, proposal) = fixture_lead_assessment(
             "request-1",

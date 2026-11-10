@@ -29,6 +29,7 @@ RUN cargo build --locked --release -p factory-native \
       --bin factory-reviewer \
       --bin factory-runtime-broker \
       --bin factory-dependency-acquire \
+      --bin factory-dependency-egress-proxy \
       --bin factory-egress-bridge \
       --bin factory-provider-bridge \
       --bin factory-fixture-provider
@@ -197,7 +198,8 @@ RUN apt-get update \
     && install -d -m 0755 /workspace
 
 COPY --from=workspace /build/target/release/factory-dependency-acquire /usr/local/bin/factory-dependency-acquire
-RUN chmod 755 /usr/local/bin/factory-dependency-acquire
+COPY --from=workspace /build/target/release/factory-dependency-egress-proxy /usr/local/bin/factory-dependency-egress-proxy
+RUN chmod 755 /usr/local/bin/factory-dependency-acquire /usr/local/bin/factory-dependency-egress-proxy
 
 ENV HOME=/tmp \
     TMPDIR=/tmp \
