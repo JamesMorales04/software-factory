@@ -25,6 +25,33 @@ The legacy API journeys and provider-specific views were retired with the former
 implementation. Historical records are archived under
 `docs/evidence/history/`.
 
+## WP10 quality-first Office acceptance
+
+`wave12-acceptance.mjs` starts an isolated real Rust Core on a dedicated
+loopback port with a disposable SQLite database, starts the real Office Vite
+server, and drives Chromium through the Director plan review, reviewer
+independence, finding disposition, workflow trace and Skills technology-pack
+surfaces. Core is built with the debug-only `test-support` feature and seeds
+labelled fixture rows; the browser always uses the real Core HTTP API and no
+paid model inference runs. The script writes screenshots and `manifest.json`
+under `docs/evidence/wave12-office-acceptance-2026-11-10/`.
+
+```sh
+# From the repository root.
+(cd native && cargo build -p factory-native --bin factory-core --features test-support)
+(cd office && npm ci)
+(cd office/e2e-browser && npm ci)
+node office/e2e-browser/wave12-acceptance.mjs
+```
+
+The run covers EN and ES at 1440, 834, 390 and 320 px, keyboard focus order,
+disabled and error states, negative redaction, unauthorized Core reads, long
+lists, and browser console/network cleanliness. It is implementer self-test
+evidence, not independent acceptance or certification. Seeded state is recorded
+in the manifest; the duplicate-sequence projection is injected by the
+test-support endpoint because the durable event primary key cannot hold a
+duplicate sequence.
+
 `personal-access.mjs` exercises the session and device-pairing journey against
 an already running disposable Compose candidate. Start first-run onboarding or
 local recovery, set `FACTORY_OFFICE_URL`, pass the one-time confirmation as

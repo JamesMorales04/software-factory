@@ -3497,7 +3497,7 @@ export const en = {
   "director.plan.compiling": "Compiling plan",
   "director.plan.empty": "No WorkGraph is recorded for this request.",
   "director.plan.units": "{count} unit(s)",
-  "director.plan.order": "Order: {order}",
+  "director.plan.order": "Order",
   "director.plan.graphSha": "Graph SHA-256",
   "director.plan.success": "The Planner WorkGraph was validated and recorded.",
   "director.plan.error": "The Planner WorkGraph could not be compiled.",

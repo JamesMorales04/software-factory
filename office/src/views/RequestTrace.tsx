@@ -101,7 +101,12 @@ function isUuid(value: string): boolean {
 }
 
 function operationalIdText(value: string | null): string {
-  return value !== null && isStepId(value) ? shortId(value) : "[REDACTED]";
+  // The `step-` prefix and UUID group separators consume the first ten
+  // characters, so shortId(value) reduced every step to the same `step-<4 hex>`
+  // label. Show the final eight hex characters instead; the full identifier
+  // remains in the title attribute.
+  if (value === null || !isStepId(value)) return "[REDACTED]";
+  return `step-${value.slice(-8)}`;
 }
 
 const CANONICAL_PAYLOAD_KEYS = new Map<string, string>([
