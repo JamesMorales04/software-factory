@@ -9,6 +9,8 @@ import {
   type IntakeRequestProjection,
   type LeadAssessmentView,
   type LeadPlanProposalView,
+  type ParticipantPlanReadinessView,
+  type PlanningReadinessView,
   type SpecCheck,
 } from "../coreApi";
 import { I18nProvider, type Locale } from "../i18n";
@@ -135,6 +137,46 @@ const plan: FrozenLeadPlanRecord = {
   created_at: "2026-10-27T10:02:00Z",
 };
 
+const readyParticipantPlan: ParticipantPlanReadinessView = {
+  required: true,
+  present: true,
+  ready: true,
+  reviewerCount: 5,
+  requiredReviewerCount: 5,
+  reviewerRoles: [
+    "FUNCTIONAL",
+    "ARCHITECTURE",
+    "CODE_QUALITY",
+    "SECURITY",
+    "TESTING",
+  ],
+  requiredRoles: [
+    "FUNCTIONAL",
+    "ARCHITECTURE",
+    "CODE_QUALITY",
+    "SECURITY",
+    "TESTING",
+  ],
+  missingRoles: [],
+  unexpectedRoles: [],
+  missingAssignments: [],
+  graphStale: false,
+  problems: [],
+};
+
+const readyPlanning: PlanningReadinessView = {
+  lane: "FORMAL_SPEC",
+  artifacts: [],
+  review: null,
+  workflow: null,
+  missingArtifacts: [],
+  participantPlan: readyParticipantPlan,
+  reviewStatus: "AUTO_APPROVED",
+  reviewApproved: true,
+  materialsReady: true,
+  ready: true,
+};
+
 function makeProjection(
   overrides: Partial<IntakeRequestProjection> = {},
 ): IntakeRequestProjection {
@@ -160,6 +202,7 @@ function makeProjection(
     assessment,
     proposal,
     plan,
+    planning: readyPlanning,
     campaign: null,
     messages: [
       {
@@ -321,6 +364,127 @@ describe("RequestWorkspace", () => {
       }),
     );
     expect(await screen.findByText(/Core recorded the approval/)).toBeDefined();
+  });
+
+  it("shows an incomplete plan-review callout and blocks approval", async () => {
+    mocks.getIntakeRequest.mockResolvedValue(
+      makeProjection({
+        planning: {
+          ...readyPlanning,
+          missingArtifacts: ["PLAN", "WORKGRAPH"],
+          ready: false,
+          participantPlan: {
+            ...readyParticipantPlan,
+            present: false,
+            ready: false,
+            reviewerCount: 0,
+            reviewerRoles: [],
+            missingRoles: readyParticipantPlan.requiredRoles,
+            missingAssignments: readyParticipantPlan.requiredRoles,
+          },
+        },
+      }),
+    );
+    renderRequest();
+    expect(await screen.findByText("Plan review incomplete")).toBeDefined();
+    expect(
+      screen.getByText("Missing artifacts: PLAN, WORKGRAPH."),
+    ).toBeDefined();
+    expect(screen.getByText(/participant plan is not recorded/i)).toBeDefined();
+    const approve = screen.getByRole("button", {
+      name: "Approve frozen plan and start",
+    });
+    expect((approve as HTMLButtonElement).disabled).toBe(true);
+    expect(
+      (screen.getByLabelText("Approval rationale") as HTMLTextAreaElement)
+        .disabled,
+    ).toBe(true);
+    expect(
+      (
+        screen.getByRole("checkbox", {
+          name: /I reviewed the frozen scope/,
+        }) as HTMLInputElement
+      ).disabled,
+    ).toBe(true);
+    expect(
+      screen
+        .getByRole("link", { name: /Open Director plan review/ })
+        .getAttribute("href"),
+    ).toBe("/director?request=request-1");
+  });
+
+  it("blocks approval when the participant plan does not match the frozen reviewer plan", async () => {
+    mocks.getIntakeRequest.mockResolvedValue(
+      makeProjection({
+        planning: {
+          ...readyPlanning,
+          ready: false,
+          participantPlan: {
+            ...readyParticipantPlan,
+            ready: false,
+            reviewerCount: 1,
+            reviewerRoles: ["FUNCTIONAL"],
+            missingRoles: [
+              "ARCHITECTURE",
+              "CODE_QUALITY",
+              "SECURITY",
+              "TESTING",
+            ],
+            missingAssignments: [
+              "ARCHITECTURE",
+              "CODE_QUALITY",
+              "SECURITY",
+              "TESTING",
+            ],
+            problems: [
+              "the participant plan requires 1 reviewer(s); the frozen plan requires 5",
+            ],
+          },
+        },
+      }),
+    );
+    renderRequest();
+    expect(
+      await screen.findByText(
+        /does not match the frozen reviewer plan: ARCHITECTURE, CODE_QUALITY, SECURITY, TESTING/,
+      ),
+    ).toBeDefined();
+    expect(
+      (
+        screen.getByRole("button", {
+          name: "Approve frozen plan and start",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+  });
+
+  it("blocks approval while the plan review awaits the owner decision", async () => {
+    mocks.getIntakeRequest.mockResolvedValue(
+      makeProjection({
+        planning: {
+          ...readyPlanning,
+          ready: false,
+          reviewStatus: "PENDING",
+          reviewApproved: false,
+          materialsReady: true,
+        },
+      }),
+    );
+    renderRequest();
+    expect(
+      await screen.findByText(/plan review is awaiting the owner decision/i),
+    ).toBeDefined();
+    expect(
+      (
+        screen.getByRole("button", {
+          name: "Approve frozen plan and start",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+    expect(
+      (screen.getByLabelText("Approval rationale") as HTMLTextAreaElement)
+        .disabled,
+    ).toBe(true);
   });
 
   it("explains an unavailable authorization and disables approval", async () => {

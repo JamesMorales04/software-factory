@@ -307,6 +307,36 @@ describe("Director", () => {
       review: null,
       workflow: null,
       missingArtifacts: [],
+      participantPlan: {
+        required: true,
+        present: true,
+        ready: true,
+        reviewerCount: 5,
+        requiredReviewerCount: 5,
+        reviewerRoles: [
+          "FUNCTIONAL",
+          "ARCHITECTURE",
+          "CODE_QUALITY",
+          "SECURITY",
+          "TESTING",
+        ],
+        requiredRoles: [
+          "FUNCTIONAL",
+          "ARCHITECTURE",
+          "CODE_QUALITY",
+          "SECURITY",
+          "TESTING",
+        ],
+        missingRoles: [],
+        unexpectedRoles: [],
+        missingAssignments: [],
+        graphStale: false,
+        problems: [],
+      },
+      reviewStatus: "AUTO_APPROVED",
+      reviewApproved: true,
+      materialsReady: true,
+      ready: true,
     });
     mocks.reviewAgenticPlan.mockReset();
     mocks.planAgenticRequest.mockReset().mockResolvedValue({
@@ -487,6 +517,36 @@ describe("Director", () => {
       },
       workflow: null,
       missingArtifacts: [],
+      participantPlan: {
+        required: true,
+        present: true,
+        ready: true,
+        reviewerCount: 5,
+        requiredReviewerCount: 5,
+        reviewerRoles: [
+          "FUNCTIONAL",
+          "ARCHITECTURE",
+          "CODE_QUALITY",
+          "SECURITY",
+          "TESTING",
+        ],
+        requiredRoles: [
+          "FUNCTIONAL",
+          "ARCHITECTURE",
+          "CODE_QUALITY",
+          "SECURITY",
+          "TESTING",
+        ],
+        missingRoles: [],
+        unexpectedRoles: [],
+        missingAssignments: [],
+        graphStale: false,
+        problems: [],
+      },
+      reviewStatus: "PENDING",
+      reviewApproved: false,
+      materialsReady: true,
+      ready: false,
     });
     mocks.reviewAgenticPlan.mockResolvedValue({
       review: {
@@ -506,6 +566,16 @@ describe("Director", () => {
     expect(
       await screen.findByRole("heading", { name: "Plan review" }),
     ).toBeDefined();
+    expect(
+      screen.getByText(/awaiting an authenticated owner decision/i),
+    ).toBeDefined();
+    expect(
+      (
+        screen.getByRole("button", {
+          name: "Approve plan",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(false);
     await userEvent.type(
       screen.getByLabelText("Review rationale"),
       "Owner approved.",
@@ -517,6 +587,78 @@ describe("Director", () => {
       decision: "APPROVE",
       rationale: "Owner approved.",
     });
+  });
+
+  it("blocks plan approval until the participant plan matches the frozen reviewer plan", async () => {
+    const requiredRoles = [
+      "FUNCTIONAL",
+      "ARCHITECTURE",
+      "CODE_QUALITY",
+      "SECURITY",
+      "TESTING",
+    ] as const;
+    mocks.getAgenticPlanning.mockResolvedValue({
+      lane: "FORMAL_SPEC",
+      signals: {
+        objective: "Add an ICS export endpoint",
+        greenfield: false,
+        large: true,
+        missingDocs: false,
+        missingStack: false,
+        architectureUncertainty: false,
+        publicContract: true,
+        dataOrSchema: false,
+        securityBoundary: false,
+        crossModule: false,
+        changedFiles: 2,
+        expectedUnits: 2,
+        explicitRepair: false,
+      },
+      artifacts: [],
+      review: {
+        id: "review-1",
+        requestId: "request-1",
+        planRevision: 1,
+        planSha256: "a".repeat(64),
+        status: "PENDING",
+        principalId: "core:planning",
+        rationale: "Owner decision required.",
+        points: 0,
+        reviewedAt: "2026-11-08T12:00:00Z",
+      },
+      workflow: null,
+      missingArtifacts: [],
+      participantPlan: {
+        required: true,
+        present: false,
+        ready: false,
+        reviewerCount: 0,
+        requiredReviewerCount: requiredRoles.length,
+        reviewerRoles: [],
+        requiredRoles: [...requiredRoles],
+        missingRoles: [...requiredRoles],
+        unexpectedRoles: [],
+        missingAssignments: [...requiredRoles],
+        graphStale: false,
+        problems: ["the participant plan is not recorded"],
+      },
+      reviewStatus: "PENDING",
+      reviewApproved: false,
+      materialsReady: false,
+      ready: false,
+    });
+    renderDirector();
+    expect(
+      await screen.findByText("Participant plan incomplete"),
+    ).toBeDefined();
+    expect(screen.getByText(/participant plan is not recorded/i)).toBeDefined();
+    expect(
+      (
+        screen.getByRole("button", {
+          name: "Approve plan",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
   });
 
   it("shows both the frozen revision and a newer draft revision", async () => {

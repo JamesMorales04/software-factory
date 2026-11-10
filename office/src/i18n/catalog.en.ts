@@ -395,6 +395,25 @@ export const en = {
   "request.approval.approve": "Approve frozen plan and start",
   "request.approval.disabled":
     "Approval is disabled until Core can derive the authorization.",
+  "request.approval.planningDisabled":
+    "Complete the plan review in the Director before approval.",
+  "request.planning.incompleteTitle": "Plan review incomplete",
+  "request.planning.incompleteBody":
+    "Core requires the planning artifacts and the participant plan before this frozen plan can start.",
+  "request.planning.missingArtifacts": "Missing artifacts: {values}.",
+  "request.planning.participantMissing":
+    "The participant plan is not recorded. Compile the plan and record the participant plan in the Director.",
+  "request.planning.participantIncomplete":
+    "The participant plan does not match the frozen reviewer plan: {values}.",
+  "request.planning.participantAssignments": "reviewer role assignments",
+  "request.planning.reviewPending":
+    "The plan review is awaiting the owner decision. Approve the exact plan revision in the Director before starting.",
+  "request.planning.reviewNotApproved":
+    "The latest plan review is {status}; the plan cannot start until an approved review binds the current revision.",
+  "request.planning.openDirector":
+    "Open Director plan review (Compile plan / Record participant plan)",
+  "request.planning.unavailable":
+    "Core did not report plan-review readiness. Reload this request before approving.",
   "request.execution.title": "Execution",
   "request.execution.description":
     "Core reports an authorized Campaign. Campaign, Run, candidate and Quality Gate state remain separate facts and are shown in the Campaign workspace.",
@@ -3512,6 +3531,16 @@ export const en = {
   "director.planning.principal": "Review principal",
   "director.planning.points": "Autonomy points",
   "director.planning.missing": "Required artifacts are missing: {values}.",
+  "director.planning.participantIncompleteTitle": "Participant plan incomplete",
+  "director.planning.participantMissing":
+    "The participant plan is not recorded. Use Record participant plan before approving.",
+  "director.planning.participantIncomplete":
+    "The participant plan does not match the frozen reviewer plan: {values}.",
+  "director.planning.participantAssignments": "reviewer role assignments",
+  "director.planning.reviewPending":
+    "The plan review is awaiting an authenticated owner decision. Approve, request changes or reject the exact plan revision.",
+  "director.planning.reviewNotApproved":
+    "The latest plan review is {status}. Approve a new exact revision before the plan can start.",
   "director.planning.rationale": "Review rationale: {value}",
   "director.planning.reviewRationale": "Review rationale",
   "director.planning.rationaleRequired":

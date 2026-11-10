@@ -1,6 +1,6 @@
 {
  "schema_version": 1,
- "updated_at": "2026-11-10T06:00:00Z",
+ "updated_at": "2026-11-10T12:00:00Z",
  "route_base_note": "Current Office uses hash routes. The design-foundation slice moves to a stable /office browser base while preserving these logical routes.",
  "capabilities": {
   "CAP-011": {
@@ -322,7 +322,8 @@
     "open the exact request workspace, Campaign, Project or runtime object without exposing removed pages",
     "cancel an autonomous request or Campaign through the authoritative Core boundary",
     "inspect the bounded, redacted workflow trace for a request: replayed final state, per-step status, ordered event log and structured replay alerts",
-    "inspect duplicate-sequence, missing-transition, open-step, terminal, truncated and malformed trace alerts without rendering tokens, prompts or unknown payload values"
+    "inspect duplicate-sequence, missing-transition, open-step, terminal, truncated and malformed trace alerts without rendering tokens, prompts or unknown payload values",
+    "see plan-review missing artifacts and participant-plan readiness before an exact intake approval and open the Director to complete the plan review"
    ],
    "states": [
     "loading",
@@ -350,7 +351,10 @@
     "trace-missing-transition",
     "trace-open-step",
     "trace-malformed-event",
-    "trace-seeded-fault-retry"
+    "trace-seeded-fault-retry",
+    "plan-review-incomplete",
+    "plan-review-pending",
+    "participant-plan-required"
    ],
    "acceptance": [
     "office/e2e-browser/rust-journey.mjs",
@@ -370,7 +374,7 @@
     "docs/implementation/wp10-browser-acceptance-evidence.md",
     "docs/evidence/wave12-office-acceptance-2026-11-10/manifest.json"
    ],
-   "notes": "Requests and decisions are operator-authenticated Core projections; the client does not synthesize state. Removed routes redirect to the closest current workspace, unknown routes return Home, and copied path URLs without a hash redirect for browser navigation. The request list and Decision Inbox filter by Project. A V2 profile whose auto_start policy enables R0 is an autopilot profile: the owner grants the autonomous policy and subscription confirmation once, then Core owns assessment, freeze and start for subsequent requests without per-request UI approval. Manual profiles keep the exact plan approval flow. The Inbox exposes exact-revision intake approval, model-call resolution, Lead withdrawal, Campaign cancellation and navigation; every action revalidates the current decision revision, requires proportionate confirmation and is disabled while Core is unreachable. Full-scope Campaign authorization is not posted from the Inbox. Autonomous Gate repair and provider-session termination remain outside the Inbox. A real Chromium run against Compose exercised the request list, Inbox, filters, deep links and the autonomous R0 path; see docs/evidence/office-autonomy-ux-2026-11-08/manifest.json and docs/evidence/autopilot-r0-2026-11-08/manifest.json. It is implementer evidence, not independent acceptance. No SSE or live-stream claim. WP11 adds an operator-authenticated GET /agentic/requests/{id}/trace read of the latest durable workflow run. It returns a bounded ReplayTrace, per-step rows, a redacted event log ordered by durable sequence, and structured alerts for duplicate sequences, gaps, open steps, terminal/non-terminal state, truncation, malformed rows and replay rejection. Payloads are redacted by Core; free-form step detail is not exposed. The Request workspace renders loading, empty, error/offline, alert, step and long event-log states. WP10 now exercises the trace in a real Chromium run against an isolated real Core with seeded workflow rows: loading, no-run empty, Core error plus retry, populated run facts, duplicate/gap/open/terminal/truncated/malformed alerts, step trace, ordered event log with redacted payloads, rejected replay state, and 1440/834/390/320 px EN/ES layouts. The duplicate-sequence projection is injected by the test-support endpoint because the durable event primary key cannot hold a duplicate sequence; it still runs through the real trace module. Compose acceptance and independent acceptance remain pending; this is implementer evidence only. WP11 review repair: allowlisted payload strings are retained only when they parse as canonical workflow/step/outcome enums, lowercase SHA-256, operational identifiers or numbers/booleans; free-form strings are hashed. Property names outside the canonical payload keys are replaced by a bounded hash label, event IDs must match canonical UUID / workflow-<uuid> / step-<uuid> formats, and the Office refuses invalid payload keys, values or identifier text again. Transition rows with JSON-looking invalid detail or missing/invalid from/to states raise MALFORMED_EVENT, and a rejected replay is shown as unknown rather than in progress. Step rows are bounded to the newest 500 with STEP_TRUNCATED and a visible step-truncation state."
+   "notes": "Requests and decisions are operator-authenticated Core projections; the client does not synthesize state. Removed routes redirect to the closest current workspace, unknown routes return Home, and copied path URLs without a hash redirect for browser navigation. The request list and Decision Inbox filter by Project. A V2 profile whose auto_start policy enables R0 is an autopilot profile: the owner grants the autonomous policy and subscription confirmation once, then Core owns assessment, freeze and start for subsequent requests without per-request UI approval. Manual profiles keep the exact plan approval flow. The Inbox exposes exact-revision intake approval, model-call resolution, Lead withdrawal, Campaign cancellation and navigation; every action revalidates the current decision revision, requires proportionate confirmation and is disabled while Core is unreachable. Full-scope Campaign authorization is not posted from the Inbox. Autonomous Gate repair and provider-session termination remain outside the Inbox. A real Chromium run against Compose exercised the request list, Inbox, filters, deep links and the autonomous R0 path; see docs/evidence/office-autonomy-ux-2026-11-08/manifest.json and docs/evidence/autopilot-r0-2026-11-08/manifest.json. It is implementer evidence, not independent acceptance. No SSE or live-stream claim. WP11 adds an operator-authenticated GET /agentic/requests/{id}/trace read of the latest durable workflow run. It returns a bounded ReplayTrace, per-step rows, a redacted event log ordered by durable sequence, and structured alerts for duplicate sequences, gaps, open steps, terminal/non-terminal state, truncation, malformed rows and replay rejection. Payloads are redacted by Core; free-form step detail is not exposed. The Request workspace renders loading, empty, error/offline, alert, step and long event-log states. WP10 now exercises the trace in a real Chromium run against an isolated real Core with seeded workflow rows: loading, no-run empty, Core error plus retry, populated run facts, duplicate/gap/open/terminal/truncated/malformed alerts, step trace, ordered event log with redacted payloads, rejected replay state, and 1440/834/390/320 px EN/ES layouts. The duplicate-sequence projection is injected by the test-support endpoint because the durable event primary key cannot hold a duplicate sequence; it still runs through the real trace module. Compose acceptance and independent acceptance remain pending; this is implementer evidence only. WP11 review repair: allowlisted payload strings are retained only when they parse as canonical workflow/step/outcome enums, lowercase SHA-256, operational identifiers or numbers/booleans; free-form strings are hashed. Property names outside the canonical payload keys are replaced by a bounded hash label, event IDs must match canonical UUID / workflow-<uuid> / step-<uuid> formats, and the Office refuses invalid payload keys, values or identifier text again. Transition rows with JSON-looking invalid detail or missing/invalid from/to states raise MALFORMED_EVENT, and a rejected replay is shown as unknown rather than in progress. Step rows are bounded to the newest 500 with STEP_TRUNCATED and a visible step-truncation state. Intake approval is fail-closed: Core returns PLAN_ARTIFACTS_REQUIRED with the missing artifact list, PARTICIPANT_PLAN_REQUIRED when the recorded participant plan does not match the frozen reviewer roles, count and assignments, or PLAN_REVIEW_REQUIRED while the latest plan-review decision is pending or not approved. The Request workspace shows the blocker and links to the Director plan review; the Decision Inbox does not offer the approve action while readiness is incomplete. This readiness repair is covered by Core and component tests only; real browser acceptance remains NOT_TESTED."
   },
   "CAP-050": {
    "name": "Campaign operational workspace",
@@ -863,6 +867,7 @@
     "author a formal specification draft for a FORMAL_SPEC request",
     "freeze the exact draft revision by its preview digest",
     "inspect requirement, assertion and check traceability",
+    "inspect whether the frozen reviewer plan is fully staffed before approving the plan",
     "retry a failed model call or reload after a conflict"
    ],
    "states": [
@@ -880,6 +885,8 @@
     "plan-changes-requested",
     "plan-rejected",
     "plan-missing-artifacts",
+    "participant-plan-required",
+    "participant-plan-mismatch",
     "findings-open",
     "finding-resolved",
     "finding-refuted",
@@ -891,11 +898,12 @@
    ],
    "acceptance": [
     "office/src/views/Director.test.tsx",
+    "office/src/views/RequestWorkspace.test.tsx",
     "office/src/views/Specs.test.tsx",
     "native/tests/planning_pipeline.rs",
     "docs/evidence/spec-board-2026-11-09/manifest.json"
    ],
-   "notes": "The Planner and Spec Manager are bounded Lead-route model calls with distinct purpose and typed schemas. Core validates the graph and compiles the frozen identities deterministically. Planning is lane-routed and every lane requires a plan review; Core auto-approves only within the frozen policy and otherwise requires an authenticated owner decision. Planning artifacts are exact revisions bound to a SHA-256. Reviewer findings are durable dispositions and an OPEN finding blocks the Gate even when the reviewer receipt passed. A frozen specification is immutable; authoring creates a new revision. Wave 12 integration adds the supervisor/verifier/provider runtime-broker owner tokens, the six-reviewer fleet, the skill-pack refresh scheduler (source availability is separate from content review), the profile-gated OpenSpec validation job, and brokered dependency acquisition with an internal allowlisted egress proxy. Dependency acquisition is dispatched after provider writes and before offline checks; it is not visible as a new Office action. Browser acceptance for the new plan-review, finding, Skills refresh and trace surfaces remains NOT_TESTED."
+   "notes": "The Planner and Spec Manager are bounded Lead-route model calls with distinct purpose and typed schemas. Core validates the graph and compiles the frozen identities deterministically. Planning is lane-routed and every lane requires a plan review; Core auto-approves only within the frozen policy and otherwise requires an authenticated owner decision. Plan approval fails closed until every lane artifact exists and the recorded participant plan binds exactly the frozen reviewer count, roles, assignments and WorkGraph. Planning artifacts are exact revisions bound to a SHA-256. Reviewer findings are durable dispositions and an OPEN finding blocks the Gate even when the reviewer receipt passed. A frozen specification is immutable; authoring creates a new revision. Wave 12 integration adds the supervisor/verifier/provider runtime-broker owner tokens, the six-reviewer fleet, the skill-pack refresh scheduler (source availability is separate from content review), the profile-gated OpenSpec validation job, and brokered dependency acquisition with an internal allowlisted egress proxy. Dependency acquisition is dispatched after provider writes and before offline checks; it is not visible as a new Office action. Browser acceptance for the new plan-review, finding, Skills refresh and trace surfaces remains NOT_TESTED."
   },
   "CAP-061": {
    "name": "Spec issue projection and kanban",
@@ -1054,6 +1062,7 @@
     "record the participant plan",
     "inspect unit specialization and provider/model routing",
     "inspect required reviewer roles, assigned principals, per-role receipt result/evidence and the independent receipt count",
+    "block plan approval and Campaign start unless the recorded participant plan matches the frozen reviewer roles, count and assignments",
     "interpret verifier and reviewer receipts without changing the Gate"
    ],
    "states": [
@@ -1063,6 +1072,8 @@
     "no-work-graph",
     "roles-assigned",
     "roles-unassigned",
+    "participant-plan-required",
+    "participant-plan-mismatch",
     "multi-reviewer",
     "observation-only",
     "error",

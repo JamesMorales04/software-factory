@@ -1049,6 +1049,63 @@ export function Director() {
                           })}
                         </p>
                       )}
+                      {planning.participantPlan.required &&
+                        !planning.participantPlan.ready && (
+                          <div
+                            className="ui-callout ui-callout--attention"
+                            role="status"
+                          >
+                            <p>
+                              <strong>
+                                {t(
+                                  "director.planning.participantIncompleteTitle",
+                                )}
+                              </strong>{" "}
+                              {planning.participantPlan.present
+                                ? t("director.planning.participantIncomplete", {
+                                    values:
+                                      [
+                                        ...planning.participantPlan
+                                          .missingRoles,
+                                        ...planning.participantPlan
+                                          .unexpectedRoles,
+                                        ...planning.participantPlan
+                                          .missingAssignments,
+                                      ].join(", ") ||
+                                      t(
+                                        "director.planning.participantAssignments",
+                                      ),
+                                  })
+                                : t("director.planning.participantMissing")}
+                            </p>
+                            {planning.participantPlan.present &&
+                              planning.participantPlan.problems.length > 0 && (
+                                <ul className="muted">
+                                  {planning.participantPlan.problems.map(
+                                    (problem) => (
+                                      <li key={problem}>{problem}</li>
+                                    ),
+                                  )}
+                                </ul>
+                              )}
+                          </div>
+                        )}
+                      {!planning.reviewApproved && (
+                        <p
+                          className={`ui-callout ${
+                            planning.reviewStatus === "PENDING"
+                              ? "ui-callout--info"
+                              : "ui-callout--attention"
+                          }`}
+                          role="status"
+                        >
+                          {planning.reviewStatus === "PENDING"
+                            ? t("director.planning.reviewPending")
+                            : t("director.planning.reviewNotApproved", {
+                                status: planning.reviewStatus ?? "—",
+                              })}
+                        </p>
+                      )}
                       {planning.review && (
                         <p className="muted">
                           {t("director.planning.rationale", {
@@ -1071,8 +1128,7 @@ export function Director() {
                               size="sm"
                               busy={reviewBusy === "APPROVE"}
                               disabled={
-                                reviewBusy !== null ||
-                                planning.missingArtifacts.length > 0
+                                reviewBusy !== null || !planning.materialsReady
                               }
                               onClick={() => void reviewPlan("APPROVE")}
                             >
