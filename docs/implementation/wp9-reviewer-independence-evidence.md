@@ -1,12 +1,13 @@
 # WP9 — Reviewer independence and Compose reviewer fleet evidence
 
 **Status:** implementer self-test evidence; **not independent acceptance and not
-certification**. Implementation candidate: `2514c2b989a50e26c75c5b5e9e57eb5a5296f18d`
+certification**. Implementation candidate: `f4c8d9e51c9dc92943afd9a9c6a7524b215ecd60`
 on branch `factory/quality-wp9-reviewer-fleet` (baseline `bcb8b5b`). This
-supersedes `d027bf2` and `de48c3b` after independent Codex GPT-6 Luna reviews
-found P1 (Gate could count roles without a frozen principal assignment), P2
-(Director did not show individual receipts), and a remaining P2 where receipts
-for roles outside the frozen plan were ignored instead of rejected.
+supersedes `d027bf2`, `de48c3b` and `2514c2b` after independent Codex GPT-6
+Luna reviews found P1 (Gate could count roles without a frozen principal
+assignment), P2 (Director did not show individual receipts), a P2 where receipts
+for roles outside the frozen plan were ignored instead of rejected, and a P2
+where a legacy roleless receipt could remain in an accepted set.
 
 ## Policy implemented
 
@@ -34,9 +35,9 @@ principal**, not provider/model diversity.
   requirement.
 - A reviewer receipt must name a role required by the frozen plan. Core returns
   `QUALITY_ROLE_MISMATCH` for a missing or unrequired role at ingestion, and the
-  Gate independently blocks on any historical/foreign extra-role receipt instead
-  of silently ignoring it. An extra-role receipt can never be included in an
-  `ACCEPTED` Gate.
+  Gate independently blocks on any historical/foreign roleless or extra-role
+  receipt instead of silently ignoring it. A roleless or extra-role receipt can
+  never be included in an `ACCEPTED` Gate when required roles exist.
 - Office shows required roles, assigned principals, per-role receipt
   result/evidence, missing receipts, a frozen-plan mismatch alert and the
   independent PASS-receipt count from Core. No "model diversity required"
@@ -56,6 +57,12 @@ principal**, not provider/model diversity.
   the Gate fails closed if a historical/foreign receipt for an unrequired role
   exists. Added deterministic coverage where all required roles pass and one
   extra-role receipt is present; the Gate is `BLOCKED`, never `ACCEPTED`.
+- **P2 — legacy roleless receipts:** when required roles exist, a historical
+  receipt with no `reviewer_role` is now invalid rather than skipped. Added a
+  direct-insert regression: one Functional receipt, one roleless legacy receipt,
+  then the required Code Quality receipt; all required roles pass, but the Gate
+  is `BLOCKED` with “reviewer receipt has no role while the frozen plan requires
+  role coverage”.
 - **P2 — individual receipts in Director:** each required role now renders its
   assigned principal, the matching receipt result and evidence, or an explicit
   “No receipt” state. A failing/changes-requested receipt gets a danger badge.
@@ -106,9 +113,9 @@ cargo test -p factory-native --lib db::tests::gate_
   includes gate_accepts_distinct_principals_with_same_model_and_exact_role_assignments,
   gate_blocks_required_roles_without_frozen_principal_assignments,
   gate_blocks_an_extra_role_receipt_even_when_required_roles_pass,
-  gate_rejects_an_assignment_set_with_an_unexpected_role,
-  gate_rejects_a_second_receipt_from_the_same_principal and
-  gate_waits_for_role_coverage_even_when_the_count_is_met
+  gate_blocks_a_roleless_legacy_receipt_when_required_roles_exist,
+  gate_rejects_an_assignment_set_with_an_unexpected_role and
+  gate_rejects_a_second_receipt_from_the_same_principal
 
 cargo test -p factory-native --lib gate_
 18 passed; 0 failed
@@ -185,10 +192,11 @@ The first repair commit changed `native/src/db/{quality,lead,tests}.rs`,
 `migrations/0066_reviewer_role_assignments.sql`,
 `office/src/views/{Director.tsx,Director.test.tsx}`,
 `office/src/i18n/catalog.{en,es}.ts`, the quality-first status document,
-capability registry and Office parity. The current repair commit adds the
+capability registry and Office parity. The next repair commit added the
 extra-role ingestion/Gate rejection in `native/src/{bin/core.rs,db/quality.rs}`
-with tests in `native/src/db/tests.rs`, and corrects the status/capability
-wording.
+with tests in `native/src/db/tests.rs`. The current repair commit makes legacy
+roleless receipts invalid in `native/src/db/quality.rs` and adds the
+direct-insert regression in `native/src/db/tests.rs`.
 
 ## Security and authorization impact
 
