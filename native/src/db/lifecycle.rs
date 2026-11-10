@@ -243,7 +243,7 @@ impl Database {
                       WHEN c.status IN ('CANCELLED','FAILED') THEN c.status
                       WHEN EXISTS (SELECT 1 FROM runs ar WHERE ar.campaign_id=c.id AND ar.status IN ('PENDING','RUNNING')) THEN c.status
                       ELSE COALESCE((
-                        SELECT gd.outcome FROM gate_decisions gd
+                        SELECT gd.outcome FROM gate_decisions_current gd
                         JOIN candidates ca ON ca.id=gd.candidate_id
                         JOIN attempts at ON at.id=ca.attempt_id
                         JOIN runs r ON r.id=at.run_id
@@ -337,7 +337,7 @@ pub(super) async fn load_campaign(
                   WHEN c.status IN ('CANCELLED','FAILED') THEN c.status
                   WHEN EXISTS (SELECT 1 FROM runs ar WHERE ar.campaign_id=c.id AND ar.status IN ('PENDING','RUNNING')) THEN c.status
                   ELSE COALESCE((
-                    SELECT gd.outcome FROM gate_decisions gd
+                    SELECT gd.outcome FROM gate_decisions_current gd
                     JOIN candidates ca ON ca.id=gd.candidate_id
                     JOIN attempts at ON at.id=ca.attempt_id
                     JOIN runs r ON r.id=at.run_id

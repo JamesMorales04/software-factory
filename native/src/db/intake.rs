@@ -763,7 +763,7 @@ impl Database {
                 .await?
                 .ok_or(Error::NotFound)?;
         let gate: Option<(String,)> = sqlx::query_as::query_as(
-            "SELECT gd.outcome FROM gate_decisions gd
+            "SELECT gd.outcome FROM gate_decisions_current gd
              JOIN candidates c ON c.id=gd.candidate_id
              JOIN attempts a ON a.id=c.attempt_id
              JOIN runs r ON r.id=a.run_id

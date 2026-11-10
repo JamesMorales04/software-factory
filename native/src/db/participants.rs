@@ -547,7 +547,7 @@ impl Database {
              JOIN campaigns c ON c.id=r.campaign_id
              JOIN actions ac ON ac.id=c.action_id
              LEFT JOIN candidates cd ON cd.attempt_id=ps.attempt_id
-             LEFT JOIN gate_decisions g ON g.candidate_id=cd.id
+             LEFT JOIN gate_decisions_current g ON g.candidate_id=cd.id
              LEFT JOIN worker_leases l ON l.attempt_id=ps.attempt_id
              WHERE (?1 IS NULL OR r.campaign_id=?1)
                AND (?2 IS NULL OR ac.project_id=?2)
@@ -863,7 +863,7 @@ impl Database {
              JOIN runs r ON r.id=a.run_id
              JOIN campaigns c ON c.id=r.campaign_id
              JOIN actions ac ON ac.id=c.action_id
-             LEFT JOIN gate_decisions g ON g.candidate_id=cd.id
+             LEFT JOIN gate_decisions_current g ON g.candidate_id=cd.id
              WHERE (?1 IS NULL OR r.campaign_id=?1)
                AND (?2 IS NULL OR ac.project_id=?2)
                AND (?3 IS NULL OR qr.model_provider=?3)

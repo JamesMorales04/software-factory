@@ -1477,6 +1477,96 @@ async fn insert_reviewer_receipt_with_findings_direct(
     .unwrap();
 }
 
+async fn attach_finding_request(fixture: &CandidateFixture) -> String {
+    let (campaign_id, project_id, action_id): (String, String, String) = sqlx::query_as::query_as(
+        "SELECT r.campaign_id,ac.project_id,ac.id
+             FROM candidates cd
+             JOIN attempts a ON a.id=cd.attempt_id
+             JOIN runs r ON r.id=a.run_id
+             JOIN campaigns c ON c.id=r.campaign_id
+             JOIN actions ac ON ac.id=c.action_id
+             WHERE cd.id=?1",
+    )
+    .bind(&fixture.candidate_id)
+    .fetch_one(&fixture.db.pool)
+    .await
+    .unwrap();
+    let suffix = Uuid::new_v4();
+    let profile_id = format!("profile-{suffix}");
+    let revision_id = format!("profile-revision-{suffix}");
+    let delegation_id = format!("delegation-{suffix}");
+    let lead_id = format!("lead-{suffix}");
+    let request_id = format!("request-{suffix}");
+    let now = Utc::now().to_rfc3339();
+    sqlx::query::query(
+        "INSERT INTO execution_profiles(id,current_revision,content_hash,created_at,updated_at)
+         VALUES (?1,1,'hash',?2,?2)",
+    )
+    .bind(&profile_id)
+    .bind(&now)
+    .execute(&fixture.db.pool)
+    .await
+    .unwrap();
+    sqlx::query::query(
+        "INSERT INTO execution_profile_revisions
+         (revision_id,profile_id,revision,content_json,content_hash,actor,created_at)
+         VALUES (?1,?2,1,'{}','hash','owner',?3)",
+    )
+    .bind(&revision_id)
+    .bind(&profile_id)
+    .bind(&now)
+    .execute(&fixture.db.pool)
+    .await
+    .unwrap();
+    sqlx::query::query(
+        "INSERT INTO standing_delegations
+         (id,principal_id,audit_id,project_id,revision,content_hash,content_json,created_at)
+         VALUES (?1,'owner','audit',?2,1,'hash','{}',?3)",
+    )
+    .bind(&delegation_id)
+    .bind(&project_id)
+    .bind(&now)
+    .execute(&fixture.db.pool)
+    .await
+    .unwrap();
+    sqlx::query::query(
+        "INSERT INTO lead_requests
+         (id,project_id,action_id,delegation_id,objective,request_hash,
+          project_config_hash,state,created_at,updated_at)
+         VALUES (?1,?2,?3,?4,'objective','hash','hash','FROZEN',?5,?5)",
+    )
+    .bind(&lead_id)
+    .bind(&project_id)
+    .bind(&action_id)
+    .bind(&delegation_id)
+    .bind(&now)
+    .execute(&fixture.db.pool)
+    .await
+    .unwrap();
+    sqlx::query::query(
+        "INSERT INTO intake_requests
+         (id,project_id,objective,mode,profile_id,profile_revision_id,profile_revision,
+          profile_hash,profile_name,action_id,delegation_id,lead_request_id,campaign_id,
+          submission_json,submission_hash,idempotency_key,created_at,updated_at)
+         VALUES (?1,?2,'objective','REVIEW_PLAN',?3,?4,1,'hash','profile',?5,?6,?7,?8,
+                 '{}','hash',?9,?10,?10)",
+    )
+    .bind(&request_id)
+    .bind(&project_id)
+    .bind(&profile_id)
+    .bind(&revision_id)
+    .bind(&action_id)
+    .bind(&delegation_id)
+    .bind(&lead_id)
+    .bind(&campaign_id)
+    .bind(format!("intake-{suffix}"))
+    .bind(&now)
+    .execute(&fixture.db.pool)
+    .await
+    .unwrap();
+    request_id
+}
+
 async fn set_reviewer_requirement(
     db: &Database,
     candidate_id: &str,
@@ -4192,6 +4282,47 @@ async fn warning_review_finding_still_requires_a_disposition() {
 }
 
 #[tokio::test]
+async fn informational_finding_on_a_non_pass_receipt_remains_actionable() {
+    use crate::review::FindingSeverity;
+
+    let fixture = candidate_fixture().await;
+    fixture
+        .db
+        .record_quality_receipt(
+            &fixture.candidate_id,
+            QualityRole::Verifier,
+            &quality_receipt(&fixture, "verifier-non-pass-info", "verifier-1"),
+        )
+        .await
+        .unwrap();
+    let mut review = quality_receipt(&fixture, "reviewer-non-pass-info", "reviewer-1");
+    review.result = ReceiptResult::ChangesRequested;
+    review.findings = vec![review_finding("info-change", FindingSeverity::Info)];
+    let result = fixture
+        .db
+        .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &review)
+        .await
+        .unwrap();
+    let gate = result.gate.expect("gate is decided");
+    assert_eq!(gate.outcome, GateOutcome::RepairRequired);
+    let repair = fixture
+        .db
+        .repair_authorization_for_candidate(&fixture.candidate_id)
+        .await
+        .unwrap()
+        .expect("non-PASS Info remains a scored repair input");
+    assert_eq!(repair.decision, "DENIED");
+    assert_eq!(repair.reason_code, "autonomy_disabled");
+    assert_eq!(
+        repair.total_points,
+        FindingSeverity::Info.canonical_points()
+    );
+    assert_eq!(repair.warning_count, 0);
+    assert_eq!(repair.info_count, 1);
+    fixture.db.close().await;
+}
+
+#[tokio::test]
 async fn blocking_review_finding_under_a_pass_receipt_still_requires_repair() {
     use crate::review::FindingSeverity;
 
@@ -4285,11 +4416,189 @@ async fn critical_review_finding_remains_a_human_stop_with_observations() {
         .expect("critical finding creates a repair decision");
     assert_eq!(repair.decision, "HUMAN_REQUIRED");
     assert_eq!(repair.reason_code, "critical_zero");
+    // The receipt is CHANGES_REQUESTED, so Info is not an observation and is
+    // still scored exactly as before.
     assert_eq!(
         repair.total_points,
-        FindingSeverity::Critical.canonical_points()
+        FindingSeverity::Critical.canonical_points() + FindingSeverity::Info.canonical_points()
     );
     assert_eq!(repair.critical_count, 1);
-    assert_eq!(repair.info_count, 0);
+    assert_eq!(repair.info_count, 1);
+    fixture.db.close().await;
+}
+
+#[tokio::test]
+async fn resolving_a_warning_reevaluates_the_gate_idempotently() {
+    use crate::planning::{FindingDisposition, FindingRoute, FindingStatus};
+    use crate::review::FindingSeverity;
+
+    let fixture = candidate_fixture().await;
+    let request_id = attach_finding_request(&fixture).await;
+    fixture
+        .db
+        .record_quality_receipt(
+            &fixture.candidate_id,
+            QualityRole::Verifier,
+            &quality_receipt(&fixture, "verifier-warning-reeval", "verifier-1"),
+        )
+        .await
+        .unwrap();
+    let mut review = quality_receipt(&fixture, "reviewer-warning-reeval", "reviewer-1");
+    review.findings = vec![review_finding("warning-reeval", FindingSeverity::Warning)];
+    let result = fixture
+        .db
+        .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &review)
+        .await
+        .unwrap();
+    let gate = result.gate.expect("gate is decided");
+    assert_eq!(gate.outcome, GateOutcome::RepairRequired);
+    assert_eq!(
+        run_status(
+            &fixture.db,
+            &run_id_for_candidate(&fixture.db, &fixture.candidate_id).await
+        )
+        .await,
+        "REPAIR_REQUIRED"
+    );
+
+    let (campaign_id,): (String,) = sqlx::query_as::query_as(
+        "SELECT r.campaign_id FROM candidates cd
+         JOIN attempts a ON a.id=cd.attempt_id
+         JOIN runs r ON r.id=a.run_id
+         WHERE cd.id=?1",
+    )
+    .bind(&fixture.candidate_id)
+    .fetch_one(&fixture.db.pool)
+    .await
+    .unwrap();
+    let (candidate_count,): (i64,) =
+        sqlx::query_as::query_as("SELECT COUNT(*) FROM candidates WHERE id=?1")
+            .bind(&fixture.candidate_id)
+            .fetch_one(&fixture.db.pool)
+            .await
+            .unwrap();
+    let (receipt_count,): (i64,) =
+        sqlx::query_as::query_as("SELECT COUNT(*) FROM quality_receipts WHERE candidate_id=?1")
+            .bind(&fixture.candidate_id)
+            .fetch_one(&fixture.db.pool)
+            .await
+            .unwrap();
+
+    let dispositions = fixture.db.finding_dispositions(&request_id).await.unwrap();
+    let warning = dispositions
+        .iter()
+        .find(|disposition| disposition.finding_id == "warning-reeval")
+        .expect("warning disposition");
+    assert_eq!(warning.status, "OPEN");
+    assert_eq!(
+        warning.candidate_id.as_deref(),
+        Some(fixture.candidate_id.as_str())
+    );
+
+    // Re-evaluating unchanged evidence is a no-op.
+    let unchanged = fixture
+        .db
+        .reevaluate_gate_for_candidate(&fixture.candidate_id)
+        .await
+        .unwrap()
+        .expect("gate exists");
+    assert_eq!(unchanged.outcome, GateOutcome::RepairRequired);
+    assert_eq!(
+        count(&fixture.db, "SELECT COUNT(*) FROM gate_decision_revisions",).await,
+        0
+    );
+
+    let resolved = FindingDisposition {
+        request_id: request_id.clone(),
+        finding_id: warning.finding_id.clone(),
+        route: FindingRoute::Repairer,
+        status: FindingStatus::Resolved,
+        candidate_id: fixture.candidate_id.clone(),
+        reviewer_principal: warning.reviewer_principal.clone(),
+        resolved_by: "operator".into(),
+        evidence_refs: vec!["test:warning_fixed".into()],
+        owner_principal: None,
+        owner_decision: None,
+    };
+    fixture
+        .db
+        .save_finding_disposition(&resolved)
+        .await
+        .unwrap();
+
+    let revised = fixture
+        .db
+        .reevaluate_gate_for_candidate(&fixture.candidate_id)
+        .await
+        .unwrap()
+        .expect("gate exists");
+    assert_eq!(revised.outcome, GateOutcome::Accepted);
+    assert_eq!(
+        run_status(
+            &fixture.db,
+            &run_id_for_candidate(&fixture.db, &fixture.candidate_id).await
+        )
+        .await,
+        "ACCEPTED"
+    );
+    let campaign = fixture
+        .db
+        .campaigns()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|campaign| campaign.id == campaign_id)
+        .expect("campaign");
+    assert_eq!(campaign.effective_status, "ACCEPTED");
+
+    // Re-evaluation accepts no new evidence and creates no candidate.
+    let (after_candidates,): (i64,) =
+        sqlx::query_as::query_as("SELECT COUNT(*) FROM candidates WHERE id=?1")
+            .bind(&fixture.candidate_id)
+            .fetch_one(&fixture.db.pool)
+            .await
+            .unwrap();
+    let (after_receipts,): (i64,) =
+        sqlx::query_as::query_as("SELECT COUNT(*) FROM quality_receipts WHERE candidate_id=?1")
+            .bind(&fixture.candidate_id)
+            .fetch_one(&fixture.db.pool)
+            .await
+            .unwrap();
+    assert_eq!(after_candidates, candidate_count);
+    assert_eq!(after_receipts, receipt_count);
+
+    // The original decision remains immutable; the new decision is append-only.
+    let (base_outcome,): (String,) =
+        sqlx::query_as::query_as("SELECT outcome FROM gate_decisions WHERE candidate_id=?1")
+            .bind(&fixture.candidate_id)
+            .fetch_one(&fixture.db.pool)
+            .await
+            .unwrap();
+    assert_eq!(base_outcome, "REPAIR_REQUIRED");
+    assert_eq!(
+        count(&fixture.db, "SELECT COUNT(*) FROM gate_decision_revisions",).await,
+        1
+    );
+
+    // Replaying the same re-evaluation does not append a duplicate decision.
+    let replay = fixture
+        .db
+        .reevaluate_gate_for_candidate(&fixture.candidate_id)
+        .await
+        .unwrap()
+        .expect("gate exists");
+    assert_eq!(replay.outcome, GateOutcome::Accepted);
+    assert_eq!(
+        count(&fixture.db, "SELECT COUNT(*) FROM gate_decision_revisions",).await,
+        1
+    );
+    let events = fixture.db.events().await.unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.kind == "quality.gate_reevaluated")
+            .count(),
+        1
+    );
     fixture.db.close().await;
 }
