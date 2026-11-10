@@ -2983,6 +2983,7 @@ capabilities:
   - Dependency acquisition is wired through the runtime broker with an internal deny-by-default network, an allowlisted CONNECT proxy, image-ID pinning, operation grants, a per-workspace lock and a Core authorization guard. Deterministic HTTP and opt-in real-Podman/live-registry tests pass, but a real Compose acquisition and independent acceptance remain NOT_TESTED. See docs/implementation/wp4-dependency-broker-evidence.md.
   - A real-model browser self-test planned and froze revisions 1 and 2, and the full E2E campaign consumed the frozen plan, but independent live certification is pending.
   - Wave 12 integration evidence and exact command results are recorded in docs/implementation/wave12-integration-evidence.md; it is implementer evidence, not acceptance.
+  - WP12 records a reproducible deterministic chaos/cross-workstream matrix and repeat-run acceptance script in docs/implementation/wp12-chaos-matrix.md and scripts/quality-wave12-acceptance.sh. It is implementer evidence only; live provider, real-Podman dependency, real Compose Campaign, browser and independent acceptance paths remain NOT_TESTED.
   blockers:
   - Per-WorkUnit execution state and the full planned-specified-executed journey remain pending.
 

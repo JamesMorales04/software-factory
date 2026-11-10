@@ -3,12 +3,17 @@
 **Status:** implementation integrated on
 `factory/quality-wave12-integration` through WP3, WP4, WP5, WP6, WP7, WP9 and
 WP11; **not certified and not accepted**. WP10 implementation and WP12
-acceptance remain pending. This document records what is implemented, what was
-tested, and what remains unverified. It is not acceptance evidence and does not
-claim `TRUSTED_LOCAL` isolation. Exact merge commits, conflicts and validation
-results are in [Wave 12 integration evidence](wave12-integration-evidence.md).
+browser/independent acceptance remain pending. WP12 adds a deterministic
+chaos/cross-workstream matrix and a repeat-run acceptance script; its
+candidate-bound results are implementer evidence only. This document records
+what is implemented, what was tested, and what remains unverified. It is not
+acceptance evidence and does not claim `TRUSTED_LOCAL` isolation. Exact merge
+commits, conflicts and validation results are in
+[Wave 12 integration evidence](wave12-integration-evidence.md).
 
 - Branch: `factory/quality-wave12-integration`
+- WP12 branch: `factory/quality-wp12-chaos-matrix` (base `452bb40`)
+- WP12 matrix: [deterministic chaos and cross-workstream matrix](wp12-chaos-matrix.md)
 - Baseline: `bcb8b5b` (`factory/agentic-flow-20261108`)
 - Merged work packages: WP3 `35fcae7`, WP5 `bd81c27`, WP7 `0b7fc3d`, WP9
   `55c43e8`, WP11 `fbc105c`, WP6 `b5dd282`, WP4 `6cde43c`
@@ -33,7 +38,7 @@ results are in [Wave 12 integration evidence](wave12-integration-evidence.md).
 | WP9 | Implemented and integrated | Role definitions, bounded role prompts, identity-based independence validation, six-service Compose reviewer fleet with per-identity tokens/principals/roles, reviewer identity registry, authenticated role binding, participant-plan role preservation, exact frozen role-to-principal assignment set, fail-closed Gate when assignments are missing/unexpected or a receipt is roleless/unrequired, Director per-role receipts, migrations `0065`/`0066` | Real two-reviewer Campaign/E2E with the fixture provider; independent acceptance |
 | WP10 | Implemented; acceptance pending | Director plan-review panel, lane/artifact/stack/architecture/docs/skills/DoD/OpenSpec summaries, approve/request-changes/reject, finding list and disposition form | Real Core/Compose browser acceptance and visual review |
 | WP11 | Implemented and integrated | Deterministic replay trace, bounded steps/events, redaction, comparison, typed alerts, operator-authenticated `GET /agentic/requests/{id}/trace` and the Office Request trace view | Real Core/Compose browser acceptance; independent acceptance |
-| WP12 | Partial; acceptance pending | Golden planning-pipeline integration test, existing Rust/Office suites, workflow, provider, dependency, migration and Compose-policy tests | Chaos/fault-injection matrix and per-option browser matrix for the new surfaces |
+| WP12 | Deterministic matrix implemented and run; acceptance pending | Reproducible chaos/fault-injection and cross-workstream matrix, repeat-run acceptance script, golden planning-pipeline integration test, workflow/provider/workspace/dependency/reviewer/OpenSpec/trace tests, existing Rust/Office suites and Compose policy checks | Independent acceptance and real Core/Compose browser acceptance of the WP10-owned Office surfaces; live/paid/provider/Podman paths remain `NOT_TESTED` |
 
 ## Verification run
 
@@ -146,4 +151,10 @@ document does not claim that a live multi-reviewer Campaign has run.
   exercised.
 - Compose end-to-end workspace restart/inventory recovery (WP6).
 - Real Compose scheduler restart evidence for skill-pack refresh (WP3).
-- The full chaos/fault-injection and per-option browser matrices (WP12).
+- The deterministic WP12 chaos/cross-workstream matrix and acceptance script are
+  recorded in [wp12-chaos-matrix.md](wp12-chaos-matrix.md) and the
+  [WP12 manifest](../evidence/quality-wave12-chaos-2026-11-10/manifest.json);
+  those are implementer evidence, not independent acceptance. Real
+  Core/Compose browser acceptance of the WP10 surfaces, live provider/Podman
+  and dependency paths, a real multi-reviewer Campaign and the per-option
+  browser matrix remain `NOT_TESTED`.
