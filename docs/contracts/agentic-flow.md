@@ -71,6 +71,26 @@ GitHub issues and a kanban projection. Issue edits/comments are operator context
 they cannot mutate a frozen spec. A material change requires a new spec
 revision. A local board is the fallback when GitHub is unavailable.
 
+## Lead structured output bounds
+
+Planner, Semantic Triage and Spec Manager are bounded Lead structured calls. A
+reasoning model spends `reasoning_content` inside the same `max_tokens`
+envelope, so a 4,096-token request can be exhausted before the assistant emits
+any JSON; the upstream then returns empty content with `finish_reason=length`.
+Core requests 16,384 output tokens for these calls. The frozen provider quote
+(up to 100,000 output tokens in the supported profile) and the shared technical
+ceilings stay authoritative and may still refuse or settle a call.
+
+Core classifies a measured empty length stop as a typed truncation. It settles
+that attempt `UNKNOWN`, keeps its reservation and budget hold, and retries at
+most once with double the requested bound, capped at 32,768. The retry has a
+new request digest and its own reservation; the first UNKNOWN reservation is
+never reused. Transport failures, HTTP errors, refusals, usage-unknown outcomes,
+budget exhaustion and every other error are never retried. A second truncation
+returns `502 AGENTIC_MODEL_OUTPUT_TRUNCATED` with a bounded diagnostic, and no
+WorkGraph, assessment, specification or plan artifact is persisted from
+truncated output.
+
 ## Repair
 
 A RepairPacket binds the exact rejected candidate, findings, failed checks,

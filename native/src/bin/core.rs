@@ -10650,6 +10650,31 @@ struct AgenticModelOutcome {
     usage_known: bool,
 }
 
+/// Planner, Semantic Triage and Spec Manager structured Lead calls need
+/// headroom for a reasoning model. A reasoning model spends
+/// `reasoning_content` inside the same `max_tokens` envelope, so 4_096 output
+/// tokens can be exhausted before the assistant emits any JSON; the observed
+/// upstream result was empty content with `finish_reason=length`. This request
+/// bound only selects the structured Lead attempt. The frozen provider quote
+/// (100_000 output tokens in the supported profile) and the shared technical
+/// ceilings remain authoritative and can still refuse or settle the call.
+const AGENTIC_LEAD_STRUCTURED_OUTPUT_TOKENS: u64 = 16_384;
+/// A single truncation retry may double the request, never beyond this bound.
+const AGENTIC_LEAD_TRUNCATION_RETRY_CEILING: u64 = 32_768;
+
+/// Return the larger bound for the one permitted truncation retry. `None`
+/// means the request is already at the ceiling and must fail typed instead of
+/// retrying forever or reusing an unresolved reservation.
+fn agentic_truncation_retry_output_tokens(requested: u64) -> Option<u64> {
+    let doubled = requested.checked_mul(2)?;
+    let retry = doubled.min(AGENTIC_LEAD_TRUNCATION_RETRY_CEILING);
+    (retry > requested).then_some(retry)
+}
+
+fn bounded_agentic_model_error(message: &str) -> String {
+    message.chars().take(480).collect()
+}
+
 fn agentic_model_error(error: factory_native::model_gateway::ModelGatewayError) -> Response {
     use factory_native::model_gateway::ModelGatewayError;
     match error {
@@ -10670,6 +10695,16 @@ fn agentic_model_error(error: factory_native::model_gateway::ModelGatewayError) 
         )
             .into_response(),
         ModelGatewayError::Database(other) => api_error(other),
+        ModelGatewayError::Truncated(detail) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({
+                "error": bounded_agentic_model_error(&format!(
+                    "the model exhausted its output token budget before returning usable JSON; no output was accepted; {detail}"
+                )),
+                "code": "AGENTIC_MODEL_OUTPUT_TRUNCATED",
+            })),
+        )
+            .into_response(),
         ModelGatewayError::Invalid(message) => (
             StatusCode::BAD_REQUEST,
             Json(json!({"error": message, "code": "AGENTIC_MODEL_INVALID"})),
@@ -10719,7 +10754,8 @@ async fn call_agentic_lead_model(
                 .into_response()
         })?;
     let principal_id = grant.principal_id.clone();
-    let result = gateway
+    let mut requested_output_tokens = max_output_tokens;
+    let mut result = gateway
         .call(
             &app.db,
             factory_native::model_gateway::ModelCallRequest {
@@ -10731,11 +10767,45 @@ async fn call_agentic_lead_model(
                 purpose,
                 system_prompt,
                 user_prompt,
-                max_output_tokens,
+                max_output_tokens: requested_output_tokens,
             },
         )
-        .await
-        .map_err(agentic_model_error)?;
+        .await;
+    // Only a measured, content-empty length stop is retryable. The first
+    // attempt stays UNKNOWN with its own reservation and budget hold; the new
+    // output bound changes the request digest and therefore owns a fresh
+    // reservation. Transport failures, HTTP errors, refusals, usage-unknown
+    // outcomes and budget exhaustion are never retried here.
+    if let Err(factory_native::model_gateway::ModelGatewayError::Truncated(detail)) = &result
+        && let Some(retry_output_tokens) =
+            agentic_truncation_retry_output_tokens(requested_output_tokens)
+    {
+        tracing::warn!(
+            purpose,
+            requested_output_tokens,
+            retry_output_tokens,
+            diagnostic = %detail,
+            "agentic Lead model output was truncated; retrying once with a larger bound"
+        );
+        requested_output_tokens = retry_output_tokens;
+        result = gateway
+            .call(
+                &app.db,
+                factory_native::model_gateway::ModelCallRequest {
+                    role: factory_native::db::ModelCallRole::Lead,
+                    principal_id: &principal_id,
+                    project_id: &record.project_id,
+                    objective_id: &record.lead_request_id,
+                    scope_id: &record.delegation_id,
+                    purpose,
+                    system_prompt,
+                    user_prompt,
+                    max_output_tokens: requested_output_tokens,
+                },
+            )
+            .await;
+    }
+    let result = result.map_err(agentic_model_error)?;
     Ok(AgenticModelOutcome {
         content: result.content,
         provider: result.provider,
@@ -11865,7 +11935,7 @@ JSON Schema:
         "agentic_planner",
         &system_prompt,
         &user_prompt,
-        4_096,
+        AGENTIC_LEAD_STRUCTURED_OUTPUT_TOKENS,
     )
     .await
     {
@@ -13550,7 +13620,7 @@ JSON Schema:
         "agentic_spec_manager",
         &system_prompt,
         &user_prompt,
-        6_144,
+        AGENTIC_LEAD_STRUCTURED_OUTPUT_TOKENS,
     )
     .await
     {
@@ -14983,7 +15053,7 @@ async fn assess_agentic_request(
                 purpose: "agentic_triage",
                 system_prompt: &system_prompt,
                 user_prompt: &user_prompt,
-                max_output_tokens: 4_096,
+                max_output_tokens: AGENTIC_LEAD_STRUCTURED_OUTPUT_TOKENS,
             },
         )
         .await
@@ -17174,6 +17244,20 @@ mod tests {
             updated_at: "2026-11-09T00:00:00Z".into(),
             resolved_at: Some("2026-11-09T00:00:00Z".into()),
         }
+    }
+
+    #[test]
+    fn truncation_retry_doubles_once_and_never_exceeds_the_ceiling() {
+        assert_eq!(agentic_truncation_retry_output_tokens(16_384), Some(32_768));
+        assert_eq!(agentic_truncation_retry_output_tokens(24_000), Some(32_768));
+        assert_eq!(agentic_truncation_retry_output_tokens(32_768), None);
+        assert_eq!(agentic_truncation_retry_output_tokens(0), None);
+        assert_eq!(
+            bounded_agentic_model_error(&"x".repeat(1_000))
+                .chars()
+                .count(),
+            480
+        );
     }
 
     #[test]
@@ -21760,12 +21844,35 @@ mod tests {
             opencode_base_url: &str,
             profile_content: factory_native::execution_profile::ExecutionProfileContent,
         ) -> Fixture {
+            setup_with_projects_root(
+                master_key,
+                opencode_go_base_url,
+                opencode_base_url,
+                profile_content,
+                None,
+            )
+            .await
+        }
+
+        async fn setup_with_projects_root(
+            master_key: Option<&factory_native::provider_secrets::ProviderSecretKey>,
+            opencode_go_base_url: &str,
+            opencode_base_url: &str,
+            profile_content: factory_native::execution_profile::ExecutionProfileContent,
+            projects_root: Option<PathBuf>,
+        ) -> Fixture {
             let path = std::env::temp_dir().join(format!(
                 "factory-core-intake-{}.sqlite",
                 uuid::Uuid::new_v4()
             ));
             let repository = git_repository();
-            let app = test_app_with_master_key(&path, master_key.cloned()).await;
+            let app = test_app_with_master_key_and_options(
+                &path,
+                master_key.cloned(),
+                false,
+                projects_root,
+            )
+            .await;
             let project = app
                 .db
                 .register_project(&repository, "intake-project-key")
@@ -22403,6 +22510,412 @@ mod tests {
                 factory_native::provider_secrets::ProviderSecretKey::from_file(&path).unwrap();
             let _ = std::fs::remove_file(path);
             key
+        }
+
+        #[cfg(feature = "test-support")]
+        fn planner_master_key() -> factory_native::provider_secrets::ProviderSecretKey {
+            use std::io::Write;
+            let path = std::env::temp_dir().join(format!(
+                "factory-core-planner-master-key-{}.txt",
+                uuid::Uuid::new_v4()
+            ));
+            let mut file = std::fs::File::create(&path).unwrap();
+            file.write_all("44".repeat(32).as_bytes()).unwrap();
+            drop(file);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            }
+            let key =
+                factory_native::provider_secrets::ProviderSecretKey::from_file(&path).unwrap();
+            let _ = std::fs::remove_file(path);
+            key
+        }
+
+        #[cfg(feature = "test-support")]
+        #[derive(Clone)]
+        enum PlannerUpstreamBehavior {
+            TruncateThen(String),
+            AlwaysTruncate,
+            EmptyStop,
+            Reject,
+        }
+
+        #[cfg(feature = "test-support")]
+        #[derive(Clone)]
+        struct PlannerUpstreamState {
+            behavior: PlannerUpstreamBehavior,
+            calls: Arc<Mutex<Vec<Value>>>,
+        }
+
+        #[cfg(feature = "test-support")]
+        async fn planner_upstream(
+            behavior: PlannerUpstreamBehavior,
+        ) -> (String, Arc<Mutex<Vec<Value>>>) {
+            use axum::{Router, routing::post};
+            async fn chat(
+                axum::extract::State(state): axum::extract::State<PlannerUpstreamState>,
+                axum::Json(body): axum::Json<Value>,
+            ) -> Response {
+                let call = {
+                    let mut calls = state.calls.lock().unwrap();
+                    calls.push(body);
+                    calls.len()
+                };
+                let truncation = || {
+                    axum::Json(json!({
+                        "choices": [{
+                            "message": {
+                                "content": "",
+                                "reasoning_content": "reasoning budget exhausted",
+                                "role": "assistant"
+                            },
+                            "finish_reason": "length"
+                        }],
+                        "usage": {"prompt_tokens": 12, "completion_tokens": 16384, "total_tokens": 16396}
+                    }))
+                    .into_response()
+                };
+                match &state.behavior {
+                    PlannerUpstreamBehavior::TruncateThen(content) => {
+                        if call == 1 {
+                            truncation()
+                        } else {
+                            axum::Json(json!({
+                                "choices": [{
+                                    "message": {"content": content},
+                                    "finish_reason": "stop"
+                                }],
+                                "usage": {"prompt_tokens": 12, "completion_tokens": 7, "total_tokens": 19}
+                            }))
+                            .into_response()
+                        }
+                    }
+                    PlannerUpstreamBehavior::AlwaysTruncate => truncation(),
+                    PlannerUpstreamBehavior::EmptyStop => axum::Json(json!({
+                        "choices": [{
+                            "message": {"content": ""},
+                            "finish_reason": "stop"
+                        }],
+                        "usage": {"prompt_tokens": 12, "completion_tokens": 7, "total_tokens": 19}
+                    }))
+                    .into_response(),
+                    PlannerUpstreamBehavior::Reject => (
+                        StatusCode::BAD_REQUEST,
+                        axum::Json(json!({"error": "invalid request"})),
+                    )
+                        .into_response(),
+                }
+            }
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let app = Router::new()
+                .route("/chat/completions", post(chat))
+                .with_state(PlannerUpstreamState {
+                    behavior,
+                    calls: calls.clone(),
+                });
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            (url, calls)
+        }
+
+        #[cfg(feature = "test-support")]
+        async fn planner_fixture(
+            behavior: PlannerUpstreamBehavior,
+            key: &str,
+        ) -> (Fixture, Arc<Mutex<Vec<Value>>>) {
+            unsafe { std::env::set_var("FACTORY_ALLOW_TEST_UPSTREAM", "1") };
+            let master_key = planner_master_key();
+            let (url, calls) = planner_upstream(behavior).await;
+            // Projects root makes deterministic stack detection read the
+            // fixture repository instead of treating it as greenfield.
+            let fixture = setup_with_projects_root(
+                Some(&master_key),
+                &url,
+                &url,
+                profile_content(),
+                Some(std::env::temp_dir()),
+            )
+            .await;
+            fixture
+                .app
+                .db
+                .enable_test_subscription_fixture_mode()
+                .await
+                .unwrap();
+            let settings = fixture
+                .app
+                .db
+                .provider_settings("opencode-go")
+                .await
+                .unwrap();
+            fixture
+                .app
+                .db
+                .save_provider_settings(
+                    &ProviderSettingsWrite {
+                        provider: "opencode-go".into(),
+                        kind: "opencode".into(),
+                        model: "deepseek-v4.1-flash".into(),
+                        base_url: url.clone(),
+                        auth_mode: settings.auth_mode,
+                        credential_ciphertext: settings.credential_ciphertext,
+                        credential_nonce: settings.credential_nonce,
+                        credential_fingerprint: settings.credential_fingerprint,
+                        enabled: true,
+                        is_default: true,
+                        max_turns: settings.max_turns,
+                        max_input_tokens: 100_000,
+                        max_output_tokens: 100_000,
+                        max_cost_micros: settings.max_cost_micros,
+                        input_micros_per_million: settings.input_micros_per_million,
+                        output_micros_per_million: settings.output_micros_per_million,
+                    },
+                    "test-operator",
+                )
+                .await
+                .unwrap();
+            // A manifest keeps deterministic planning on the existing-stack
+            // path instead of requiring a greenfield Stack selection.
+            std::fs::write(
+                fixture.repository.join("Cargo.toml"),
+                "[package]\nname = \"planner-fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+            )
+            .unwrap();
+            std::fs::create_dir_all(fixture.repository.join("src")).unwrap();
+            std::fs::write(
+                fixture.repository.join("src/lib.rs"),
+                "pub fn planner_fixture() {}\n",
+            )
+            .unwrap();
+            let (status, _) = enable_policy(&fixture).await;
+            assert_eq!(status, StatusCode::CREATED);
+            let (status, created) = create_intake_with_amount(&fixture, key, Some(5_000_000)).await;
+            assert_eq!(status, StatusCode::CREATED, "{created}");
+            let intake_id = created["id"].as_str().unwrap().to_owned();
+            let request = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            for scope in [&intake_id, &request.lead_request_id] {
+                fixture
+                    .app
+                    .db
+                    .admit_test_subscription_dispatch(scope)
+                    .await
+                    .unwrap();
+            }
+            fixture_plan(&fixture, &intake_id, "FIXTURE").await;
+            (fixture, calls)
+        }
+
+        #[cfg(feature = "test-support")]
+        fn planner_model_content() -> String {
+            serde_json::to_string(&factory_native::agentic::WorkGraphModel {
+                units: vec![factory_native::agentic::PlannedWorkUnit {
+                    id: "endpoint".into(),
+                    title: "Implement the bounded endpoint".into(),
+                    objective: "Add the bounded endpoint.".into(),
+                    depends_on: Vec::new(),
+                    paths: vec!["src/api.rs".into()],
+                    acceptance: vec!["The endpoint returns a bounded response.".into()],
+                }],
+                assumptions: Vec::new(),
+                risks: Vec::new(),
+            })
+            .unwrap()
+        }
+
+        #[cfg(feature = "test-support")]
+        async fn planner_records(fixture: &Fixture) -> Vec<factory_native::db::ModelCallRecord> {
+            let request = fixture
+                .app
+                .db
+                .intake_request(&planner_intake_id(fixture).await)
+                .await
+                .unwrap();
+            fixture
+                .app
+                .db
+                .lead_model_calls(&request.lead_request_id)
+                .await
+                .unwrap()
+        }
+
+        #[cfg(feature = "test-support")]
+        async fn planner_intake_id(fixture: &Fixture) -> String {
+            fixture
+                .app
+                .db
+                .intake_requests()
+                .await
+                .unwrap()
+                .into_iter()
+                .next()
+                .unwrap()
+                .id
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn planner_retries_one_truncation_with_a_larger_bound() {
+            let (fixture, calls) = planner_fixture(
+                PlannerUpstreamBehavior::TruncateThen(planner_model_content()),
+                "planner-retry",
+            )
+            .await;
+            let intake_id = planner_intake_id(&fixture).await;
+            let (status, planned) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{planned}");
+            assert!(
+                planned["graph"]["graphSha256"].is_string(),
+                "planner response: {planned}"
+            );
+            assert_eq!(planned["planning"]["code"], Value::Null);
+
+            {
+                let calls = calls.lock().unwrap();
+                assert_eq!(calls.len(), 2, "exactly one truncation retry");
+                assert_eq!(calls[0]["max_tokens"], json!(16_384));
+                assert_eq!(calls[1]["max_tokens"], json!(32_768));
+            }
+
+            let records = planner_records(&fixture).await;
+            assert_eq!(records.len(), 2);
+            let first = records
+                .iter()
+                .find(|record| record.state == "UNKNOWN")
+                .expect("first truncated attempt stays UNKNOWN");
+            let second = records
+                .iter()
+                .find(|record| record.state == "SETTLED")
+                .expect("retry settles");
+            assert_eq!(first.purpose, "agentic_planner");
+            assert_eq!(second.purpose, "agentic_planner");
+            assert_ne!(first.reservation_id, second.reservation_id);
+            assert_ne!(first.request_sha256, second.request_sha256);
+            assert_eq!(
+                fixture
+                    .app
+                    .db
+                    .agentic_work_graph(&intake_id)
+                    .await
+                    .unwrap()
+                    .graph_sha256,
+                planned["graph"]["graphSha256"].as_str().unwrap()
+            );
+            let artifacts = fixture.app.db.planning_artifacts(&intake_id).await.unwrap();
+            assert!(
+                artifacts.iter().any(|artifact| artifact.kind == "PLAN"),
+                "a successful second attempt persists the plan: {artifacts:?}"
+            );
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn planner_double_truncation_returns_a_typed_bounded_error_without_artifacts() {
+            let (fixture, calls) = planner_fixture(
+                PlannerUpstreamBehavior::AlwaysTruncate,
+                "planner-double-truncation",
+            )
+            .await;
+            let intake_id = planner_intake_id(&fixture).await;
+            let (status, planned) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_GATEWAY, "{planned}");
+            assert_eq!(planned["code"], "AGENTIC_MODEL_OUTPUT_TRUNCATED");
+            let message = planned["error"].as_str().unwrap();
+            assert!(message.contains("output token budget"), "{message}");
+            assert!(message.chars().count() <= 480, "{message}");
+
+            assert_eq!(calls.lock().unwrap().len(), 2, "at most one retry");
+            let records = planner_records(&fixture).await;
+            assert_eq!(records.len(), 2);
+            assert!(records.iter().all(|record| record.state == "UNKNOWN"));
+            assert!(matches!(
+                fixture.app.db.agentic_work_graph(&intake_id).await,
+                Err(Error::NotFound)
+            ));
+            assert!(
+                fixture
+                    .app
+                    .db
+                    .planning_artifacts(&intake_id)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn planner_does_not_retry_empty_content_without_length() {
+            let (fixture, calls) =
+                planner_fixture(PlannerUpstreamBehavior::EmptyStop, "planner-empty-stop").await;
+            let intake_id = planner_intake_id(&fixture).await;
+            let (status, planned) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{planned}");
+            assert_eq!(calls.lock().unwrap().len(), 1, "no retry");
+            let records = planner_records(&fixture).await;
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].state, "UNKNOWN");
+            assert!(matches!(
+                fixture.app.db.agentic_work_graph(&intake_id).await,
+                Err(Error::NotFound)
+            ));
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn planner_does_not_retry_http_failures() {
+            let (fixture, calls) =
+                planner_fixture(PlannerUpstreamBehavior::Reject, "planner-http-reject").await;
+            let intake_id = planner_intake_id(&fixture).await;
+            let (status, planned) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_GATEWAY, "{planned}");
+            assert_eq!(planned["code"], "AGENTIC_MODEL_FAILED");
+            assert_eq!(calls.lock().unwrap().len(), 1, "no retry");
+            let records = planner_records(&fixture).await;
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].state, "AMBIGUOUS");
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
         }
 
         #[cfg(feature = "test-support")]
