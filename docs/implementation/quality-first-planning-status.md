@@ -8,7 +8,7 @@ what remains unverified. It is not acceptance evidence and does not claim
 - Branch: `factory/agentic-flow-20261108`
 - Implementation commit: `ae7182e`
 - Review-fix commits: `29ee61c`, `d774d3e`, `ae7182e`, `185ca99`, `a086d02`,
-  `30e6ad2`
+  `30e6ad2`, `0133318`, `feff8ed`
 - Design authority: [ADR-0039](../architecture/decisions/ADR-0039-quality-first-planning-and-stack-selection.md)
 - Plans: [quality-first planning](../implementation/quality-first-planning-plan.md),
   [delivery](quality-first-delivery-plan.md),
@@ -27,7 +27,7 @@ what remains unverified. It is not acceptance evidence and does not claim
 | WP6 | Existing implementation verified | Content-addressed workspace snapshots, generated-target exclusion, symlink/unsafe-archive rejection, cleanup paths | Startup orphan-volume reconciliation and a dedicated chaos run |
 | WP7 | Implemented | Canonical `## ADDED Requirements` / `### Requirement:` / `#### Scenario:` and numeric task IDs; pinned OpenSpec CLI `1.16.1` validator and container image | Compose validation job against a Core-rendered change |
 | WP8 | Implemented | Deterministic Finding Router, durable OPEN dispositions, Gate blocks missing/OPEN findings even on reviewer PASS, authenticated resolve/refute, durable owner-decision validation, immutable closed dispositions | Browser acceptance of finding actions |
-| WP9 | Partial | Role definitions, bounded role prompts, separate principal IDs, reviewer evidence validation | Multi-process Compose reviewer fleet with distinct tokens/identities |
+| WP9 | Partial | Role definitions, bounded role prompts, separate principal IDs, reviewer evidence validation, critical-diversity fail-closed policy | Multi-process Compose reviewer fleet with distinct tokens/identities |
 | WP10 | Implemented for this slice | Director plan-review panel, lane/artifact/stack/architecture/docs/skills/DoD/OpenSpec summaries, approve/request-changes/reject, finding list and disposition form | Real Core/Compose browser acceptance and visual review |
 | WP11 | Implemented at the projection boundary | Deterministic replay trace, redaction, comparison, event/payload bounds | Core/Office trace view wiring |
 | WP12 | Partial | Golden planning-pipeline integration test, existing Rust/Office suites, workflow and provider unit tests | Chaos/fault-injection matrix and per-option browser matrix for the new surfaces |
@@ -38,7 +38,7 @@ From `native/`:
 
 ```text
 cargo test -p factory-native --lib
-729 passed; 0 failed; 2 ignored
+731 passed; 0 failed; 2 ignored
 
 cargo test -p factory-native --test planning_pipeline
 1 passed
@@ -60,9 +60,14 @@ npm run lint
 clean
 ```
 
-One Office full-suite run reported a single transient failure; three consecutive
-reruns passed 297/297. The failure was not reproduced and is not claimed as
-fixed.
+One Office full-suite run reported a single transient failure; subsequent
+consecutive reruns passed 297/297. The failure was not reproduced and is not
+claimed as fixed.
+
+Independent read-only Codex reviews at the review-fix commits reported no
+remaining findings for WP0, WP1, WP2, WP3, WP4, WP7, WP8, WP9 and WP10. The
+WP9 review explicitly records the one-reviewer Compose fleet as a declared
+limitation, not implemented coverage.
 
 ## Security and authority
 
@@ -78,6 +83,9 @@ fixed.
 - Dependency acquisition scrubs ambient credentials and pins the cargo/rustup
   toolchain. Network allowlisting remains the broker network namespace/egress
   policy's responsibility.
+- Critical assurance fails closed unless two independent reviewer provider/model
+  pairs are provisioned; the current one-reviewer Compose topology cannot
+  satisfy that requirement.
 - No isolation or deployment certification is claimed.
 
 ## Not tested / open
