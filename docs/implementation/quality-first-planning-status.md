@@ -30,13 +30,13 @@ are in [Wave 12 integration evidence](wave12-integration-evidence.md).
 |---|---|---|---|
 | WP0 | Implemented | Typed planning contracts, validation, migrations `0060`, `0061`, `0063`, `0064`; exact plan/artifact hashes; authenticated owner attribution | — |
 | WP1 | Implemented | Durable workflow state machine, revisions, steps, checkpoints, outbox, idempotency, restart recovery, conditional reclaim/finish fence | Purge job for expired idempotency rows |
-| WP2 | Implemented | Deterministic lane floors, Planner every lane, Spec Manager `FORMAL_SPEC`, bounded prompts, planning artifacts, mandatory plan review, policy-bounded auto-approval, authenticated owner review, workflow transitions | Browser acceptance of the review surface |
+| WP2 | Implemented | Deterministic lane floors, Planner every lane, Spec Manager `FORMAL_SPEC`, bounded prompts, planning artifacts, mandatory plan review, policy-bounded auto-approval, authenticated owner review, workflow transitions | Independent acceptance and Product Owner review; the WP10 implementer Chromium matrix covers the plan-review surface against an isolated real Core with seeded test-support rows |
 | WP3 | Implemented and integrated | Existing/user stack decisions, architecture projection, tiered documentation plan, source-cited skill packs with FRESH/DUE/REFRESHABLE/STALE/MISSING classification, separate source-check and content-review evidence (15 packs content-reviewed; remaining source-availability-only packs block), a bounded Core refresh scheduler with durable idempotent events and a durable rotating project cursor, broader stack detection/catalog, Definition of Done, per-document checks, migrations `0067`/`0068`, and the Office Skills panel | Content review of the remaining catalog packs; real Compose scheduler/restart evidence; independent browser acceptance of the Skills refresh surface |
-| WP4 | Implemented and integrated through the broker boundary | Lockfile/vendor/SBOM/license/advisory evidence binding, Cargo source-replacement parsing, private staging fetch/vendor, atomic promotion/rollback, aggregate bounds, timeout/output bounds, pinned cargo/rustup, `POST /v1/dependencies/acquire`, internal deny-by-default egress network with an allowlisted CONNECT proxy, pinned image ID verification, Supervisor operation grants, Worker pre-check dispatch, per-workspace lock, authorization guard, migration `0069`, and a fail-closed rejection of FIXTURE execution with a dependency plan | Real Compose dependency acquisition and independent acceptance |
+| WP4 | Implemented and integrated through the broker boundary | Lockfile/vendor/SBOM/license/advisory-inventory binding, Cargo source-replacement parsing, private staging fetch/vendor, atomic promotion/rollback, aggregate bounds, timeout/output bounds, pinned cargo/rustup, `POST /v1/dependencies/acquire`, internal deny-by-default egress network with an allowlisted CONNECT proxy, pinned image ID verification, Supervisor operation grants, Worker pre-check dispatch, per-workspace lock, authorization guard, migration `0069`, and a fail-closed rejection of FIXTURE execution with a dependency plan | Real Compose dependency acquisition and independent acceptance; pinned advisory database, `cargo audit`/`cargo deny` verdicts and license-policy enforcement are `NOT_IMPLEMENTED` (`advisories.json` is an inventory with `status: NOT_CHECKED`) |
 | WP5 | Implemented and integrated | Bounded SSE reconnect, no hidden 300-second turn deadline, reservation settle/release policy, bounded structured-output repair policy, deterministic reconnect/duplicate/lifecycle chaos matrix, and no candidate on any provider failure, cancellation or reconnect exhaustion | Live provider long-turn/SSE-cut UAT and independent acceptance |
 | WP6 | Implemented and integrated | Content-addressed workspace snapshots, generated-target exclusion, symlink/unsafe-archive rejection, per-owner runtime-broker credentials (supervisor/verifier/provider derived only from the authenticated token), owner-scoped startup orphan-volume/container reconciliation, bounded inventory/inspect streams, serialized per-resource create/delete with one lock identity per name, active-execution registry, cancellation-confirmed cleanup and real rootless-Podman orphan/foreign-owner probes | Compose end-to-end restart and HTTP inventory acceptance; independent acceptance |
 | WP7 | Implemented and integrated | Canonical `## ADDED Requirements` / `### Requirement:` / `#### Scenario:` and numeric task IDs; pinned OpenSpec CLI `1.16.1` validator and container image; profile-gated Compose validation job against a Core-rendered fixture; Core-owned idempotent archive transition and drift/immutability checks | Real Core-backed Compose run against a projection produced by the model planning pipeline |
-| WP8 | Implemented | Deterministic Finding Router, durable OPEN dispositions, Gate blocks missing/OPEN findings even on reviewer PASS, authenticated resolve/refute, durable owner-decision validation, immutable closed dispositions | Browser acceptance of finding actions |
+| WP8 | Implemented | Deterministic Finding Router, durable OPEN dispositions, Gate blocks missing/OPEN findings even on reviewer PASS, authenticated resolve/refute, durable owner-decision validation, immutable closed dispositions | Independent acceptance and Product Owner review; the WP10 implementer Chromium matrix covers resolve/refute finding actions against an isolated real Core with seeded test-support rows |
 | WP9 | Implemented and integrated | Role definitions, bounded role prompts, identity-based independence validation, six-service Compose reviewer fleet with per-identity tokens/principals/roles, reviewer identity registry, authenticated role binding, participant-plan role preservation, exact frozen role-to-principal assignment set, fail-closed Gate when assignments are missing/unexpected or a receipt is roleless/unrequired, Director per-role receipts, migrations `0065`/`0066` | Real two-reviewer Campaign/E2E with the fixture provider; independent acceptance |
 | WP10 | Implemented; implementer browser acceptance passed | Director plan-review panel, lane/artifact/stack/architecture/docs/skills/DoD/OpenSpec summaries, approve/request-changes/reject, finding list and disposition form, plus the 39/39 Chromium matrix against an isolated real Core | Real Compose browser acceptance, independent acceptance and Product Owner visual review |
 | WP11 | Implemented and integrated | Deterministic replay trace, bounded steps/events, redaction, comparison, typed alerts, operator-authenticated `GET /agentic/requests/{id}/trace` and the Office Request trace view | Real Core/Compose browser acceptance; independent acceptance |
@@ -208,8 +208,9 @@ document does not claim that a live multi-reviewer Campaign has run.
 ## Not tested / open
 
 - Live provider inference and a live long-turn/SSE-cut UAT (WP5).
-- Real Core/Compose browser acceptance for plan review, finding actions, the
-  Skills refresh panel and the workflow trace view (WP10/WP12).
+- Real Compose browser acceptance and independent acceptance for plan review,
+  finding actions, the Skills refresh panel and the workflow trace view
+  (WP10/WP12). The implementer Chromium matrix exists for these surfaces.
 - Independent acceptance and Product Owner visual approval.
 - A real Compose Campaign with two or more reviewer role receipts and the Gate
   aggregating them; only deterministic DB/plan/Gate coverage was exercised.
@@ -220,12 +221,18 @@ document does not claim that a live multi-reviewer Campaign has run.
 - A real Compose dependency acquisition through the internal network and
   allowlisted proxy; only deterministic HTTP and opt-in live test bodies were
   exercised.
+- Pinned advisory database, `cargo audit`/`cargo deny` verdicts and
+  license-policy enforcement are `NOT_IMPLEMENTED`; `advisories.json` is a
+  package inventory with `status: NOT_CHECKED` and
+  `database: not-configured`. See
+  [WP4 evidence](wp4-dependency-broker-evidence.md).
 - Compose end-to-end workspace restart/inventory recovery (WP6).
 - Real Compose scheduler restart evidence for skill-pack refresh (WP3).
 - The deterministic WP12 chaos/cross-workstream matrix and acceptance script are
   recorded in [wp12-chaos-matrix.md](wp12-chaos-matrix.md) and the
   [WP12 manifest](../evidence/quality-wave12-chaos-2026-11-10/manifest.json);
   those are implementer evidence, not independent acceptance. Real
-  Core/Compose browser acceptance of the WP10 surfaces, live provider/Podman
-  and dependency paths, a real multi-reviewer Campaign and the per-option
-  browser matrix remain `NOT_TESTED`.
+  Compose browser acceptance of the WP10 surfaces, live provider/Podman and
+  dependency paths, and a real multi-reviewer Campaign remain `NOT_TESTED`.
+  The per-option browser matrix is implementer-complete but not independently
+  accepted.

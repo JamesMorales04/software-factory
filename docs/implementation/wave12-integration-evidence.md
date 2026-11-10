@@ -460,7 +460,14 @@ No paid inference was used.
   remain pending.
 - WP4: real Compose dependency acquisition through the internal network and
   allowlisted proxy; the real-Podman/live-registry tests are opt-in and were not
-  enabled.
+  enabled. Pinned advisory database, `cargo audit`/`cargo deny` verdicts and
+  license-policy enforcement are `NOT_IMPLEMENTED`; `advisories.json` is a
+  package inventory with `status: NOT_CHECKED` and `database: not-configured`.
+  See [WP4 evidence](wp4-dependency-broker-evidence.md).
+- WP2/WP8: the WP10 implementer Chromium matrix covers the plan-review and
+  finding resolve/refute surfaces against an isolated real Core with seeded
+  test-support rows. Independent acceptance and Product Owner review remain
+  pending.
 - WP6: Compose end-to-end restart and HTTP inventory acceptance; independent
   acceptance.
 - WP5: live provider long-turn/SSE-cut UAT; independent acceptance. The
