@@ -1,0 +1,132 @@
+{
+  "schema": "factory.evidence.manifest.v1",
+  "recorded_at": "2026-11-10T00:03:01Z",
+  "candidate_commit": "32e1bbb8f99a4c4e484ca6761d2ffe3930e70fab",
+  "branch": "factory/agentic-flow-20261108",
+  "scope": "Quality-first planning, plan review, finding closure, provider reconnect, dependency broker and canonical OpenSpec implementation slice",
+  "status": "IMPLEMENTER_EVIDENCE_NOT_ACCEPTANCE",
+  "changed_surfaces": [
+    "native/src/planning",
+    "native/src/db/planning.rs",
+    "native/src/db/quality.rs",
+    "native/src/bin/core.rs",
+    "native/src/dependency_broker.rs",
+    "native/src/dependencies.rs",
+    "native/src/openspec.rs",
+    "native/src/openspec_cli.rs",
+    "native/src/provider_reliability.rs",
+    "native/src/review_roles.rs",
+    "native/src/runtime.rs",
+    "native/src/bin/worker.rs",
+    "native/tests/planning_pipeline.rs",
+    "office/src/views/Director.tsx",
+    "office/src/coreApi.ts",
+    "office/src/i18n/catalog.en.ts",
+    "office/src/i18n/catalog.es.ts",
+    "docs/product/office-parity.json",
+    "docs/product/capabilities.yaml"
+  ],
+  "commands": [
+    {
+      "command": "cargo test -p factory-native --lib",
+      "cwd": "native",
+      "result": "731 passed; 0 failed; 2 ignored"
+    },
+    {
+      "command": "cargo test -p factory-native --test planning_pipeline",
+      "cwd": "native",
+      "result": "1 passed; 0 failed"
+    },
+    {
+      "command": "cargo clippy -p factory-native --all-targets --all-features -- -D warnings",
+      "cwd": "native",
+      "result": "clean"
+    },
+    {
+      "command": "cargo test -p factory-native --bin factory-worker",
+      "cwd": "native",
+      "result": "15 passed; 0 failed"
+    },
+    {
+      "command": "npm test -- --run",
+      "cwd": "office",
+      "result": "297 passed across 45 files; one earlier transient failure was not reproduced"
+    },
+    {
+      "command": "npm run typecheck",
+      "cwd": "office",
+      "result": "clean"
+    },
+    {
+      "command": "npm run lint",
+      "cwd": "office",
+      "result": "clean"
+    }
+  ],
+  "independent_reviews": [
+    {
+      "work_package": "WP0",
+      "agent_id": "6b2f7558-463b-454d-940c-9408b02df958",
+      "model": "codex/gpt-6-luna",
+      "result": "no remaining findings"
+    },
+    {
+      "work_package": "WP1",
+      "agent_id": "88b20399-746b-4664-ab69-780a45e90e9f",
+      "model": "codex/gpt-6-luna",
+      "result": "no remaining findings"
+    },
+    {
+      "work_package": "WP2",
+      "agent_id": "5bb611b7-4ea3-4526-8310-b4b25c24a654",
+      "model": "codex/gpt-6-luna",
+      "result": "no remaining findings"
+    },
+    {
+      "work_package": "WP3",
+      "agent_id": "d5810d0f-cc20-4d99-a6fd-22fd78f527d6",
+      "model": "codex/gpt-6-luna",
+      "result": "no remaining findings"
+    },
+    {
+      "work_package": "WP4",
+      "agent_id": "49bf8bb7-0701-4365-a869-aff0de22bd8d",
+      "model": "codex/gpt-6-luna",
+      "result": "no remaining findings at commit 30e6ad2"
+    },
+    {
+      "work_package": "WP7",
+      "agent_id": "39a6eadf-7712-41c5-b4b2-8111adf65596",
+      "model": "codex/gpt-6-luna",
+      "result": "no remaining findings"
+    },
+    {
+      "work_package": "WP8",
+      "agent_id": "bffeb2eb-7e3b-4376-9126-e5fd5f7cc365",
+      "model": "codex/gpt-6-luna",
+      "result": "no remaining findings"
+    },
+    {
+      "work_package": "WP9",
+      "agent_id": "cc684bfb-b87d-4bec-824e-d148c4cd8426",
+      "model": "codex/gpt-6-luna",
+      "result": "no remaining findings at commit feff8ed"
+    },
+    {
+      "work_package": "WP10",
+      "agent_id": "c35c4bcb-1d41-47c6-a0bd-e04e44d24e4b",
+      "model": "codex/gpt-6-luna",
+      "result": "no remaining findings at commit 0133318"
+    }
+  ],
+  "limitations": [
+    "No real Core/Compose browser acceptance for the plan-review or finding surfaces.",
+    "No live provider inference or live long-turn/SSE-cut UAT.",
+    "No independent human acceptance, Product Owner visual approval or deployment certification.",
+    "The Compose topology provisions one reviewer identity; critical assurance fails closed and multi-role coverage is not claimed.",
+    "The OpenSpec CLI validator image exists, but the Compose validation job is not wired.",
+    "The dependency broker library implements atomic acquisition, but the runtime-broker HTTP/Compose path is not wired.",
+    "Startup orphan-volume reconciliation and the full chaos matrix remain open.",
+    "TRUSTED_LOCAL is not isolation and is not certified."
+  ]
+}
