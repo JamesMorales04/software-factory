@@ -698,6 +698,15 @@ capabilities:
     isolation: []
   limitations:
   - Gate acceptance is candidate-specific and is not deployment or security certification.
+  - Candidates now record `final_source` as `MODEL_FINAL` or `STAGNATION_SALVAGE`. Deterministic stagnation salvage is
+    allowed only when the latest durable progress decision is `Diagnose` satisfying the frozen progress counts, the
+    ActionSpec has at least one frozen check, at least one Core-recorded final nudge exists, the exact candidate diff
+    is non-empty and exactly one PASS execution receipt per frozen check is bound to the exact
+    check id, candidate commit/tree, Attempt, Campaign and work item. Core derives these values from durable records,
+    records `worker.stagnation_finalized` and permits one salvage per work item. R0 salvage remains eligible for the
+    ordinary Gate; R1-R3 salvage can never be accepted automatically and carries `SALVAGE_HUMAN_REVIEW_REQUIRED`.
+    R1-R3 authorization itself remains disabled in the current product, so the R1+ branch is domain-tested but not
+    reachable through the authorization route.
   blockers: []
 - id: CAP-008
   name: Scoped capability grants

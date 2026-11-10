@@ -2999,7 +2999,15 @@ export const es: Catalog = {
   "evidence.identity.tree": "Árbol",
   "evidence.identity.attempt": "Intento",
   "evidence.identity.implementer": "Implementador",
+  "evidence.identity.finalSource": "Origen final",
   "evidence.identity.recorded": "Registrado",
+  "evidence.finalSource.model": "Final del modelo",
+  "evidence.finalSource.modelDetail":
+    "El proveedor devolvió una respuesta final normal.",
+  "evidence.finalSource.salvage": "Rescate por estancamiento",
+  "evidence.finalSource.salvageDetail":
+    "Finalización determinista tras el diagnóstico de estancamiento del Core; el bucle del modelo ya se había detenido.",
+  "evidence.gate.finalSource": "Origen final del candidato:",
 
   "projectFiles.title": "Archivos del Proyecto",
   "projectFiles.description":

@@ -4,6 +4,7 @@ import { CancelCampaign } from "../CancelCampaign";
 import { CampaignPulse } from "../components/office/CampaignPulse";
 import { CandidateDiff } from "../components/office/CandidateDiff";
 import {
+  CandidateFinalSourceBadge,
   CandidateIdentity,
   QualityGatePanel,
   ReceiptEvidenceTable,
@@ -1045,6 +1046,11 @@ export function CampaignDetail() {
                           {t("campaignDetail.evidence.independent")}
                         </span>
                       </div>
+                      <p>
+                        <CandidateFinalSourceBadge
+                          source={candidate.final_source}
+                        />
+                      </p>
                       <ReceiptEvidenceTable receipts={candidateReceipts} />
                       <ReceiptModelProvenance receipts={candidateReceipts} />
                       <h3>{t("campaignDetail.evidence.reviewFindings")}</h3>
@@ -1079,6 +1085,7 @@ export function CampaignDetail() {
                     <QualityGatePanel
                       gate={gates[candidate.id] ?? null}
                       candidateId={candidate.id}
+                      finalSource={candidate.final_source}
                     />
                     <CheapOpsPanel candidateId={candidate.id} />
                   </Panel>

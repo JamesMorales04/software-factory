@@ -2891,7 +2891,15 @@ export const en = {
   "evidence.identity.tree": "Tree",
   "evidence.identity.attempt": "Attempt",
   "evidence.identity.implementer": "Implementer",
+  "evidence.identity.finalSource": "Final source",
   "evidence.identity.recorded": "Recorded",
+  "evidence.finalSource.model": "Model final",
+  "evidence.finalSource.modelDetail":
+    "The provider returned a normal final response.",
+  "evidence.finalSource.salvage": "Stagnation salvage",
+  "evidence.finalSource.salvageDetail":
+    "Deterministic completion after Core diagnosed stagnation; the model loop had stopped.",
+  "evidence.gate.finalSource": "Candidate final source:",
 
   "projectFiles.title": "Project files",
   "projectFiles.description":

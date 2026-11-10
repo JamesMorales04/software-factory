@@ -363,7 +363,11 @@ here rather than repeated:
    threshold. The earlier `f8ea5e85` Campaign was blocked at
    `IMPLEMENTER_PROGRESS_Diagnose` and produced no candidate. The salvage repair
    is deployed and deterministically tested, but it is not proven to have
-   finalized `be5eb14f`. The record does not claim that it did.
+   finalized `be5eb14f`. The record does not claim that it did. Candidate
+   `final_source` did not exist at that time; migration `0075` adds it with the
+   safe `MODEL_FINAL` default and does not rewrite history, so `be5eb14f` is
+   never reclassified or claimed as `STAGNATION_SALVAGE`. New salvage runs carry
+   durable `worker.stagnation_finalized` evidence in Core.
 3. **The candidate has 11 tests.** `ff1c0c8` has five `#[test]` functions in
    `tests/cli.rs`; `cargo test --locked` passes 5/5 with zero unit tests. The
    eleven-test count is not reproducible and is not used.

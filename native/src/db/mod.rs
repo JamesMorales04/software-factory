@@ -347,6 +347,7 @@ pub const EVENT_KINDS: &[&str] = &[
     "worker.claim_released",
     "worker.registered",
     "worker.session_rotated",
+    "worker.stagnation_finalized",
     "worker.terminal_reported",
     "work_integration.started",
     "workflow.checkpoint.recorded",
@@ -378,6 +379,8 @@ pub struct CandidateRecord {
     pub integration: bool,
     #[serde(default)]
     pub lineage: Vec<String>,
+    #[serde(default)]
+    pub final_source: crate::quality::CandidateFinalSource,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -401,6 +404,60 @@ pub struct NewCandidate {
     pub action_spec_sha256: String,
     pub commit_sha: String,
     pub tree_sha: String,
+    #[serde(default)]
+    pub final_source: crate::quality::CandidateFinalSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub salvage: Option<CandidateSalvageClaim>,
+}
+
+/// The only Worker-supplied salvage fact accepted by Core. Every trigger and
+/// receipt is derived from durable Core records; this claim only binds the
+/// stable work-item identity to the submission.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct CandidateSalvageClaim {
+    pub work_item_id: String,
+}
+
+/// Core-derived, exact-candidate salvage evidence recorded in the immutable
+/// `worker.stagnation_finalized` event. No field is copied from an unverified
+/// Worker count.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct CandidateSalvageEvidence {
+    pub campaign_id: String,
+    pub work_item_id: String,
+    pub attempt_id: String,
+    pub model_turns: u64,
+    pub final_nudges: u64,
+    pub frozen_checks: u64,
+    pub passed_checks: u64,
+    pub written: bool,
+    pub decision: String,
+    pub reason: String,
+    pub policy_id: String,
+    pub authorization_id: String,
+    pub diagnose_checkpoint_id: String,
+    pub stagnant_checkpoints: u32,
+    pub unsuccessful_replans: u32,
+    pub diff: CandidateSalvageDiff,
+    pub check_receipts: Vec<CandidateSalvageCheckReceipt>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct CandidateSalvageDiff {
+    pub changed_files: u64,
+    pub changed_paths: Vec<String>,
+    pub diff_stat: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct CandidateSalvageCheckReceipt {
+    pub check_id: String,
+    pub receipt_id: String,
+    pub result_sha256: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

@@ -16894,7 +16894,17 @@ async fn quality_gate(
     }
     match app.db.gate_for_candidate(&id).await {
         Ok(Some(gate)) => {
+            let candidate = match app.db.candidate(&id).await {
+                Ok(candidate) => candidate,
+                Err(error) => return api_error(error),
+            };
             let mut body = serde_json::to_value(&gate).unwrap_or_else(|_| serde_json::json!({}));
+            if let Some(object) = body.as_object_mut() {
+                object.insert(
+                    "final_source".into(),
+                    serde_json::to_value(candidate.final_source).unwrap_or(serde_json::Value::Null),
+                );
+            }
             if let Some(repair) = app
                 .db
                 .repair_authorization_for_candidate(&id)
