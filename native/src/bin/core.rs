@@ -6442,8 +6442,8 @@ impl<'a> DecisionProjection<'a> {
             if context.is_some() && !planning_ready {
                 blocked_reason = planning
                     .as_ref()
-                    .and_then(PlanningReadiness::blocking_code)
-                    .map(str::to_owned);
+                    .and_then(|readiness| readiness.conflict())
+                    .map(|conflict| conflict.code.to_owned());
             }
             let plan_hash = context
                 .as_ref()
@@ -11260,24 +11260,99 @@ async fn plan_agentic_request(
             .filter(|kind| !matches!(*kind, "SPEC" | "OPENSPEC"))
             .collect::<Vec<_>>();
         if !compile_missing.is_empty() {
-            return (
-                StatusCode::CONFLICT,
-                Json(json!({
-                    "error": "the recorded plan is missing artifacts Core must generate; recompile the plan from a new request or repair the planning state",
-                    "code": "PLAN_ARTIFACTS_REQUIRED",
-                    "missingArtifacts": compile_missing,
-                    "participantPlan": readiness.participant_plan,
-                })),
-            )
-                .into_response();
+            let graph_record = match app.db.agentic_work_graph(&record.id).await {
+                Ok(record) => record,
+                Err(Error::NotFound) => {
+                    return (
+                        StatusCode::CONFLICT,
+                        Json(json!({
+                            "error": "the recorded plan is missing generated artifacts and has no WorkGraph to repair from",
+                            "code": "WORK_GRAPH_REQUIRED",
+                            "missingArtifacts": compile_missing,
+                        })),
+                    )
+                        .into_response();
+                }
+                Err(error) => return api_error(error),
+            };
+            let graph = match serde_json::from_str::<factory_native::agentic::ValidatedWorkGraph>(
+                &graph_record.graph_json,
+            ) {
+                Ok(graph) if graph.graph_sha256 == graph_record.graph_sha256 => graph,
+                _ => {
+                    return (
+                        StatusCode::CONFLICT,
+                        Json(json!({
+                            "error": "the stored WorkGraph is invalid; the plan cannot be repaired deterministically",
+                            "code": "WORK_GRAPH_REQUIRED",
+                            "missingArtifacts": compile_missing,
+                        })),
+                    )
+                        .into_response();
+                }
+            };
+            let planning = match persist_planning_plan(&app, &record, &context, &graph).await {
+                Ok(value) => value,
+                Err(response) => return response,
+            };
+            if let Some(code) = planning.get("code").and_then(Value::as_str) {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(json!({
+                        "code": code,
+                        "error": planning.get("message").and_then(Value::as_str).unwrap_or("planning is blocked"),
+                        "missingArtifacts": planning.get("missingArtifacts").cloned().unwrap_or(Value::Null),
+                        "participantPlan": planning.get("participantPlan").cloned().unwrap_or(Value::Null),
+                        "options": planning.get("options").cloned().unwrap_or(Value::Null),
+                    })),
+                )
+                    .into_response();
+            }
+            let plan = match app.db.latest_planning_artifact(&record.id, "PLAN").await {
+                Ok(plan) => plan,
+                Err(error) => return api_error(error),
+            };
+            let review = app.db.latest_plan_review(&record.id).await.ok();
+            let artifacts = app
+                .db
+                .planning_artifacts(&record.id)
+                .await
+                .unwrap_or_default();
+            let readiness =
+                match planning_readiness(&app, &record.id, plan.revision, &context).await {
+                    Ok(readiness) => readiness,
+                    Err(error) => return api_error(error),
+                };
+            let graph_record = app.db.agentic_work_graph(&record.id).await.ok();
+            return Json(json!({
+                "plan": plan,
+                "graph": graph_record,
+                "review": review,
+                "artifacts": artifacts,
+                "alreadyPlanned": true,
+                "repaired": true,
+                "missingArtifacts": readiness.missing_artifacts,
+                "participantPlan": readiness.participant_plan,
+                "reviewStatus": readiness.review_status,
+                "reviewApproved": readiness.review_approved,
+                "materialsReady": readiness.materials_ready,
+                "ready": readiness.ready(),
+            }))
+            .into_response();
         }
+        let graph_record = app.db.agentic_work_graph(&record.id).await.ok();
         return Json(json!({
             "plan": plan,
+            "graph": graph_record,
             "review": review,
             "artifacts": artifacts,
             "alreadyPlanned": true,
+            "repaired": false,
             "missingArtifacts": readiness.missing_artifacts,
             "participantPlan": readiness.participant_plan,
+            "reviewStatus": readiness.review_status,
+            "reviewApproved": readiness.review_approved,
+            "materialsReady": readiness.materials_ready,
             "ready": readiness.ready(),
         }))
         .into_response();
@@ -11724,15 +11799,39 @@ impl PlanningReadiness {
     }
 
     /// The first fail-closed reason a plan cannot be approved or started.
-    fn blocking_code(&self) -> Option<&'static str> {
+    fn conflict(&self) -> Option<PlanningReadinessConflict> {
         if !self.missing_artifacts.is_empty() {
-            Some("PLAN_ARTIFACTS_REQUIRED")
+            Some(PlanningReadinessConflict {
+                code: "PLAN_ARTIFACTS_REQUIRED",
+                message: "required planning artifacts are missing; compile the plan and complete the plan review before approval",
+            })
         } else if self.participant_plan.required && !self.participant_plan.ready {
-            Some("PARTICIPANT_PLAN_REQUIRED")
+            Some(PlanningReadinessConflict {
+                code: "PARTICIPANT_PLAN_REQUIRED",
+                message: "a recorded participant plan matching the frozen reviewer plan is required before approval",
+            })
         } else if !self.review_approved {
-            Some("PLAN_REVIEW_REQUIRED")
+            Some(PlanningReadinessConflict {
+                code: "PLAN_REVIEW_REQUIRED",
+                message: "the latest plan review is not approved; complete the owner decision in the Director before approval",
+            })
         } else {
             None
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PlanningReadinessConflict {
+    code: &'static str,
+    message: &'static str,
+}
+
+impl PlanningReadinessConflict {
+    fn into_error(self) -> Error {
+        Error::IntakeConflict {
+            code: self.code,
+            message: self.message.into(),
         }
     }
 }
@@ -11954,18 +12053,16 @@ fn assess_participant_plan(
 }
 
 async fn latest_planning_revision(app: &App, request_id: &str) -> Result<u32, Error> {
-    let review_revision = app
-        .db
-        .latest_plan_review(request_id)
-        .await
-        .ok()
-        .map(|review| review.plan_revision);
-    let artifact_revision = app
-        .db
-        .latest_planning_artifact(request_id, "PLAN")
-        .await
-        .ok()
-        .map(|artifact| artifact.revision);
+    let review_revision = match app.db.latest_plan_review(request_id).await {
+        Ok(review) => Some(review.plan_revision),
+        Err(Error::NotFound) => None,
+        Err(error) => return Err(error),
+    };
+    let artifact_revision = match app.db.latest_planning_artifact(request_id, "PLAN").await {
+        Ok(artifact) => Some(artifact.revision),
+        Err(Error::NotFound) => None,
+        Err(error) => return Err(error),
+    };
     Ok(review_revision
         .into_iter()
         .chain(artifact_revision)
@@ -12108,24 +12205,13 @@ async fn planning_readiness(
 }
 
 fn planning_readiness_conflict(readiness: &PlanningReadiness) -> Option<Response> {
-    let code = readiness.blocking_code()?;
-    let error = match code {
-        "PLAN_ARTIFACTS_REQUIRED" => {
-            "required planning artifacts are missing; compile the plan and complete the plan review before approval"
-        }
-        "PARTICIPANT_PLAN_REQUIRED" => {
-            "a recorded participant plan matching the frozen reviewer plan is required before approval"
-        }
-        _ => {
-            "the latest plan review is not approved; complete the owner decision in the Director before approval"
-        }
-    };
+    let conflict = readiness.conflict()?;
     Some(
         (
             StatusCode::CONFLICT,
             Json(json!({
-                "error": error,
-                "code": code,
+                "error": conflict.message,
+                "code": conflict.code,
                 "missingArtifacts": readiness.missing_artifacts,
                 "participantPlan": readiness.participant_plan,
                 "reviewStatus": readiness.review_status,
@@ -12154,6 +12240,20 @@ async fn ensure_planning_ready(
         return Err(response);
     }
     Ok(readiness)
+}
+
+/// Typed, non-HTTP form of the readiness boundary for internal Core starts.
+async fn ensure_planning_ready_or_error(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+) -> Result<(), Error> {
+    let context = agentic_triage_context(app, record).await?;
+    let revision = latest_planning_revision(app, &record.id).await?;
+    let readiness = planning_readiness(app, &record.id, revision, &context).await?;
+    if let Some(conflict) = readiness.conflict() {
+        return Err(conflict.into_error());
+    }
+    Ok(())
 }
 
 /// The legacy Lead start/approve routes must not bypass the planning boundary
@@ -14754,6 +14854,7 @@ async fn autonomous_start_intake(app: &Arc<App>, id: &str) -> Result<(), Error> 
     if context.lead.campaign_id.is_some() {
         return Ok(());
     }
+    ensure_planning_ready_or_error(app, &context.intake).await?;
     let global_reserved = factory_native::db::RESERVED_MATTERS
         .iter()
         .map(|matter| (*matter).to_string())
@@ -18018,6 +18119,15 @@ mod tests {
         path: &Path,
         master_key: Option<factory_native::provider_secrets::ProviderSecretKey>,
     ) -> Arc<App> {
+        test_app_with_master_key_and_options(path, master_key, false, None).await
+    }
+
+    async fn test_app_with_master_key_and_options(
+        path: &Path,
+        master_key: Option<factory_native::provider_secrets::ProviderSecretKey>,
+        lead_autonomous_start: bool,
+        projects_root: Option<PathBuf>,
+    ) -> Arc<App> {
         Arc::new(App {
             db: Database::open(path).await.unwrap(),
             operator_token: "operator-token".into(),
@@ -18026,13 +18136,13 @@ mod tests {
             verifier_principal: "verifier-process".into(),
             reviewer_identities: test_reviewer_identities(),
             lead_fixture_assessor: false,
-            lead_autonomous_start: false,
+            lead_autonomous_start,
             model_gateway: None,
             master_key,
             github: factory_native::github::GitHubClient::production().unwrap(),
             github_sync: tokio::sync::Mutex::new(()),
             enrollment_code_file: None,
-            projects_root: None,
+            projects_root,
             allow_insecure_git: false,
             setup: Mutex::new(SetupState {
                 failures: 0,
@@ -21363,6 +21473,44 @@ mod tests {
             .await
         }
 
+        async fn enable_autonomous_policy(
+            fixture: &Fixture,
+        ) -> (
+            StatusCode,
+            Value,
+            factory_native::db::ExecutionProfileRecord,
+        ) {
+            let mut content = profile_content();
+            content.name = "Autonomous R0".into();
+            content.auto_start = AutoStartPolicy {
+                enabled: true,
+                risk_classes: vec![factory_native::lead::RiskClass::R0],
+            };
+            let profile = fixture
+                .app
+                .db
+                .create_execution_profile(&content, "owner")
+                .await
+                .unwrap();
+            let result = send(
+                &fixture.router,
+                "POST",
+                &format!("/projects/{}/execution-policy", fixture.project_id),
+                Some(json!({
+                    "execution_profile_id": profile.id,
+                    "expected_revision": profile.revision,
+                    "expected_revision_hash": profile.content_hash,
+                    "project_config_hash": fixture.config.config_hash,
+                    "autonomous": true,
+                    "subscription_confirmed": true,
+                    "acknowledge": true,
+                    "idempotency_key": "autonomous-policy-api-key",
+                })),
+            )
+            .await;
+            (result.0, result.1, profile)
+        }
+
         async fn create_intake(fixture: &Fixture, key: &str) -> (StatusCode, Value) {
             create_intake_with_amount(fixture, key, None).await
         }
@@ -23148,6 +23296,189 @@ mod tests {
             assert_eq!(approved["planning"]["ready"], true);
             assert!(approved["campaignId"].is_string());
 
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
+        async fn autonomous_start_requires_planning_readiness_and_starts_when_ready() {
+            let fixture = setup().await;
+            let (status, policy, profile) = enable_autonomous_policy(&fixture).await;
+            assert_eq!(status, StatusCode::CREATED, "{policy}");
+            let (record, created) = fixture
+                .app
+                .db
+                .create_intake_request(
+                    &fixture.project_id,
+                    "Implement a bounded intake endpoint.",
+                    Some(&profile.id),
+                    factory_native::intake::IntakeMode::Autonomous,
+                    "request-api-autopilot-readiness",
+                    "operator-token",
+                )
+                .await
+                .unwrap();
+            assert!(created);
+            let intake_id = record.id;
+            fixture_plan(&fixture, &intake_id, "FIXTURE").await;
+            let app = test_app_with_master_key_and_options(&fixture.path, None, true, None).await;
+
+            let error = autonomous_start_intake(&app, &intake_id)
+                .await
+                .expect_err("an incomplete plan must not start");
+            assert!(
+                matches!(
+                    error,
+                    Error::IntakeConflict {
+                        code: "PLAN_ARTIFACTS_REQUIRED",
+                        ..
+                    }
+                ),
+                "{error}"
+            );
+            let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            assert!(record.campaign_id.is_none());
+            assert!(
+                fixture.app.db.campaigns().await.unwrap().is_empty(),
+                "a rejected autonomous start must not create a Campaign"
+            );
+
+            seed_complete_planning(&fixture, &intake_id, ParticipantSeed::Matching).await;
+            autonomous_start_intake(&app, &intake_id)
+                .await
+                .expect("a ready auto-approved plan must start");
+            let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            let campaign_id = record.campaign_id.expect("autonomous Campaign");
+            let campaign = fixture.app.db.campaign(&campaign_id).await.unwrap();
+            assert_eq!(campaign.status, "AUTHORIZED");
+            autonomous_start_intake(&app, &intake_id)
+                .await
+                .expect("an already-started request is an idempotent replay");
+            assert_eq!(fixture.app.db.campaigns().await.unwrap().len(), 1);
+
+            app.db.close().await;
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
+        async fn latest_planning_revision_propagates_database_errors() {
+            let fixture = setup().await;
+            fixture.app.db.close().await;
+            let result = latest_planning_revision(&fixture.app, "missing-request").await;
+            assert!(
+                result.is_err(),
+                "a database failure must not be treated as absence: {result:?}"
+            );
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
+        async fn compile_plan_repairs_a_partial_artifact_set() {
+            let fixture = setup().await;
+            let (status, _) = enable_policy(&fixture).await;
+            assert_eq!(status, StatusCode::CREATED);
+            let (status, created) = create_intake(&fixture, "request-api-repair-plan").await;
+            assert_eq!(status, StatusCode::CREATED, "{created}");
+            let intake_id = created["id"].as_str().unwrap().to_owned();
+            let context = fixture_plan(&fixture, &intake_id, "FIXTURE").await;
+            seed_complete_planning(&fixture, &intake_id, ParticipantSeed::Matching).await;
+            std::fs::write(
+                fixture.repository.join("package.json"),
+                "{\"name\":\"fixture\",\"version\":\"1.0.0\",\"private\":true}\n",
+            )
+            .unwrap();
+            let app = test_app_with_master_key_and_options(
+                &fixture.path,
+                None,
+                false,
+                Some(fixture.repository.parent().unwrap().to_path_buf()),
+            )
+            .await;
+            let router = build_router(app.clone());
+
+            let pool = sqlx_sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx_sqlite::SqliteConnectOptions::new()
+                        .filename(&fixture.path)
+                        .create_if_missing(false),
+                )
+                .await
+                .unwrap();
+            sqlx::query::query(
+                "DELETE FROM planning_artifacts
+                 WHERE request_id=?1 AND kind IN ('STACK','DOD')",
+            )
+            .bind(&intake_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+            pool.close().await;
+
+            let (status, detail) = send(
+                &router,
+                "GET",
+                &format!("/intake/requests/{intake_id}"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{detail}");
+            assert_eq!(detail["planning"]["ready"], false);
+            let missing = detail["planning"]["missingArtifacts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>();
+            assert!(missing.contains(&"STACK"), "{missing:?}");
+            assert!(missing.contains(&"DOD"), "{missing:?}");
+
+            let (status, repaired) = send(
+                &router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{repaired}");
+            assert_eq!(repaired["repaired"], true);
+            assert_eq!(repaired["alreadyPlanned"], true);
+            assert!(repaired["graph"].is_object());
+            assert_eq!(repaired["missingArtifacts"], json!([]));
+            assert_eq!(repaired["reviewStatus"], "AUTO_APPROVED");
+            assert_eq!(repaired["ready"], true);
+
+            let (status, detail) = send(
+                &router,
+                "GET",
+                &format!("/intake/requests/{intake_id}"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{detail}");
+            assert_eq!(detail["planning"]["ready"], true);
+            assert_eq!(detail["planning"]["missingArtifacts"], json!([]));
+
+            let (status, approved) = send(
+                &router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/approve"),
+                Some(json!({
+                    "expected_plan_hash": context.plan.plan_hash,
+                    "rationale": "Repaired plan reviewed.",
+                    "idempotency_key": "approve-repaired-plan",
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{approved}");
+            assert_eq!(approved["state"], "EXECUTING");
+            assert!(approved["campaignId"].is_string());
+
+            app.db.close().await;
             fixture.app.db.close().await;
             let _ = std::fs::remove_file(fixture.path);
             let _ = std::fs::remove_dir_all(fixture.repository);
