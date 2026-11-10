@@ -475,6 +475,13 @@ mod tests {
         character.to_string().repeat(64)
     }
 
+    const REQUEST_ID: &str = "00000000-0000-4000-8000-000000000001";
+    const RUN_ID: &str = "workflow-00000000-0000-4000-8000-000000000002";
+
+    fn step_id(suffix: u8) -> String {
+        format!("step-00000000-0000-4000-8000-{suffix:012}")
+    }
+
     fn event(
         sequence: u64,
         kind: &str,
@@ -483,8 +490,8 @@ mod tests {
     ) -> ReplayEvent {
         ReplayEvent {
             sequence,
-            request_id: "request-1".into(),
-            run_id: "run-1".into(),
+            request_id: REQUEST_ID.into(),
+            run_id: RUN_ID.into(),
             step_id: None,
             kind: kind.into(),
             state_from: from,
@@ -508,8 +515,8 @@ mod tests {
 
     fn run(state: WorkflowState) -> WorkflowRunRecord {
         WorkflowRunRecord {
-            id: "run-1".into(),
-            request_id: "request-1".into(),
+            id: RUN_ID.into(),
+            request_id: REQUEST_ID.into(),
             campaign_id: None,
             state,
             revision: 1,
@@ -522,7 +529,7 @@ mod tests {
     fn step(id: &str, status: WorkflowStepStatus) -> WorkflowStepRecord {
         WorkflowStepRecord {
             id: id.into(),
-            run_id: "run-1".into(),
+            run_id: RUN_ID.into(),
             kind: "unit.execute".into(),
             status,
             attempt: 1,
@@ -582,10 +589,10 @@ mod tests {
     #[test]
     fn terminal_run_reports_terminal_alert_and_no_open_steps() {
         let view = project(
-            "request-1",
+            REQUEST_ID,
             run(WorkflowState::Accepted),
             valid_terminal_events(),
-            vec![step("step-1", WorkflowStepStatus::Succeeded)],
+            vec![step(&step_id(1), WorkflowStepStatus::Succeeded)],
             TraceBounds::default(),
         );
 
@@ -613,8 +620,9 @@ mod tests {
 
     #[test]
     fn duplicate_gap_open_step_and_state_divergence_are_reported() {
+        let open_step = step_id(5);
         let mut started = event(3, "workflow.step.started", None, None);
-        started.step_id = Some("step-open".into());
+        started.step_id = Some(open_step.clone());
         let step_events = vec![
             loaded(
                 transition(2, WorkflowState::Frozen, WorkflowState::Executing),
@@ -627,10 +635,10 @@ mod tests {
             loaded(started, Value::Null),
         ];
         let view = project(
-            "request-1",
+            REQUEST_ID,
             run(WorkflowState::Accepted),
             step_events,
-            vec![step("step-open", WorkflowStepStatus::Running)],
+            vec![step(&open_step, WorkflowStepStatus::Running)],
             TraceBounds::default(),
         );
 
@@ -657,7 +665,7 @@ mod tests {
             "unknown": secret,
         }));
         let view = project(
-            "request-1",
+            REQUEST_ID,
             run(WorkflowState::Executing),
             vec![loaded(event(1, "workflow.event", None, None), payload)],
             Vec::new(),
@@ -667,7 +675,16 @@ mod tests {
         let serialized = serde_json::to_string(&view).expect("serializable trace view");
         assert!(!serialized.contains(secret));
         assert_eq!(view.events[0].payload["state"], "EXECUTING");
-        assert_eq!(view.events[0].payload["unknown"], "[REDACTED]");
+        let payload = view.events[0]
+            .payload
+            .as_object()
+            .expect("redacted payload object");
+        assert!(!payload.contains_key("unknown"));
+        assert!(
+            payload
+                .iter()
+                .any(|(key, value)| key.starts_with("redacted_") && value == "[REDACTED]")
+        );
         assert!(
             view.events[0].payload["token"]
                 .as_str()
@@ -683,7 +700,7 @@ mod tests {
             "prompt": secret,
         }));
         let view = project(
-            "request-1",
+            REQUEST_ID,
             run(WorkflowState::Submitted),
             vec![loaded(
                 transition(1, WorkflowState::Submitted, WorkflowState::Executing),
@@ -707,7 +724,7 @@ mod tests {
     #[test]
     fn truncated_read_is_reported_and_bounded() {
         let view = project(
-            "request-1",
+            REQUEST_ID,
             run(WorkflowState::Assessing),
             vec![loaded(
                 transition(1, WorkflowState::Submitted, WorkflowState::Assessing),
@@ -733,10 +750,10 @@ mod tests {
     #[test]
     fn step_truncation_is_reported_and_bounded() {
         let view = project(
-            "request-1",
+            REQUEST_ID,
             run(WorkflowState::Submitted),
             Vec::new(),
-            vec![step("step-1", WorkflowStepStatus::Succeeded)],
+            vec![step(&step_id(1), WorkflowStepStatus::Succeeded)],
             TraceBounds {
                 step_limit: 2,
                 steps_truncated: true,
@@ -759,7 +776,7 @@ mod tests {
         malformed.malformed = true;
 
         let view = project(
-            "request-1",
+            REQUEST_ID,
             run(WorkflowState::Submitted),
             vec![malformed],
             Vec::new(),
@@ -775,7 +792,7 @@ mod tests {
 
     #[test]
     fn empty_view_has_no_run_and_no_alerts() {
-        let view = empty("request-1", 10_000);
+        let view = empty(REQUEST_ID, 10_000);
         assert!(view.run.is_none());
         assert!(view.trace.is_none());
         assert!(view.events.is_empty());

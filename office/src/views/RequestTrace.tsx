@@ -81,12 +81,61 @@ function normalizePayloadKey(key: string): string {
   return key.toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
-const OPERATIONAL_IDENTIFIER = /^[A-Za-z0-9._:/-]{1,200}$/;
+const OPERATIONAL_IDENTIFIER =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+function isStepId(value: string): boolean {
+  return (
+    value.startsWith("step-") && OPERATIONAL_IDENTIFIER.test(value.slice(5))
+  );
+}
+
+function isWorkflowRunId(value: string): boolean {
+  return (
+    value.startsWith("workflow-") && OPERATIONAL_IDENTIFIER.test(value.slice(9))
+  );
+}
+
+function isUuid(value: string): boolean {
+  return OPERATIONAL_IDENTIFIER.test(value);
+}
 
 function operationalIdText(value: string | null): string {
-  return value !== null && OPERATIONAL_IDENTIFIER.test(value)
-    ? shortId(value)
-    : "[REDACTED]";
+  return value !== null && isStepId(value) ? shortId(value) : "[REDACTED]";
+}
+
+const CANONICAL_PAYLOAD_KEYS: Record<string, string> = {
+  kind: "kind",
+  state: "state",
+  statefrom: "stateFrom",
+  stateto: "stateTo",
+  status: "status",
+  outcome: "outcome",
+  sequence: "sequence",
+  stepid: "stepId",
+  runid: "runId",
+  requestid: "requestId",
+  attempt: "attempt",
+  count: "count",
+  durationms: "durationMs",
+  bytes: "bytes",
+  sha256: "sha256",
+  payloadsha256: "payloadSha256",
+  terminal: "terminal",
+  token: "token",
+  password: "password",
+  secret: "secret",
+  authorization: "authorization",
+  apikey: "api_key",
+  prompt: "prompt",
+  content: "content",
+};
+
+function displayPayloadKey(key: string): string {
+  const canonical = CANONICAL_PAYLOAD_KEYS[normalizePayloadKey(key)];
+  if (canonical) return canonical;
+  if (/^redacted_[a-f0-9]{12}$/.test(key)) return key;
+  return "[redacted]";
 }
 
 function isSafePayloadString(key: string, value: string): boolean {
@@ -103,9 +152,11 @@ function isSafePayloadString(key: string, value: string): boolean {
     case "payloadsha256":
       return /^[a-f0-9]{64}$/.test(value);
     case "stepid":
+      return isStepId(value);
     case "runid":
+      return isWorkflowRunId(value);
     case "requestid":
-      return /^[A-Za-z0-9._:/-]{1,200}$/.test(value);
+      return isUuid(value);
     default:
       return false;
   }
@@ -211,9 +262,12 @@ function payloadEntries(payload: unknown): Array<[string, string]> {
   if (typeof payload === "object" && !Array.isArray(payload)) {
     return Object.entries(payload as Record<string, unknown>)
       .slice(0, 50)
-      .map(([key, value]) => [key, displayPayloadValue(key, value)]);
+      .map(([key, value]) => [
+        displayPayloadKey(key),
+        displayPayloadValue(key, value),
+      ]);
   }
-  return [["value", displayPayloadValue("value", payload)]];
+  return [["[redacted]", displayPayloadValue("value", payload)]];
 }
 
 export function RequestTrace({ requestId }: { requestId: string }) {

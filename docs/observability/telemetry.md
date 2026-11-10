@@ -48,7 +48,10 @@ duplicate sequences, state-chain gaps, open steps, terminal/non-terminal state,
 event or step truncation, malformed rows and replay rejection. Payload values
 under allowlisted keys retain only validated enum codes, canonical hash shapes,
 operational identifiers or numbers/booleans; free-form strings are replaced by a
-SHA-256 fingerprint. Free-form step detail is not exposed. A truncated or
+SHA-256 fingerprint. Property names outside the canonical payload key set are
+replaced by a bounded hash label so sensitive text cannot ride in a key. Event
+request, run and step IDs must match the canonical UUID, `workflow-<uuid>` or
+`step-<uuid>` formats. Free-form step detail is not exposed. A truncated or
 rejected replay is reported as an alert; Core never invents the missing state.
 
 ## Native OTLP log export

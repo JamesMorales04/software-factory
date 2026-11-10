@@ -91,7 +91,13 @@ function runningTrace(
       finalState: "EXECUTING",
       terminal: false,
       checkpoints: [],
-      openSteps: [{ stepId: "step-2", status: "RUNNING", lastSequence: 3 }],
+      openSteps: [
+        {
+          stepId: "step-22222222-2222-4222-8222-222222222222",
+          status: "RUNNING",
+          lastSequence: 3,
+        },
+      ],
       duplicateSequences: [{ sequence: 2, occurrences: 2 }],
       missingTransitions: [
         {
@@ -106,21 +112,22 @@ function runningTrace(
         payload: { state: "SUBMITTED" },
       }),
       event(2, "workflow.step.started", {
-        stepId: "step-1",
+        stepId: "step-11111111-1111-4111-8111-111111111111",
         payload: {
-          stepId: "step-1",
+          stepId: "step-11111111-1111-4111-8111-111111111111",
           status: "RUNNING",
           state: "raw prompt or token",
           prompt: "raw prompt body",
           token: "super-secret-token",
+          "prompt sk-proj-sensitive": "sensitive-key-value",
         },
       }),
       event(3, "workflow.step.started", {
-        stepId: "raw prompt or token",
+        stepId: "sk-proj-abcdefghijklmnop",
         stateFrom: "SUBMITTED",
         stateTo: "EXECUTING",
         payload: {
-          stepId: "step-2",
+          stepId: "step-22222222-2222-4222-8222-222222222222",
           status: "RUNNING",
           detail: "[REDACTED]",
         },
@@ -128,7 +135,7 @@ function runningTrace(
     ],
     steps: [
       {
-        stepId: "step-1",
+        stepId: "step-11111111-1111-4111-8111-111111111111",
         kind: "unit.execute",
         status: "SUCCEEDED",
         attempt: 1,
@@ -140,7 +147,7 @@ function runningTrace(
         lastSequence: 2,
       },
       {
-        stepId: "step-2",
+        stepId: "step-22222222-2222-4222-8222-222222222222",
         kind: "unit.verify",
         status: "RUNNING",
         attempt: 1,
@@ -190,7 +197,7 @@ function runningTrace(
         kind: "OPEN_STEP",
         severity: "INFO",
         sequence: 3,
-        stepId: "step-2",
+        stepId: "step-22222222-2222-4222-8222-222222222222",
         occurrences: null,
         expectedFrom: null,
         observedFrom: null,
@@ -286,6 +293,8 @@ describe("RequestTrace", () => {
     expect(screen.queryByText("raw prompt body")).toBeNull();
     expect(screen.queryByText("super-secret-token")).toBeNull();
     expect(screen.queryByText("raw prompt or token")).toBeNull();
+    expect(screen.queryByText(/sk-proj/)).toBeNull();
+    expect(screen.queryByText(/sensitive-key-value/)).toBeNull();
   });
 
   it("renders a rejected replay as unknown rather than in progress", async () => {

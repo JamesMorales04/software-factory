@@ -20839,7 +20839,7 @@ mod tests {
             )
             .bind(&run_id)
             .bind(
-                r#"{"state":"raw prompt or token","status":"raw prompt or token","stepId":"raw prompt or token"}"#,
+                r#"{"state":"raw prompt or token","status":"raw prompt or token","stepId":"sk-proj-abcdefghijklmnop","prompt sk-proj-sensitive":"sensitive-key-value"}"#,
             )
             .bind(chrono::Utc::now().to_rfc3339())
             .execute(&pool)
@@ -20865,6 +20865,9 @@ mod tests {
             assert!(!serialized.contains("super-secret-token-value"));
             assert!(!serialized.contains("raw prompt body"));
             assert!(!serialized.contains("raw prompt or token"));
+            assert!(!serialized.contains("sk-proj"));
+            assert!(!serialized.contains("sensitive-key-value"));
+            assert!(!serialized.contains("prompt sk-proj-sensitive"));
             assert!(trace["events"].as_array().unwrap().iter().any(|event| {
                 event["payload"]["state"]
                     .as_str()

@@ -84,11 +84,14 @@ fn loaded_event(
         kind.as_str(),
         "run.status_changed" | "workflow.transitioned"
     );
-    // A transition row must carry a JSON object with both canonical states.
-    // Legacy run status rows use a plain `status=...` string; those are not
-    // claimed to be transitions. JSON-looking text that fails to parse is a
-    // malformed transition, not an ordinary event.
-    let mut malformed = transition_event && detail_parse.is_err() && detail_is_json_like;
+    // The only documented non-JSON event detail is the legacy run status
+    // shape `status=<TOKEN> [attempt=...]`. JSON-looking corrupt detail is
+    // malformed for every event kind; a transition row is also malformed when
+    // its non-JSON text is anything other than that legacy status shape.
+    let legacy_status_detail = detail.trim_start().starts_with("status=");
+    let json_parse_failed = detail_parse.is_err() && detail_is_json_like;
+    let transition_text_failed = transition_event && detail_parse.is_err() && !legacy_status_detail;
+    let mut malformed = json_parse_failed || transition_text_failed;
 
     let state_from = transition_event
         .then(|| {
@@ -136,7 +139,7 @@ fn loaded_event(
         .and_then(|value| value.get("stepId").or_else(|| value.get("step_id")))
         .and_then(Value::as_str)
         .and_then(
-            |value| match workflow::validate_operational_identifier("step id", value) {
+            |value| match workflow::validate_workflow_step_id("step id", value) {
                 Ok(()) => Some(value.to_owned()),
                 Err(_) => {
                     malformed = true;
@@ -258,9 +261,9 @@ mod tests {
     #[tokio::test]
     async fn trace_loader_maps_transitions_and_step_lifecycle_in_sequence_order() {
         let db = temp_db().await;
-        seed_request(&db, "request-trace").await;
+        seed_request(&db, "00000000-0000-4000-8000-000000000011").await;
         let run_id = db
-            .ensure_workflow_run("request-trace", None, "")
+            .ensure_workflow_run("00000000-0000-4000-8000-000000000011", None, "")
             .await
             .unwrap();
         db.transition_workflow(
@@ -281,7 +284,10 @@ mod tests {
         .await
         .unwrap();
 
-        let view = db.workflow_trace("request-trace", 100).await.unwrap();
+        let view = db
+            .workflow_trace("00000000-0000-4000-8000-000000000011", 100)
+            .await
+            .unwrap();
 
         assert!(
             view.events
@@ -305,9 +311,9 @@ mod tests {
     #[tokio::test]
     async fn trace_loader_reports_a_gap_and_bounds_the_newest_events() {
         let db = temp_db().await;
-        seed_request(&db, "request-gap").await;
+        seed_request(&db, "00000000-0000-4000-8000-000000000012").await;
         let run_id = db
-            .ensure_workflow_run("request-gap", None, "")
+            .ensure_workflow_run("00000000-0000-4000-8000-000000000012", None, "")
             .await
             .unwrap();
         for (from, to) in [
@@ -332,14 +338,20 @@ mod tests {
             .await
             .unwrap();
 
-        let view = db.workflow_trace("request-gap", 10).await.unwrap();
+        let view = db
+            .workflow_trace("00000000-0000-4000-8000-000000000012", 10)
+            .await
+            .unwrap();
         assert!(
             view.alerts
                 .iter()
                 .any(|alert| alert.kind == TraceAlertKind::MissingTransition)
         );
 
-        let bounded = db.workflow_trace("request-gap", 1).await.unwrap();
+        let bounded = db
+            .workflow_trace("00000000-0000-4000-8000-000000000012", 1)
+            .await
+            .unwrap();
         assert!(bounded.truncated);
         assert_eq!(bounded.event_limit, 1);
         assert_eq!(bounded.events.len(), 1);
@@ -354,22 +366,29 @@ mod tests {
     #[tokio::test]
     async fn malformed_transition_rows_are_flagged() {
         let db = temp_db().await;
-        seed_request(&db, "request-malformed").await;
+        seed_request(&db, "00000000-0000-4000-8000-000000000014").await;
         let run_id = db
-            .ensure_workflow_run("request-malformed", None, "")
+            .ensure_workflow_run("00000000-0000-4000-8000-000000000014", None, "")
             .await
             .unwrap();
         let now = Utc::now().to_rfc3339();
-        for detail in [
-            "{broken",
-            r#"{"status":"RUNNING"}"#,
-            r#"{"from":"NOT_A_STATE","to":"ASSESSING"}"#,
+        for (kind, detail) in [
+            ("run.status_changed", "{broken"),
+            ("run.status_changed", r#"{"status":"RUNNING"}"#),
+            (
+                "run.status_changed",
+                r#"{"from":"NOT_A_STATE","to":"ASSESSING"}"#,
+            ),
+            ("run.created", r#"{"state":"#),
+            ("run.status_changed", "not-json-garbage"),
+            ("run.status_changed", "status=RUNNING attempt=legacy"),
         ] {
             sqlx::query::query(
                 "INSERT INTO events(subject_id,kind,detail,recorded_at)
-                 VALUES (?1,'run.status_changed',?2,?3)",
+                 VALUES (?1,?2,?3,?4)",
             )
             .bind(&run_id)
+            .bind(kind)
             .bind(detail)
             .bind(&now)
             .execute(&db.pool)
@@ -377,14 +396,17 @@ mod tests {
             .unwrap();
         }
 
-        let view = db.workflow_trace("request-malformed", 100).await.unwrap();
+        let view = db
+            .workflow_trace("00000000-0000-4000-8000-000000000014", 100)
+            .await
+            .unwrap();
 
-        assert!(
+        assert_eq!(
             view.alerts
                 .iter()
                 .filter(|alert| alert.kind == TraceAlertKind::MalformedEvent)
-                .count()
-                >= 3
+                .count(),
+            5
         );
         assert!(view.replay_error.is_some());
         assert!(
@@ -397,9 +419,12 @@ mod tests {
     #[tokio::test]
     async fn trace_loader_returns_empty_view_without_a_run() {
         let db = temp_db().await;
-        seed_request(&db, "request-no-run").await;
+        seed_request(&db, "00000000-0000-4000-8000-000000000013").await;
 
-        let view = db.workflow_trace("request-no-run", 50).await.unwrap();
+        let view = db
+            .workflow_trace("00000000-0000-4000-8000-000000000013", 50)
+            .await
+            .unwrap();
 
         assert!(view.run.is_none());
         assert!(view.events.is_empty());
