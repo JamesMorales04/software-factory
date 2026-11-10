@@ -13,6 +13,7 @@ COPY validate.mjs /opt/openspec/validate.mjs
 RUN mkdir -p /workspace && chown 10001:10001 /workspace
 
 ENV OPENSPEC_NO_UPDATE_CHECK=1
+ENV OPENSPEC_TELEMETRY=0
 ENV NO_COLOR=1
 WORKDIR /workspace
 USER 10001:10001

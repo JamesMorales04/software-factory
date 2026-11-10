@@ -489,6 +489,7 @@ function runOpenSpec(args, cwd) {
     env: {
       ...process.env,
       OPENSPEC_NO_UPDATE_CHECK: "1",
+      OPENSPEC_TELEMETRY: "0",
       NO_COLOR: "1",
       CI: "1",
     },
