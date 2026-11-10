@@ -162,13 +162,29 @@ function isSafePayloadString(key: string, value: string): boolean {
   }
 }
 
+const NUMERIC_PAYLOAD_KEYS = new Set([
+  "sequence",
+  "attempt",
+  "count",
+  "durationms",
+  "bytes",
+]);
+
+const BOOLEAN_PAYLOAD_KEYS = new Set(["terminal"]);
+
 function displayPayloadValue(key: string, value: unknown): string {
-  if (isSecretPayloadKey(key)) return "[REDACTED]";
+  const normalized = normalizePayloadKey(key);
+  if (!CANONICAL_PAYLOAD_KEYS.has(normalized) || isSecretPayloadKey(key)) {
+    return "[REDACTED]";
+  }
   if (typeof value === "string") {
     return isSafePayloadString(key, value) ? value : "[REDACTED]";
   }
-  if (typeof value === "boolean" || typeof value === "number") {
-    return String(value);
+  if (typeof value === "number") {
+    return NUMERIC_PAYLOAD_KEYS.has(normalized) ? String(value) : "[REDACTED]";
+  }
+  if (typeof value === "boolean") {
+    return BOOLEAN_PAYLOAD_KEYS.has(normalized) ? String(value) : "[REDACTED]";
   }
   // Nested structures are not re-rendered in the browser; Core's redacted
   // scalar projection is the only display contract.

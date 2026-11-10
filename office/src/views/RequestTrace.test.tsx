@@ -297,15 +297,19 @@ describe("RequestTrace", () => {
     expect(screen.queryByText(/sensitive-key-value/)).toBeNull();
   });
 
-  it("does not crash on an inherited constructor payload key", async () => {
+  it("redacts unknown constructor keys and scalar values", async () => {
     mocks.getRequestTrace.mockResolvedValue(
       runningTrace({
         events: [
           event(1, "workflow.event", {
             payload: {
-              constructor: "sensitive-constructor-value",
+              constructor: 987654321,
+              "constructor text": "sensitive-constructor-value",
               state: "EXECUTING",
             },
+          }),
+          event(2, "workflow.event", {
+            payload: 555555,
           }),
         ],
       }),
@@ -315,6 +319,8 @@ describe("RequestTrace", () => {
     expect(await screen.findByText("Workflow trace")).toBeDefined();
     expect(screen.queryByText("constructor")).toBeNull();
     expect(screen.queryByText(/sensitive-constructor-value/)).toBeNull();
+    expect(screen.queryByText("987654321")).toBeNull();
+    expect(screen.queryByText("555555")).toBeNull();
     expect(screen.getByText("EXECUTING")).toBeDefined();
   });
 
