@@ -406,6 +406,25 @@ export const es: Catalog = {
   "request.approval.approve": "Aprobar el plan congelado e iniciar",
   "request.approval.disabled":
     "La aprobación está deshabilitada hasta que Core pueda derivar la autorización.",
+  "request.approval.planningDisabled":
+    "Completa la revisión del plan en el Director antes de aprobar.",
+  "request.planning.incompleteTitle": "Revisión del plan incompleta",
+  "request.planning.incompleteBody":
+    "Core requiere los artefactos de planificación y el plan de participantes antes de iniciar este plan congelado.",
+  "request.planning.missingArtifacts": "Faltan artefactos: {values}.",
+  "request.planning.participantMissing":
+    "El plan de participantes no está registrado. Compila el plan y registra el plan de participantes en el Director.",
+  "request.planning.participantIncomplete":
+    "El plan de participantes no coincide con el plan de revisores congelado: {values}.",
+  "request.planning.participantAssignments": "asignaciones de roles de revisor",
+  "request.planning.reviewPending":
+    "La revisión del plan espera la decisión del owner. Aprueba la revisión exacta del plan en el Director antes de iniciar.",
+  "request.planning.reviewNotApproved":
+    "La última revisión del plan es {status}; el plan no puede iniciar hasta que una revisión aprobada vincule la revisión actual.",
+  "request.planning.openDirector":
+    "Abrir la revisión del plan en el Director (Compilar plan / Registrar plan de participantes)",
+  "request.planning.unavailable":
+    "Core no informó de la preparación de la revisión del plan. Recarga esta solicitud antes de aprobar.",
   "request.execution.title": "Ejecución",
   "request.execution.description":
     "Core informa de una Campaña autorizada. Los estados de Campaña, Ejecución, candidato y Quality Gate siguen siendo hechos separados y se muestran en el espacio de trabajo de Campañas.",
@@ -3648,6 +3667,18 @@ export const es: Catalog = {
   "director.planning.principal": "Principal revisor",
   "director.planning.points": "Puntos de autonomía",
   "director.planning.missing": "Faltan artefactos requeridos: {values}.",
+  "director.planning.participantIncompleteTitle":
+    "Plan de participantes incompleto",
+  "director.planning.participantMissing":
+    "El plan de participantes no está registrado. Usa Registrar plan de participantes antes de aprobar.",
+  "director.planning.participantIncomplete":
+    "El plan de participantes no coincide con el plan de revisores congelado: {values}.",
+  "director.planning.participantAssignments":
+    "asignaciones de roles de revisor",
+  "director.planning.reviewPending":
+    "La revisión del plan espera una decisión autenticada del owner. Aprueba, solicita cambios o rechaza la revisión exacta del plan.",
+  "director.planning.reviewNotApproved":
+    "La última revisión del plan es {status}. Aprueba una nueva revisión exacta antes de que el plan pueda iniciar.",
   "director.planning.rationale": "Justificación de la revisión: {value}",
   "director.planning.reviewRationale": "Justificación de la revisión",
   "director.planning.rationaleRequired":

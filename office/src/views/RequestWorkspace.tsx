@@ -200,12 +200,28 @@ export function RequestWorkspace() {
   const authorizationAvailable = data.authorization.available;
   const isAutopilot = data.mode === "AUTONOMOUS";
   const offline = connectionError !== null;
+  const planning = data.planning ?? null;
+  const planningReady = planning?.ready === true;
+  const missingPlanArtifacts = planning?.missingArtifacts ?? [];
+  const participantPlan = planning?.participantPlan ?? null;
+  const participantPlanIncomplete =
+    participantPlan?.required === true && participantPlan.ready !== true;
+  const planningIncomplete =
+    data.state === "AWAITING_APPROVAL" && data.plan !== null && !planningReady;
+  const planningProblemValues = participantPlan
+    ? [
+        ...participantPlan.missingRoles,
+        ...participantPlan.unexpectedRoles,
+        ...participantPlan.missingAssignments,
+      ]
+    : [];
   const approvalReady =
     data.state === "AWAITING_APPROVAL" && data.plan !== null;
   const approveDisabled =
     busy !== null ||
     offline ||
     !approvalReady ||
+    !planningReady ||
     !authorizationAvailable ||
     rationale.trim() === "" ||
     !approvedScope;
@@ -446,6 +462,67 @@ export function RequestWorkspace() {
         </p>
       )}
 
+      {planningIncomplete && (
+        <div
+          className="ui-callout ui-callout--attention request-callout"
+          role="status"
+        >
+          <p>
+            <strong>{t("request.planning.incompleteTitle")}</strong>{" "}
+            {t("request.planning.incompleteBody")}
+          </p>
+          {planning === null ? (
+            <p>{t("request.planning.unavailable")}</p>
+          ) : (
+            <>
+              {missingPlanArtifacts.length > 0 && (
+                <p>
+                  {t("request.planning.missingArtifacts", {
+                    values: missingPlanArtifacts.join(", "),
+                  })}
+                </p>
+              )}
+              {participantPlanIncomplete && participantPlan && (
+                <p>
+                  {participantPlan.present
+                    ? t("request.planning.participantIncomplete", {
+                        values:
+                          planningProblemValues.length > 0
+                            ? planningProblemValues.join(", ")
+                            : t("request.planning.participantAssignments"),
+                      })
+                    : t("request.planning.participantMissing")}
+                </p>
+              )}
+              {!planning.reviewApproved && (
+                <p>
+                  {planning.reviewStatus === "PENDING"
+                    ? t("request.planning.reviewPending")
+                    : t("request.planning.reviewNotApproved", {
+                        status: planning.reviewStatus ?? "—",
+                      })}
+                </p>
+              )}
+              {participantPlan?.present &&
+                planningProblemValues.length === 0 &&
+                participantPlan.problems.length > 0 && (
+                  <ul className="muted">
+                    {participantPlan.problems.map((problem) => (
+                      <li key={problem}>{problem}</li>
+                    ))}
+                  </ul>
+                )}
+            </>
+          )}
+          <Link
+            className={buttonClass("secondary")}
+            to={`/director?request=${encodeURIComponent(data.id)}`}
+          >
+            {t("request.planning.openDirector")}
+          </Link>
+        </div>
+      )}
+
       {actionError && (
         <div className="ui-callout ui-callout--danger" role="alert">
           <p>{actionError}</p>
@@ -607,7 +684,9 @@ export function RequestWorkspace() {
                           label={t("request.approval.rationale")}
                           value={rationale}
                           onChange={(event) => setRationale(event.target.value)}
-                          disabled={!authorizationAvailable || offline}
+                          disabled={
+                            !authorizationAvailable || offline || !planningReady
+                          }
                           help={t("request.approval.rationaleHelp")}
                           required
                         />
@@ -617,7 +696,9 @@ export function RequestWorkspace() {
                           onChange={(event) =>
                             setApprovedScope(event.target.checked)
                           }
-                          disabled={!authorizationAvailable || offline}
+                          disabled={
+                            !authorizationAvailable || offline || !planningReady
+                          }
                         />
                         <div className="request-form-actions">
                           <Button
@@ -632,6 +713,11 @@ export function RequestWorkspace() {
                           {!authorizationAvailable && (
                             <span className="muted">
                               {t("request.approval.disabled")}
+                            </span>
+                          )}
+                          {authorizationAvailable && !planningReady && (
+                            <span className="muted">
+                              {t("request.approval.planningDisabled")}
                             </span>
                           )}
                         </div>

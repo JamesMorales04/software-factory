@@ -2498,7 +2498,9 @@ async fn start_lead_campaign_in_tx(
          SELECT ?1,pp.reviewer_count,
                 COALESCE(json_extract(pp.plan_json,'$.reviewerRoles'),'[]'),
                 COALESCE(json_extract(pp.plan_json,'$.reviewerAssignments'),'[]'),?2
-         FROM agentic_participant_plans pp WHERE pp.request_id=?3
+         FROM agentic_participant_plans pp
+         JOIN intake_requests ir ON ir.id=pp.request_id
+         WHERE ir.lead_request_id=?3
          ON CONFLICT(campaign_id) DO NOTHING",
     )
     .bind(&campaign.id)

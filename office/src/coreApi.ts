@@ -1443,15 +1443,39 @@ export interface IntakeRequestSummary {
   updatedAt: string;
 }
 
+export interface ParticipantPlanReadinessView {
+  required: boolean;
+  present: boolean;
+  ready: boolean;
+  reviewerCount: number;
+  requiredReviewerCount: number;
+  reviewerRoles: AgenticReviewerRole[];
+  requiredRoles: AgenticReviewerRole[];
+  missingRoles: AgenticReviewerRole[];
+  unexpectedRoles: AgenticReviewerRole[];
+  missingAssignments: AgenticReviewerRole[];
+  graphStale: boolean;
+  problems: string[];
+}
+
+export interface PlanningReadinessView {
+  lane: PlanningLane;
+  artifacts: PlanningArtifactRecord[];
+  review: PlanReviewRecord | null;
+  workflow: PlanningWorkflowRun | null;
+  missingArtifacts: string[];
+  participantPlan: ParticipantPlanReadinessView;
+  reviewStatus: string | null;
+  reviewApproved: boolean;
+  materialsReady: boolean;
+  ready: boolean;
+}
+
 export interface IntakeRequestProjection extends IntakeRequestSummary {
   assessment: LeadAssessmentView | null;
   proposal: LeadPlanProposalView | null;
   plan: FrozenLeadPlanRecord | null;
-  planning?: {
-    artifacts: PlanningArtifactRecord[];
-    review: PlanReviewRecord | null;
-    workflow: PlanningWorkflowRun | null;
-  };
+  planning?: PlanningReadinessView;
   campaign: CampaignDetail | null;
   messages: IntakeMessage[];
 }
@@ -1943,6 +1967,11 @@ export interface AgenticPlanningProjection {
   review: PlanReviewRecord | null;
   workflow: PlanningWorkflowRun | null;
   missingArtifacts: string[];
+  participantPlan: ParticipantPlanReadinessView;
+  reviewStatus: string | null;
+  reviewApproved: boolean;
+  materialsReady: boolean;
+  ready: boolean;
 }
 
 export interface AgenticRequestDetail {
