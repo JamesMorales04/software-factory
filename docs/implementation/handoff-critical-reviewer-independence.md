@@ -1,8 +1,8 @@
 # Handoff — Critical reviewer independence without model diversity
 
 **Estado:** handoff para el siguiente agente. No implementa ni certifica nada por sí
-mismo. Baseline: rama `factory/agentic-flow-20261108`, tip `e59c812`, candidato de
-código `feff8ed`.
+mismo. Baseline de código: rama `factory/agentic-flow-20261108`, candidato
+`feff8ed`; el handoff se apoya en la documentación acumulada hasta `c19a251`.
 
 ## Corrección de política
 
@@ -52,6 +52,31 @@ correctos.
 - `native/src/bin/core.rs` reduce el plan a un reviewer cuando
   `reviewer_count > 1`; eso no debe ocurrir para lanes que requieren varios
   reviewers.
+
+## Plan previo: waves y estado
+
+El plan aprobado es
+[`docs/implementation/quality-first-delivery-plan.md`](quality-first-delivery-plan.md).
+La rama actual ya integra la mayor parte de las Waves 0–2. Este handoff **no
+reabre** esos work packages: corrige WP9 y cierra la aceptación pendiente de
+Wave 3.
+
+| Wave | Work packages | Estado en esta rama | Ya hecho | Pendiente |
+|---|---|---|---|---|
+| **Wave 0** | WP0 — contratos, esquemas, migraciones | **Completado** | Contratos Rust/JSON, validación determinista, migraciones `0060`, `0061`, `0063`, `0064`, hashes exactos de plan/artefacto y atribución autenticada del owner | — |
+| **Wave 1** | WP1, WP2, WP4, WP5, WP6, WP9, WP11 | **Parcial** | WP1: workflow durable, outbox, idempotencia, recuperación y fence reclaim/finish. WP2: route floors, prompts, Planner en todos los lanes, Spec Manager `FORMAL_SPEC`, artefactos, plan review y transiciones. WP4: broker atómico en la frontera de librería, evidencia y límites. WP5: SSE reconnect, sin deadline oculto de 300 s, políticas de reservas y reparación estructurada. WP6: snapshots content-addressed, exclusión de `target`, rechazo de symlinks/archivos inseguros y cleanup existente. WP11: replay, redacción, comparación y bounds. | WP9: flota real de reviewers con identidades/tokens/principals separados; este handoff. WP4: wiring HTTP/Compose del runtime broker. WP5: UAT live de long-turn/SSE cut y matriz de fallos. WP6: reconciliación de volúmenes huérfanos al arranque y chaos dedicado. WP11: vista de trace en Core/Office. |
+| **Wave 2** | WP3, WP7, WP8, WP10, WP12 | **Parcial** | WP3: stack, arquitectura, documentación, skill packs con frescura y DoD. WP7: renderer OpenSpec canónico y validador CLI `1.16.1` con imagen. WP8: Finding Router, disposiciones durables, Gate bloquea hallazgos OPEN y resolve/refute autenticados. WP10: panel de plan review y disposición de hallazgos en Director. WP12: test golden del pipeline y suites Rust/Office existentes. | WP3: scheduler de refresh de skill packs y catálogo más amplio. WP7: job Compose de validación OpenSpec. WP8/WP10: aceptación browser real y revisión visual. WP12: matriz chaos/fault-injection y matriz browser por opción. |
+| **Wave 3** | Integración y aceptación | **Pendiente** | Integración de rutas Core/Office, evidencia implementer y revisiones independientes Codex de WP0–WP10. | WP9 fleet, WP10 live wiring/acceptance, WP12 E2E/chaos completo, contract tests cross-workstream, candidato final, aceptación independiente y evidencia candidate-bound. |
+
+**Orden de merges previsto:** WP0 → (WP1, WP2, WP4, WP5, WP6, WP9, WP11) →
+(WP3, WP7, WP8) → WP10 → WP12. En esta rama ese orden ya está materializado en
+los commits `0d7ef6e`, `96b43db`, `1b53b9a`, `7f17d59` y los fixes posteriores.
+El trabajo restante se hace sobre el tip actual, sin reconstruir la rama.
+
+**Alcance de este handoff:** cerrar WP9 (independencia por identidad/proceso,
+no por modelo/proveedor) y dejar el camino de Wave 3 para aceptación real. No
+declarar WP9 completo hasta que el fleet esté provisionado y probado; no
+declarar Wave 3 completa sin browser/E2E/aceptación independiente.
 
 ## Plan de implementación
 
