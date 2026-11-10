@@ -527,6 +527,84 @@ export const es: Catalog = {
     "{acceptance} de aceptación · {negative} negativas",
   "request.plan.noWorkUnits": "No hay unidades de trabajo registradas.",
 
+  "request.trace.title": "Traza del flujo de trabajo",
+  "request.trace.description":
+    "Eventos duraderos acotados y redactados, junto con la proyección determinista de repetición de la última ejecución de este flujo. Los eventos se ordenan por secuencia duradera.",
+  "request.trace.updated": "Actualizado {date}",
+  "request.trace.refresh": "Actualizar traza",
+  "request.trace.loading": "Cargando la traza del flujo…",
+  "request.trace.errorTitle": "Traza del flujo no disponible",
+  "request.trace.error": "No se pudo cargar la traza del flujo de trabajo.",
+  "request.trace.retry": "Reintentar traza",
+  "request.trace.retryNow": "Reintentar ahora",
+  "request.trace.offline":
+    "Se muestra la última traza cargada el {loadedAt}. Falló la actualización: {error}",
+  "request.trace.emptyTitle": "Aún no hay una ejecución del flujo",
+  "request.trace.emptyDescription":
+    "La traza aparece cuando Core crea una ejecución duradera del flujo para esta solicitud.",
+  "request.trace.run": "Ejecución",
+  "request.trace.state": "Estado duradero",
+  "request.trace.revision": "Revisión",
+  "request.trace.finalState": "Estado final reproducido",
+  "request.trace.outcome": "Resultado de la repetición",
+  "request.trace.terminal": "Terminal",
+  "request.trace.inProgress": "En curso",
+  "request.trace.eventCount": "Eventos",
+  "request.trace.eventCountValue": "{events} mostrados · límite {limit}",
+  "request.trace.alertsTitle": "Alertas de repetición",
+  "request.trace.alertsAria": "Alertas de repetición del flujo",
+  "request.trace.alertsEmpty": "No se registraron anomalías de repetición.",
+  "request.trace.sequence": "Secuencia {sequence}",
+  "request.trace.stepsTitle": "Traza de pasos",
+  "request.trace.stepsCount": "{count} paso(s)",
+  "request.trace.stepsEmpty": "No hay pasos duraderos registrados.",
+  "request.trace.stepOpen": "Abierto en la repetición",
+  "request.trace.stepKind": "Tipo",
+  "request.trace.stepAttempt": "Intento",
+  "request.trace.stepUpdated": "Actualizado",
+  "request.trace.stepSequence": "Último evento",
+  "request.trace.eventLogTitle": "Registro de eventos",
+  "request.trace.eventLogHint": "Ordenado por secuencia duradera",
+  "request.trace.eventLogEmpty": "No hay eventos duraderos registrados.",
+  "request.trace.eventLogAria": "Registro de eventos del flujo",
+  "request.trace.noPayload": "No hay carga útil visualizable.",
+  "request.trace.payloadHash": "SHA-256 de la carga útil: {hash}",
+  "request.trace.replayRejected": "Repetición rechazada.",
+  "request.trace.replayRejectedHint":
+    "El registro duradero es ambiguo o incompleto. No se inventó ningún estado; revisa el registro de eventos y las alertas.",
+  "request.trace.truncated":
+    "Se muestran los {limit} eventos más recientes porque la traza está acotada. Los eventos anteriores pueden faltar; las anomalías de repetición pueden deberse al prefijo omitido.",
+  "request.trace.alert.DUPLICATE_SEQUENCE": "Secuencia duplicada",
+  "request.trace.alert.MISSING_TRANSITION": "Transición faltante",
+  "request.trace.alert.OPEN_STEP": "Paso abierto",
+  "request.trace.alert.TERMINAL_STATE": "Estado terminal",
+  "request.trace.alert.NON_TERMINAL_STATE": "En curso",
+  "request.trace.alert.TRACE_TRUNCATED": "Traza truncada",
+  "request.trace.alert.REPLAY_REJECTED": "Repetición rechazada",
+  "request.trace.alert.STATE_DIVERGENCE": "Divergencia de estado",
+  "request.trace.alert.NO_EVENTS": "Sin eventos",
+  "request.trace.alert.MALFORMED_EVENT": "Evento mal formado",
+  "request.trace.alert.duplicateDetail":
+    "La secuencia {sequence} aparece {count} vez/veces con contenido idéntico.",
+  "request.trace.alert.missingTransitionDetail":
+    "Secuencia {sequence}: se esperaba {expected}, se observó {observed}.",
+  "request.trace.alert.openStepDetail":
+    "{stepId} sigue pendiente o en ejecución.",
+  "request.trace.alert.stateDivergenceDetail":
+    "Estado duradero {expected}; la repetición observó {observed}.",
+  "request.trace.alert.malformedEventDetail":
+    "La secuencia {sequence} no es un evento de flujo completo.",
+  "request.trace.alert.truncatedDetail":
+    "Los eventos más antiguos quedan fuera del límite solicitado.",
+  "request.trace.alert.rejectedDetail":
+    "La proyección pura de repetición rechazó este registro.",
+  "request.trace.alert.noEventsDetail":
+    "La ejecución no tiene eventos duraderos.",
+  "request.trace.alert.terminalDetail":
+    "La repetición alcanzó un estado terminal del flujo.",
+  "request.trace.alert.nonTerminalDetail":
+    "La repetición no alcanzó un estado terminal del flujo.",
+
   "actions.title": "Acciones",
   "actions.description":
     "Una Acción congela el objetivo, la ruta del proveedor, las rutas permitidas y las comprobaciones exactas a las que se vinculan las Ejecuciones posteriores y la verificación independiente. La ruta del proveedor debe configurarse en Configuración para la ejecución real.",

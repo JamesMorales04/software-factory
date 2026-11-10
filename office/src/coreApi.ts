@@ -1740,6 +1740,152 @@ export interface PlanningWorkflowRun {
   updatedAt: string;
 }
 
+export type WorkflowStateCode =
+  | "SUBMITTED"
+  | "ASSESSING"
+  | "PLANNED"
+  | "PLAN_REVIEW"
+  | "FROZEN"
+  | "EXECUTING"
+  | "VERIFYING"
+  | "REVIEWING"
+  | "GATE"
+  | "REPAIRING"
+  | "REPLANNING"
+  | "CONVERGING"
+  | "ACCEPTED"
+  | "BLOCKED"
+  | "FAILED"
+  | "CANCELLED";
+
+export type WorkflowStepStatusCode =
+  | "PENDING"
+  | "RUNNING"
+  | "SUCCEEDED"
+  | "FAILED"
+  | "BLOCKED";
+
+export type TraceAlertKind =
+  | "DUPLICATE_SEQUENCE"
+  | "MISSING_TRANSITION"
+  | "OPEN_STEP"
+  | "TERMINAL_STATE"
+  | "NON_TERMINAL_STATE"
+  | "TRACE_TRUNCATED"
+  | "REPLAY_REJECTED"
+  | "STATE_DIVERGENCE"
+  | "NO_EVENTS"
+  | "MALFORMED_EVENT";
+
+export type TraceAlertSeverity = "INFO" | "WARNING" | "CRITICAL";
+
+export interface TraceAlert {
+  kind: TraceAlertKind;
+  severity: TraceAlertSeverity;
+  sequence: number | null;
+  stepId: string | null;
+  occurrences: number | null;
+  expectedFrom: WorkflowStateCode | null;
+  observedFrom: WorkflowStateCode | null;
+  expectedState: WorkflowStateCode | null;
+  observedState: WorkflowStateCode | null;
+}
+
+export interface ReplayEventView {
+  sequence: number;
+  requestId: string;
+  runId: string;
+  stepId: string | null;
+  kind: string;
+  stateFrom: WorkflowStateCode | null;
+  stateTo: WorkflowStateCode | null;
+  payloadSha256: string;
+  recordedAt: string;
+}
+
+export interface ReplayCheckpointView {
+  sequence: number;
+  stepId: string | null;
+  state: WorkflowStateCode | null;
+  payloadSha256: string;
+  recordedAt: string;
+}
+
+export interface OpenStepView {
+  stepId: string;
+  status: WorkflowStepStatusCode;
+  lastSequence: number;
+}
+
+export interface DuplicateSequenceView {
+  sequence: number;
+  occurrences: number;
+}
+
+export interface MissingTransitionView {
+  sequence: number;
+  expectedFrom: WorkflowStateCode;
+  observedFrom: WorkflowStateCode;
+}
+
+export interface ReplayTraceView {
+  events: ReplayEventView[];
+  finalState: WorkflowStateCode | null;
+  terminal: boolean;
+  checkpoints: ReplayCheckpointView[];
+  openSteps: OpenStepView[];
+  duplicateSequences: DuplicateSequenceView[];
+  missingTransitions: MissingTransitionView[];
+}
+
+export interface TraceEventView {
+  sequence: number;
+  stepId: string | null;
+  kind: string;
+  stateFrom: WorkflowStateCode | null;
+  stateTo: WorkflowStateCode | null;
+  payloadSha256: string;
+  recordedAt: string;
+  payload: unknown;
+}
+
+export interface TraceStepView {
+  stepId: string;
+  kind: string;
+  status: WorkflowStepStatusCode;
+  attempt: number;
+  inputSha256: string;
+  outputSha256: string;
+  createdAt: string;
+  updatedAt: string;
+  open: boolean;
+  lastSequence: number | null;
+}
+
+export interface TraceRunView {
+  id: string;
+  requestId: string;
+  campaignId: string | null;
+  state: WorkflowStateCode;
+  revision: number;
+  planSha256: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WorkflowTraceView {
+  requestId: string;
+  run: TraceRunView | null;
+  trace: ReplayTraceView | null;
+  events: TraceEventView[];
+  steps: TraceStepView[];
+  alerts: TraceAlert[];
+  terminal: boolean;
+  eventLimit: number;
+  truncated: boolean;
+  replayError: string | null;
+}
+
 export interface AgenticPlanningProjection {
   lane: PlanningLane;
   signals: {
@@ -3353,6 +3499,14 @@ export const coreApi = {
     request<AgenticPlanningProjection>(
       `/agentic/requests/${encodeURIComponent(id)}/planning`,
     ),
+  getRequestTrace: (id: string, limit?: number) => {
+    const params = new URLSearchParams();
+    if (limit !== undefined) params.set("limit", String(limit));
+    const query = params.toString();
+    return request<WorkflowTraceView>(
+      `/agentic/requests/${encodeURIComponent(id)}/trace${query ? `?${query}` : ""}`,
+    );
+  },
   reviewAgenticPlan: (
     id: string,
     input: {

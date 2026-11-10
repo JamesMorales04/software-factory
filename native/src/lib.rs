@@ -62,6 +62,7 @@ pub mod spec_publish;
 pub mod sse;
 pub mod subscription_admission;
 pub mod telemetry;
+pub mod trace;
 pub mod workflow;
 pub mod workspace;
 pub mod workspace_archive;

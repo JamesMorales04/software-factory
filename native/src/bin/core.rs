@@ -1168,6 +1168,7 @@ fn office_api_router(app: Arc<App>) -> Router {
             post(resolve_agentic_owner_decision),
         )
         .route("/agentic/requests/{id}", get(agentic_request_detail))
+        .route("/agentic/requests/{id}/trace", get(agentic_request_trace))
         .route(
             "/provider/sessions/{session_record_id}/tool_events",
             get(provider_session_tool_events),
@@ -1457,6 +1458,7 @@ fn api_router(app: Arc<App>) -> Router {
             post(resolve_agentic_owner_decision),
         )
         .route("/agentic/requests/{id}", get(agentic_request_detail))
+        .route("/agentic/requests/{id}/trace", get(agentic_request_trace))
         .route(
             "/provider/sessions/{session_record_id}/tool_events",
             get(provider_session_tool_events),
@@ -13621,6 +13623,32 @@ async fn agentic_request_detail(
     }
 }
 
+#[derive(Deserialize, Default)]
+struct TraceQuery {
+    limit: Option<usize>,
+}
+
+async fn agentic_request_trace(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Query(query): Query<TraceQuery>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if let Err(error) = app.db.intake_request(&id).await {
+        return api_error(error);
+    }
+    let limit = query
+        .limit
+        .unwrap_or(factory_native::trace::TRACE_EVENT_DEFAULT);
+    match app.db.workflow_trace(&id, limit).await {
+        Ok(view) => Json(view).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
 fn internal_operator_headers(app: &App) -> HeaderMap {
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -17024,6 +17052,7 @@ mod tests {
             "/core-api/lead/requests/missing",
             "/core-api/intake/requests",
             "/core-api/intake/requests/missing",
+            "/core-api/agentic/requests/missing/trace",
             "/core-api/candidates",
             "/core-api/workers",
         ];
@@ -20733,6 +20762,121 @@ mod tests {
             .await;
             assert_eq!(status, StatusCode::CONFLICT);
             assert_eq!(fenced["code"], "INTAKE_WITHDRAWN");
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
+        async fn request_trace_is_operator_only_bounded_and_redacted() {
+            let fixture = setup().await;
+            let (status, _) = enable_policy(&fixture).await;
+            assert_eq!(status, StatusCode::CREATED);
+            let (status, created) =
+                create_intake_with_amount(&fixture, "request-api-trace", Some(5_000_000)).await;
+            assert_eq!(status, StatusCode::CREATED, "{created}");
+            let intake_id = created["id"].as_str().unwrap().to_owned();
+
+            let (status, empty) = send(
+                &fixture.router,
+                "GET",
+                &format!("/agentic/requests/{intake_id}/trace"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{empty}");
+            assert!(empty["run"].is_null());
+            assert!(empty["trace"].is_null());
+            assert_eq!(empty["events"].as_array().unwrap().len(), 0);
+
+            let run_id = fixture
+                .app
+                .db
+                .ensure_workflow_run(&intake_id, None, "")
+                .await
+                .unwrap();
+            fixture
+                .app
+                .db
+                .transition_workflow(
+                    &run_id,
+                    factory_native::planning::WorkflowState::Submitted,
+                    factory_native::planning::WorkflowState::Assessing,
+                    "token=super-secret-token-value",
+                )
+                .await
+                .unwrap();
+            let step = fixture
+                .app
+                .db
+                .begin_step(&run_id, "unit.execute", "")
+                .await
+                .unwrap();
+            fixture
+                .app
+                .db
+                .finish_step(
+                    &step.id,
+                    factory_native::planning::WorkflowStepStatus::Succeeded,
+                    "",
+                    "raw prompt body",
+                )
+                .await
+                .unwrap();
+
+            let (status, trace) = send(
+                &fixture.router,
+                "GET",
+                &format!("/agentic/requests/{intake_id}/trace"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{trace}");
+            assert_eq!(trace["run"]["state"], "ASSESSING");
+            assert_eq!(trace["events"].as_array().unwrap().len(), 4);
+            assert_eq!(trace["steps"][0]["status"], "SUCCEEDED");
+            assert_eq!(trace["steps"][0]["stepId"], step.id);
+            let serialized = trace.to_string();
+            assert!(!serialized.contains("super-secret-token-value"));
+            assert!(!serialized.contains("raw prompt body"));
+            assert!(
+                trace["alerts"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|alert| alert["kind"] == "NON_TERMINAL_STATE")
+            );
+
+            let (status, bounded) = send(
+                &fixture.router,
+                "GET",
+                &format!("/agentic/requests/{intake_id}/trace?limit=1"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{bounded}");
+            assert_eq!(bounded["truncated"], true);
+            assert_eq!(bounded["eventLimit"], 1);
+            assert_eq!(bounded["events"].as_array().unwrap().len(), 1);
+
+            let (status, _) = send_as(
+                &fixture.router,
+                "GET",
+                &format!("/agentic/requests/{intake_id}/trace"),
+                "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb",
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+            let (status, _) = send(
+                &fixture.router,
+                "GET",
+                "/agentic/requests/missing/trace",
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
 
             fixture.app.db.close().await;
             let _ = std::fs::remove_file(fixture.path);

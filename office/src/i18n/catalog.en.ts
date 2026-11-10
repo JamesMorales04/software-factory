@@ -515,6 +515,82 @@ export const en = {
   "request.plan.checksValue": "{acceptance} acceptance · {negative} negative",
   "request.plan.noWorkUnits": "No work units recorded.",
 
+  "request.trace.title": "Workflow trace",
+  "request.trace.description":
+    "Bounded, redacted durable events and the deterministic replay projection for this request's latest workflow run. Events are ordered by durable sequence.",
+  "request.trace.updated": "Updated {date}",
+  "request.trace.refresh": "Refresh trace",
+  "request.trace.loading": "Loading workflow trace…",
+  "request.trace.errorTitle": "Workflow trace unavailable",
+  "request.trace.error": "The workflow trace could not be loaded.",
+  "request.trace.retry": "Retry trace",
+  "request.trace.retryNow": "Retry now",
+  "request.trace.offline":
+    "Showing the last trace loaded at {loadedAt}. Refresh failed: {error}",
+  "request.trace.emptyTitle": "No workflow run yet",
+  "request.trace.emptyDescription":
+    "A trace appears after Core creates a durable workflow run for this request.",
+  "request.trace.run": "Run",
+  "request.trace.state": "Durable state",
+  "request.trace.revision": "Revision",
+  "request.trace.finalState": "Replayed final state",
+  "request.trace.outcome": "Replay outcome",
+  "request.trace.terminal": "Terminal",
+  "request.trace.inProgress": "In progress",
+  "request.trace.eventCount": "Events",
+  "request.trace.eventCountValue": "{events} shown · limit {limit}",
+  "request.trace.alertsTitle": "Replay alerts",
+  "request.trace.alertsAria": "Workflow replay alerts",
+  "request.trace.alertsEmpty": "No replay anomalies recorded.",
+  "request.trace.sequence": "Sequence {sequence}",
+  "request.trace.stepsTitle": "Step trace",
+  "request.trace.stepsCount": "{count} step(s)",
+  "request.trace.stepsEmpty": "No durable workflow steps recorded.",
+  "request.trace.stepOpen": "Open in replay",
+  "request.trace.stepKind": "Kind",
+  "request.trace.stepAttempt": "Attempt",
+  "request.trace.stepUpdated": "Updated",
+  "request.trace.stepSequence": "Last event",
+  "request.trace.eventLogTitle": "Event log",
+  "request.trace.eventLogHint": "Ordered by durable sequence",
+  "request.trace.eventLogEmpty": "No durable workflow events recorded.",
+  "request.trace.eventLogAria": "Workflow event log",
+  "request.trace.noPayload": "No displayable payload.",
+  "request.trace.payloadHash": "Payload SHA-256: {hash}",
+  "request.trace.replayRejected": "Replay rejected.",
+  "request.trace.replayRejectedHint":
+    "The durable ledger is ambiguous or incomplete. No state was invented; inspect the event log and alerts.",
+  "request.trace.truncated":
+    "Showing the newest {limit} events because this trace is bounded. Older events may be omitted; replay anomalies can result from the omitted prefix.",
+  "request.trace.alert.DUPLICATE_SEQUENCE": "Duplicate sequence",
+  "request.trace.alert.MISSING_TRANSITION": "Missing transition",
+  "request.trace.alert.OPEN_STEP": "Open step",
+  "request.trace.alert.TERMINAL_STATE": "Terminal state",
+  "request.trace.alert.NON_TERMINAL_STATE": "In progress",
+  "request.trace.alert.TRACE_TRUNCATED": "Trace truncated",
+  "request.trace.alert.REPLAY_REJECTED": "Replay rejected",
+  "request.trace.alert.STATE_DIVERGENCE": "State divergence",
+  "request.trace.alert.NO_EVENTS": "No events",
+  "request.trace.alert.MALFORMED_EVENT": "Malformed event",
+  "request.trace.alert.duplicateDetail":
+    "Sequence {sequence} appears {count} time(s) with identical content.",
+  "request.trace.alert.missingTransitionDetail":
+    "Sequence {sequence}: expected {expected}, observed {observed}.",
+  "request.trace.alert.openStepDetail": "{stepId} is still pending or running.",
+  "request.trace.alert.stateDivergenceDetail":
+    "Durable run state {expected}; replay observed {observed}.",
+  "request.trace.alert.malformedEventDetail":
+    "Sequence {sequence} is not a complete workflow event.",
+  "request.trace.alert.truncatedDetail":
+    "The oldest events are outside the requested bound.",
+  "request.trace.alert.rejectedDetail":
+    "The pure replay projection refused this ledger.",
+  "request.trace.alert.noEventsDetail": "The run has no durable events.",
+  "request.trace.alert.terminalDetail":
+    "The replay reached a terminal workflow state.",
+  "request.trace.alert.nonTerminalDetail":
+    "The replay has not reached a terminal workflow state.",
+
   "actions.title": "Actions",
   "actions.description":
     "An Action freezes the objective, provider route, allowed paths and the exact checks later Runs and independent verification bind to. The provider route must be configured in Settings for live execution.",

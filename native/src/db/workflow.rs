@@ -231,6 +231,13 @@ impl Database {
         .bind(&now)
         .execute(&mut *transaction)
         .await?;
+        super::record_event(
+            &mut transaction,
+            &run_id,
+            "run.created",
+            &serde_json::json!({"state": "SUBMITTED"}).to_string(),
+        )
+        .await?;
         transaction.commit().await?;
         Ok(run_id)
     }
@@ -384,6 +391,19 @@ impl Database {
         .execute(&mut *transaction)
         .await?;
         let step = load_step(&mut transaction, &step_id).await?;
+        super::record_event(
+            &mut transaction,
+            run_id,
+            "workflow.step.started",
+            &serde_json::json!({
+                "stepId": step.id,
+                "stepKind": step.kind,
+                "attempt": step.attempt,
+                "status": "RUNNING",
+            })
+            .to_string(),
+        )
+        .await?;
         transaction.commit().await?;
         Ok(step)
     }
@@ -435,6 +455,29 @@ impl Database {
             return Err(Error::Conflict("workflow step was already finished"));
         }
         let step = load_step(&mut transaction, step_id).await?;
+        let event_kind = match status {
+            WorkflowStepStatus::Succeeded => "workflow.step.succeeded",
+            WorkflowStepStatus::Failed => "workflow.step.failed",
+            WorkflowStepStatus::Blocked => "workflow.step.blocked",
+            WorkflowStepStatus::Pending | WorkflowStepStatus::Running => {
+                return Err(Error::Validation(
+                    "workflow step must finish in SUCCEEDED, FAILED or BLOCKED".into(),
+                ));
+            }
+        };
+        super::record_event(
+            &mut transaction,
+            &step.run_id,
+            event_kind,
+            &serde_json::json!({
+                "stepId": step.id,
+                "stepKind": step.kind,
+                "attempt": step.attempt,
+                "status": workflow::workflow_step_status_code(status),
+            })
+            .to_string(),
+        )
+        .await?;
         transaction.commit().await?;
         Ok(step)
     }
@@ -492,6 +535,13 @@ impl Database {
         .bind(&state_sha256)
         .bind(&now)
         .execute(&mut *transaction)
+        .await?;
+        super::record_event(
+            &mut transaction,
+            run_id,
+            "workflow.checkpoint.recorded",
+            &serde_json::json!({"unitId": unit_id, "sha256": state_sha256}).to_string(),
+        )
         .await?;
         let checkpoint = load_checkpoint(&mut transaction, &checkpoint_id).await?;
         transaction.commit().await?;
@@ -767,6 +817,21 @@ impl Database {
             .iter()
             .map(step_from_row)
             .collect::<Result<Vec<_>, _>>()?;
+        for step in &steps {
+            super::record_event(
+                &mut transaction,
+                run_id,
+                "workflow.step.blocked",
+                &serde_json::json!({
+                    "stepId": step.id,
+                    "stepKind": step.kind,
+                    "attempt": step.attempt,
+                    "status": "BLOCKED",
+                })
+                .to_string(),
+            )
+            .await?;
+        }
         transaction.commit().await?;
         Ok(steps)
     }

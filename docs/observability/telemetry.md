@@ -36,6 +36,19 @@ Token count, elapsed model time, request/retry count and subscription-notional c
 
 Avoid high-cardinality metric labels: `actionId`, `runId` and `sessionId` belong in trace/log correlation, not generic aggregated metric tags. Correlate structured logs to trace/span IDs. Prefer standard structured logging for Go until its logging SDK path is tested.
 
+## Operator replay trace read
+
+`GET /agentic/requests/{id}/trace` is the operator-authenticated read of the
+latest durable workflow run. It loads at most a bounded newest page of durable
+events (default 500, hard maximum 2,000) in ascending sequence order, maps them
+through the pure `native/src/replay.rs` projection without a second state
+machine, and returns the replayed final state, per-step rows, a redacted event
+log and structured alerts for duplicate sequences, state-chain gaps, open
+steps, terminal/non-terminal state, truncation, malformed rows and replay
+rejection. Payloads are redacted by Core before serialization; free-form step
+detail is not exposed. A truncated or rejected replay is reported as an alert;
+Core never invents the missing state.
+
 ## Native OTLP log export
 
 `FACTORY_OTLP_ENDPOINT` enables export when it is an absolute http(s) URL; a
