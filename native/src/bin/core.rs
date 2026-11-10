@@ -10926,6 +10926,444 @@ fn repository_file_sha256(
     Some(format!("{:x}", Sha256::digest(&output.stdout)))
 }
 
+#[derive(Debug, Clone)]
+struct PlanningCompileConflict {
+    code: &'static str,
+    message: String,
+    options: Option<Value>,
+}
+
+enum PlanningCompileFailure {
+    Conflict(PlanningCompileConflict),
+    Internal(Error),
+}
+
+impl From<Error> for PlanningCompileFailure {
+    fn from(error: Error) -> Self {
+        Self::Internal(error)
+    }
+}
+
+fn planning_compile_conflict_response(
+    conflict: PlanningCompileConflict,
+    missing: &[&'static str],
+) -> Response {
+    let mut body = json!({
+        "code": conflict.code,
+        "error": conflict.message,
+        "missingArtifacts": missing,
+    });
+    if let Some(options) = conflict.options {
+        body["options"] = options;
+    }
+    (StatusCode::CONFLICT, Json(body)).into_response()
+}
+
+fn planning_compile_conflict_value(conflict: PlanningCompileConflict) -> Value {
+    match conflict.options {
+        Some(options) => json!({
+            "code": conflict.code,
+            "message": conflict.message,
+            "options": options,
+        }),
+        None => json!({
+            "code": conflict.code,
+            "message": conflict.message,
+        }),
+    }
+}
+
+/// Attach the frozen dependency plan to the ActionSpec. This is deterministic
+/// Core state, not model authority; it is required before authorization.
+async fn attach_dependency_plan(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+    stack: &factory_native::planning::StackDecision,
+    repository: &std::path::Path,
+    base_commit: &str,
+) -> Result<(), PlanningCompileFailure> {
+    use factory_native::planning::DependencyStrategy;
+    let lockfile_sha256 = repository_file_sha256(repository, base_commit, "Cargo.lock");
+    let vendor_path = if stack.dependency_plan.cache_ref.trim().is_empty() {
+        "vendor"
+    } else {
+        stack.dependency_plan.cache_ref.as_str()
+    };
+    let execution_plan = match factory_native::dependencies::from_frozen_planning(
+        &stack.dependency_plan,
+        factory_native::dependencies::DependencyKind::Rust,
+        lockfile_sha256.as_deref(),
+        vendor_path,
+        &stack.dependency_plan.sbom_ref,
+    ) {
+        Ok(plan) => plan,
+        Err(error) => {
+            return Err(PlanningCompileFailure::Conflict(PlanningCompileConflict {
+                code: "DEPENDENCY_PLAN_INVALID",
+                message: format!("the frozen dependency plan is not executable: {error}"),
+                options: None,
+            }));
+        }
+    };
+    let dependencies_required = stack.dependency_plan.strategy != DependencyStrategy::NotRequired;
+    if let Err(error) = app
+        .db
+        .set_action_dependency_plan(
+            &record.action_id,
+            execution_plan.as_ref(),
+            dependencies_required,
+        )
+        .await
+    {
+        return Err(PlanningCompileFailure::Conflict(PlanningCompileConflict {
+            code: "DEPENDENCY_PLAN_REQUIRED",
+            message: format!(
+                "the frozen dependency plan could not be attached before authorization: {error}"
+            ),
+            options: None,
+        }));
+    }
+    Ok(())
+}
+
+async fn compile_stack_decision(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+    lane: factory_native::planning::PlanningLane,
+    detected: &factory_native::agentic::StackProfile,
+    config: &factory_native::lead::ProjectConfig,
+) -> Result<factory_native::planning::StackDecision, PlanningCompileFailure> {
+    use factory_native::planning::DependencyStrategy;
+    let repository = std::path::PathBuf::from(&config.repository);
+    let mut stack = match factory_native::planning::stack::build_stack_decision(
+        lane,
+        detected,
+        &factory_native::planning::route::UserPlanningConstraints::default(),
+        &record.objective,
+    ) {
+        Ok(stack) => stack,
+        Err(factory_native::planning::stack::StackBuildError::SelectionRequired { options }) => {
+            return Err(PlanningCompileFailure::Conflict(PlanningCompileConflict {
+                code: "STACK_SELECTION_REQUIRED",
+                message: "A greenfield request needs an explicit stack selection before planning."
+                    .into(),
+                options: Some(json!(options)),
+            }));
+        }
+        Err(error) => {
+            return Err(PlanningCompileFailure::Internal(Error::Validation(
+                error.to_string(),
+            )));
+        }
+    };
+    let lockfile_sha256 = repository_file_sha256(&repository, &config.base_commit, "Cargo.lock");
+    if stack.dependency_plan.strategy == DependencyStrategy::VendorCache
+        && !repository.join("vendor").is_dir()
+        && lockfile_sha256.is_some()
+    {
+        // A repository with a lockfile but no committed vendor tree can use
+        // the brokered fetch; the frozen lockfile digest binds the request.
+        stack.dependency_plan.strategy = DependencyStrategy::BrokeredFetch;
+    }
+    stack
+        .validate(lane)
+        .map_err(|error| PlanningCompileFailure::Internal(Error::Validation(error)))?;
+    attach_dependency_plan(app, record, &stack, &repository, &config.base_commit).await?;
+    Ok(stack)
+}
+
+async fn compile_skill_plan(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+    stack: &factory_native::agentic::StackProfile,
+) -> Result<factory_native::planning::SkillPlan, PlanningCompileFailure> {
+    let persisted = app.db.skill_packs().await?;
+    let mut persisted_packs = Vec::with_capacity(persisted.len());
+    for record in &persisted {
+        let pack = factory_native::planning::SkillPack::from_persisted_json(&record.content_json)
+            .map_err(|_| {
+            PlanningCompileFailure::Internal(Error::Invalid(
+                "stored skill pack is not a valid planning artifact",
+            ))
+        })?;
+        persisted_packs.push(pack);
+    }
+    let now = chrono::Utc::now().to_rfc3339();
+    let skill_plan =
+        match factory_native::planning::skills::build_skill_plan(stack, &persisted_packs, &now) {
+            Ok(plan) => plan,
+            Err(error) => {
+                let _ = app
+                    .db
+                    .record_event_once(
+                        &format!("request:{}", record.id),
+                        "skill.pack.refresh_blocked",
+                        &format!("planning blocked: {error}"),
+                    )
+                    .await;
+                return Err(PlanningCompileFailure::Conflict(PlanningCompileConflict {
+                    code: "SKILL_PACK_REQUIRED",
+                    message: error.to_string(),
+                    options: None,
+                }));
+            }
+        };
+    for pack in &skill_plan.proposed {
+        app.db.save_skill_pack(pack).await?;
+    }
+    Ok(skill_plan)
+}
+
+async fn save_repaired_artifact<T: serde::Serialize>(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+    kind: &'static str,
+    revision: u32,
+    value: &T,
+    missing: &[&'static str],
+) -> Result<(), Response> {
+    let content = serde_json::to_string(value)
+        .map_err(|_| api_error(Error::Invalid("planning artifact encoding")))?;
+    app.db
+        .save_planning_artifact(&record.id, kind, revision, &content)
+        .await
+        .map_err(|error| {
+            planning_compile_conflict_response(
+                PlanningCompileConflict {
+                    code: "PLAN_ARTIFACTS_REQUIRED",
+                    message: format!(
+                        "could not persist the repaired {kind} artifact at revision {revision}: {error}"
+                    ),
+                    options: None,
+                },
+                missing,
+            )
+        })?;
+    Ok(())
+}
+
+/// Recompute only the missing compile-time artifacts at the existing frozen
+/// PLAN revision. It never writes a new PLAN, review or workflow state.
+async fn repair_planning_artifacts(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+    context: &AgenticTriageContext,
+    graph: &factory_native::agentic::ValidatedWorkGraph,
+    lane: factory_native::planning::PlanningLane,
+    revision: u32,
+    missing: &[&'static str],
+) -> Result<(), Response> {
+    use factory_native::planning::route::required_reviewers;
+    use factory_native::planning::{DocumentationPlan, StackDecision};
+
+    let config = app
+        .db
+        .project_config(&record.project_id)
+        .await
+        .map_err(api_error)?;
+    let repository = std::path::PathBuf::from(&config.repository);
+    let missing_set = missing.iter().copied().collect::<BTreeSet<_>>();
+    for kind in missing {
+        if !matches!(
+            *kind,
+            "STACK" | "ARCHITECTURE" | "DOCUMENTATION" | "SKILL" | "DOD"
+        ) {
+            return Err(planning_compile_conflict_response(
+                PlanningCompileConflict {
+                    code: "PLAN_ARTIFACTS_REQUIRED",
+                    message: format!(
+                        "artifact {kind} cannot be repaired without recompiling the frozen plan"
+                    ),
+                    options: None,
+                },
+                missing,
+            ));
+        }
+    }
+
+    let stack_was_missing = missing_set.contains("STACK");
+    let stack_decision = if stack_was_missing {
+        match compile_stack_decision(app, record, lane, &context.stack, &config).await {
+            Ok(stack) => Some(stack),
+            Err(PlanningCompileFailure::Conflict(conflict)) => {
+                return Err(planning_compile_conflict_response(conflict, missing));
+            }
+            Err(PlanningCompileFailure::Internal(error)) => return Err(api_error(error)),
+        }
+    } else {
+        let artifact = match app
+            .db
+            .planning_artifact(&record.id, "STACK", revision)
+            .await
+        {
+            Ok(artifact) => artifact,
+            Err(Error::NotFound) => {
+                return Err(planning_compile_conflict_response(
+                    PlanningCompileConflict {
+                        code: "PLAN_ARTIFACTS_REQUIRED",
+                        message: "STACK is missing from the existing PLAN revision".into(),
+                        options: None,
+                    },
+                    missing,
+                ));
+            }
+            Err(error) => return Err(api_error(error)),
+        };
+        let stack = match serde_json::from_str::<StackDecision>(&artifact.content_json) {
+            Ok(stack) => stack,
+            Err(_) => {
+                return Err(planning_compile_conflict_response(
+                    PlanningCompileConflict {
+                        code: "PLAN_ARTIFACTS_REQUIRED",
+                        message: "the stored STACK artifact is not decodable".into(),
+                        options: None,
+                    },
+                    missing,
+                ));
+            }
+        };
+        match attach_dependency_plan(app, record, &stack, &repository, &config.base_commit).await {
+            Ok(()) => {}
+            Err(PlanningCompileFailure::Conflict(conflict)) => {
+                return Err(planning_compile_conflict_response(conflict, missing));
+            }
+            Err(PlanningCompileFailure::Internal(error)) => return Err(api_error(error)),
+        }
+        Some(stack)
+    };
+
+    let documentation = if missing_set.contains("DOCUMENTATION") {
+        let documentation =
+            factory_native::planning::docs::build_documentation_plan(&repository, lane);
+        documentation
+            .validate()
+            .map_err(|error| api_error(Error::Validation(error)))?;
+        Some(documentation)
+    } else if missing_set.contains("DOD") {
+        let artifact = match app
+            .db
+            .planning_artifact(&record.id, "DOCUMENTATION", revision)
+            .await
+        {
+            Ok(artifact) => artifact,
+            Err(Error::NotFound) => {
+                return Err(planning_compile_conflict_response(
+                    PlanningCompileConflict {
+                        code: "PLAN_ARTIFACTS_REQUIRED",
+                        message: "DOCUMENTATION is missing from the existing PLAN revision".into(),
+                        options: None,
+                    },
+                    missing,
+                ));
+            }
+            Err(error) => return Err(api_error(error)),
+        };
+        let documentation = match serde_json::from_str::<DocumentationPlan>(&artifact.content_json)
+        {
+            Ok(documentation) => documentation,
+            Err(_) => {
+                return Err(planning_compile_conflict_response(
+                    PlanningCompileConflict {
+                        code: "PLAN_ARTIFACTS_REQUIRED",
+                        message: "the stored DOCUMENTATION artifact is not decodable".into(),
+                        options: None,
+                    },
+                    missing,
+                ));
+            }
+        };
+        documentation
+            .validate()
+            .map_err(|error| api_error(Error::Validation(error)))?;
+        Some(documentation)
+    } else {
+        None
+    };
+
+    let architecture = if missing_set.contains("ARCHITECTURE") {
+        let architecture = factory_native::planning::architecture::build_architecture_plan(
+            &record.objective,
+            graph,
+            &context.stack,
+        );
+        architecture
+            .validate()
+            .map_err(|error| api_error(Error::Validation(error)))?;
+        Some(architecture)
+    } else {
+        None
+    };
+
+    let skill_plan = if missing_set.contains("SKILL") {
+        match compile_skill_plan(app, record, &context.stack).await {
+            Ok(plan) => Some(plan),
+            Err(PlanningCompileFailure::Conflict(conflict)) => {
+                return Err(planning_compile_conflict_response(conflict, missing));
+            }
+            Err(PlanningCompileFailure::Internal(error)) => return Err(api_error(error)),
+        }
+    } else {
+        None
+    };
+
+    let definition_of_done = if missing_set.contains("DOD") {
+        let documentation = documentation.as_ref().ok_or_else(|| {
+            planning_compile_conflict_response(
+                PlanningCompileConflict {
+                    code: "PLAN_ARTIFACTS_REQUIRED",
+                    message: "DOCUMENTATION is required to rebuild the Definition of Done".into(),
+                    options: None,
+                },
+                missing,
+            )
+        })?;
+        let reviewer_plan = required_reviewers(lane, context.assurance());
+        reviewer_plan
+            .validate()
+            .map_err(|error| api_error(Error::Validation(error)))?;
+        let definition = factory_native::planning::dod::build_definition_of_done(
+            lane,
+            &context.stack,
+            documentation.clone(),
+            reviewer_plan,
+        );
+        definition
+            .validate()
+            .map_err(|error| api_error(Error::Validation(error)))?;
+        Some(definition)
+    } else {
+        None
+    };
+
+    if stack_was_missing && let Some(stack) = &stack_decision {
+        save_repaired_artifact(app, record, "STACK", revision, stack, missing).await?;
+    }
+    if let Some(architecture) = &architecture {
+        save_repaired_artifact(app, record, "ARCHITECTURE", revision, architecture, missing)
+            .await?;
+    }
+    if missing_set.contains("DOCUMENTATION")
+        && let Some(documentation) = &documentation
+    {
+        save_repaired_artifact(
+            app,
+            record,
+            "DOCUMENTATION",
+            revision,
+            documentation,
+            missing,
+        )
+        .await?;
+    }
+    if let Some(skill_plan) = &skill_plan {
+        save_repaired_artifact(app, record, "SKILL", revision, skill_plan, missing).await?;
+    }
+    if let Some(definition) = &definition_of_done {
+        save_repaired_artifact(app, record, "DOD", revision, definition, missing).await?;
+    }
+    Ok(())
+}
+
 async fn persist_planning_plan(
     app: &App,
     record: &factory_native::db::IntakeRequestRecord,
@@ -10942,73 +11380,13 @@ async fn persist_planning_plan(
         .await
         .map_err(api_error)?;
     let repository = PathBuf::from(&config.repository);
-    let mut stack = match factory_native::planning::stack::build_stack_decision(
-        lane,
-        &context.stack,
-        &factory_native::planning::route::UserPlanningConstraints::default(),
-        &record.objective,
-    ) {
+    let stack = match compile_stack_decision(app, record, lane, &context.stack, &config).await {
         Ok(stack) => stack,
-        Err(factory_native::planning::stack::StackBuildError::SelectionRequired { options }) => {
-            return Ok(json!({
-                "code": "STACK_SELECTION_REQUIRED",
-                "message": "A greenfield request needs an explicit stack selection before planning.",
-                "options": options,
-            }));
+        Err(PlanningCompileFailure::Conflict(conflict)) => {
+            return Ok(planning_compile_conflict_value(conflict));
         }
-        Err(error) => {
-            return Err(api_error(Error::Validation(error.to_string())));
-        }
+        Err(PlanningCompileFailure::Internal(error)) => return Err(api_error(error)),
     };
-    let lockfile_sha256 = repository_file_sha256(&repository, &config.base_commit, "Cargo.lock");
-    if stack.dependency_plan.strategy == factory_native::planning::DependencyStrategy::VendorCache
-        && !repository.join("vendor").is_dir()
-        && lockfile_sha256.is_some()
-    {
-        // A repository with a lockfile but no committed vendor tree can use
-        // the brokered fetch; the frozen lockfile digest binds the request.
-        stack.dependency_plan.strategy =
-            factory_native::planning::DependencyStrategy::BrokeredFetch;
-    }
-    stack
-        .validate(lane)
-        .map_err(|error| api_error(Error::Validation(error)))?;
-    let vendor_path = if stack.dependency_plan.cache_ref.trim().is_empty() {
-        "vendor"
-    } else {
-        stack.dependency_plan.cache_ref.as_str()
-    };
-    let execution_plan = match factory_native::dependencies::from_frozen_planning(
-        &stack.dependency_plan,
-        factory_native::dependencies::DependencyKind::Rust,
-        lockfile_sha256.as_deref(),
-        vendor_path,
-        &stack.dependency_plan.sbom_ref,
-    ) {
-        Ok(plan) => plan,
-        Err(error) => {
-            return Ok(json!({
-                "code": "DEPENDENCY_PLAN_INVALID",
-                "message": format!("the frozen dependency plan is not executable: {error}"),
-            }));
-        }
-    };
-    let dependencies_required =
-        stack.dependency_plan.strategy != factory_native::planning::DependencyStrategy::NotRequired;
-    if let Err(error) = app
-        .db
-        .set_action_dependency_plan(
-            &record.action_id,
-            execution_plan.as_ref(),
-            dependencies_required,
-        )
-        .await
-    {
-        return Ok(json!({
-            "code": "DEPENDENCY_PLAN_REQUIRED",
-            "message": format!("the frozen dependency plan could not be attached before authorization: {error}"),
-        }));
-    }
     let architecture = factory_native::planning::architecture::build_architecture_plan(
         &record.objective,
         graph,
@@ -11021,42 +11399,13 @@ async fn persist_planning_plan(
     documentation
         .validate()
         .map_err(|error| api_error(Error::Validation(error)))?;
-    let persisted = app.db.skill_packs().await.map_err(api_error)?;
-    let mut persisted_packs = Vec::with_capacity(persisted.len());
-    for record in &persisted {
-        let pack = factory_native::planning::SkillPack::from_persisted_json(&record.content_json)
-            .map_err(|_| {
-            api_error(Error::Invalid(
-                "stored skill pack is not a valid planning artifact",
-            ))
-        })?;
-        persisted_packs.push(pack);
-    }
-    let now = chrono::Utc::now().to_rfc3339();
-    let skill_plan = match factory_native::planning::skills::build_skill_plan(
-        &context.stack,
-        &persisted_packs,
-        &now,
-    ) {
+    let skill_plan = match compile_skill_plan(app, record, &context.stack).await {
         Ok(plan) => plan,
-        Err(error) => {
-            let _ = app
-                .db
-                .record_event_once(
-                    &format!("request:{}", record.id),
-                    "skill.pack.refresh_blocked",
-                    &format!("planning blocked: {error}"),
-                )
-                .await;
-            return Ok(json!({
-                "code": "SKILL_PACK_REQUIRED",
-                "message": error.to_string(),
-            }));
+        Err(PlanningCompileFailure::Conflict(conflict)) => {
+            return Ok(planning_compile_conflict_value(conflict));
         }
+        Err(PlanningCompileFailure::Internal(error)) => return Err(api_error(error)),
     };
-    for pack in &skill_plan.proposed {
-        app.db.save_skill_pack(pack).await.map_err(api_error)?;
-    }
     let reviewer_plan = required_reviewers(lane, context.assurance());
     reviewer_plan
         .validate()
@@ -11071,12 +11420,12 @@ async fn persist_planning_plan(
         .map_err(|error| api_error(Error::Validation(error)))?;
 
     let required = required_artifacts(lane);
-    let revision = app
-        .db
-        .latest_planning_artifact(&record.id, "PLAN")
-        .await
-        .map(|plan| plan.revision.saturating_add(1))
-        .unwrap_or(1);
+    let revision = match app.db.latest_planning_artifact(&record.id, "PLAN").await {
+        Ok(plan) => plan.revision.saturating_add(1),
+        Err(Error::NotFound) => 1,
+        Err(error) => return Err(api_error(error)),
+    };
+    let now = chrono::Utc::now().to_rfc3339();
     let plan_bundle = json!({
         "schemaVersion": factory_native::planning::SCHEMA_VERSION,
         "requestId": record.id,
@@ -11358,22 +11707,19 @@ async fn plan_agentic_request(
                     &compile_missing,
                 );
             }
-            let planning = match persist_planning_plan(&app, &record, &context, &graph).await {
-                Ok(value) => value,
-                Err(response) => return response,
-            };
-            if let Some(code) = planning.get("code").and_then(Value::as_str) {
-                return (
-                    StatusCode::CONFLICT,
-                    Json(json!({
-                        "code": code,
-                        "error": planning.get("message").and_then(Value::as_str).unwrap_or("planning is blocked"),
-                        "missingArtifacts": planning.get("missingArtifacts").cloned().unwrap_or(Value::Null),
-                        "participantPlan": planning.get("participantPlan").cloned().unwrap_or(Value::Null),
-                        "options": planning.get("options").cloned().unwrap_or(Value::Null),
-                    })),
-                )
-                    .into_response();
+            let lane = planning_lane_from_code(readiness.lane).unwrap_or(context.planning_lane);
+            if let Err(response) = repair_planning_artifacts(
+                &app,
+                &record,
+                &context,
+                &graph,
+                lane,
+                plan.revision,
+                &compile_missing,
+            )
+            .await
+            {
+                return response;
             }
             let plan = match app.db.latest_planning_artifact(&record.id, "PLAN").await {
                 Ok(plan) => plan,
@@ -11728,30 +12074,26 @@ async fn persist_openspec_projection(
         graph,
         &stack,
     );
-    let evidence = app
-        .db
-        .planning_artifact(
-            &record.id,
-            "DOD",
-            app.db
-                .latest_planning_artifact(&record.id, "PLAN")
-                .await
-                .map(|plan| plan.revision)
-                .unwrap_or(1),
-        )
-        .await
-        .ok()
-        .and_then(|record| {
+    let revision = match app.db.latest_planning_artifact(&record.id, "PLAN").await {
+        Ok(plan) => plan.revision,
+        Err(Error::NotFound) => 1,
+        Err(error) => return Err(api_error(error)),
+    };
+    let evidence = match app.db.planning_artifact(&record.id, "DOD", revision).await {
+        Ok(record) => {
             serde_json::from_str::<factory_native::planning::DefinitionOfDone>(&record.content_json)
                 .ok()
-        })
-        .map(|dod| {
-            dod.project_checks
-                .iter()
-                .map(|check| check.command.join(" "))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_else(|| vec!["Run the deterministic Definition of Done checks.".into()]);
+                .map(|dod| {
+                    dod.project_checks
+                        .iter()
+                        .map(|check| check.command.join(" "))
+                        .collect::<Vec<_>>()
+                })
+        }
+        Err(Error::NotFound) => None,
+        Err(error) => return Err(api_error(error)),
+    }
+    .unwrap_or_else(|| vec!["Run the deterministic Definition of Done checks.".into()]);
     let change =
         match openspec_change_for_plan(record, spec, graph, &stack, &architecture, &evidence) {
             Ok(change) => change,
@@ -11794,12 +12136,6 @@ async fn persist_openspec_projection(
         .save_openspec_projection(&record.id, &projection)
         .await
         .map_err(api_error)?;
-    let revision = app
-        .db
-        .latest_planning_artifact(&record.id, "PLAN")
-        .await
-        .map(|plan| plan.revision)
-        .unwrap_or(1);
     app.db
         .save_planning_artifact(
             &record.id,
@@ -13050,15 +13386,23 @@ async fn get_agentic_spec(
         Ok(record) => record,
         Err(error) => return api_error(error),
     };
-    let frozen = app
-        .db
-        .agentic_spec(&record.id)
-        .await
-        .ok()
-        .filter(|spec| spec.state == "FROZEN");
-    let draft = app.db.agentic_spec_draft(&record.id).await.ok();
-    let graph = app.db.agentic_work_graph(&record.id).await.ok();
-    let publication = app
+    let frozen = match app.db.agentic_spec(&record.id).await {
+        Ok(spec) if spec.state == "FROZEN" => Some(spec),
+        Ok(_) => None,
+        Err(Error::NotFound) => None,
+        Err(error) => return api_error(error),
+    };
+    let draft = match app.db.agentic_spec_draft(&record.id).await {
+        Ok(draft) => Some(draft),
+        Err(Error::NotFound) => None,
+        Err(error) => return api_error(error),
+    };
+    let graph = match app.db.agentic_work_graph(&record.id).await {
+        Ok(graph) => Some(graph),
+        Err(Error::NotFound) => None,
+        Err(error) => return api_error(error),
+    };
+    let publication = match app
         .db
         .agentic_spec_publication(
             frozen
@@ -13067,13 +13411,16 @@ async fn get_agentic_spec(
                 .unwrap_or_default(),
         )
         .await
-        .ok();
+    {
+        Ok(publication) => Some(publication),
+        Err(Error::NotFound) => None,
+        Err(error) => return api_error(error),
+    };
     let issues = match &frozen {
-        Some(spec) => app
-            .db
-            .agentic_spec_issues(&spec.id)
-            .await
-            .unwrap_or_default(),
+        Some(spec) => match app.db.agentic_spec_issues(&spec.id).await {
+            Ok(issues) => issues,
+            Err(error) => return api_error(error),
+        },
         None => Vec::new(),
     };
     let github_bound = app
@@ -13142,7 +13489,11 @@ async fn author_agentic_spec(
         Ok(graph) => graph,
         Err(response) => return *response,
     };
-    let current = app.db.agentic_spec(&record.id).await.ok();
+    let current = match app.db.agentic_spec(&record.id).await {
+        Ok(spec) => Some(spec),
+        Err(Error::NotFound) => None,
+        Err(error) => return api_error(error),
+    };
     let (revision, has_frozen) = match &current {
         Some(spec) if spec.state == "FROZEN" => (spec.revision + 1, true),
         Some(spec) => (spec.revision, false),
@@ -21734,6 +22085,7 @@ mod tests {
         #[derive(Clone, Copy, PartialEq, Eq)]
         enum PlanReviewSeed {
             AutoApproved,
+            OwnerApproved,
             Pending,
             ChangesRequested,
             Rejected,
@@ -21830,14 +22182,45 @@ mod tests {
                 .save_planning_artifact(&request.id, "PLAN", 1, &plan_bundle.to_string())
                 .await
                 .unwrap();
-            for kind in [
-                "STACK",
-                "ARCHITECTURE",
-                "DOCUMENTATION",
-                "SKILL",
-                "DOD",
-                "OPENSPEC",
-            ] {
+            let stack_decision = factory_native::planning::StackDecision {
+                schema_version: factory_native::planning::SCHEMA_VERSION,
+                source: factory_native::planning::StackSource::Existing,
+                constraints: Vec::new(),
+                options: vec![factory_native::planning::StackOption {
+                    id: "existing".into(),
+                    summary: "Existing fixture stack.".into(),
+                    fit: 3,
+                    security: 3,
+                    maintainability: 3,
+                    operability: 3,
+                    time_to_value: 3,
+                    exit_cost: 3,
+                    pros: Vec::new(),
+                    cons: Vec::new(),
+                    evidence_refs: vec!["seed.txt".into()],
+                }],
+                selected: "existing".into(),
+                reason: "Preserve the fixture stack.".into(),
+                confidence: "high".into(),
+                required_capabilities: Vec::new(),
+                dependency_plan: factory_native::planning::DependencyPlan::default(),
+                stack_change: false,
+                autonomy_points: 0,
+                owner_approval: None,
+                adr_path: "docs/architecture/decisions/ADR-0001-existing-stack.md".into(),
+            };
+            fixture
+                .app
+                .db
+                .save_planning_artifact(
+                    &request.id,
+                    "STACK",
+                    1,
+                    &serde_json::to_string(&stack_decision).unwrap(),
+                )
+                .await
+                .unwrap();
+            for kind in ["ARCHITECTURE", "DOCUMENTATION", "SKILL", "DOD", "OPENSPEC"] {
                 fixture
                     .app
                     .db
@@ -21855,6 +22238,11 @@ mod tests {
                     "PENDING",
                     "core:planning",
                     "The plan requires an authenticated owner decision.",
+                ),
+                PlanReviewSeed::OwnerApproved => (
+                    "OWNER_APPROVED",
+                    "operator",
+                    "The owner approved the exact plan revision.",
                 ),
                 PlanReviewSeed::ChangesRequested => (
                     "CHANGES_REQUESTED",
@@ -23493,6 +23881,13 @@ mod tests {
             let intake_id = created["id"].as_str().unwrap().to_owned();
             let context = fixture_plan(&fixture, &intake_id, "FIXTURE").await;
             seed_complete_planning(&fixture, &intake_id, ParticipantSeed::Matching).await;
+            let plan_before = fixture
+                .app
+                .db
+                .latest_planning_artifact(&intake_id, "PLAN")
+                .await
+                .unwrap();
+            let review_before = fixture.app.db.latest_plan_review(&intake_id).await.unwrap();
             std::fs::write(
                 fixture.repository.join("package.json"),
                 "{\"name\":\"fixture\",\"version\":\"1.0.0\",\"private\":true}\n",
@@ -23558,6 +23953,23 @@ mod tests {
             assert_eq!(repaired["missingArtifacts"], json!([]));
             assert_eq!(repaired["reviewStatus"], "AUTO_APPROVED");
             assert_eq!(repaired["ready"], true);
+            let plan_after = fixture
+                .app
+                .db
+                .latest_planning_artifact(&intake_id, "PLAN")
+                .await
+                .unwrap();
+            let review_after = fixture.app.db.latest_plan_review(&intake_id).await.unwrap();
+            assert_eq!(plan_after.revision, plan_before.revision);
+            assert_eq!(plan_after.content_sha256, plan_before.content_sha256);
+            assert_eq!(review_after.id, review_before.id);
+            assert_eq!(review_after.status, review_before.status);
+            assert_eq!(review_after.plan_sha256, review_before.plan_sha256);
+            assert_eq!(
+                fixture.app.db.plan_reviews(&intake_id).await.unwrap().len(),
+                1,
+                "repair must not append a replacement review"
+            );
 
             let (status, detail) = send(
                 &router,
@@ -23589,6 +24001,125 @@ mod tests {
             fixture.app.db.close().await;
             let _ = std::fs::remove_file(fixture.path);
             let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
+        async fn compile_plan_repair_preserves_the_existing_review() {
+            for (seed, expected_status, label) in [
+                (PlanReviewSeed::Pending, "PENDING", "pending"),
+                (PlanReviewSeed::OwnerApproved, "OWNER_APPROVED", "owner"),
+            ] {
+                let fixture = setup().await;
+                let (status, _) = enable_policy(&fixture).await;
+                assert_eq!(status, StatusCode::CREATED);
+                let (status, created) =
+                    create_intake(&fixture, &format!("request-api-preserve-{label}")).await;
+                assert_eq!(status, StatusCode::CREATED, "{created}");
+                let intake_id = created["id"].as_str().unwrap().to_owned();
+                let context = fixture_plan(&fixture, &intake_id, "FIXTURE").await;
+                seed_complete_planning_with_review(
+                    &fixture,
+                    &intake_id,
+                    ParticipantSeed::Matching,
+                    seed,
+                )
+                .await;
+                let plan_before = fixture
+                    .app
+                    .db
+                    .latest_planning_artifact(&intake_id, "PLAN")
+                    .await
+                    .unwrap();
+                let review_before = fixture.app.db.latest_plan_review(&intake_id).await.unwrap();
+                let pool = sqlx_sqlite::SqlitePoolOptions::new()
+                    .max_connections(1)
+                    .connect_with(
+                        sqlx_sqlite::SqliteConnectOptions::new()
+                            .filename(&fixture.path)
+                            .create_if_missing(false),
+                    )
+                    .await
+                    .unwrap();
+                sqlx::query::query(
+                    "DELETE FROM planning_artifacts WHERE request_id=?1 AND kind='DOD'",
+                )
+                .bind(&intake_id)
+                .execute(&pool)
+                .await
+                .unwrap();
+                pool.close().await;
+
+                let (status, repaired) = send(
+                    &fixture.router,
+                    "POST",
+                    &format!("/agentic/requests/{intake_id}/plan"),
+                    None,
+                )
+                .await;
+                assert_eq!(status, StatusCode::OK, "{repaired}");
+                assert_eq!(repaired["repaired"], true);
+                assert_eq!(repaired["missingArtifacts"], json!([]));
+                assert_eq!(repaired["reviewStatus"], expected_status);
+                let plan_after = fixture
+                    .app
+                    .db
+                    .latest_planning_artifact(&intake_id, "PLAN")
+                    .await
+                    .unwrap();
+                let review_after = fixture.app.db.latest_plan_review(&intake_id).await.unwrap();
+                assert_eq!(plan_after.revision, plan_before.revision);
+                assert_eq!(plan_after.content_sha256, plan_before.content_sha256);
+                assert_eq!(review_after.id, review_before.id);
+                assert_eq!(review_after.status, review_before.status);
+                assert_eq!(review_after.plan_revision, review_before.plan_revision);
+                assert_eq!(review_after.plan_sha256, review_before.plan_sha256);
+                assert_eq!(review_after.reviewed_at, review_before.reviewed_at);
+                assert_eq!(
+                    fixture.app.db.plan_reviews(&intake_id).await.unwrap().len(),
+                    1,
+                    "repair must preserve exactly the existing review"
+                );
+
+                if expected_status == "PENDING" {
+                    assert_eq!(repaired["materialsReady"], true);
+                    assert_eq!(repaired["reviewApproved"], false);
+                    assert_eq!(repaired["ready"], false);
+                    let (status, blocked) = send(
+                        &fixture.router,
+                        "POST",
+                        &format!("/intake/requests/{intake_id}/approve"),
+                        Some(json!({
+                            "expected_plan_hash": context.plan.plan_hash,
+                            "rationale": "Pending review cannot start.",
+                            "idempotency_key": format!("approve-pending-{label}"),
+                        })),
+                    )
+                    .await;
+                    assert_eq!(status, StatusCode::CONFLICT, "{blocked}");
+                    assert_eq!(blocked["code"], "PLAN_REVIEW_REQUIRED");
+                    assert!(fixture.app.db.campaigns().await.unwrap().is_empty());
+                } else {
+                    assert_eq!(repaired["ready"], true);
+                    let (status, approved) = send(
+                        &fixture.router,
+                        "POST",
+                        &format!("/intake/requests/{intake_id}/approve"),
+                        Some(json!({
+                            "expected_plan_hash": context.plan.plan_hash,
+                            "rationale": "Owner-approved repaired plan.",
+                            "idempotency_key": format!("approve-owner-{label}"),
+                        })),
+                    )
+                    .await;
+                    assert_eq!(status, StatusCode::CREATED, "{approved}");
+                    assert_eq!(approved["state"], "EXECUTING");
+                    assert!(approved["campaignId"].is_string());
+                }
+
+                fixture.app.db.close().await;
+                let _ = std::fs::remove_file(fixture.path);
+                let _ = std::fs::remove_dir_all(fixture.repository);
+            }
         }
 
         #[tokio::test]
