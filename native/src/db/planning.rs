@@ -517,6 +517,34 @@ impl Database {
     }
 
     #[cfg(test)]
+    pub(crate) async fn insert_skill_pack_json_for_test(
+        &self,
+        id: &str,
+        technology: &str,
+        content_json: &str,
+        source_checked_at: &str,
+        review_after: &str,
+    ) -> Result<(), Error> {
+        let content_sha256 = sha256_hex(content_json.as_bytes());
+        sqlx::query::query(
+            "INSERT INTO skill_packs
+             (id,technology,version,content_json,content_sha256,source_urls_json,
+              source_checked_at,content_reviewed_at,review_after,license,provenance,created_at)
+             VALUES (?1,?2,'1.90',?3,?4,'[]',?5,'',?6,'MIT','test fixture',
+                     '2026-01-01T00:00:00Z')",
+        )
+        .bind(id)
+        .bind(technology)
+        .bind(content_json)
+        .bind(content_sha256)
+        .bind(source_checked_at)
+        .bind(review_after)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    #[cfg(test)]
     pub(crate) async fn insert_project_for_test(
         &self,
         id: &str,

@@ -722,6 +722,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn legacy_source_only_pack_is_upgraded_to_the_reviewed_builtin() {
+        let path = temp_path();
+        let db = Database::open(&path).await.unwrap();
+        let legacy_json = r#"{
+            "technology":"rust",
+            "version":"1.90",
+            "sourceUrls":["https://doc.rust-lang.org/"],
+            "lastVerifiedAt":"2026-01-01T00:00:00Z",
+            "reviewAfter":"2026-04-01T00:00:00Z",
+            "bestPractices":["legacy source-only content"],
+            "antiPatterns":[],
+            "commands":[],
+            "securityNotes":[],
+            "deprecations":[],
+            "license":"MIT",
+            "provenance":"legacy",
+            "contentSha256":""
+        }"#;
+        db.insert_skill_pack_json_for_test(
+            "legacy-rust",
+            "rust",
+            legacy_json,
+            "2026-01-01T00:00:00Z",
+            "2026-04-01T00:00:00Z",
+        )
+        .await
+        .unwrap();
+        let before = db.skill_packs().await.unwrap().len();
+        let report = run_pass(&db, "2026-11-09T00:00:00Z").await.unwrap();
+        assert!(report.refreshed.contains(&"rust".to_string()));
+        let after = db.skill_packs().await.unwrap();
+        assert_eq!(after.len(), before + 1);
+        let legacy = after
+            .iter()
+            .find(|record| record.id == "legacy-rust")
+            .unwrap();
+        let legacy = crate::planning::SkillPack::from_persisted_json(&legacy.content_json).unwrap();
+        assert_eq!(
+            legacy.review_basis,
+            crate::planning::SkillReviewBasis::SourceAvailabilityOnly
+        );
+        let latest = db.latest_skill_pack("rust").await.unwrap();
+        assert_eq!(
+            latest.content_reviewed_at,
+            crate::planning::skills::BUILTIN_CONTENT_REVIEWED_AT
+        );
+        let latest = crate::planning::SkillPack::from_persisted_json(&latest.content_json).unwrap();
+        assert_eq!(
+            latest.review_basis,
+            crate::planning::SkillReviewBasis::ContentReviewed
+        );
+        assert!(latest.is_content_reviewed());
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
     async fn due_and_blocked_events_are_idempotent() {
         let path = temp_path();
         let db = Database::open(&path).await.unwrap();

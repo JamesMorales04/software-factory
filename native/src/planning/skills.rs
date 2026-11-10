@@ -148,6 +148,7 @@ pub fn classify_technology(
             ),
         }
     } else if let Some(builtin) = builtin.as_ref() {
+        let persisted_source_only = persisted_pack.is_some_and(|pack| !pack.is_content_reviewed());
         let newer_than_persisted = persisted_pack.is_some_and(|persisted| {
             match (
                 timestamp(&builtin.content_reviewed_at),
@@ -162,10 +163,39 @@ pub fn classify_technology(
         let different_content = persisted_pack.is_some_and(|persisted| {
             pack_content_sha256(builtin) != pack_content_sha256(persisted)
         });
-        if builtin_usable && newer_than_persisted && different_content {
+        let reviewed_not_before_legacy_check = persisted_pack.is_some_and(|persisted| {
+            match (
+                timestamp(&builtin.content_reviewed_at),
+                timestamp(&persisted.source_checked_at),
+            ) {
+                (Some(reviewed), Some(checked)) => reviewed >= checked,
+                _ => false,
+            }
+        });
+        if persisted_source_only
+            && builtin_usable
+            && different_content
+            && reviewed_not_before_legacy_check
+        {
+            (
+                SkillPackState::Refreshable,
+                "the persisted revision is source-only and a reviewed builtin revision is available"
+                    .to_string(),
+            )
+        } else if !persisted_source_only
+            && builtin_usable
+            && newer_than_persisted
+            && different_content
+        {
             (
                 SkillPackState::Refreshable,
                 "the persisted revision is due and the builtin revision is newer with different content"
+                    .to_string(),
+            )
+        } else if persisted_source_only && builtin_usable {
+            (
+                SkillPackState::Due,
+                "the source-only persisted revision cannot be upgraded: the builtin content is unchanged or predates the legacy source check"
                     .to_string(),
             )
         } else if builtin_usable {
@@ -373,6 +403,39 @@ mod tests {
         );
         assert_eq!(refreshable.state, SkillPackState::Refreshable);
         assert!(!refreshable.blocking);
+
+        let mut legacy_source_only = builtin.clone();
+        legacy_source_only.source_checked_at = "2026-01-01T00:00:00Z".into();
+        legacy_source_only.content_reviewed_at = String::new();
+        legacy_source_only.review_basis = SkillReviewBasis::SourceAvailabilityOnly;
+        legacy_source_only.review_after = String::new();
+        legacy_source_only.review_scope = String::new();
+        legacy_source_only.reviewed_sections = Vec::new();
+        legacy_source_only
+            .best_practices
+            .push("legacy source-only content marker".into());
+        let legacy_refresh = classify_technology("rust", &[legacy_source_only.clone()], now);
+        assert_eq!(legacy_refresh.state, SkillPackState::Refreshable);
+        assert_eq!(
+            legacy_refresh.reason,
+            "the persisted revision is source-only and a reviewed builtin revision is available"
+        );
+        let legacy_plan =
+            build_skill_plan(&rust_stack(), &[legacy_source_only.clone()], now).unwrap();
+        assert!(
+            legacy_plan
+                .proposed
+                .iter()
+                .any(|pack| pack.technology == "rust")
+        );
+
+        legacy_source_only.source_checked_at = "2027-01-01T00:00:00Z".into();
+        let legacy_blocked = classify_technology("rust", &[legacy_source_only], now);
+        assert_eq!(legacy_blocked.state, SkillPackState::Due);
+        assert_eq!(
+            legacy_blocked.reason,
+            "the source-only persisted revision cannot be upgraded: the builtin content is unchanged or predates the legacy source check"
+        );
 
         let stale = classify_technology("rust", &[], "2028-01-01T00:00:00Z");
         assert_eq!(stale.state, SkillPackState::Stale);
