@@ -121,8 +121,10 @@ projection to `archived: true`:
 
 - replaying the same binding is idempotent and returns
   `alreadyArchived: true` without changing the row;
-- a changed artifact, stale revision/hash, or different archive binding is
-  rejected as drift/immutability, never silently repaired;
+- a changed artifact, stale revision/hash, superseded revision, or different
+  archive binding is rejected as drift/immutability, never silently repaired;
+- the revision must remain the latest for the request when Core checks and
+  updates it under the same write transaction;
 - the response carries `archivePath` (`openspec/changes/archive/<change-id>`)
   and the exact projection hashes.
 

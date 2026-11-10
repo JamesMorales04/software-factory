@@ -49,9 +49,11 @@ stays active until the body is fully read.
 
 The archive endpoint recomputes the exact stored artifact JSON SHA-256 before
 decoding it, then verifies the change id, revision and every projection/manifest
-hash. It archives the durable projection only when the binding matches. A replay
-returns `alreadyArchived: true` without changing `updated_at`; a changed
-artifact, stale binding or different archived identity is rejected as
+hash. Under the same write lock and `BEGIN IMMEDIATE` transaction it also
+requires the target revision to remain the latest for the request. It archives
+the durable projection only when the binding matches. A replay returns
+`alreadyArchived: true` without changing `updated_at`; a changed artifact, stale
+binding, superseded revision or different archived identity is rejected as
 drift/immutability. Archiving never accepts a candidate, closes a finding or
 grants delivery authority.
 
@@ -64,7 +66,7 @@ cargo fmt --all -- --check
 PASS
 
 cargo test -p factory-native --lib
-736 passed; 0 failed; 2 ignored
+737 passed; 0 failed; 2 ignored
 
 cargo test -p factory-native --test openspec_compose_validation
 5 passed; 0 failed
@@ -163,7 +165,9 @@ in `proposal.md`, `design.md` and the manifest. Artifact validation now rejects
 a spec preamble, the fixture hashes were regenerated, and the rerun passed.
 
 Cleanup after the run: the `wp7-openspec` containers, networks and named volumes
-were removed; the committed fixture and result JSON remain as evidence.
+were removed; the committed fixture and result JSON remain as evidence. The
+later stale-latest archive repair changes only the Core archive transaction, not
+the validation image or script, so this Compose run was not rerun for it.
 
 ## Compose-init token volume
 
@@ -191,7 +195,8 @@ from this source.
   unvalidated archive and unsafe request ids.
 - `native/src/db/planning.rs` tests prove the archive transition is idempotent,
   preserves `updated_at` on replay, rejects a changed hash/revision/identity,
-  and leaves the archived row immutable.
+  requires the revision to remain latest under the write transaction, and
+  leaves the archived row immutable.
 - The Core route test rejects unauthenticated calls, a missing request and a
   201-character request id for both the read and archive routes on both router
   variants.

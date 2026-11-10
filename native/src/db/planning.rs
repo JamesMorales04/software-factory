@@ -812,6 +812,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn openspec_archive_rejects_a_revision_that_is_no_longer_latest() {
+        let db = seeded_db("request-archive-stale").await;
+        let revision_one = crate::planning::OpenSpecProjection {
+            change_id: "add-validator".into(),
+            revision: 1,
+            proposal_sha256: "a".repeat(64),
+            specs_sha256: "b".repeat(64),
+            design_sha256: "c".repeat(64),
+            tasks_sha256: "d".repeat(64),
+            validated: true,
+            archived: false,
+        };
+        db.save_openspec_projection("request-archive-stale", &revision_one)
+            .await
+            .unwrap();
+        let revision_two = crate::planning::OpenSpecProjection {
+            revision: 2,
+            proposal_sha256: "e".repeat(64),
+            specs_sha256: "f".repeat(64),
+            design_sha256: "0".repeat(64),
+            tasks_sha256: "1".repeat(64),
+            ..revision_one.clone()
+        };
+        db.save_openspec_projection("request-archive-stale", &revision_two)
+            .await
+            .unwrap();
+
+        let error = db
+            .archive_openspec_projection("request-archive-stale", &revision_one)
+            .await
+            .expect_err("a stale revision must not archive");
+        assert!(error.to_string().contains("no longer the latest"));
+
+        let one = db
+            .openspec_projection("request-archive-stale", 1)
+            .await
+            .unwrap();
+        assert!(!one.archived);
+        let latest = db
+            .latest_openspec_projection("request-archive-stale")
+            .await
+            .unwrap();
+        assert_eq!(latest.revision, 2);
+        assert!(!latest.archived);
+
+        // The archive transition also refuses a revision that was archived and
+        // later superseded.
+        db.archive_openspec_projection("request-archive-stale", &revision_two)
+            .await
+            .unwrap();
+        let revision_three = crate::planning::OpenSpecProjection {
+            revision: 3,
+            proposal_sha256: "2".repeat(64),
+            specs_sha256: "3".repeat(64),
+            design_sha256: "4".repeat(64),
+            tasks_sha256: "5".repeat(64),
+            ..revision_one.clone()
+        };
+        db.save_openspec_projection("request-archive-stale", &revision_three)
+            .await
+            .unwrap();
+        let error = db
+            .archive_openspec_projection("request-archive-stale", &revision_two)
+            .await
+            .expect_err("a superseded archived revision must not replay");
+        assert!(error.to_string().contains("no longer the latest"));
+    }
+
+    #[tokio::test]
     async fn skill_packs_are_immutable_and_fresh() {
         let db = seeded_db("request-skill").await;
         let pack = crate::planning::skills::builtin_skill_pack("rust").unwrap();
@@ -946,6 +1015,23 @@ impl Database {
         row.ok_or(Error::NotFound).and_then(openspec_from_row)
     }
 
+    pub async fn openspec_projection(
+        &self,
+        request_id: &str,
+        revision: u32,
+    ) -> Result<OpenSpecProjectionRecord, Error> {
+        let row: Option<OpenSpecRow> = sqlx::query_as::query_as(
+            "SELECT id,request_id,change_id,revision,proposal_sha256,specs_sha256,
+                    design_sha256,tasks_sha256,validated,archived,created_at,updated_at
+             FROM openspec_projections WHERE request_id=?1 AND revision=?2",
+        )
+        .bind(request_id)
+        .bind(i64::from(revision))
+        .fetch_optional(&self.pool)
+        .await?;
+        row.ok_or(Error::NotFound).and_then(openspec_from_row)
+    }
+
     /// Move one validated OpenSpec projection to its archive state exactly once.
     ///
     /// The expected projection must match the durable row byte-for-byte in its
@@ -969,11 +1055,28 @@ impl Database {
         }
         let now = Utc::now().to_rfc3339();
         let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let latest: Option<i64> = sqlx::query_scalar::query_scalar(
+            "SELECT MAX(revision) FROM openspec_projections WHERE request_id=?1",
+        )
+        .bind(request_id)
+        .fetch_one(&mut *transaction)
+        .await?;
+        let latest = latest.ok_or(Error::NotFound)?;
+        let latest =
+            u32::try_from(latest).map_err(|_| Error::Invalid("stored OpenSpec revision"))?;
+        if latest != expected.revision {
+            return Err(Error::Conflict(
+                "OpenSpec projection is no longer the latest revision",
+            ));
+        }
         let update = sqlx::query::query(
             "UPDATE openspec_projections SET archived=1,updated_at=?3
              WHERE request_id=?1 AND revision=?2 AND validated=1 AND archived=0
                AND change_id=?4 AND proposal_sha256=?5 AND specs_sha256=?6
-               AND design_sha256=?7 AND tasks_sha256=?8",
+               AND design_sha256=?7 AND tasks_sha256=?8
+               AND revision=(SELECT MAX(revision) FROM openspec_projections
+                             WHERE request_id=?1)",
         )
         .bind(request_id)
         .bind(i64::from(expected.revision))
@@ -983,7 +1086,7 @@ impl Database {
         .bind(&expected.specs_sha256)
         .bind(&expected.design_sha256)
         .bind(&expected.tasks_sha256)
-        .execute(&self.pool)
+        .execute(&mut *transaction)
         .await?;
         let row: Option<OpenSpecRow> = sqlx::query_as::query_as(
             "SELECT id,request_id,change_id,revision,proposal_sha256,specs_sha256,
@@ -992,7 +1095,7 @@ impl Database {
         )
         .bind(request_id)
         .bind(i64::from(expected.revision))
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *transaction)
         .await?;
         let record = openspec_from_row(row.ok_or(Error::NotFound)?)?;
         if update.rows_affected() == 0 {
@@ -1014,11 +1117,13 @@ impl Database {
             {
                 return Err(Error::Conflict("archived OpenSpec projection is immutable"));
             }
+            transaction.commit().await?;
             return Ok(OpenSpecArchiveTransition {
                 record,
                 already_archived: true,
             });
         }
+        transaction.commit().await?;
         Ok(OpenSpecArchiveTransition {
             record,
             already_archived: false,

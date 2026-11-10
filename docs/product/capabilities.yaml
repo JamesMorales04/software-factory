@@ -2958,7 +2958,7 @@ capabilities:
   limitations:
   - The Planner and Spec Manager are bounded Lead-route model calls with distinct purpose and typed schemas; they do not have separate provider roles yet.
   - Plan review and finding disposition are implemented in Core and Office; real browser acceptance for the new surfaces remains NOT_TESTED.
-  - The OpenSpec projection uses canonical ADDED Requirements/Requirement/Scenario headings and numeric task IDs; the pinned CLI 1.16.1 validator runs as a profile-gated Compose job against a Core-rendered fixture; Core exposes an idempotent archive transition with stored-artifact digest and projection drift checks; a real Core-backed run against a projection produced by the model planning pipeline remains NOT_TESTED. See docs/implementation/wp7-openspec-compose-evidence.md.
+  - The OpenSpec projection uses canonical ADDED Requirements/Requirement/Scenario headings and numeric task IDs; the pinned CLI 1.16.1 validator runs as a profile-gated Compose job against a Core-rendered fixture; Core exposes an idempotent archive transition for the latest validated revision with stored-artifact digest and projection drift checks; a real Core-backed run against a projection produced by the model planning pipeline remains NOT_TESTED. See docs/implementation/wp7-openspec-compose-evidence.md.
   - A real-model browser self-test planned and froze revisions 1 and 2, and the full E2E campaign consumed the frozen plan, but independent live certification is pending.
   blockers:
   - Per-WorkUnit execution state and the full planned-specified-executed journey remain pending.
