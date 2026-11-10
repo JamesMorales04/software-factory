@@ -6,7 +6,7 @@
 //! waiter and OpenCode SSE classifier used by the Worker.
 
 use std::{
-    collections::VecDeque,
+    collections::{BTreeMap, VecDeque},
     future::Future,
     pin::Pin,
     sync::{
@@ -28,8 +28,8 @@ use bytes::Bytes;
 use factory_native::{
     db::ProviderTerminal,
     provider_lifecycle::{
-        post_provider_terminal, recover_unresolved_provider_sessions, release_provider_turn,
-        settle_provider_turn,
+        ProviderLifecycleError, post_provider_terminal, recover_unresolved_provider_sessions,
+        release_provider_turn, settle_provider_turn,
     },
     provider_patch::{ProviderAction, ProviderUsage, extract_action_text},
     provider_reliability::{
@@ -580,11 +580,45 @@ fn provider_session_reconnect_and_cleanup_are_exactly_once() {
 #[derive(Clone, Default)]
 struct CoreFixture {
     calls: Arc<Mutex<Vec<(String, serde_json::Value)>>>,
+    rejected: Arc<Mutex<Vec<(String, serde_json::Value)>>>,
+    reservations: Arc<Mutex<BTreeMap<String, String>>>,
 }
 
 impl CoreFixture {
     fn record(&self, route: &str, body: serde_json::Value) {
         self.calls.lock().unwrap().push((route.to_string(), body));
+    }
+
+    fn reject(&self, route: &str, body: serde_json::Value) {
+        self.rejected
+            .lock()
+            .unwrap()
+            .push((route.to_string(), body));
+    }
+
+    /// Mimics the Core invariant: a reservation reaches exactly one terminal
+    /// state. A second settle or release is a conflict, not another effect.
+    fn transition(
+        &self,
+        route: &str,
+        body: serde_json::Value,
+        reservation_id: &str,
+        next: &str,
+    ) -> bool {
+        if reservation_id.trim().is_empty() {
+            self.reject(route, body);
+            return false;
+        }
+        let mut reservations = self.reservations.lock().unwrap();
+        if reservations.contains_key(reservation_id) {
+            drop(reservations);
+            self.reject(route, body);
+            return false;
+        }
+        reservations.insert(reservation_id.to_string(), next.to_string());
+        drop(reservations);
+        self.record(route, body);
+        true
     }
 }
 
@@ -592,15 +626,29 @@ async fn fixture_settle(
     State(state): State<CoreFixture>,
     Json(body): Json<serde_json::Value>,
 ) -> Response {
-    state.record("settle", body);
-    Json(json!({"usage": {"reservation_id": "reservation-http"}})).into_response()
+    let reservation_id = body
+        .pointer("/usage/reservation_id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    if !state.transition("settle", body, &reservation_id, "SETTLED") {
+        return StatusCode::CONFLICT.into_response();
+    }
+    Json(json!({"usage": {"reservation_id": reservation_id}})).into_response()
 }
 
 async fn fixture_release(
     State(state): State<CoreFixture>,
     Json(body): Json<serde_json::Value>,
 ) -> Response {
-    state.record("release", body);
+    let reservation_id = body
+        .get("reservation_id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    if !state.transition("release", body, &reservation_id, "RELEASED") {
+        return StatusCode::CONFLICT.into_response();
+    }
     StatusCode::NO_CONTENT.into_response()
 }
 
@@ -631,8 +679,7 @@ async fn fixture_cleanup(
     Json(json!({"state": "CLEANED"})).into_response()
 }
 
-#[tokio::test]
-async fn production_worker_http_lifecycle_settles_releases_and_reconciles_cleanup() {
+async fn start_core_fixture() -> (CoreFixture, reqwest::Url, tokio::task::JoinHandle<()>) {
     let state = CoreFixture::default();
     let app = Router::new()
         .route("/worker/provider_turn_settle", post(fixture_settle))
@@ -647,6 +694,12 @@ async fn production_worker_http_lifecycle_settles_releases_and_reconciles_cleanu
         axum::serve(listener, app).await.unwrap();
     });
     let core = reqwest::Url::parse(&format!("http://{address}")).unwrap();
+    (state, core, server)
+}
+
+#[tokio::test]
+async fn production_worker_http_lifecycle_settles_releases_and_reconciles_cleanup() {
+    let (state, core, server) = start_core_fixture().await;
     let client = reqwest::Client::new();
     let token = "worker-session-token-0123456789abcdef";
 
@@ -657,14 +710,21 @@ async fn production_worker_http_lifecycle_settles_releases_and_reconciles_cleanu
         cost_micros: 40,
         known: true,
     };
-    settle_provider_turn(&client, &core, token, "worker", "reservation-http", &usage)
-        .await
-        .unwrap();
+    settle_provider_turn(
+        &client,
+        &core,
+        token,
+        "worker",
+        "reservation-settle",
+        &usage,
+    )
+    .await
+    .unwrap();
     release_provider_turn(
         &client,
         &core,
         token,
-        "reservation-http",
+        "reservation-release",
         "session-record",
         "worker",
         7,
@@ -706,11 +766,11 @@ async fn production_worker_http_lifecycle_settles_releases_and_reconciles_cleanu
         routes,
         ["settle", "release", "terminal", "unresolved", "cleanup"]
     );
-    assert_eq!(calls[0].1["usage"]["reservation_id"], "reservation-http");
+    assert_eq!(calls[0].1["usage"]["reservation_id"], "reservation-settle");
     assert_eq!(calls[0].1["usage"]["worker_id"], "worker");
     assert_eq!(calls[0].1["usage"]["input_tokens"], 10);
     assert_eq!(calls[0].1["usage"]["usage_known"], true);
-    assert_eq!(calls[1].1["reservation_id"], "reservation-http");
+    assert_eq!(calls[1].1["reservation_id"], "reservation-release");
     assert_eq!(calls[1].1["session_record_id"], "session-record");
     assert_eq!(calls[1].1["generation"], 7);
     assert_eq!(
@@ -727,18 +787,69 @@ async fn production_worker_http_lifecycle_settles_releases_and_reconciles_cleanu
 }
 
 #[tokio::test]
+async fn settle_then_release_of_the_same_reservation_is_rejected() {
+    let (state, core, server) = start_core_fixture().await;
+    let client = reqwest::Client::new();
+    let token = "worker-session-token-0123456789abcdef";
+    let usage = ProviderUsage {
+        input_tokens: 1,
+        output_tokens: 2,
+        total_tokens: 3,
+        cost_micros: 4,
+        known: true,
+    };
+    settle_provider_turn(&client, &core, token, "worker", "reservation-both", &usage)
+        .await
+        .unwrap();
+    let error = release_provider_turn(
+        &client,
+        &core,
+        token,
+        "reservation-both",
+        "session-record",
+        "worker",
+        7,
+    )
+    .await
+    .expect_err("a settled reservation must not be released");
+    assert!(matches!(error, ProviderLifecycleError::Refused(_)));
+    assert_eq!(
+        state
+            .reservations
+            .lock()
+            .unwrap()
+            .get("reservation-both")
+            .map(String::as_str),
+        Some("SETTLED"),
+        "the first terminal transition wins"
+    );
+    assert_eq!(
+        state
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(route, _)| route.as_str())
+            .collect::<Vec<_>>(),
+        ["settle"]
+    );
+    assert_eq!(
+        state
+            .rejected
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(route, _)| route.as_str())
+            .collect::<Vec<_>>(),
+        ["release"],
+        "the conflicting release was rejected by the Core fixture"
+    );
+    server.abort();
+}
+
+#[tokio::test]
 async fn failed_cleanup_receipt_never_claims_an_orphan_is_cleaned() {
-    let state = CoreFixture::default();
-    let app = Router::new()
-        .route("/worker/provider_unresolved", get(fixture_unresolved))
-        .route("/worker/provider_cleanup", post(fixture_cleanup))
-        .with_state(state.clone());
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
-    });
-    let core = reqwest::Url::parse(&format!("http://{address}")).unwrap();
+    let (state, core, server) = start_core_fixture().await;
     let error = recover_unresolved_provider_sessions(
         &reqwest::Client::new(),
         &core,
