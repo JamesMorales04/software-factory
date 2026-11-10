@@ -1,11 +1,12 @@
 # WP9 — Reviewer independence and Compose reviewer fleet evidence
 
 **Status:** implementer self-test evidence; **not independent acceptance and not
-certification**. Implementation candidate: `de48c3b021a547a9d569e41f8d8421d0e000629b`
+certification**. Implementation candidate: `2514c2b989a50e26c75c5b5e9e57eb5a5296f18d`
 on branch `factory/quality-wp9-reviewer-fleet` (baseline `bcb8b5b`). This
-supersedes the earlier WP9 candidate `d027bf2` after the independent Codex
-GPT-6 Luna review found P1 (Gate could count roles without a frozen principal
-assignment) and P2 (Director did not show individual receipts).
+supersedes `d027bf2` and `de48c3b` after independent Codex GPT-6 Luna reviews
+found P1 (Gate could count roles without a frozen principal assignment), P2
+(Director did not show individual receipts), and a remaining P2 where receipts
+for roles outside the frozen plan were ignored instead of rejected.
 
 ## Policy implemented
 
@@ -31,6 +32,11 @@ principal**, not provider/model diversity.
   role has no assignment, when the assignment set contains an unexpected role,
   or when the frozen plan is unreadable. A role name alone can never satisfy a
   requirement.
+- A reviewer receipt must name a role required by the frozen plan. Core returns
+  `QUALITY_ROLE_MISMATCH` for a missing or unrequired role at ingestion, and the
+  Gate independently blocks on any historical/foreign extra-role receipt instead
+  of silently ignoring it. An extra-role receipt can never be included in an
+  `ACCEPTED` Gate.
 - Office shows required roles, assigned principals, per-role receipt
   result/evidence, missing receipts, a frozen-plan mismatch alert and the
   independent PASS-receipt count from Core. No "model diversity required"
@@ -45,6 +51,11 @@ principal**, not provider/model diversity.
   “reviewer plan does not bind every required role to an authenticated
   principal”, and does not count receipts by role name alone. This also covers
   an older plan whose roles are readable but assignments are absent/unreadable.
+- **P2 — receipts outside the frozen plan:** Core now rejects a missing or
+  unrequired reviewer role at receipt ingestion (`QUALITY_ROLE_MISMATCH`), and
+  the Gate fails closed if a historical/foreign receipt for an unrequired role
+  exists. Added deterministic coverage where all required roles pass and one
+  extra-role receipt is present; the Gate is `BLOCKED`, never `ACCEPTED`.
 - **P2 — individual receipts in Director:** each required role now renders its
   assigned principal, the matching receipt result and evidence, or an explicit
   “No receipt” state. A failing/changes-requested receipt gets a danger badge.
@@ -91,23 +102,33 @@ cargo test -p factory-native --lib planning
 45 passed; 0 failed
 
 cargo test -p factory-native --lib db::tests::gate_
-17 passed; 0 failed
+8 passed; 0 failed
   includes gate_accepts_distinct_principals_with_same_model_and_exact_role_assignments,
   gate_blocks_required_roles_without_frozen_principal_assignments,
+  gate_blocks_an_extra_role_receipt_even_when_required_roles_pass,
   gate_rejects_an_assignment_set_with_an_unexpected_role,
   gate_rejects_a_second_receipt_from_the_same_principal and
   gate_waits_for_role_coverage_even_when_the_count_is_met
+
+cargo test -p factory-native --lib gate_
+18 passed; 0 failed
+  (broader substring filter; not the exact db::tests::gate_ command above)
 
 cargo test -p factory-native --bin factory-core
 36 passed; 0 failed
   includes quality_receipt_rejects_caller_selected_principal_or_role
 
 cargo test -p factory-native --lib
-743 passed; 0 failed; 2 ignored
+745 passed; 0 failed; 2 ignored
 
 cargo clippy -p factory-native --all-targets --all-features -- -D warnings
 clean
 ```
+
+The earlier evidence reported 17 for `db::tests::gate_`; that was actually the
+broader `gate_` substring filter. This version records the exact
+`db::tests::gate_` command and count (8) plus the broader `gate_` count (18), so
+the filter and result are unambiguous.
 
 From the repository root:
 
@@ -160,11 +181,14 @@ High-level: `native/src/review_roles.rs`, `native/src/reviewer_identity.rs`
 documents, Office parity, capability registry, roadmap, Compose/Codex runbooks
 and `native/README.md`.
 
-The repair commit changed `native/src/db/{quality,lead,tests}.rs`,
+The first repair commit changed `native/src/db/{quality,lead,tests}.rs`,
 `migrations/0066_reviewer_role_assignments.sql`,
 `office/src/views/{Director.tsx,Director.test.tsx}`,
 `office/src/i18n/catalog.{en,es}.ts`, the quality-first status document,
-capability registry and Office parity.
+capability registry and Office parity. The current repair commit adds the
+extra-role ingestion/Gate rejection in `native/src/{bin/core.rs,db/quality.rs}`
+with tests in `native/src/db/tests.rs`, and corrects the status/capability
+wording.
 
 ## Security and authorization impact
 
