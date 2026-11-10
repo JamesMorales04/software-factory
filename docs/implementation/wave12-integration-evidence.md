@@ -438,6 +438,57 @@ clean
 Repair commit: `fix(worker): block fixture candidates with dependency plans`.
 No paid inference was used.
 
+### 6.3 Stagnant Implementer salvage
+
+A live Implementer wrote a complete Rust CLI and passed build/tests, but never
+emitted a valid `final`. After three stagnant checkpoints Core returned
+`ContinuationDecision::Diagnose` and the Worker blocked the attempt, discarding
+the valid workspace. The repair adds one shared deterministic helper used by
+both provider loops:
+
+- only a `Diagnose` decision with at least one applied write is eligible;
+- the Worker executes every remaining frozen check through the existing
+  Supervisor path;
+- only when all checks pass does it persist a distinct salvage progress
+  checkpoint best-effort, close the provider session, call
+  `finalize_candidate`, clean up the workspace and emit
+  `worker.stagnation_finalized` with the receipt count;
+- the salvage checkpoint appends `-salvage` to the normal turn checkpoint id,
+  so Core accepts it and persists the check receipts instead of rejecting the
+  stagnation checkpoint id as reused with different content;
+- a failed check, an unchanged workspace or any other decision returns the
+  original `WorkerProgressHalt` and submits no candidate.
+
+The model loop still stops. Frozen checks, allowed paths, budgets, artifact
+paths and the independent Quality Gate are unchanged. The fake progress
+endpoint in the Worker tests enforces Core's id-plus-content replay rule and
+asserts that the salvage evidence is persisted under the distinct id.
+
+Validation:
+
+```text
+cargo fmt --all -- --check
+clean
+
+cargo test -p factory-native --bin factory-worker
+28 passed; 0 failed
+
+cargo test -p factory-native --test provider_chaos
+16 passed; 0 failed
+
+cargo test -p factory-native --lib
+852 passed; 0 failed; 4 ignored
+
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+clean
+
+podman compose config
+valid
+```
+
+Repair commit: `fix(worker): salvage checked stagnant candidates`.
+No paid inference was used.
+
 ## 7. Documentation integration
 
 - `docs/implementation/quality-first-planning-status.md` records every merged

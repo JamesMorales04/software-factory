@@ -324,6 +324,10 @@ layer.
 
 - Stagnation -> diagnosis -> bounded replan (new graph revision, same frozen
   spec/stack unless the finding requires a revision).
+- Before Core diagnosis, the Worker may finalize an already-changed workspace
+  after a `Diagnose` checkpoint only when every remaining frozen check passes;
+  otherwise it returns the original halt. The model loop still stops, and the
+  frozen checks, budgets and independent Quality Gate are unchanged.
 - Finding Router: code -> Repairer; test -> Test Planner/Repairer; spec/arch/
   stack -> Planner/Spec Manager; security -> Security Reviewer/owner; docs ->
   docs unit.
@@ -335,6 +339,9 @@ layer.
 ### Acceptance
 
 - Inject a stalled unit; the campaign replans and continues.
+- A diagnosed Implementer with applied writes and passing frozen checks yields
+  the exact candidate; an unchanged workspace, a failing check or any
+  non-`Diagnose` decision yields no candidate.
 - Inject an architecture finding; the Planner/Spec Manager revision is created,
   reviewed and executed, not patched around.
 - Exhausted budget goes to an owner decision, never accepted.

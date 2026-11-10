@@ -2003,21 +2003,38 @@ impl TurnProgress {
     /// Build the checkpoint for the completed turn. The evidence is cleared so
     /// each terminal operation is submitted exactly once.
     fn checkpoint_request(&mut self) -> Option<ProgressCheckpointRequest> {
+        self.checkpoint_request_with_phase(None)
+    }
+
+    /// Build the terminal checkpoint after a Diagnose halt. It must not reuse
+    /// the stagnation checkpoint identity: Core rejects a repeated id with
+    /// different content, which would discard the salvage check receipts.
+    fn salvage_checkpoint_request(&mut self) -> Option<ProgressCheckpointRequest> {
+        self.checkpoint_request_with_phase(Some("salvage"))
+    }
+
+    fn checkpoint_request_with_phase(
+        &mut self,
+        phase: Option<&str>,
+    ) -> Option<ProgressCheckpointRequest> {
         if self.turn == 0 {
             return None;
         }
-        let checkpoint_id = format!("{}-turn-{}", self.operation_prefix, self.turn);
+        let checkpoint_id = match phase {
+            Some(phase) => format!("{}-turn-{}-{phase}", self.operation_prefix, self.turn),
+            None => format!("{}-turn-{}", self.operation_prefix, self.turn),
+        };
         let operation_id = checkpoint_id.clone();
-        let outcome_sha256 = sha256_hex(
-            serde_json::to_string(&serde_json::json!({
-                "workItemId": self.work_item_id,
-                "operation": self.operation_prefix,
-                "turn": self.turn,
-                "evidence": self.evidence.iter().map(|item| item.evidence_id.clone()).collect::<Vec<_>>(),
-            }))
-            .ok()?
-            .as_bytes(),
-        );
+        let mut outcome = serde_json::json!({
+            "workItemId": self.work_item_id,
+            "operation": self.operation_prefix,
+            "turn": self.turn,
+            "evidence": self.evidence.iter().map(|item| item.evidence_id.clone()).collect::<Vec<_>>(),
+        });
+        if let Some(phase) = phase {
+            outcome["phase"] = serde_json::Value::String(phase.to_owned());
+        }
+        let outcome_sha256 = sha256_hex(serde_json::to_string(&outcome).ok()?.as_bytes());
         let checkpoint = ProgressCheckpoint {
             checkpoint_id,
             work_item_id: self.work_item_id.clone(),
@@ -2127,14 +2144,11 @@ async fn submit_progress_checkpoint(
         })
 }
 
-/// Persist the final terminal operation before the candidate is reported. The
-/// Quality Gate remains independent; an open progress hold blocks the next
-/// attempt, not the gate for this candidate.
-async fn persist_final_progress_checkpoint(
+async fn persist_progress_checkpoint(
     context: &ProviderContext<'_>,
-    progress: &mut TurnProgress,
+    request: Option<ProgressCheckpointRequest>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if let Some(request) = progress.checkpoint_request() {
+    if let Some(request) = request {
         let _ = submit_progress_checkpoint(
             context.client,
             context.core,
@@ -2146,6 +2160,129 @@ async fn persist_final_progress_checkpoint(
         .await?;
     }
     Ok(())
+}
+
+/// Persist the final terminal operation before the candidate is reported. The
+/// Quality Gate remains independent; an open progress hold blocks the next
+/// attempt, not the gate for this candidate.
+async fn persist_final_progress_checkpoint(
+    context: &ProviderContext<'_>,
+    progress: &mut TurnProgress,
+) -> Result<(), Box<dyn std::error::Error>> {
+    persist_progress_checkpoint(context, progress.checkpoint_request()).await
+}
+
+/// Persist the post-diagnosis salvage operation under its own checkpoint
+/// identity so Core keeps the check receipts instead of rejecting a reused id.
+async fn persist_salvage_progress_checkpoint(
+    context: &ProviderContext<'_>,
+    progress: &mut TurnProgress,
+) -> Result<(), Box<dyn std::error::Error>> {
+    persist_progress_checkpoint(context, progress.salvage_checkpoint_request()).await
+}
+
+enum ProviderSessionCleanup<'a> {
+    OpenCode {
+        http: &'a reqwest::Client,
+        base_url: &'a str,
+        password: &'a str,
+        api_directory: &'a str,
+        session_id: &'a str,
+    },
+    Codex {
+        rpc: &'a mut JsonRpc<tokio::process::ChildStdout, tokio::process::ChildStdin>,
+        thread_id: &'a str,
+    },
+}
+
+impl ProviderSessionCleanup<'_> {
+    async fn close(self) -> Result<(), Box<dyn std::error::Error>> {
+        match self {
+            Self::OpenCode {
+                http,
+                base_url,
+                password,
+                api_directory,
+                session_id,
+            } => {
+                factory_native::runtime::delete_opencode_session(
+                    http,
+                    base_url,
+                    password,
+                    api_directory,
+                    session_id,
+                )
+                .await?;
+            }
+            Self::Codex { rpc, thread_id } => {
+                let _ = tokio::time::timeout(Duration::from_secs(5), rpc.archive_thread(thread_id))
+                    .await;
+            }
+        }
+        Ok(())
+    }
+}
+
+enum StagnationSalvage {
+    Finalized(ProviderRun),
+    Halted(WorkerProgressHalt),
+}
+
+/// Deterministically finish an Implementer that Core diagnosed as stagnant
+/// only when it already changed the candidate and every remaining frozen check
+/// passes. The model loop has already stopped: this submits the same workspace
+/// the normal final path would submit, with the same frozen checks, budgets and
+/// independent Quality Gate. Any other decision, a missing write or a failing
+/// check returns the original progress halt unchanged.
+#[allow(clippy::too_many_arguments)]
+async fn finalize_stagnant_candidate(
+    context: &ProviderContext<'_>,
+    handle: &WorkspaceHandle,
+    dependencies: &mut DependencyAcquisitionState,
+    progress: &mut TurnProgress,
+    passed_checks: &mut std::collections::BTreeSet<String>,
+    written: bool,
+    halt: WorkerProgressHalt,
+    usage: ProviderUsage,
+    provider_session_id: String,
+    turn_id: String,
+    session: ProviderSessionCleanup<'_>,
+) -> Result<StagnationSalvage, Box<dyn std::error::Error>> {
+    if halt.decision != ContinuationDecision::Diagnose || !written {
+        return Ok(StagnationSalvage::Halted(halt));
+    }
+    let executions =
+        execute_missing_frozen_checks(context, handle, dependencies, progress, passed_checks)
+            .await?;
+    if frozen_check_failure_summary(&executions).is_some() {
+        return Ok(StagnationSalvage::Halted(halt));
+    }
+    let executed_checks = executions.len();
+    if let Err(error) = persist_salvage_progress_checkpoint(context, progress).await {
+        eprintln!("worker: salvage progress checkpoint was not persisted: {error}");
+    }
+    session.close().await?;
+    let candidate = finalize_candidate(context, handle, dependencies).await?;
+    cleanup(context.supervisor, &handle.workspace_id, &handle.capability).await?;
+    eprintln!(
+        "{}",
+        json!({
+            "event": "worker.stagnation_finalized",
+            "work_item_id": context.assignment.work_item_id,
+            "attempt_id": context.assignment.lease.attempt_id,
+            "decision": "Diagnose",
+            "check_receipts": passed_checks.len(),
+            "executed_checks": executed_checks,
+            "frozen_checks": context.assignment.action_spec.checks.len(),
+            "candidate_commit": candidate.commit_sha.as_str(),
+        })
+    );
+    Ok(StagnationSalvage::Finalized(ProviderRun {
+        candidate,
+        provider_session_id,
+        turn_id,
+        usage,
+    }))
 }
 
 type ProviderEventStream = factory_native::provider_stream::BoxEventStream;
@@ -2297,7 +2434,7 @@ async fn run_provider_tool_loop(
     let mut written = false;
     let mut passed_checks = std::collections::BTreeSet::new();
     let mut dependencies = DependencyAcquisitionState::default();
-    let mut last_message_id: String;
+    let mut last_message_id = String::new();
     let mut call_ids = std::collections::BTreeSet::new();
     let mut structured_output = StructuredOutputRepair::new(MAX_STRUCTURED_REPAIRS)?;
     let mut progress = TurnProgress::new(context);
@@ -2314,7 +2451,30 @@ async fn run_provider_tool_loop(
             .await?;
             if let Some(halt) = WorkerProgressHalt::from_response(&progress.work_item_id, &response)
             {
-                return Err(Box::new(halt));
+                match finalize_stagnant_candidate(
+                    context,
+                    &handle,
+                    &mut dependencies,
+                    &mut progress,
+                    &mut passed_checks,
+                    written,
+                    halt,
+                    usage,
+                    session_id.clone(),
+                    last_message_id.clone(),
+                    ProviderSessionCleanup::OpenCode {
+                        http: &http,
+                        base_url: context.base_url,
+                        password: context.password,
+                        api_directory: context.api_directory,
+                        session_id: &session_id,
+                    },
+                )
+                .await?
+                {
+                    StagnationSalvage::Finalized(run) => return Ok(run),
+                    StagnationSalvage::Halted(halt) => return Err(Box::new(halt)),
+                }
             }
         }
         progress.begin_turn();
@@ -3227,7 +3387,29 @@ async fn run_codex_tool_loop(
                 if let Some(halt) =
                     WorkerProgressHalt::from_response(&progress.work_item_id, &response)
                 {
-                    return Err(Box::new(halt) as Box<dyn std::error::Error>);
+                    match finalize_stagnant_candidate(
+                        context,
+                        &handle,
+                        &mut tool_state.dependencies,
+                        &mut progress,
+                        &mut tool_state.passed_checks,
+                        tool_state.written,
+                        halt,
+                        usage,
+                        thread_id.clone(),
+                        last_turn_id.clone(),
+                        ProviderSessionCleanup::Codex {
+                            rpc,
+                            thread_id: &thread_id,
+                        },
+                    )
+                    .await?
+                    {
+                        StagnationSalvage::Finalized(run) => return Ok(run),
+                        StagnationSalvage::Halted(halt) => {
+                            return Err(Box::new(halt) as Box<dyn std::error::Error>);
+                        }
+                    }
                 }
             }
             progress.begin_turn();
@@ -3752,6 +3934,7 @@ struct FrozenCheckExecution {
 /// Worker completion policy: the model may run checks itself, but it cannot
 /// finish a candidate by omitting them. Only the exact frozen argv and the
 /// frozen timeout are used through the existing Supervisor operation path.
+/// Test-only fixture transports keep their documented exemption from checks.
 async fn execute_missing_frozen_checks(
     context: &ProviderContext<'_>,
     handle: &WorkspaceHandle,
@@ -3759,6 +3942,9 @@ async fn execute_missing_frozen_checks(
     progress: &mut TurnProgress,
     passed_checks: &mut std::collections::BTreeSet<String>,
 ) -> Result<Vec<FrozenCheckExecution>, Box<dyn std::error::Error>> {
+    if !context.enforce_check_completion {
+        return Ok(Vec::new());
+    }
     let missing = missing_frozen_checks(&context.assignment.action_spec.checks, passed_checks);
     if missing.is_empty() {
         return Ok(Vec::new());
@@ -3875,9 +4061,6 @@ async fn complete_missing_frozen_checks(
     progress: &mut TurnProgress,
     passed_checks: &mut std::collections::BTreeSet<String>,
 ) -> Result<Option<String>, Box<dyn std::error::Error>> {
-    if !context.enforce_check_completion {
-        return Ok(None);
-    }
     let executions =
         execute_missing_frozen_checks(context, handle, dependencies, progress, passed_checks)
             .await?;
@@ -5186,6 +5369,14 @@ mod tests {
         run_results: AutoCheckRunResults,
         finalize_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
         write_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        checkpoint_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        progress_decisions:
+            std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<ContinuationDecision>>>,
+        progress_checkpoint_hashes:
+            std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, String>>>,
+        progress_requests: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+        progress_rejections: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        receipts: std::sync::Arc<std::sync::Mutex<Vec<ExecutionCheckReceiptRecord>>>,
         sequence: std::sync::Arc<std::sync::atomic::AtomicI64>,
     }
 
@@ -5240,6 +5431,9 @@ mod tests {
                 fail_to_pass: false,
             }
         });
+        if let Some(receipt) = &execution_check {
+            state.receipts.lock().unwrap().push(receipt.clone());
+        }
         axum::Json(factory_native::db::ProviderToolEventRecord {
             session_record_id: input.session_record_id,
             sequence: state.sequence.fetch_add(1, Ordering::SeqCst),
@@ -5252,15 +5446,74 @@ mod tests {
         })
     }
 
-    async fn auto_check_progress_checkpoint() -> axum::Json<serde_json::Value> {
+    async fn auto_check_progress_checkpoint(
+        axum::extract::State(state): axum::extract::State<AutoCheckBackendState>,
+        axum::Json(input): axum::Json<serde_json::Value>,
+    ) -> axum::response::Response {
+        use axum::response::IntoResponse;
+        use std::sync::atomic::Ordering;
+        state.checkpoint_calls.fetch_add(1, Ordering::SeqCst);
+        let Some(checkpoint) = input.get("checkpoint") else {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                axum::Json(serde_json::json!({"error": "missing checkpoint"})),
+            )
+                .into_response();
+        };
+        let Some(checkpoint_id) = checkpoint
+            .get("checkpointId")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+        else {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                axum::Json(serde_json::json!({"error": "missing checkpoint id"})),
+            )
+                .into_response();
+        };
+        let checkpoint_sha256 = sha256_hex(
+            serde_json::to_string(checkpoint)
+                .unwrap_or_default()
+                .as_bytes(),
+        );
+        {
+            let mut stored = state.progress_checkpoint_hashes.lock().unwrap();
+            if let Some(existing) = stored.get(&checkpoint_id) {
+                if existing != &checkpoint_sha256 {
+                    state.progress_rejections.fetch_add(1, Ordering::SeqCst);
+                    return (
+                        axum::http::StatusCode::CONFLICT,
+                        axum::Json(serde_json::json!({
+                            "error": "progress checkpoint id was reused with different content"
+                        })),
+                    )
+                        .into_response();
+                }
+            } else {
+                stored.insert(checkpoint_id.to_owned(), checkpoint_sha256);
+            }
+        }
+        state.progress_requests.lock().unwrap().push(input);
+        let decision = state
+            .progress_decisions
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or(ContinuationDecision::Continue);
+        let (classification, stagnant_checkpoints, hold_open) = match decision {
+            ContinuationDecision::Diagnose => ("STAGNANT", 2, true),
+            ContinuationDecision::Escalate => ("STAGNANT", 3, true),
+            _ => ("PROVISIONAL", 0, false),
+        };
         axum::Json(serde_json::json!({
-            "checkpointId": "checkpoint",
-            "decision": "CONTINUE",
-            "classification": "PROVISIONAL",
-            "stagnantCheckpoints": 0,
+            "checkpointId": checkpoint_id,
+            "decision": decision,
+            "classification": classification,
+            "stagnantCheckpoints": stagnant_checkpoints,
             "unsuccessfulReplans": 0,
-            "holdOpen": false
+            "holdOpen": hold_open
         }))
+        .into_response()
     }
 
     async fn auto_check_workspace_operation() -> axum::Json<serde_json::Value> {
@@ -5363,6 +5616,10 @@ mod tests {
         prompts: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
         runs: AutoCheckRuns,
         finalize_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        checkpoint_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        progress_requests: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+        progress_rejections: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        receipts: std::sync::Arc<std::sync::Mutex<Vec<ExecutionCheckReceiptRecord>>>,
         provider_server: tokio::task::JoinHandle<()>,
         backend_server: tokio::task::JoinHandle<()>,
         root: std::path::PathBuf,
@@ -5381,6 +5638,15 @@ mod tests {
             actions: Vec<serde_json::Value>,
             run_results: Vec<(Option<i32>, String, String)>,
             checks: Vec<SpecCheck>,
+        ) -> Self {
+            Self::start_with_decisions(actions, run_results, checks, Vec::new()).await
+        }
+
+        async fn start_with_decisions(
+            actions: Vec<serde_json::Value>,
+            run_results: Vec<(Option<i32>, String, String)>,
+            checks: Vec<SpecCheck>,
+            progress_decisions: Vec<ContinuationDecision>,
         ) -> Self {
             use axum::routing::{delete, get, post};
             use std::sync::atomic::AtomicUsize;
@@ -5444,6 +5710,10 @@ mod tests {
 
             let runs = Arc::new(Mutex::new(Vec::new()));
             let finalize_calls = Arc::new(AtomicUsize::new(0));
+            let checkpoint_calls = Arc::new(AtomicUsize::new(0));
+            let progress_requests = Arc::new(Mutex::new(Vec::new()));
+            let progress_rejections = Arc::new(AtomicUsize::new(0));
+            let receipts = Arc::new(Mutex::new(Vec::new()));
             let backend_state = AutoCheckBackendState {
                 base: base.clone(),
                 checks: checks.clone(),
@@ -5451,6 +5721,12 @@ mod tests {
                 run_results: Arc::new(Mutex::new(run_results.into())),
                 finalize_calls: Arc::clone(&finalize_calls),
                 write_calls: Arc::new(AtomicUsize::new(0)),
+                checkpoint_calls: Arc::clone(&checkpoint_calls),
+                progress_decisions: Arc::new(Mutex::new(progress_decisions.into())),
+                progress_checkpoint_hashes: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
+                progress_requests: Arc::clone(&progress_requests),
+                progress_rejections: Arc::clone(&progress_rejections),
+                receipts: Arc::clone(&receipts),
                 sequence: Arc::new(std::sync::atomic::AtomicI64::new(1)),
             };
             let backend_router = axum::Router::new()
@@ -5509,6 +5785,10 @@ mod tests {
                 prompts,
                 runs,
                 finalize_calls,
+                checkpoint_calls,
+                progress_requests,
+                progress_rejections,
+                receipts,
                 provider_server,
                 backend_server,
                 root,
@@ -5575,6 +5855,189 @@ mod tests {
             vec![(check.command.clone(), check.timeout_secs as u64)],
             "only the exact frozen argv and timeout may be executed"
         );
+    }
+
+    fn stagnation_check() -> SpecCheck {
+        SpecCheck {
+            id: "build".into(),
+            kind: CheckKind::Build,
+            description: "cargo build".into(),
+            command: vec!["cargo".into(), "build".into()],
+            expect_exit: 0,
+            timeout_secs: 120,
+        }
+    }
+
+    #[tokio::test]
+    async fn worker_salvages_a_changed_candidate_after_diagnose_when_all_frozen_checks_pass() {
+        use std::sync::atomic::Ordering;
+
+        let check = stagnation_check();
+        let harness = AutoCheckHarness::start_with_decisions(
+            vec![auto_check_write_action()],
+            vec![(Some(0), "built\n".into(), String::new())],
+            vec![check.clone()],
+            vec![ContinuationDecision::Diagnose],
+        )
+        .await;
+        let candidate = harness
+            .run()
+            .await
+            .expect("a changed candidate with passing frozen checks is salvageable");
+        assert_eq!(candidate.commit_sha, "c".repeat(40));
+        assert_eq!(
+            harness.prompts.lock().unwrap().len(),
+            1,
+            "stagnation salvage must not request another model turn"
+        );
+        assert_eq!(
+            harness.finalize_calls.load(Ordering::SeqCst),
+            1,
+            "the worker must submit exactly one candidate"
+        );
+        assert_eq!(
+            *harness.runs.lock().unwrap(),
+            vec![(check.command.clone(), check.timeout_secs as u64)],
+            "salvage may only execute each missing frozen check once"
+        );
+        let receipts = harness.receipts.lock().unwrap();
+        assert_eq!(receipts.len(), 1, "a check receipt must be recorded");
+        assert_eq!(receipts[0].outcome, "PASS");
+        assert_eq!(
+            harness.checkpoint_calls.load(Ordering::SeqCst),
+            2,
+            "the stagnation checkpoint and the salvage checkpoint must both be submitted"
+        );
+        assert_eq!(
+            harness.progress_rejections.load(Ordering::SeqCst),
+            0,
+            "the salvage checkpoint must not reuse the stagnation checkpoint id"
+        );
+        let requests = harness.progress_requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        let stagnation_id = requests[0]
+            .pointer("/checkpoint/checkpointId")
+            .and_then(serde_json::Value::as_str)
+            .expect("stagnation checkpoint id");
+        let salvage_id = requests[1]
+            .pointer("/checkpoint/checkpointId")
+            .and_then(serde_json::Value::as_str)
+            .expect("salvage checkpoint id");
+        assert_ne!(stagnation_id, salvage_id);
+        assert!(
+            salvage_id.ends_with("-salvage"),
+            "salvage checkpoint id should be distinct: {salvage_id}"
+        );
+        let evidence_ids = requests[1]
+            .pointer("/checkpoint/evidenceIds")
+            .and_then(serde_json::Value::as_array)
+            .expect("declared salvage evidence ids");
+        assert!(!evidence_ids.is_empty());
+        let evidence = requests[1]
+            .get("evidence")
+            .and_then(serde_json::Value::as_array)
+            .expect("salvage evidence");
+        assert!(
+            evidence.iter().any(|item| {
+                item.get("kind").and_then(serde_json::Value::as_str) == Some("TESTS_IMPROVED")
+            }),
+            "the salvage checkpoint must persist the frozen-check receipt: {evidence:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn worker_diagnose_with_a_failing_frozen_check_returns_the_original_halt() {
+        use std::sync::atomic::Ordering;
+
+        let check = stagnation_check();
+        let harness = AutoCheckHarness::start_with_decisions(
+            vec![auto_check_write_action()],
+            vec![(Some(1), String::new(), "compile error\n".into())],
+            vec![check.clone()],
+            vec![ContinuationDecision::Diagnose],
+        )
+        .await;
+        let error = harness
+            .run()
+            .await
+            .expect_err("a failing frozen check must not finalize");
+        let halt = error
+            .downcast_ref::<WorkerProgressHalt>()
+            .expect("the original progress halt must be returned");
+        assert_eq!(halt.decision, ContinuationDecision::Diagnose);
+        assert_eq!(halt.work_item_id, "unit-1");
+        assert_eq!(
+            harness.finalize_calls.load(Ordering::SeqCst),
+            0,
+            "no candidate may be submitted while a frozen check fails"
+        );
+        assert_eq!(
+            *harness.runs.lock().unwrap(),
+            vec![(check.command.clone(), check.timeout_secs as u64)]
+        );
+        assert_eq!(harness.prompts.lock().unwrap().len(), 1);
+        let receipts = harness.receipts.lock().unwrap();
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts[0].outcome, "FAIL");
+        assert_eq!(harness.checkpoint_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn worker_diagnose_without_a_write_returns_the_original_halt() {
+        use std::sync::atomic::Ordering;
+
+        let harness = AutoCheckHarness::start_with_decisions(
+            vec![auto_check_final_action()],
+            vec![(Some(0), "built\n".into(), String::new())],
+            vec![stagnation_check()],
+            vec![ContinuationDecision::Diagnose],
+        )
+        .await;
+        let error = harness
+            .run()
+            .await
+            .expect_err("an unchanged workspace must not be salvaged");
+        let halt = error
+            .downcast_ref::<WorkerProgressHalt>()
+            .expect("the original progress halt must be returned");
+        assert_eq!(halt.decision, ContinuationDecision::Diagnose);
+        assert!(
+            harness.runs.lock().unwrap().is_empty(),
+            "no frozen check may run when nothing was written"
+        );
+        assert!(harness.receipts.lock().unwrap().is_empty());
+        assert_eq!(harness.finalize_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(harness.prompts.lock().unwrap().len(), 1);
+        assert_eq!(harness.checkpoint_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn worker_escalate_is_never_salvaged_even_with_passing_checks() {
+        use std::sync::atomic::Ordering;
+
+        let harness = AutoCheckHarness::start_with_decisions(
+            vec![auto_check_write_action()],
+            vec![(Some(0), "built\n".into(), String::new())],
+            vec![stagnation_check()],
+            vec![ContinuationDecision::Escalate],
+        )
+        .await;
+        let error = harness
+            .run()
+            .await
+            .expect_err("only a Diagnose decision may be salvaged");
+        let halt = error
+            .downcast_ref::<WorkerProgressHalt>()
+            .expect("the original progress halt must be returned");
+        assert_eq!(halt.decision, ContinuationDecision::Escalate);
+        assert!(
+            harness.runs.lock().unwrap().is_empty(),
+            "an escalation must not run or accept frozen checks"
+        );
+        assert!(harness.receipts.lock().unwrap().is_empty());
+        assert_eq!(harness.finalize_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(harness.prompts.lock().unwrap().len(), 1);
+        assert_eq!(harness.checkpoint_calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -5885,6 +6348,44 @@ mod tests {
         }
         assert_eq!(progress.turn, 12);
         assert!(progress.checkpoint_request().is_none() || progress.evidence.is_empty());
+    }
+
+    #[test]
+    fn salvage_checkpoint_identity_differs_from_the_stagnation_checkpoint() {
+        let mut progress = TurnProgress::from_identity(
+            "campaign".into(),
+            "unit-1".into(),
+            "attempt-1".into(),
+            1,
+            "run-1".into(),
+            0,
+        );
+        progress.begin_turn();
+        progress.observe_write("src/lib.rs", "changed");
+        let stagnation = progress
+            .checkpoint_request()
+            .expect("stagnation checkpoint");
+        progress.observe_check(&check_receipt("call-salvage", "PASS", "pass", true));
+        let salvage = progress
+            .salvage_checkpoint_request()
+            .expect("salvage checkpoint");
+        assert_eq!(
+            stagnation.checkpoint.checkpoint_id, "unit-1/attempt-1-g1-run-1-turn-1",
+            "the normal terminal checkpoint identity must not change"
+        );
+        assert_eq!(
+            salvage.checkpoint.checkpoint_id,
+            "unit-1/attempt-1-g1-run-1-turn-1-salvage"
+        );
+        assert_ne!(
+            stagnation.checkpoint.outcome_sha256, salvage.checkpoint.outcome_sha256,
+            "a distinct phase must produce a distinct replay digest"
+        );
+        assert_eq!(salvage.evidence.len(), 1);
+        assert_eq!(
+            salvage.checkpoint.evidence_ids,
+            vec![salvage.evidence[0].evidence_id.clone()]
+        );
     }
 
     #[test]
