@@ -1,5 +1,11 @@
 {
   "schemaVersion": 2,
+  "implementationCommit": "8357e38ccd897b146bd442a247c054e80b8a01aa",
+  "migrations": [
+    "0067_skill_refresh_cursor.sql",
+    "0068_skill_pack_content_review.sql"
+  ],
+  "legacyCompatibility": "SkillPack::from_persisted_json maps legacy lastVerifiedAt to source_checked_at with SOURCE_AVAILABILITY_ONLY and empty content review",
   "sourceCheckedAt": "2026-11-09T00:00:00Z",
   "contentReviewedAt": "2026-11-09T00:00:00Z",
   "reviewWindowDays": 90,

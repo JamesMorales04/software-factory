@@ -5,7 +5,7 @@ completion claim. No paid model inference was run. The stale/missing skill gate
 was not weakened.
 
 - Branch: `factory/quality-wp3-skill-refresh`
-- Implementation commit: `ba2e2c99d0b289f59b86a763f492244e31fcee03`
+- Implementation commit: `8357e38ccd897b146bd442a247c054e80b8a01aa`
 - Baseline: `bcb8b5b`
 - Design authority:
   [ADR-0039](../architecture/decisions/ADR-0039-quality-first-planning-and-stack-selection.md)
@@ -29,6 +29,22 @@ review at `cf8f890` found two remaining issues, repaired here:
 2. **Office labeled the next project window as already scanned.** The panel now
    labels status counts as the “Next scan window” and shows the completed pass
    from `lastOutcome` separately.
+
+The third review at `0082b70` found three remaining issues, repaired here:
+
+1. **Legacy skill-pack JSON could fail planning.** `SkillPack::from_persisted_json`
+   now decodes the current schema first and falls back to a realistic legacy
+   `lastVerifiedAt`/`reviewAfter` shape. Legacy rows become
+   `SOURCE_AVAILABILITY_ONLY` with an empty content-review window, so they
+   remain blocking. A migration test uses a realistic pre-change serialized
+   pack, not `{}`.
+2. **Migration numbers collided with WP9.** WP3 migrations are renumbered to
+   `0067_skill_refresh_cursor.sql` and
+   `0068_skill_pack_content_review.sql`; WP9’s 0065/0066 are untouched.
+3. **Source-only stale reason was misleading.** The classifier now says the
+   builtin has source-availability evidence only and content review is
+   required. The Office panel shows that reason plus an explicit source-only
+   badge, with a component test.
 
 ### Content-review basis
 
@@ -162,8 +178,8 @@ registry remains separate and unchanged in authority.
 - `native/src/planning/skill_refresh.rs`
 - `native/src/planning/skills.rs`
 - `native/src/planning/skills/catalog.rs`
-- `migrations/0065_skill_refresh_cursor.sql`
-- `migrations/0066_skill_pack_content_review.sql`
+- `migrations/0067_skill_refresh_cursor.sql`
+- `migrations/0068_skill_pack_content_review.sql`
 - `native/tests/migration_skill_refresh.rs`
 - `office/src/coreApi.ts`
 - `office/src/i18n/catalog.en.ts`
@@ -213,7 +229,7 @@ From `office/`:
 
 ```text
 npm test -- --run
-303 passed across 45 files
+304 passed across 45 files
 
 npm run typecheck
 clean
@@ -234,9 +250,10 @@ source-only packs never being fresh, immutable refresh revision, idempotent
 scheduler pass and events, scheduler shutdown, missing-technology fail-closed
 behavior, Python/pip planning, detected-stack catalog coverage, catalog
 source/content-review manifest integrity, Docker source correctness, durable
-project rotation with skipped counts, migration `0065` cursor durability and
-`0066` historical-row preservation, endpoint authentication/bounds and the
-Office loading/error/action/truncation/deferred/next-window states.
+project rotation with skipped counts, legacy skill-pack JSON decoding, migration
+`0067` cursor durability and `0068` historical-row preservation, endpoint
+authentication/bounds and the Office
+loading/error/action/truncation/deferred/next-window/source-only states.
 
 ## Limitations and NOT_TESTED
 
@@ -254,6 +271,9 @@ Office loading/error/action/truncation/deferred/next-window states.
   remaining 50 canonical packs and three compatibility aliases are
   source-availability-only and block planning until content-reviewed. This is
   intentional fail-closed behavior.
+- **KNOWN LIMITATION:** legacy persisted rows are decoded as source-only and
+  block until an explicitly content-reviewed revision is persisted; migration
+  `0068` does not invent a content review from the old availability date.
 - **KNOWN LIMITATION:** for the 15 reviewed packs, the review scope is the
   named official section headings recorded in the manifest, not a verbatim
   reproduction of the documentation.
@@ -284,9 +304,11 @@ No items are marked `BLOCKED` for this WP.
   the rotating scan is deterministic.
 - `native/src/planning/mod.rs`: `SkillReviewBasis` and the separated
   source/content review contract.
-- `migrations/0065_skill_refresh_cursor.sql`: durable cursor table.
-- `migrations/0066_skill_pack_content_review.sql`: source-check/content-review
+- `migrations/0067_skill_refresh_cursor.sql`: durable cursor table.
+- `migrations/0068_skill_pack_content_review.sql`: source-check/content-review
   column split.
+- Legacy compatibility is explicit: `SkillPack::from_persisted_json` maps the
+  old `lastVerifiedAt` to `source_checked_at`, never to content freshness.
 - The migration owner should keep these numbers when merging the wave.
 
 ## Authority and security
