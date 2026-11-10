@@ -2942,14 +2942,15 @@ capabilities:
     - docs/architecture/decisions/ADR-0037-agent-topology-context-and-composition.md
     contract:
     - docs/contracts/agentic-flow.md
-    source: [native/src/agentic.rs, native/src/db/agentic_plans.rs, native/src/db/planning.rs, native/src/planning, native/src/dependencies.rs, native/src/openspec.rs, native/src/openspec_cli.rs, native/src/bin/core.rs, office/src/views/Director.tsx]
-    test: [native/src/agentic.rs, native/src/db/intake.rs, native/src/db/planning.rs, native/src/db/quality.rs, native/tests/planning_pipeline.rs, office/src/views/Director.test.tsx]
+    source: [native/src/agentic.rs, native/src/db/agentic_plans.rs, native/src/db/planning.rs, native/src/planning, native/src/dependencies.rs, native/src/openspec.rs, native/src/openspec_cli.rs, native/src/bin/core.rs, deploy/openspec, office/src/views/Director.tsx]
+    test: [native/src/agentic.rs, native/src/db/intake.rs, native/src/db/planning.rs, native/src/db/quality.rs, native/tests/planning_pipeline.rs, native/tests/openspec_compose_validation.rs, deploy/openspec/validate.test.mjs, office/src/views/Director.test.tsx]
   acceptance:
     deterministic: Core derives a planning lane floor, persists exact stack/architecture/documentation/skill/DoD artifacts, and requires a plan review for every lane with policy-bounded auto-approval; the Planner proposes a WorkGraph that Core validates for cycles, paths, dependencies, competence and budget; the Spec Manager authors observable acceptance and negative cases only for FORMAL_SPEC; deterministic compilation freezes exact requirement, assertion and check identities; every reviewer finding is a durable disposition and an OPEN finding blocks the Gate; post-freeze changes require a new revision.
     real: A multi-unit browser operation is planned, specified, frozen and executed without the model changing a frozen requirement.
   evidence:
     deterministic:
     - docs/evidence/spec-board-2026-11-09/deterministic.json
+    - docs/implementation/wp7-openspec-compose-evidence.md
     live_agent: []
     uat: []
     deployment: []
@@ -2957,7 +2958,7 @@ capabilities:
   limitations:
   - The Planner and Spec Manager are bounded Lead-route model calls with distinct purpose and typed schemas; they do not have separate provider roles yet.
   - Plan review and finding disposition are implemented in Core and Office; real browser acceptance for the new surfaces remains NOT_TESTED.
-  - The OpenSpec projection uses canonical ADDED Requirements/Requirement/Scenario headings and numeric task IDs, and the pinned CLI 1.16.1 validator is implemented as a container image and typed runner; the Compose validation job is not yet wired.
+  - The OpenSpec projection uses canonical ADDED Requirements/Requirement/Scenario headings and numeric task IDs; the pinned CLI 1.16.1 validator runs as a profile-gated Compose job against a Core-rendered fixture; Core exposes an idempotent archive transition for the latest validated revision with stored-artifact digest and projection drift checks; a real Core-backed run against a projection produced by the model planning pipeline remains NOT_TESTED. See docs/implementation/wp7-openspec-compose-evidence.md.
   - A real-model browser self-test planned and froze revisions 1 and 2, and the full E2E campaign consumed the frozen plan, but independent live certification is pending.
   blockers:
   - Per-WorkUnit execution state and the full planned-specified-executed journey remain pending.

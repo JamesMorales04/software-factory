@@ -112,6 +112,83 @@ class ComposePolicyTests(unittest.TestCase):
             "device_cgroup_rules are forbidden",
         )
 
+    def test_rejects_unsafe_openspec_validation_job(self):
+        if "openspec-validate" not in base_config()["services"]:
+            self.skipTest("OpenSpec validation profile is not active in this config")
+        self.assert_rejected(
+            lambda c: c["services"]["openspec-validate"].__setitem__(
+                "profiles", ["default"]
+            ),
+            "openspec-validate: only the openspec-validation profile is allowed",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["openspec-validate"].__setitem__("read_only", False),
+            "openspec-validate: read-only root filesystem is required",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["openspec-validate"].__setitem__(
+                "cap_add", ["SYS_ADMIN"]
+            ),
+            "openspec-validate: the validation job must not add capabilities",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["openspec-validate"].__setitem__(
+                "networks", ["factory-control", "factory-egress"]
+            ),
+            "openspec-validate: must use only the private control network",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["openspec-validate"]["environment"].__setitem__(
+                "FACTORY_OPERATOR_TOKEN", "secret-value"
+            ),
+            "openspec-validate: secrets must not be passed in the environment",
+        )
+
+    def test_rejects_openspec_validation_cross_role_volume_or_writable_config(self):
+        if "openspec-validate" not in base_config()["services"]:
+            self.skipTest("OpenSpec validation profile is not active in this config")
+
+        def cross_role(config):
+            for volume in config["services"]["openspec-validate"]["volumes"]:
+                if volume.get("source") == "factory-config-openspec":
+                    volume["source"] = "factory-config-core"
+
+        self.assert_rejected(
+            cross_role,
+            "openspec-validate: exactly one volume factory-config-openspec is allowed",
+        )
+
+        def writable(config):
+            for volume in config["services"]["openspec-validate"]["volumes"]:
+                if volume.get("source") == "factory-config-openspec":
+                    volume["read_only"] = False
+
+        self.assert_rejected(
+            writable,
+            "openspec-validate: its config volume must be read-only at /config",
+        )
+
+    def test_rejects_openspec_validation_project_and_data_mounts(self):
+        if "openspec-validate" not in base_config()["services"]:
+            self.skipTest("OpenSpec validation profile is not active in this config")
+
+        for source in ("factory-projects", "factory-data"):
+            with self.subTest(source=source):
+                def mount_extra_volume(config, source=source):
+                    config["services"]["openspec-validate"]["volumes"].append(
+                        {
+                            "type": "volume",
+                            "source": source,
+                            "target": f"/{source}",
+                            "read_only": True,
+                        }
+                    )
+
+                self.assert_rejected(
+                    mount_extra_volume,
+                    "openspec-validate: exactly one volume factory-config-openspec is allowed",
+                )
+
     def test_rejects_unsafe_security_options(self):
         self.assert_rejected(
             lambda c: c["services"]["worker"].__setitem__(

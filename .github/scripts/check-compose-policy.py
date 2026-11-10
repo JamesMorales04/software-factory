@@ -21,7 +21,14 @@ CONFIG_VOLUMES = {
     "verifier": "factory-config-verifier",
     "reviewer": "factory-config-reviewer",
 }
-ALL_CONFIG_VOLUMES = set(CONFIG_VOLUMES.values())
+# Profile-gated one-shot jobs are not part of the steady-state stack, but they
+# still need explicit credential, mount, network and privilege rules.
+OPTIONAL_CONFIG_VOLUMES = {
+    "openspec-validate": "factory-config-openspec",
+}
+ALL_CONFIG_VOLUMES = set(CONFIG_VOLUMES.values()) | set(
+    OPTIONAL_CONFIG_VOLUMES.values()
+)
 EXPECTED_NETWORKS = {
     "core": {"factory-control", "factory-egress"},
     "supervisor": {"factory-control"},
@@ -62,6 +69,13 @@ HOST_NAMESPACE_KEYS = ("pid", "ipc", "uts", "cgroup")
 def as_set(service, key):
     value = service.get(key) or []
     return set(value)
+
+
+def network_names(service):
+    networks = service.get("networks") or {}
+    if isinstance(networks, dict):
+        return set(networks.keys())
+    return set(networks)
 
 
 def bind_entries(value):
@@ -145,6 +159,8 @@ def main(path: str) -> int:
     expected_services = PERMANENT | {"init", "provider-bundle", "runtime"}
     if has_tailscale:
         expected_services.add("tailscale")
+    if "openspec-validate" in services:
+        expected_services.add("openspec-validate")
     if set(services) != expected_services:
         fail(f"unexpected services: {sorted(set(services) - expected_services)}")
 
@@ -237,12 +253,78 @@ def main(path: str) -> int:
                 fail(
                     f"{name}: must mount only {expected_config}; got {sorted(config_sources)}"
                 )
-            actual_networks = set((service.get("networks") or {}).keys())
+            actual_networks = network_names(service)
             expected_networks = EXPECTED_NETWORKS[name]
             if actual_networks != expected_networks:
                 fail(
                     f"{name}: networks {sorted(actual_networks)} do not match {sorted(expected_networks)}"
                 )
+
+        if "openspec-validate" in services:
+            job = services["openspec-validate"]
+            if job.get("read_only") is not True:
+                fail("openspec-validate: read-only root filesystem is required")
+            if as_set(job, "cap_drop") != {"ALL"}:
+                fail("openspec-validate: cap_drop must be exactly ALL")
+            if as_set(job, "cap_add"):
+                fail("openspec-validate: the validation job must not add capabilities")
+            if not any(
+                str(option).replace(" ", "") == "no-new-privileges:true"
+                for option in job.get("security_opt", []) or []
+            ):
+                fail("openspec-validate: no-new-privileges is required")
+            if str(job.get("user")) != "10001:10001":
+                fail("openspec-validate: must run as the unprivileged factory UID")
+            if job.get("profiles") != ["openspec-validation"]:
+                fail("openspec-validate: only the openspec-validation profile is allowed")
+            if job.get("restart") != "no":
+                fail("openspec-validate: a one-shot job must not restart")
+            if job.get("entrypoint") != ["node", "/opt/openspec/validate.mjs"]:
+                fail("openspec-validate: the image-baked validation entrypoint is required")
+            if job.get("image") != "localhost/software-factory-openspec:1.16.1":
+                fail("openspec-validate: the pinned OpenSpec image is required")
+            expected_config = OPTIONAL_CONFIG_VOLUMES["openspec-validate"]
+            volumes = job.get("volumes") or []
+            volume_sources = [str(volume.get("source", "")) for volume in volumes]
+            if len(volumes) != 1 or volume_sources != [expected_config]:
+                fail(
+                    "openspec-validate: exactly one volume "
+                    f"{expected_config} is allowed; got {volume_sources}"
+                )
+            else:
+                volume = volumes[0]
+                if str(volume.get("type", "")) != "volume":
+                    fail("openspec-validate: the config mount must be a named volume")
+                if (
+                    str(volume.get("target", "")) != "/config"
+                    or volume.get("read_only") is not True
+                ):
+                    fail("openspec-validate: its config volume must be read-only at /config")
+            actual_networks = network_names(job)
+            if actual_networks != {"factory-control"}:
+                fail(
+                    "openspec-validate: must use only the private control network; got "
+                    f"{sorted(actual_networks)}"
+                )
+            environment = job.get("environment") or {}
+            if environment.get("FACTORY_CORE_URL") != "http://core:8765":
+                fail("openspec-validate: FACTORY_CORE_URL must target Core on the control network")
+            if environment.get("FACTORY_OPERATOR_TOKEN_FILE") != "/config/operator.token":
+                fail("openspec-validate: the operator token must be read from its file")
+            if environment.get("FACTORY_OPENSPEC_WORKSPACE") != "/workspace":
+                fail("openspec-validate: the isolated workspace path is required")
+            if "FACTORY_OPENSPEC_REQUEST_ID" not in environment:
+                fail("openspec-validate: the request id must be operator-supplied")
+            if any(
+                key.upper().endswith("TOKEN") and str(value or "").strip()
+                for key, value in environment.items()
+            ):
+                fail("openspec-validate: secrets must not be passed in the environment")
+            if not any(
+                str(entry).startswith("/workspace:")
+                for entry in job.get("tmpfs", []) or []
+            ):
+                fail("openspec-validate: the isolated workspace tmpfs is required")
 
         for port in service.get("ports", []) or []:
             published.append((name, port))

@@ -73,6 +73,65 @@ provider in one shared builder stage. A cold build is several minutes; later
 builds reuse the cache. The provider image contains pinned OpenCode/Codex
 executables and Node, so its bundle is large (about 1.5 GiB on the tested host).
 
+## OpenSpec validation job (profile-gated)
+
+The pinned OpenSpec CLI is not a host dependency. A one-shot Compose service
+validates the latest Core-rendered projection:
+
+```sh
+podman compose --profile openspec-validation build openspec-validate
+FACTORY_OPENSPEC_REQUEST_ID=<request-id> \
+  podman compose --profile openspec-validation run --rm --no-deps openspec-validate
+```
+
+`openspec-validate` is not part of the default steady-state stack. It:
+
+- builds from [`deploy/openspec/Dockerfile`](../../deploy/openspec/Dockerfile)
+  with the official `@fission-ai/openspec@1.16.1` package on Node 22.23.2;
+- reads the operator token from `/config/operator.token` in the dedicated
+  `factory-config-openspec` volume (never from the command line or an
+  environment value);
+- joins only `factory-control`, calls
+  `GET /agentic/requests/{id}/openspec` on Core, and has no egress network;
+- writes `openspec/changes/<change-id>/...` into a private tmpfs workspace,
+  verifies every file against the Core manifest hash, runs
+  `openspec validate <change-id> --strict`, and removes the workspace;
+- mounts no project source, no Core database and no host path;
+- prints exactly one bounded JSON result and exits non-zero on failure.
+
+The result carries `status` (`PASS`/`FAIL`), `changeId`, `revision`,
+`openspecVersion`, `artifactHashes`, the validation `exitCode`, bounded
+stdout/stderr and a typed failure `code`. A `PASS` is validation evidence for
+plan review: it does not accept a candidate, close a finding or grant delivery
+authority. Core remains authoritative.
+
+If Core has no persisted projection, the job reports
+`OPENSPEC_NOT_FOUND`. If the stored projection and artifact disagree, Core
+returns `OPENSPEC_PROJECTION_STALE` and the job fails closed. Keep the
+`FACTORY_OPENSPEC_REQUEST_ID` value in the operator environment; it is not a
+secret.
+
+### Archive and drift
+
+Core exposes `POST /agentic/requests/{id}/openspec/archive` for the exact
+projection read by the job. The request binds `changeId`, `revision` and
+`artifactContentSha256`. Core recomputes the stored artifact JSON digest,
+verifies the projection and manifest hashes, and only then moves the durable
+projection to `archived: true`:
+
+- replaying the same binding is idempotent and returns
+  `alreadyArchived: true` without changing the row;
+- a changed artifact, stale revision/hash, superseded revision, or different
+  archive binding is rejected as drift/immutability, never silently repaired;
+- the revision must remain the latest for the request when Core checks and
+  updates it under the same write transaction;
+- the response carries `archivePath` (`openspec/changes/archive/<change-id>`)
+  and the exact projection hashes.
+
+Archiving is a projection transition only. It never accepts a candidate, closes
+a finding or grants delivery authority. A drift failure is surfaced to the
+operator; Core does not rewrite the stored artifact or archive it.
+
 ## First-run enrollment
 
 Start and open Office with the host launcher:
@@ -242,6 +301,7 @@ podman compose -p software-factory-e2e -f compose.yaml -f compose.e2e.yaml down 
 | Runtime | `quay.io/podman/stable:v5.8.9` + VFS |
 | Office build | Node `22.23.2`, React/Vite pinned by `office/package-lock.json` |
 | Provider | Node `22.23.2`, OpenCode `1.18.32`, Codex `0.156.1` |
+| OpenSpec validation | Node `22.23.2`, `@fission-ai/openspec@1.16.1` |
 
 Base images are pinned by version tag. Digest pinning is not enforced; record
 local image digests for any certification. The provider image is not published;

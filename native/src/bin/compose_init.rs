@@ -41,6 +41,10 @@ const SUPERVISOR_SECRETS: &[&str] = &[
 const VERIFIER_SECRETS: &[&str] = &["verifier.token", "runtime-broker.token"];
 const REVIEWER_SECRETS: &[&str] = &["reviewer.token"];
 const RUNTIME_SECRETS: &[&str] = &["runtime-broker.token"];
+// The profile-gated OpenSpec validation job reads the latest durable
+// projection through the operator-authenticated Core endpoint. It receives only
+// the operator token, not Core's master key or the other role credentials.
+const OPENSPEC_SECRETS: &[&str] = &["operator.token"];
 
 struct Placement {
     directory: PathBuf,
@@ -89,6 +93,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Placement {
             directory: config_dir("FACTORY_CONFIG_RUNTIME_DIR", "/config-runtime"),
             secrets: RUNTIME_SECRETS,
+        },
+        Placement {
+            directory: config_dir("FACTORY_CONFIG_OPENSPEC_DIR", "/config-openspec"),
+            secrets: OPENSPEC_SECRETS,
         },
     ];
     for placement in &placements {
