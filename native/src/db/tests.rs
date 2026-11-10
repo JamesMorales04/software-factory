@@ -3510,6 +3510,11 @@ async fn model_call_scope_and_global_budgets_are_enforced() {
     let ModelCallDecision::Reserved(grant) = db.authorize_model_call(&first).await.unwrap() else {
         panic!("expected a reservation");
     };
+    assert_eq!(
+        grant.max_input_tokens, 100,
+        "a lower policy budget must not be raised to the technical ceiling"
+    );
+    assert_eq!(grant.max_cost_micros, 1_000);
     db.settle_model_call(&ModelCallUsage {
         reservation_id: grant.reservation_id,
         input_tokens: 40,
@@ -3564,6 +3569,184 @@ async fn model_call_scope_and_global_budgets_are_enforced() {
         db.authorize_model_call(&global_second).await,
         Err(Error::Forbidden(_))
     ));
+    db.close().await;
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn model_call_policy_near_i64_max_is_clamped_to_the_technical_ceiling() {
+    let (path, db) = temp_db("factory-model-call-ceiling").await;
+    let scope = "evaluation-ceiling";
+    db.admit_test_subscription_dispatch(scope).await.unwrap();
+    let input = model_call_input(
+        &"7".repeat(64),
+        scope,
+        100,
+        0,
+        500,
+        model_call_policy(u64::MAX, u64::MAX, u64::MAX),
+    );
+    let ModelCallDecision::Reserved(grant) = db.authorize_model_call(&input).await.unwrap() else {
+        panic!("expected a reservation");
+    };
+    assert_eq!(
+        grant.max_input_tokens,
+        crate::execution_policy::SAFE_MAX_MODEL_CALL_INPUT_TOKENS
+    );
+    assert_eq!(
+        grant.max_output_tokens,
+        crate::execution_policy::SAFE_MAX_MODEL_CALL_OUTPUT_TOKENS
+    );
+    assert_eq!(
+        grant.max_total_tokens,
+        crate::execution_policy::SAFE_MAX_MODEL_CALL_TOTAL_TOKENS
+    );
+    assert_eq!(
+        grant.max_cost_micros,
+        crate::execution_policy::SAFE_MAX_MODEL_CALL_COST_MICROS
+    );
+    let events = db.events().await.unwrap();
+    assert!(
+        events.iter().any(|event| {
+            event.kind == "model.call_authorized" && event.detail.contains("capped=true")
+        }),
+        "a clamped policy must leave bounded evidence in the event ledger"
+    );
+    db.close().await;
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn many_model_call_reservations_and_legacy_rows_do_not_overflow_accounting() {
+    let (path, db) = temp_db("factory-model-call-overflow").await;
+    insert_project(&db, "evaluation", "/fixture", "base").await;
+    let now = Utc::now().to_rfc3339();
+    let now_ms = Utc::now().timestamp_millis();
+    // A subscription-bound Campaign has no cumulative monetary envelope, so
+    // eight reservations can legitimately be in flight at once. That is the
+    // shape that used to overflow SUM(max_cost_micros).
+    sqlx::query::query(
+        "INSERT INTO actions
+         (id,project_id,objective,provider,model,risk,status,objective_sha256,created_at)
+         VALUES ('action-overflow','evaluation','objective','opencode-go',
+                 'deepseek-v4.1-flash','R0','AUTHORIZED','hash',?1)",
+    )
+    .bind(&now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query::query(
+        "INSERT INTO campaigns(id,action_id,status,created_at)
+         VALUES ('campaign-overflow','action-overflow','AUTHORIZED',?1)",
+    )
+    .bind(&now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query::query("INSERT INTO runs VALUES ('run-overflow','campaign-overflow','QUEUED',?1)")
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    sqlx::query::query(
+        "INSERT INTO attempts(id,run_id,status,created_at)
+         VALUES ('attempt-overflow','run-overflow','ACCEPTED',?1)",
+    )
+    .bind(&now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query::query(
+        "INSERT INTO candidates
+         (id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at)
+         VALUES ('candidate-overflow','attempt-overflow','hash','commit','tree','worker',?1)",
+    )
+    .bind(&now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query::query(
+        "INSERT INTO inference_campaign_modes
+         (campaign_id,mode,classified_at_ms,evidence_sha256)
+         VALUES ('campaign-overflow','SUBSCRIPTION',?1,?2)",
+    )
+    .bind(now_ms)
+    .bind("e".repeat(64))
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    db.admit_test_subscription_dispatch("campaign-overflow")
+        .await
+        .unwrap();
+    let scope = "candidate-overflow";
+    let policy = model_call_policy(u64::MAX, u64::MAX, u64::MAX);
+    for index in 0..8u64 {
+        let mut input =
+            model_call_input(&format!("{:064x}", index + 1), scope, 100, 50, 500, policy);
+        input.global_policy = Some(policy);
+        let ModelCallDecision::Reserved(grant) = db.authorize_model_call(&input).await.unwrap()
+        else {
+            panic!("expected reservation {index}");
+        };
+        assert_eq!(
+            grant.max_cost_micros,
+            crate::execution_policy::SAFE_MAX_MODEL_CALL_COST_MICROS
+        );
+    }
+    let records = db.model_calls_for_scope(scope).await.unwrap();
+    assert_eq!(records.len(), 8);
+
+    // The semantic reviewer uses the same reservation path and ceiling as every
+    // other role.
+    let mut reviewer = model_call_input(&format!("{:064x}", 900), scope, 100, 50, 500, policy);
+    reviewer.role = ModelCallRole::SemanticReviewer;
+    reviewer.principal_id = "reviewer".into();
+    reviewer.purpose = "semantic_review".into();
+    reviewer.global_policy = Some(policy);
+    let ModelCallDecision::Reserved(grant) = db.authorize_model_call(&reviewer).await.unwrap()
+    else {
+        panic!("expected a reviewer reservation");
+    };
+    assert_eq!(
+        grant.max_cost_micros,
+        crate::execution_policy::SAFE_MAX_MODEL_CALL_COST_MICROS
+    );
+    assert_eq!(db.model_calls_for_scope(scope).await.unwrap().len(), 9);
+
+    // A pre-repair ledger may already contain reservations near i64::MAX / 4.
+    // Their sum exceeds SQLite's signed INTEGER range, but the projection must
+    // stay finite and fail closed instead of raising a database error.
+    let legacy_cost = i64::MAX as u64 / 4;
+    for index in 0..5u64 {
+        sqlx::query::query(
+            "INSERT INTO model_call_reservations
+             (reservation_id,role,principal_id,project_id,objective_id,scope_id,provider,model,
+              purpose,request_sha256,max_input_tokens,max_output_tokens,max_total_tokens,
+              max_cost_micros,state,expires_at_ms,created_at,updated_at)
+             VALUES (?1,'EVALUATION','evaluator','evaluation',?2,?2,'opencode-go',
+                     'deepseek-v4.1-flash','evaluation',?3,100,100,200,?4,'AMBIGUOUS',?5,?6,?6)",
+        )
+        .bind(format!("legacy-{index}"))
+        .bind(scope)
+        .bind(format!("{:064x}", 100 + index))
+        .bind(i64::try_from(legacy_cost).unwrap())
+        .bind(i64::MAX - 1)
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    }
+    let (count, bound) = db.unresolved_model_call_budget().await.unwrap();
+    assert_eq!(count, 5);
+    assert_eq!(bound, legacy_cost * 5);
+    let latest = model_call_input(&format!("{:064x}", 999), scope, 100, 50, 500, policy);
+    assert!(
+        matches!(
+            db.authorize_model_call(&latest).await,
+            Ok(ModelCallDecision::Reserved(_))
+        ),
+        "legacy large reservations must not break a subscription authorization"
+    );
     db.close().await;
     let _ = std::fs::remove_file(path);
 }

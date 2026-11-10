@@ -248,6 +248,13 @@ Every long-lived task has:
 - Idempotency keys bind the operation and a canonical payload digest. Same payload returns the recorded result; different payload or operation is a conflict.
 - Enforce uniqueness, foreign keys, checks and immutability in the database as well as in domain validation.
 - Use checked arithmetic for generations, counters and budgets; reject overflow.
+- Bound every durable reservation by a documented technical ceiling that leaves
+  ample headroom for the number of rows a sum may include. Do not persist
+  `i64::MAX`-scale sentinels: a handful of such rows overflows SQLite `SUM()`.
+  Aggregate legacy ledgers with per-row checked `u128` arithmetic, and treat a
+  total beyond `u64` as exhausted rather than wrapping. A technical ceiling is
+  not a productivity or spending cap; a lower policy budget remains
+  authoritative and is never raised by the ceiling.
 - Test fresh migrations, repeated startup, legacy adoption, rollback under injected failure, referential integrity, concurrent claims, fencing, restart recovery and non-blocking async behavior.
 
 ### 11.4 Error classification

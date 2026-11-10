@@ -389,20 +389,19 @@ impl Database {
             };
             // The frozen quote is monetary evidence, not a token/productivity
             // ceiling. V2 records actual usage; the shared ledger enforces the
-            // operator's monetary envelope.
-            let uncapped = i64::try_from(crate::execution_policy::UNCAPPED_TOKENS)
-                .map_err(|_| Error::Invalid("uncapped provider turn budget"))?;
+            // operator's monetary envelope. The legacy columns still need
+            // finite technical bounds so their signed-integer sums stay safe.
+            let (safe_input, safe_output, safe_total) = provider_turn_safe_token_bounds()?;
             let _ = quote;
-            (uncapped, uncapped, uncapped, 0, 0, 0, 0, 0, 0, 0, 0)
+            (safe_input, safe_output, safe_total, 0, 0, 0, 0, 0, 0, 0, 0)
         } else if subscription {
             // A subscription turn has no billable monetary envelope and no
             // productivity token/time cap. The legacy reservation columns
-            // hold finite sentinels so SQLite remains valid; no executor
-            // treats them as a ceiling. Observed usage and latency are
+            // hold finite technical ceilings so SQLite remains valid; no
+            // executor treats them as a ceiling. Observed usage and latency are
             // telemetry, and progress supervision is the only automatic brake.
-            let uncapped = i64::try_from(crate::execution_policy::UNCAPPED_TOKENS)
-                .map_err(|_| Error::Invalid("uncapped token sentinel"))?;
-            (uncapped, uncapped, uncapped, 0, 0, 0, 0, 0, 0, 0, 0)
+            let (safe_input, safe_output, safe_total) = provider_turn_safe_token_bounds()?;
+            (safe_input, safe_output, safe_total, 0, 0, 0, 0, 0, 0, 0, 0)
         } else if authorization_version == 1 {
             let max_input: Option<i64> = lease.try_get("max_input_tokens")?;
             let max_output: Option<i64> = lease.try_get("max_output_tokens")?;
@@ -468,7 +467,7 @@ impl Database {
             .saturating_sub(used_cost)
             .saturating_sub(reserved_cost);
         let requested_output = if subscription {
-            i64::try_from(crate::execution_policy::UNCAPPED_TOKENS)
+            i64::try_from(crate::execution_policy::SAFE_MAX_MODEL_CALL_OUTPUT_TOKENS)
                 .map_err(|_| Error::Invalid("uncapped provider turn output"))?
         } else if requested_output_tokens == 0 {
             // A billable or legacy turn still has a monetary envelope. Use
@@ -1742,6 +1741,20 @@ impl Database {
 
 fn nullable(value: &str) -> Option<&str> {
     (!value.trim().is_empty()).then_some(value)
+}
+
+/// Technical token ceilings for a subscription/ledger-bound provider turn.
+/// These keep the legacy signed-integer reservation columns and their sums
+/// finite; they are not productivity limits and are never enforced as such.
+fn provider_turn_safe_token_bounds() -> Result<(i64, i64, i64), Error> {
+    Ok((
+        i64::try_from(crate::execution_policy::SAFE_MAX_MODEL_CALL_INPUT_TOKENS)
+            .map_err(|_| Error::Invalid("safe provider turn input bound"))?,
+        i64::try_from(crate::execution_policy::SAFE_MAX_MODEL_CALL_OUTPUT_TOKENS)
+            .map_err(|_| Error::Invalid("safe provider turn output bound"))?,
+        i64::try_from(crate::execution_policy::SAFE_MAX_MODEL_CALL_TOTAL_TOKENS)
+            .map_err(|_| Error::Invalid("safe provider turn total bound"))?,
+    ))
 }
 
 async fn load_provider_session(

@@ -7426,7 +7426,7 @@ async fn build_overview(app: &App) -> Result<serde_json::Value, Error> {
         .filter(|session| !session.usage_known)
         .map(|session| session.cost_micros)
         .sum::<u64>()
-        + unresolved_model_bound;
+        .saturating_add(unresolved_model_bound);
     let measured_session_cost: u64 = sessions
         .iter()
         .filter(|session| session.usage_known)

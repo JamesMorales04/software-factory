@@ -201,7 +201,8 @@ impl ModelGateway {
             ]
         });
         if request.max_output_tokens > 0
-            && request.max_output_tokens < crate::execution_policy::UNCAPPED_TOKENS
+            && request.max_output_tokens
+                < crate::execution_policy::SAFE_MAX_MODEL_CALL_OUTPUT_TOKENS
         {
             body["max_tokens"] = serde_json::Value::from(request.max_output_tokens);
         }

@@ -276,16 +276,16 @@ impl<'a> RoleGatewayFactory<'a> {
         // output policy. Legacy V1 billable routes keep their own path.
         let _ = core_policy;
         let policy = ModelCallPolicy {
-            max_input_tokens: crate::execution_policy::UNCAPPED_TOKENS,
+            max_input_tokens: crate::execution_policy::SAFE_MAX_MODEL_CALL_INPUT_TOKENS,
             max_output_tokens: operations
                 .map(|limits| u64::from(limits.max_generation_tokens.get()))
-                .unwrap_or(crate::execution_policy::UNCAPPED_TOKENS),
-            max_cost_micros: crate::execution_policy::UNCAPPED_COST_MICROS,
+                .unwrap_or(crate::execution_policy::SAFE_MAX_MODEL_CALL_OUTPUT_TOKENS),
+            max_cost_micros: crate::execution_policy::SAFE_MAX_MODEL_CALL_COST_MICROS,
         };
         let global_policy = ModelCallPolicy {
-            max_input_tokens: crate::execution_policy::UNCAPPED_TOKENS,
-            max_output_tokens: crate::execution_policy::UNCAPPED_TOKENS,
-            max_cost_micros: crate::execution_policy::UNCAPPED_COST_MICROS,
+            max_input_tokens: crate::execution_policy::SAFE_MAX_MODEL_CALL_INPUT_TOKENS,
+            max_output_tokens: crate::execution_policy::SAFE_MAX_MODEL_CALL_OUTPUT_TOKENS,
+            max_cost_micros: crate::execution_policy::SAFE_MAX_MODEL_CALL_COST_MICROS,
         };
         let config = ModelGatewayConfig {
             base_url: settings.base_url.clone(),
@@ -622,11 +622,11 @@ mod integration_tests {
         );
         assert_eq!(
             lead.role_policy(ModelCallRole::Lead).max_input_tokens,
-            crate::execution_policy::UNCAPPED_TOKENS
+            crate::execution_policy::SAFE_MAX_MODEL_CALL_INPUT_TOKENS
         );
         assert_eq!(
             lead.role_policy(ModelCallRole::Lead).max_cost_micros,
-            crate::execution_policy::UNCAPPED_COST_MICROS
+            crate::execution_policy::SAFE_MAX_MODEL_CALL_COST_MICROS
         );
         // The selected credential is exactly the one stored for this provider.
         let lead_settings = db.provider_settings("opencode-go").await.unwrap();
