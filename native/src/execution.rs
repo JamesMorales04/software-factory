@@ -40,6 +40,7 @@ const MAX_STATE_RECORDS: usize = 4096;
 const STATE_PREFIX: &str = "workspace-";
 const VOLUME_PREFIX: &str = "factory-ws-";
 const CONTAINER_PREFIX: &str = "factory-exec-";
+const DEPENDENCY_CONTAINER_PREFIX: &str = "factory-deps-";
 
 #[derive(Debug, thiserror::Error)]
 pub enum ExecutionError {
@@ -53,6 +54,8 @@ pub enum ExecutionError {
     Workspace(#[from] WorkspaceError),
     #[error("workspace volume operation failed: {0}")]
     Volume(String),
+    #[error("dependency acquisition failed: {0}")]
+    Dependency(String),
     #[error("sandbox operation failed: {0}")]
     Sandbox(#[from] SandboxError),
     #[error("workspace already has a different identity")]
@@ -250,6 +253,14 @@ pub trait VolumeBackend: Send + Sync {
         argv: &[String],
         timeout: Duration,
     ) -> impl std::future::Future<Output = Result<BoundedOutput, ExecutionError>> + Send;
+    fn acquire_dependencies(
+        &self,
+        volume: &str,
+        container: &str,
+        request: &crate::dependency_service::DependencyAcquireRequest,
+    ) -> impl std::future::Future<
+        Output = Result<crate::dependency_service::DependencyAcquireReceipt, ExecutionError>,
+    > + Send;
     fn remove_container(
         &self,
         name: &str,
@@ -578,6 +589,35 @@ impl VolumeBackend for BrokerVolumes {
         Ok(crate::runtime_broker::run_result(result))
     }
 
+    async fn acquire_dependencies(
+        &self,
+        volume: &str,
+        container: &str,
+        request: &crate::dependency_service::DependencyAcquireRequest,
+    ) -> Result<crate::dependency_service::DependencyAcquireReceipt, ExecutionError> {
+        validate_volume_name(volume)?;
+        validate_container_name(container)?;
+        if !container.starts_with(DEPENDENCY_CONTAINER_PREFIX) {
+            return Err(ExecutionError::Invalid(
+                "dependency acquisition requires a dependency container identity".into(),
+            ));
+        }
+        let wire = crate::dependency_service::DependencyAcquireWireRequest {
+            volume: volume.to_owned(),
+            container: container.to_owned(),
+            workdir: request.workdir.clone(),
+            lockfile_path: request.lockfile_path.clone(),
+            lockfile_sha256: request.lockfile_sha256.clone(),
+            vendor_path: request.vendor_path.clone(),
+            registry: request.registry.clone(),
+            timeout_secs: request.timeout_secs,
+        };
+        self.client
+            .acquire_dependencies(&wire)
+            .await
+            .map_err(|error| ExecutionError::Dependency(error.to_string()))
+    }
+
     async fn remove_container(&self, name: &str) -> Result<(), ExecutionError> {
         validate_container_name(name)?;
         self.client
@@ -807,6 +847,20 @@ impl VolumeBackend for RootlessPodmanVolumes {
         })
     }
 
+    async fn acquire_dependencies(
+        &self,
+        _volume: &str,
+        _container: &str,
+        _request: &crate::dependency_service::DependencyAcquireRequest,
+    ) -> Result<crate::dependency_service::DependencyAcquireReceipt, ExecutionError> {
+        // Host-only development must not acquire dependencies outside the
+        // runtime broker. The installed product fails closed rather than
+        // falling back to a host Cargo/network path.
+        Err(ExecutionError::Dependency(
+            "dependency acquisition requires the runtime broker".into(),
+        ))
+    }
+
     async fn remove_container(&self, name: &str) -> Result<(), ExecutionError> {
         validate_container_name(name)?;
         if let Some(labels) = self.container_labels(name).await? {
@@ -883,6 +937,8 @@ pub struct WorkspaceManager<B: VolumeBackend> {
     project_roots: Vec<PathBuf>,
     backend: B,
     lock: Arc<tokio::sync::Mutex<()>>,
+    operation_locks:
+        Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
     active: Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
     cancelled: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
 }
@@ -916,6 +972,7 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
             project_roots,
             backend,
             lock: Arc::new(tokio::sync::Mutex::new(())),
+            operation_locks: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             active: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             cancelled: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
         })
@@ -1154,6 +1211,169 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
             workspace: record.handle(),
             confinement: confinement(&input.image),
         })
+    }
+
+    /// Acquire dependencies for an allocated workspace through the trusted
+    /// backend. The host worktree and the workspace volume are reconciled in
+    /// both directions so the vendor tree and evidence survive the next check
+    /// snapshot. The broker remains the only network-enabled step; the check
+    /// container stays offline.
+    ///
+    /// A per-workspace lock serializes acquisition for one workspace while the
+    /// global state lock is held only for short record transitions. The record
+    /// state is revalidated after every external call, so a concurrent
+    /// cancellation or reconciliation cannot publish a stale result.
+    pub async fn acquire_dependencies(
+        &self,
+        workspace_id: &str,
+        input: &crate::dependency_service::DependencyAcquireRequest,
+    ) -> Result<crate::dependency_service::DependencyAcquireReceipt, ExecutionError> {
+        validate_workspace_id(workspace_id)?;
+        crate::dependency_service::validate_request_shape(input)
+            .map_err(ExecutionError::Invalid)?;
+        let operation_lock = {
+            let mut locks = self.operation_locks.lock().unwrap();
+            locks
+                .entry(workspace_id.to_owned())
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                .clone()
+        };
+        let _operation = operation_lock.lock().await;
+        let container = format!("{DEPENDENCY_CONTAINER_PREFIX}{}", Uuid::new_v4());
+        let (workspace, volume) = {
+            let _write = self.lock.lock().await;
+            if self.cancelled.lock().unwrap().remove(workspace_id) {
+                return Err(ExecutionError::Conflict);
+            }
+            let mut record = self.find_by_id(workspace_id)?;
+            if record.status != WorkspaceStatus::Allocated {
+                return Err(ExecutionError::Conflict);
+            }
+            let workspace = self.open_existing(&record)?;
+            workspace.verify_identity((record.worktree_device, record.worktree_inode))?;
+            record.status = WorkspaceStatus::Running;
+            record.container = Some(container.clone());
+            record.updated_at_ms = now_ms();
+            self.write_record(&record)?;
+            (workspace, record.volume)
+        };
+        self.active
+            .lock()
+            .unwrap()
+            .insert(workspace_id.to_owned(), container.clone());
+        let result: Result<
+            (crate::dependency_service::DependencyAcquireReceipt, Vec<u8>),
+            ExecutionError,
+        > = async {
+            let snapshot = tokio::task::spawn_blocking({
+                let path = workspace.path().to_owned();
+                move || workspace_archive::snapshot(&path)
+            })
+            .await
+            .map_err(|error| ExecutionError::Invalid(format!("snapshot task: {error}")))??;
+            self.backend.import_volume(&volume, &snapshot.bytes).await?;
+            let receipt = self
+                .backend
+                .acquire_dependencies(&volume, &container, input)
+                .await?;
+            let exported = self.backend.export_volume(&volume).await?;
+            Ok((receipt, exported))
+        }
+        .await;
+        self.active.lock().unwrap().remove(workspace_id);
+        let _ = self.backend.remove_container(&container).await;
+        if self.cancelled.lock().unwrap().remove(workspace_id) {
+            self.fail_dependency_acquisition(
+                workspace_id,
+                &container,
+                "dependency acquisition was cancelled",
+            )
+            .await;
+            return Err(ExecutionError::Conflict);
+        }
+        let (receipt, exported) = match result {
+            Ok(value) => value,
+            Err(error) => {
+                self.fail_dependency_acquisition(workspace_id, &container, &error.to_string())
+                    .await;
+                return Err(error);
+            }
+        };
+        {
+            let _write = self.lock.lock().await;
+            let record = self.find_by_id(workspace_id)?;
+            if record.status != WorkspaceStatus::Running
+                || record.container.as_deref() != Some(container.as_str())
+            {
+                return Err(ExecutionError::Conflict);
+            }
+        }
+        let staging = self
+            .workspace_root
+            .join(format!("stage-{}", Uuid::new_v4()));
+        let extracted = tokio::task::spawn_blocking({
+            let bytes = exported;
+            let staging = staging.clone();
+            move || workspace_archive::extract(&bytes, &staging)
+        })
+        .await
+        .map_err(|error| ExecutionError::Invalid(format!("extract task: {error}")))?;
+        if let Err(error) = extracted {
+            self.fail_dependency_acquisition(workspace_id, &container, &error.to_string())
+                .await;
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(ExecutionError::Archive(error));
+        }
+        let _write = self.lock.lock().await;
+        if self.cancelled.lock().unwrap().remove(workspace_id) {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(ExecutionError::Conflict);
+        }
+        let mut record = self.find_by_id(workspace_id)?;
+        if record.status != WorkspaceStatus::Running
+            || record.container.as_deref() != Some(container.as_str())
+        {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(ExecutionError::Conflict);
+        }
+        let workspace = self.open_existing(&record)?;
+        if let Err(error) = workspace
+            .verify_identity((record.worktree_device, record.worktree_inode))
+            .and_then(|()| workspace.replace_contents(&staging))
+            .and_then(|()| {
+                workspace.verify_identity((record.worktree_device, record.worktree_inode))
+            })
+        {
+            record.status = WorkspaceStatus::Allocated;
+            record.container = None;
+            record.error = Some(error.to_string());
+            record.updated_at_ms = now_ms();
+            let _ = self.write_record(&record);
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(ExecutionError::Workspace(error));
+        }
+        record.status = WorkspaceStatus::Allocated;
+        record.container = None;
+        record.error = None;
+        record.updated_at_ms = now_ms();
+        self.write_record(&record)?;
+        Ok(receipt)
+    }
+
+    async fn fail_dependency_acquisition(&self, workspace_id: &str, container: &str, error: &str) {
+        let _write = self.lock.lock().await;
+        let Ok(mut record) = self.find_by_id(workspace_id) else {
+            return;
+        };
+        if record.status == WorkspaceStatus::Running
+            && record.container.as_deref() == Some(container)
+        {
+            record.status = WorkspaceStatus::Allocated;
+            record.container = None;
+            record.error = Some(error.to_owned());
+            record.updated_at_ms = now_ms();
+            let _ = self.write_record(&record);
+        }
     }
 
     /// Restore workspace paths outside the verified allowed scope after a
@@ -1869,7 +2089,9 @@ fn validate_volume_name(value: &str) -> Result<(), ExecutionError> {
 }
 
 fn validate_container_name(value: &str) -> Result<(), ExecutionError> {
-    if runtime_broker::is_valid_exec_container_name(value) {
+    if runtime_broker::is_valid_exec_container_name(value)
+        || runtime_broker::is_valid_dependency_container_name(value)
+    {
         Ok(())
     } else {
         Err(ExecutionError::Invalid(
@@ -1958,6 +2180,7 @@ mod tests {
         inventory: Mutex<InventoryMode>,
         corrupt_export: Mutex<bool>,
         owner: ResourceOwner,
+        dependency_barrier: Option<Arc<tokio::sync::Barrier>>,
     }
 
     impl LocalBackend {
@@ -1971,6 +2194,20 @@ mod tests {
                 inventory: Mutex::new(InventoryMode::Supported),
                 corrupt_export: Mutex::new(false),
                 owner: ResourceOwner::Supervisor,
+                dependency_barrier: None,
+            }
+        }
+        fn with_dependency_barrier(root: PathBuf, barrier: Arc<tokio::sync::Barrier>) -> Self {
+            Self {
+                volumes: Mutex::new(HashMap::new()),
+                volume_meta: Mutex::new(HashMap::new()),
+                containers: Mutex::new(HashMap::new()),
+                root: Mutex::new(Some(root)),
+                children: Arc::new(Mutex::new(HashMap::new())),
+                inventory: Mutex::new(InventoryMode::Supported),
+                corrupt_export: Mutex::new(false),
+                owner: ResourceOwner::Supervisor,
+                dependency_barrier: Some(barrier),
             }
         }
         fn volume_path(&self, name: &str) -> Result<PathBuf, ExecutionError> {
@@ -2168,7 +2405,6 @@ mod tests {
             }
             Ok(())
         }
-
         async fn list_managed(&self) -> Result<Option<ManagedResources>, ExecutionError> {
             match *self.inventory.lock().unwrap() {
                 InventoryMode::Supported => {}
@@ -2188,6 +2424,65 @@ mod tests {
                 volumes,
                 containers,
             }))
+        }
+
+        async fn acquire_dependencies(
+            &self,
+            volume: &str,
+            _container: &str,
+            request: &crate::dependency_service::DependencyAcquireRequest,
+        ) -> Result<crate::dependency_service::DependencyAcquireReceipt, ExecutionError> {
+            use sha2::{Digest, Sha256};
+            if let Some(barrier) = &self.dependency_barrier {
+                barrier.wait().await;
+            }
+            let path = self.volume_path(volume)?;
+            let vendor = path.join(&request.vendor_path);
+            let evidence = vendor.join(crate::dependency_broker::EVIDENCE_DIR);
+            fs::create_dir_all(&evidence)?;
+            fs::write(vendor.join("vendor.txt"), "vendored")?;
+            for (name, body) in [
+                (crate::dependency_broker::SBOM_FILE, b"sbom".as_slice()),
+                (
+                    crate::dependency_broker::LICENSE_FILE,
+                    b"licenses".as_slice(),
+                ),
+                (
+                    crate::dependency_broker::ADVISORY_FILE,
+                    b"advisories".as_slice(),
+                ),
+            ] {
+                fs::write(evidence.join(name), body)?;
+            }
+            let hex = |bytes: &[u8]| format!("{:x}", Sha256::digest(bytes));
+            Ok(crate::dependency_service::DependencyAcquireReceipt {
+                image: "test/dependency:1".into(),
+                lockfile_sha256: request.lockfile_sha256.clone(),
+                vendor_sha256: hex(b"vendor"),
+                vendor_entries: 2,
+                sbom_path: format!(
+                    "{}/{}/{}",
+                    request.vendor_path,
+                    crate::dependency_broker::EVIDENCE_DIR,
+                    crate::dependency_broker::SBOM_FILE
+                ),
+                sbom_sha256: hex(b"sbom"),
+                license_path: format!(
+                    "{}/{}/{}",
+                    request.vendor_path,
+                    crate::dependency_broker::EVIDENCE_DIR,
+                    crate::dependency_broker::LICENSE_FILE
+                ),
+                license_sha256: hex(b"licenses"),
+                advisory_path: format!(
+                    "{}/{}/{}",
+                    request.vendor_path,
+                    crate::dependency_broker::EVIDENCE_DIR,
+                    crate::dependency_broker::ADVISORY_FILE
+                ),
+                advisory_sha256: hex(b"advisories"),
+                staging_cleaned: true,
+            })
         }
     }
 
@@ -3213,5 +3508,96 @@ mod tests {
         assert!(!args.iter().any(|arg| arg == "--privileged"
             || arg == "--network=host"
             || arg.contains("podman.sock")));
+    }
+
+    #[tokio::test]
+    async fn dependency_acquisition_does_not_serialize_other_workspaces() {
+        let root = std::env::temp_dir().join(format!(
+            "factory-execution-deps-concurrency-{}",
+            Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let repository = root.join("repo");
+        fs::create_dir(&repository).unwrap();
+        git_test(&repository, &["init", "-q"]);
+        git_test(
+            &repository,
+            &["config", "user.email", "test@example.invalid"],
+        );
+        git_test(&repository, &["config", "user.name", "Test"]);
+        fs::write(repository.join("seed.txt"), "base\n").unwrap();
+        git_test(&repository, &["add", "seed.txt"]);
+        git_test(&repository, &["commit", "-qm", "base"]);
+        let base = String::from_utf8(
+            StdCommand::new("git")
+                .args(["-C", repository.to_str().unwrap(), "rev-parse", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_owned();
+        let volume_root = root.join("volumes");
+        fs::create_dir(&volume_root).unwrap();
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let manager = Arc::new(
+            WorkspaceManager::new(
+                root.join("work"),
+                root.join("state"),
+                [repository.clone()],
+                LocalBackend::with_dependency_barrier(volume_root, barrier),
+            )
+            .unwrap(),
+        );
+        let mut handles = Vec::new();
+        for attempt in ["attempt-a", "attempt-b"] {
+            handles.push(
+                manager
+                    .allocate(&WorkspaceAllocation {
+                        attempt_id: attempt.into(),
+                        repository: repository.to_string_lossy().into_owned(),
+                        base_commit: base.clone(),
+                        generation: 1,
+                        action_spec_sha256: "a".repeat(64),
+                        attempt_grant: String::new(),
+                    })
+                    .await
+                    .unwrap(),
+            );
+        }
+        let request = crate::dependency_service::DependencyAcquireRequest {
+            workdir: ".".into(),
+            lockfile_path: "Cargo.lock".into(),
+            lockfile_sha256: "a".repeat(64),
+            vendor_path: "vendor".into(),
+            registry: "sparse+https://index.crates.io/".into(),
+            timeout_secs: 60,
+        };
+        let first = tokio::spawn({
+            let manager = manager.clone();
+            let workspace = handles[0].workspace_id.clone();
+            let request = request.clone();
+            async move { manager.acquire_dependencies(&workspace, &request).await }
+        });
+        let second = tokio::spawn({
+            let manager = manager.clone();
+            let workspace = handles[1].workspace_id.clone();
+            let request = request.clone();
+            async move { manager.acquire_dependencies(&workspace, &request).await }
+        });
+        let (first, second) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(first, second)
+        })
+        .await
+        .expect("both dependency acquisitions should reach the backend concurrently");
+        assert!(first.unwrap().is_ok());
+        assert!(second.unwrap().is_ok());
+        for handle in &handles {
+            let worktree = manager.status(&handle.workspace_id).unwrap();
+            assert_eq!(worktree.status, WorkspaceStatus::Allocated);
+        }
+        drop(manager);
+        let _ = fs::remove_dir_all(root);
     }
 }

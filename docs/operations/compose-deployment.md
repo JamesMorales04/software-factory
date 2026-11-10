@@ -102,6 +102,36 @@ provider in one shared builder stage. A cold build is several minutes; later
 builds reuse the cache. The provider image contains pinned OpenCode/Codex
 executables and Node, so its bundle is large (about 1.5 GiB on the tested host).
 
+## Dependency acquisition
+
+The `dependency` target is a separate credential-free Rust acquisition image.
+`dependency-bundle` exports its rootfs to the shared image-bundle volume and the
+runtime entrypoint waits for the bundle marker before starting the broker. The
+broker imports it into the dedicated engine, pins the imported image ID and
+re-verifies that exact ID before every acquisition. It exposes only
+`POST /v1/dependencies/acquire`.
+
+Acquisition runs on a dedicated internal Podman network with no external route.
+The runtime broker runs a deny-by-default HTTPS CONNECT proxy on that network's
+gateway; the acquisition container receives only the proxy URL and can reach no
+other destination. Cargo's `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY` and
+`CARGO_HTTP_PROXY` are fixed to the proxy, and the proxy allows only the
+configured crates.io/GitHub hosts (`FACTORY_RUNTIME_DEPENDENCY_EGRESS_ALLOW`).
+Direct egress and non-allowlisted CONNECT destinations are refused; broker
+startup fails closed if the network or proxy cannot be established. An existing
+`factory-deps-egress` network is accepted only when it is still marked
+`internal` and carries the `io.software-factory.managed=true` label; a
+non-internal or unmanaged network is refused.
+
+The planning route attaches a frozen dependency plan to the ActionSpec before
+plan review and Campaign authorization; the spec is immutable after Campaign
+start. Core and the Worker refuse dependency-requiring work when the plan is
+missing. The Worker acquires after provider writes and before offline
+checks/finalization. A failed acquisition, a missing plan or invalid evidence
+blocks the candidate and is persisted as a terminal blocker reason.
+Vendor-cache plans are enforced by the offline checks. The check container
+remains `--network=none` and `--offline`.
+
 ## OpenSpec validation job (profile-gated)
 
 The pinned OpenSpec CLI is not a host dependency. A one-shot Compose service

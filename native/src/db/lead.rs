@@ -3068,6 +3068,8 @@ fn derive_root_action_spec(
         model: grant.route.model.clone(),
         allowed_paths,
         checks,
+        dependency_plan: None,
+        dependencies_required: false,
     })
 }
 
@@ -3330,6 +3332,8 @@ fn unit_action_spec(
         model: grant.route.model.clone(),
         allowed_paths: unit.allowed_paths.clone(),
         checks,
+        dependency_plan: None,
+        dependencies_required: false,
     })
 }
 
@@ -3809,6 +3813,8 @@ async fn ensure_integration(
         model: grant.route.model.clone(),
         allowed_paths: allowed_paths.into_iter().collect(),
         checks,
+        dependency_plan: None,
+        dependencies_required: false,
     };
     let spec_json = serde_json::to_string(&spec)
         .map_err(|_| Error::Invalid("integration ActionSpec encoding"))?;
@@ -5246,6 +5252,7 @@ mod tests {
                 ActionSpecInput {
                     allowed_paths: &allowed,
                     checks: &checks,
+                    dependency_plan: None,
                 },
             )
             .await
@@ -5432,6 +5439,8 @@ mod tests {
             model: grant.route.model.clone(),
             allowed_paths: config.allowed_paths.clone(),
             checks: acceptance.into_iter().chain(negative).collect(),
+            dependency_plan: None,
+            dependencies_required: false,
         };
         let binding = ActionBinding {
             id: request.action_id.clone(),
@@ -5694,6 +5703,7 @@ mod tests {
                 ActionSpecInput {
                     allowed_paths: &["src".to_string()],
                     checks: &checks,
+                    dependency_plan: None,
                 },
             )
             .await
@@ -5811,6 +5821,7 @@ mod tests {
                 ActionSpecInput {
                     allowed_paths: &["src".to_string()],
                     checks: &checks,
+                    dependency_plan: None,
                 },
             )
             .await
@@ -5966,6 +5977,7 @@ mod tests {
                 ActionSpecInput {
                     allowed_paths: &["src".to_string()],
                     checks: &checks,
+                    dependency_plan: None,
                 },
             )
             .await
@@ -6793,6 +6805,7 @@ mod tests {
                 ActionSpecInput {
                     allowed_paths: &["src".to_string()],
                     checks: &[],
+                    dependency_plan: None,
                 },
             )
             .await
@@ -8106,6 +8119,7 @@ mod tests {
                 crate::db::ActionSpecInput {
                     allowed_paths: &allowed_paths,
                     checks: &checks,
+                    dependency_plan: None,
                 },
             )
             .await
@@ -8325,6 +8339,7 @@ mod tests {
                 receipt_id: "progress-blocked-receipt".into(),
                 result_sha256: sha256_hex(b"blocked"),
                 terminal_status: "BLOCKED".into(),
+                reason: "blocked".into(),
             },
             now_ms,
         )

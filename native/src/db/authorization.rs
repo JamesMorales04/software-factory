@@ -544,6 +544,7 @@ pub(super) async fn authorize_campaign_in_tx(
     let (_, spec_json) = spec.ok_or(Error::Conflict("campaign action has no frozen spec"))?;
     let action_spec: ActionSpec = serde_json::from_str(&spec_json)
         .map_err(|_| Error::Invalid("stored ActionSpec encoding"))?;
+    super::validate_dependency_requirement(&action_spec)?;
     if action_spec.allowed_paths.is_empty() {
         return Err(Error::Forbidden(
             "campaign action has no frozen allowed-path scope".into(),
@@ -994,6 +995,8 @@ mod tests {
                 expect_exit: 0,
                 timeout_secs: 60,
             }],
+            dependency_plan: None,
+            dependencies_required: false,
         };
         let _action = db
             .create_action_with_spec(
@@ -1005,6 +1008,7 @@ mod tests {
                 ActionSpecInput {
                     allowed_paths: &spec.allowed_paths,
                     checks: &spec.checks,
+                    dependency_plan: None,
                 },
             )
             .await
@@ -1094,6 +1098,41 @@ mod tests {
             progress: progress(),
             operations: operations(),
         }
+    }
+
+    #[tokio::test]
+    async fn authorization_refuses_a_dependency_requirement_without_a_plan() {
+        let (path, db, _grant) = fixture().await;
+        let (action_id, spec_json): (String, String) =
+            sqlx::query_as::query_as("SELECT action_id,spec_json FROM action_specs LIMIT 1")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        let mut spec: ActionSpec = serde_json::from_str(&spec_json).unwrap();
+        spec.dependencies_required = true;
+        spec.dependency_plan = None;
+        let spec_json = serde_json::to_string(&spec).unwrap();
+        let spec_sha256 = crate::device_session::sha256_hex(&spec_json);
+        sqlx::query::query(
+            "UPDATE action_specs SET spec_json=?1,spec_sha256=?2 WHERE action_id=?3",
+        )
+        .bind(&spec_json)
+        .bind(&spec_sha256)
+        .bind(&action_id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let campaign = db
+            .create_campaign(&action_id, "dependency-required-campaign")
+            .await
+            .unwrap();
+        let error = db
+            .authorize_campaign(&campaign.id, &authorization())
+            .await
+            .expect_err("authorization must refuse a missing dependency plan");
+        assert!(error.to_string().contains("dependency"), "error: {error}");
+        db.close().await;
+        let _ = std::fs::remove_file(path);
     }
 
     #[tokio::test]

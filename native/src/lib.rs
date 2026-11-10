@@ -13,6 +13,8 @@ pub mod context7;
 pub mod db;
 pub mod dependencies;
 pub mod dependency_broker;
+pub mod dependency_egress;
+pub mod dependency_service;
 pub mod device_session;
 pub mod evaluation;
 pub mod execution;

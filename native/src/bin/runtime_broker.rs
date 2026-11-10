@@ -14,6 +14,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     env,
+    net::SocketAddr,
     path::{Path, PathBuf},
     process::Stdio,
     sync::Arc,
@@ -28,6 +29,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use factory_native::dependency_egress::{self, EgressAllowlist};
 use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -129,6 +131,13 @@ impl OwnerTokens {
             }
         }
         matched
+    }
+
+    fn token(&self, owner: ResourceOwner) -> Option<&str> {
+        self.entries
+            .iter()
+            .find(|(candidate, _)| *candidate == owner)
+            .map(|(_, token)| token.as_str())
     }
 }
 
@@ -242,6 +251,8 @@ struct App {
     provider_kind: String,
     provider_session_root: PathBuf,
     import_images: Vec<(String, PathBuf)>,
+    dependency_image: Option<String>,
+    dependency_bundle: Option<PathBuf>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -306,6 +317,34 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     let import_images =
         parse_import_images(env::var("FACTORY_RUNTIME_IMPORT_IMAGES").unwrap_or_default())?;
+    let dependency_image = match env::var("FACTORY_RUNTIME_DEPENDENCY_IMAGE") {
+        Ok(value) if !value.trim().is_empty() => {
+            let image = value.trim().to_owned();
+            if image.starts_with('-')
+                || image.chars().any(char::is_whitespace)
+                || image.contains("://")
+            {
+                return Err("FACTORY_RUNTIME_DEPENDENCY_IMAGE is invalid".into());
+            }
+            Some(image)
+        }
+        _ => None,
+    };
+    let dependency_bundle = match env::var("FACTORY_RUNTIME_DEPENDENCY_BUNDLE") {
+        Ok(value) if !value.trim().is_empty() => Some(PathBuf::from(value.trim())),
+        _ => None,
+    };
+    if dependency_image.is_some() != dependency_bundle.is_some() {
+        return Err(
+            "FACTORY_RUNTIME_DEPENDENCY_IMAGE and FACTORY_RUNTIME_DEPENDENCY_BUNDLE must be set together"
+                .into(),
+        );
+    }
+    if let Some(bundle) = &dependency_bundle
+        && (!bundle.is_absolute() || !bundle.is_file())
+    {
+        return Err("FACTORY_RUNTIME_DEPENDENCY_BUNDLE must be an absolute existing file".into());
+    }
     let bind = env::var("FACTORY_BIND").unwrap_or_else(|_| "0.0.0.0:8770".into());
     let addr: std::net::SocketAddr = bind.parse()?;
     let container_mode = env::var("FACTORY_CONTAINER_MODE").as_deref() == Ok("1");
@@ -326,11 +365,69 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         provider_kind,
         provider_session_root,
         import_images,
+        dependency_image,
+        dependency_bundle,
     });
     app.preflight().await?;
     app.prepull_images().await?;
 
-    let router = Router::new()
+    let mut dependency_proxy = None;
+    let dependency_service = match app.dependency_image.as_deref() {
+        Some(image) => {
+            let registries = match env::var("FACTORY_RUNTIME_DEPENDENCY_REGISTRIES") {
+                Ok(value) if !value.trim().is_empty() => parse_registries(value)?,
+                _ => factory_native::dependencies::DEFAULT_ALLOWED_REGISTRIES
+                    .iter()
+                    .map(|registry| (*registry).to_string())
+                    .collect(),
+            };
+            let image_id = app
+                .dependency_image_id(image)
+                .await
+                .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
+            let (network, proxy_address) = app
+                .ensure_dependency_egress_network()
+                .await
+                .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
+            let allowlist = parse_egress_allowlist(
+                env::var("FACTORY_RUNTIME_DEPENDENCY_EGRESS_ALLOW").unwrap_or_else(|_| {
+                    "index.crates.io:443,static.crates.io:443,github.com:443,codeload.github.com:443"
+                        .into()
+                }),
+            )?;
+            let proxy = dependency_egress::spawn(proxy_address, allowlist)
+                .await
+                .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
+            let ready = proxy.ready();
+            let proxy_url = format!("http://{proxy_address}");
+            let acquirer = factory_native::dependency_service::PodmanDependencyAcquirer::new(
+                app.podman.clone(),
+                image_id.clone(),
+            )
+            .and_then(|acquirer| acquirer.with_egress(network.clone(), proxy_url.clone(), ready))
+            .map_err(|error| error.to_string())?;
+            dependency_proxy = Some(proxy);
+            tracing::info!(%image, %image_id, network=%network, %proxy_url, "dependency egress proxy ready");
+            Some(Arc::new(
+                factory_native::dependency_service::DependencyService::new(
+                    app.tokens
+                        .token(ResourceOwner::Supervisor)
+                        .ok_or("runtime broker supervisor token is unavailable")?
+                        .to_owned(),
+                    image.to_owned(),
+                    registries,
+                    Arc::new(acquirer),
+                )
+                .map_err(|error| error.to_string())?
+                .with_guard(Arc::new(BrokerDependencyGuard {
+                    app: Arc::clone(&app),
+                })),
+            ))
+        }
+        None => None,
+    };
+
+    let mut router = Router::new()
         .route("/health", get(health))
         .route("/v1/resources", get(list_resources))
         .route("/v1/volumes", post(create_volume))
@@ -349,6 +446,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/providers/start", post(start_provider))
         .layer(DefaultBodyLimit::max(MAX_JSON_BYTES))
         .with_state(Arc::clone(&app));
+    if let Some(service) = dependency_service {
+        router = router.merge(service.router());
+        tracing::info!("dependency acquisition endpoint enabled");
+    } else {
+        tracing::info!("dependency acquisition endpoint disabled; no dependency image configured");
+    }
+    let _keep_dependency_proxy = dependency_proxy;
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(%addr, "Factory runtime broker listening");
     axum::serve(listener, router)
@@ -395,6 +499,21 @@ fn parse_images(raw: String) -> Result<BTreeSet<String>, String> {
         return Err("image allowlist must not be empty".into());
     }
     Ok(images)
+}
+
+fn parse_registries(raw: String) -> Result<Vec<String>, String> {
+    let mut registries = Vec::new();
+    for registry in raw.split(',') {
+        let registry = registry.trim();
+        if registry.is_empty() || registry.chars().any(char::is_whitespace) {
+            return Err("dependency registry allowlist contains an invalid entry".into());
+        }
+        registries.push(registry.to_owned());
+    }
+    if registries.is_empty() {
+        return Err("dependency registry allowlist must not be empty".into());
+    }
+    Ok(registries)
 }
 
 impl App {
@@ -454,76 +573,24 @@ impl App {
             }
         }
         for (tag, path) in &self.import_images {
-            if !path.is_file() {
-                return Err(format!("image bundle {} is missing", path.display()).into());
-            }
-            let bundle_path = path.clone();
-            let digest = tokio::task::spawn_blocking(move || bundle_digest(&bundle_path))
-                .await
-                .map_err(|error| format!("bundle hash task failed: {error}"))??;
-            let existing = self
-                .podman_output([
-                    "image",
-                    "inspect",
-                    "--format",
-                    "{{ index .Labels \"io.software-factory.bundle-sha256\" }}",
-                    tag.as_str(),
-                ])
-                .await;
-            if let Ok(existing) = existing
-                && existing.status.success()
-                && String::from_utf8_lossy(&existing.stdout).trim() == digest
-            {
-                continue;
-            }
-            let label = format!("LABEL io.software-factory.bundle-sha256={digest}");
-            let stable = PathBuf::from("/var/lib/containers/tmp/provider-bundle.tar");
-            let source = path.clone();
-            let stable_for_copy = stable.clone();
-            tokio::task::spawn_blocking(move || -> std::io::Result<()> {
-                std::fs::copy(&source, &stable_for_copy)?;
-                Ok(())
-            })
-            .await
-            .map_err(|error| format!("bundle copy task failed: {error}"))?
-            .map_err(|error| format!("bundle copy failed: {error}"))?;
-            let output = time::timeout(
-                Duration::from_secs(900),
-                self.podman_command([
-                    "import",
-                    "--change",
-                    "ENV PATH=/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin",
-                    "--change",
-                    "ENTRYPOINT [\"/usr/local/bin/factory-provider-entrypoint\"]",
-                    "--change",
-                    "WORKDIR /session",
-                    "--change",
-                    label.as_str(),
-                    stable.to_string_lossy().as_ref(),
-                    tag.as_str(),
-                ])
-                .output(),
+            self.import_bundle_image(
+                tag,
+                path,
+                "/usr/local/bin/factory-provider-entrypoint",
+                "/session",
+                "provider-bundle.tar",
             )
-            .await
-            .map_err(|_| format!("importing {tag} timed out"))??;
-            let _ = std::fs::remove_file(&stable);
-            if !output.status.success() {
-                let existing = self
-                    .podman_output([
-                        "image",
-                        "inspect",
-                        "--format",
-                        "{{ index .Labels \"io.software-factory.bundle-sha256\" }}",
-                        tag.as_str(),
-                    ])
-                    .await;
-                if !existing.is_ok_and(|existing| {
-                    existing.status.success()
-                        && String::from_utf8_lossy(&existing.stdout).trim() == digest
-                }) {
-                    return Err(format!("importing {tag} failed: {}", stderr(&output)).into());
-                }
-            }
+            .await?;
+        }
+        if let (Some(image), Some(bundle)) = (&self.dependency_image, &self.dependency_bundle) {
+            self.import_bundle_image(
+                image,
+                bundle,
+                "/usr/local/bin/factory-dependency-acquire",
+                "/workspace",
+                "dependency-bundle.tar",
+            )
+            .await?;
         }
         for image in self.provider_images.iter() {
             let output = self
@@ -531,6 +598,97 @@ impl App {
                 .await?;
             if !output.status.success() {
                 return Err(format!("provider image {image} is not available").into());
+            }
+        }
+        if let Some(image) = &self.dependency_image {
+            let output = self
+                .podman_output(["image", "exists", image.as_str()])
+                .await?;
+            if !output.status.success() {
+                return Err(format!("dependency image {image} is not available").into());
+            }
+        }
+        Ok(())
+    }
+
+    async fn import_bundle_image(
+        &self,
+        tag: &str,
+        path: &std::path::Path,
+        entrypoint: &str,
+        workdir: &str,
+        stable_name: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if !path.is_file() {
+            return Err(format!("image bundle {} is missing", path.display()).into());
+        }
+        let bundle_path = path.to_owned();
+        let digest = tokio::task::spawn_blocking(move || bundle_digest(&bundle_path))
+            .await
+            .map_err(|error| format!("bundle hash task failed: {error}"))??;
+        let existing = self
+            .podman_output([
+                "image",
+                "inspect",
+                "--format",
+                "{{ index .Labels \"io.software-factory.bundle-sha256\" }}",
+                tag,
+            ])
+            .await;
+        if let Ok(existing) = existing
+            && existing.status.success()
+            && String::from_utf8_lossy(&existing.stdout).trim() == digest
+        {
+            return Ok(());
+        }
+        let label = format!("LABEL io.software-factory.bundle-sha256={digest}");
+        let stable = PathBuf::from("/var/lib/containers/tmp").join(stable_name);
+        let source = path.to_owned();
+        let stable_for_copy = stable.clone();
+        tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+            std::fs::copy(&source, &stable_for_copy)?;
+            Ok(())
+        })
+        .await
+        .map_err(|error| format!("bundle copy task failed: {error}"))?
+        .map_err(|error| format!("bundle copy failed: {error}"))?;
+        let entrypoint_change = format!("ENTRYPOINT [\"{entrypoint}\"]");
+        let workdir_change = format!("WORKDIR {workdir}");
+        let output = time::timeout(
+            Duration::from_secs(900),
+            self.podman_command([
+                "import",
+                "--change",
+                "ENV PATH=/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin",
+                "--change",
+                entrypoint_change.as_str(),
+                "--change",
+                workdir_change.as_str(),
+                "--change",
+                label.as_str(),
+                stable.to_string_lossy().as_ref(),
+                tag,
+            ])
+            .output(),
+        )
+        .await
+        .map_err(|_| format!("importing {tag} timed out"))??;
+        let _ = std::fs::remove_file(&stable);
+        if !output.status.success() {
+            let existing = self
+                .podman_output([
+                    "image",
+                    "inspect",
+                    "--format",
+                    "{{ index .Labels \"io.software-factory.bundle-sha256\" }}",
+                    tag,
+                ])
+                .await;
+            if !existing.is_ok_and(|existing| {
+                existing.status.success()
+                    && String::from_utf8_lossy(&existing.stdout).trim() == digest
+            }) {
+                return Err(format!("importing {tag} failed: {}", stderr(&output)).into());
             }
         }
         Ok(())
@@ -938,6 +1096,211 @@ impl App {
         }
         Ok(output.stdout)
     }
+
+    async fn dependency_image_id(&self, image: &str) -> Result<String, String> {
+        let output = self
+            .podman_output(["image", "inspect", "--format", "{{.Id}}", image])
+            .await?;
+        if !output.status.success() {
+            return Err(format!(
+                "dependency image {image} is not available: {}",
+                stderr(&output)
+            ));
+        }
+        let id = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        factory_native::dependency_service::normalize_image_id(&id)
+            .ok_or_else(|| format!("dependency image {image} returned an invalid identity"))
+    }
+
+    async fn ensure_dependency_egress_network(&self) -> Result<(String, SocketAddr), String> {
+        let network = env::var("FACTORY_RUNTIME_DEPENDENCY_EGRESS_NETWORK")
+            .unwrap_or_else(|_| "factory-deps-egress".into());
+        if !valid_network_name(&network) {
+            return Err("FACTORY_RUNTIME_DEPENDENCY_EGRESS_NETWORK is invalid".into());
+        }
+        let subnet = env::var("FACTORY_RUNTIME_DEPENDENCY_EGRESS_SUBNET")
+            .unwrap_or_else(|_| "10.90.0.0/24".into());
+        let gateway = env::var("FACTORY_RUNTIME_DEPENDENCY_EGRESS_GATEWAY")
+            .unwrap_or_else(|_| "10.90.0.1".into());
+        let gateway: std::net::IpAddr = gateway
+            .parse()
+            .map_err(|_| "FACTORY_RUNTIME_DEPENDENCY_EGRESS_GATEWAY is invalid")?;
+        if gateway.is_unspecified() || gateway.is_multicast() {
+            return Err(
+                "FACTORY_RUNTIME_DEPENDENCY_EGRESS_GATEWAY must be a private network address"
+                    .into(),
+            );
+        }
+        let port: u16 = env::var("FACTORY_RUNTIME_DEPENDENCY_EGRESS_PORT")
+            .unwrap_or_else(|_| "18080".into())
+            .parse()
+            .map_err(|_| "FACTORY_RUNTIME_DEPENDENCY_EGRESS_PORT is invalid")?;
+        if port == 0 {
+            return Err("FACTORY_RUNTIME_DEPENDENCY_EGRESS_PORT is invalid".into());
+        }
+        let exists = self
+            .podman_output(["network", "exists", network.as_str()])
+            .await?;
+        if !exists.status.success() {
+            let output = self
+                .podman_output([
+                    "network",
+                    "create",
+                    "--internal",
+                    "--subnet",
+                    subnet.as_str(),
+                    "--gateway",
+                    &gateway.to_string(),
+                    "--label",
+                    MANAGED_LABEL,
+                    network.as_str(),
+                ])
+                .await?;
+            if !output.status.success() {
+                return Err(format!(
+                    "creating dependency egress network failed: {}",
+                    stderr(&output)
+                ));
+            }
+        }
+        let output = self
+            .podman_output([
+                "network",
+                "inspect",
+                "--format",
+                "{{json .}}",
+                network.as_str(),
+            ])
+            .await?;
+        if !output.status.success() {
+            return Err(format!(
+                "inspecting dependency egress network failed: {}",
+                stderr(&output)
+            ));
+        }
+        let inspected: serde_json::Value =
+            serde_json::from_slice(&output.stdout).map_err(|error| {
+                format!("dependency egress network inspection is not JSON: {error}")
+            })?;
+        validate_egress_network_inspection(&inspected, &gateway.to_string(), &subnet)?;
+        Ok((network, SocketAddr::new(gateway, port)))
+    }
+}
+
+/// Admission guard for dependency acquisition. It reuses the broker's exact
+/// per-volume lock, owner-label check and active-execution registry so the
+/// dependency route cannot be used as a side channel to mutate a volume that
+/// is owned by another service or currently in use.
+struct BrokerDependencyGuard {
+    app: Arc<App>,
+}
+
+struct DependencyLease {
+    active: Arc<ActiveExecutions>,
+    volume: String,
+    container: String,
+}
+
+impl Drop for DependencyLease {
+    fn drop(&mut self) {
+        self.active.remove(&self.volume, &self.container);
+    }
+}
+
+impl factory_native::dependency_service::DependencyGuard for BrokerDependencyGuard {
+    fn enter<'a>(
+        &'a self,
+        volume: &'a str,
+        container: &'a str,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<Box<dyn std::any::Any + Send>, String>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            let lock = self.app.resource_lock(volume);
+            let guard = lock.lock_owned().await;
+            let Some(labels) = self.app.volume_labels(volume).await? else {
+                return Err("workspace volume does not exist".into());
+            };
+            if !resource_owner_matches(&labels, ResourceOwner::Supervisor) {
+                return Err("workspace volume is not owned by the authenticated service".into());
+            }
+            if !labels
+                .get("io.software-factory.workspace")
+                .is_some_and(|workspace| !workspace.is_empty())
+            {
+                return Err("workspace volume is not bound to a workspace".into());
+            }
+            if !self.app.active.register(volume, container) {
+                return Err("workspace volume already has an active execution".into());
+            }
+            drop(guard);
+            Ok(Box::new(DependencyLease {
+                active: Arc::clone(&self.app.active),
+                volume: volume.to_owned(),
+                container: container.to_owned(),
+            }) as Box<dyn std::any::Any + Send>)
+        })
+    }
+}
+
+fn validate_egress_network_inspection(
+    inspected: &serde_json::Value,
+    expected_gateway: &str,
+    expected_subnet: &str,
+) -> Result<(), String> {
+    if inspected
+        .get("internal")
+        .and_then(serde_json::Value::as_bool)
+        != Some(true)
+    {
+        return Err("dependency egress network must be an internal network".into());
+    }
+    if inspected
+        .pointer("/labels/io.software-factory.managed")
+        .and_then(serde_json::Value::as_str)
+        != Some("true")
+    {
+        return Err(
+            "dependency egress network is missing the managed label; refusing an unmanaged network"
+                .into(),
+        );
+    }
+    let observed_gateway = inspected
+        .pointer("/subnets/0/gateway")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let observed_subnet = inspected
+        .pointer("/subnets/0/subnet")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    if observed_gateway != expected_gateway || observed_subnet != expected_subnet {
+        return Err(format!(
+            "dependency egress network does not match its fixed gateway/subnet: {observed_gateway} {observed_subnet}"
+        ));
+    }
+    Ok(())
+}
+
+fn valid_network_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+}
+
+fn parse_egress_allowlist(raw: String) -> Result<EgressAllowlist, String> {
+    let entries: Vec<String> = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(str::to_owned)
+        .collect();
+    EgressAllowlist::new(entries).map_err(|error| error.to_string())
 }
 
 fn stderr(output: &std::process::Output) -> String {
@@ -949,12 +1312,14 @@ fn stderr(output: &std::process::Output) -> String {
         .to_owned()
 }
 
-async fn health() -> Json<serde_json::Value> {
+async fn health(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
     Json(json!({
         "healthy": true,
         "isolation_certified": false,
         "engine_exposed": false,
-        "network": "none"
+        "network": "none",
+        "dependency_acquisition": app.dependency_image.is_some(),
+        "dependency_network": "internal-egress-proxy-only"
     }))
 }
 
@@ -1867,9 +2232,48 @@ mod tests {
             "factory-provider-123e4567-e89b-12d3-a456-426614174000"
         ));
         assert!(!is_valid_container_name("factory-provider-123"));
+        assert!(!is_valid_container_name("factory-deps-123"));
         assert!(valid_provider_session_subdir("provider-session-a"));
         assert!(!valid_provider_session_subdir("../escape"));
         assert!(valid_workspace_id("attempt-1"));
+    }
+
+    #[test]
+    fn dependency_registry_allowlist_is_strict() {
+        assert!(parse_registries("sparse+https://index.crates.io/".into()).is_ok());
+        assert!(parse_registries("a,b".into()).is_ok());
+        assert!(parse_registries("a,,b".into()).is_err());
+        assert!(parse_registries("a b".into()).is_err());
+    }
+
+    #[test]
+    fn existing_egress_network_must_remain_internal_and_managed() {
+        let valid = json!({
+            "name": "factory-deps-egress",
+            "driver": "bridge",
+            "internal": true,
+            "subnets": [{"subnet": "10.90.0.0/24", "gateway": "10.90.0.1"}],
+            "labels": {"io.software-factory.managed": "true"}
+        });
+        assert!(validate_egress_network_inspection(&valid, "10.90.0.1", "10.90.0.0/24").is_ok());
+
+        let mut non_internal = valid.clone();
+        non_internal["internal"] = json!(false);
+        let error = validate_egress_network_inspection(&non_internal, "10.90.0.1", "10.90.0.0/24")
+            .expect_err("non-internal network must be rejected");
+        assert!(error.contains("internal network"), "{error}");
+
+        let mut unmanaged = valid.clone();
+        unmanaged["labels"] = json!({});
+        let error = validate_egress_network_inspection(&unmanaged, "10.90.0.1", "10.90.0.0/24")
+            .expect_err("unmanaged network must be rejected");
+        assert!(error.contains("managed label"), "{error}");
+
+        let mut wrong_subnet = valid;
+        wrong_subnet["subnets"][0]["gateway"] = json!("10.90.0.2");
+        assert!(
+            validate_egress_network_inspection(&wrong_subnet, "10.90.0.1", "10.90.0.0/24").is_err()
+        );
     }
 
     #[test]
@@ -2061,6 +2465,8 @@ mod tests {
             provider_kind: String::new(),
             provider_session_root: std::env::temp_dir(),
             import_images: Vec::new(),
+            dependency_image: None,
+            dependency_bundle: None,
         })
     }
 

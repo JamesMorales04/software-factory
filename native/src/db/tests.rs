@@ -221,6 +221,7 @@ async fn run_status_backfill_migration_is_conservative() {
             ActionSpecInput {
                 allowed_paths: &["seed.txt".to_string()],
                 checks: &[],
+                dependency_plan: None,
             },
         )
         .await
@@ -599,6 +600,7 @@ async fn authorized_attempt(db: &Database) -> String {
             ActionSpecInput {
                 allowed_paths: &["seed.txt".to_string()],
                 checks: &[],
+                dependency_plan: None,
             },
         )
         .await
@@ -650,6 +652,68 @@ async fn fixture_assignment_claim_does_not_require_provider_route_identity() {
             .attempt_id,
         attempt_id
     );
+    db.close().await;
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn dependency_plan_attaches_before_campaign_and_missing_plan_blocks() {
+    let (path, db) = temp_db("factory-dependency-plan-attach").await;
+    insert_project(&db, "project", "/fixture", "base").await;
+    let action = db
+        .create_action_with_spec(
+            "project",
+            "objective",
+            "codex",
+            "model",
+            "action-key",
+            ActionSpecInput {
+                allowed_paths: &["src".to_string()],
+                checks: &[],
+                dependency_plan: None,
+            },
+        )
+        .await
+        .unwrap();
+    let mut missing = action.spec.clone();
+    missing.dependencies_required = true;
+    missing.dependency_plan = None;
+    assert!(crate::db::validate_dependency_requirement(&missing).is_err());
+
+    let planning = crate::planning::DependencyPlan {
+        strategy: crate::planning::DependencyStrategy::VendorCache,
+        items: Vec::new(),
+        cache_ref: "vendor".into(),
+        sbom_ref: "artifacts/sbom.json".into(),
+        owner_approval: None,
+    };
+    let plan = crate::dependencies::from_frozen_planning(
+        &planning,
+        crate::dependencies::DependencyKind::Rust,
+        None,
+        "vendor",
+        "artifacts/sbom.json",
+    )
+    .unwrap()
+    .expect("vendor plan");
+    let updated = db
+        .set_action_dependency_plan(&action.id, Some(&plan), true)
+        .await
+        .unwrap();
+    assert!(updated.spec.dependencies_required);
+    assert_eq!(updated.spec.dependency_plan, Some(plan.clone()));
+    let loaded = db.action(&action.id).await.unwrap();
+    assert_eq!(loaded.spec.dependency_plan, Some(plan));
+    assert!(crate::db::validate_dependency_requirement(&loaded.spec).is_ok());
+
+    let _campaign = db
+        .create_campaign(&action.id, "campaign-key")
+        .await
+        .unwrap();
+    assert!(matches!(
+        db.set_action_dependency_plan(&action.id, None, false).await,
+        Err(Error::Conflict(_))
+    ));
     db.close().await;
     let _ = std::fs::remove_file(path);
 }
@@ -713,6 +777,7 @@ async fn p7_p8_claim_is_fenced_expires_and_survives_restart() {
         receipt_id: "receipt-one".into(),
         result_sha256: "a".repeat(64),
         terminal_status: "FAILED".into(),
+        reason: "fixture terminal".into(),
     };
     assert!(matches!(
         db.report_terminal(
@@ -776,6 +841,7 @@ async fn worker_cancelled_report_projects_to_run() {
             receipt_id: "cancelled-receipt".into(),
             result_sha256: "c".repeat(64),
             terminal_status: "CANCELLED".into(),
+            reason: "cancelled".into(),
         },
         110,
     )
@@ -807,6 +873,7 @@ async fn p6_concurrent_workers_claim_distinct_attempts() {
             ActionSpecInput {
                 allowed_paths: &["seed.txt".to_string()],
                 checks: &[],
+                dependency_plan: None,
             },
         )
         .await
@@ -1106,6 +1173,7 @@ async fn candidate_fixture() -> CandidateFixture {
             ActionSpecInput {
                 allowed_paths: &["seed.txt".to_string()],
                 checks: &[],
+                dependency_plan: None,
             },
         )
         .await
@@ -2925,6 +2993,7 @@ async fn authorization_rejects_unratified_risk_and_execution_modes() {
             ActionSpecInput {
                 allowed_paths: &["src".to_string()],
                 checks: &[],
+                dependency_plan: None,
             },
         )
         .await
@@ -2990,6 +3059,7 @@ async fn candidate_outside_scope_and_symlink_are_rejected() {
             ActionSpecInput {
                 allowed_paths: &["src".to_string()],
                 checks: &[],
+                dependency_plan: None,
             },
         )
         .await

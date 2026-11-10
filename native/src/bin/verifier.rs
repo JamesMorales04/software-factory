@@ -565,6 +565,34 @@ impl VolumeBackend for VerifierBackend {
             Self::Local(backend) => backend.run(volume, container, image, argv, timeout).await,
         }
     }
+    async fn acquire_dependencies(
+        &self,
+        volume: &str,
+        container: &str,
+        request: &factory_native::dependency_service::DependencyAcquireRequest,
+    ) -> Result<
+        factory_native::dependency_service::DependencyAcquireReceipt,
+        factory_native::execution::ExecutionError,
+    > {
+        match self {
+            Self::Podman(backend) => {
+                backend
+                    .acquire_dependencies(volume, container, request)
+                    .await
+            }
+            Self::Broker(backend) => {
+                backend
+                    .acquire_dependencies(volume, container, request)
+                    .await
+            }
+            #[cfg(debug_assertions)]
+            Self::Local(backend) => {
+                backend
+                    .acquire_dependencies(volume, container, request)
+                    .await
+            }
+        }
+    }
     async fn remove_container(
         &self,
         name: &str,
@@ -704,6 +732,19 @@ impl VolumeBackend for LocalVolumeBackend {
             stdout_truncated: false,
             stderr_truncated: false,
         })
+    }
+    async fn acquire_dependencies(
+        &self,
+        _volume: &str,
+        _container: &str,
+        _request: &factory_native::dependency_service::DependencyAcquireRequest,
+    ) -> Result<
+        factory_native::dependency_service::DependencyAcquireReceipt,
+        factory_native::execution::ExecutionError,
+    > {
+        Err(factory_native::execution::ExecutionError::Dependency(
+            "local verifier backend does not support dependency acquisition".into(),
+        ))
     }
     async fn remove_container(
         &self,

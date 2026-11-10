@@ -103,12 +103,6 @@ pub struct Action {
     pub spec_sha256: String,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct ActionSpecInput<'a> {
-    pub allowed_paths: &'a [String],
-    pub checks: &'a [SpecCheck],
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ActionSpec {
@@ -124,6 +118,35 @@ pub struct ActionSpec {
     pub allowed_paths: Vec<String>,
     #[serde(default)]
     pub checks: Vec<SpecCheck>,
+    /// Frozen dependency acquisition plan. `None` means the action does not
+    /// require brokered dependency acquisition. A present plan is validated
+    /// before persistence and is carried to the Worker assignment.
+    #[serde(default)]
+    pub dependency_plan: Option<crate::dependencies::DependencyPlan>,
+    /// True when the frozen planning decision requires dependency acquisition
+    /// or a vendor cache. Core and the Worker refuse to authorize/execute when
+    /// this is true but `dependency_plan` is absent.
+    #[serde(default)]
+    pub dependencies_required: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ActionSpecInput<'a> {
+    pub allowed_paths: &'a [String],
+    pub checks: &'a [SpecCheck],
+    pub dependency_plan: Option<&'a crate::dependencies::DependencyPlan>,
+}
+
+/// Deterministic dependency-requirement check shared by assignment dispatch and
+/// authorization. A plan marked as required must carry its frozen execution
+/// plan; absence is a hard refusal, not a silent skip.
+pub fn validate_dependency_requirement(spec: &ActionSpec) -> Result<(), Error> {
+    if spec.dependencies_required && spec.dependency_plan.is_none() {
+        return Err(Error::Forbidden(
+            "frozen work requires dependency acquisition but has no dependency plan".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -227,6 +250,11 @@ pub struct WorkerReport {
     pub receipt_id: String,
     pub result_sha256: String,
     pub terminal_status: String,
+    /// Bounded human-readable blocker/failure reason. It is excluded from the
+    /// receipt digest so historical receipt replay remains stable, and is
+    /// persisted in the run event and progress hold.
+    #[serde(default, skip_serializing)]
+    pub reason: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

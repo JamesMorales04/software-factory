@@ -88,6 +88,10 @@ pub fn is_valid_provider_container_name(name: &str) -> bool {
     valid_prefixed_uuid(name, "factory-provider-")
 }
 
+pub fn is_valid_dependency_container_name(name: &str) -> bool {
+    valid_prefixed_uuid(name, "factory-deps-")
+}
+
 pub fn is_valid_container_name(name: &str) -> bool {
     is_valid_exec_container_name(name) || is_valid_provider_container_name(name)
 }
@@ -291,6 +295,8 @@ pub fn extend_bounded(target: &mut Vec<u8>, chunk: &[u8], limit: usize) -> bool 
     target.extend_from_slice(chunk);
     true
 }
+
+const MAX_DEPENDENCY_RESPONSE_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum BrokerError {
@@ -552,6 +558,47 @@ impl RuntimeBrokerClient {
             return Err(self.refusal(response).await);
         }
         response.json().await.map_err(BrokerError::Request)
+    }
+
+    /// Request a bounded, credential-free dependency acquisition against a
+    /// managed workspace volume. The broker owns the image, argv, network and
+    /// timeout bounds; this client only supplies validated plan fields.
+    pub async fn acquire_dependencies(
+        &self,
+        input: &crate::dependency_service::DependencyAcquireWireRequest,
+    ) -> Result<crate::dependency_service::DependencyAcquireReceipt, BrokerError> {
+        if input.timeout_secs == 0 {
+            return Err(BrokerError::Invalid(
+                "dependency acquisition timeout must be positive".into(),
+            ));
+        }
+        let response = self
+            .client
+            .post(self.join(crate::dependency_service::DEPENDENCY_ACQUIRE_ROUTE)?)
+            .bearer_auth(&self.token)
+            .json(input)
+            .timeout(Duration::from_secs(input.timeout_secs + 90))
+            .send()
+            .await?;
+        if !response.status().is_success() {
+            return Err(self.refusal(response).await);
+        }
+        if let Some(length) = response.content_length()
+            && length as usize > MAX_DEPENDENCY_RESPONSE_BYTES
+        {
+            return Err(BrokerError::InvalidResponse(
+                "dependency receipt exceeds the broker bound".into(),
+            ));
+        }
+        let bytes = response.bytes().await?;
+        if bytes.len() > MAX_DEPENDENCY_RESPONSE_BYTES {
+            return Err(BrokerError::InvalidResponse(
+                "dependency receipt exceeds the broker bound".into(),
+            ));
+        }
+        serde_json::from_slice(&bytes).map_err(|_| {
+            BrokerError::InvalidResponse("dependency receipt could not be decoded".into())
+        })
     }
 
     pub async fn remove_container(&self, container: &str) -> Result<(), BrokerError> {

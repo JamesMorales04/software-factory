@@ -286,6 +286,8 @@ impl Database {
             model: profile.roles.implementer.model.clone(),
             allowed_paths: config.allowed_paths,
             checks: Vec::new(),
+            dependency_plan: None,
+            dependencies_required: false,
         })
     }
 
@@ -1491,6 +1493,14 @@ async fn load_intake_approval_context(
         proposal.validate_v2(&grant, &config.binding(), &action, now)?;
     }
     let (action_spec, spec_sha256) = load_action_spec(connection, &lead.action_id).await?;
+    if action_spec.dependencies_required && action_spec.dependency_plan.is_none() {
+        return Err(Error::IntakeConflict {
+            code: "DEPENDENCY_PLAN_REQUIRED",
+            message:
+                "the frozen plan requires dependency acquisition but no execution dependency plan was attached"
+                    .into(),
+        });
+    }
     if action_spec.allowed_paths.is_empty()
         || action_spec
             .allowed_paths
@@ -2122,6 +2132,8 @@ mod tests {
             model: grant.route.model.clone(),
             allowed_paths: config.allowed_paths.clone(),
             checks: checks(),
+            dependency_plan: None,
+            dependencies_required: false,
         };
         let (assessment, proposal) = crate::lead::fixture_lead_assessment(
             &lead.id,
@@ -3412,6 +3424,8 @@ mod tests {
             model: grant.route.model.clone(),
             allowed_paths: config.allowed_paths.clone(),
             checks: checks(),
+            dependency_plan: None,
+            dependencies_required: false,
         };
         let (assessment, proposal) = crate::lead::fixture_lead_assessment(
             &lead.id,
