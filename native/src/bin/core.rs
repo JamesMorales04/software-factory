@@ -10863,6 +10863,18 @@ fn planning_conflict(code: &'static str, message: &str) -> Response {
         .into_response()
 }
 
+fn planning_work_graph_conflict(message: &str, missing: &[&'static str]) -> Response {
+    (
+        StatusCode::CONFLICT,
+        Json(json!({
+            "error": message,
+            "code": "WORK_GRAPH_REQUIRED",
+            "missingArtifacts": missing,
+        })),
+    )
+        .into_response()
+}
+
 async fn ensure_planning_workflow(
     app: &App,
     request_id: &str,
@@ -11242,13 +11254,21 @@ async fn plan_agentic_request(
         Ok(context) => context,
         Err(error) => return api_error(error),
     };
-    if let Ok(plan) = app.db.latest_planning_artifact(&record.id, "PLAN").await {
-        let review = app.db.latest_plan_review(&record.id).await.ok();
-        let artifacts = app
-            .db
-            .planning_artifacts(&record.id)
-            .await
-            .unwrap_or_default();
+    let latest_plan = match app.db.latest_planning_artifact(&record.id, "PLAN").await {
+        Ok(plan) => Some(plan),
+        Err(Error::NotFound) => None,
+        Err(error) => return api_error(error),
+    };
+    if let Some(plan) = latest_plan {
+        let review = match app.db.latest_plan_review(&record.id).await {
+            Ok(review) => Some(review),
+            Err(Error::NotFound) => None,
+            Err(error) => return api_error(error),
+        };
+        let artifacts = match app.db.planning_artifacts(&record.id).await {
+            Ok(artifacts) => artifacts,
+            Err(error) => return api_error(error),
+        };
         let readiness = match planning_readiness(&app, &record.id, plan.revision, &context).await {
             Ok(readiness) => readiness,
             Err(error) => return api_error(error),
@@ -11260,37 +11280,84 @@ async fn plan_agentic_request(
             .filter(|kind| !matches!(*kind, "SPEC" | "OPENSPEC"))
             .collect::<Vec<_>>();
         if !compile_missing.is_empty() {
+            if let Some(review) = review.as_ref()
+                && matches!(review.status.as_str(), "CHANGES_REQUESTED" | "REJECTED")
+            {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(json!({
+                        "error": "the latest plan review was rejected or requested changes; a repair cannot replace that owner decision",
+                        "code": "PLAN_REVIEW_REJECTED",
+                        "reviewStatus": review.status,
+                        "missingArtifacts": compile_missing,
+                    })),
+                )
+                    .into_response();
+            }
             let graph_record = match app.db.agentic_work_graph(&record.id).await {
                 Ok(record) => record,
                 Err(Error::NotFound) => {
-                    return (
-                        StatusCode::CONFLICT,
-                        Json(json!({
-                            "error": "the recorded plan is missing generated artifacts and has no WorkGraph to repair from",
-                            "code": "WORK_GRAPH_REQUIRED",
-                            "missingArtifacts": compile_missing,
-                        })),
-                    )
-                        .into_response();
+                    return planning_work_graph_conflict(
+                        "the recorded plan is missing generated artifacts and has no WorkGraph to repair from",
+                        &compile_missing,
+                    );
                 }
                 Err(error) => return api_error(error),
             };
-            let graph = match serde_json::from_str::<factory_native::agentic::ValidatedWorkGraph>(
-                &graph_record.graph_json,
-            ) {
-                Ok(graph) if graph.graph_sha256 == graph_record.graph_sha256 => graph,
-                _ => {
-                    return (
-                        StatusCode::CONFLICT,
-                        Json(json!({
-                            "error": "the stored WorkGraph is invalid; the plan cannot be repaired deterministically",
-                            "code": "WORK_GRAPH_REQUIRED",
-                            "missingArtifacts": compile_missing,
-                        })),
-                    )
-                        .into_response();
+            let stored_graph = match serde_json::from_str::<
+                factory_native::agentic::ValidatedWorkGraph,
+            >(&graph_record.graph_json)
+            {
+                Ok(graph) => graph,
+                Err(_) => {
+                    return planning_work_graph_conflict(
+                        "the stored WorkGraph is not decodable; the plan cannot be repaired deterministically",
+                        &compile_missing,
+                    );
                 }
             };
+            let config = match app.db.project_config(&record.project_id).await {
+                Ok(config) => config,
+                Err(error) => return api_error(error),
+            };
+            let model = factory_native::agentic::WorkGraphModel {
+                units: stored_graph.units.clone(),
+                assumptions: stored_graph.assumptions.clone(),
+                risks: stored_graph.risks.clone(),
+            };
+            let graph = match factory_native::agentic::validate_work_graph(
+                &model,
+                &config.allowed_paths,
+            ) {
+                Ok(graph) => graph,
+                Err(_) => {
+                    return planning_work_graph_conflict(
+                        "the stored WorkGraph does not validate against the current Project scope; the plan cannot be repaired deterministically",
+                        &compile_missing,
+                    );
+                }
+            };
+            let stored_order = match serde_json::from_str::<Vec<String>>(
+                &graph_record.topological_order_json,
+            ) {
+                Ok(order) => order,
+                Err(_) => {
+                    return planning_work_graph_conflict(
+                        "the stored WorkGraph order is not decodable; the plan cannot be repaired deterministically",
+                        &compile_missing,
+                    );
+                }
+            };
+            if graph.graph_sha256 != graph_record.graph_sha256
+                || graph.graph_sha256 != stored_graph.graph_sha256
+                || graph.topological_order != stored_graph.topological_order
+                || graph.topological_order != stored_order
+            {
+                return planning_work_graph_conflict(
+                    "the stored WorkGraph digest or order does not match its validated content; the plan cannot be repaired deterministically",
+                    &compile_missing,
+                );
+            }
             let planning = match persist_planning_plan(&app, &record, &context, &graph).await {
                 Ok(value) => value,
                 Err(response) => return response,
@@ -11312,18 +11379,25 @@ async fn plan_agentic_request(
                 Ok(plan) => plan,
                 Err(error) => return api_error(error),
             };
-            let review = app.db.latest_plan_review(&record.id).await.ok();
-            let artifacts = app
-                .db
-                .planning_artifacts(&record.id)
-                .await
-                .unwrap_or_default();
+            let review = match app.db.latest_plan_review(&record.id).await {
+                Ok(review) => Some(review),
+                Err(Error::NotFound) => None,
+                Err(error) => return api_error(error),
+            };
+            let artifacts = match app.db.planning_artifacts(&record.id).await {
+                Ok(artifacts) => artifacts,
+                Err(error) => return api_error(error),
+            };
             let readiness =
                 match planning_readiness(&app, &record.id, plan.revision, &context).await {
                     Ok(readiness) => readiness,
                     Err(error) => return api_error(error),
                 };
-            let graph_record = app.db.agentic_work_graph(&record.id).await.ok();
+            let graph_record = match app.db.agentic_work_graph(&record.id).await {
+                Ok(record) => Some(record),
+                Err(Error::NotFound) => None,
+                Err(error) => return api_error(error),
+            };
             return Json(json!({
                 "plan": plan,
                 "graph": graph_record,
@@ -11340,7 +11414,11 @@ async fn plan_agentic_request(
             }))
             .into_response();
         }
-        let graph_record = app.db.agentic_work_graph(&record.id).await.ok();
+        let graph_record = match app.db.agentic_work_graph(&record.id).await {
+            Ok(record) => Some(record),
+            Err(Error::NotFound) => None,
+            Err(error) => return api_error(error),
+        };
         return Json(json!({
             "plan": plan,
             "graph": graph_record,
@@ -11373,11 +11451,15 @@ async fn plan_agentic_request(
     if let Err(message) = app.reviewer_identities.validate_plan(&reviewer_plan) {
         return agentic_conflict("REVIEWER_INDEPENDENCE_REQUIRED", &message);
     }
-    if app.db.agentic_spec(&record.id).await.is_ok() {
-        return agentic_conflict(
-            "PLAN_ALREADY_SPECIFIED",
-            "a specification already binds this plan; a material change requires a new request or spec revision",
-        );
+    match app.db.agentic_spec(&record.id).await {
+        Ok(_) => {
+            return agentic_conflict(
+                "PLAN_ALREADY_SPECIFIED",
+                "a specification already binds this plan; a material change requires a new request or spec revision",
+            );
+        }
+        Err(Error::NotFound) => {}
+        Err(error) => return api_error(error),
     }
     let config = match app.db.project_config(&record.project_id).await {
         Ok(config) => config,
@@ -11737,8 +11819,10 @@ async fn try_freeze_approved_plan(
     context: &AgenticTriageContext,
 ) -> Result<(), Error> {
     use factory_native::planning::WorkflowState;
-    let Ok(review) = app.db.latest_plan_review(request_id).await else {
-        return Ok(());
+    let review = match app.db.latest_plan_review(request_id).await {
+        Ok(review) => review,
+        Err(Error::NotFound) => return Ok(()),
+        Err(error) => return Err(error),
     };
     if !matches!(review.status.as_str(), "AUTO_APPROVED" | "OWNER_APPROVED") {
         return Ok(());
@@ -14804,6 +14888,10 @@ fn internal_operator_headers(app: &App) -> HeaderMap {
     headers
 }
 
+/// Record the request-scoped subscription funding admission required by the
+/// assessment/model calls. This is funding evidence only: it never authorizes a
+/// Campaign start, and every start still passes the planning-readiness guard
+/// plus the frozen policy, scope and exact-binding checks.
 async fn ensure_autopilot_subscription_admission(app: &Arc<App>, id: &str) -> Result<(), Error> {
     if app
         .db
@@ -15066,6 +15154,9 @@ async fn agentic_scheduler_loop(app: Arc<App>, scheduler: Arc<AgenticScheduler>)
         let scheduler_for_task = Arc::clone(&scheduler);
         tokio::spawn(async move {
             let _permit = permit;
+            // STARTING is scheduler/operation telemetry, not Campaign authority.
+            // A Campaign is created only inside the frozen start transaction
+            // after readiness, policy, scope and exact-binding checks.
             let _ = app_for_task
                 .db
                 .set_agentic_operation_status(&item.request_id, "STARTING")
@@ -15117,6 +15208,9 @@ async fn run_autopilot_inner(app: &Arc<App>, id: &str) -> Result<(), Error> {
                     .into(),
         });
     }
+    // The subscription admission is funding evidence for assessment/provider
+    // calls. It never authorizes a Campaign start; that requires the frozen
+    // readiness guard and the exact start transaction below.
     ensure_autopilot_subscription_admission(app, id).await?;
     let response = assess_intake_request(
         State(Arc::clone(app)),
@@ -15136,6 +15230,9 @@ async fn run_autopilot_inner(app: &Arc<App>, id: &str) -> Result<(), Error> {
         let _ = app.db.set_agentic_operation_status(id, "EXECUTING").await;
         return Ok(());
     }
+    // Re-check immediately before the start call so an incomplete plan becomes
+    // a truthful autopilot blocker instead of a doomed Campaign.
+    ensure_planning_ready_or_error(app, &record).await?;
     autonomous_start_intake(app, id).await?;
     let _ = app.db.set_agentic_operation_status(id, "EXECUTING").await;
     Ok(())
@@ -21638,6 +21735,8 @@ mod tests {
         enum PlanReviewSeed {
             AutoApproved,
             Pending,
+            ChangesRequested,
+            Rejected,
         }
 
         async fn seed_complete_planning(
@@ -21757,6 +21856,14 @@ mod tests {
                     "core:planning",
                     "The plan requires an authenticated owner decision.",
                 ),
+                PlanReviewSeed::ChangesRequested => (
+                    "CHANGES_REQUESTED",
+                    "operator",
+                    "The owner requested changes to the plan.",
+                ),
+                PlanReviewSeed::Rejected => {
+                    ("REJECTED", "operator", "The owner rejected the plan.")
+                }
             };
             fixture
                 .app
@@ -23477,6 +23584,333 @@ mod tests {
             assert_eq!(status, StatusCode::CREATED, "{approved}");
             assert_eq!(approved["state"], "EXECUTING");
             assert!(approved["campaignId"].is_string());
+
+            app.db.close().await;
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
+        async fn compile_plan_refuses_to_auto_approve_a_rejected_review() {
+            for (seed, expected_status, label) in [
+                (
+                    PlanReviewSeed::ChangesRequested,
+                    "CHANGES_REQUESTED",
+                    "changes-requested",
+                ),
+                (PlanReviewSeed::Rejected, "REJECTED", "rejected"),
+            ] {
+                let fixture = setup().await;
+                let (status, _) = enable_policy(&fixture).await;
+                assert_eq!(status, StatusCode::CREATED);
+                let (status, created) =
+                    create_intake(&fixture, &format!("request-api-rejected-{label}")).await;
+                assert_eq!(status, StatusCode::CREATED, "{created}");
+                let intake_id = created["id"].as_str().unwrap().to_owned();
+                let context = fixture_plan(&fixture, &intake_id, "FIXTURE").await;
+                seed_complete_planning_with_review(
+                    &fixture,
+                    &intake_id,
+                    ParticipantSeed::Matching,
+                    seed,
+                )
+                .await;
+                let pool = sqlx_sqlite::SqlitePoolOptions::new()
+                    .max_connections(1)
+                    .connect_with(
+                        sqlx_sqlite::SqliteConnectOptions::new()
+                            .filename(&fixture.path)
+                            .create_if_missing(false),
+                    )
+                    .await
+                    .unwrap();
+                sqlx::query::query(
+                    "DELETE FROM planning_artifacts WHERE request_id=?1 AND kind='DOD'",
+                )
+                .bind(&intake_id)
+                .execute(&pool)
+                .await
+                .unwrap();
+                pool.close().await;
+
+                let (status, refused) = send(
+                    &fixture.router,
+                    "POST",
+                    &format!("/agentic/requests/{intake_id}/plan"),
+                    None,
+                )
+                .await;
+                assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+                assert_eq!(refused["code"], "PLAN_REVIEW_REJECTED");
+                assert_eq!(refused["reviewStatus"], expected_status);
+                assert_eq!(
+                    fixture
+                        .app
+                        .db
+                        .latest_planning_artifact(&intake_id, "PLAN")
+                        .await
+                        .unwrap()
+                        .revision,
+                    1,
+                    "a rejected review must not be repaired into a new revision"
+                );
+                assert_eq!(
+                    fixture
+                        .app
+                        .db
+                        .latest_plan_review(&intake_id)
+                        .await
+                        .unwrap()
+                        .status,
+                    expected_status
+                );
+
+                let (status, blocked) = send(
+                    &fixture.router,
+                    "POST",
+                    &format!("/intake/requests/{intake_id}/approve"),
+                    Some(json!({
+                        "expected_plan_hash": context.plan.plan_hash,
+                        "rationale": "Rejected plan must not start.",
+                        "idempotency_key": format!("approve-rejected-{label}"),
+                    })),
+                )
+                .await;
+                assert_eq!(status, StatusCode::CONFLICT, "{blocked}");
+                let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
+                assert!(record.campaign_id.is_none());
+                assert!(fixture.app.db.campaigns().await.unwrap().is_empty());
+                assert!(
+                    fixture
+                        .app
+                        .db
+                        .lead_start_evidence(&context.lead.id)
+                        .await
+                        .unwrap()
+                        .is_none(),
+                    "a rejected plan must not record start approval evidence"
+                );
+
+                fixture.app.db.close().await;
+                let _ = std::fs::remove_file(fixture.path);
+                let _ = std::fs::remove_dir_all(fixture.repository);
+            }
+        }
+
+        #[tokio::test]
+        async fn compile_plan_rejects_a_tampered_work_graph() {
+            let fixture = setup().await;
+            let (status, _) = enable_policy(&fixture).await;
+            assert_eq!(status, StatusCode::CREATED);
+            let (status, created) = create_intake(&fixture, "request-api-tampered-graph").await;
+            assert_eq!(status, StatusCode::CREATED, "{created}");
+            let intake_id = created["id"].as_str().unwrap().to_owned();
+            fixture_plan(&fixture, &intake_id, "FIXTURE").await;
+            seed_complete_planning(&fixture, &intake_id, ParticipantSeed::Matching).await;
+
+            let pool = sqlx_sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx_sqlite::SqliteConnectOptions::new()
+                        .filename(&fixture.path)
+                        .create_if_missing(false),
+                )
+                .await
+                .unwrap();
+            sqlx::query::query("DELETE FROM planning_artifacts WHERE request_id=?1 AND kind='DOD'")
+                .bind(&intake_id)
+                .execute(&pool)
+                .await
+                .unwrap();
+            let (graph_json,): (String,) = sqlx::query_as::query_as(
+                "SELECT graph_json FROM agentic_work_graphs WHERE request_id=?1",
+            )
+            .bind(&intake_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            let mut tampered: Value = serde_json::from_str(&graph_json).unwrap();
+            tampered["units"][0]["title"] = json!("Tampered after validation");
+            sqlx::query::query("UPDATE agentic_work_graphs SET graph_json=?1 WHERE request_id=?2")
+                .bind(tampered.to_string())
+                .bind(&intake_id)
+                .execute(&pool)
+                .await
+                .unwrap();
+            pool.close().await;
+
+            let (status, refused) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+            assert_eq!(refused["code"], "WORK_GRAPH_REQUIRED");
+            assert_eq!(
+                fixture
+                    .app
+                    .db
+                    .latest_planning_artifact(&intake_id, "PLAN")
+                    .await
+                    .unwrap()
+                    .revision,
+                1
+            );
+            assert!(fixture.app.db.campaigns().await.unwrap().is_empty());
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
+        async fn autopilot_readiness_failure_creates_no_campaign_or_approval() {
+            use factory_native::db::ScopeAdmissionWrite;
+            use factory_native::execution_policy::{
+                OwnerBillingAssumption, OwnerControlledExtraUsage,
+            };
+            use factory_native::subscription_admission::{TestModelRole, TestRouteBinding};
+
+            let fixture = setup().await;
+            let (status, policy, profile) = enable_autonomous_policy(&fixture).await;
+            assert_eq!(status, StatusCode::CREATED, "{policy}");
+            let (record, created) = fixture
+                .app
+                .db
+                .create_intake_request(
+                    &fixture.project_id,
+                    "Implement a bounded intake endpoint.",
+                    Some(&profile.id),
+                    factory_native::intake::IntakeMode::Autonomous,
+                    "request-api-autopilot-side-effects",
+                    "operator-token",
+                )
+                .await
+                .unwrap();
+            assert!(created);
+            let intake_id = record.id.clone();
+            fixture_plan(&fixture, &intake_id, "FIXTURE").await;
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            fixture
+                .app
+                .db
+                .create_subscription_scope_admission(&ScopeAdmissionWrite {
+                    intake_request_id: intake_id.clone(),
+                    lead_request_id: record.lead_request_id.clone(),
+                    test_profile_id: "opencode-go-subscription".into(),
+                    execution_profile_id: record.profile_id.clone(),
+                    provider: "opencode-go".into(),
+                    model: "deepseek-v4.1-flash".into(),
+                    settings_revision: "funding-only-test".into(),
+                    profile_revision_id: record.profile_revision_id.clone(),
+                    profile_hash: record.profile_hash.clone(),
+                    assumption: OwnerBillingAssumption {
+                        assumption_id: "autopilot-funding-only".into(),
+                        confirmed_by: "Product Owner".into(),
+                        confirmed_at_ms: now_ms - 1_000,
+                        valid_until_ms: now_ms + 60_000,
+                        extra_usage: OwnerControlledExtraUsage::Disabled,
+                        statement:
+                            "Owner confirmed Extra Usage is disabled for this funding-only test admission."
+                                .into(),
+                    },
+                    routes: vec![
+                        TestRouteBinding {
+                            role: TestModelRole::Lead,
+                            provider: "opencode-go".into(),
+                            model: "deepseek-v4.1-flash".into(),
+                            settings_revision: "funding-only-test".into(),
+                            transport: "OPENCODE_GO_SUBSCRIPTION".into(),
+                        },
+                        TestRouteBinding {
+                            role: TestModelRole::Implementer,
+                            provider: "opencode-go".into(),
+                            model: "deepseek-v4.1-flash".into(),
+                            settings_revision: "funding-only-test".into(),
+                            transport: "OPENCODE_GO_SUBSCRIPTION".into(),
+                        },
+                    ],
+                    idempotency_key: "autopilot-funding-only-admission".into(),
+                })
+                .await
+                .expect("funding-only admission");
+            let app = test_app_with_master_key_and_options(&fixture.path, None, true, None).await;
+            app.db
+                .set_agentic_operation_status(&intake_id, "STARTING")
+                .await
+                .unwrap();
+
+            let error = run_autopilot_inner(&app, &intake_id)
+                .await
+                .expect_err("incomplete planning must block the autopilot start");
+            assert!(
+                matches!(
+                    error,
+                    Error::IntakeConflict {
+                        code: "PLAN_ARTIFACTS_REQUIRED",
+                        ..
+                    }
+                ),
+                "{error}"
+            );
+            // STARTING is scheduler telemetry, not Campaign authority.
+            assert!(
+                app.db.campaigns().await.unwrap().is_empty(),
+                "the autopilot must not create a Campaign before readiness"
+            );
+            let record = app.db.intake_request(&intake_id).await.unwrap();
+            assert!(record.campaign_id.is_none());
+            let lead = app.db.lead_request(&record.lead_request_id).await.unwrap();
+            assert!(lead.campaign_id.is_none());
+            assert!(
+                app.db
+                    .lead_start_evidence(&lead.id)
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "an incomplete autopilot must not record start approval evidence"
+            );
+            assert!(
+                app.db
+                    .active_subscription_admission_for_request(&intake_id)
+                    .await
+                    .unwrap()
+                    .is_some(),
+                "the subscription admission is funding evidence created before assessment"
+            );
+            let value = intake_request_value(&app, &record, false).await.unwrap();
+            assert_ne!(value["state"], "EXECUTING");
+
+            fail_autopilot(&app, &intake_id, &error).await;
+            app.db
+                .set_agentic_operation_status(&intake_id, "BLOCKED")
+                .await
+                .unwrap();
+            let blocked = app.db.lead_request(&lead.id).await.unwrap();
+            assert_eq!(
+                blocked.state,
+                factory_native::lead::LeadRequestState::Blocked
+            );
+            assert!(
+                blocked
+                    .failure_reason
+                    .as_deref()
+                    .is_some_and(|reason| reason.contains("PLAN_ARTIFACTS_REQUIRED")),
+                "{:?}",
+                blocked.failure_reason
+            );
+            assert_eq!(
+                app.db
+                    .agentic_operation_for_request(&intake_id)
+                    .await
+                    .unwrap()
+                    .status,
+                "BLOCKED"
+            );
+            assert!(app.db.campaigns().await.unwrap().is_empty());
 
             app.db.close().await;
             fixture.app.db.close().await;
