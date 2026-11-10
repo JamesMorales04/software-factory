@@ -97,15 +97,18 @@ Migration smoke: fresh and upgrade-from-0064 databases apply migrations
 
 ### WP12 acceptance run
 
-Candidate `4769b9ed0ca1b67c2afde2edafdcfb02dca14c1c` (clean tree
-`9d094cc9188f27270e470fb608ebf4980ddbac1f`) was exercised with
+Candidate `ec4519ec293f0fd8d49f94ee6a2ff52e9143210d` (clean tree
+`25d72c49e61ff9b5cfced8012a666ade924c1d50`) was exercised with
 `scripts/quality-wave12-acceptance.sh --require-clean`. Exact results and the
 per-step logs are recorded in the
 [WP12 manifest](../evidence/quality-wave12-chaos-2026-11-10/manifest.json).
 
 ```text
 scripts/quality-wave12-acceptance.sh --require-clean
-19/19 steps PASS; 0 failed; 0 skipped steps; 225 s
+20/20 steps PASS; 0 failed; 0 skipped steps; 236 s
+
+scripts/quality-wave12-acceptance.test.sh
+PASS (PASS/PARTIAL/FAIL results; missing/stale/fresh --no-install dependencies)
 
 cargo test -p factory-native --locked --lib
 830 passed; 0 failed; 4 ignored

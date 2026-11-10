@@ -9,8 +9,8 @@ instead of being counted as passes.
 
 - Branch: `factory/quality-wave12-chaos-matrix`
 - Baseline: `452bb40` (`factory/quality-wave12-integration`)
-- Candidate: `4769b9ed0ca1b67c2afde2edafdcfb02dca14c1c` (tree
-  `9d094cc9188f27270e470fb608ebf4980ddbac1f`, clean)
+- Candidate: `ec4519ec293f0fd8d49f94ee6a2ff52e9143210d` (tree
+  `25d72c49e61ff9b5cfced8012a666ade924c1d50`, clean)
 - Acceptance script: [`scripts/quality-wave12-acceptance.sh`](../../scripts/quality-wave12-acceptance.sh)
 - Candidate-bound evidence: [`docs/evidence/quality-wave12-chaos-2026-11-10/manifest.json`](../evidence/quality-wave12-chaos-2026-11-10/manifest.json)
 - Related evidence: [WP5 provider chaos](wp5-provider-chaos-evidence.md),
@@ -50,12 +50,13 @@ that the temp root is not a Git worktree.
 
 ## Candidate result
 
-The recorded run used candidate `4769b9e`, a clean worktree and
+The recorded run used candidate `ec4519e`, a clean worktree and
 `--require-clean`:
 
 | Check | Exact result |
 |---|---|
-| Acceptance script | 19/19 steps PASS, 0 FAIL, 0 skipped steps; 225 s |
+| Acceptance script | 20/20 steps PASS, 0 FAIL, 0 skipped steps; 236 s |
+| Control-flow self-test | PASS (PASS/PARTIAL/FAIL results; missing/stale/fresh `--no-install` dependencies) |
 | Library suite | 830 passed, 0 failed, 4 ignored |
 | Binary suites | 125 passed, 0 failed (Core 38, runtime broker 29, worker 17, supervisor 9, verifier 7, architecture 8, repo hygiene 7, reviewer 4, dependency acquire 3, provider smoke 3) |
 | Targeted integration | 29 passed, 0 failed (planning 1, provider chaos 16, dependency HTTP 6, OpenSpec 5, migration 1) |

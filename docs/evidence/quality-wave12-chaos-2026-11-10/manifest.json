@@ -6,8 +6,8 @@
   "title": "Deterministic chaos/fault-injection matrix and repeat-run acceptance",
   "branch": "factory/quality-wp12-chaos-matrix",
   "baseCommit": "452bb40fba2d74ef4cbfbb108191900d4159d9dd",
-  "candidateCommit": "4769b9ed0ca1b67c2afde2edafdcfb02dca14c1c",
-  "candidateTree": "9d094cc9188f27270e470fb608ebf4980ddbac1f",
+  "candidateCommit": "ec4519ec293f0fd8d49f94ee6a2ff52e9143210d",
+  "candidateTree": "25d72c49e61ff9b5cfced8012a666ade924c1d50",
   "candidateClean": true,
   "acceptanceScript": "scripts/quality-wave12-acceptance.sh",
   "matrix": "docs/implementation/wp12-chaos-matrix.md",
@@ -16,17 +16,26 @@
     "repeatRuns": "docs/evidence/quality-wave12-chaos-2026-11-10/repeat-runs.log"
   },
   "command": "scripts/quality-wave12-acceptance.sh --require-clean",
-  "startedAt": "2026-11-09T23:22:09-05:00",
-  "finishedAt": "2026-11-09T23:25:54-05:00",
-  "durationSeconds": 225,
+  "startedAt": "2026-11-09T23:42:19-05:00",
+  "finishedAt": "2026-11-09T23:46:15-05:00",
+  "durationSeconds": 236,
   "exitStatus": 0,
   "paidInference": false,
   "installedStackTouched": false,
   "summary": {
-    "stepsPassed": 19,
+    "stepsPassed": 20,
     "stepsFailed": 0,
     "stepsSkipped": 0,
     "result": "PASS"
+  },
+  "partialRunSemantics": {
+    "pass": "Only a full run with no required skip can print RESULT: PASS.",
+    "partial": "--skip-office or --skip-compose is diagnostic only and prints RESULT: PARTIAL.",
+    "partialExitStatus": 3,
+    "failedExitStatus": 1,
+    "blockedExitStatus": 2,
+    "noInstall": "--no-install fails closed when Office dependencies are missing or stale.",
+    "selfTest": "scripts/quality-wave12-acceptance.test.sh proves PASS/PARTIAL/FAIL results and the missing/stale/fresh dependency cases."
   },
   "environment": {
     "hostname": "cachyos-x8664",
@@ -46,16 +55,30 @@
   },
   "steps": [
     {
+      "id": "self_test",
+      "command": "scripts/quality-wave12-acceptance.test.sh",
+      "result": "PASS",
+      "durationSeconds": 1,
+      "assertions": [
+        "full run result/exit: PASS/0",
+        "required skip result/exit: PARTIAL/3",
+        "failed step result/exit: FAIL/1",
+        "missing Office dependencies with --no-install: fail closed",
+        "stale Office dependencies with --no-install: fail closed",
+        "fresh Office dependencies with --no-install: pass without npm"
+      ]
+    },
+    {
       "id": "fmt",
       "command": "cargo fmt --all -- --check",
       "result": "PASS",
-      "durationSeconds": 2
+      "durationSeconds": 1
     },
     {
       "id": "lib",
       "command": "cargo test -p factory-native --locked --lib",
       "result": "PASS",
-      "durationSeconds": 148,
+      "durationSeconds": 156,
       "tests": {
         "passed": 830,
         "failed": 0,
@@ -140,7 +163,7 @@
       "id": "filter_review_roles",
       "command": "cargo test -p factory-native --locked --lib review_roles",
       "result": "PASS",
-      "durationSeconds": 1,
+      "durationSeconds": 0,
       "tests": {
         "passed": 9,
         "failed": 0,
@@ -151,7 +174,7 @@
       "id": "filter_gate",
       "command": "cargo test -p factory-native --locked --lib gate_",
       "result": "PASS",
-      "durationSeconds": 7,
+      "durationSeconds": 8,
       "tests": {
         "passed": 18,
         "failed": 0,
@@ -213,7 +236,7 @@
       "id": "office_typecheck",
       "command": "cd office && npm run typecheck",
       "result": "PASS",
-      "durationSeconds": 8
+      "durationSeconds": 9
     },
     {
       "id": "office_lint",
@@ -226,7 +249,7 @@
       "id": "compose_config_base",
       "command": "podman compose -f compose.yaml config",
       "result": "PASS",
-      "durationSeconds": 2,
+      "durationSeconds": 1,
       "services": 14,
       "volumes": 27,
       "networks": 2
@@ -235,7 +258,7 @@
       "id": "compose_config_profile",
       "command": "podman compose --profile openspec-validation -f compose.yaml config",
       "result": "PASS",
-      "durationSeconds": 1,
+      "durationSeconds": 2,
       "services": 15,
       "volumes": 27,
       "networks": 2
@@ -256,7 +279,7 @@
       "id": "compose_policy_profile",
       "command": "docker-compose --profile openspec-validation -f target/quality-wave12/compose-openspec.yaml config --format json > target/quality-wave12/compose-openspec.json && python3 .github/scripts/check-compose-policy.py target/quality-wave12/compose-openspec.json && COMPOSE_CONFIG_JSON=target/quality-wave12/compose-openspec.json python3 .github/scripts/test_check_compose_policy.py",
       "result": "PASS",
-      "durationSeconds": 8,
+      "durationSeconds": 11,
       "policy": "PASS",
       "policyTests": {
         "run": 36,
@@ -480,5 +503,5 @@
     "The four ignored library tests are reported as SKIPPED, not as passes.",
     "The compose_config_base and compose_config_profile step logs are empty because config output was redirected to the YAML artifacts; both commands exited 0 and the rendered service counts are recorded above."
   ],
-  "claimBoundary": "Deterministic implementer evidence for candidate 4769b9e. It is not independent acceptance, a Quality Gate decision, deployment, certification, live-provider evidence or a TRUSTED_LOCAL isolation claim."
+  "claimBoundary": "Deterministic implementer evidence for candidate ec4519e. It is not independent acceptance, a Quality Gate decision, deployment, certification, live-provider evidence or a TRUSTED_LOCAL isolation claim."
 }
