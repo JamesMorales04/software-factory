@@ -49,6 +49,13 @@ rejected. Every finding must set `points` to the canonical severity weight
 finding points are advisory input and never grant repair or acceptance.
 Malformed or uncertain output is never converted into approval.
 
+Informational (`info`) findings on a passing, executed reviewer receipt are
+observations. They remain durable in `findings_json` and the finding ledger and
+stay visible in Office, but they do not block an otherwise accepted Gate and
+never produce or authorize a repair cycle. Warning, blocking and critical
+findings keep their open-disposition and repair rules, and non-passing receipts
+keep the existing finding behavior.
+
 ## Verdict mapping
 
 | Semantic verdict | Receipt result | Gate effect |

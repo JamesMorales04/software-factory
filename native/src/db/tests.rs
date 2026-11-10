@@ -1389,6 +1389,21 @@ fn quality_receipt(fixture: &CandidateFixture, id: &str, principal: &str) -> Qua
     }
 }
 
+fn review_finding(
+    id: &str,
+    severity: crate::review::FindingSeverity,
+) -> crate::review::ReviewFinding {
+    crate::review::ReviewFinding {
+        id: id.into(),
+        severity,
+        category: crate::review::FindingCategory::Functional,
+        message: format!("{severity:?} finding for {id}"),
+        points: severity.canonical_points(),
+        rationale: "the exact candidate diff demonstrates this finding".into(),
+        evidence_refs: vec!["seed.txt".into()],
+    }
+}
+
 fn quality_reviewer_receipt(
     fixture: &CandidateFixture,
     id: &str,
@@ -1427,6 +1442,36 @@ async fn insert_reviewer_receipt_direct(
     .bind(&fixture.commit_sha)
     .bind(&fixture.tree_sha)
     .bind(Utc::now().to_rfc3339())
+    .execute(&fixture.db.pool)
+    .await
+    .unwrap();
+}
+
+async fn insert_reviewer_receipt_with_findings_direct(
+    fixture: &CandidateFixture,
+    id: &str,
+    principal: &str,
+    result: &str,
+    findings: &[crate::review::ReviewFinding],
+) {
+    let findings_json = serde_json::to_string(findings).unwrap();
+    sqlx::query::query(
+        "INSERT INTO quality_receipts
+           (receipt_id,candidate_id,role,principal_id,reviewer_role,action_spec_sha256,
+            commit_sha,tree_sha,result,evidence,findings_json,mechanism,model_provider,
+            model_name,model_reservation_id,model_request_sha256,input_tokens,output_tokens,
+            total_tokens,cost_micros,usage_known,received_at)
+         VALUES (?1,?2,'reviewer',?3,'',?4,?5,?6,?7,'EXECUTED',?8,'DETERMINISTIC',
+                 '','','','',0,0,0,0,0,'2000-01-01T00:00:00Z')",
+    )
+    .bind(id)
+    .bind(&fixture.candidate_id)
+    .bind(principal)
+    .bind(&fixture.spec_sha256)
+    .bind(&fixture.commit_sha)
+    .bind(&fixture.tree_sha)
+    .bind(result)
+    .bind(findings_json)
     .execute(&fixture.db.pool)
     .await
     .unwrap();
@@ -3973,5 +4018,278 @@ async fn open_reviewer_findings_block_the_gate() {
             .iter()
             .any(|reason| reason.contains("remain open"))
     );
+    fixture.db.close().await;
+}
+
+#[tokio::test]
+async fn informational_only_review_findings_accept_with_observations() {
+    use crate::review::FindingSeverity;
+
+    let fixture = candidate_fixture().await;
+    fixture
+        .db
+        .record_quality_receipt(
+            &fixture.candidate_id,
+            QualityRole::Verifier,
+            &quality_receipt(&fixture, "verifier-info-only", "verifier-1"),
+        )
+        .await
+        .unwrap();
+    let mut review = quality_receipt(&fixture, "reviewer-info-only", "reviewer-1");
+    review.findings = vec![
+        review_finding("info-1", FindingSeverity::Info),
+        review_finding("info-2", FindingSeverity::Info),
+    ];
+    let result = fixture
+        .db
+        .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &review)
+        .await
+        .unwrap();
+    let gate = result.gate.expect("gate is decided");
+    assert_eq!(gate.outcome, GateOutcome::Accepted);
+    assert!(gate.reasons.iter().any(|reason| {
+        reason.contains("2 informational reviewer finding(s) recorded as observations")
+    }));
+
+    // Informational findings stay visible in the receipt evidence.
+    let receipts = fixture
+        .db
+        .quality_receipts(&fixture.candidate_id)
+        .await
+        .unwrap();
+    let reviewer = receipts
+        .iter()
+        .find(|receipt| receipt.role == QualityRole::Reviewer)
+        .unwrap();
+    assert_eq!(reviewer.findings.len(), 2);
+    assert!(
+        reviewer
+            .findings
+            .iter()
+            .all(|finding| finding.severity == FindingSeverity::Info)
+    );
+
+    // An info-only passing review cannot produce or deny a repair cycle.
+    assert!(
+        fixture
+            .db
+            .repair_authorization_for_candidate(&fixture.candidate_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let (repairs,): (i64,) =
+        sqlx::query_as::query_as("SELECT COUNT(*) FROM autonomy_repairs WHERE candidate_id=?1")
+            .bind(&fixture.candidate_id)
+            .fetch_one(&fixture.db.pool)
+            .await
+            .unwrap();
+    assert_eq!(repairs, 0);
+    fixture.db.close().await;
+}
+
+#[tokio::test]
+async fn five_passing_reviewers_with_informational_findings_accept() {
+    use crate::review::FindingSeverity;
+
+    let fixture = candidate_fixture().await;
+    set_reviewer_requirement(&fixture.db, &fixture.candidate_id, 5, &[], &[]).await;
+    fixture
+        .db
+        .record_quality_receipt(
+            &fixture.candidate_id,
+            QualityRole::Verifier,
+            &quality_receipt(&fixture, "verifier-five-info", "verifier-1"),
+        )
+        .await
+        .unwrap();
+    for index in 1..=5 {
+        let mut review = quality_receipt(
+            &fixture,
+            &format!("reviewer-five-info-{index}"),
+            &format!("reviewer-{index}"),
+        );
+        review.findings = vec![review_finding(
+            &format!("info-{index}"),
+            FindingSeverity::Info,
+        )];
+        let result = fixture
+            .db
+            .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &review)
+            .await
+            .unwrap();
+        if index < 5 {
+            assert!(result.gate.is_none(), "the Gate waits for all reviewers");
+        } else {
+            let gate = result.gate.expect("the fifth reviewer decides the Gate");
+            assert_eq!(gate.outcome, GateOutcome::Accepted);
+            assert!(gate.reasons.iter().any(|reason| {
+                reason.contains("5 informational reviewer finding(s) recorded as observations")
+            }));
+        }
+    }
+    assert!(
+        fixture
+            .db
+            .repair_authorization_for_candidate(&fixture.candidate_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let (repairs,): (i64,) =
+        sqlx::query_as::query_as("SELECT COUNT(*) FROM autonomy_repairs WHERE candidate_id=?1")
+            .bind(&fixture.candidate_id)
+            .fetch_one(&fixture.db.pool)
+            .await
+            .unwrap();
+    assert_eq!(repairs, 0);
+    fixture.db.close().await;
+}
+
+#[tokio::test]
+async fn warning_review_finding_still_requires_a_disposition() {
+    use crate::review::FindingSeverity;
+
+    let fixture = candidate_fixture().await;
+    fixture
+        .db
+        .record_quality_receipt(
+            &fixture.candidate_id,
+            QualityRole::Verifier,
+            &quality_receipt(&fixture, "verifier-warning-disposition", "verifier-1"),
+        )
+        .await
+        .unwrap();
+    let mut review = quality_receipt(&fixture, "reviewer-warning-disposition", "reviewer-1");
+    review.findings = vec![review_finding("warning-1", FindingSeverity::Warning)];
+    let result = fixture
+        .db
+        .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &review)
+        .await
+        .unwrap();
+    let gate = result.gate.expect("gate is decided");
+    assert_eq!(gate.outcome, GateOutcome::RepairRequired);
+    assert!(
+        gate.reasons
+            .iter()
+            .any(|reason| reason.contains("1 reviewer finding(s) remain open"))
+    );
+    let repair = fixture
+        .db
+        .repair_authorization_for_candidate(&fixture.candidate_id)
+        .await
+        .unwrap()
+        .expect("warning finding creates a repair decision");
+    assert_eq!(repair.decision, "DENIED");
+    assert_eq!(repair.reason_code, "contradictory_review");
+    assert_eq!(
+        repair.total_points,
+        FindingSeverity::Warning.canonical_points()
+    );
+    assert_eq!(repair.warning_count, 1);
+    assert_eq!(repair.info_count, 0);
+    fixture.db.close().await;
+}
+
+#[tokio::test]
+async fn blocking_review_finding_under_a_pass_receipt_still_requires_repair() {
+    use crate::review::FindingSeverity;
+
+    let fixture = candidate_fixture().await;
+    fixture
+        .db
+        .record_quality_receipt(
+            &fixture.candidate_id,
+            QualityRole::Verifier,
+            &quality_receipt(&fixture, "verifier-blocking-pass", "verifier-1"),
+        )
+        .await
+        .unwrap();
+    // Simulate a historical/malformed PASS row that bypassed ingestion
+    // validation. A later receipt recomputes the Gate over every durable row.
+    insert_reviewer_receipt_with_findings_direct(
+        &fixture,
+        "reviewer-blocking-pass",
+        "reviewer-historical",
+        "PASS",
+        &[review_finding("blocking-1", FindingSeverity::Blocking)],
+    )
+    .await;
+    let trigger = quality_receipt(&fixture, "reviewer-blocking-trigger", "reviewer-1");
+    let result = fixture
+        .db
+        .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &trigger)
+        .await
+        .unwrap();
+    let gate = result.gate.expect("gate is decided");
+    assert_eq!(gate.outcome, GateOutcome::RepairRequired);
+    assert!(
+        gate.reasons
+            .iter()
+            .any(|reason| reason.contains("contradicts a blocking finding"))
+    );
+    let repair = fixture
+        .db
+        .repair_authorization_for_candidate(&fixture.candidate_id)
+        .await
+        .unwrap()
+        .expect("blocking finding creates a repair decision");
+    assert_eq!(repair.decision, "DENIED");
+    assert_eq!(repair.reason_code, "contradictory_review");
+    assert_eq!(
+        repair.total_points,
+        FindingSeverity::Blocking.canonical_points()
+    );
+    assert_eq!(repair.blocking_count, 1);
+    assert_eq!(repair.info_count, 0);
+    fixture.db.close().await;
+}
+
+#[tokio::test]
+async fn critical_review_finding_remains_a_human_stop_with_observations() {
+    use crate::review::FindingSeverity;
+
+    let fixture = candidate_fixture().await;
+    fixture
+        .db
+        .record_quality_receipt(
+            &fixture.candidate_id,
+            QualityRole::Verifier,
+            &quality_receipt(&fixture, "verifier-critical-info", "verifier-1"),
+        )
+        .await
+        .unwrap();
+    let mut review = quality_receipt(&fixture, "reviewer-critical-info", "reviewer-1");
+    review.result = ReceiptResult::ChangesRequested;
+    review.findings = vec![
+        review_finding("critical-1", FindingSeverity::Critical),
+        review_finding("info-critical", FindingSeverity::Info),
+    ];
+    let result = fixture
+        .db
+        .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &review)
+        .await
+        .unwrap();
+    let gate = result.gate.expect("gate is decided");
+    assert_eq!(gate.outcome, GateOutcome::HumanRequired);
+    assert!(
+        gate.reasons
+            .iter()
+            .any(|reason| reason.contains("critical review finding"))
+    );
+    let repair = fixture
+        .db
+        .repair_authorization_for_candidate(&fixture.candidate_id)
+        .await
+        .unwrap()
+        .expect("critical finding creates a repair decision");
+    assert_eq!(repair.decision, "HUMAN_REQUIRED");
+    assert_eq!(repair.reason_code, "critical_zero");
+    assert_eq!(
+        repair.total_points,
+        FindingSeverity::Critical.canonical_points()
+    );
+    assert_eq!(repair.critical_count, 1);
+    assert_eq!(repair.info_count, 0);
     fixture.db.close().await;
 }

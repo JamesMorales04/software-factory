@@ -51,13 +51,17 @@ not reachable.
    the canonical mapping, an approval containing Blocking/Critical findings,
    and a passing receipt with a Blocking/Critical finding. Historical receipts
    decode with defaulted points/rationale for display but fail closed for
-   autonomous repair.
+   autonomous repair. Informational findings on a passing, executed review are
+   non-blocking observations: they stay visible and retain a durable
+   disposition but do not block acceptance.
 
-4. **Repair authorization is deterministic.** Core computes the finding score,
-   requires reviewer independence from the implementer and verifier, requires
-   executed non-passing review evidence, applies the frozen `AutonomyPolicy`
-   point and cycle budgets by risk class, and records an append-only
-   `AUTHORIZED`, `DENIED` or `HUMAN_REQUIRED` decision. Any Critical finding,
+4. **Repair authorization is deterministic.** Core filters informational
+   observations, computes the finding score from Warning/Blocking/Critical
+   findings, requires reviewer independence from the implementer and verifier,
+   requires executed non-passing review evidence, applies the frozen
+   `AutonomyPolicy` point and cycle budgets by risk class, and records an
+   append-only `AUTHORIZED`, `DENIED` or `HUMAN_REQUIRED` decision. An
+   info-only review never creates a repair authorization. Any Critical finding,
    R2/R3 risk, unknown risk, disabled policy or exhausted budget is a human
    stop. Model output never grants repair or delivery authority.
 

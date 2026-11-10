@@ -1513,6 +1513,34 @@ async fn reviewer_requirement_for_candidate(
     Ok(requirement)
 }
 
+/// Informational findings on a passing, executed review are observations.
+/// They remain durable in the receipt and disposition ledger, but they never
+/// block acceptance; warning and higher severities keep their existing rules.
+fn informational_observation(
+    reviewer: &QualityReceiptRecord,
+    finding: &crate::review::ReviewFinding,
+) -> bool {
+    reviewer.result == ReceiptResult::Pass
+        && reviewer.evidence == EvidenceKind::Executed
+        && finding.severity == crate::review::FindingSeverity::Info
+}
+
+/// Repair authorization consumes actionable findings only. Informational
+/// findings remain observations and never justify or authorize a repair cycle.
+fn is_actionable_finding(finding: &crate::review::ReviewFinding) -> bool {
+    finding.severity != crate::review::FindingSeverity::Info
+}
+
+fn actionable_findings(
+    findings: &[crate::review::ReviewFinding],
+) -> Vec<crate::review::ReviewFinding> {
+    findings
+        .iter()
+        .filter(|finding| is_actionable_finding(finding))
+        .cloned()
+        .collect()
+}
+
 async fn decide_gate(
     connection: &mut SqliteConnection,
     candidate_id: &str,
@@ -1661,10 +1689,17 @@ async fn decide_gate(
     // Every reviewer finding is a durable disposition. A missing or OPEN
     // disposition blocks acceptance even when the reviewer receipt itself
     // passed; the finding must be repaired, resolved with evidence or refuted
-    // by an authenticated owner.
+    // by an authenticated owner. Informational findings on a passing, executed
+    // review are observations: they remain visible in the receipt and
+    // disposition ledger but do not block an otherwise accepted Gate.
     let mut open_findings = 0usize;
+    let mut observations = 0usize;
     for reviewer in &reviewer_records {
         for finding in &reviewer.findings {
+            if informational_observation(reviewer, finding) {
+                observations += 1;
+                continue;
+            }
             let status: Option<(String,)> = sqlx::query_as::query_as(
                 "SELECT status FROM finding_dispositions
                  WHERE candidate_id=?1 AND finding_id=?2",
@@ -1687,6 +1722,11 @@ async fn decide_gate(
             outcome: GateOutcome::RepairRequired,
             reasons: vec![format!("{open_findings} reviewer finding(s) remain open")],
         };
+    }
+    if observations > 0 && decision.outcome == GateOutcome::Accepted {
+        decision.reasons.push(format!(
+            "{observations} informational reviewer finding(s) recorded as observations"
+        ));
     }
     match reviewer_selection_for_candidate_in_tx(connection, candidate_id).await {
         Ok(ReviewerSelection::Deterministic) => {
@@ -1803,7 +1843,10 @@ async fn decide_gate(
         )
         .await?;
     }
-    if let Some(reviewer) = reviewer_records.first() {
+    if let Some(reviewer) = reviewer_records
+        .iter()
+        .find(|reviewer| reviewer.findings.iter().any(is_actionable_finding))
+    {
         record_gate_repair_authorization(connection, &gate, candidate, reviewer, verifier).await?;
     }
     Ok(Some(gate))
@@ -1879,14 +1922,15 @@ async fn record_gate_repair_authorization(
     reviewer: &QualityReceiptRecord,
     verifier: &QualityReceiptRecord,
 ) -> Result<(), Error> {
+    let findings = actionable_findings(&reviewer.findings);
     if !matches!(
         gate.outcome,
         GateOutcome::RepairRequired | GateOutcome::HumanRequired
-    ) || reviewer.findings.is_empty()
+    ) || findings.is_empty()
     {
         return Ok(());
     }
-    let score = match autonomy::score_findings(&reviewer.findings) {
+    let score = match autonomy::score_findings(&findings) {
         Ok(score) => score,
         Err(_) => return Ok(()),
     };
@@ -1894,7 +1938,7 @@ async fn record_gate_repair_authorization(
     let decision = autonomy::authorize_repair(&RepairRequest {
         risk_class: &context.risk_class,
         policy: &context.autonomy,
-        findings: &reviewer.findings,
+        findings: &findings,
         reviewer_result: reviewer.result,
         reviewer_evidence_executed: reviewer.evidence == EvidenceKind::Executed,
         reviewer_principal: &reviewer.principal_id,
