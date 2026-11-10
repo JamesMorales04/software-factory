@@ -42,7 +42,7 @@ services:
       CARGO_HOME: /home/factory/.cargo
       CARGO_TARGET_DIR: /target
       HOME: /home/factory
-      FACTORY_CORE_URL: http://core:8765
+      FACTORY_CORE_URL: http://core-control:8765
       PLAYWRIGHT_BROWSERS_PATH: /home/factory/.cache/ms-playwright
     security_opt:
       - no-new-privileges:true

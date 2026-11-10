@@ -471,7 +471,12 @@ networks, publish its own host port, configure Funnel, or pass
 Factory/provider credentials to Tailscale. Core keeps its existing `127.0.0.1`
 publication for local access and recovery.
 Core's full control listener binds only the `core-control` (factory-control)
-and `core-egress` (factory-egress) network aliases. Tailscale Serve forwards
+and `core-egress` (factory-egress) network aliases. Supervisor, Worker,
+verifier, reviewer and OpenSpec control-plane clients therefore set
+`FACTORY_CORE_URL=http://core-control:8765`. They must never use the plain
+`core` service name, which is attached to both networks and can resolve to an
+address where the control listener is not bound; the Compose policy check
+rejects that regression. Tailscale Serve forwards
 only to Core's restricted Office listener through the dedicated
 `factory-office-socket` Unix domain socket volume, mounted read-only in
 Tailscale. The listener omits Worker, Supervisor, verifier, reviewer, and

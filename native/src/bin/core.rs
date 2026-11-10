@@ -2226,7 +2226,7 @@ fn request_host_allowed(headers: &HeaderMap, trusted: &[String]) -> bool {
     if loopback_host(authority.host()) {
         return true;
     }
-    if authority.host() == "core" && authority.port_u16() == Some(8765) {
+    if authority.host() == "core-control" && authority.port_u16() == Some(8765) {
         return true;
     }
     trusted.iter().any(|origin| {
@@ -17949,6 +17949,11 @@ mod tests {
         assert!(request_host_allowed(&headers, &trusted));
         assert!(origin_allowed("http://127.0.0.1:8893", &headers, &trusted));
         assert!(!origin_allowed("http://127.0.0.1:9999", &headers, &trusted));
+
+        headers.insert(header::HOST, HeaderValue::from_static("core-control:8765"));
+        assert!(request_host_allowed(&headers, &trusted));
+        headers.insert(header::HOST, HeaderValue::from_static("core:8765"));
+        assert!(!request_host_allowed(&headers, &trusted));
     }
 
     #[tokio::test]

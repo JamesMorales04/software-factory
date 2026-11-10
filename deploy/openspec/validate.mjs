@@ -196,7 +196,7 @@ async function fetchProjection() {
   }
   result.requestId = requestId;
   const coreUrl = (
-    process.env.FACTORY_CORE_URL ?? "http://core:8765"
+    process.env.FACTORY_CORE_URL ?? "http://core-control:8765"
   ).replace(/\/+$/, "");
   if (!/^https?:\/\/[^/]+$/.test(coreUrl)) {
     throw new ValidationError(

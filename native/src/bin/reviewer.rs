@@ -889,7 +889,7 @@ fn validated_core_url(raw: &str) -> Result<reqwest::Url, Box<dyn std::error::Err
         raw,
         "FACTORY_CORE_URL",
         container_mode,
-        &["core"],
+        &["core-control"],
     )?;
     Ok(url)
 }
