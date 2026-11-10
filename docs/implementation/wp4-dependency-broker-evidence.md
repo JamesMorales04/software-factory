@@ -10,8 +10,10 @@ acceptance, certification, or a merged/delivered claim.
 `b43dab41b1109a4019ccd6881a262d54a4182405` (worker dispatch, egress proxy,
 workspace synchronization, image pinning), and
 `21b84f57b9ae4b48caf4aab9aaaf239e2c8400bd` (internal-network enforcement and
-pre-authorization dependency-plan attachment). The final evidence-doc commit is
-the branch HEAD after this file.
+pre-authorization dependency-plan attachment), and
+`b041897b708dd35bcd853843b0a91958dab0b470` (Campaign authorization guard and
+migration renumber). The final evidence-doc commit is the branch HEAD after
+this file.
 
 Branch: `factory/quality-wp4-dependency-broker`, baseline `bcb8b5b`.
 
@@ -200,7 +202,9 @@ Evidence content:
   execution plan and attaches it to the ActionSpec before plan review and
   Campaign authorization. Migration `0069` permits that one pre-authorization
   ActionSpec update only while no Campaign exists; the spec is immutable after
-  Campaign start and the migration keeps that invariant in the database.
+  Campaign start and the migration keeps that invariant in the database. It is
+  numbered after WP9's `0065`/`0066` and WP3's `0067`/`0068` to avoid the wave
+  migration collision; earlier WP4 drafts used `0065`.
   - Existing Rust repository with a lockfile and no committed `vendor/`:
     `BrokeredFetch`, with the exact base-commit `Cargo.lock` SHA-256 obtained
     from `git show <base>:Cargo.lock`.
@@ -211,8 +215,10 @@ Evidence content:
   - If planning cannot attach the plan, the route refuses with
     `DEPENDENCY_PLAN_INVALID`/`DEPENDENCY_PLAN_REQUIRED`.
 - Core refuses authorization when `dependencies_required` is true and the plan
-  is absent (`DEPENDENCY_PLAN_REQUIRED` in `load_intake_approval_context`) and
-  refuses assignment dispatch with the same invariant in `load_assignment`.
+  is absent in both the intake start context (`DEPENDENCY_PLAN_REQUIRED`) and
+  the Campaign authorization transaction (`validate_dependency_requirement`
+  before any authorization row is recorded). Assignment dispatch enforces the
+  same invariant in `load_assignment`.
 - The Worker independently refuses an assignment that requires dependencies but
   has no plan before any HTTP call, then derives a typed acquisition request
   from the plan's `BrokeredFetch` contract and calls the Supervisor route with a
@@ -250,19 +256,19 @@ serialization.
 ## Verification run
 
 All commands were run from `native/` unless noted, on
-`21b84f57b9ae4b48caf4aab9aaaf239e2c8400bd`.
+`b041897b708dd35bcd853843b0a91958dab0b470`.
 
 ```text
 cargo fmt --all -- --check
 clean
 
 cargo test -p factory-native --lib
-753 passed; 0 failed; 2 ignored
+754 passed; 0 failed; 2 ignored
 
 cargo test -p factory-native --lib dependency_
-24 passed; 0 failed (includes egress proxy, image pinning, per-workspace
+25 passed; 0 failed (includes egress proxy, image pinning, per-workspace
 concurrency, internal-network enforcement, plan conversion, pre-authorization
-attachment and missing-plan blockers)
+attachment, missing-plan blockers and the Campaign authorization guard)
 
 cargo test -p factory-native --test dependency_broker_http
 6 passed; 0 failed
@@ -295,6 +301,10 @@ cargo test -p factory-native --bin factory-supervisor \
   --bin factory-dependency-acquire
 8 + 7 + 8 + 3 passed; 0 failed (runtime broker includes the existing
 non-internal/unmanaged network regression test)
+
+cargo test -p factory-native --lib authorization_refuses_a_dependency_requirement
+1 passed; Campaign authorization refuses a stored dependency-requiring spec
+with no plan before recording authorization
 
 cargo clippy -p factory-native --all-targets --all-features -- -D warnings
 clean
