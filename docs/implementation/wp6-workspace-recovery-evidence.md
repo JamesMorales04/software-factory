@@ -11,6 +11,7 @@ end-to-end coverage.
 - Original implementation commit: `e3b2454`
 - First review-repair commit: `1dc9176`
 - Second review-repair implementation: `394719a`
+- Third review-repair implementation: `22fd634`
 - Worktree: `/home/james/Escritorio/Development/sf-quality-wave12/wp6`
 
 ## Scope
@@ -49,12 +50,21 @@ valid issues. All were repaired:
    delete, reset, status and inventory operations enforce the derived owner.
    Cleanup/reaper paths use the same checked helpers.
 5. **Serialize per-resource mutations.** Create/reset/delete/import/export/run
-   acquire a bounded sharded async lock per resource name and recheck ownership
-   after acquiring it. Concurrent create for different owners and concurrent
+   acquire an exact per-resource-name async lock and recheck ownership after
+   acquiring it. Locks are bounded with safe reclamation; lock order is
+   volume -> container. Concurrent create for different owners and concurrent
    delete/reset are deterministic tests.
 6. **Status truth.** `docs/implementation/quality-first-planning-status.md`
    records WP6 as implemented for this slice with the remaining independent
    acceptance work.
+7. **Exact resource locks.** The re-review found that sharded locks could block
+   unrelated names on a long execution's shard. Locks are now exact per resource
+   name, bounded to 4096 entries, with unused-entry reclamation and a single
+   overflow lock at capacity. Lock order is volume -> container.
+8. **Execution cleanup lock.** `run_child` cleanup now calls the locking
+   container wrapper, not the unchecked helper, so concurrent delete/recreate
+   cannot replace the inspected container before removal. A deterministic race
+   test asserts strict inspect/remove serialization.
 
 ## Per-owner credential model
 
@@ -124,14 +134,20 @@ Authorization rules:
 4. The broker no longer deletes managed containers on startup. A broker-only
    restart therefore cannot kill an active provider session or execution child
    merely by restarting; the owning service reconciles failures it observes.
-5. Broker mutations acquire a sharded per-name lock before inspecting and again
-   recheck ownership after the lock. Concurrent create for different owners
-   cannot return success for a volume owned by the other caller; concurrent
-   delete/reset cannot remove a replacement created under the lock.
+5. Broker mutations acquire an exact per-resource-name async lock before
+   inspecting and recheck ownership after the lock. Locks are bounded to 4096
+   entries, reclaim unused entries at capacity and use one overflow lock if all
+   entries are active. Lock order is volume -> container: execution holds only
+   its volume lock, cleanup then takes the container lock, and no path acquires a
+   volume lock while holding a container lock. Concurrent create for different
+   owners cannot return success for a volume owned by the other caller;
+   concurrent delete/reset cannot remove a replacement created under the lock,
+   and an unrelated resource is never blocked by a long execution.
 
-Limits: at most 4096 durable state records, 4096 inventory entries and 4 MiB of
-inventory/inspect subprocess output; Podman commands retain the existing 120 s
-command timeout. Inventory failure is reported (`sweepSupported: true`,
+Limits: at most 4096 durable state records, 4096 inventory entries, 4096 exact
+resource-lock entries (then one overflow lock preserves exclusion), and 4 MiB
+of inventory/inspect subprocess output; Podman commands retain the existing
+120 s command timeout. Inventory failure is reported (`sweepSupported: true`,
 `sweepError`) and does not delete anything; an unsupported backend reports
 `sweepSupported: false`.
 
@@ -147,7 +163,7 @@ cargo test -p factory-native --lib
 747 passed; 0 failed; 4 ignored
 
 cargo test -p factory-native --bin factory-runtime-broker
-18 passed; 0 failed
+21 passed; 0 failed
 
 cargo clippy -p factory-native --all-targets --all-features -- -D warnings
 clean
@@ -182,10 +198,18 @@ Owner-token spoofing and authorization tests (deterministic fake Podman):
 
 Concurrency tests (stateful fake Podman with a shared log):
 
+- `resource_locks_are_exact_and_reclaim_unused_entries` — same name shares one
+  lock, different names do not, unused entries are reclaimed, capacity falls
+  back to the overflow lock.
 - `concurrent_create_for_different_owners_serializes_per_name` — one `201` and
   one `409`; the stored owner matches the successful caller.
 - `concurrent_delete_and_reset_never_removes_the_replacement` — no `rm`
   interleaves between create-reset start and completion.
+- `execution_cleanup_serializes_with_container_delete` — execution cleanup and a
+  concurrent container delete produce two strict
+  inspect-start/inspect-end/rm sequences; no replace-before-remove window.
+- `long_execution_does_not_block_an_unrelated_resource` — a create for another
+  volume completes while an 800 ms execution still holds its own volume lock.
 
 Bounded-stream tests:
 
@@ -237,6 +261,8 @@ exit 0; 411 lines rendered
 | Pre-existing foreign volume on create | broker handler test, execution backend test, real Podman probe | Preserved; request fails closed; no `rm`/`create` |
 | Concurrent create for different owners | `concurrent_create_for_different_owners_serializes_per_name` | One success, one conflict; ownership consistent |
 | Concurrent delete/reset | `concurrent_delete_and_reset_never_removes_the_replacement` | Serialized; no interleaved delete |
+| Execution cleanup vs container delete | `execution_cleanup_serializes_with_container_delete` | Strict inspect/remove sequences; no replacement race |
+| Long execution vs unrelated resource | `long_execution_does_not_block_an_unrelated_resource` | Unrelated create completes while execution holds its volume lock |
 | Inventory/inspect output overflow | `read_capped_stops_at_the_limit`, `inspect_output_is_bounded_before_parsing` | Stops at bound; process/response rejected |
 | Inventory unavailable or unsupported | `reconcile_handles_unsupported_and_failed_inventory` | No deletion; status/error reported |
 | Real Podman orphan sweep | `real_podman_reconcile_removes_only_its_orphan_volume` | Orphan removed; referenced volume preserved; cleanup confirmed |
@@ -257,6 +283,10 @@ exit 0; 411 lines rendered
 - Deletion is owner-scoped and verifies the stored label after acquiring the
   per-name lock. Creation resets only a managed, same-owner, same-workspace
   volume; foreign/unlabelled resources are preserved.
+- Mutations use exact per-resource locks with bounded entries and safe
+  reclamation. Lock order is volume -> container; long executions hold only
+  their own volume lock, so unrelated resources and cleanup are not blocked by
+  a shared shard.
 - Legacy managed resources without an owner label are never deleted. They require
   explicit manual cleanup; this is intentional (`never remove unlabelled`).
 - Provider containers are owned by Worker recovery, not by Supervisor
