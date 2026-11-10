@@ -140,10 +140,11 @@ topology. It may bind the repository and use a development image. The product
   the volumes needed for its responsibility.
 - Default-deny execution egress. Provider traffic goes through the scoped egress
   broker; provider children have no host/control network.
-- Per-service configuration volumes are scoped. A deliberately shared execution
-  credential (for example the runtime-broker token used by the execution roles)
-  is shared authority and must be documented as such; never describe it as
-  per-role secret isolation.
+- Per-service configuration volumes are scoped. Runtime-broker callers receive
+  distinct per-owner tokens; the broker derives Supervisor, verifier or
+  provider identity from the authenticated token. Never replace them with a
+  shared destructive credential or a caller-supplied owner value, and never
+  describe the shared engine boundary as per-role secret isolation.
 - Redact credentials, tokens, prompts, source bodies and environment maps at
   logs, telemetry, evidence and error boundaries. Do not print an enrollment
   code, operator token or provider key in agent output.

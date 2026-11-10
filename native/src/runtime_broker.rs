@@ -215,14 +215,21 @@ fn is_managed(labels: &BTreeMap<String, String>) -> bool {
     labels.get(MANAGED_LABEL_KEY).map(String::as_str) == Some("true")
 }
 
+/// Owner derived from the managed and owner labels. Missing, unknown or
+/// non-managed labels yield `None`.
+pub fn managed_owner(labels: &BTreeMap<String, String>) -> Option<ResourceOwner> {
+    if !is_managed(labels) {
+        return None;
+    }
+    labels
+        .get(OWNER_LABEL_KEY)
+        .and_then(|value| ResourceOwner::from_label(value))
+}
+
 /// A resource is removable only when it carries the managed label and the
 /// expected owner label. Missing or unknown owner labels fail closed.
 pub fn resource_owner_matches(labels: &BTreeMap<String, String>, expected: ResourceOwner) -> bool {
-    is_managed(labels)
-        && labels
-            .get(OWNER_LABEL_KEY)
-            .and_then(|value| ResourceOwner::from_label(value))
-            == Some(expected)
+    managed_owner(labels) == Some(expected)
 }
 
 /// Volume reuse is allowed only when the existing volume is managed, owned by
@@ -303,6 +310,7 @@ pub enum BrokerError {
 pub struct RuntimeBrokerClient {
     base: reqwest::Url,
     token: String,
+    owner: ResourceOwner,
     client: reqwest::Client,
 }
 
@@ -311,6 +319,7 @@ impl std::fmt::Debug for RuntimeBrokerClient {
         formatter
             .debug_struct("RuntimeBrokerClient")
             .field("base", &self.base)
+            .field("owner", &self.owner)
             .field("token", &"<redacted>")
             .finish()
     }
@@ -321,7 +330,6 @@ impl std::fmt::Debug for RuntimeBrokerClient {
 pub struct NewVolume {
     pub volume: String,
     pub workspace_id: String,
-    pub owner: ResourceOwner,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -332,7 +340,6 @@ pub struct RunContainer<'a> {
     pub image: &'a str,
     pub argv: &'a [String],
     pub timeout_secs: u64,
-    pub owner: ResourceOwner,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -363,7 +370,7 @@ pub struct ContainerStatus {
 }
 
 impl RuntimeBrokerClient {
-    pub fn new(base: &str, token: String) -> Result<Self, BrokerError> {
+    pub fn new(base: &str, token: String, owner: ResourceOwner) -> Result<Self, BrokerError> {
         let base = reqwest::Url::parse(base)
             .map_err(|_| BrokerError::Invalid("runtime broker URL".into()))?;
         if base.scheme() != "http"
@@ -392,8 +399,13 @@ impl RuntimeBrokerClient {
         Ok(Self {
             base,
             token,
+            owner,
             client,
         })
+    }
+
+    pub fn owner(&self) -> ResourceOwner {
+        self.owner
     }
 
     pub async fn preflight(&self) -> Result<(), BrokerError> {
@@ -427,16 +439,10 @@ impl RuntimeBrokerClient {
         self.expect_success(response).await
     }
 
-    pub async fn remove_volume(
-        &self,
-        volume: &str,
-        owner: ResourceOwner,
-    ) -> Result<(), BrokerError> {
-        let mut url = self.join(&format!("v1/volumes/{volume}"))?;
-        url.query_pairs_mut().append_pair("owner", owner.as_str());
+    pub async fn remove_volume(&self, volume: &str) -> Result<(), BrokerError> {
         let response = self
             .client
-            .delete(url)
+            .delete(self.join(&format!("v1/volumes/{volume}"))?)
             .bearer_auth(&self.token)
             .timeout(Duration::from_secs(60))
             .send()
@@ -548,16 +554,10 @@ impl RuntimeBrokerClient {
         response.json().await.map_err(BrokerError::Request)
     }
 
-    pub async fn remove_container(
-        &self,
-        container: &str,
-        owner: ResourceOwner,
-    ) -> Result<(), BrokerError> {
-        let mut url = self.join(&format!("v1/containers/{container}"))?;
-        url.query_pairs_mut().append_pair("owner", owner.as_str());
+    pub async fn remove_container(&self, container: &str) -> Result<(), BrokerError> {
         let response = self
             .client
-            .delete(url)
+            .delete(self.join(&format!("v1/containers/{container}"))?)
             .bearer_auth(&self.token)
             .timeout(Duration::from_secs(60))
             .send()
@@ -650,10 +650,37 @@ mod tests {
 
     #[test]
     fn broker_url_and_token_are_strict() {
-        assert!(RuntimeBrokerClient::new("http://runtime:8770", "x".repeat(32)).is_ok());
-        assert!(RuntimeBrokerClient::new("http://runtime:8770/path", "x".repeat(32)).is_err());
-        assert!(RuntimeBrokerClient::new("https://runtime:8770", "x".repeat(32)).is_err());
-        assert!(RuntimeBrokerClient::new("http://runtime:8770", "short".into()).is_err());
+        let client = RuntimeBrokerClient::new(
+            "http://runtime:8770",
+            "x".repeat(32),
+            ResourceOwner::Supervisor,
+        )
+        .unwrap();
+        assert_eq!(client.owner(), ResourceOwner::Supervisor);
+        assert!(
+            RuntimeBrokerClient::new(
+                "http://runtime:8770/path",
+                "x".repeat(32),
+                ResourceOwner::Supervisor,
+            )
+            .is_err()
+        );
+        assert!(
+            RuntimeBrokerClient::new(
+                "https://runtime:8770",
+                "x".repeat(32),
+                ResourceOwner::Supervisor,
+            )
+            .is_err()
+        );
+        assert!(
+            RuntimeBrokerClient::new(
+                "http://runtime:8770",
+                "short".into(),
+                ResourceOwner::Supervisor,
+            )
+            .is_err()
+        );
     }
 
     #[test]

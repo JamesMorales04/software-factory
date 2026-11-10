@@ -145,7 +145,7 @@ services:
       TMPDIR: /var/lib/containers/tmp
       FACTORY_BIND: 0.0.0.0:8770
       FACTORY_CONTAINER_MODE: "1"
-      FACTORY_RUNTIME_BROKER_TOKEN_FILE: /config/runtime-broker.token
+      FACTORY_RUNTIME_BROKER_TOKEN_DIR: /config
       FACTORY_RUNTIME_IMAGES: docker.io/library/rust:1.90.0-bookworm
       FACTORY_RUNTIME_PROVIDER_IMAGES: localhost/software-factory-provider:dev
       # The installed stack is fail-closed for the live OpenCode route:
@@ -253,7 +253,7 @@ services:
       FACTORY_SUPERVISOR_PROJECT_ROOTS: /projects
       FACTORY_SUPERVISOR_IMAGES: docker.io/library/rust:1.90.0-bookworm
       FACTORY_RUNTIME_BROKER_URL: http://runtime:8770
-      FACTORY_RUNTIME_BROKER_TOKEN_FILE: /config/runtime-broker.token
+      FACTORY_RUNTIME_BROKER_TOKEN_FILE: /config/runtime-broker-supervisor.token
     networks:
       - factory-control
     healthcheck:
@@ -298,7 +298,7 @@ services:
       FACTORY_PROVIDER_KIND: ${FACTORY_PROVIDER_KIND:-opencode}
       FACTORY_PROVIDER_SESSION_ROOT: /provider-sessions
       FACTORY_RUNTIME_BROKER_URL: http://runtime:8770
-      FACTORY_RUNTIME_BROKER_TOKEN_FILE: /config/runtime-broker.token
+      FACTORY_RUNTIME_BROKER_TOKEN_FILE: /config/runtime-broker-provider.token
       FACTORY_FIXTURE_FILE: src/fixture.txt
       FACTORY_FIXTURE_CONTENT: "fixture candidate\n"
     networks:
@@ -329,7 +329,7 @@ services:
       <<: *control-env
       FACTORY_VERIFIER_TOKEN_FILE: /config/verifier.token
       FACTORY_RUNTIME_BROKER_URL: http://runtime:8770
-      FACTORY_RUNTIME_BROKER_TOKEN_FILE: /config/runtime-broker.token
+      FACTORY_RUNTIME_BROKER_TOKEN_FILE: /config/runtime-broker-verifier.token
       FACTORY_VERIFIER_IMAGE: docker.io/library/rust:1.90.0-bookworm
       FACTORY_VERIFIER_WORKSPACE: /state
       FACTORY_VERIFIER_WATCH: "1"

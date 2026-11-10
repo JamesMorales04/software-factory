@@ -482,7 +482,7 @@ pub struct BrokerVolumes {
 
 impl BrokerVolumes {
     pub fn new(base: &str, token: String, owner: ResourceOwner) -> Result<Self, ExecutionError> {
-        let client = crate::runtime_broker::RuntimeBrokerClient::new(base, token)
+        let client = crate::runtime_broker::RuntimeBrokerClient::new(base, token, owner)
             .map_err(|error| ExecutionError::Volume(error.to_string()))?;
         Ok(Self {
             client,
@@ -515,7 +515,6 @@ impl VolumeBackend for BrokerVolumes {
             .create_volume(&crate::runtime_broker::NewVolume {
                 volume: name.to_owned(),
                 workspace_id: workspace_id.to_owned(),
-                owner: self.owner,
             })
             .await
             .map_err(ExecutionError::from)
@@ -524,7 +523,7 @@ impl VolumeBackend for BrokerVolumes {
     async fn remove_volume(&self, name: &str) -> Result<(), ExecutionError> {
         validate_volume_name(name)?;
         self.client
-            .remove_volume(name, self.owner)
+            .remove_volume(name)
             .await
             .map_err(ExecutionError::from)
     }
@@ -573,7 +572,6 @@ impl VolumeBackend for BrokerVolumes {
                 image,
                 argv,
                 timeout_secs: timeout.as_secs(),
-                owner: self.owner,
             })
             .await
             .map_err(ExecutionError::from)?;
@@ -583,7 +581,7 @@ impl VolumeBackend for BrokerVolumes {
     async fn remove_container(&self, name: &str) -> Result<(), ExecutionError> {
         validate_container_name(name)?;
         self.client
-            .remove_container(name, self.owner)
+            .remove_container(name)
             .await
             .map_err(ExecutionError::from)
     }

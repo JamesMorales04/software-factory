@@ -24,11 +24,11 @@ isolated execution remains fail-closed.
 
 Phase zero created at least two independent child containers, distinct named
 volumes, a network-disabled verifier child, bounded cgroups, and verified
-cleanup. A controlled engine restart preserved engine storage. Managed-resource
-reconciliation is owned by the service that created the resource: at startup the
+cleanup. A controlled engine restart preserved engine storage. The broker uses
+per-owner credentials and a read-only managed-resource inventory. At startup the
 Supervisor repairs durable workspace state and removes only orphaned
-`io.software-factory.owner=supervisor` volumes/containers through the broker's
-read-only inventory. The broker no longer deletes managed containers on startup.
+`io.software-factory.owner=supervisor` volumes/containers. The broker no longer
+deletes managed containers on startup.
 
 A nested **rootless** engine inside the rootless outer container failed for
 child ID mapping:
@@ -125,10 +125,13 @@ why the engine is trusted infrastructure and why SEC-01 remains blocked.
   DETERMINISTIC rather than pretending model review occurred; a configured
   default provider without constructible MODEL evidence fails closed at the
   gate. Independent review and isolation remain the mitigation.
-- The execution roles that must call the runtime broker (Worker, Supervisor,
-  verifier and runtime) share the runtime-broker credential. This is a scoped
-  shared engine authority, not per-role secret isolation. The reviewer does not
-  receive this token.
+- The runtime broker uses three distinct owner credentials: Supervisor,
+  verifier and Worker/provider. Each caller authenticates as exactly one
+  `ResourceOwner`; the broker derives the owner from the token and applies it to
+  create/import/export/execute/delete/reset/status operations. The reviewer does
+  not receive a runtime-broker token. A compromised trusted service can still
+  attempt operations within its own owner scope; this is scoped engine authority,
+  not kernel or credential isolation.
 - A broker-only restart no longer deletes managed containers. In-flight broker
   operations still fail and are reconciled by their owning service: the
   Supervisor fails durable `RUNNING` records and removes their resources at
@@ -149,7 +152,7 @@ why the engine is trusted infrastructure and why SEC-01 remains blocked.
   removes stale workspaces and its own owner-labelled orphan resources on
   reconciliation. Unlabelled, foreign-owner and provider resources are
   preserved.
-- Broker deletion requires the caller's expected owner and verifies the stored
+- Broker deletion requires the caller's per-owner token and verifies the stored
   owner label before removal. Volume creation resets only a managed volume whose
   owner and workspace identity match; a foreign or unlabelled pre-existing
   volume is preserved and the request fails closed.

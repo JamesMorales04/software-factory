@@ -163,8 +163,12 @@ impl ContainerProviderSandbox {
                 "provider lifetime is outside the allowed bound".into(),
             ));
         }
-        let broker = RuntimeBrokerClient::new(&config.broker_base, config.broker_token)
-            .map_err(|error| SandboxError::Invalid(error.to_string()))?;
+        let broker = RuntimeBrokerClient::new(
+            &config.broker_base,
+            config.broker_token,
+            ResourceOwner::Provider,
+        )
+        .map_err(|error| SandboxError::Invalid(error.to_string()))?;
         std::fs::create_dir_all(&config.session_dir)?;
         set_private_directory(&config.session_dir)?;
         let session_subdir = config
@@ -220,9 +224,7 @@ impl ContainerProviderSandbox {
             })
             .await
         {
-            let _ = broker
-                .remove_container(&container, ResourceOwner::Provider)
-                .await;
+            let _ = broker.remove_container(&container).await;
             if let Some(egress) = egress {
                 egress.stop();
             }
@@ -236,9 +238,7 @@ impl ContainerProviderSandbox {
                 break;
             }
             if time::Instant::now() >= deadline {
-                let _ = broker
-                    .remove_container(&container, ResourceOwner::Provider)
-                    .await;
+                let _ = broker.remove_container(&container).await;
                 if let Some(egress) = egress {
                     egress.stop();
                 }
@@ -298,10 +298,7 @@ impl ContainerProviderSandbox {
         if let Some(egress) = self.egress.take() {
             egress.stop();
         }
-        let cleanup = self
-            .broker
-            .remove_container(&self.container, ResourceOwner::Provider)
-            .await;
+        let cleanup = self.broker.remove_container(&self.container).await;
         let absent = match self.broker.container_status(&self.container).await {
             Ok(status) => status.status == "absent" || status.status == "exited",
             Err(_) => true,

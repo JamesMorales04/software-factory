@@ -14,7 +14,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     env,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Stdio,
     sync::Arc,
     time::Duration,
@@ -23,7 +23,7 @@ use std::{
 use axum::{
     Json, Router,
     body::Bytes,
-    extract::{DefaultBodyLimit, Path as AxumPath, Query, State},
+    extract::{DefaultBodyLimit, Path as AxumPath, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -58,6 +58,12 @@ const MAX_PROVIDER_RUNTIME: Duration = Duration::from_secs(60 * 60);
 const MANAGED_LABEL: &str = "io.software-factory.managed=true";
 const WORKSPACE_LABEL: &str = "io.software-factory.workspace";
 const OWNER_LABEL: &str = "io.software-factory.owner";
+const RESOURCE_LOCK_SHARDS: usize = 64;
+const OWNER_TOKEN_FILES: [(ResourceOwner, &str); 3] = [
+    (ResourceOwner::Supervisor, "runtime-broker-supervisor.token"),
+    (ResourceOwner::Verifier, "runtime-broker-verifier.token"),
+    (ResourceOwner::Provider, "runtime-broker-provider.token"),
+];
 
 const PROVIDER_ENV_KEYS: [&str; 19] = [
     "FACTORY_PROVIDER_SOCKET",
@@ -82,8 +88,67 @@ const PROVIDER_ENV_KEYS: [&str; 19] = [
 ];
 
 #[derive(Clone)]
+struct OwnerTokens {
+    entries: Vec<(ResourceOwner, String)>,
+}
+
+impl OwnerTokens {
+    fn from_directory(directory: &Path) -> Result<Self, String> {
+        let mut entries: Vec<(ResourceOwner, String)> = Vec::new();
+        for (owner, file) in OWNER_TOKEN_FILES {
+            let path = directory.join(file);
+            let token = std::fs::read_to_string(&path)
+                .map_err(|_| format!("runtime broker owner token {} is unavailable", file))?
+                .trim_end_matches(['\r', '\n'])
+                .to_owned();
+            if token.len() < 32 || token.len() > 4096 || token.contains('\0') {
+                return Err(format!("runtime broker owner token {file} is invalid"));
+            }
+            if entries
+                .iter()
+                .any(|(_, existing)| constant_time_eq(existing.as_bytes(), token.as_bytes()))
+            {
+                return Err("runtime broker owner tokens must be distinct".into());
+            }
+            entries.push((owner, token));
+        }
+        Ok(Self { entries })
+    }
+
+    fn authenticate(&self, headers: &HeaderMap) -> Option<ResourceOwner> {
+        let value = headers
+            .get("authorization")?
+            .to_str()
+            .ok()?
+            .strip_prefix("Bearer ")?;
+        let mut matched = None;
+        for (owner, token) in &self.entries {
+            if constant_time_eq(value.as_bytes(), token.as_bytes()) {
+                matched = Some(*owner);
+            }
+        }
+        matched
+    }
+}
+
+enum MutationError {
+    Conflict(&'static str),
+    Failed(String),
+}
+
+impl std::fmt::Display for MutationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Conflict(message) => formatter.write_str(message),
+            Self::Failed(message) => formatter.write_str(message),
+        }
+    }
+}
+
+#[derive(Clone)]
 struct App {
-    token: String,
+    tokens: Arc<OwnerTokens>,
+    resource_locks: Arc<Vec<tokio::sync::Mutex<()>>>,
     podman: PathBuf,
     images: Arc<BTreeSet<String>>,
     provider_images: Arc<BTreeSet<String>>,
@@ -110,11 +175,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let token = factory_native::secrets::required("FACTORY_RUNTIME_BROKER_TOKEN")?;
-    if token.len() < 32 {
-        return Err("FACTORY_RUNTIME_BROKER_TOKEN must be at least 32 bytes".into());
+    let token_dir = PathBuf::from(
+        env::var("FACTORY_RUNTIME_BROKER_TOKEN_DIR").unwrap_or_else(|_| "/config".into()),
+    );
+    if !token_dir.is_absolute() {
+        return Err("FACTORY_RUNTIME_BROKER_TOKEN_DIR must be absolute".into());
     }
-    factory_native::telemetry::register_secret(&token);
+    let tokens = OwnerTokens::from_directory(&token_dir)?;
+    for (_, token) in &tokens.entries {
+        factory_native::telemetry::register_secret(token);
+    }
     let podman = env::var("FACTORY_PODMAN_BIN").unwrap_or_else(|_| "/usr/bin/podman".into());
     let podman = PathBuf::from(podman);
     if !podman.is_absolute() || !podman.is_file() {
@@ -159,7 +229,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let app = Arc::new(App {
-        token,
+        tokens: Arc::new(tokens),
+        resource_locks: Arc::new(
+            (0..RESOURCE_LOCK_SHARDS)
+                .map(|_| tokio::sync::Mutex::new(()))
+                .collect(),
+        ),
         podman,
         images: Arc::new(images),
         provider_images: Arc::new(provider_images),
@@ -376,7 +451,20 @@ impl App {
         Ok(())
     }
 
-    async fn managed_resources(&self) -> Result<ManagedResources, String> {
+    fn owner(&self, headers: &HeaderMap) -> Option<ResourceOwner> {
+        self.tokens.authenticate(headers)
+    }
+
+    fn resource_lock(&self, name: &str) -> &tokio::sync::Mutex<()> {
+        let mut hash = 14_695_981_039_346_656_037u64;
+        for byte in name.bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(1_099_511_628_211);
+        }
+        &self.resource_locks[(hash as usize) % RESOURCE_LOCK_SHARDS]
+    }
+
+    async fn managed_resources(&self, owner: ResourceOwner) -> Result<ManagedResources, String> {
         let volumes = self
             .run_bounded(
                 [
@@ -405,10 +493,120 @@ impl App {
                 MAX_RESOURCE_INVENTORY_BYTES,
             )
             .await?;
+        let owned = owner.as_str();
         Ok(ManagedResources {
-            volumes: parse_volume_inventory(&volumes)?,
-            containers: parse_container_inventory(&containers)?,
+            volumes: parse_volume_inventory(&volumes)?
+                .into_iter()
+                .filter(|resource| resource.owner.as_deref() == Some(owned))
+                .collect(),
+            containers: parse_container_inventory(&containers)?
+                .into_iter()
+                .filter(|resource| resource.owner.as_deref() == Some(owned))
+                .collect(),
         })
+    }
+
+    async fn remove_volume_locked(
+        &self,
+        volume: &str,
+        owner: ResourceOwner,
+    ) -> Result<(), MutationError> {
+        let Some(labels) = self
+            .volume_labels(volume)
+            .await
+            .map_err(MutationError::Failed)?
+        else {
+            return Ok(());
+        };
+        if !resource_owner_matches(&labels, owner) {
+            return Err(MutationError::Conflict(
+                "volume is not owned by the authenticated service",
+            ));
+        }
+        let output = self
+            .podman_output(["volume", "rm", "--force", volume])
+            .await
+            .map_err(MutationError::Failed)?;
+        if !output.status.success() {
+            let exists = self
+                .podman_output(["volume", "exists", volume])
+                .await
+                .map_err(MutationError::Failed)?;
+            if exists.status.code() == Some(1) {
+                return Ok(());
+            }
+            return Err(MutationError::Failed(format!(
+                "volume removal failed: {}",
+                stderr(&output)
+            )));
+        }
+        Ok(())
+    }
+
+    async fn remove_container_locked(
+        &self,
+        container: &str,
+        owner: ResourceOwner,
+    ) -> Result<(), MutationError> {
+        let Some(labels) = self
+            .container_labels(container)
+            .await
+            .map_err(MutationError::Failed)?
+        else {
+            return Ok(());
+        };
+        if !resource_owner_matches(&labels, owner) {
+            return Err(MutationError::Conflict(
+                "container is not owned by the authenticated service",
+            ));
+        }
+        let output = self
+            .podman_output(["rm", "--force", "--time=0", container])
+            .await
+            .map_err(MutationError::Failed)?;
+        if !output.status.success() {
+            let exists = self
+                .podman_output(["container", "exists", container])
+                .await
+                .map_err(MutationError::Failed)?;
+            if exists.status.code() == Some(1) {
+                return Ok(());
+            }
+            return Err(MutationError::Failed(format!(
+                "container removal failed: {}",
+                stderr(&output)
+            )));
+        }
+        Ok(())
+    }
+
+    async fn remove_container_for(
+        &self,
+        container: &str,
+        owner: ResourceOwner,
+    ) -> Result<(), MutationError> {
+        let _guard = self.resource_lock(container).lock().await;
+        self.remove_container_locked(container, owner).await
+    }
+
+    async fn require_volume_owner(
+        &self,
+        volume: &str,
+        owner: ResourceOwner,
+    ) -> Result<(), MutationError> {
+        let Some(labels) = self
+            .volume_labels(volume)
+            .await
+            .map_err(MutationError::Failed)?
+        else {
+            return Err(MutationError::Failed("volume is unavailable".into()));
+        };
+        if !resource_owner_matches(&labels, owner) {
+            return Err(MutationError::Conflict(
+                "volume is not owned by the authenticated service",
+            ));
+        }
+        Ok(())
     }
 
     async fn volume_labels(
@@ -416,16 +614,23 @@ impl App {
         volume: &str,
     ) -> Result<Option<BTreeMap<String, String>>, String> {
         let output = self
-            .podman_output(["volume", "inspect", "--format", "json", volume])
-            .await?;
-        if !output.status.success() {
-            let exists = self.podman_output(["volume", "exists", volume]).await?;
-            if exists.status.code() == Some(1) {
-                return Ok(None);
+            .run_bounded(
+                ["volume", "inspect", "--format", "json", volume],
+                "volume inspect",
+                MAX_RESOURCE_INVENTORY_BYTES,
+            )
+            .await;
+        let labels = match output {
+            Ok(bytes) => parse_volume_labels(&bytes)?,
+            Err(error) => {
+                let exists = self.podman_output(["volume", "exists", volume]).await?;
+                if exists.status.code() == Some(1) {
+                    return Ok(None);
+                }
+                return Err(error);
             }
-            return Err(format!("volume inspect failed: {}", stderr(&output)));
-        }
-        parse_volume_labels(&output.stdout).map(Some)
+        };
+        Ok(Some(labels))
     }
 
     async fn container_labels(
@@ -433,18 +638,25 @@ impl App {
         container: &str,
     ) -> Result<Option<BTreeMap<String, String>>, String> {
         let output = self
-            .podman_output(["inspect", "--format", "json", container])
-            .await?;
-        if !output.status.success() {
-            let exists = self
-                .podman_output(["container", "exists", container])
-                .await?;
-            if exists.status.code() == Some(1) {
-                return Ok(None);
+            .run_bounded(
+                ["inspect", "--format", "json", container],
+                "container inspect",
+                MAX_RESOURCE_INVENTORY_BYTES,
+            )
+            .await;
+        let labels = match output {
+            Ok(bytes) => parse_container_labels(&bytes)?,
+            Err(error) => {
+                let exists = self
+                    .podman_output(["container", "exists", container])
+                    .await?;
+                if exists.status.code() == Some(1) {
+                    return Ok(None);
+                }
+                return Err(error);
             }
-            return Err(format!("container inspect failed: {}", stderr(&output)));
-        }
-        parse_container_labels(&output.stdout).map(Some)
+        };
+        Ok(Some(labels))
     }
 
     async fn run_bounded<I, S>(
@@ -583,24 +795,13 @@ async fn health() -> Json<serde_json::Value> {
 }
 
 async fn list_resources(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
-    if !authorized(&headers, &app.token) {
+    let Some(owner) = app.owner(&headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
-    }
-    match app.managed_resources().await {
+    };
+    match app.managed_resources(owner).await {
         Ok(resources) => Json(resources).into_response(),
         Err(error) => operation_error(error),
     }
-}
-
-fn authorized(headers: &HeaderMap, expected: &str) -> bool {
-    let Some(value) = headers
-        .get("authorization")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-    else {
-        return false;
-    };
-    constant_time_eq(value.as_bytes(), expected.as_bytes())
 }
 
 fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
@@ -743,7 +944,6 @@ fn validate_env(env: &[(String, String)]) -> Result<(), String> {
 struct NewVolume {
     volume: String,
     workspace_id: String,
-    owner: ResourceOwner,
 }
 
 async fn create_volume(
@@ -751,35 +951,30 @@ async fn create_volume(
     headers: HeaderMap,
     Json(input): Json<NewVolume>,
 ) -> Response {
-    if !authorized(&headers, &app.token) {
+    let Some(owner) = app.owner(&headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
-    }
+    };
     if !is_valid_volume_name(&input.volume) || !valid_workspace_id(&input.workspace_id) {
         return bad_request("invalid volume or workspace identity");
     }
-    if input.owner == ResourceOwner::Provider {
-        return bad_request("provider owner cannot create workspace volumes");
+    if owner == ResourceOwner::Provider {
+        return forbidden("provider owner cannot create workspace volumes");
     }
+    let _guard = app.resource_lock(&input.volume).lock().await;
     match app.volume_labels(&input.volume).await {
         Ok(Some(labels)) => {
-            if !volume_identity_matches(&labels, input.owner, &input.workspace_id) {
+            if !volume_identity_matches(&labels, owner, &input.workspace_id) {
                 return conflict("volume exists with a different owner or workspace");
             }
-            if let Err(error) = app
-                .run_checked(
-                    ["volume", "rm", "--force", input.volume.as_str()],
-                    "volume reset",
-                )
-                .await
-            {
-                return operation_error(error);
+            if let Err(error) = app.remove_volume_locked(&input.volume, owner).await {
+                return mutation_error(error);
             }
         }
         Ok(None) => {}
         Err(error) => return operation_error(error),
     }
     let label = format!("{WORKSPACE_LABEL}={}", input.workspace_id);
-    let owner = format!("{OWNER_LABEL}={}", input.owner.as_str());
+    let owner_label = format!("{OWNER_LABEL}={}", owner.as_str());
     match app
         .run_checked(
             [
@@ -788,7 +983,7 @@ async fn create_volume(
                 "--label",
                 &label,
                 "--label",
-                &owner,
+                &owner_label,
                 "--label",
                 MANAGED_LABEL,
                 input.volume.as_str(),
@@ -810,52 +1005,21 @@ async fn create_volume(
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct OwnerQuery {
-    owner: ResourceOwner,
-}
-
 async fn remove_volume(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
     AxumPath(volume): AxumPath<String>,
-    Query(query): Query<OwnerQuery>,
 ) -> Response {
-    if !authorized(&headers, &app.token) {
+    let Some(owner) = app.owner(&headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
-    }
+    };
     if !is_valid_volume_name(&volume) {
         return bad_request("invalid volume name");
     }
-    match app.volume_labels(&volume).await {
-        Ok(None) => StatusCode::NO_CONTENT.into_response(),
-        Ok(Some(labels)) => {
-            if !resource_owner_matches(&labels, query.owner) {
-                return conflict("volume is not owned by the requesting service");
-            }
-            let output = match app
-                .podman_output(["volume", "rm", "--force", volume.as_str()])
-                .await
-            {
-                Ok(output) => output,
-                Err(error) => return operation_error(error),
-            };
-            if output.status.success() {
-                return StatusCode::NO_CONTENT.into_response();
-            }
-            match app
-                .podman_output(["volume", "exists", volume.as_str()])
-                .await
-            {
-                Ok(exists) if exists.status.code() == Some(1) => {
-                    StatusCode::NO_CONTENT.into_response()
-                }
-                Ok(_) => operation_error(format!("volume removal failed: {}", stderr(&output))),
-                Err(error) => operation_error(error),
-            }
-        }
-        Err(error) => operation_error(error),
+    let _guard = app.resource_lock(&volume).lock().await;
+    match app.remove_volume_locked(&volume, owner).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => mutation_error(error),
     }
 }
 
@@ -865,11 +1029,15 @@ async fn import_volume(
     AxumPath(volume): AxumPath<String>,
     body: Bytes,
 ) -> Response {
-    if !authorized(&headers, &app.token) {
+    let Some(owner) = app.owner(&headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
-    }
+    };
     if !is_valid_volume_name(&volume) || body.is_empty() || body.len() > MAX_ARCHIVE_BYTES {
         return bad_request("invalid volume import");
+    }
+    let _guard = app.resource_lock(&volume).lock().await;
+    if let Err(error) = app.require_volume_owner(&volume, owner).await {
+        return mutation_error(error);
     }
     let mut child = match app
         .podman_command(["volume", "import", volume.as_str(), "-"])
@@ -893,9 +1061,7 @@ async fn import_volume(
         Ok(Ok(output)) => output,
         Ok(Err(error)) => return operation_error(format!("volume import failed: {error}")),
         Err(_) => {
-            let _ = app
-                .podman_output(["volume", "rm", "--force", volume.as_str()])
-                .await;
+            let _ = app.remove_volume_locked(&volume, owner).await;
             return operation_error("volume import timed out");
         }
     };
@@ -917,11 +1083,15 @@ async fn export_volume(
     headers: HeaderMap,
     AxumPath(volume): AxumPath<String>,
 ) -> Response {
-    if !authorized(&headers, &app.token) {
+    let Some(owner) = app.owner(&headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
-    }
+    };
     if !is_valid_volume_name(&volume) {
         return bad_request("invalid volume name");
+    }
+    let _guard = app.resource_lock(&volume).lock().await;
+    if let Err(error) = app.require_volume_owner(&volume, owner).await {
+        return mutation_error(error);
     }
     let mut child = match app
         .podman_command(["volume", "export", volume.as_str()])
@@ -981,7 +1151,6 @@ struct RunContainer {
     image: String,
     argv: Vec<String>,
     timeout_secs: u64,
-    owner: ResourceOwner,
 }
 
 async fn run_container(
@@ -989,17 +1158,17 @@ async fn run_container(
     headers: HeaderMap,
     Json(input): Json<RunContainer>,
 ) -> Response {
-    if !authorized(&headers, &app.token) {
+    let Some(owner) = app.owner(&headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
-    }
+    };
     if !is_valid_volume_name(&input.volume) || !is_valid_container_name(&input.container) {
         return bad_request("invalid volume or container identity");
     }
     if !is_valid_exec_container_name(&input.container) {
         return bad_request("execution container has an invalid owner prefix");
     }
-    if input.owner == ResourceOwner::Provider {
-        return bad_request("provider owner cannot start execution containers");
+    if owner == ResourceOwner::Provider {
+        return forbidden("provider owner cannot start execution containers");
     }
     if !app.images.contains(&input.image) {
         return bad_request("image is not allowlisted");
@@ -1010,8 +1179,12 @@ async fn run_container(
     if !(1..=MAX_EXECUTION_RUNTIME.as_secs()).contains(&input.timeout_secs) {
         return bad_request("execution timeout is outside the allowed bound");
     }
+    let _guard = app.resource_lock(&input.volume).lock().await;
+    if let Err(error) = app.require_volume_owner(&input.volume, owner).await {
+        return mutation_error(error);
+    }
     tracing::info!(container=%input.container, volume=%input.volume, "child execution started");
-    let result = run_child(&app, &input).await;
+    let result = run_child(&app, &input, owner).await;
     match &result {
         Ok(output) => tracing::info!(
             container=%input.container,
@@ -1041,16 +1214,20 @@ struct ChildOutput {
     stderr_truncated: bool,
 }
 
-async fn run_child(app: &App, input: &RunContainer) -> Result<ChildOutput, String> {
+async fn run_child(
+    app: &App,
+    input: &RunContainer,
+    owner: ResourceOwner,
+) -> Result<ChildOutput, String> {
     let timeout = Duration::from_secs(input.timeout_secs);
-    let owner = format!("{OWNER_LABEL}={}", input.owner.as_str());
+    let owner_label = format!("{OWNER_LABEL}={}", owner.as_str());
     let args = vec![
         "run".to_owned(),
         "--rm".to_owned(),
         format!("--name={}", input.container),
         format!("--label={MANAGED_LABEL}"),
         format!("--label={WORKSPACE_LABEL}={}", input.volume),
-        format!("--label={owner}"),
+        format!("--label={owner_label}"),
         "--pull=never".to_owned(),
         "--network=none".to_owned(),
         "--read-only".to_owned(),
@@ -1101,17 +1278,13 @@ async fn run_child(app: &App, input: &RunContainer) -> Result<ChildOutput, Strin
         }
         Err(_) => {
             let _ = child.kill().await;
-            let _ = app
-                .podman_output(["rm", "--force", "--time=0", input.container.as_str()])
-                .await;
+            let _ = app.remove_container_locked(&input.container, owner).await;
             stdout_task.abort();
             stderr_task.abort();
             return Err("child container execution timed out".into());
         }
     };
-    let _ = app
-        .podman_output(["rm", "--force", "--time=0", input.container.as_str()])
-        .await;
+    let _ = app.remove_container_locked(&input.container, owner).await;
     let (stdout, stdout_truncated) = stdout_task
         .await
         .map_err(|error| format!("child stdout reader: {error}"))?
@@ -1133,42 +1306,17 @@ async fn remove_container(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
     AxumPath(container): AxumPath<String>,
-    Query(query): Query<OwnerQuery>,
 ) -> Response {
-    if !authorized(&headers, &app.token) {
+    let Some(owner) = app.owner(&headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
-    }
+    };
     if !is_valid_container_name(&container) {
         return bad_request("invalid container name");
     }
-    match app.container_labels(&container).await {
-        Ok(None) => StatusCode::NO_CONTENT.into_response(),
-        Ok(Some(labels)) => {
-            if !resource_owner_matches(&labels, query.owner) {
-                return conflict("container is not owned by the requesting service");
-            }
-            let output = match app
-                .podman_output(["rm", "--force", "--time=0", container.as_str()])
-                .await
-            {
-                Ok(output) => output,
-                Err(error) => return operation_error(error),
-            };
-            if output.status.success() {
-                return StatusCode::NO_CONTENT.into_response();
-            }
-            match app
-                .podman_output(["container", "exists", container.as_str()])
-                .await
-            {
-                Ok(exists) if exists.status.code() == Some(1) => {
-                    StatusCode::NO_CONTENT.into_response()
-                }
-                Ok(_) => operation_error(format!("container removal failed: {}", stderr(&output))),
-                Err(error) => operation_error(error),
-            }
-        }
-        Err(error) => operation_error(error),
+    let _guard = app.resource_lock(&container).lock().await;
+    match app.remove_container_locked(&container, owner).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => mutation_error(error),
     }
 }
 
@@ -1177,11 +1325,24 @@ async fn container_status(
     headers: HeaderMap,
     AxumPath(container): AxumPath<String>,
 ) -> Response {
-    if !authorized(&headers, &app.token) {
+    let Some(owner) = app.owner(&headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
-    }
+    };
     if !is_valid_container_name(&container) {
         return bad_request("invalid container name");
+    }
+    let Some(labels) = (match app.container_labels(&container).await {
+        Ok(labels) => labels,
+        Err(error) => return operation_error(error),
+    }) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error":"container not found"})),
+        )
+            .into_response();
+    };
+    if !resource_owner_matches(&labels, owner) {
+        return conflict("container is not owned by the authenticated service");
     }
     let output = match app
         .podman_output([
@@ -1226,8 +1387,11 @@ async fn start_provider(
     headers: HeaderMap,
     Json(input): Json<StartProvider>,
 ) -> Response {
-    if !authorized(&headers, &app.token) {
+    let Some(owner) = app.owner(&headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
+    };
+    if owner != ResourceOwner::Provider {
+        return forbidden("only the provider owner may start provider sessions");
     }
     if !is_valid_provider_container_name(&input.container) {
         return bad_request("invalid provider container identity");
@@ -1250,6 +1414,7 @@ async fn start_provider(
     if app.provider_images.len() != 1 {
         return bad_request("provider image allowlist must contain exactly one image");
     }
+    let _guard = app.resource_lock(&input.container).lock().await;
     let session_source = app.provider_session_root.join(&input.session_subdir);
     let canonical = match session_source.canonicalize() {
         Ok(path) => path,
@@ -1309,7 +1474,7 @@ async fn start_provider(
     };
     if !output.status.success() {
         let _ = app
-            .podman_output(["rm", "--force", "--time=0", input.container.as_str()])
+            .remove_container_locked(&input.container, ResourceOwner::Provider)
             .await;
         return operation_error(format!("provider start failed: {}", stderr(&output)));
     }
@@ -1320,15 +1485,12 @@ async fn start_provider(
     if reaper_seconds > 0 {
         tokio::spawn(async move {
             time::sleep(Duration::from_secs(reaper_seconds)).await;
-            if let Ok(exists) = reaper
-                .podman_output(["container", "exists", reaper_container.as_str()])
+            tracing::warn!(container=%reaper_container, "provider container reached its lifetime bound; removing");
+            if let Err(error) = reaper
+                .remove_container_for(&reaper_container, ResourceOwner::Provider)
                 .await
-                && exists.status.success()
             {
-                tracing::warn!(container=%reaper_container, "provider container exceeded its lifetime; removing");
-                let _ = reaper
-                    .podman_output(["rm", "--force", "--time=0", reaper_container.as_str()])
-                    .await;
+                tracing::warn!(container=%reaper_container, %error, "provider reaper cleanup failed");
             }
         });
     }
@@ -1347,8 +1509,19 @@ fn bad_request(message: &str) -> Response {
     (StatusCode::BAD_REQUEST, Json(json!({"error": message}))).into_response()
 }
 
+fn forbidden(message: &str) -> Response {
+    (StatusCode::FORBIDDEN, Json(json!({"error": message}))).into_response()
+}
+
 fn conflict(message: &str) -> Response {
     (StatusCode::CONFLICT, Json(json!({"error": message}))).into_response()
+}
+
+fn mutation_error(error: MutationError) -> Response {
+    match error {
+        MutationError::Conflict(message) => conflict(message),
+        MutationError::Failed(message) => operation_error(message),
+    }
 }
 
 fn operation_error(message: impl Into<String>) -> Response {
@@ -1365,7 +1538,11 @@ where
     let mut truncated = false;
     let mut chunk = [0u8; 16 * 1024];
     loop {
-        let read = reader.read(&mut chunk).await?;
+        let read = match reader.read(&mut chunk).await {
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
         if read == 0 {
             break;
         }
@@ -1392,7 +1569,11 @@ where
     let mut captured = Vec::new();
     let mut chunk = [0u8; 16 * 1024];
     loop {
-        let read = reader.read(&mut chunk).await?;
+        let read = match reader.read(&mut chunk).await {
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
         if read == 0 {
             return Ok((captured, false));
         }
@@ -1464,17 +1645,47 @@ mod tests {
     }
 
     #[test]
-    fn volume_owner_is_required_and_typed() {
-        let volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
-        let valid =
-            format!(r#"{{"volume":"{volume}","workspaceId":"attempt-1","owner":"supervisor"}}"#);
-        let input: NewVolume = serde_json::from_str(&valid).unwrap();
-        assert_eq!(input.owner, ResourceOwner::Supervisor);
-        let unknown =
-            format!(r#"{{"volume":"{volume}","workspaceId":"attempt-1","owner":"worker"}}"#);
-        assert!(serde_json::from_str::<NewVolume>(&unknown).is_err());
-        let missing = format!(r#"{{"volume":"{volume}","workspaceId":"attempt-1"}}"#);
-        assert!(serde_json::from_str::<NewVolume>(&missing).is_err());
+    fn owner_tokens_are_distinct_and_authenticate_exactly() {
+        let directory =
+            std::env::temp_dir().join(format!("factory-owner-tokens-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        for (owner, file) in OWNER_TOKEN_FILES {
+            std::fs::write(
+                directory.join(file),
+                format!("{}-owner-token-0123456789abcdef0123456789", owner.as_str()),
+            )
+            .unwrap();
+        }
+        let tokens = OwnerTokens::from_directory(&directory).unwrap();
+        for (owner, file) in OWNER_TOKEN_FILES {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                "authorization",
+                format!(
+                    "Bearer {}",
+                    std::fs::read_to_string(directory.join(file)).unwrap()
+                )
+                .trim()
+                .parse()
+                .unwrap(),
+            );
+            assert_eq!(tokens.authenticate(&headers), Some(owner));
+        }
+        let mut wrong = HeaderMap::new();
+        wrong.insert("authorization", "Bearer wrong".parse().unwrap());
+        assert_eq!(tokens.authenticate(&wrong), None);
+        assert_eq!(tokens.authenticate(&HeaderMap::new()), None);
+
+        std::fs::write(
+            directory.join("runtime-broker-verifier.token"),
+            std::fs::read_to_string(directory.join("runtime-broker-supervisor.token")).unwrap(),
+        )
+        .unwrap();
+        assert!(OwnerTokens::from_directory(&directory).is_err());
+
+        std::fs::write(directory.join("runtime-broker-verifier.token"), "short").unwrap();
+        assert!(OwnerTokens::from_directory(&directory).is_err());
+        let _ = std::fs::remove_dir_all(directory);
     }
 
     #[test]
@@ -1513,11 +1724,26 @@ mod tests {
         path
     }
 
+    const TEST_SUPERVISOR_TOKEN: &str = "supervisor-token-0123456789abcdef0123456789";
+    const TEST_VERIFIER_TOKEN: &str = "verifier-token-0123456789abcdef012345678901";
+    const TEST_PROVIDER_TOKEN: &str = "provider-token-0123456789abcdef012345678901";
+
     fn test_app(podman: PathBuf) -> Arc<App> {
         Arc::new(App {
-            token: "test-token-0123456789abcdef0123456789".into(),
+            tokens: Arc::new(OwnerTokens {
+                entries: vec![
+                    (ResourceOwner::Supervisor, TEST_SUPERVISOR_TOKEN.into()),
+                    (ResourceOwner::Verifier, TEST_VERIFIER_TOKEN.into()),
+                    (ResourceOwner::Provider, TEST_PROVIDER_TOKEN.into()),
+                ],
+            }),
+            resource_locks: Arc::new(
+                (0..RESOURCE_LOCK_SHARDS)
+                    .map(|_| tokio::sync::Mutex::new(()))
+                    .collect(),
+            ),
             podman,
-            images: Arc::new(BTreeSet::new()),
+            images: Arc::new(BTreeSet::from(["test/image:1".to_owned()])),
             provider_images: Arc::new(BTreeSet::new()),
             provider_kind: String::new(),
             provider_session_root: std::env::temp_dir(),
@@ -1525,26 +1751,33 @@ mod tests {
         })
     }
 
-    fn test_headers() -> HeaderMap {
+    fn test_headers(owner: ResourceOwner) -> HeaderMap {
+        let token = match owner {
+            ResourceOwner::Supervisor => TEST_SUPERVISOR_TOKEN,
+            ResourceOwner::Verifier => TEST_VERIFIER_TOKEN,
+            ResourceOwner::Provider => TEST_PROVIDER_TOKEN,
+        };
         let mut headers = HeaderMap::new();
-        headers.insert(
-            "authorization",
-            "Bearer test-token-0123456789abcdef0123456789"
-                .parse()
-                .unwrap(),
-        );
+        headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
         headers
     }
 
+    async fn response_body(response: Response) -> String {
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
     #[tokio::test]
-    async fn remove_volume_requires_the_expected_owner_label() {
+    async fn remove_volume_requires_the_authenticated_owner() {
         let volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
         let marker =
             std::env::temp_dir().join(format!("factory-fake-rm-volume-{}", uuid::Uuid::new_v4()));
         let script = format!(
             r#"#!/bin/sh
 if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then
-  printf '%s\n' '[{{"Name":"{volume}","Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"verifier"}}}}]'
+  printf '%s\n' '[{{"Name":"{volume}","Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor"}}}}]'
   exit 0
 fi
 if [ "$1" = "volume" ] && [ "$2" = "rm" ]; then
@@ -1559,29 +1792,135 @@ exit 1
             marker = marker.display()
         );
         let app = test_app(fake_podman(&script));
-        let rejected = remove_volume(
+        let unauthenticated = remove_volume(
             State(Arc::clone(&app)),
-            test_headers(),
+            HeaderMap::new(),
             AxumPath(volume.clone()),
-            Query(OwnerQuery {
-                owner: ResourceOwner::Supervisor,
-            }),
         )
         .await;
-        assert_eq!(rejected.status(), StatusCode::CONFLICT);
+        assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+        assert!(!marker.exists());
+
+        let spoofed = remove_volume(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Verifier),
+            AxumPath(volume.clone()),
+        )
+        .await;
+        let spoofed_status = spoofed.status();
+        let spoofed_body = response_body(spoofed).await;
+        assert_eq!(spoofed_status, StatusCode::CONFLICT, "body: {spoofed_body}");
         assert!(!marker.exists());
 
         let accepted = remove_volume(
             State(app),
-            test_headers(),
+            test_headers(ResourceOwner::Supervisor),
             AxumPath(volume),
-            Query(OwnerQuery {
-                owner: ResourceOwner::Verifier,
-            }),
         )
         .await;
         assert_eq!(accepted.status(), StatusCode::NO_CONTENT);
         assert!(marker.exists());
+    }
+
+    #[tokio::test]
+    async fn import_export_execute_and_provider_start_require_the_authenticated_owner() {
+        let volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let container = format!("factory-exec-{}", uuid::Uuid::new_v4());
+        let marker =
+            std::env::temp_dir().join(format!("factory-fake-owner-path-{}", uuid::Uuid::new_v4()));
+        let script = format!(
+            r#"#!/bin/sh
+if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then
+  printf '%s\n' '[{{"Name":"{volume}","Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"verifier"}}}}]'
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "import" ]; then touch "{marker}"; exit 0; fi
+if [ "$1" = "volume" ] && [ "$2" = "export" ]; then touch "{marker}"; exit 0; fi
+if [ "$1" = "run" ]; then touch "{marker}"; exit 0; fi
+exit 1
+"#,
+            marker = marker.display()
+        );
+        let app = test_app(fake_podman(&script));
+        let import = import_volume(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Supervisor),
+            AxumPath(volume.clone()),
+            Bytes::from_static(b"archive"),
+        )
+        .await;
+        assert_eq!(import.status(), StatusCode::CONFLICT);
+        assert!(!marker.exists());
+
+        let export = export_volume(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Supervisor),
+            AxumPath(volume.clone()),
+        )
+        .await;
+        assert_eq!(export.status(), StatusCode::CONFLICT);
+        assert!(!marker.exists());
+
+        let execute = run_container(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Supervisor),
+            Json(RunContainer {
+                volume: volume.clone(),
+                container,
+                image: "test/image:1".into(),
+                argv: vec!["/bin/true".into()],
+                timeout_secs: 10,
+            }),
+        )
+        .await;
+        assert_eq!(execute.status(), StatusCode::CONFLICT);
+        assert!(!marker.exists());
+
+        let provider = start_provider(
+            State(app),
+            test_headers(ResourceOwner::Supervisor),
+            Json(StartProvider {
+                container: format!("factory-provider-{}", uuid::Uuid::new_v4()),
+                session_subdir: "provider-session-a".into(),
+                timeout_secs: 30,
+                env: Vec::new(),
+            }),
+        )
+        .await;
+        assert_eq!(provider.status(), StatusCode::FORBIDDEN);
+        assert!(!marker.exists());
+    }
+
+    #[tokio::test]
+    async fn managed_inventory_is_scoped_to_the_authenticated_owner() {
+        let supervisor_volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let verifier_volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let script = format!(
+            r#"#!/bin/sh
+if [ "$1" = "volume" ] && [ "$2" = "ls" ]; then
+  printf '%s\n' '[{{"Name":"{supervisor_volume}","Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor"}}}},{{"Name":"{verifier_volume}","Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"verifier"}}}}]'
+  exit 0
+fi
+if [ "$1" = "ps" ]; then
+  printf '%s\n' '[]'
+  exit 0
+fi
+exit 1
+"#
+        );
+        let app = test_app(fake_podman(&script));
+        let supervisor = app
+            .managed_resources(ResourceOwner::Supervisor)
+            .await
+            .unwrap();
+        assert_eq!(supervisor.volumes.len(), 1);
+        assert_eq!(supervisor.volumes[0].name, supervisor_volume);
+        let verifier = app
+            .managed_resources(ResourceOwner::Verifier)
+            .await
+            .unwrap();
+        assert_eq!(verifier.volumes.len(), 1);
+        assert_eq!(verifier.volumes[0].name, verifier_volume);
     }
 
     #[tokio::test]
@@ -1609,22 +1948,16 @@ exit 1
         let app = test_app(fake_podman(&script));
         let response = remove_volume(
             State(Arc::clone(&app)),
-            test_headers(),
+            test_headers(ResourceOwner::Supervisor),
             AxumPath(unlabelled),
-            Query(OwnerQuery {
-                owner: ResourceOwner::Supervisor,
-            }),
         )
         .await;
         assert_eq!(response.status(), StatusCode::CONFLICT);
 
         let response = remove_volume(
             State(app),
-            test_headers(),
+            test_headers(ResourceOwner::Supervisor),
             AxumPath(missing),
-            Query(OwnerQuery {
-                owner: ResourceOwner::Supervisor,
-            }),
         )
         .await;
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
@@ -1659,11 +1992,10 @@ exit 1
         let app = test_app(fake_podman(&script));
         let response = create_volume(
             State(app),
-            test_headers(),
+            test_headers(ResourceOwner::Supervisor),
             Json(NewVolume {
                 volume,
                 workspace_id: "workspace-a".into(),
-                owner: ResourceOwner::Supervisor,
             }),
         )
         .await;
@@ -1703,11 +2035,10 @@ exit 1
         let app = test_app(fake_podman(&script));
         let response = create_volume(
             State(app),
-            test_headers(),
+            test_headers(ResourceOwner::Supervisor),
             Json(NewVolume {
                 volume,
                 workspace_id: "workspace-a".into(),
-                owner: ResourceOwner::Supervisor,
             }),
         )
         .await;
@@ -1743,26 +2074,196 @@ exit 1
         let app = test_app(fake_podman(&script));
         let rejected = remove_container(
             State(Arc::clone(&app)),
-            test_headers(),
+            test_headers(ResourceOwner::Supervisor),
             AxumPath(container.clone()),
-            Query(OwnerQuery {
-                owner: ResourceOwner::Supervisor,
-            }),
         )
         .await;
-        assert_eq!(rejected.status(), StatusCode::CONFLICT);
+        let rejected_status = rejected.status();
+        let rejected_body = response_body(rejected).await;
+        assert_eq!(
+            rejected_status,
+            StatusCode::CONFLICT,
+            "body: {rejected_body}"
+        );
         assert!(!marker.exists());
 
         let accepted = remove_container(
             State(app),
-            test_headers(),
+            test_headers(ResourceOwner::Provider),
             AxumPath(container),
-            Query(OwnerQuery {
-                owner: ResourceOwner::Provider,
-            }),
         )
         .await;
         assert_eq!(accepted.status(), StatusCode::NO_CONTENT);
         assert!(marker.exists());
+    }
+
+    #[tokio::test]
+    async fn inspect_output_is_bounded_before_parsing() {
+        let volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let script = r#"#!/bin/sh
+if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then
+  head -c 5000000 /dev/zero | tr '\0' 'x'
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "exists" ]; then
+  exit 0
+fi
+exit 1
+"#;
+        let app = test_app(fake_podman(script));
+        assert!(app.volume_labels(&volume).await.is_err());
+    }
+
+    fn stateful_volume_script(name: &str, state: &Path, log: &Path) -> String {
+        format!(
+            r#"#!/bin/sh
+state="{state}"
+log="{log}"
+name="{name}"
+if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then
+  echo inspect >> "$log"
+  if [ -f "$state" ]; then
+    cat "$state"
+    exit 0
+  fi
+  exit 1
+fi
+if [ "$1" = "volume" ] && [ "$2" = "exists" ]; then
+  if [ -f "$state" ]; then exit 0; else exit 1; fi
+fi
+if [ "$1" = "volume" ] && [ "$2" = "rm" ]; then
+  echo rm >> "$log"
+  rm -f "$state"
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "create" ]; then
+  owner=""
+  workspace=""
+  for arg in "$@"; do
+    case "$arg" in
+      io.software-factory.owner=*) owner="${{arg#*=}}" ;;
+      io.software-factory.workspace=*) workspace="${{arg#*=}}" ;;
+    esac
+  done
+  echo create-start >> "$log"
+  sleep 0.2
+  printf '[{{"Name":"%s","Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"%s","io.software-factory.workspace":"%s"}}}}]' "$name" "$owner" "$workspace" > "$state"
+  echo create-end >> "$log"
+  exit 0
+fi
+exit 1
+"#,
+            state = state.display(),
+            log = log.display()
+        )
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_create_for_different_owners_serializes_per_name() {
+        let volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let state =
+            std::env::temp_dir().join(format!("factory-stateful-volume-{}", uuid::Uuid::new_v4()));
+        let log = std::env::temp_dir().join(format!(
+            "factory-stateful-volume-log-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let app = test_app(fake_podman(&stateful_volume_script(&volume, &state, &log)));
+        let (supervisor, verifier) = tokio::join!(
+            create_volume(
+                State(Arc::clone(&app)),
+                test_headers(ResourceOwner::Supervisor),
+                Json(NewVolume {
+                    volume: volume.clone(),
+                    workspace_id: "workspace-a".into(),
+                }),
+            ),
+            create_volume(
+                State(Arc::clone(&app)),
+                test_headers(ResourceOwner::Verifier),
+                Json(NewVolume {
+                    volume: volume.clone(),
+                    workspace_id: "workspace-a".into(),
+                }),
+            ),
+        );
+        let supervisor_status = supervisor.status();
+        let supervisor_body = response_body(supervisor).await;
+        let verifier_status = verifier.status();
+        let verifier_body = response_body(verifier).await;
+        let statuses = [supervisor_status, verifier_status];
+        assert_eq!(
+            statuses
+                .iter()
+                .filter(|status| **status == StatusCode::CREATED)
+                .count(),
+            1,
+            "supervisor={supervisor_status} {supervisor_body}; verifier={verifier_status} {verifier_body}"
+        );
+        assert_eq!(
+            statuses
+                .iter()
+                .filter(|status| **status == StatusCode::CONFLICT)
+                .count(),
+            1,
+            "supervisor={supervisor_status} {supervisor_body}; verifier={verifier_status} {verifier_body}"
+        );
+        let state = std::fs::read_to_string(&state).unwrap();
+        let created_owner = if supervisor_status == StatusCode::CREATED {
+            "supervisor"
+        } else {
+            "verifier"
+        };
+        assert!(state.contains(created_owner));
+        let _ = std::fs::remove_file(&log);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_delete_and_reset_never_removes_the_replacement() {
+        let volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let state =
+            std::env::temp_dir().join(format!("factory-stateful-replace-{}", uuid::Uuid::new_v4()));
+        let log = std::env::temp_dir().join(format!(
+            "factory-stateful-replace-log-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(
+            &state,
+            format!(
+                r#"[{{"Name":"{volume}","Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor","io.software-factory.workspace":"workspace-a"}}}}]"#
+            ),
+        )
+        .unwrap();
+        let app = test_app(fake_podman(&stateful_volume_script(&volume, &state, &log)));
+        let (created, removed) = tokio::join!(
+            create_volume(
+                State(Arc::clone(&app)),
+                test_headers(ResourceOwner::Supervisor),
+                Json(NewVolume {
+                    volume: volume.clone(),
+                    workspace_id: "workspace-a".into(),
+                }),
+            ),
+            remove_volume(
+                State(Arc::clone(&app)),
+                test_headers(ResourceOwner::Supervisor),
+                AxumPath(volume.clone()),
+            ),
+        );
+        assert_eq!(created.status(), StatusCode::CREATED);
+        assert_eq!(removed.status(), StatusCode::NO_CONTENT);
+        let log = std::fs::read_to_string(&log).unwrap();
+        let lines: Vec<&str> = log.lines().collect();
+        let start = lines
+            .iter()
+            .position(|line| *line == "create-start")
+            .unwrap();
+        let end = lines.iter().position(|line| *line == "create-end").unwrap();
+        assert!(start < end);
+        assert!(
+            !lines[start + 1..end].contains(&"rm"),
+            "delete interleaved with create reset: {lines:?}"
+        );
+        let _ = std::fs::remove_file(&state);
+        let _ = std::fs::remove_file(&log);
     }
 }
