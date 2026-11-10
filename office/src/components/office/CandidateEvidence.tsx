@@ -202,6 +202,10 @@ export function QualityGatePanel({
       </div>
     );
   }
+  const repairAuthorization =
+    gate.outcome === "REPAIR_REQUIRED" || gate.outcome === "HUMAN_REQUIRED"
+      ? gate.repair_authorization
+      : null;
   return (
     <div data-testid="quality-gate">
       <p>
@@ -228,15 +232,15 @@ export function QualityGatePanel({
           ))}
         </ul>
       )}
-      {gate.repair_authorization && (
+      {repairAuthorization && (
         <div className="ui-callout ui-callout--attention" role="status">
           <strong>{t("evidence.repair.title")}</strong>{" "}
-          <StatusBadge status={gate.repair_authorization.decision} />{" "}
+          <StatusBadge status={repairAuthorization.decision} />{" "}
           <span className="muted">
             {t("evidence.repair.detail", {
-              points: gate.repair_authorization.total_points,
-              cycle: gate.repair_authorization.cycle_index,
-              reason: gate.repair_authorization.reason,
+              points: repairAuthorization.total_points,
+              cycle: repairAuthorization.cycle_index,
+              reason: repairAuthorization.reason,
             })}
           </span>
         </div>

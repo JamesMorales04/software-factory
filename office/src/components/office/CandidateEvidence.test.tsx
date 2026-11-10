@@ -72,6 +72,10 @@ const gate: Gate = {
   },
 };
 
+function gateWithOutcome(outcome: Gate["outcome"]): Gate {
+  return { ...gate, outcome };
+}
+
 describe("CandidateEvidence", () => {
   it("renders canonical finding points, rationale and native provenance", () => {
     render(
@@ -100,5 +104,33 @@ describe("CandidateEvidence", () => {
     expect(
       screen.getByText(/a critical finding always requires human review/),
     ).toBeDefined();
+  });
+
+  it("hides a historical repair authorization once the gate is accepted", () => {
+    render(
+      <I18nProvider>
+        <QualityGatePanel
+          gate={gateWithOutcome("ACCEPTED")}
+          candidateId="candidate-1"
+        />
+      </I18nProvider>,
+    );
+    expect(screen.queryByText("Repair authorization")).toBeNull();
+    expect(screen.getByText("Accepted")).toBeDefined();
+    expect(
+      screen.getByText("critical review finding requires human review"),
+    ).toBeDefined();
+  });
+
+  it("still renders the repair authorization while repair is required", () => {
+    render(
+      <I18nProvider>
+        <QualityGatePanel
+          gate={gateWithOutcome("REPAIR_REQUIRED")}
+          candidateId="candidate-1"
+        />
+      </I18nProvider>,
+    );
+    expect(screen.getByText("Repair authorization")).toBeDefined();
   });
 });
