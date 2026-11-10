@@ -10,9 +10,10 @@ use super::*;
 
 use crate::execution_policy::{
     InferenceRole, InferenceSettlement, ReserveInferenceInput, SubscriptionFundingRefusal,
-    UsdMicros,
+    UsdMicros, check_model_call_technical_ceilings,
 };
 use chrono::Utc;
+use futures_util::TryStreamExt;
 use sqlx::row::Row;
 use sqlx_sqlite::SqliteConnection;
 use uuid::Uuid;
@@ -504,7 +505,16 @@ impl Database {
         let (max_input, max_output, max_cost) = if let Some(quote) = &pricing_quote {
             // V2 uses a per-request technical token bound, never cumulative
             // lifetime role/scope allowances. The bound must fit the frozen
-            // quote envelope or the request is refused before any effect.
+            // quote envelope or the request is refused before any effect. The
+            // quote itself is checked here because a legacy or corrupt provider
+            // setting could otherwise carry an amount above the shared ceiling
+            // into the inference ledger and legacy reservation columns.
+            check_model_call_technical_ceilings(
+                quote.input_tokens,
+                quote.output_tokens,
+                quote.upper_bound_micros.get(),
+            )
+            .map_err(|error| Error::Invalid(error.message()))?;
             if input.estimated_input_tokens > input.policy.max_input_tokens {
                 return Err(Error::Forbidden(
                     "model call request exceeds its technical policy".into(),
@@ -573,22 +583,12 @@ impl Database {
                     .map_err(|_| Error::Invalid("model call cost reservation"))?,
             )
         };
-        let max_total = max_input
-            .checked_add(max_output)
-            .ok_or(Error::Invalid("model call total token reservation"))?;
         // A frozen quote is the only path that can supply a value larger than
         // the policy clamp. Never store a reservation that exceeds the
         // technical ceiling: clamping it would under-reserve the real amount,
-        // so fail with a bounded error before any upstream effect.
-        if max_input > crate::execution_policy::SAFE_MAX_MODEL_CALL_INPUT_TOKENS
-            || max_output > crate::execution_policy::SAFE_MAX_MODEL_CALL_OUTPUT_TOKENS
-            || max_total > crate::execution_policy::SAFE_MAX_MODEL_CALL_TOTAL_TOKENS
-            || max_cost.get() > crate::execution_policy::SAFE_MAX_MODEL_CALL_COST_MICROS
-        {
-            return Err(Error::Invalid(
-                "model call reservation exceeds the technical ceiling",
-            ));
-        }
+        // so fail with the shared bounded error before any upstream effect.
+        let max_total = check_model_call_technical_ceilings(max_input, max_output, max_cost.get())
+            .map_err(|error| Error::Invalid(error.message()))?;
         let request_sha256 = input.request_sha256.to_ascii_lowercase();
         let reservation_id = Uuid::new_v4().to_string();
         // There is no total model-call deadline. Latency is telemetry; an
@@ -1379,16 +1379,18 @@ impl Database {
     pub async fn unresolved_model_call_budget(&self) -> Result<(u64, u64), Error> {
         self.expire_model_calls(Utc::now().timestamp_millis())
             .await?;
-        let rows: Vec<(i64,)> = sqlx::query_as::query_as(
+        let mut rows = sqlx::query_as::query_as::<_, (i64,)>(
             "SELECT max_cost_micros
              FROM model_call_reservations
              WHERE state IN ('AMBIGUOUS','UNKNOWN') AND usage_known=0",
         )
-        .fetch_all(&self.pool)
-        .await?;
-        let count = u64::try_from(rows.len()).map_err(|_| Error::Invalid("model call count"))?;
+        .fetch(&self.pool);
+        let mut count = 0u64;
         let mut bound = 0u128;
-        for (value,) in rows {
+        while let Some((value,)) = rows.try_next().await? {
+            count = count
+                .checked_add(1)
+                .ok_or(Error::Invalid("model call count"))?;
             bound = bound
                 .checked_add(
                     u128::try_from(value).map_err(|_| Error::Invalid("model reservation"))?,
@@ -1906,44 +1908,31 @@ fn model_call_records(rows: Vec<sqlx_sqlite::SqliteRow>) -> Result<Vec<ModelCall
     Ok(records)
 }
 
-/// Sum model-call token/cost columns in checked `u128` arithmetic.
-///
-/// SQLite's `SUM()` over a signed `INTEGER` column raises `integer overflow`
-/// as soon as a single scope contains enough legacy large reservations. A
-/// database error here used to abort a perfectly valid model call. Reading the
-/// individual rows and adding them in `u128` keeps legacy rows readable. If a
-/// total exceeds `u64` it saturates at `u64::MAX`, which can only make a budget
-/// look exhausted (fail-closed) and never grants additional authority.
+/// Sum model-call token/cost columns in checked `u128` arithmetic while
+/// streaming the matching rows. SQLite's `SUM()` over a signed `INTEGER`
+/// column raises `integer overflow` as soon as a single scope contains enough
+/// legacy large reservations; materializing the whole history into a `Vec`
+/// would instead move the failure into process memory. If a total exceeds
+/// `u64` it saturates at `u64::MAX`, which can only make a budget look
+/// exhausted (fail-closed) and never grants additional authority.
 async fn model_call_totals(
     connection: &mut SqliteConnection,
     sql: &str,
     key: &str,
     field: &'static str,
 ) -> Result<(u64, u64, u64), Error> {
-    let rows: Vec<(i64, i64, i64)> = sqlx::query_as::query_as(sql)
-        .bind(key)
-        .fetch_all(&mut *connection)
-        .await?;
-    let mut totals = (0u128, 0u128, 0u128);
-    for (input, output, cost) in rows {
-        totals.0 = totals
-            .0
-            .checked_add(u128::try_from(input).map_err(|_| Error::Invalid(field))?)
-            .ok_or(Error::Invalid(field))?;
-        totals.1 = totals
-            .1
-            .checked_add(u128::try_from(output).map_err(|_| Error::Invalid(field))?)
-            .ok_or(Error::Invalid(field))?;
-        totals.2 = totals
-            .2
-            .checked_add(u128::try_from(cost).map_err(|_| Error::Invalid(field))?)
-            .ok_or(Error::Invalid(field))?;
-    }
-    Ok((
-        u64::try_from(totals.0).unwrap_or(u64::MAX),
-        u64::try_from(totals.1).unwrap_or(u64::MAX),
-        u64::try_from(totals.2).unwrap_or(u64::MAX),
-    ))
+    let totals = super::accounting::checked_stream_totals(
+        connection,
+        sql,
+        &[key],
+        &["input_tokens", "output_tokens", "cost_micros"],
+        field,
+    )
+    .await?;
+    let [input, output, cost] = totals.as_slice() else {
+        return Err(Error::Invalid(field));
+    };
+    Ok((*input, *output, *cost))
 }
 
 async fn model_call_role_usage(
@@ -1966,7 +1955,9 @@ async fn model_call_role_reservations(
 ) -> Result<(u64, u64, u64), Error> {
     model_call_totals(
         connection,
-        "SELECT max_input_tokens,max_output_tokens,max_cost_micros
+        "SELECT max_input_tokens AS input_tokens,
+                max_output_tokens AS output_tokens,
+                max_cost_micros AS cost_micros
          FROM model_call_reservations
          WHERE role=?1 AND state IN ('RESERVED','AMBIGUOUS','UNKNOWN')",
         role.as_str(),
@@ -1995,7 +1986,9 @@ async fn model_call_reservations(
 ) -> Result<(u64, u64, u64), Error> {
     model_call_totals(
         connection,
-        "SELECT max_input_tokens,max_output_tokens,max_cost_micros
+        "SELECT max_input_tokens AS input_tokens,
+                max_output_tokens AS output_tokens,
+                max_cost_micros AS cost_micros
          FROM model_call_reservations
          WHERE scope_id=?1 AND state IN ('RESERVED','AMBIGUOUS','UNKNOWN')",
         scope_id,
@@ -2451,6 +2444,48 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(reservations, 0);
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn long_model_call_history_is_folded_without_materializing_it() {
+        let (path, db) = project_db("factory-model-call-stream").await;
+        // `model_call_totals` consumes the query with `fetch`/`try_next`; this
+        // fixture exercises a long history through that streaming fold rather
+        // than a `fetch_all` vector. The exact total also proves the fold did
+        // not truncate or wrap at the 10k row boundary.
+        sqlx::query::query(
+            "WITH RECURSIVE seq(n) AS (
+               SELECT 1
+               UNION ALL
+               SELECT n+1 FROM seq WHERE n < 10000
+             )
+             INSERT INTO model_call_reservations
+             (reservation_id,role,principal_id,project_id,objective_id,scope_id,provider,model,
+              purpose,request_sha256,max_input_tokens,max_output_tokens,max_total_tokens,
+              max_cost_micros,input_tokens,output_tokens,total_tokens,cost_micros,usage_known,
+              state,expires_at_ms,created_at,updated_at)
+             SELECT 'stream-'||n,'EVALUATION','evaluator','project','stream','stream',
+                    'opencode-go','deepseek-v4.1-flash','evaluate',printf('%064d',n),
+                    10,10,20,10,1,1,2,1,1,'SETTLED',1,'now','now'
+             FROM seq",
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let mut connection = db.pool.acquire().await.unwrap();
+        assert_eq!(
+            model_call_usage(&mut connection, "stream").await.unwrap(),
+            (10_000, 10_000, 10_000)
+        );
+        assert_eq!(
+            model_call_role_usage(&mut connection, ModelCallRole::Evaluation)
+                .await
+                .unwrap(),
+            (10_000, 10_000, 10_000)
+        );
+        drop(connection);
         db.close().await;
         let _ = std::fs::remove_file(path);
     }

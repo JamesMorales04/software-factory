@@ -695,14 +695,6 @@ impl Database {
                     mc.state AS model_call_state,mc.updated_at AS model_call_updated_at,
                     (SELECT COUNT(*) FROM model_call_reservations m
                      WHERE m.role='LEAD' AND m.objective_id=lr.id) AS model_call_count,
-                    (SELECT COALESCE(SUM(m.input_tokens),0) FROM model_call_reservations m
-                     WHERE m.role='LEAD' AND m.objective_id=lr.id) AS input_tokens,
-                    (SELECT COALESCE(SUM(m.output_tokens),0) FROM model_call_reservations m
-                     WHERE m.role='LEAD' AND m.objective_id=lr.id) AS output_tokens,
-                    (SELECT COALESCE(SUM(m.total_tokens),0) FROM model_call_reservations m
-                     WHERE m.role='LEAD' AND m.objective_id=lr.id) AS total_tokens,
-                    (SELECT COALESCE(SUM(m.cost_micros),0) FROM model_call_reservations m
-                     WHERE m.role='LEAD' AND m.objective_id=lr.id) AS cost_micros,
                     (SELECT MIN(m.usage_known) FROM model_call_reservations m
                      WHERE m.role='LEAD' AND m.objective_id=lr.id) AS usage_known
              FROM lead_requests lr
@@ -726,6 +718,7 @@ impl Database {
         .bind(fetch as i64)
         .fetch_all(&self.pool)
         .await?;
+        let mut connection = self.pool.acquire().await?;
         let mut participants = Vec::with_capacity(rows.len());
         for row in rows {
             let id: String = row.try_get("id")?;
@@ -766,11 +759,30 @@ impl Database {
                 _ => None,
             };
             let usage = if model_call_count > 0 {
+                let totals = super::accounting::checked_stream_totals(
+                    &mut connection,
+                    "SELECT input_tokens,output_tokens,total_tokens,cost_micros
+                     FROM model_call_reservations
+                     WHERE role='LEAD' AND objective_id=?1",
+                    &[id.as_str()],
+                    &[
+                        "input_tokens",
+                        "output_tokens",
+                        "total_tokens",
+                        "cost_micros",
+                    ],
+                    "lead model usage",
+                )
+                .await?;
+                let [input_tokens, output_tokens, total_tokens, cost_micros] = totals.as_slice()
+                else {
+                    return Err(Error::Invalid("lead model usage"));
+                };
                 Some(ParticipantUsage {
-                    input_tokens: to_u64(row.try_get("input_tokens")?)?,
-                    output_tokens: to_u64(row.try_get("output_tokens")?)?,
-                    total_tokens: to_u64(row.try_get("total_tokens")?)?,
-                    cost_micros: to_u64(row.try_get("cost_micros")?)?,
+                    input_tokens: *input_tokens,
+                    output_tokens: *output_tokens,
+                    total_tokens: *total_tokens,
+                    cost_micros: *cost_micros,
                     usage_known: row
                         .try_get::<Option<i64>, _>("usage_known")?
                         .map(|value| value == 1)
@@ -1819,6 +1831,55 @@ mod tests {
         let serialized = serde_json::to_string(&projection).unwrap();
         assert!(!serialized.contains("raw source body"));
         assert!(!serialized.contains("leaky_tool"));
+        fixture.close().await;
+    }
+
+    #[tokio::test]
+    async fn lead_usage_folds_legacy_large_rows_without_sql_sum_overflow() {
+        let fixture = Fixture::new().await;
+        // Three legacy LEAD reservations whose signed sum exceeds i64::MAX.
+        // The previous SQL SUM() raised `integer overflow`; the streaming
+        // checked fold must preserve the exact u64 total.
+        let legacy = i64::MAX / 2;
+        for index in 0..3i64 {
+            sqlx::query::query(
+                "INSERT INTO model_call_reservations
+                 (reservation_id,role,principal_id,project_id,objective_id,scope_id,provider,model,
+                  purpose,request_sha256,max_input_tokens,max_output_tokens,max_total_tokens,
+                  max_cost_micros,input_tokens,output_tokens,total_tokens,cost_micros,usage_known,
+                  state,expires_at_ms,created_at,updated_at)
+                 VALUES (?1,'LEAD','lead-1','p1','lr1','lr1','opencode','deepseek-v4.1-flash',
+                         'lead',?2,?3,?3,?3,?3,?3,?3,?3,?3,1,'SETTLED',?4,
+                         '2026-10-27T09:30:30+00:00','2026-10-27T09:32:00+00:00')",
+            )
+            .bind(format!("legacy-{index}"))
+            .bind(format!("{:064x}", index + 1))
+            .bind(legacy)
+            .bind(Utc::now().timestamp_millis() + 60_000)
+            .execute(&fixture.db.pool)
+            .await
+            .unwrap();
+        }
+        let page = fixture
+            .db
+            .participants(&ParticipantQuery {
+                limit: 50,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let lead = page
+            .participants
+            .iter()
+            .find(|participant| participant.participant_id == "lead:lr1")
+            .expect("lead projection");
+        assert_eq!(lead.model_call_count, Some(4));
+        let usage = lead.usage.as_ref().expect("lead usage");
+        let expected = legacy as u64 * 3 + 10;
+        assert_eq!(usage.input_tokens, expected);
+        assert_eq!(usage.output_tokens, legacy as u64 * 3 + 5);
+        assert_eq!(usage.total_tokens, legacy as u64 * 3 + 15);
+        assert_eq!(usage.cost_micros, legacy as u64 * 3 + 3);
         fixture.close().await;
     }
 }

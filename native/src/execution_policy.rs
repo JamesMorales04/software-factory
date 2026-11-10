@@ -37,6 +37,79 @@ pub const SAFE_MAX_MODEL_CALL_TOTAL_TOKENS: u64 =
     SAFE_MAX_MODEL_CALL_INPUT_TOKENS + SAFE_MAX_MODEL_CALL_OUTPUT_TOKENS;
 pub const SAFE_MAX_MODEL_CALL_COST_MICROS: u64 = 1_000_000_000_000;
 
+/// Bounded refusal for a reservation that exceeds the shared technical
+/// ceilings above. The variant, not caller-supplied text, defines the error so
+/// an oversized quote cannot produce unbounded error evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum ModelCallCeilingError {
+    #[error("model call input token reservation exceeds the technical ceiling")]
+    InputTokens,
+    #[error("model call output token reservation exceeds the technical ceiling")]
+    OutputTokens,
+    #[error("model call total token reservation exceeds the technical ceiling")]
+    TotalTokens,
+    #[error("model call cost reservation exceeds the technical ceiling")]
+    CostMicros,
+}
+
+impl ModelCallCeilingError {
+    pub const fn message(self) -> &'static str {
+        match self {
+            Self::InputTokens => "model call input exceeds the technical ceiling",
+            Self::OutputTokens => "model call output exceeds the technical ceiling",
+            Self::TotalTokens => "model call total exceeds the technical ceiling",
+            Self::CostMicros => "model call cost exceeds the technical ceiling",
+        }
+    }
+}
+
+/// Check one reservation envelope against the shared arithmetic ceilings.
+///
+/// Returns the checked total token amount. This is a safety bound only: a
+/// caller's lower policy remains authoritative, and no real budget is rounded.
+/// Every durable model-call, provider-turn and inference-ledger reservation
+/// must pass through this helper before it writes an amount.
+pub fn check_model_call_technical_ceilings(
+    input_tokens: u64,
+    output_tokens: u64,
+    cost_micros: u64,
+) -> Result<u64, ModelCallCeilingError> {
+    if input_tokens > SAFE_MAX_MODEL_CALL_INPUT_TOKENS {
+        return Err(ModelCallCeilingError::InputTokens);
+    }
+    if output_tokens > SAFE_MAX_MODEL_CALL_OUTPUT_TOKENS {
+        return Err(ModelCallCeilingError::OutputTokens);
+    }
+    let total_tokens = input_tokens
+        .checked_add(output_tokens)
+        .ok_or(ModelCallCeilingError::TotalTokens)?;
+    if total_tokens > SAFE_MAX_MODEL_CALL_TOTAL_TOKENS {
+        return Err(ModelCallCeilingError::TotalTokens);
+    }
+    check_model_call_cost_ceiling(cost_micros)?;
+    Ok(total_tokens)
+}
+
+/// Check only the monetary ceiling. The shared inference ledger stores a cost
+/// bound without token columns, but that bound must obey the same arithmetic
+/// safety limit as a model-call or provider-turn reservation.
+pub fn check_model_call_cost_ceiling(cost_micros: u64) -> Result<(), ModelCallCeilingError> {
+    if cost_micros > SAFE_MAX_MODEL_CALL_COST_MICROS {
+        return Err(ModelCallCeilingError::CostMicros);
+    }
+    Ok(())
+}
+
+/// Fold non-negative accounting units in checked `u128` arithmetic. A total
+/// above the durable `u64` range saturates at `u64::MAX`, which makes a budget
+/// projection look exhausted rather than available and never grants authority.
+pub fn total_model_call_units<I: IntoIterator<Item = u64>>(values: I) -> u64 {
+    let total = values.into_iter().fold(0u128, |total, value| {
+        total.saturating_add(u128::from(value))
+    });
+    u64::try_from(total).unwrap_or(u64::MAX)
+}
+
 /// Reserved deadline sentinel for a subscription call with no total deadline.
 /// This is a timestamp, not a budget, and cannot overflow a cost/token sum.
 pub const UNCAPPED_EXPIRES_AT_MS: i64 = i64::MAX - 1;
@@ -1018,6 +1091,34 @@ mod tests {
         assert_eq!(
             one.checked_sub(UsdMicros::new(2).unwrap()).unwrap_err(),
             ExecutionPolicyError::Overflow
+        );
+    }
+
+    #[test]
+    fn technical_ceilings_and_unit_folds_fail_closed() {
+        assert_eq!(
+            check_model_call_technical_ceilings(
+                SAFE_MAX_MODEL_CALL_INPUT_TOKENS,
+                SAFE_MAX_MODEL_CALL_OUTPUT_TOKENS,
+                SAFE_MAX_MODEL_CALL_COST_MICROS,
+            )
+            .unwrap(),
+            SAFE_MAX_MODEL_CALL_TOTAL_TOKENS
+        );
+        assert_eq!(
+            check_model_call_technical_ceilings(SAFE_MAX_MODEL_CALL_INPUT_TOKENS + 1, 1, 1,)
+                .unwrap_err(),
+            ModelCallCeilingError::InputTokens
+        );
+        assert_eq!(
+            check_model_call_cost_ceiling(SAFE_MAX_MODEL_CALL_COST_MICROS + 1).unwrap_err(),
+            ModelCallCeilingError::CostMicros
+        );
+        assert_eq!(total_model_call_units([1, 2, 3]), 6);
+        assert_eq!(
+            total_model_call_units([u64::MAX, 1]),
+            u64::MAX,
+            "a total beyond the durable u64 range must look exhausted, not wrap"
         );
     }
 

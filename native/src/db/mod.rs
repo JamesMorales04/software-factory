@@ -952,6 +952,7 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
 }
 
 mod access_revocation;
+mod accounting;
 mod authorization;
 pub use authorization::{
     CampaignAuthorizationRecord, NO_BILLABLE_ENVELOPE, NewCampaignAuthorization,
