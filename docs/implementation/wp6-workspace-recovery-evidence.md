@@ -12,6 +12,7 @@ end-to-end coverage.
 - First review-repair commit: `1dc9176`
 - Second review-repair implementation: `394719a`
 - Third review-repair implementation: `22fd634`
+- Fourth review-repair implementation: `d6c53cb`
 - Worktree: `/home/james/Escritorio/Development/sf-quality-wave12/wp6`
 
 ## Scope
@@ -59,12 +60,19 @@ valid issues. All were repaired:
    acceptance work.
 7. **Exact resource locks.** The re-review found that sharded locks could block
    unrelated names on a long execution's shard. Locks are now exact per resource
-   name, bounded to 4096 entries, with unused-entry reclamation and a single
-   overflow lock at capacity. Lock order is volume -> container.
+   name, permanently bounded at 4096 entries; entries are never reclaimed so a
+   name keeps one lock identity. Additional names permanently share one overflow
+   lock and intentionally serialize. Lock order is volume -> container.
 8. **Execution cleanup lock.** `run_child` cleanup now calls the locking
    container wrapper, not the unchecked helper, so concurrent delete/recreate
    cannot replace the inspected container before removal. A deterministic race
    test asserts strict inspect/remove serialization.
+9. **Overflow lock identity.** The fourth review found that reclaiming an exact
+   entry could give an overflowed name a second lock identity. Reclamation is
+   removed: the 4096-entry exact table is permanent, and additional names
+   permanently share one overflow lock. A saturation test holds the overflow
+   lock while an exact slot becomes idle and re-acquires the same name, proving
+   exclusion is preserved.
 
 ## Per-owner credential model
 
@@ -135,21 +143,23 @@ Authorization rules:
    restart therefore cannot kill an active provider session or execution child
    merely by restarting; the owning service reconciles failures it observes.
 5. Broker mutations acquire an exact per-resource-name async lock before
-   inspecting and recheck ownership after the lock. Locks are bounded to 4096
-   entries, reclaim unused entries at capacity and use one overflow lock if all
-   entries are active. Lock order is volume -> container: execution holds only
-   its volume lock, cleanup then takes the container lock, and no path acquires a
-   volume lock while holding a container lock. Concurrent create for different
-   owners cannot return success for a volume owned by the other caller;
+   inspecting and recheck ownership after the lock. The exact table is
+   permanently bounded at 4096 entries and never reclaimed, so a name always has
+   one lock identity. Names beyond capacity permanently share one overflow lock
+   and intentionally serialize. Lock order is volume -> container: execution
+   holds only its volume lock, cleanup then takes the container lock, and no path
+   acquires a volume lock while holding a container lock. Concurrent create for
+   different owners cannot return success for a volume owned by the other caller;
    concurrent delete/reset cannot remove a replacement created under the lock,
-   and an unrelated resource is never blocked by a long execution.
+   and an unrelated resource within exact-table capacity is not blocked by a long
+   execution.
 
 Limits: at most 4096 durable state records, 4096 inventory entries, 4096 exact
-resource-lock entries (then one overflow lock preserves exclusion), and 4 MiB
-of inventory/inspect subprocess output; Podman commands retain the existing
-120 s command timeout. Inventory failure is reported (`sweepSupported: true`,
-`sweepError`) and does not delete anything; an unsupported backend reports
-`sweepSupported: false`.
+resource-lock entries (entries are permanent; additional names permanently share
+one overflow lock and serialize), and 4 MiB of inventory/inspect subprocess
+output; Podman commands retain the existing 120 s command timeout. Inventory
+failure is reported (`sweepSupported: true`, `sweepError`) and does not delete
+anything; an unsupported backend reports `sweepSupported: false`.
 
 ## Commands and results
 
@@ -198,9 +208,10 @@ Owner-token spoofing and authorization tests (deterministic fake Podman):
 
 Concurrency tests (stateful fake Podman with a shared log):
 
-- `resource_locks_are_exact_and_reclaim_unused_entries` — same name shares one
-  lock, different names do not, unused entries are reclaimed, capacity falls
-  back to the overflow lock.
+- `resource_locks_keep_one_identity_per_name_at_saturation` — same name shares
+  one lock, different names do not, the exact table is never reclaimed, an
+  overflowed name keeps the overflow identity after an exact slot becomes idle,
+  and a held overflow lock still excludes that name.
 - `concurrent_create_for_different_owners_serializes_per_name` — one `201` and
   one `409`; the stored owner matches the successful caller.
 - `concurrent_delete_and_reset_never_removes_the_replacement` — no `rm`
@@ -209,7 +220,8 @@ Concurrency tests (stateful fake Podman with a shared log):
   concurrent container delete produce two strict
   inspect-start/inspect-end/rm sequences; no replace-before-remove window.
 - `long_execution_does_not_block_an_unrelated_resource` — a create for another
-  volume completes while an 800 ms execution still holds its own volume lock.
+  volume within exact-table capacity completes while an 800 ms execution still
+  holds its own volume lock.
 
 Bounded-stream tests:
 
@@ -262,7 +274,7 @@ exit 0; 411 lines rendered
 | Concurrent create for different owners | `concurrent_create_for_different_owners_serializes_per_name` | One success, one conflict; ownership consistent |
 | Concurrent delete/reset | `concurrent_delete_and_reset_never_removes_the_replacement` | Serialized; no interleaved delete |
 | Execution cleanup vs container delete | `execution_cleanup_serializes_with_container_delete` | Strict inspect/remove sequences; no replacement race |
-| Long execution vs unrelated resource | `long_execution_does_not_block_an_unrelated_resource` | Unrelated create completes while execution holds its volume lock |
+| Long execution vs unrelated resource | `long_execution_does_not_block_an_unrelated_resource` | Unrelated create within exact-table capacity completes while execution holds its volume lock; overflow names intentionally serialize |
 | Inventory/inspect output overflow | `read_capped_stops_at_the_limit`, `inspect_output_is_bounded_before_parsing` | Stops at bound; process/response rejected |
 | Inventory unavailable or unsupported | `reconcile_handles_unsupported_and_failed_inventory` | No deletion; status/error reported |
 | Real Podman orphan sweep | `real_podman_reconcile_removes_only_its_orphan_volume` | Orphan removed; referenced volume preserved; cleanup confirmed |
@@ -283,10 +295,12 @@ exit 0; 411 lines rendered
 - Deletion is owner-scoped and verifies the stored label after acquiring the
   per-name lock. Creation resets only a managed, same-owner, same-workspace
   volume; foreign/unlabelled resources are preserved.
-- Mutations use exact per-resource locks with bounded entries and safe
-  reclamation. Lock order is volume -> container; long executions hold only
-  their own volume lock, so unrelated resources and cleanup are not blocked by
-  a shared shard.
+- Mutations use exact per-resource locks with a permanent 4096-entry table.
+  Entries are never reclaimed so a name cannot change lock identity; names
+  beyond capacity permanently share one overflow lock and serialize. Lock order
+  is volume -> container; long executions hold only their own volume lock, so
+  unrelated resources within capacity and cleanup are not blocked by a shared
+  shard.
 - Legacy managed resources without an owner label are never deleted. They require
   explicit manual cleanup; this is intentional (`never remove unlabelled`).
 - Provider containers are owned by Worker recovery, not by Supervisor
