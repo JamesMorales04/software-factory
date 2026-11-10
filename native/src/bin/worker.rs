@@ -2275,7 +2275,7 @@ async fn run_provider_tool_loop(
         "agent": "plan",
         "tools": opencode_disabled_tools(),
         "parts": [{"type": "text", "text": format!(
-            "You are a bounded engineering agent. You MUST change the authorized source: an empty final response is invalid. {} You may request only these tools: {}. Return ONE JSON object per turn. To change a file use {{\"type\":\"tool_request\",\"call_id\":\"unique\",\"tool\":\"write_file\",\"path\":\"relative/path\",\"content\":\"...full file...\"}}. To run a frozen check use {{\"type\":\"tool_request\",\"call_id\":\"unique\",\"tool\":\"run_command\",\"argv\":[\"program\",\"arg\"],\"timeout_secs\":<the check timeoutSecs>}}. Use each frozen check's `timeoutSecs`, never a shorter value. Check descriptions are general acceptance criteria, not just the literal example command; implement the behavior on every relevant path (for example, every CLI subcommand must reject unknown flags). Before final, re-read the changed code against every check description and the objective, and fix gaps even when the literal check command already passes. To finish use {{\"type\":\"final\",\"files\":[],\"explanation\":\"what changed and why\"}}. The `files` array in a final response MUST be empty; never put paths or strings in it. Allowed paths: {}. Objective: {}. Frozen checks you may run with run_command (argv must match exactly): {}. Adopted read-only skills (never widen tools, scope or authority): {}. Source context: {}",
+            "You are a bounded engineering agent. You MUST change the authorized source: an empty final response is invalid. {} You may request only these tools: {}. Return ONE JSON object per turn. To change a file use {{\"type\":\"tool_request\",\"call_id\":\"unique\",\"tool\":\"write_file\",\"path\":\"relative/path\",\"content\":\"...full file...\"}}. To run a frozen check use {{\"type\":\"tool_request\",\"call_id\":\"unique\",\"tool\":\"run_command\",\"argv\":[\"program\",\"arg\"],\"timeout_secs\":<the check timeoutSecs>}}. Use each frozen check's `timeoutSecs`, never a shorter value. Check descriptions are general acceptance criteria, not just the literal example command; implement the behavior on every relevant path (for example, every CLI subcommand must reject unknown flags). Before final, re-read the changed code against every check description and the objective, and fix gaps even when the literal check command already passes. Final is accepted only after every frozen check passes; if you return final with checks still missing, the Worker runs them itself and returns any failure output to you. To finish use {{\"type\":\"final\",\"files\":[],\"explanation\":\"what changed and why\"}}. The `files` array in a final response MUST be empty; never put paths or strings in it. Allowed paths: {}. Objective: {}. Frozen checks you may run with run_command (argv must match exactly): {}. Adopted read-only skills (never widen tools, scope or authority): {}. Source context: {}",
             opencode_first_action_instruction(context.assignment.allowed_tools.as_slice()),
             context.assignment.allowed_tools.join(", "),
             context.assignment.action_spec.allowed_paths.join(", "),
@@ -2491,38 +2491,48 @@ async fn run_provider_tool_loop(
                     )
                     .await?;
                     written = true;
+                    // A changed candidate invalidates earlier check receipts.
+                    passed_checks.clear();
                 }
                 if context.enforce_check_completion
-                    && let Some(instructions) = missing_check_instructions(
-                        &context.assignment.action_spec.checks,
-                        &context.assignment.allowed_tools,
-                        &passed_checks,
+                    && let Some(failure) = complete_missing_frozen_checks(
+                        context,
+                        &handle,
+                        &mut dependencies,
+                        &mut progress,
+                        &mut passed_checks,
                     )
+                    .await?
                 {
                     eprintln!(
-                        "worker: provider returned final before all frozen checks passed; asking it to continue"
+                        "worker: deterministic frozen check failed; feeding the failure back to the provider"
                     );
                     post_tool_event(
                         context,
                         "incomplete-final",
                         "final",
                         "ERROR",
-                        "frozen acceptance checks have not passed in this workspace",
+                        "frozen acceptance checks failed; the Worker executed them automatically",
                     )
                     .await?;
-                    prompt = json!({
-                        "model": {"providerID": context.assignment.provider, "modelID": context.assignment.model},
-                        "parts": [{"type": "text", "text": instructions}]
-                    });
-                    continue;
-                }
-                let all_checks_passed = !context.enforce_check_completion
-                    || missing_check_instructions(
+                    let instructions = missing_check_instructions(
                         &context.assignment.action_spec.checks,
                         &context.assignment.allowed_tools,
                         &passed_checks,
                     )
-                    .is_none();
+                    .unwrap_or_default();
+                    prompt = json!({
+                        "model": {"providerID": context.assignment.provider, "modelID": context.assignment.model},
+                        "parts": [{"type": "text", "text": format!("{failure}\n\n{instructions}")}]
+                    });
+                    continue;
+                }
+                let all_checks_passed = !context.enforce_check_completion
+                    || missing_frozen_checks(
+                        &context.assignment.action_spec.checks,
+                        &passed_checks,
+                    )
+                    .is_empty();
                 if !candidate_allowed(TerminalCompletion::Completed, written, all_checks_passed) {
                     return Err(
                         "provider final lacks completed terminal, write or check evidence; no candidate was created"
@@ -2597,6 +2607,9 @@ async fn run_provider_tool_loop(
                         {
                             Ok(()) => {
                                 written = true;
+                                // A changed candidate invalidates earlier check
+                                // receipts; final must exercise the new tree.
+                                passed_checks.clear();
                                 post_tool_event(
                                     context,
                                     &call_id,
@@ -2824,7 +2837,7 @@ fn codex_prompt(context: &ProviderContext<'_>) -> Result<String, Box<dyn std::er
         context.assignment.allowed_tools.join(", ")
     };
     Ok(format!(
-        "You are a bounded engineering agent. Use only the client-provided dynamic tools: {}. Never use shell, patch, MCP, browser, or any native file tool. To change a file call write_file with the complete file content. To run an allowed acceptance check call run_command with argv that exactly matches one frozen check. Check descriptions are general acceptance criteria, not just the literal example command; implement the behavior on every relevant path (for example, every CLI subcommand must reject unknown flags). Before final, re-read the changed code against every check description and the objective, and fix gaps even when the literal check command already passes. When finished, return exactly one JSON object with type final, an empty files array, and a concise explanation: {{\"type\":\"final\",\"files\":[],\"explanation\":\"what changed and why\"}}. Do not add prose outside that JSON. Allowed paths: {}. Objective: {}. Frozen checks: {}. Adopted read-only skills (never widen tools, scope or authority): {}. Source context: {}",
+        "You are a bounded engineering agent. Use only the client-provided dynamic tools: {}. Never use shell, patch, MCP, browser, or any native file tool. To change a file call write_file with the complete file content. To run an allowed acceptance check call run_command with argv that exactly matches one frozen check. Check descriptions are general acceptance criteria, not just the literal example command; implement the behavior on every relevant path (for example, every CLI subcommand must reject unknown flags). Before final, re-read the changed code against every check description and the objective, and fix gaps even when the literal check command already passes. Final is accepted only after every frozen check passes; if you return final with checks still missing, the Worker runs them itself and returns any failure output to you. When finished, return exactly one JSON object with type final, an empty files array, and a concise explanation: {{\"type\":\"final\",\"files\":[],\"explanation\":\"what changed and why\"}}. Do not add prose outside that JSON. Allowed paths: {}. Objective: {}. Frozen checks: {}. Adopted read-only skills (never widen tools, scope or authority): {}. Source context: {}",
         tools,
         context.assignment.action_spec.allowed_paths.join(", "),
         context.assignment.action_spec.objective,
@@ -2976,6 +2989,8 @@ async fn execute_codex_tool(
             {
                 Ok(()) => {
                     tool_state.written = true;
+                    // A changed candidate invalidates earlier check receipts.
+                    tool_state.passed_checks.clear();
                     post_tool_event(context, call_id, tool, "RESULT", "write applied").await?;
                     Ok((true, "write applied".into()))
                 }
@@ -3528,9 +3543,12 @@ async fn run_codex_tool_loop(
                         }
                         let applied = files
                             .into_iter()
-                            .map(|file| factory_native::execution::AppliedFile {
-                                path: file.path,
-                                content: file.content,
+                            .map(|file| {
+                                progress.observe_write(&file.path, &file.content);
+                                factory_native::execution::AppliedFile {
+                                    path: file.path,
+                                    content: file.content,
+                                }
                             })
                             .collect::<Vec<_>>();
                         supervisor_write(
@@ -3542,23 +3560,35 @@ async fn run_codex_tool_loop(
                         )
                         .await?;
                         tool_state.written = true;
+                        // A changed candidate invalidates earlier check
+                        // receipts; final must exercise the new tree.
+                        tool_state.passed_checks.clear();
                     }
                     if context.enforce_check_completion
-                        && let Some(instructions) = missing_check_instructions(
-                            &context.assignment.action_spec.checks,
-                            &context.assignment.allowed_tools,
-                            &tool_state.passed_checks,
+                        && let Some(failure) = complete_missing_frozen_checks(
+                            context,
+                            &handle,
+                            &mut tool_state.dependencies,
+                            &mut progress,
+                            &mut tool_state.passed_checks,
                         )
+                        .await?
                     {
                         post_tool_event(
                             context,
                             "incomplete-final",
                             "final",
                             "ERROR",
-                            "frozen acceptance checks have not passed in this workspace",
+                            "frozen acceptance checks failed; the Worker executed them automatically",
                         )
                         .await?;
-                        prompt = instructions;
+                        let instructions = missing_check_instructions(
+                            &context.assignment.action_spec.checks,
+                            &context.assignment.allowed_tools,
+                            &tool_state.passed_checks,
+                        )
+                        .unwrap_or_default();
+                        prompt = format!("{failure}\n\n{instructions}");
                         continue;
                     }
                     persist_final_progress_checkpoint(context, &mut progress).await?;
@@ -3675,19 +3705,183 @@ fn decide_tool(
             }
             // The model's timeout is advisory. The frozen check owns the
             // execution budget so a short model value cannot truncate a
-            // healthy compile/test run.
-            let effective_timeout = u64::from(check.timeout_secs.min(300))
-                .min(u64::from(
-                    operation_limits(context).tool_call_timeout_secs.get(),
-                ))
-                .max(1);
+            // healthy compile/test run. Deterministic Worker execution uses
+            // the same frozen bound.
             Ok(ToolDecision::Run {
                 check_id: check.id.clone(),
-                timeout_secs: effective_timeout,
+                timeout_secs: effective_check_timeout(context, check),
             })
         }
         _ => Err(format!("unknown tool {tool}")),
     }
+}
+
+fn effective_check_timeout(
+    context: &ProviderContext<'_>,
+    check: &factory_native::lead::SpecCheck,
+) -> u64 {
+    u64::from(check.timeout_secs)
+        .min(300)
+        .min(u64::from(
+            operation_limits(context).tool_call_timeout_secs.get(),
+        ))
+        .max(1)
+}
+
+fn missing_frozen_checks<'a>(
+    checks: &'a [factory_native::lead::SpecCheck],
+    passed: &std::collections::BTreeSet<String>,
+) -> Vec<&'a factory_native::lead::SpecCheck> {
+    checks
+        .iter()
+        .filter(|check| !passed.contains(&check.id))
+        .collect()
+}
+
+struct FrozenCheckExecution {
+    check_id: String,
+    exit_code: Option<i32>,
+    expected_exit: i32,
+    passed: bool,
+    stdout: String,
+    stderr: String,
+    output_truncated: bool,
+}
+
+/// Execute every frozen check that has not passed yet. This is deterministic
+/// Worker completion policy: the model may run checks itself, but it cannot
+/// finish a candidate by omitting them. Only the exact frozen argv and the
+/// frozen timeout are used through the existing Supervisor operation path.
+async fn execute_missing_frozen_checks(
+    context: &ProviderContext<'_>,
+    handle: &WorkspaceHandle,
+    dependencies: &mut DependencyAcquisitionState,
+    progress: &mut TurnProgress,
+    passed_checks: &mut std::collections::BTreeSet<String>,
+) -> Result<Vec<FrozenCheckExecution>, Box<dyn std::error::Error>> {
+    let missing = missing_frozen_checks(&context.assignment.action_spec.checks, passed_checks);
+    if missing.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Dependency acquisition is a prerequisite for offline checks and stays
+    // attempt-scoped; it runs at most once before the first check or finalize.
+    ensure_dependencies(context, handle, dependencies).await?;
+    let mut executions = Vec::with_capacity(missing.len());
+    for (index, check) in missing.into_iter().enumerate() {
+        let call_id = format!(
+            "worker-check-{}-{}-{}",
+            progress.turn,
+            index + 1,
+            Uuid::new_v4().simple()
+        );
+        post_tool_event(
+            context,
+            &call_id,
+            "run_command",
+            "REQUEST",
+            &format!(
+                "Worker executing frozen check {} after final was requested",
+                check.id
+            ),
+        )
+        .await?;
+        post_tool_event(
+            context,
+            &call_id,
+            "run_command",
+            "ALLOW",
+            "exact frozen acceptance check",
+        )
+        .await?;
+        let timeout_secs = effective_check_timeout(context, check);
+        let result = supervisor_run(
+            context,
+            &handle.workspace_id,
+            &handle.capability,
+            &check.command,
+            timeout_secs,
+        )
+        .await
+        .map_err(|error| {
+            format!(
+                "Worker could not execute frozen check {}; no candidate was created: {error}",
+                check.id
+            )
+        })?;
+        let receipt = post_check_result(
+            context,
+            &call_id,
+            &check.command,
+            &progress.candidate_digest(),
+            result.exit_code,
+        )
+        .await?;
+        progress.observe_check(&receipt);
+        let passed = receipt.outcome == "PASS";
+        if passed {
+            passed_checks.insert(check.id.clone());
+        }
+        executions.push(FrozenCheckExecution {
+            check_id: check.id.clone(),
+            exit_code: result.exit_code,
+            expected_exit: check.expect_exit,
+            passed,
+            stdout: result.stdout,
+            stderr: result.stderr,
+            output_truncated: result.stdout_truncated || result.stderr_truncated,
+        });
+    }
+    Ok(executions)
+}
+
+fn frozen_check_failure_summary(executions: &[FrozenCheckExecution]) -> Option<String> {
+    let failed = executions
+        .iter()
+        .filter(|execution| !execution.passed)
+        .collect::<Vec<_>>();
+    if failed.is_empty() {
+        return None;
+    }
+    let passed = executions.len().saturating_sub(failed.len());
+    let mut summary = format!(
+        "The Worker executed the remaining frozen acceptance checks automatically. {passed} passed and {} failed; no candidate was submitted. Fix the workspace with write_file, then return final again. The Worker will execute all remaining frozen checks itself.\n",
+        failed.len()
+    );
+    for execution in failed {
+        summary.push_str(&format!(
+            "\nFrozen check {} FAILED: exit={:?}, expected={}{}:\nstdout:\n{}\nstderr:\n{}\n",
+            execution.check_id,
+            execution.exit_code,
+            execution.expected_exit,
+            if execution.output_truncated {
+                " (output truncated by the Supervisor)"
+            } else {
+                ""
+            },
+            bounded_tool_text(&execution.stdout),
+            bounded_tool_text(&execution.stderr)
+        ));
+    }
+    Some(summary.chars().take(16_000).collect())
+}
+
+/// Run unfinished frozen checks when the model requests final. All pass means
+/// the caller may finalize immediately with real receipts; any failure returns
+/// a bounded observation for the next model turn. Execution errors fail closed.
+async fn complete_missing_frozen_checks(
+    context: &ProviderContext<'_>,
+    handle: &WorkspaceHandle,
+    dependencies: &mut DependencyAcquisitionState,
+    progress: &mut TurnProgress,
+    passed_checks: &mut std::collections::BTreeSet<String>,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    if !context.enforce_check_completion {
+        return Ok(None);
+    }
+    let executions =
+        execute_missing_frozen_checks(context, handle, dependencies, progress, passed_checks)
+            .await?;
+    Ok(frozen_check_failure_summary(&executions))
 }
 
 fn missing_check_instructions(
@@ -3716,7 +3910,7 @@ fn missing_check_instructions(
         return None;
     }
     Some(format!(
-        "Not finished: every frozen acceptance check must pass in the workspace before you may return final. Missing checks: {}. Write the remaining implementation and invoke each check with run_command using the exact argv and timeout_secs above. If a check fails, read its output, fix the workspace, and run it again. Do not return final until every check has passed.",
+        "Not finished: every frozen acceptance check must pass in the workspace before you may return final. Missing checks: {}. Fix the workspace with write_file and return final again; the Worker executes missing frozen checks automatically and will not create a candidate while any check fails. You may still run them with run_command using the exact argv and timeout_secs above. If a check fails, read its output, fix the workspace, and return final again. Do not return final until every check has passed.",
         missing.join("; ")
     ))
 }
@@ -4822,6 +5016,714 @@ mod tests {
     };
     use factory_native::db::ExecutionCheckReceiptRecord;
     use factory_native::lead::{CheckKind, SpecCheck};
+
+    fn auto_check_policy() -> factory_native::execution_policy::FrozenExecutionPolicy {
+        use std::num::NonZeroU32;
+        factory_native::execution_policy::FrozenExecutionPolicy::V2(
+            factory_native::execution_policy::ExecutionPolicyV2 {
+                policy_id: "policy".into(),
+                authorization_id: "authorization".into(),
+                monetary_envelope_id: "envelope".into(),
+                scope_sha256: "a".repeat(64),
+                progress: factory_native::execution_policy::ProgressPolicy {
+                    diagnose_after_stagnant_checkpoints: NonZeroU32::new(2).unwrap(),
+                    escalate_after_unsuccessful_replans: NonZeroU32::new(1).unwrap(),
+                    observation_timeout_secs: NonZeroU32::new(300).unwrap(),
+                    autonomy: Default::default(),
+                },
+                operations: factory_native::execution_policy::OperationLimits {
+                    model_request_timeout_secs: NonZeroU32::new(300).unwrap(),
+                    tool_call_timeout_secs: NonZeroU32::new(600).unwrap(),
+                    max_request_bytes: NonZeroU32::new(2 * 1024 * 1024).unwrap(),
+                    max_response_bytes: NonZeroU32::new(2 * 1024 * 1024).unwrap(),
+                    max_generation_tokens: NonZeroU32::new(8_192).unwrap(),
+                    max_in_flight_operations: NonZeroU32::new(4).unwrap(),
+                },
+            },
+        )
+    }
+
+    fn auto_check_write_action() -> serde_json::Value {
+        serde_json::json!({
+            "type": "tool_request",
+            "call_id": "write-1",
+            "tool": "write_file",
+            "path": "src/lib.rs",
+            "content": "fixed\n"
+        })
+    }
+
+    fn auto_check_final_action() -> serde_json::Value {
+        serde_json::json!({
+            "type": "final",
+            "files": [],
+            "explanation": "implemented"
+        })
+    }
+
+    #[derive(Clone)]
+    struct AutoCheckProviderState {
+        session: String,
+        actions: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+        prompts: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+        events: tokio::sync::broadcast::Sender<String>,
+    }
+
+    async fn auto_check_provider_events(
+        axum::extract::State(state): axum::extract::State<AutoCheckProviderState>,
+    ) -> axum::response::sse::Sse<
+        impl futures_util::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>,
+    > {
+        use futures_util::StreamExt;
+        let created = format!(
+            "{{\"id\":\"evt-created\",\"type\":\"session.created\",\"properties\":{{\"sessionID\":\"{}\",\"info\":{{\"id\":\"{}\"}}}}}}",
+            state.session, state.session
+        );
+        let receiver = state.events.subscribe();
+        let initial = futures_util::stream::once(async move {
+            Ok::<_, std::convert::Infallible>(axum::response::sse::Event::default().data(created))
+        });
+        let rest = futures_util::stream::unfold(receiver, |mut receiver| async move {
+            loop {
+                match receiver.recv().await {
+                    Ok(data) => {
+                        return Some((
+                            Ok::<_, std::convert::Infallible>(
+                                axum::response::sse::Event::default().data(data),
+                            ),
+                            receiver,
+                        ));
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+                }
+            }
+        });
+        axum::response::sse::Sse::new(initial.chain(rest))
+            .keep_alive(axum::response::sse::KeepAlive::default())
+    }
+
+    async fn auto_check_provider_create_session(
+        axum::extract::State(state): axum::extract::State<AutoCheckProviderState>,
+    ) -> axum::Json<serde_json::Value> {
+        axum::Json(serde_json::json!({"id": state.session}))
+    }
+
+    async fn auto_check_provider_prompt(
+        axum::extract::State(state): axum::extract::State<AutoCheckProviderState>,
+        axum::Json(body): axum::Json<serde_json::Value>,
+    ) -> axum::http::StatusCode {
+        state.prompts.lock().unwrap().push(body);
+        let provider_error = {
+            let mut actions = state.actions.lock().unwrap();
+            if actions.first().is_some_and(|action| {
+                action.get("type").and_then(serde_json::Value::as_str) == Some("provider_error")
+            }) {
+                actions.remove(0);
+                true
+            } else {
+                false
+            }
+        };
+        let frame = if provider_error {
+            format!(
+                "{{\"type\":\"session.error\",\"properties\":{{\"sessionID\":\"{}\",\"error\":{{\"name\":\"ProviderError\"}}}}}}",
+                state.session
+            )
+        } else {
+            format!(
+                "{{\"type\":\"session.idle\",\"properties\":{{\"sessionID\":\"{}\"}}}}",
+                state.session
+            )
+        };
+        let _ = state.events.send(frame);
+        axum::http::StatusCode::NO_CONTENT
+    }
+
+    async fn auto_check_provider_message(
+        axum::extract::State(state): axum::extract::State<AutoCheckProviderState>,
+    ) -> axum::Json<serde_json::Value> {
+        let mut actions = state.actions.lock().unwrap();
+        let action = if actions.is_empty() {
+            serde_json::json!({
+                "type": "final",
+                "files": [],
+                "explanation": "unexpected extra provider turn"
+            })
+        } else {
+            actions.remove(0)
+        };
+        drop(actions);
+        axum::Json(serde_json::json!([{
+            "info": {
+                "id": "msg-1",
+                "sessionID": state.session,
+                "role": "assistant",
+                "tokens": {"input": 1, "output": 1, "total": 2},
+                "cost": 0.0
+            },
+            "parts": [{"type": "text", "text": action.to_string()}]
+        }]))
+    }
+
+    async fn auto_check_provider_delete() -> axum::Json<bool> {
+        axum::Json(true)
+    }
+
+    async fn auto_check_provider_missing() -> axum::http::StatusCode {
+        axum::http::StatusCode::NOT_FOUND
+    }
+
+    type AutoCheckRuns = std::sync::Arc<std::sync::Mutex<Vec<(Vec<String>, u64)>>>;
+    type AutoCheckRunResults =
+        std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<(Option<i32>, String, String)>>>;
+
+    #[derive(Clone)]
+    struct AutoCheckBackendState {
+        base: String,
+        checks: Vec<SpecCheck>,
+        runs: AutoCheckRuns,
+        run_results: AutoCheckRunResults,
+        finalize_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        write_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        sequence: std::sync::Arc<std::sync::atomic::AtomicI64>,
+    }
+
+    async fn auto_check_provider_active() -> axum::Json<serde_json::Value> {
+        axum::Json(serde_json::json!({}))
+    }
+
+    async fn auto_check_agent_state() -> axum::Json<serde_json::Value> {
+        axum::Json(serde_json::json!({"state": "RUNNING"}))
+    }
+
+    async fn auto_check_tool_event(
+        axum::extract::State(state): axum::extract::State<AutoCheckBackendState>,
+        axum::Json(input): axum::Json<factory_native::db::ProviderToolEventInput>,
+    ) -> axum::Json<factory_native::db::ProviderToolEventRecord> {
+        use std::sync::atomic::Ordering;
+        let execution_check = input.check.as_ref().map(|check| {
+            let expected_exit = state
+                .checks
+                .iter()
+                .find(|frozen| frozen.command == check.command)
+                .map(|frozen| frozen.expect_exit)
+                .unwrap_or(0);
+            let outcome = if check.exit_code == Some(expected_exit) {
+                "PASS"
+            } else {
+                "FAIL"
+            };
+            let sequence = state.sequence.fetch_add(1, Ordering::SeqCst);
+            ExecutionCheckReceiptRecord {
+                receipt_id: format!("receipt-{sequence}"),
+                campaign_id: "campaign".into(),
+                work_item_id: "unit-1".into(),
+                attempt_id: "attempt".into(),
+                session_record_id: input.session_record_id.clone(),
+                sequence,
+                call_id: input.call_id.clone(),
+                suite: format!("check:{}", check.command.join("\u{0}")),
+                candidate_sha256: check.candidate_sha256.clone(),
+                exit_code: check.exit_code,
+                expected_exit,
+                outcome: outcome.into(),
+                result_sha256: sha256_hex(
+                    format!(
+                        "{}:{}:{}",
+                        input.call_id,
+                        check.candidate_sha256,
+                        check.exit_code.unwrap_or(-1)
+                    )
+                    .as_bytes(),
+                ),
+                fail_to_pass: false,
+            }
+        });
+        axum::Json(factory_native::db::ProviderToolEventRecord {
+            session_record_id: input.session_record_id,
+            sequence: state.sequence.fetch_add(1, Ordering::SeqCst),
+            call_id: input.call_id,
+            tool: input.tool,
+            decision: input.decision,
+            detail: input.detail,
+            created_at: "test".into(),
+            execution_check,
+        })
+    }
+
+    async fn auto_check_progress_checkpoint() -> axum::Json<serde_json::Value> {
+        axum::Json(serde_json::json!({
+            "checkpointId": "checkpoint",
+            "decision": "CONTINUE",
+            "classification": "PROVISIONAL",
+            "stagnantCheckpoints": 0,
+            "unsuccessfulReplans": 0,
+            "holdOpen": false
+        }))
+    }
+
+    async fn auto_check_workspace_operation() -> axum::Json<serde_json::Value> {
+        axum::Json(serde_json::json!({"grant": "grant"}))
+    }
+
+    async fn auto_check_allocate(
+        axum::extract::State(state): axum::extract::State<AutoCheckBackendState>,
+    ) -> axum::Json<serde_json::Value> {
+        axum::Json(serde_json::json!({
+            "workspaceId": "ws",
+            "attemptId": "attempt",
+            "baseCommit": state.base,
+            "generation": 1,
+            "status": "ALLOCATED",
+            "candidate": null,
+            "capability": "capability"
+        }))
+    }
+
+    async fn auto_check_write(
+        axum::extract::State(state): axum::extract::State<AutoCheckBackendState>,
+    ) -> axum::http::StatusCode {
+        state
+            .write_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        axum::http::StatusCode::NO_CONTENT
+    }
+
+    async fn auto_check_run(
+        axum::extract::State(state): axum::extract::State<AutoCheckBackendState>,
+        axum::Json(request): axum::Json<factory_native::execution::ToolRunRequest>,
+    ) -> axum::Json<serde_json::Value> {
+        state
+            .runs
+            .lock()
+            .unwrap()
+            .push((request.argv.clone(), request.timeout_secs));
+        let (exit_code, stdout, stderr) = state
+            .run_results
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or((Some(0), String::new(), String::new()));
+        axum::Json(serde_json::json!({
+            "exitCode": exit_code,
+            "stdout": stdout,
+            "stderr": stderr,
+            "stdoutTruncated": false,
+            "stderrTruncated": false,
+            "candidate": null,
+            "snapshotSha256": "e".repeat(64),
+            "workspace": {
+                "workspaceId": "ws",
+                "attemptId": "attempt",
+                "baseCommit": state.base,
+                "generation": 1,
+                "status": "RUNNING",
+                "candidate": null,
+                "capability": "capability",
+                "capabilityExpiresAtMs": 0
+            },
+            "confinement": {
+                "mountKind": "volume",
+                "hostWorkspaceMounted": false,
+                "network": "none",
+                "readOnlyRoot": true,
+                "capabilitiesDropped": true,
+                "noNewPrivileges": true,
+                "image": "test/image:1"
+            }
+        }))
+    }
+
+    async fn auto_check_finalize(
+        axum::extract::State(state): axum::extract::State<AutoCheckBackendState>,
+    ) -> axum::Json<serde_json::Value> {
+        state
+            .finalize_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        axum::Json(serde_json::json!({
+            "commitSha": "c".repeat(40),
+            "treeSha": "d".repeat(40)
+        }))
+    }
+
+    async fn auto_check_cleanup() -> axum::http::StatusCode {
+        axum::http::StatusCode::NO_CONTENT
+    }
+
+    struct AutoCheckHarness {
+        core: reqwest::Url,
+        provider_url: String,
+        directory: String,
+        client: reqwest::Client,
+        supervisor: Supervisor,
+        provider_session: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+        usage_tracker: std::sync::Arc<std::sync::Mutex<ProviderUsage>>,
+        assignment: Assignment,
+        prompts: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+        runs: AutoCheckRuns,
+        finalize_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        provider_server: tokio::task::JoinHandle<()>,
+        backend_server: tokio::task::JoinHandle<()>,
+        root: std::path::PathBuf,
+    }
+
+    impl Drop for AutoCheckHarness {
+        fn drop(&mut self) {
+            self.provider_server.abort();
+            self.backend_server.abort();
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    impl AutoCheckHarness {
+        async fn start(
+            actions: Vec<serde_json::Value>,
+            run_results: Vec<(Option<i32>, String, String)>,
+            checks: Vec<SpecCheck>,
+        ) -> Self {
+            use axum::routing::{delete, get, post};
+            use std::sync::atomic::AtomicUsize;
+            use std::sync::{Arc, Mutex};
+            use tokio::sync::broadcast;
+
+            let root = std::env::temp_dir().join(format!(
+                "factory-worker-auto-check-{}",
+                uuid::Uuid::new_v4()
+            ));
+            std::fs::create_dir_all(root.join("src")).unwrap();
+            std::fs::write(root.join("src/lib.rs"), "base\n").unwrap();
+            let git = |args: &[&str]| {
+                let output = std::process::Command::new("git")
+                    .current_dir(&root)
+                    .args(args)
+                    .env("GIT_AUTHOR_NAME", "Test")
+                    .env("GIT_AUTHOR_EMAIL", "test@example.invalid")
+                    .env("GIT_COMMITTER_NAME", "Test")
+                    .env("GIT_COMMITTER_EMAIL", "test@example.invalid")
+                    .output()
+                    .unwrap();
+                assert!(output.status.success(), "git {args:?}: {:?}", output);
+                String::from_utf8_lossy(&output.stdout).trim().to_owned()
+            };
+            git(&["init", "-q"]);
+            git(&["add", "src/lib.rs"]);
+            git(&["commit", "-qm", "base"]);
+            let base = git(&["rev-parse", "HEAD"]);
+
+            let prompts = Arc::new(Mutex::new(Vec::new()));
+            let provider_state = AutoCheckProviderState {
+                session: "ses_auto_check".into(),
+                actions: Arc::new(Mutex::new(actions)),
+                prompts: Arc::clone(&prompts),
+                events: broadcast::channel(16).0,
+            };
+            let provider_router = axum::Router::new()
+                .route("/event", get(auto_check_provider_events))
+                .route("/session", post(auto_check_provider_create_session))
+                .route(
+                    "/session/{session}/prompt_async",
+                    post(auto_check_provider_prompt),
+                )
+                .route(
+                    "/session/{session}/message",
+                    get(auto_check_provider_message),
+                )
+                .route(
+                    "/session/{session}",
+                    delete(auto_check_provider_delete).get(auto_check_provider_missing),
+                )
+                .with_state(provider_state);
+            let provider_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let provider_addr = provider_listener.local_addr().unwrap();
+            let provider_server = tokio::spawn(async move {
+                axum::serve(provider_listener, provider_router)
+                    .await
+                    .unwrap();
+            });
+
+            let runs = Arc::new(Mutex::new(Vec::new()));
+            let finalize_calls = Arc::new(AtomicUsize::new(0));
+            let backend_state = AutoCheckBackendState {
+                base: base.clone(),
+                checks: checks.clone(),
+                runs: Arc::clone(&runs),
+                run_results: Arc::new(Mutex::new(run_results.into())),
+                finalize_calls: Arc::clone(&finalize_calls),
+                write_calls: Arc::new(AtomicUsize::new(0)),
+                sequence: Arc::new(std::sync::atomic::AtomicI64::new(1)),
+            };
+            let backend_router = axum::Router::new()
+                .route("/worker/provider_active", post(auto_check_provider_active))
+                .route("/worker/provider_state", post(auto_check_agent_state))
+                .route("/worker/provider_tool_event", post(auto_check_tool_event))
+                .route(
+                    "/worker/progress_checkpoint",
+                    post(auto_check_progress_checkpoint),
+                )
+                .route(
+                    "/worker/workspace_operation",
+                    post(auto_check_workspace_operation),
+                )
+                .route("/v1/workspaces", post(auto_check_allocate))
+                .route("/v1/workspaces/ws/write", post(auto_check_write))
+                .route("/v1/workspaces/ws/run", post(auto_check_run))
+                .route("/v1/workspaces/ws/finalize", post(auto_check_finalize))
+                .route("/v1/workspaces/ws", delete(auto_check_cleanup))
+                .with_state(backend_state);
+            let backend_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let backend_addr = backend_listener.local_addr().unwrap();
+            let backend_server = tokio::spawn(async move {
+                axum::serve(backend_listener, backend_router).await.unwrap();
+            });
+
+            let client = reqwest::Client::new();
+            let core = reqwest::Url::parse(&format!("http://{backend_addr}")).unwrap();
+            let supervisor = Supervisor {
+                client: client.clone(),
+                base: core.clone(),
+                token: "supervisor-token".into(),
+                image: "test/image:1".into(),
+                timeout_secs: 30,
+            };
+            let mut assignment = assignment_for_progress();
+            let directory = root.to_string_lossy().into_owned();
+            assignment.repository = directory.clone();
+            assignment.action_spec.repository = directory.clone();
+            assignment.action_spec.base_commit = base;
+            assignment.action_spec.allowed_paths = vec!["src".into()];
+            assignment.action_spec.checks = checks;
+            assignment.allowed_tools = vec!["write_file".into(), "run_command".into()];
+            assignment.lease.attempt_id = "attempt".into();
+            assignment.execution_policy = Some(auto_check_policy());
+
+            Self {
+                core,
+                provider_url: format!("http://{provider_addr}"),
+                directory,
+                client,
+                supervisor,
+                provider_session: Arc::new(Mutex::new(None)),
+                usage_tracker: Arc::new(Mutex::new(ProviderUsage::default())),
+                assignment,
+                prompts,
+                runs,
+                finalize_calls,
+                provider_server,
+                backend_server,
+                root,
+            }
+        }
+
+        async fn run(
+            &self,
+        ) -> Result<factory_native::workspace::CandidateRevision, Box<dyn std::error::Error>>
+        {
+            let context = ProviderContext {
+                client: &self.client,
+                core: &self.core,
+                session_token: "session-token",
+                worker_id: "worker",
+                session_record_id: "session-record",
+                base_url: &self.provider_url,
+                password: "provider-password",
+                directory: &self.directory,
+                api_directory: "",
+                provider_kind: "opencode",
+                provider_session: &self.provider_session,
+                usage_tracker: &self.usage_tracker,
+                turn_policy: None,
+                assignment: &self.assignment,
+                supervisor: &self.supervisor,
+                enforce_check_completion: true,
+            };
+            Ok(super::run_provider_tool_loop(&context).await?.candidate)
+        }
+    }
+
+    #[tokio::test]
+    async fn worker_executes_missing_frozen_checks_and_finalizes_without_extra_model_turn() {
+        let check = SpecCheck {
+            id: "build".into(),
+            kind: CheckKind::Build,
+            description: "cargo build".into(),
+            command: vec!["cargo".into(), "build".into()],
+            expect_exit: 0,
+            timeout_secs: 120,
+        };
+        let harness = AutoCheckHarness::start(
+            vec![auto_check_write_action(), auto_check_final_action()],
+            vec![(Some(0), "built\n".into(), String::new())],
+            vec![check.clone()],
+        )
+        .await;
+        let candidate = harness.run().await.expect("candidate was finalized");
+        assert_eq!(candidate.commit_sha, "c".repeat(40));
+        assert_eq!(
+            harness.prompts.lock().unwrap().len(),
+            2,
+            "passing deterministic checks must not require another model turn"
+        );
+        assert_eq!(
+            harness
+                .finalize_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        assert_eq!(
+            *harness.runs.lock().unwrap(),
+            vec![(check.command.clone(), check.timeout_secs as u64)],
+            "only the exact frozen argv and timeout may be executed"
+        );
+    }
+
+    #[tokio::test]
+    async fn worker_never_executes_a_model_command_that_is_not_the_exact_frozen_argv() {
+        let check = SpecCheck {
+            id: "build".into(),
+            kind: CheckKind::Build,
+            description: "cargo build".into(),
+            command: vec!["cargo".into(), "build".into()],
+            expect_exit: 0,
+            timeout_secs: 120,
+        };
+        let harness = AutoCheckHarness::start(
+            vec![
+                auto_check_write_action(),
+                serde_json::json!({
+                    "type": "tool_request",
+                    "call_id": "run-1",
+                    "tool": "run_command",
+                    "argv": ["cargo", "test"],
+                    "timeout_secs": 60
+                }),
+                auto_check_final_action(),
+            ],
+            vec![(Some(0), "built\n".into(), String::new())],
+            vec![check.clone()],
+        )
+        .await;
+        let candidate = harness.run().await.expect("candidate was finalized");
+        assert_eq!(candidate.commit_sha, "c".repeat(40));
+        assert_eq!(
+            *harness.runs.lock().unwrap(),
+            vec![(check.command.clone(), check.timeout_secs as u64)],
+            "an unauthorized model command must never reach the Supervisor"
+        );
+        assert_eq!(
+            harness
+                .finalize_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn worker_reruns_a_check_after_a_later_write_changes_the_candidate() {
+        let check = SpecCheck {
+            id: "build".into(),
+            kind: CheckKind::Build,
+            description: "cargo build".into(),
+            command: vec!["cargo".into(), "build".into()],
+            expect_exit: 0,
+            timeout_secs: 120,
+        };
+        let harness = AutoCheckHarness::start(
+            vec![
+                auto_check_write_action(),
+                serde_json::json!({
+                    "type": "tool_request",
+                    "call_id": "run-1",
+                    "tool": "run_command",
+                    "argv": ["cargo", "build"],
+                    "timeout_secs": 120
+                }),
+                serde_json::json!({
+                    "type": "tool_request",
+                    "call_id": "write-2",
+                    "tool": "write_file",
+                    "path": "src/lib.rs",
+                    "content": "changed again\n"
+                }),
+                auto_check_final_action(),
+            ],
+            vec![
+                (Some(0), "first build\n".into(), String::new()),
+                (Some(0), "second build\n".into(), String::new()),
+            ],
+            vec![check.clone()],
+        )
+        .await;
+        let candidate = harness.run().await.expect("candidate was finalized");
+        assert_eq!(candidate.commit_sha, "c".repeat(40));
+        assert_eq!(
+            *harness.runs.lock().unwrap(),
+            vec![
+                (check.command.clone(), check.timeout_secs as u64),
+                (check.command.clone(), check.timeout_secs as u64)
+            ],
+            "a check receipt for an older candidate must not accept the final tree"
+        );
+        assert_eq!(
+            harness
+                .finalize_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn worker_feeds_failed_frozen_check_back_and_never_finalizes_failed_candidate() {
+        let check = SpecCheck {
+            id: "test".into(),
+            kind: CheckKind::Test,
+            description: "cargo test".into(),
+            command: vec!["cargo".into(), "test".into()],
+            expect_exit: 0,
+            timeout_secs: 60,
+        };
+        let noisy = "x".repeat(20_000);
+        let harness = AutoCheckHarness::start(
+            vec![
+                auto_check_write_action(),
+                auto_check_final_action(),
+                serde_json::json!({"type": "provider_error"}),
+            ],
+            vec![(Some(1), noisy.clone(), noisy.clone())],
+            vec![check.clone()],
+        )
+        .await;
+        let result = harness.run().await;
+        assert!(result.is_err(), "a failed frozen check must not finalize");
+        assert_eq!(
+            harness
+                .finalize_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "no candidate may be submitted on a failing check"
+        );
+        assert_eq!(
+            *harness.runs.lock().unwrap(),
+            vec![(check.command.clone(), check.timeout_secs as u64)]
+        );
+        let prompts = harness.prompts.lock().unwrap();
+        assert_eq!(
+            prompts.len(),
+            3,
+            "the worker must continue with the check failure observation"
+        );
+        let failure_prompt = prompts[2]
+            .pointer("/parts/0/text")
+            .and_then(serde_json::Value::as_str)
+            .expect("failure observation text");
+        assert!(failure_prompt.contains("Frozen check test FAILED"));
+        assert!(failure_prompt.contains("expected=0"));
+        assert!(
+            failure_prompt.len() < 20_000,
+            "check output must stay bounded: {} bytes",
+            failure_prompt.len()
+        );
+    }
 
     fn check_receipt(
         call_id: &str,
