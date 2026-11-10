@@ -10671,6 +10671,72 @@ fn agentic_truncation_retry_output_tokens(requested: u64) -> Option<u64> {
     (retry > requested).then_some(retry)
 }
 
+/// The shared identity and prompts for one bounded structured Lead call.
+/// Planner, Semantic Triage and Spec Manager keep their distinct purpose,
+/// scope and HTTP error mapping while sharing the truncation retry policy.
+struct LeadModelCall<'a> {
+    principal_id: &'a str,
+    project_id: &'a str,
+    objective_id: &'a str,
+    scope_id: &'a str,
+    purpose: &'a str,
+    system_prompt: &'a str,
+    user_prompt: &'a str,
+    max_output_tokens: u64,
+}
+
+impl LeadModelCall<'_> {
+    fn request(
+        &self,
+        max_output_tokens: u64,
+    ) -> factory_native::model_gateway::ModelCallRequest<'_> {
+        factory_native::model_gateway::ModelCallRequest {
+            role: factory_native::db::ModelCallRole::Lead,
+            principal_id: self.principal_id,
+            project_id: self.project_id,
+            objective_id: self.objective_id,
+            scope_id: self.scope_id,
+            purpose: self.purpose,
+            system_prompt: self.system_prompt,
+            user_prompt: self.user_prompt,
+            max_output_tokens,
+        }
+    }
+}
+
+/// Execute one structured Lead call. Only a measured, content-empty length
+/// stop is retryable. The first attempt stays UNKNOWN with its own reservation
+/// and budget hold; the new output bound changes the request digest and
+/// therefore owns a fresh reservation. Transport failures, HTTP errors,
+/// refusals, usage-unknown outcomes and budget exhaustion are never retried.
+async fn call_lead_model_with_truncation_retry(
+    gateway: &factory_native::model_gateway::ModelGateway,
+    database: &factory_native::db::Database,
+    call: &LeadModelCall<'_>,
+) -> Result<factory_native::db::ModelCallResult, factory_native::model_gateway::ModelGatewayError> {
+    let mut requested_output_tokens = call.max_output_tokens;
+    let mut result = gateway
+        .call(database, call.request(requested_output_tokens))
+        .await;
+    if let Err(factory_native::model_gateway::ModelGatewayError::Truncated(detail)) = &result
+        && let Some(retry_output_tokens) =
+            agentic_truncation_retry_output_tokens(requested_output_tokens)
+    {
+        tracing::warn!(
+            purpose = call.purpose,
+            requested_output_tokens,
+            retry_output_tokens,
+            diagnostic = %detail,
+            "agentic Lead model output was truncated; retrying once with a larger bound"
+        );
+        requested_output_tokens = retry_output_tokens;
+        result = gateway
+            .call(database, call.request(requested_output_tokens))
+            .await;
+    }
+    result
+}
+
 fn bounded_agentic_model_error(message: &str) -> String {
     message.chars().take(480).collect()
 }
@@ -10754,58 +10820,22 @@ async fn call_agentic_lead_model(
                 .into_response()
         })?;
     let principal_id = grant.principal_id.clone();
-    let mut requested_output_tokens = max_output_tokens;
-    let mut result = gateway
-        .call(
-            &app.db,
-            factory_native::model_gateway::ModelCallRequest {
-                role: factory_native::db::ModelCallRole::Lead,
-                principal_id: &principal_id,
-                project_id: &record.project_id,
-                objective_id: &record.lead_request_id,
-                scope_id: &record.delegation_id,
-                purpose,
-                system_prompt,
-                user_prompt,
-                max_output_tokens: requested_output_tokens,
-            },
-        )
-        .await;
-    // Only a measured, content-empty length stop is retryable. The first
-    // attempt stays UNKNOWN with its own reservation and budget hold; the new
-    // output bound changes the request digest and therefore owns a fresh
-    // reservation. Transport failures, HTTP errors, refusals, usage-unknown
-    // outcomes and budget exhaustion are never retried here.
-    if let Err(factory_native::model_gateway::ModelGatewayError::Truncated(detail)) = &result
-        && let Some(retry_output_tokens) =
-            agentic_truncation_retry_output_tokens(requested_output_tokens)
-    {
-        tracing::warn!(
+    let result = call_lead_model_with_truncation_retry(
+        &gateway,
+        &app.db,
+        &LeadModelCall {
+            principal_id: &principal_id,
+            project_id: &record.project_id,
+            objective_id: &record.lead_request_id,
+            scope_id: &record.delegation_id,
             purpose,
-            requested_output_tokens,
-            retry_output_tokens,
-            diagnostic = %detail,
-            "agentic Lead model output was truncated; retrying once with a larger bound"
-        );
-        requested_output_tokens = retry_output_tokens;
-        result = gateway
-            .call(
-                &app.db,
-                factory_native::model_gateway::ModelCallRequest {
-                    role: factory_native::db::ModelCallRole::Lead,
-                    principal_id: &principal_id,
-                    project_id: &record.project_id,
-                    objective_id: &record.lead_request_id,
-                    scope_id: &record.delegation_id,
-                    purpose,
-                    system_prompt,
-                    user_prompt,
-                    max_output_tokens: requested_output_tokens,
-                },
-            )
-            .await;
-    }
-    let result = result.map_err(agentic_model_error)?;
+            system_prompt,
+            user_prompt,
+            max_output_tokens,
+        },
+    )
+    .await
+    .map_err(agentic_model_error)?;
     Ok(AgenticModelOutcome {
         content: result.content,
         provider: result.provider,
@@ -15041,22 +15071,21 @@ async fn assess_agentic_request(
     })
     .to_string();
     let principal_id = grant.principal_id.clone();
-    let result = match gateway
-        .call(
-            &app.db,
-            factory_native::model_gateway::ModelCallRequest {
-                role: factory_native::db::ModelCallRole::Lead,
-                principal_id: &principal_id,
-                project_id: &record.project_id,
-                objective_id: &record.lead_request_id,
-                scope_id: &record.delegation_id,
-                purpose: "agentic_triage",
-                system_prompt: &system_prompt,
-                user_prompt: &user_prompt,
-                max_output_tokens: AGENTIC_LEAD_STRUCTURED_OUTPUT_TOKENS,
-            },
-        )
-        .await
+    let result = match call_lead_model_with_truncation_retry(
+        &gateway,
+        &app.db,
+        &LeadModelCall {
+            principal_id: &principal_id,
+            project_id: &record.project_id,
+            objective_id: &record.lead_request_id,
+            scope_id: &record.delegation_id,
+            purpose: "agentic_triage",
+            system_prompt: &system_prompt,
+            user_prompt: &user_prompt,
+            max_output_tokens: AGENTIC_LEAD_STRUCTURED_OUTPUT_TOKENS,
+        },
+    )
+    .await
     {
         Ok(result) => result,
         Err(factory_native::model_gateway::ModelGatewayError::Database(error)) => {
@@ -15079,6 +15108,9 @@ async fn assess_agentic_request(
                     .into_response(),
                 other => api_error(other),
             };
+        }
+        Err(error @ factory_native::model_gateway::ModelGatewayError::Truncated(_)) => {
+            return agentic_model_error(error);
         }
         Err(factory_native::model_gateway::ModelGatewayError::Invalid(message)) => {
             return (
@@ -22513,7 +22545,7 @@ mod tests {
         }
 
         #[cfg(feature = "test-support")]
-        fn planner_master_key() -> factory_native::provider_secrets::ProviderSecretKey {
+        fn structured_lead_master_key() -> factory_native::provider_secrets::ProviderSecretKey {
             use std::io::Write;
             let path = std::env::temp_dir().join(format!(
                 "factory-core-planner-master-key-{}.txt",
@@ -22535,7 +22567,7 @@ mod tests {
 
         #[cfg(feature = "test-support")]
         #[derive(Clone)]
-        enum PlannerUpstreamBehavior {
+        enum StructuredLeadUpstreamBehavior {
             TruncateThen(String),
             AlwaysTruncate,
             EmptyStop,
@@ -22544,18 +22576,18 @@ mod tests {
 
         #[cfg(feature = "test-support")]
         #[derive(Clone)]
-        struct PlannerUpstreamState {
-            behavior: PlannerUpstreamBehavior,
+        struct StructuredLeadUpstreamState {
+            behavior: StructuredLeadUpstreamBehavior,
             calls: Arc<Mutex<Vec<Value>>>,
         }
 
         #[cfg(feature = "test-support")]
-        async fn planner_upstream(
-            behavior: PlannerUpstreamBehavior,
+        async fn structured_lead_upstream(
+            behavior: StructuredLeadUpstreamBehavior,
         ) -> (String, Arc<Mutex<Vec<Value>>>) {
             use axum::{Router, routing::post};
             async fn chat(
-                axum::extract::State(state): axum::extract::State<PlannerUpstreamState>,
+                axum::extract::State(state): axum::extract::State<StructuredLeadUpstreamState>,
                 axum::Json(body): axum::Json<Value>,
             ) -> Response {
                 let call = {
@@ -22578,7 +22610,7 @@ mod tests {
                     .into_response()
                 };
                 match &state.behavior {
-                    PlannerUpstreamBehavior::TruncateThen(content) => {
+                    StructuredLeadUpstreamBehavior::TruncateThen(content) => {
                         if call == 1 {
                             truncation()
                         } else {
@@ -22592,8 +22624,8 @@ mod tests {
                             .into_response()
                         }
                     }
-                    PlannerUpstreamBehavior::AlwaysTruncate => truncation(),
-                    PlannerUpstreamBehavior::EmptyStop => axum::Json(json!({
+                    StructuredLeadUpstreamBehavior::AlwaysTruncate => truncation(),
+                    StructuredLeadUpstreamBehavior::EmptyStop => axum::Json(json!({
                         "choices": [{
                             "message": {"content": ""},
                             "finish_reason": "stop"
@@ -22601,7 +22633,7 @@ mod tests {
                         "usage": {"prompt_tokens": 12, "completion_tokens": 7, "total_tokens": 19}
                     }))
                     .into_response(),
-                    PlannerUpstreamBehavior::Reject => (
+                    StructuredLeadUpstreamBehavior::Reject => (
                         StatusCode::BAD_REQUEST,
                         axum::Json(json!({"error": "invalid request"})),
                     )
@@ -22611,7 +22643,7 @@ mod tests {
             let calls = Arc::new(Mutex::new(Vec::new()));
             let app = Router::new()
                 .route("/chat/completions", post(chat))
-                .with_state(PlannerUpstreamState {
+                .with_state(StructuredLeadUpstreamState {
                     behavior,
                     calls: calls.clone(),
                 });
@@ -22622,13 +22654,13 @@ mod tests {
         }
 
         #[cfg(feature = "test-support")]
-        async fn planner_fixture(
-            behavior: PlannerUpstreamBehavior,
+        async fn structured_lead_fixture(
+            behavior: StructuredLeadUpstreamBehavior,
             key: &str,
         ) -> (Fixture, Arc<Mutex<Vec<Value>>>) {
             unsafe { std::env::set_var("FACTORY_ALLOW_TEST_UPSTREAM", "1") };
-            let master_key = planner_master_key();
-            let (url, calls) = planner_upstream(behavior).await;
+            let master_key = structured_lead_master_key();
+            let (url, calls) = structured_lead_upstream(behavior).await;
             // Projects root makes deterministic stack detection read the
             // fixture repository instead of treating it as greenfield.
             let fixture = setup_with_projects_root(
@@ -22687,7 +22719,7 @@ mod tests {
             std::fs::create_dir_all(fixture.repository.join("src")).unwrap();
             std::fs::write(
                 fixture.repository.join("src/lib.rs"),
-                "pub fn planner_fixture() {}\n",
+                "pub fn structured_lead_fixture() {}\n",
             )
             .unwrap();
             let (status, _) = enable_policy(&fixture).await;
@@ -22726,11 +22758,46 @@ mod tests {
         }
 
         #[cfg(feature = "test-support")]
-        async fn planner_records(fixture: &Fixture) -> Vec<factory_native::db::ModelCallRecord> {
+        fn triage_model_content() -> String {
+            use factory_native::agentic::{
+                AgenticTriageModel, Assurance, ChangeRoute, RequestKind, StackProfile,
+            };
+            serde_json::to_string(&AgenticTriageModel {
+                request_kind: RequestKind::Change,
+                route: ChangeRoute::Delegated,
+                assurance: Assurance::Standard,
+                stack: StackProfile {
+                    languages: vec!["rust".into()],
+                    package_managers: vec!["cargo".into()],
+                    build_tools: vec!["cargo".into()],
+                    evidence_refs: vec!["Cargo.toml".into()],
+                    confidence: "high".into(),
+                    ..StackProfile::default()
+                },
+                files: vec!["src/api.rs".into()],
+                domains: Vec::new(),
+                risk: "low".into(),
+                expected_work_units: Some(1),
+                ambiguous: false,
+                architecture_uncertainty: false,
+                cross_module: false,
+                public_contract: false,
+                data_or_schema: false,
+                security_boundary: false,
+                skill_needs: Vec::new(),
+                unknowns: Vec::new(),
+            })
+            .unwrap()
+        }
+
+        #[cfg(feature = "test-support")]
+        async fn structured_lead_records(
+            fixture: &Fixture,
+        ) -> Vec<factory_native::db::ModelCallRecord> {
             let request = fixture
                 .app
                 .db
-                .intake_request(&planner_intake_id(fixture).await)
+                .intake_request(&fixture_intake_id(fixture).await)
                 .await
                 .unwrap();
             fixture
@@ -22742,7 +22809,7 @@ mod tests {
         }
 
         #[cfg(feature = "test-support")]
-        async fn planner_intake_id(fixture: &Fixture) -> String {
+        async fn fixture_intake_id(fixture: &Fixture) -> String {
             fixture
                 .app
                 .db
@@ -22758,12 +22825,12 @@ mod tests {
         #[cfg(feature = "test-support")]
         #[tokio::test]
         async fn planner_retries_one_truncation_with_a_larger_bound() {
-            let (fixture, calls) = planner_fixture(
-                PlannerUpstreamBehavior::TruncateThen(planner_model_content()),
+            let (fixture, calls) = structured_lead_fixture(
+                StructuredLeadUpstreamBehavior::TruncateThen(planner_model_content()),
                 "planner-retry",
             )
             .await;
-            let intake_id = planner_intake_id(&fixture).await;
+            let intake_id = fixture_intake_id(&fixture).await;
             let (status, planned) = send(
                 &fixture.router,
                 "POST",
@@ -22785,7 +22852,7 @@ mod tests {
                 assert_eq!(calls[1]["max_tokens"], json!(32_768));
             }
 
-            let records = planner_records(&fixture).await;
+            let records = structured_lead_records(&fixture).await;
             assert_eq!(records.len(), 2);
             let first = records
                 .iter()
@@ -22823,12 +22890,12 @@ mod tests {
         #[cfg(feature = "test-support")]
         #[tokio::test]
         async fn planner_double_truncation_returns_a_typed_bounded_error_without_artifacts() {
-            let (fixture, calls) = planner_fixture(
-                PlannerUpstreamBehavior::AlwaysTruncate,
+            let (fixture, calls) = structured_lead_fixture(
+                StructuredLeadUpstreamBehavior::AlwaysTruncate,
                 "planner-double-truncation",
             )
             .await;
-            let intake_id = planner_intake_id(&fixture).await;
+            let intake_id = fixture_intake_id(&fixture).await;
             let (status, planned) = send(
                 &fixture.router,
                 "POST",
@@ -22843,7 +22910,7 @@ mod tests {
             assert!(message.chars().count() <= 480, "{message}");
 
             assert_eq!(calls.lock().unwrap().len(), 2, "at most one retry");
-            let records = planner_records(&fixture).await;
+            let records = structured_lead_records(&fixture).await;
             assert_eq!(records.len(), 2);
             assert!(records.iter().all(|record| record.state == "UNKNOWN"));
             assert!(matches!(
@@ -22868,9 +22935,12 @@ mod tests {
         #[cfg(feature = "test-support")]
         #[tokio::test]
         async fn planner_does_not_retry_empty_content_without_length() {
-            let (fixture, calls) =
-                planner_fixture(PlannerUpstreamBehavior::EmptyStop, "planner-empty-stop").await;
-            let intake_id = planner_intake_id(&fixture).await;
+            let (fixture, calls) = structured_lead_fixture(
+                StructuredLeadUpstreamBehavior::EmptyStop,
+                "planner-empty-stop",
+            )
+            .await;
+            let intake_id = fixture_intake_id(&fixture).await;
             let (status, planned) = send(
                 &fixture.router,
                 "POST",
@@ -22880,7 +22950,7 @@ mod tests {
             .await;
             assert_eq!(status, StatusCode::FORBIDDEN, "{planned}");
             assert_eq!(calls.lock().unwrap().len(), 1, "no retry");
-            let records = planner_records(&fixture).await;
+            let records = structured_lead_records(&fixture).await;
             assert_eq!(records.len(), 1);
             assert_eq!(records[0].state, "UNKNOWN");
             assert!(matches!(
@@ -22896,9 +22966,12 @@ mod tests {
         #[cfg(feature = "test-support")]
         #[tokio::test]
         async fn planner_does_not_retry_http_failures() {
-            let (fixture, calls) =
-                planner_fixture(PlannerUpstreamBehavior::Reject, "planner-http-reject").await;
-            let intake_id = planner_intake_id(&fixture).await;
+            let (fixture, calls) = structured_lead_fixture(
+                StructuredLeadUpstreamBehavior::Reject,
+                "planner-http-reject",
+            )
+            .await;
+            let intake_id = fixture_intake_id(&fixture).await;
             let (status, planned) = send(
                 &fixture.router,
                 "POST",
@@ -22909,9 +22982,91 @@ mod tests {
             assert_eq!(status, StatusCode::BAD_GATEWAY, "{planned}");
             assert_eq!(planned["code"], "AGENTIC_MODEL_FAILED");
             assert_eq!(calls.lock().unwrap().len(), 1, "no retry");
-            let records = planner_records(&fixture).await;
+            let records = structured_lead_records(&fixture).await;
             assert_eq!(records.len(), 1);
             assert_eq!(records[0].state, "AMBIGUOUS");
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn triage_retries_one_truncation_with_a_larger_bound() {
+            let (fixture, calls) = structured_lead_fixture(
+                StructuredLeadUpstreamBehavior::TruncateThen(triage_model_content()),
+                "triage-retry",
+            )
+            .await;
+            let intake_id = fixture_intake_id(&fixture).await;
+            let (status, assessed) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/assess"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{assessed}");
+            assert_eq!(assessed["assessment"]["requestKind"], "CHANGE");
+
+            {
+                let calls = calls.lock().unwrap();
+                assert_eq!(calls.len(), 2, "exactly one truncation retry");
+                assert_eq!(calls[0]["max_tokens"], json!(16_384));
+                assert_eq!(calls[1]["max_tokens"], json!(32_768));
+            }
+
+            let records = structured_lead_records(&fixture).await;
+            assert_eq!(records.len(), 2);
+            let first = records
+                .iter()
+                .find(|record| record.state == "UNKNOWN")
+                .expect("first truncated attempt stays UNKNOWN");
+            let second = records
+                .iter()
+                .find(|record| record.state == "SETTLED")
+                .expect("retry settles");
+            assert_eq!(first.purpose, "agentic_triage");
+            assert_eq!(second.purpose, "agentic_triage");
+            assert_ne!(first.reservation_id, second.reservation_id);
+            assert_ne!(first.request_sha256, second.request_sha256);
+            assert!(
+                fixture.app.db.agentic_assessment(&intake_id).await.is_ok(),
+                "the successful retry persists the triage assessment"
+            );
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn triage_double_truncation_returns_the_typed_error_without_an_assessment() {
+            let (fixture, calls) = structured_lead_fixture(
+                StructuredLeadUpstreamBehavior::AlwaysTruncate,
+                "triage-double-truncation",
+            )
+            .await;
+            let intake_id = fixture_intake_id(&fixture).await;
+            let (status, assessed) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/assess"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_GATEWAY, "{assessed}");
+            assert_eq!(assessed["code"], "AGENTIC_MODEL_OUTPUT_TRUNCATED");
+            assert_eq!(calls.lock().unwrap().len(), 2, "at most one retry");
+            let records = structured_lead_records(&fixture).await;
+            assert_eq!(records.len(), 2);
+            assert!(records.iter().all(|record| record.state == "UNKNOWN"));
+            assert!(matches!(
+                fixture.app.db.agentic_assessment(&intake_id).await,
+                Err(Error::NotFound)
+            ));
 
             fixture.app.db.close().await;
             let _ = std::fs::remove_file(fixture.path);

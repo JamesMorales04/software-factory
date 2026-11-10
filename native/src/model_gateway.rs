@@ -312,27 +312,27 @@ impl ModelGateway {
             .and_then(serde_json::Value::as_str)
             .unwrap_or_default()
             .trim();
+        let message = value.pointer("/choices/0/message");
+        let refusal = message
+            .and_then(|message| message.get("refusal"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        let top_error_value = value.get("error");
         // A reasoning model spends its output budget on reasoning_content
         // before it can emit the JSON answer. Empty content with
-        // finish_reason=length is therefore a truncation, not a refusal or an
-        // ambiguous transport outcome. Classify it structurally here so Core
-        // never has to match diagnostic strings.
-        let truncated_output = content.is_empty() && finish_reason == Some("length");
+        // finish_reason=length is therefore a truncation, not an ambiguous
+        // transport outcome. A provider refusal signal is never a truncation:
+        // it must not trigger the bounded token-budget retry.
+        let provider_refusal = !refusal.trim().is_empty() || top_error_value.is_some();
+        let truncated_output =
+            content.is_empty() && finish_reason == Some("length") && !provider_refusal;
         let diagnostic = if content.is_empty() {
             let finish_reason = finish_reason.unwrap_or("unknown");
-            let message_keys = value
-                .pointer("/choices/0/message")
+            let message_keys = message
                 .and_then(serde_json::Value::as_object)
                 .map(|message| message.keys().cloned().collect::<Vec<_>>().join(","))
                 .unwrap_or_default();
-            let refusal = value
-                .pointer("/choices/0/message/refusal")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("");
-            let top_error = value
-                .get("error")
-                .map(ToString::to_string)
-                .unwrap_or_default();
+            let top_error = top_error_value.map(ToString::to_string).unwrap_or_default();
             tracing::warn!(
                 finish_reason,
                 message_keys = %message_keys,
@@ -693,6 +693,8 @@ mod integration_tests {
         NoUsage,
         Empty,
         Truncated,
+        Refusal,
+        ProviderError,
         Oversized,
         Timeout,
         Reject,
@@ -727,6 +729,27 @@ mod integration_tests {
             Behavior::Truncated => axum::Json(json!({
                 "choices":[{
                     "message":{"content":"","reasoning_content":"reasoning budget exhausted","role":"assistant"},
+                    "finish_reason":"length"
+                }],
+                "usage":{"prompt_tokens":12,"completion_tokens":100,"total_tokens":112}
+            }))
+            .into_response(),
+            Behavior::Refusal => axum::Json(json!({
+                "choices":[{
+                    "message":{
+                        "content":"",
+                        "refusal":"I cannot help with that request.",
+                        "role":"assistant"
+                    },
+                    "finish_reason":"length"
+                }],
+                "usage":{"prompt_tokens":12,"completion_tokens":100,"total_tokens":112}
+            }))
+            .into_response(),
+            Behavior::ProviderError => axum::Json(json!({
+                "error":{"message":"content policy refusal","type":"invalid_request_error"},
+                "choices":[{
+                    "message":{"content":"","role":"assistant"},
                     "finish_reason":"length"
                 }],
                 "usage":{"prompt_tokens":12,"completion_tokens":100,"total_tokens":112}
@@ -955,6 +978,44 @@ mod integration_tests {
         database.close().await;
         let _ = std::fs::remove_file(path);
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn refusals_are_not_truncation_and_are_never_retried() {
+        for (scope, behavior) in [
+            ("gateway-refusal", Behavior::Refusal),
+            ("gateway-provider-error", Behavior::ProviderError),
+        ] {
+            let (path, database) = database().await;
+            database
+                .admit_test_subscription_dispatch(scope)
+                .await
+                .unwrap();
+            let (url, calls, server) = upstream(behavior).await;
+            let gateway = gateway(&url, 5_000);
+            let error = gateway
+                .call(&database, request(scope, "prompt"))
+                .await
+                .expect_err("a refusal never settles as usable content");
+            assert!(
+                !matches!(error, ModelGatewayError::Truncated(_)),
+                "{scope}: a refusal must not be classified as truncation: {error:?}"
+            );
+            assert!(
+                matches!(
+                    error,
+                    ModelGatewayError::Database(crate::db::Error::Forbidden(_))
+                ),
+                "{scope}: the refusal stays an UNKNOWN settlement: {error:?}"
+            );
+            let records = database.model_calls_for_scope(scope).await.unwrap();
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].state, "UNKNOWN");
+            assert_eq!(*calls.lock().await, 1, "{scope}: no token-budget retry");
+            database.close().await;
+            let _ = std::fs::remove_file(path);
+            server.abort();
+        }
     }
 
     #[tokio::test]
