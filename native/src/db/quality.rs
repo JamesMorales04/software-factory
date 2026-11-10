@@ -571,7 +571,7 @@ impl Database {
              JOIN runs r ON r.campaign_id=ir.campaign_id
              JOIN attempts a ON a.run_id=r.id
              JOIN candidates cd ON cd.attempt_id=a.id
-             JOIN gate_decisions gd ON gd.candidate_id=cd.id
+             JOIN gate_decisions_current gd ON gd.candidate_id=cd.id
              WHERE gd.outcome='ACCEPTED'
              ORDER BY cd.created_at DESC,cd.id DESC",
         )
@@ -715,6 +715,23 @@ impl Database {
         .fetch_all(&self.pool)
         .await?;
         rows.iter().map(receipt_from_row).collect()
+    }
+
+    /// Re-evaluate the Gate from the existing immutable receipts and the
+    /// current finding dispositions. This accepts no new evidence and appends
+    /// a revision only when the deterministic outcome or reasons changed.
+    pub async fn reevaluate_gate_for_candidate(
+        &self,
+        candidate_id: &str,
+    ) -> Result<Option<GateRecord>, Error> {
+        if candidate_id.trim().is_empty() {
+            return Err(Error::Invalid("candidate id"));
+        }
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin().await?;
+        let gate = reevaluate_gate_for_candidate_in_tx(&mut transaction, candidate_id).await?;
+        transaction.commit().await?;
+        Ok(gate)
     }
 }
 
@@ -1513,11 +1530,48 @@ async fn reviewer_requirement_for_candidate(
     Ok(requirement)
 }
 
-async fn decide_gate(
+/// Informational findings on a passing, executed review are observations.
+/// They remain durable in the receipt and disposition ledger, but they never
+/// block acceptance; warning and higher severities keep their existing rules.
+fn informational_observation(
+    reviewer: &QualityReceiptRecord,
+    finding: &crate::review::ReviewFinding,
+) -> bool {
+    reviewer.result == ReceiptResult::Pass
+        && reviewer.evidence == EvidenceKind::Executed
+        && finding.severity == crate::review::FindingSeverity::Info
+}
+
+/// Repair authorization consumes actionable findings only. The observation
+/// exception is deliberately receipt-aware: Info remains actionable on a
+/// non-PASS or non-EXECUTED receipt, exactly as before the observation rule.
+fn is_actionable_finding(
+    reviewer: &QualityReceiptRecord,
+    finding: &crate::review::ReviewFinding,
+) -> bool {
+    !informational_observation(reviewer, finding)
+}
+
+fn actionable_findings(reviewer: &QualityReceiptRecord) -> Vec<crate::review::ReviewFinding> {
+    reviewer
+        .findings
+        .iter()
+        .filter(|finding| is_actionable_finding(reviewer, finding))
+        .cloned()
+        .collect()
+}
+
+struct EvaluatedGate {
+    decision: crate::quality::GateDecision,
+    verifier: QualityReceiptRecord,
+    reviewers: Vec<QualityReceiptRecord>,
+}
+
+async fn evaluate_gate_decision(
     connection: &mut SqliteConnection,
     candidate_id: &str,
     candidate: &CandidateRecord,
-) -> Result<Option<GateRecord>, Error> {
+) -> Result<Option<EvaluatedGate>, Error> {
     let verifier = load_receipt_by_role(connection, candidate_id, QualityRole::Verifier).await?;
     let Some(verifier) = verifier.as_ref() else {
         return Ok(None);
@@ -1661,10 +1715,17 @@ async fn decide_gate(
     // Every reviewer finding is a durable disposition. A missing or OPEN
     // disposition blocks acceptance even when the reviewer receipt itself
     // passed; the finding must be repaired, resolved with evidence or refuted
-    // by an authenticated owner.
+    // by an authenticated owner. Informational findings on a passing, executed
+    // review are observations: they remain visible in the receipt and
+    // disposition ledger but do not block an otherwise accepted Gate.
     let mut open_findings = 0usize;
+    let mut observations = 0usize;
     for reviewer in &reviewer_records {
         for finding in &reviewer.findings {
+            if informational_observation(reviewer, finding) {
+                observations += 1;
+                continue;
+            }
             let status: Option<(String,)> = sqlx::query_as::query_as(
                 "SELECT status FROM finding_dispositions
                  WHERE candidate_id=?1 AND finding_id=?2",
@@ -1687,6 +1748,11 @@ async fn decide_gate(
             outcome: GateOutcome::RepairRequired,
             reasons: vec![format!("{open_findings} reviewer finding(s) remain open")],
         };
+    }
+    if observations > 0 && decision.outcome == GateOutcome::Accepted {
+        decision.reasons.push(format!(
+            "{observations} informational reviewer finding(s) recorded as observations"
+        ));
     }
     match reviewer_selection_for_candidate_in_tx(connection, candidate_id).await {
         Ok(ReviewerSelection::Deterministic) => {
@@ -1741,10 +1807,25 @@ async fn decide_gate(
     {
         return Ok(None);
     }
+    Ok(Some(EvaluatedGate {
+        decision,
+        verifier: verifier.clone(),
+        reviewers: reviewer_records,
+    }))
+}
+
+async fn decide_gate(
+    connection: &mut SqliteConnection,
+    candidate_id: &str,
+    candidate: &CandidateRecord,
+) -> Result<Option<GateRecord>, Error> {
+    let Some(evaluated) = evaluate_gate_decision(connection, candidate_id, candidate).await? else {
+        return Ok(None);
+    };
     let gate = GateRecord {
         candidate_id: candidate_id.to_owned(),
-        outcome: decision.outcome,
-        reasons: decision.reasons,
+        outcome: evaluated.decision.outcome,
+        reasons: evaluated.decision.reasons,
         decided_at: Utc::now().to_rfc3339(),
     };
     let reasons_json = serde_json::to_string(&gate.reasons).expect("gate reasons are serializable");
@@ -1755,7 +1836,7 @@ async fn decide_gate(
         .bind(&gate.decided_at)
         .execute(&mut *connection)
         .await?;
-    for reviewer in &reviewer_records {
+    for reviewer in &evaluated.reviewers {
         sqlx::query::query(
             "INSERT OR IGNORE INTO gate_decision_reviewers (candidate_id,reviewer_receipt_id)
              VALUES (?1,?2)",
@@ -1772,6 +1853,75 @@ async fn decide_gate(
         &format!("outcome={:?}", gate.outcome),
     )
     .await?;
+    project_gate_to_run(connection, candidate_id, &gate).await?;
+    if let Some(reviewer) = evaluated.reviewers.iter().find(|reviewer| {
+        reviewer
+            .findings
+            .iter()
+            .any(|finding| is_actionable_finding(reviewer, finding))
+    }) {
+        record_gate_repair_authorization(
+            connection,
+            &gate,
+            candidate,
+            reviewer,
+            &evaluated.verifier,
+        )
+        .await?;
+    }
+    Ok(Some(gate))
+}
+
+async fn reevaluate_gate_for_candidate_in_tx(
+    connection: &mut SqliteConnection,
+    candidate_id: &str,
+) -> Result<Option<GateRecord>, Error> {
+    let candidate = load_candidate(connection, candidate_id).await?;
+    let Some(current) = load_gate(connection, candidate_id).await? else {
+        return Ok(None);
+    };
+    let Some(evaluated) = evaluate_gate_decision(connection, candidate_id, &candidate).await?
+    else {
+        return Ok(Some(current));
+    };
+    if current.outcome == evaluated.decision.outcome
+        && current.reasons == evaluated.decision.reasons
+    {
+        return Ok(Some(current));
+    }
+    let gate = GateRecord {
+        candidate_id: candidate_id.to_owned(),
+        outcome: evaluated.decision.outcome,
+        reasons: evaluated.decision.reasons,
+        decided_at: Utc::now().to_rfc3339(),
+    };
+    let reasons_json = serde_json::to_string(&gate.reasons).expect("gate reasons are serializable");
+    sqlx::query::query(
+        "INSERT INTO gate_decision_revisions (candidate_id,outcome,reasons_json,decided_at)
+         VALUES (?1,?2,?3,?4)",
+    )
+    .bind(&gate.candidate_id)
+    .bind(gate_outcome_str(gate.outcome))
+    .bind(reasons_json)
+    .bind(&gate.decided_at)
+    .execute(&mut *connection)
+    .await?;
+    record_event(
+        connection,
+        candidate_id,
+        "quality.gate_reevaluated",
+        &format!("outcome={:?}", gate.outcome),
+    )
+    .await?;
+    project_gate_to_run(connection, candidate_id, &gate).await?;
+    Ok(Some(gate))
+}
+
+async fn project_gate_to_run(
+    connection: &mut SqliteConnection,
+    candidate_id: &str,
+    gate: &GateRecord,
+) -> Result<(), Error> {
     let run: Option<(String,)> = sqlx::query_as::query_as(
         "SELECT r.id FROM candidates cd
          JOIN attempts a ON a.id=cd.attempt_id
@@ -1803,10 +1953,7 @@ async fn decide_gate(
         )
         .await?;
     }
-    if let Some(reviewer) = reviewer_records.first() {
-        record_gate_repair_authorization(connection, &gate, candidate, reviewer, verifier).await?;
-    }
-    Ok(Some(gate))
+    Ok(())
 }
 
 struct RepairContext {
@@ -1879,14 +2026,15 @@ async fn record_gate_repair_authorization(
     reviewer: &QualityReceiptRecord,
     verifier: &QualityReceiptRecord,
 ) -> Result<(), Error> {
+    let findings = actionable_findings(reviewer);
     if !matches!(
         gate.outcome,
         GateOutcome::RepairRequired | GateOutcome::HumanRequired
-    ) || reviewer.findings.is_empty()
+    ) || findings.is_empty()
     {
         return Ok(());
     }
-    let score = match autonomy::score_findings(&reviewer.findings) {
+    let score = match autonomy::score_findings(&findings) {
         Ok(score) => score,
         Err(_) => return Ok(()),
     };
@@ -1894,7 +2042,7 @@ async fn record_gate_repair_authorization(
     let decision = autonomy::authorize_repair(&RepairRequest {
         risk_class: &context.risk_class,
         policy: &context.autonomy,
-        findings: &reviewer.findings,
+        findings: &findings,
         reviewer_result: reviewer.result,
         reviewer_evidence_executed: reviewer.evidence == EvidenceKind::Executed,
         reviewer_principal: &reviewer.principal_id,
@@ -2159,7 +2307,7 @@ async fn load_gate(
     candidate_id: &str,
 ) -> Result<Option<GateRecord>, Error> {
     let row: Option<(String, String, String)> = sqlx::query_as::query_as(
-        "SELECT outcome,reasons_json,decided_at FROM gate_decisions WHERE candidate_id=?1",
+        "SELECT outcome,reasons_json,decided_at FROM gate_decisions_current WHERE candidate_id=?1",
     )
     .bind(candidate_id)
     .fetch_optional(connection)

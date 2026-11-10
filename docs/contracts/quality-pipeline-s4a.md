@@ -162,9 +162,12 @@ Rules:
   establish a bounded verdict).
 - Missing/`NOT_TESTED` required evidence → `NOT_TESTED`/`BLOCKED`; never PASS.
 - All required evidence `PASS` and reviewer `APPROVE` → `ACCEPTED`.
-- A decision is persisted only when verifier and reviewer evidence exist. It is
-  keyed uniquely by candidate, immutable across replay/restart, and repeated
-  evidence delivery is idempotent. A new decision requires a new candidate.
+- A decision is persisted only when verifier and reviewer evidence exist. The
+  initial decision is keyed uniquely by candidate, immutable across
+  replay/restart, and repeated evidence delivery is idempotent. A new candidate
+  is required for new evidence. A disposition-driven re-evaluation of the same
+  receipts may append one immutable Gate revision only when the recomputed
+  outcome or reasons differ; unchanged evidence is a no-op.
 - A final decision records an evidence digest. The store verifies that the
   committed evidence set still matches the evaluated set at save time; new
   evidence committing during evaluation makes the save a conflict and the Core

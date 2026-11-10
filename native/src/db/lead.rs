@@ -709,7 +709,7 @@ impl Database {
         let gate_outcome = match &request.campaign_id {
             Some(campaign_id) => {
                 let row: Option<(String,)> = sqlx::query_as::query_as(
-                    "SELECT gd.outcome FROM gate_decisions gd
+                    "SELECT gd.outcome FROM gate_decisions_current gd
                      JOIN candidates c ON c.id=gd.candidate_id
                      JOIN attempts a ON a.id=c.attempt_id
                      JOIN runs r ON r.id=a.run_id
@@ -4048,7 +4048,7 @@ impl Database {
             let verified: Option<(String, String, String)> = sqlx::query_as::query_as(
                 "SELECT gd.outcome,c.commit_sha,
                         COALESCE(lt.unit_id,li.integration_id,r.campaign_id)
-                 FROM gate_decisions gd
+                 FROM gate_decisions_current gd
                  JOIN candidates c ON c.id=gd.candidate_id
                  JOIN attempts a ON a.id=c.attempt_id
                  JOIN runs r ON r.id=a.run_id
@@ -4840,7 +4840,7 @@ async fn verify_progress_evidence_in_tx(
             crate::execution_policy::ProgressKind::RepairValidated => {
                 let gates: Vec<(String, String, String, String)> = sqlx::query_as::query_as(
                     "SELECT gd.candidate_id,gd.outcome,gd.decided_at,c.commit_sha
-                     FROM gate_decisions gd
+                     FROM gate_decisions_current gd
                      JOIN candidates c ON c.id=gd.candidate_id
                      JOIN attempts a ON a.id=c.attempt_id
                      JOIN runs r ON r.id=a.run_id

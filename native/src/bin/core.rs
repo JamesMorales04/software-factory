@@ -13406,7 +13406,25 @@ async fn resolve_agentic_finding(
             .into_response();
     }
     match app.db.save_finding_disposition(&disposition).await {
-        Ok(saved) => Json(saved).into_response(),
+        Ok(saved) => {
+            if let Some(candidate_id) = saved
+                .candidate_id
+                .as_deref()
+                .filter(|candidate_id| !candidate_id.is_empty())
+            {
+                match app.db.gate_for_candidate(candidate_id).await {
+                    Ok(Some(_)) => {
+                        if let Err(error) = app.db.reevaluate_gate_for_candidate(candidate_id).await
+                        {
+                            return api_error(error);
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => return api_error(error),
+                }
+            }
+            Json(saved).into_response()
+        }
         Err(error) => api_error(error),
     }
 }
@@ -25658,6 +25676,239 @@ mod tests {
                 "the detail campaign projection must expose the exact candidate"
             );
 
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
+        async fn disposition_resolution_reevaluates_the_gate_only_when_authorized() {
+            use tower::ServiceExt;
+
+            let fixture = setup().await;
+            let (status, _) = enable_policy(&fixture).await;
+            assert_eq!(status, StatusCode::CREATED);
+            let (status, created) = create_intake(&fixture, "request-api-reeval").await;
+            assert_eq!(status, StatusCode::CREATED, "{created}");
+            let intake_id = created["id"].as_str().unwrap().to_owned();
+            let context = fixture_plan(&fixture, &intake_id, "FIXTURE").await;
+            seed_complete_planning(&fixture, &intake_id, ParticipantSeed::Matching).await;
+            let (status, approved) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/approve"),
+                Some(json!({
+                    "expected_plan_hash": context.plan.plan_hash,
+                    "rationale": "Reviewed the frozen plan and budget.",
+                    "idempotency_key": "approve-disposition-reeval",
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{approved}");
+            let campaign_id = approved["campaignId"].as_str().unwrap().to_owned();
+            let tasks = fixture.app.db.campaign_tasks(&campaign_id).await.unwrap();
+            let attempt_id = tasks[0].attempt_id.clone().expect("Lead Attempt");
+            let candidate_id = "candidate-disposition-reeval".to_owned();
+            let pool = sqlx_sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx_sqlite::SqliteConnectOptions::new()
+                        .filename(&fixture.path)
+                        .create_if_missing(false),
+                )
+                .await
+                .unwrap();
+            let (spec_sha256,): (String,) = sqlx::query_as::query_as(
+                "SELECT spec_sha256 FROM attempt_specs WHERE attempt_id=?1",
+            )
+            .bind(&attempt_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            let now = chrono::Utc::now().to_rfc3339();
+            // This test isolates the Gate re-evaluation path; use one legacy
+            // roleless reviewer requirement instead of the participant plan.
+            sqlx::query::query("DELETE FROM agentic_participant_plans WHERE request_id=?1")
+                .bind(&intake_id)
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query::query(
+                "UPDATE campaign_review_requirements
+                 SET reviewer_count=1, required_roles_json='[]', required_assignments_json='[]'
+                 WHERE campaign_id=?1",
+            )
+            .bind(&campaign_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query::query(
+                "INSERT INTO candidates
+                 (id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at)
+                 VALUES (?1,?2,?3,?4,?5,'worker-reeval',?6)",
+            )
+            .bind(&candidate_id)
+            .bind(&attempt_id)
+            .bind(&spec_sha256)
+            .bind("a".repeat(40))
+            .bind("b".repeat(40))
+            .bind(&now)
+            .execute(&pool)
+            .await
+            .unwrap();
+            for (receipt_id, role, principal, findings) in [
+                (
+                    "verifier-disposition-reeval",
+                    "verifier",
+                    "verifier-1",
+                    "[]".to_string(),
+                ),
+                (
+                    "reviewer-disposition-reeval",
+                    "reviewer",
+                    "reviewer-1",
+                    json!([{
+                        "id": "warning-reeval",
+                        "severity": "warning",
+                        "category": "functional",
+                        "message": "the exported file is not closed deterministically",
+                        "points": 2,
+                        "rationale": "the candidate diff shows a missing close path",
+                        "evidenceRefs": ["src/export.rs:42"]
+                    }])
+                    .to_string(),
+                ),
+            ] {
+                sqlx::query::query(
+                    "INSERT INTO quality_receipts
+                     (receipt_id,candidate_id,role,principal_id,reviewer_role,action_spec_sha256,
+                      commit_sha,tree_sha,result,evidence,findings_json,mechanism,model_provider,
+                      model_name,model_reservation_id,model_request_sha256,input_tokens,
+                      output_tokens,total_tokens,cost_micros,usage_known,received_at)
+                     VALUES (?1,?2,?3,?4,'',?5,?6,?7,'PASS','EXECUTED',?8,'DETERMINISTIC',
+                             '','','','',0,0,0,0,0,?9)",
+                )
+                .bind(receipt_id)
+                .bind(&candidate_id)
+                .bind(role)
+                .bind(principal)
+                .bind(&spec_sha256)
+                .bind("a".repeat(40))
+                .bind("b".repeat(40))
+                .bind(findings)
+                .bind(&now)
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+            sqlx::query::query(
+                "INSERT INTO finding_dispositions
+                 (id,request_id,candidate_id,finding_id,route,status,reviewer_principal,
+                  resolved_by,evidence_refs_json,owner_decision,created_at,updated_at)
+                 VALUES ('disposition-warning-reeval',?1,?2,'warning-reeval','REPAIRER','OPEN',
+                         'reviewer-1','','[]',NULL,?3,?3)",
+            )
+            .bind(&intake_id)
+            .bind(&candidate_id)
+            .bind(&now)
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query::query(
+                "INSERT INTO gate_decisions(candidate_id,outcome,reasons_json,decided_at)
+                 VALUES (?1,'REPAIR_REQUIRED','[\"1 reviewer finding(s) remain open\"]',?2)",
+            )
+            .bind(&candidate_id)
+            .bind(&now)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            let path = format!("/agentic/requests/{intake_id}/findings/warning-reeval/disposition");
+            let body = json!({
+                "status": "RESOLVED",
+                "evidenceRefs": ["test:warning_fixed"],
+            });
+            let unauthorized = fixture
+                .router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri(&path)
+                        .header("content-type", "application/json")
+                        .body(axum::body::Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+            let disposition = fixture
+                .app
+                .db
+                .finding_disposition(&intake_id, "warning-reeval")
+                .await
+                .unwrap();
+            assert_eq!(disposition.status, "OPEN");
+            assert_eq!(
+                fixture
+                    .app
+                    .db
+                    .gate_for_candidate(&candidate_id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .outcome,
+                factory_native::quality::GateOutcome::RepairRequired
+            );
+            let revisions_before: i64 = sqlx::query_scalar::query_scalar(
+                "SELECT COUNT(*) FROM gate_decision_revisions WHERE candidate_id=?1",
+            )
+            .bind(&candidate_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(revisions_before, 0);
+
+            let (status, resolved) = send(&fixture.router, "POST", &path, Some(body.clone())).await;
+            assert_eq!(status, StatusCode::OK, "{resolved}");
+            assert_eq!(resolved["status"], "RESOLVED");
+            let revised_gate = fixture
+                .app
+                .db
+                .gate_for_candidate(&candidate_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                revised_gate.outcome,
+                factory_native::quality::GateOutcome::Accepted,
+                "{:?}",
+                revised_gate.reasons
+            );
+            let (status, replay) = send(&fixture.router, "POST", &path, Some(body)).await;
+            assert_eq!(status, StatusCode::OK, "{replay}");
+            assert_eq!(replay["status"], "RESOLVED");
+            let revisions_after: i64 = sqlx::query_scalar::query_scalar(
+                "SELECT COUNT(*) FROM gate_decision_revisions WHERE candidate_id=?1",
+            )
+            .bind(&candidate_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(revisions_after, 1);
+            let (candidate_count, receipt_count): (i64, i64) = sqlx::query_as::query_as(
+                "SELECT (SELECT COUNT(*) FROM candidates WHERE id=?1),
+                        (SELECT COUNT(*) FROM quality_receipts WHERE candidate_id=?1)",
+            )
+            .bind(&candidate_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(candidate_count, 1);
+            assert_eq!(receipt_count, 2);
+
+            pool.close().await;
             fixture.app.db.close().await;
             let _ = std::fs::remove_file(fixture.path);
             let _ = std::fs::remove_dir_all(fixture.repository);

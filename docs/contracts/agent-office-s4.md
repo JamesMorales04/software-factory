@@ -149,9 +149,10 @@ Rules:
 - Implementer usage comes from the session binding; Lead usage is the sum of
   recorded LEAD model-call usage; review usage comes from the receipt.
   Unmeasured usage is `usage_known=false`, never zero.
-- Evidence joins require the exact candidate and, for gate outcome, the exact
-  `gate_decisions` row. A task or candidate without a Gate is never labelled
-  `ACCEPTED`.
+- Evidence joins require the exact candidate and, for gate outcome, the
+  effective `gate_decisions_current` projection (the immutable initial
+  `gate_decisions` row plus any disposition-driven revision). A task or
+  candidate without a Gate is never labelled `ACCEPTED`.
 - Ordering is deterministic: `last_observed_at DESC`, then
   `participant_id ASC`. Pagination is bounded and duplicate identities are
   collapsed deterministically.
