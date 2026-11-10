@@ -23,6 +23,7 @@ use factory_native::execution::{
     BoundedOutput, BrokerVolumes, RootlessPodmanVolumes, VolumeBackend,
 };
 use factory_native::lead::SpecCheck;
+use factory_native::runtime_broker::ResourceOwner;
 use factory_native::workspace::{self, WorkspaceAllocator, WorkspaceError};
 use factory_native::workspace_archive;
 use serde_json::json;
@@ -355,17 +356,21 @@ async fn sandboxed_checks(
         env::var("FACTORY_RUNTIME_BROKER_URL"),
         factory_native::secrets::required("FACTORY_RUNTIME_BROKER_TOKEN"),
     ) {
-        let backend = BrokerVolumes::new(&url, token).map_err(|error| {
-            VerificationError::Infrastructure(format!("verifier broker configuration: {error}"))
-        })?;
+        let backend =
+            BrokerVolumes::new(&url, token, ResourceOwner::Verifier).map_err(|error| {
+                VerificationError::Infrastructure(format!("verifier broker configuration: {error}"))
+            })?;
         backend.preflight().await.map_err(|error| {
             VerificationError::Infrastructure(format!("verifier broker unavailable: {error}"))
         })?;
         VerifierBackend::Broker(backend)
     } else {
-        let backend = RootlessPodmanVolumes::new([image.clone()]).map_err(|error| {
-            VerificationError::Infrastructure(format!("verifier sandbox configuration: {error}"))
-        })?;
+        let backend = RootlessPodmanVolumes::new([image.clone()], ResourceOwner::Verifier)
+            .map_err(|error| {
+                VerificationError::Infrastructure(format!(
+                    "verifier sandbox configuration: {error}"
+                ))
+            })?;
         backend.preflight().await.map_err(|error| {
             VerificationError::Infrastructure(format!("verifier sandbox unavailable: {error}"))
         })?;
@@ -496,6 +501,9 @@ enum VerifierBackend {
 }
 
 impl VolumeBackend for VerifierBackend {
+    fn owner(&self) -> ResourceOwner {
+        ResourceOwner::Verifier
+    }
     async fn create_volume(
         &self,
         name: &str,
@@ -603,6 +611,9 @@ impl LocalVolumeBackend {
 
 #[cfg(debug_assertions)]
 impl VolumeBackend for LocalVolumeBackend {
+    fn owner(&self) -> ResourceOwner {
+        ResourceOwner::Verifier
+    }
     async fn create_volume(
         &self,
         name: &str,

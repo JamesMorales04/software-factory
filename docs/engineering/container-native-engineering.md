@@ -140,10 +140,11 @@ topology. It may bind the repository and use a development image. The product
   the volumes needed for its responsibility.
 - Default-deny execution egress. Provider traffic goes through the scoped egress
   broker; provider children have no host/control network.
-- Per-service configuration volumes are scoped. A deliberately shared execution
-  credential (for example the runtime-broker token used by the execution roles)
-  is shared authority and must be documented as such; never describe it as
-  per-role secret isolation.
+- Per-service configuration volumes are scoped. Runtime-broker callers receive
+  distinct per-owner tokens; the broker derives Supervisor, verifier or
+  provider identity from the authenticated token. Never replace them with a
+  shared destructive credential or a caller-supplied owner value, and never
+  describe the shared engine boundary as per-role secret isolation.
 - Redact credentials, tokens, prompts, source bodies and environment maps at
   logs, telemetry, evidence and error boundaries. Do not print an enrollment
   code, operator token or provider key in agent output.
@@ -182,9 +183,12 @@ semantically; a green form check is not proof of the claim.
 - Office shows provider/session/campaign/gate state truthfully. Container-level
   health that Core cannot observe is not invented; use the documented Compose
   command instead.
-- A broker-only restart removes managed containers, including containers that
-  may belong to live attempts. Record the resulting failure and recovery; do
-  not describe it as graceful.
+- A broker-only restart no longer deletes managed containers. In-flight
+  operations still fail and are reconciled by their owning service. The
+  Supervisor removes stale `RUNNING` workspaces and its own owner-labelled
+  orphan resources at startup; unlabelled, foreign-owner and provider resources
+  are preserved. Record the failure and recovery; do not describe it as
+  graceful.
 - Remove disposable projects, volumes, provider sessions and credentials after
   a test or UAT and record the cleanup result.
 

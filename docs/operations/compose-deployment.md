@@ -76,6 +76,24 @@ http://127.0.0.1:8893
 
 Set `FACTORY_PORT` to change the host port. No other service publishes a port.
 
+### Runtime-broker owner credentials
+
+`factory-compose-init` generates three distinct runtime-broker tokens and
+places each caller's token in its own config volume:
+
+| Caller | Token file |
+|---|---|
+| Supervisor | `runtime-broker-supervisor.token` |
+| Verifier | `runtime-broker-verifier.token` |
+| Worker/provider | `runtime-broker-provider.token` |
+
+The runtime service receives all three files under `/config` and derives the
+caller's `ResourceOwner` from the bearer token. The broker rejects a missing or
+unknown token and applies the derived owner to create, import, export, execute,
+delete, reset and inspect operations. Never replace these with one shared
+token, and never accept an owner from the request body or query string. Tokens
+are read from files, never passed in argv or logged.
+
 ### First build time
 
 The unified `deploy/Containerfile` compiles Core, compose-init, Supervisor,

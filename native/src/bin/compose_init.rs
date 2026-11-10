@@ -1,12 +1,12 @@
 //! Idempotent first-run material generation for the Compose deployment.
 //!
-//! Role secrets are split across per-service configuration volumes. The
-//! runtime-broker credential is intentionally shared by the execution roles
-//! that call the broker (Worker, Supervisor, verifier and runtime); other role
-//! credentials and the Core master key are not shared. Copies of shared secrets
-//! are generated once and verified equal. Existing material is never
-//! overwritten and no secret is printed. Files are owned by the unprivileged
-//! service UID and restricted to mode 0640.
+//! Role secrets are split across per-service configuration volumes. Each
+//! runtime-broker caller receives its own owner token: Supervisor, verifier and
+//! Worker/provider. The runtime broker receives all three owner tokens so it can
+//! derive the caller identity from the authenticated credential. Other role
+//! credentials and the Core master key are not shared. Existing material is
+//! never overwritten and no secret is printed. Files are owned by the
+//! unprivileged service UID and restricted to mode 0640.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -76,22 +76,26 @@ const WORKER_SECRETS: &[&str] = &[
     "worker-bootstrap.token",
     "worker-registration.key",
     "supervisor.token",
-    "runtime-broker.token",
+    "runtime-broker-provider.token",
 ];
 const SUPERVISOR_SECRETS: &[&str] = &[
     "supervisor.token",
     "attempt-grant.key",
     "supervisor-capability.key",
-    "runtime-broker.token",
+    "runtime-broker-supervisor.token",
 ];
-const VERIFIER_SECRETS: &[&str] = &["verifier.token", "runtime-broker.token"];
+const VERIFIER_SECRETS: &[&str] = &["verifier.token", "runtime-broker-verifier.token"];
 const REVIEWER_FUNCTIONAL_SECRETS: &[&str] = &["reviewer-functional.token"];
 const REVIEWER_ARCHITECTURE_SECRETS: &[&str] = &["reviewer-architecture.token"];
 const REVIEWER_CODE_QUALITY_SECRETS: &[&str] = &["reviewer-code-quality.token"];
 const REVIEWER_SECURITY_SECRETS: &[&str] = &["reviewer-security.token"];
 const REVIEWER_TESTING_SECRETS: &[&str] = &["reviewer-testing.token"];
 const REVIEWER_OPERABILITY_SECRETS: &[&str] = &["reviewer-operability.token"];
-const RUNTIME_SECRETS: &[&str] = &["runtime-broker.token"];
+const RUNTIME_SECRETS: &[&str] = &[
+    "runtime-broker-supervisor.token",
+    "runtime-broker-verifier.token",
+    "runtime-broker-provider.token",
+];
 // The profile-gated OpenSpec validation job reads the latest durable
 // projection through the operator-authenticated Core endpoint. It receives only
 // the operator token, not Core's master key or the other role credentials.
@@ -191,6 +195,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for placement in &placements {
         prepare_directory(&placement.directory, uid)?;
         let _ = fs::remove_file(placement.directory.join(".ready"));
+        // Remove the retired shared credential; callers now use owner tokens.
+        let _ = fs::remove_file(placement.directory.join("runtime-broker.token"));
     }
     for directory in [&data, &projects, &provider_sessions, &office_socket] {
         prepare_directory(directory, uid)?;

@@ -490,8 +490,12 @@ async fn container_recovery_receipt(directory: &str) -> Result<&'static str, Str
     let url = env::var("FACTORY_RUNTIME_BROKER_URL")
         .map_err(|_| "FACTORY_RUNTIME_BROKER_URL required for container recovery")?;
     let token = factory_native::secrets::required("FACTORY_RUNTIME_BROKER_TOKEN")?;
-    let broker = factory_native::runtime_broker::RuntimeBrokerClient::new(&url, token)
-        .map_err(|error| error.to_string())?;
+    let broker = factory_native::runtime_broker::RuntimeBrokerClient::new(
+        &url,
+        token,
+        factory_native::runtime_broker::ResourceOwner::Provider,
+    )
+    .map_err(|error| error.to_string())?;
     broker
         .remove_container(&container)
         .await

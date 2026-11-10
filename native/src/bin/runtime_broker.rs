@@ -11,7 +11,14 @@
 //! namespace. It is a candidate TRUSTED_LOCAL boundary, not certified
 //! isolation. See docs/security/container-runtime.md.
 
-use std::{collections::BTreeSet, env, path::PathBuf, process::Stdio, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap},
+    env,
+    path::{Path, PathBuf},
+    process::Stdio,
+    sync::Arc,
+    time::Duration,
+};
 
 use axum::{
     Json, Router,
@@ -30,6 +37,13 @@ use tokio::{
     time,
 };
 
+use factory_native::runtime_broker::{
+    MAX_RESOURCE_INVENTORY_BYTES, ManagedResources, ResourceOwner, is_valid_container_name,
+    is_valid_exec_container_name, is_valid_provider_container_name, is_valid_volume_name,
+    parse_container_inventory, parse_container_labels, parse_volume_inventory, parse_volume_labels,
+    resource_owner_matches, volume_identity_matches,
+};
+
 const MAX_JSON_BYTES: usize = 2 * 1024 * 1024;
 const MAX_ARCHIVE_BYTES: usize = 128 * 1024 * 1024;
 const MAX_STREAM_BYTES: usize = 1024 * 1024;
@@ -43,6 +57,14 @@ const MAX_EXECUTION_RUNTIME: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 const MAX_PROVIDER_RUNTIME: Duration = Duration::from_secs(60 * 60);
 const MANAGED_LABEL: &str = "io.software-factory.managed=true";
 const WORKSPACE_LABEL: &str = "io.software-factory.workspace";
+const OWNER_LABEL: &str = "io.software-factory.owner";
+const RESOURCE_LOCK_ENTRIES: usize = 4096;
+const MAX_ACTIVE_EXECUTIONS: usize = 4096;
+const OWNER_TOKEN_FILES: [(ResourceOwner, &str); 3] = [
+    (ResourceOwner::Supervisor, "runtime-broker-supervisor.token"),
+    (ResourceOwner::Verifier, "runtime-broker-verifier.token"),
+    (ResourceOwner::Provider, "runtime-broker-provider.token"),
+];
 
 const PROVIDER_ENV_KEYS: [&str; 19] = [
     "FACTORY_PROVIDER_SOCKET",
@@ -67,8 +89,153 @@ const PROVIDER_ENV_KEYS: [&str; 19] = [
 ];
 
 #[derive(Clone)]
+struct OwnerTokens {
+    entries: Vec<(ResourceOwner, String)>,
+}
+
+impl OwnerTokens {
+    fn from_directory(directory: &Path) -> Result<Self, String> {
+        let mut entries: Vec<(ResourceOwner, String)> = Vec::new();
+        for (owner, file) in OWNER_TOKEN_FILES {
+            let path = directory.join(file);
+            let token = std::fs::read_to_string(&path)
+                .map_err(|_| format!("runtime broker owner token {} is unavailable", file))?
+                .trim_end_matches(['\r', '\n'])
+                .to_owned();
+            if token.len() < 32 || token.len() > 4096 || token.contains('\0') {
+                return Err(format!("runtime broker owner token {file} is invalid"));
+            }
+            if entries
+                .iter()
+                .any(|(_, existing)| constant_time_eq(existing.as_bytes(), token.as_bytes()))
+            {
+                return Err("runtime broker owner tokens must be distinct".into());
+            }
+            entries.push((owner, token));
+        }
+        Ok(Self { entries })
+    }
+
+    fn authenticate(&self, headers: &HeaderMap) -> Option<ResourceOwner> {
+        let value = headers
+            .get("authorization")?
+            .to_str()
+            .ok()?
+            .strip_prefix("Bearer ")?;
+        let mut matched = None;
+        for (owner, token) in &self.entries {
+            if constant_time_eq(value.as_bytes(), token.as_bytes()) {
+                matched = Some(*owner);
+            }
+        }
+        matched
+    }
+}
+
+enum MutationError {
+    Conflict(&'static str),
+    Failed(String),
+}
+
+/// Active execution identity, registered under the volume lock for the short
+/// validation window and removed only after confirmed container cleanup. The
+/// registry reserves both the volume and the container name atomically. Volume
+/// delete/reset/import/export checks this registry instead of holding a lock
+/// across the execution lifetime.
+struct ActiveExecutions {
+    entries: std::sync::Mutex<ActiveEntries>,
+}
+
+#[derive(Default)]
+struct ActiveEntries {
+    volumes: HashMap<String, String>,
+    containers: std::collections::HashSet<String>,
+}
+
+impl ActiveExecutions {
+    fn new() -> Self {
+        Self {
+            entries: std::sync::Mutex::new(ActiveEntries::default()),
+        }
+    }
+
+    fn register(&self, volume: &str, container: &str) -> bool {
+        let mut entries = self.entries.lock().unwrap();
+        if entries.volumes.len() >= MAX_ACTIVE_EXECUTIONS
+            || entries.volumes.contains_key(volume)
+            || entries.containers.contains(container)
+        {
+            return false;
+        }
+        entries
+            .volumes
+            .insert(volume.to_owned(), container.to_owned());
+        entries.containers.insert(container.to_owned());
+        true
+    }
+
+    fn remove(&self, volume: &str, container: &str) {
+        let mut entries = self.entries.lock().unwrap();
+        if entries.volumes.get(volume).map(String::as_str) == Some(container) {
+            entries.volumes.remove(volume);
+            entries.containers.remove(container);
+        }
+    }
+
+    fn is_active(&self, volume: &str) -> bool {
+        self.entries.lock().unwrap().volumes.contains_key(volume)
+    }
+}
+
+/// Exact per-resource-name async locks. The exact table is permanently bounded.
+/// Entries are never reclaimed: a name that once fell back to the overflow lock
+/// must keep that identity forever, because reclaiming an idle exact entry could
+/// later create a second lock for the same overflowed name. Names beyond the
+/// table capacity intentionally serialize on one overflow lock. Locks are never
+/// held across a long execution; the active-execution registry provides volume
+/// exclusion for the run lifetime.
+struct ResourceLocks {
+    entries: std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    overflow: Arc<tokio::sync::Mutex<()>>,
+}
+
+impl ResourceLocks {
+    fn new() -> Self {
+        Self {
+            entries: std::sync::Mutex::new(HashMap::new()),
+            overflow: Arc::new(tokio::sync::Mutex::new(())),
+        }
+    }
+
+    fn acquire_with_limit(&self, name: &str, limit: usize) -> Arc<tokio::sync::Mutex<()>> {
+        let mut entries = self.entries.lock().unwrap();
+        if let Some(lock) = entries.get(name) {
+            return Arc::clone(lock);
+        }
+        if entries.len() >= limit {
+            return Arc::clone(&self.overflow);
+        }
+        let lock = Arc::new(tokio::sync::Mutex::new(()));
+        entries.insert(name.to_owned(), Arc::clone(&lock));
+        lock
+    }
+}
+
+impl std::fmt::Display for MutationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Conflict(message) => formatter.write_str(message),
+            Self::Failed(message) => formatter.write_str(message),
+        }
+    }
+}
+
+#[derive(Clone)]
 struct App {
-    token: String,
+    tokens: Arc<OwnerTokens>,
+    resource_locks: Arc<ResourceLocks>,
+    lock_limit: usize,
+    active: Arc<ActiveExecutions>,
     podman: PathBuf,
     images: Arc<BTreeSet<String>>,
     provider_images: Arc<BTreeSet<String>>,
@@ -95,11 +262,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let token = factory_native::secrets::required("FACTORY_RUNTIME_BROKER_TOKEN")?;
-    if token.len() < 32 {
-        return Err("FACTORY_RUNTIME_BROKER_TOKEN must be at least 32 bytes".into());
+    let token_dir = PathBuf::from(
+        env::var("FACTORY_RUNTIME_BROKER_TOKEN_DIR").unwrap_or_else(|_| "/config".into()),
+    );
+    if !token_dir.is_absolute() {
+        return Err("FACTORY_RUNTIME_BROKER_TOKEN_DIR must be absolute".into());
     }
-    factory_native::telemetry::register_secret(&token);
+    let tokens = OwnerTokens::from_directory(&token_dir)?;
+    for (_, token) in &tokens.entries {
+        factory_native::telemetry::register_secret(token);
+    }
     let podman = env::var("FACTORY_PODMAN_BIN").unwrap_or_else(|_| "/usr/bin/podman".into());
     let podman = PathBuf::from(podman);
     if !podman.is_absolute() || !podman.is_file() {
@@ -144,7 +316,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let app = Arc::new(App {
-        token,
+        tokens: Arc::new(tokens),
+        resource_locks: Arc::new(ResourceLocks::new()),
+        lock_limit: RESOURCE_LOCK_ENTRIES,
+        active: Arc::new(ActiveExecutions::new()),
         podman,
         images: Arc::new(images),
         provider_images: Arc::new(provider_images),
@@ -153,11 +328,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         import_images,
     });
     app.preflight().await?;
-    app.remove_managed_containers().await;
     app.prepull_images().await?;
 
     let router = Router::new()
         .route("/health", get(health))
+        .route("/v1/resources", get(list_resources))
         .route("/v1/volumes", post(create_volume))
         .route("/v1/volumes/{volume}", axum::routing::delete(remove_volume))
         .route(
@@ -361,40 +536,366 @@ impl App {
         Ok(())
     }
 
-    async fn remove_managed_containers(&self) {
-        let output = self
-            .podman_command([
-                "ps",
-                "-a",
-                "--filter",
-                &format!("label={MANAGED_LABEL}"),
-                "--format",
-                "{{.Names}}",
-            ])
-            .output()
-            .await;
-        let Ok(output) = output else {
-            tracing::warn!("could not list managed containers during reconciliation");
-            return;
+    fn owner(&self, headers: &HeaderMap) -> Option<ResourceOwner> {
+        self.tokens.authenticate(headers)
+    }
+
+    fn resource_lock(&self, name: &str) -> Arc<tokio::sync::Mutex<()>> {
+        self.resource_locks
+            .acquire_with_limit(name, self.lock_limit)
+    }
+
+    async fn managed_resources(&self, owner: ResourceOwner) -> Result<ManagedResources, String> {
+        let volumes = self
+            .run_bounded(
+                [
+                    "volume",
+                    "ls",
+                    "--filter",
+                    &format!("label={MANAGED_LABEL}"),
+                    "--format",
+                    "json",
+                ],
+                "managed volume listing",
+                MAX_RESOURCE_INVENTORY_BYTES,
+            )
+            .await?;
+        let containers = self
+            .run_bounded(
+                [
+                    "ps",
+                    "-a",
+                    "--filter",
+                    &format!("label={MANAGED_LABEL}"),
+                    "--format",
+                    "json",
+                ],
+                "managed container listing",
+                MAX_RESOURCE_INVENTORY_BYTES,
+            )
+            .await?;
+        let owned = owner.as_str();
+        Ok(ManagedResources {
+            volumes: parse_volume_inventory(&volumes)?
+                .into_iter()
+                .filter(|resource| resource.owner.as_deref() == Some(owned))
+                .collect(),
+            containers: parse_container_inventory(&containers)?
+                .into_iter()
+                .filter(|resource| resource.owner.as_deref() == Some(owned))
+                .collect(),
+        })
+    }
+
+    async fn remove_volume_locked(
+        &self,
+        volume: &str,
+        owner: ResourceOwner,
+    ) -> Result<(), MutationError> {
+        let Some(labels) = self
+            .volume_labels(volume)
+            .await
+            .map_err(MutationError::Failed)?
+        else {
+            return Ok(());
         };
-        if !output.status.success() {
-            tracing::warn!("managed container listing failed during reconciliation");
-            return;
+        if !resource_owner_matches(&labels, owner) {
+            return Err(MutationError::Conflict(
+                "volume is not owned by the authenticated service",
+            ));
         }
-        let names: Vec<String> = String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .map(str::trim)
-            .filter(|name| valid_container_name(name))
-            .map(str::to_owned)
-            .collect();
-        for name in names {
-            if let Err(error) = self
-                .podman_output(["rm", "--force", "--time=0", name.as_str()])
+        let output = self
+            .podman_output(["volume", "rm", "--force", volume])
+            .await
+            .map_err(MutationError::Failed)?;
+        if !output.status.success() {
+            let exists = self
+                .podman_output(["volume", "exists", volume])
                 .await
-            {
-                tracing::warn!(%name, %error, "could not remove reconciled container");
+                .map_err(MutationError::Failed)?;
+            if exists.status.code() == Some(1) {
+                return Ok(());
+            }
+            return Err(MutationError::Failed(format!(
+                "volume removal failed: {}",
+                stderr(&output)
+            )));
+        }
+        Ok(())
+    }
+
+    async fn remove_container_locked(
+        &self,
+        container: &str,
+        owner: ResourceOwner,
+    ) -> Result<(), MutationError> {
+        self.remove_container_matching_locked(container, owner, None)
+            .await
+    }
+
+    async fn remove_execution_container_locked(
+        &self,
+        container: &str,
+        owner: ResourceOwner,
+        volume: &str,
+    ) -> Result<(), MutationError> {
+        self.remove_container_matching_locked(container, owner, Some(volume))
+            .await
+    }
+
+    async fn remove_container_matching_locked(
+        &self,
+        container: &str,
+        owner: ResourceOwner,
+        expected_workspace: Option<&str>,
+    ) -> Result<(), MutationError> {
+        let Some(labels) = self
+            .container_labels(container)
+            .await
+            .map_err(MutationError::Failed)?
+        else {
+            return Ok(());
+        };
+        if !resource_owner_matches(&labels, owner) {
+            return Err(MutationError::Conflict(
+                "container is not owned by the authenticated service",
+            ));
+        }
+        if let Some(workspace) = expected_workspace
+            && labels.get(WORKSPACE_LABEL).map(String::as_str) != Some(workspace)
+        {
+            return Err(MutationError::Conflict(
+                "container does not belong to the execution workspace",
+            ));
+        }
+        let output = self
+            .podman_output(["rm", "--force", "--time=0", container])
+            .await
+            .map_err(MutationError::Failed)?;
+        if !output.status.success() {
+            let exists = self
+                .podman_output(["container", "exists", container])
+                .await
+                .map_err(MutationError::Failed)?;
+            if exists.status.code() == Some(1) {
+                return Ok(());
+            }
+            return Err(MutationError::Failed(format!(
+                "container removal failed: {}",
+                stderr(&output)
+            )));
+        }
+        Ok(())
+    }
+
+    async fn remove_container_for(
+        &self,
+        container: &str,
+        owner: ResourceOwner,
+    ) -> Result<(), MutationError> {
+        let lock = self.resource_lock(container);
+        let _guard = lock.lock().await;
+        self.remove_container_locked(container, owner).await
+    }
+
+    async fn remove_execution_container_for(
+        &self,
+        container: &str,
+        owner: ResourceOwner,
+        volume: &str,
+    ) -> Result<(), MutationError> {
+        let lock = self.resource_lock(container);
+        let _guard = lock.lock().await;
+        self.remove_execution_container_locked(container, owner, volume)
+            .await
+    }
+
+    /// Remove the execution container and confirm it is absent before its
+    /// volume active marker may be released. Any uncertainty keeps the volume
+    /// blocked.
+    async fn confirm_execution_cleanup(
+        &self,
+        container: &str,
+        owner: ResourceOwner,
+        volume: &str,
+    ) -> bool {
+        if let Err(error) = self
+            .remove_execution_container_for(container, owner, volume)
+            .await
+        {
+            tracing::warn!(%container, %error, "execution cleanup removal failed; volume remains blocked");
+            return false;
+        }
+        match self.podman_output(["container", "exists", container]).await {
+            Ok(output) if output.status.code() == Some(1) => true,
+            Ok(_) => {
+                tracing::warn!(%container, "execution container still present; volume remains blocked");
+                false
+            }
+            Err(error) => {
+                tracing::warn!(%container, %error, "execution cleanup could not be confirmed; volume remains blocked");
+                false
             }
         }
+    }
+
+    async fn require_volume_owner(
+        &self,
+        volume: &str,
+        owner: ResourceOwner,
+    ) -> Result<(), MutationError> {
+        let Some(labels) = self
+            .volume_labels(volume)
+            .await
+            .map_err(MutationError::Failed)?
+        else {
+            return Err(MutationError::Failed("volume is unavailable".into()));
+        };
+        if !resource_owner_matches(&labels, owner) {
+            return Err(MutationError::Conflict(
+                "volume is not owned by the authenticated service",
+            ));
+        }
+        Ok(())
+    }
+
+    async fn volume_labels(
+        &self,
+        volume: &str,
+    ) -> Result<Option<BTreeMap<String, String>>, String> {
+        let output = self
+            .run_bounded(
+                ["volume", "inspect", "--format", "json", volume],
+                "volume inspect",
+                MAX_RESOURCE_INVENTORY_BYTES,
+            )
+            .await;
+        let labels = match output {
+            Ok(bytes) => parse_volume_labels(&bytes)?,
+            Err(error) => {
+                let exists = self.podman_output(["volume", "exists", volume]).await?;
+                if exists.status.code() == Some(1) {
+                    return Ok(None);
+                }
+                return Err(error);
+            }
+        };
+        Ok(Some(labels))
+    }
+
+    async fn container_labels(
+        &self,
+        container: &str,
+    ) -> Result<Option<BTreeMap<String, String>>, String> {
+        let output = self
+            .run_bounded(
+                ["inspect", "--format", "json", container],
+                "container inspect",
+                MAX_RESOURCE_INVENTORY_BYTES,
+            )
+            .await;
+        let labels = match output {
+            Ok(bytes) => parse_container_labels(&bytes)?,
+            Err(error) => {
+                let exists = self
+                    .podman_output(["container", "exists", container])
+                    .await?;
+                if exists.status.code() == Some(1) {
+                    return Ok(None);
+                }
+                return Err(error);
+            }
+        };
+        Ok(Some(labels))
+    }
+
+    async fn container_present(&self, container: &str) -> Result<bool, String> {
+        let output = self
+            .podman_output(["container", "exists", container])
+            .await?;
+        match output.status.code() {
+            Some(0) => Ok(true),
+            Some(1) => Ok(false),
+            _ => Err(format!(
+                "container existence check failed: {}",
+                stderr(&output)
+            )),
+        }
+    }
+
+    async fn run_bounded<I, S>(
+        &self,
+        args: I,
+        operation: &str,
+        limit: usize,
+    ) -> Result<Vec<u8>, String>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<std::ffi::OsStr>,
+    {
+        let mut child = self
+            .podman_command(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("{operation} could not start: {error}"))?;
+        let Some(stdout) = child.stdout.take() else {
+            return Err(format!("{operation} stdout unavailable"));
+        };
+        let Some(stderr) = child.stderr.take() else {
+            return Err(format!("{operation} stderr unavailable"));
+        };
+        let deadline = time::Instant::now() + COMMAND_TIMEOUT;
+        let stdout_task = tokio::spawn(read_capped(stdout, limit));
+        let stderr_task = tokio::spawn(read_bounded(stderr, MAX_STREAM_BYTES));
+        let (bytes, overflow) = match time::timeout_at(deadline, stdout_task).await {
+            Ok(Ok(Ok(value))) => value,
+            Ok(Ok(Err(error))) => {
+                let _ = child.kill().await;
+                return Err(format!("{operation} stdout: {error}"));
+            }
+            Ok(Err(error)) => {
+                let _ = child.kill().await;
+                return Err(format!("{operation} reader task: {error}"));
+            }
+            Err(_) => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                stderr_task.abort();
+                return Err(format!("{operation} timed out"));
+            }
+        };
+        if overflow {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            stderr_task.abort();
+            return Err(format!("{operation} exceeded its output bound"));
+        }
+        let status = match time::timeout_at(deadline, child.wait()).await {
+            Ok(Ok(status)) => status,
+            Ok(Err(error)) => return Err(format!("{operation} wait failed: {error}")),
+            Err(_) => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                stderr_task.abort();
+                return Err(format!("{operation} timed out"));
+            }
+        };
+        let stderr_bytes = match time::timeout_at(deadline, stderr_task).await {
+            Ok(Ok(Ok((bytes, _)))) => bytes,
+            Ok(Ok(Err(error))) => {
+                return Err(format!("{operation} stderr: {error}"));
+            }
+            Ok(Err(error)) => return Err(format!("{operation} stderr task: {error}")),
+            Err(_) => return Err(format!("{operation} stderr timed out")),
+        };
+        if !status.success() {
+            return Err(format!(
+                "{operation} failed: {}",
+                String::from_utf8_lossy(&stderr_bytes).trim()
+            ));
+        }
+        Ok(bytes)
     }
 
     fn podman_command<I, S>(&self, args: I) -> Command
@@ -457,15 +958,14 @@ async fn health() -> Json<serde_json::Value> {
     }))
 }
 
-fn authorized(headers: &HeaderMap, expected: &str) -> bool {
-    let Some(value) = headers
-        .get("authorization")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-    else {
-        return false;
+async fn list_resources(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    let Some(owner) = app.owner(&headers) else {
+        return StatusCode::UNAUTHORIZED.into_response();
     };
-    constant_time_eq(value.as_bytes(), expected.as_bytes())
+    match app.managed_resources(owner).await {
+        Ok(resources) => Json(resources).into_response(),
+        Err(error) => operation_error(error),
+    }
 }
 
 fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
@@ -477,28 +977,6 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
         diff |= left ^ right;
     }
     diff == 0
-}
-
-fn valid_volume_name(name: &str) -> bool {
-    let Some(rest) = name.strip_prefix("factory-ws-") else {
-        return false;
-    };
-    rest.len() == 36
-        && rest
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() || byte == b'-')
-}
-
-fn valid_container_name(name: &str) -> bool {
-    let prefixes = ["factory-exec-", "factory-provider-"];
-    prefixes.iter().any(|prefix| {
-        name.strip_prefix(prefix).is_some_and(|rest| {
-            rest.len() == 36
-                && rest
-                    .bytes()
-                    .all(|byte| byte.is_ascii_hexdigit() || byte == b'-')
-        })
-    })
 }
 
 fn valid_workspace_id(value: &str) -> bool {
@@ -637,13 +1115,34 @@ async fn create_volume(
     headers: HeaderMap,
     Json(input): Json<NewVolume>,
 ) -> Response {
-    if !authorized(&headers, &app.token) {
+    let Some(owner) = app.owner(&headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
-    }
-    if !valid_volume_name(&input.volume) || !valid_workspace_id(&input.workspace_id) {
+    };
+    if !is_valid_volume_name(&input.volume) || !valid_workspace_id(&input.workspace_id) {
         return bad_request("invalid volume or workspace identity");
     }
+    if owner == ResourceOwner::Provider {
+        return forbidden("provider owner cannot create workspace volumes");
+    }
+    let lock = app.resource_lock(&input.volume);
+    let _guard = lock.lock().await;
+    if app.active.is_active(&input.volume) {
+        return conflict("volume has an active execution");
+    }
+    match app.volume_labels(&input.volume).await {
+        Ok(Some(labels)) => {
+            if !volume_identity_matches(&labels, owner, &input.workspace_id) {
+                return conflict("volume exists with a different owner or workspace");
+            }
+            if let Err(error) = app.remove_volume_locked(&input.volume, owner).await {
+                return mutation_error(error);
+            }
+        }
+        Ok(None) => {}
+        Err(error) => return operation_error(error),
+    }
     let label = format!("{WORKSPACE_LABEL}={}", input.workspace_id);
+    let owner_label = format!("{OWNER_LABEL}={}", owner.as_str());
     match app
         .run_checked(
             [
@@ -651,6 +1150,8 @@ async fn create_volume(
                 "create",
                 "--label",
                 &label,
+                "--label",
+                &owner_label,
                 "--label",
                 MANAGED_LABEL,
                 input.volume.as_str(),
@@ -677,29 +1178,20 @@ async fn remove_volume(
     headers: HeaderMap,
     AxumPath(volume): AxumPath<String>,
 ) -> Response {
-    if !authorized(&headers, &app.token) {
+    let Some(owner) = app.owner(&headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
-    }
-    if !valid_volume_name(&volume) {
+    };
+    if !is_valid_volume_name(&volume) {
         return bad_request("invalid volume name");
     }
-    let output = match app
-        .podman_output(["volume", "rm", "--force", volume.as_str()])
-        .await
-    {
-        Ok(output) => output,
-        Err(error) => return operation_error(error),
-    };
-    if output.status.success() {
-        return StatusCode::NO_CONTENT.into_response();
+    let lock = app.resource_lock(&volume);
+    let _guard = lock.lock().await;
+    if app.active.is_active(&volume) {
+        return conflict("volume has an active execution");
     }
-    match app
-        .podman_output(["volume", "exists", volume.as_str()])
-        .await
-    {
-        Ok(exists) if exists.status.code() == Some(1) => StatusCode::NO_CONTENT.into_response(),
-        Ok(_) => operation_error(format!("volume removal failed: {}", stderr(&output))),
-        Err(error) => operation_error(error),
+    match app.remove_volume_locked(&volume, owner).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => mutation_error(error),
     }
 }
 
@@ -709,11 +1201,19 @@ async fn import_volume(
     AxumPath(volume): AxumPath<String>,
     body: Bytes,
 ) -> Response {
-    if !authorized(&headers, &app.token) {
+    let Some(owner) = app.owner(&headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
-    }
-    if !valid_volume_name(&volume) || body.is_empty() || body.len() > MAX_ARCHIVE_BYTES {
+    };
+    if !is_valid_volume_name(&volume) || body.is_empty() || body.len() > MAX_ARCHIVE_BYTES {
         return bad_request("invalid volume import");
+    }
+    let lock = app.resource_lock(&volume);
+    let _guard = lock.lock().await;
+    if app.active.is_active(&volume) {
+        return conflict("volume has an active execution");
+    }
+    if let Err(error) = app.require_volume_owner(&volume, owner).await {
+        return mutation_error(error);
     }
     let mut child = match app
         .podman_command(["volume", "import", volume.as_str(), "-"])
@@ -737,9 +1237,7 @@ async fn import_volume(
         Ok(Ok(output)) => output,
         Ok(Err(error)) => return operation_error(format!("volume import failed: {error}")),
         Err(_) => {
-            let _ = app
-                .podman_output(["volume", "rm", "--force", volume.as_str()])
-                .await;
+            let _ = app.remove_volume_locked(&volume, owner).await;
             return operation_error("volume import timed out");
         }
     };
@@ -761,11 +1259,19 @@ async fn export_volume(
     headers: HeaderMap,
     AxumPath(volume): AxumPath<String>,
 ) -> Response {
-    if !authorized(&headers, &app.token) {
+    let Some(owner) = app.owner(&headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
-    }
-    if !valid_volume_name(&volume) {
+    };
+    if !is_valid_volume_name(&volume) {
         return bad_request("invalid volume name");
+    }
+    let lock = app.resource_lock(&volume);
+    let _guard = lock.lock().await;
+    if app.active.is_active(&volume) {
+        return conflict("volume has an active execution");
+    }
+    if let Err(error) = app.require_volume_owner(&volume, owner).await {
+        return mutation_error(error);
     }
     let mut child = match app
         .podman_command(["volume", "export", volume.as_str()])
@@ -817,7 +1323,7 @@ async fn export_volume(
         .into_response()
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct RunContainer {
     volume: String,
@@ -832,11 +1338,17 @@ async fn run_container(
     headers: HeaderMap,
     Json(input): Json<RunContainer>,
 ) -> Response {
-    if !authorized(&headers, &app.token) {
+    let Some(owner) = app.owner(&headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
-    }
-    if !valid_volume_name(&input.volume) || !valid_container_name(&input.container) {
+    };
+    if !is_valid_volume_name(&input.volume) || !is_valid_container_name(&input.container) {
         return bad_request("invalid volume or container identity");
+    }
+    if !is_valid_exec_container_name(&input.container) {
+        return bad_request("execution container has an invalid owner prefix");
+    }
+    if owner == ResourceOwner::Provider {
+        return forbidden("provider owner cannot start execution containers");
     }
     if !app.images.contains(&input.image) {
         return bad_request("image is not allowlisted");
@@ -847,26 +1359,97 @@ async fn run_container(
     if !(1..=MAX_EXECUTION_RUNTIME.as_secs()).contains(&input.timeout_secs) {
         return bad_request("execution timeout is outside the allowed bound");
     }
-    tracing::info!(container=%input.container, volume=%input.volume, "child execution started");
-    let result = run_child(&app, &input).await;
-    match &result {
-        Ok(output) => tracing::info!(
-            container=%input.container,
-            exit_code=?output.exit_code,
-            "child execution finished"
-        ),
-        Err(error) => tracing::warn!(container=%input.container, %error, "child execution failed"),
+    let lock = app.resource_lock(&input.volume);
+    let volume_guard = lock.lock().await;
+    // Volume validation and active-execution registration happen under the
+    // volume lock. The lock is released before the long execution; the registry
+    // blocks volume deletion/reset/import/export for the run lifetime.
+    if let Err(error) = app.require_volume_owner(&input.volume, owner).await {
+        return mutation_error(error);
     }
-    match result {
-        Ok(output) => Json(json!({
-            "exitCode": output.exit_code,
-            "stdout": String::from_utf8_lossy(&output.stdout),
-            "stderr": String::from_utf8_lossy(&output.stderr),
-            "stdoutTruncated": output.stdout_truncated,
-            "stderrTruncated": output.stderr_truncated
-        }))
-        .into_response(),
-        Err(error) => operation_error(error),
+    if !app.active.register(&input.volume, &input.container) {
+        return conflict("volume or container name is already active");
+    }
+    match app.container_present(&input.container).await {
+        Ok(true) => {
+            app.active.remove(&input.volume, &input.container);
+            return conflict("container name is already present");
+        }
+        Ok(false) => {}
+        Err(error) => {
+            app.active.remove(&input.volume, &input.container);
+            return operation_error(error);
+        }
+    }
+    drop(volume_guard);
+    drop(lock);
+    let task_app = Arc::clone(&app);
+    let task_input = input.clone();
+    let task = tokio::spawn(async move {
+        tracing::info!(container=%task_input.container, volume=%task_input.volume, "child execution started");
+        let result = run_child(&task_app, &task_input, owner).await;
+        let confirmed = task_app
+            .confirm_execution_cleanup(&task_input.container, owner, &task_input.volume)
+            .await;
+        if confirmed {
+            task_app
+                .active
+                .remove(&task_input.volume, &task_input.container);
+        } else {
+            tracing::error!(
+                container=%task_input.container,
+                volume=%task_input.volume,
+                "execution cleanup unconfirmed; volume remains blocked"
+            );
+        }
+        match &result {
+            Ok(output) => tracing::info!(
+                container=%task_input.container,
+                exit_code=?output.exit_code,
+                "child execution finished"
+            ),
+            Err(error) => {
+                tracing::warn!(container=%task_input.container, %error, "child execution failed")
+            }
+        }
+        (result, confirmed)
+    });
+    // The execution task is detached from this request. If the client cancels,
+    // the task still runs cleanup and only then releases the volume marker.
+    match task.await {
+        Ok((result, confirmed)) => {
+            if !confirmed {
+                return operation_error(
+                    "execution cleanup could not be confirmed; volume remains blocked",
+                );
+            }
+            match result {
+                Ok(output) => Json(json!({
+                    "exitCode": output.exit_code,
+                    "stdout": String::from_utf8_lossy(&output.stdout),
+                    "stderr": String::from_utf8_lossy(&output.stderr),
+                    "stdoutTruncated": output.stdout_truncated,
+                    "stderrTruncated": output.stderr_truncated
+                }))
+                .into_response(),
+                Err(error) => operation_error(error),
+            }
+        }
+        Err(error) => {
+            tracing::error!(%error, "execution task failed; scheduling cleanup confirmation");
+            let cleanup_app = Arc::clone(&app);
+            let container = input.container.clone();
+            let volume = input.volume.clone();
+            tokio::spawn(async move {
+                if cleanup_app
+                    .confirm_execution_cleanup(&container, owner, &volume)
+                    .await
+                {
+                    cleanup_app.active.remove(&volume, &container);
+                }
+            });
+            operation_error("execution task failed; cleanup is being confirmed")
+        }
     }
 }
 
@@ -878,14 +1461,20 @@ struct ChildOutput {
     stderr_truncated: bool,
 }
 
-async fn run_child(app: &App, input: &RunContainer) -> Result<ChildOutput, String> {
+async fn run_child(
+    app: &App,
+    input: &RunContainer,
+    owner: ResourceOwner,
+) -> Result<ChildOutput, String> {
     let timeout = Duration::from_secs(input.timeout_secs);
+    let owner_label = format!("{OWNER_LABEL}={}", owner.as_str());
     let args = vec![
         "run".to_owned(),
         "--rm".to_owned(),
         format!("--name={}", input.container),
         format!("--label={MANAGED_LABEL}"),
         format!("--label={WORKSPACE_LABEL}={}", input.volume),
+        format!("--label={owner_label}"),
         "--pull=never".to_owned(),
         "--network=none".to_owned(),
         "--read-only".to_owned(),
@@ -937,7 +1526,7 @@ async fn run_child(app: &App, input: &RunContainer) -> Result<ChildOutput, Strin
         Err(_) => {
             let _ = child.kill().await;
             let _ = app
-                .podman_output(["rm", "--force", "--time=0", input.container.as_str()])
+                .remove_execution_container_for(&input.container, owner, &input.volume)
                 .await;
             stdout_task.abort();
             stderr_task.abort();
@@ -945,7 +1534,7 @@ async fn run_child(app: &App, input: &RunContainer) -> Result<ChildOutput, Strin
         }
     };
     let _ = app
-        .podman_output(["rm", "--force", "--time=0", input.container.as_str()])
+        .remove_execution_container_for(&input.container, owner, &input.volume)
         .await;
     let (stdout, stdout_truncated) = stdout_task
         .await
@@ -969,29 +1558,17 @@ async fn remove_container(
     headers: HeaderMap,
     AxumPath(container): AxumPath<String>,
 ) -> Response {
-    if !authorized(&headers, &app.token) {
+    let Some(owner) = app.owner(&headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
-    }
-    if !valid_container_name(&container) {
+    };
+    if !is_valid_container_name(&container) {
         return bad_request("invalid container name");
     }
-    let output = match app
-        .podman_output(["rm", "--force", "--time=0", container.as_str()])
-        .await
-    {
-        Ok(output) => output,
-        Err(error) => return operation_error(error),
-    };
-    if output.status.success() {
-        return StatusCode::NO_CONTENT.into_response();
-    }
-    match app
-        .podman_output(["container", "exists", container.as_str()])
-        .await
-    {
-        Ok(exists) if exists.status.code() == Some(1) => StatusCode::NO_CONTENT.into_response(),
-        Ok(_) => operation_error(format!("container removal failed: {}", stderr(&output))),
-        Err(error) => operation_error(error),
+    let lock = app.resource_lock(&container);
+    let _guard = lock.lock().await;
+    match app.remove_container_locked(&container, owner).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => mutation_error(error),
     }
 }
 
@@ -1000,11 +1577,26 @@ async fn container_status(
     headers: HeaderMap,
     AxumPath(container): AxumPath<String>,
 ) -> Response {
-    if !authorized(&headers, &app.token) {
+    let Some(owner) = app.owner(&headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
-    }
-    if !valid_container_name(&container) {
+    };
+    if !is_valid_container_name(&container) {
         return bad_request("invalid container name");
+    }
+    let lock = app.resource_lock(&container);
+    let _guard = lock.lock().await;
+    let Some(labels) = (match app.container_labels(&container).await {
+        Ok(labels) => labels,
+        Err(error) => return operation_error(error),
+    }) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error":"container not found"})),
+        )
+            .into_response();
+    };
+    if !resource_owner_matches(&labels, owner) {
+        return conflict("container is not owned by the authenticated service");
     }
     let output = match app
         .podman_output([
@@ -1049,11 +1641,13 @@ async fn start_provider(
     headers: HeaderMap,
     Json(input): Json<StartProvider>,
 ) -> Response {
-    if !authorized(&headers, &app.token) {
+    let Some(owner) = app.owner(&headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
+    };
+    if owner != ResourceOwner::Provider {
+        return forbidden("only the provider owner may start provider sessions");
     }
-    if !valid_container_name(&input.container) || !input.container.starts_with("factory-provider-")
-    {
+    if !is_valid_provider_container_name(&input.container) {
         return bad_request("invalid provider container identity");
     }
     if !valid_provider_session_subdir(&input.session_subdir) {
@@ -1074,6 +1668,8 @@ async fn start_provider(
     if app.provider_images.len() != 1 {
         return bad_request("provider image allowlist must contain exactly one image");
     }
+    let lock = app.resource_lock(&input.container);
+    let _guard = lock.lock().await;
     let session_source = app.provider_session_root.join(&input.session_subdir);
     let canonical = match session_source.canonicalize() {
         Ok(path) => path,
@@ -1101,6 +1697,7 @@ async fn start_provider(
         "--detach".into(),
         format!("--name={}", input.container),
         format!("--label={MANAGED_LABEL}"),
+        format!("--label={OWNER_LABEL}=provider"),
         "--pull=never".into(),
         "--network=none".into(),
         "--read-only".into(),
@@ -1132,7 +1729,7 @@ async fn start_provider(
     };
     if !output.status.success() {
         let _ = app
-            .podman_output(["rm", "--force", "--time=0", input.container.as_str()])
+            .remove_container_locked(&input.container, ResourceOwner::Provider)
             .await;
         return operation_error(format!("provider start failed: {}", stderr(&output)));
     }
@@ -1143,15 +1740,12 @@ async fn start_provider(
     if reaper_seconds > 0 {
         tokio::spawn(async move {
             time::sleep(Duration::from_secs(reaper_seconds)).await;
-            if let Ok(exists) = reaper
-                .podman_output(["container", "exists", reaper_container.as_str()])
+            tracing::warn!(container=%reaper_container, "provider container reached its lifetime bound; removing");
+            if let Err(error) = reaper
+                .remove_container_for(&reaper_container, ResourceOwner::Provider)
                 .await
-                && exists.status.success()
             {
-                tracing::warn!(container=%reaper_container, "provider container exceeded its lifetime; removing");
-                let _ = reaper
-                    .podman_output(["rm", "--force", "--time=0", reaper_container.as_str()])
-                    .await;
+                tracing::warn!(container=%reaper_container, %error, "provider reaper cleanup failed");
             }
         });
     }
@@ -1170,6 +1764,21 @@ fn bad_request(message: &str) -> Response {
     (StatusCode::BAD_REQUEST, Json(json!({"error": message}))).into_response()
 }
 
+fn forbidden(message: &str) -> Response {
+    (StatusCode::FORBIDDEN, Json(json!({"error": message}))).into_response()
+}
+
+fn conflict(message: &str) -> Response {
+    (StatusCode::CONFLICT, Json(json!({"error": message}))).into_response()
+}
+
+fn mutation_error(error: MutationError) -> Response {
+    match error {
+        MutationError::Conflict(message) => conflict(message),
+        MutationError::Failed(message) => operation_error(message),
+    }
+}
+
 fn operation_error(message: impl Into<String>) -> Response {
     let message = message.into();
     let message: String = message.chars().take(1024).collect();
@@ -1184,7 +1793,11 @@ where
     let mut truncated = false;
     let mut chunk = [0u8; 16 * 1024];
     loop {
-        let read = reader.read(&mut chunk).await?;
+        let read = match reader.read(&mut chunk).await {
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
         if read == 0 {
             break;
         }
@@ -1199,6 +1812,31 @@ where
         }
     }
     Ok((captured, truncated))
+}
+
+/// Read at most `limit` bytes. Returning as soon as the next chunk would cross
+/// the limit lets the caller terminate the child instead of buffering an
+/// unbounded stream.
+async fn read_capped<R>(mut reader: R, limit: usize) -> std::io::Result<(Vec<u8>, bool)>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut captured = Vec::new();
+    let mut chunk = [0u8; 16 * 1024];
+    loop {
+        let read = match reader.read(&mut chunk).await {
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
+        if read == 0 {
+            return Ok((captured, false));
+        }
+        if captured.len().saturating_add(read) > limit {
+            return Ok((captured, true));
+        }
+        captured.extend_from_slice(&chunk[..read]);
+    }
 }
 
 #[cfg(test)]
@@ -1218,17 +1856,17 @@ mod tests {
 
     #[test]
     fn identities_are_strict() {
-        assert!(valid_volume_name(
+        assert!(is_valid_volume_name(
             "factory-ws-123e4567-e89b-12d3-a456-426614174000"
         ));
-        assert!(!valid_volume_name("factory-ws-../../etc"));
-        assert!(valid_container_name(
+        assert!(!is_valid_volume_name("factory-ws-../../etc"));
+        assert!(is_valid_container_name(
             "factory-exec-123e4567-e89b-12d3-a456-426614174000"
         ));
-        assert!(valid_container_name(
+        assert!(is_valid_container_name(
             "factory-provider-123e4567-e89b-12d3-a456-426614174000"
         ));
-        assert!(!valid_container_name("factory-provider-123"));
+        assert!(!is_valid_container_name("factory-provider-123"));
         assert!(valid_provider_session_subdir("provider-session-a"));
         assert!(!valid_provider_session_subdir("../escape"));
         assert!(valid_workspace_id("attempt-1"));
@@ -1262,9 +1900,1338 @@ mod tests {
     }
 
     #[test]
+    fn owner_tokens_are_distinct_and_authenticate_exactly() {
+        let directory =
+            std::env::temp_dir().join(format!("factory-owner-tokens-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        for (owner, file) in OWNER_TOKEN_FILES {
+            std::fs::write(
+                directory.join(file),
+                format!("{}-owner-token-0123456789abcdef0123456789", owner.as_str()),
+            )
+            .unwrap();
+        }
+        let tokens = OwnerTokens::from_directory(&directory).unwrap();
+        for (owner, file) in OWNER_TOKEN_FILES {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                "authorization",
+                format!(
+                    "Bearer {}",
+                    std::fs::read_to_string(directory.join(file)).unwrap()
+                )
+                .trim()
+                .parse()
+                .unwrap(),
+            );
+            assert_eq!(tokens.authenticate(&headers), Some(owner));
+        }
+        let mut wrong = HeaderMap::new();
+        wrong.insert("authorization", "Bearer wrong".parse().unwrap());
+        assert_eq!(tokens.authenticate(&wrong), None);
+        assert_eq!(tokens.authenticate(&HeaderMap::new()), None);
+
+        std::fs::write(
+            directory.join("runtime-broker-verifier.token"),
+            std::fs::read_to_string(directory.join("runtime-broker-supervisor.token")).unwrap(),
+        )
+        .unwrap();
+        assert!(OwnerTokens::from_directory(&directory).is_err());
+
+        std::fs::write(directory.join("runtime-broker-verifier.token"), "short").unwrap();
+        assert!(OwnerTokens::from_directory(&directory).is_err());
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
     fn constant_time_compare_requires_exact_match() {
         assert!(constant_time_eq(b"secret", b"secret"));
         assert!(!constant_time_eq(b"secret", b"secreT"));
         assert!(!constant_time_eq(b"secret", b"secret2"));
+    }
+
+    #[tokio::test]
+    async fn read_capped_stops_at_the_limit() {
+        let input = vec![b'x'; 32 * 1024];
+        let (bytes, overflow) = read_capped(&input[..], 1024).await.unwrap();
+        assert!(overflow);
+        assert!(bytes.len() <= 1024);
+
+        let exact = vec![b'y'; 1024];
+        let (bytes, overflow) = read_capped(&exact[..], 1024).await.unwrap();
+        assert!(!overflow);
+        assert_eq!(bytes.len(), 1024);
+
+        let (bytes, overflow) = read_capped(&b"small"[..], 1024).await.unwrap();
+        assert!(!overflow);
+        assert_eq!(bytes, b"small");
+    }
+
+    #[tokio::test]
+    async fn resource_locks_keep_one_identity_per_name_at_saturation() {
+        let locks = ResourceLocks::new();
+        let first = locks.acquire_with_limit("factory-ws-a", RESOURCE_LOCK_ENTRIES);
+        assert!(Arc::ptr_eq(
+            &first,
+            &locks.acquire_with_limit("factory-ws-a", RESOURCE_LOCK_ENTRIES)
+        ));
+        assert!(!Arc::ptr_eq(
+            &first,
+            &locks.acquire_with_limit("factory-ws-b", RESOURCE_LOCK_ENTRIES)
+        ));
+
+        let bounded = ResourceLocks::new();
+        let a = bounded.acquire_with_limit("a", 2);
+        let a_identity = Arc::clone(&a);
+        let b = bounded.acquire_with_limit("b", 2);
+        let c = bounded.acquire_with_limit("c", 2);
+        assert!(Arc::ptr_eq(&c, &bounded.overflow));
+
+        let overflow_guard = c.lock().await;
+        drop(a);
+        let c_again = bounded.acquire_with_limit("c", 2);
+        assert!(
+            Arc::ptr_eq(&c, &c_again),
+            "overflowed name received a second lock identity"
+        );
+        assert!(
+            c_again.try_lock().is_err(),
+            "same name bypassed the held overflow lock"
+        );
+        assert!(!bounded.entries.lock().unwrap().contains_key("c"));
+
+        let a_again = bounded.acquire_with_limit("a", 2);
+        assert!(
+            Arc::ptr_eq(&a_again, &a_identity),
+            "idle exact entry was reclaimed and replaced"
+        );
+        drop(overflow_guard);
+        assert!(c_again.try_lock().is_ok());
+        drop((b, c, c_again, a_again));
+    }
+
+    static FAKE_PODMAN_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    /// Serialize fake-Podman tests. Parallel tests that fork while another test
+    /// is writing an executable script can observe transient `ETXTBSY`; the
+    /// guard is held for the whole test body by each caller.
+    async fn fake_podman(script: &str) -> (PathBuf, tokio::sync::MutexGuard<'static, ()>) {
+        let guard = FAKE_PODMAN_LOCK.lock().await;
+        let path =
+            std::env::temp_dir().join(format!("factory-fake-podman-{}", uuid::Uuid::new_v4()));
+        let temporary = path.with_extension("tmp");
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o700);
+        }
+        let mut file = options.open(&temporary).unwrap();
+        std::io::Write::write_all(&mut file, script.as_bytes()).unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+        std::fs::rename(&temporary, &path).unwrap();
+        (path, guard)
+    }
+
+    const TEST_SUPERVISOR_TOKEN: &str = "supervisor-token-0123456789abcdef0123456789";
+    const TEST_VERIFIER_TOKEN: &str = "verifier-token-0123456789abcdef012345678901";
+    const TEST_PROVIDER_TOKEN: &str = "provider-token-0123456789abcdef012345678901";
+
+    fn test_app(podman: PathBuf) -> Arc<App> {
+        test_app_with_lock_limit(podman, RESOURCE_LOCK_ENTRIES)
+    }
+
+    fn test_app_with_lock_limit(podman: PathBuf, lock_limit: usize) -> Arc<App> {
+        Arc::new(App {
+            tokens: Arc::new(OwnerTokens {
+                entries: vec![
+                    (ResourceOwner::Supervisor, TEST_SUPERVISOR_TOKEN.into()),
+                    (ResourceOwner::Verifier, TEST_VERIFIER_TOKEN.into()),
+                    (ResourceOwner::Provider, TEST_PROVIDER_TOKEN.into()),
+                ],
+            }),
+            resource_locks: Arc::new(ResourceLocks::new()),
+            lock_limit,
+            active: Arc::new(ActiveExecutions::new()),
+            podman,
+            images: Arc::new(BTreeSet::from(["test/image:1".to_owned()])),
+            provider_images: Arc::new(BTreeSet::new()),
+            provider_kind: String::new(),
+            provider_session_root: std::env::temp_dir(),
+            import_images: Vec::new(),
+        })
+    }
+
+    fn test_headers(owner: ResourceOwner) -> HeaderMap {
+        let token = match owner {
+            ResourceOwner::Supervisor => TEST_SUPERVISOR_TOKEN,
+            ResourceOwner::Verifier => TEST_VERIFIER_TOKEN,
+            ResourceOwner::Provider => TEST_PROVIDER_TOKEN,
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
+        headers
+    }
+
+    async fn response_body(response: Response) -> String {
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    #[tokio::test]
+    async fn remove_volume_requires_the_authenticated_owner() {
+        let volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let marker =
+            std::env::temp_dir().join(format!("factory-fake-rm-volume-{}", uuid::Uuid::new_v4()));
+        let script = format!(
+            r#"#!/bin/sh
+if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then
+  printf '%s\n' '[{{"Name":"{volume}","Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor"}}}}]'
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "rm" ]; then
+  touch "{marker}"
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "exists" ]; then
+  exit 0
+fi
+exit 1
+"#,
+            marker = marker.display()
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app(podman);
+        let unauthenticated = remove_volume(
+            State(Arc::clone(&app)),
+            HeaderMap::new(),
+            AxumPath(volume.clone()),
+        )
+        .await;
+        assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+        assert!(!marker.exists());
+
+        let spoofed = remove_volume(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Verifier),
+            AxumPath(volume.clone()),
+        )
+        .await;
+        let spoofed_status = spoofed.status();
+        let spoofed_body = response_body(spoofed).await;
+        assert_eq!(spoofed_status, StatusCode::CONFLICT, "body: {spoofed_body}");
+        assert!(!marker.exists());
+
+        let accepted = remove_volume(
+            State(app),
+            test_headers(ResourceOwner::Supervisor),
+            AxumPath(volume),
+        )
+        .await;
+        assert_eq!(accepted.status(), StatusCode::NO_CONTENT);
+        assert!(marker.exists());
+    }
+
+    #[tokio::test]
+    async fn import_export_execute_and_provider_start_require_the_authenticated_owner() {
+        let volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let container = format!("factory-exec-{}", uuid::Uuid::new_v4());
+        let marker =
+            std::env::temp_dir().join(format!("factory-fake-owner-path-{}", uuid::Uuid::new_v4()));
+        let script = format!(
+            r#"#!/bin/sh
+if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then
+  printf '%s\n' '[{{"Name":"{volume}","Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"verifier"}}}}]'
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "import" ]; then touch "{marker}"; exit 0; fi
+if [ "$1" = "volume" ] && [ "$2" = "export" ]; then touch "{marker}"; exit 0; fi
+if [ "$1" = "run" ]; then touch "{marker}"; exit 0; fi
+exit 1
+"#,
+            marker = marker.display()
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app(podman);
+        let import = import_volume(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Supervisor),
+            AxumPath(volume.clone()),
+            Bytes::from_static(b"archive"),
+        )
+        .await;
+        assert_eq!(import.status(), StatusCode::CONFLICT);
+        assert!(!marker.exists());
+
+        let export = export_volume(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Supervisor),
+            AxumPath(volume.clone()),
+        )
+        .await;
+        assert_eq!(export.status(), StatusCode::CONFLICT);
+        assert!(!marker.exists());
+
+        let execute = run_container(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Supervisor),
+            Json(RunContainer {
+                volume: volume.clone(),
+                container,
+                image: "test/image:1".into(),
+                argv: vec!["/bin/true".into()],
+                timeout_secs: 10,
+            }),
+        )
+        .await;
+        assert_eq!(execute.status(), StatusCode::CONFLICT);
+        assert!(!marker.exists());
+
+        let provider = start_provider(
+            State(app),
+            test_headers(ResourceOwner::Supervisor),
+            Json(StartProvider {
+                container: format!("factory-provider-{}", uuid::Uuid::new_v4()),
+                session_subdir: "provider-session-a".into(),
+                timeout_secs: 30,
+                env: Vec::new(),
+            }),
+        )
+        .await;
+        assert_eq!(provider.status(), StatusCode::FORBIDDEN);
+        assert!(!marker.exists());
+    }
+
+    #[tokio::test]
+    async fn managed_inventory_is_scoped_to_the_authenticated_owner() {
+        let supervisor_volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let verifier_volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let script = format!(
+            r#"#!/bin/sh
+if [ "$1" = "volume" ] && [ "$2" = "ls" ]; then
+  printf '%s\n' '[{{"Name":"{supervisor_volume}","Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor"}}}},{{"Name":"{verifier_volume}","Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"verifier"}}}}]'
+  exit 0
+fi
+if [ "$1" = "ps" ]; then
+  printf '%s\n' '[]'
+  exit 0
+fi
+exit 1
+"#
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app(podman);
+        let supervisor = app
+            .managed_resources(ResourceOwner::Supervisor)
+            .await
+            .unwrap();
+        assert_eq!(supervisor.volumes.len(), 1);
+        assert_eq!(supervisor.volumes[0].name, supervisor_volume);
+        let verifier = app
+            .managed_resources(ResourceOwner::Verifier)
+            .await
+            .unwrap();
+        assert_eq!(verifier.volumes.len(), 1);
+        assert_eq!(verifier.volumes[0].name, verifier_volume);
+    }
+
+    #[tokio::test]
+    async fn remove_volume_rejects_missing_owner_and_missing_resource() {
+        let unlabelled = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let missing = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let script = format!(
+            r#"#!/bin/sh
+if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then
+  if [ "$5" = "{missing}" ]; then
+    exit 1
+  fi
+  printf '%s\n' '[{{"Name":"{unlabelled}","Labels":{{"io.software-factory.managed":"true"}}}}]'
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "rm" ]; then
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "exists" ]; then
+  exit 1
+fi
+exit 1
+"#
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app(podman);
+        let response = remove_volume(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Supervisor),
+            AxumPath(unlabelled),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+
+        let response = remove_volume(
+            State(app),
+            test_headers(ResourceOwner::Supervisor),
+            AxumPath(missing),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn create_volume_refuses_a_preexisting_foreign_volume() {
+        let volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let rm_marker =
+            std::env::temp_dir().join(format!("factory-fake-create-rm-{}", uuid::Uuid::new_v4()));
+        let create_marker =
+            std::env::temp_dir().join(format!("factory-fake-create-new-{}", uuid::Uuid::new_v4()));
+        let script = format!(
+            r#"#!/bin/sh
+if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then
+  printf '%s\n' '[{{"Name":"{volume}","Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"verifier","io.software-factory.workspace":"other-workspace"}}}}]'
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "rm" ]; then
+  touch "{rm_marker}"
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "create" ]; then
+  touch "{create_marker}"
+  exit 0
+fi
+exit 1
+"#,
+            rm_marker = rm_marker.display(),
+            create_marker = create_marker.display()
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app(podman);
+        let response = create_volume(
+            State(app),
+            test_headers(ResourceOwner::Supervisor),
+            Json(NewVolume {
+                volume,
+                workspace_id: "workspace-a".into(),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(!rm_marker.exists());
+        assert!(!create_marker.exists());
+    }
+
+    #[tokio::test]
+    async fn create_volume_reuses_a_matching_owned_workspace() {
+        let volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let rm_marker =
+            std::env::temp_dir().join(format!("factory-fake-reuse-rm-{}", uuid::Uuid::new_v4()));
+        let create_marker = std::env::temp_dir().join(format!(
+            "factory-fake-reuse-create-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let script = format!(
+            r#"#!/bin/sh
+if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then
+  printf '%s\n' '[{{"Name":"{volume}","Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor","io.software-factory.workspace":"workspace-a"}}}}]'
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "rm" ]; then
+  touch "{rm_marker}"
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "create" ]; then
+  touch "{create_marker}"
+  exit 0
+fi
+exit 1
+"#,
+            rm_marker = rm_marker.display(),
+            create_marker = create_marker.display()
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app(podman);
+        let response = create_volume(
+            State(app),
+            test_headers(ResourceOwner::Supervisor),
+            Json(NewVolume {
+                volume,
+                workspace_id: "workspace-a".into(),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        assert!(rm_marker.exists());
+        assert!(create_marker.exists());
+    }
+
+    #[tokio::test]
+    async fn remove_container_requires_the_expected_owner_label() {
+        let container = format!("factory-exec-{}", uuid::Uuid::new_v4());
+        let marker = std::env::temp_dir().join(format!(
+            "factory-fake-rm-container-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let script = format!(
+            r#"#!/bin/sh
+if [ "$1" = "inspect" ]; then
+  printf '%s\n' '[{{"Config":{{"Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"provider"}}}}}}]'
+  exit 0
+fi
+if [ "$1" = "rm" ]; then
+  touch "{marker}"
+  exit 0
+fi
+if [ "$1" = "container" ] && [ "$2" = "exists" ]; then
+  exit 0
+fi
+exit 1
+"#,
+            marker = marker.display()
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app(podman);
+        let rejected = remove_container(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Supervisor),
+            AxumPath(container.clone()),
+        )
+        .await;
+        let rejected_status = rejected.status();
+        let rejected_body = response_body(rejected).await;
+        assert_eq!(
+            rejected_status,
+            StatusCode::CONFLICT,
+            "body: {rejected_body}"
+        );
+        assert!(!marker.exists());
+
+        let accepted = remove_container(
+            State(app),
+            test_headers(ResourceOwner::Provider),
+            AxumPath(container),
+        )
+        .await;
+        assert_eq!(accepted.status(), StatusCode::NO_CONTENT);
+        assert!(marker.exists());
+    }
+
+    #[tokio::test]
+    async fn inspect_output_is_bounded_before_parsing() {
+        let volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let script = r#"#!/bin/sh
+if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then
+  head -c 5000000 /dev/zero | tr '\0' 'x'
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "exists" ]; then
+  exit 0
+fi
+exit 1
+"#;
+        let (podman, _serial) = fake_podman(script).await;
+        let app = test_app(podman);
+        assert!(app.volume_labels(&volume).await.is_err());
+    }
+
+    fn stateful_volume_script(name: &str, state: &Path, log: &Path) -> String {
+        format!(
+            r#"#!/bin/sh
+state="{state}"
+log="{log}"
+name="{name}"
+if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then
+  echo inspect >> "$log"
+  if [ -f "$state" ]; then
+    cat "$state"
+    exit 0
+  fi
+  exit 1
+fi
+if [ "$1" = "volume" ] && [ "$2" = "exists" ]; then
+  if [ -f "$state" ]; then exit 0; else exit 1; fi
+fi
+if [ "$1" = "volume" ] && [ "$2" = "rm" ]; then
+  echo rm >> "$log"
+  rm -f "$state"
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "create" ]; then
+  owner=""
+  workspace=""
+  for arg in "$@"; do
+    case "$arg" in
+      io.software-factory.owner=*) owner="${{arg#*=}}" ;;
+      io.software-factory.workspace=*) workspace="${{arg#*=}}" ;;
+    esac
+  done
+  echo create-start >> "$log"
+  sleep 0.2
+  printf '[{{"Name":"%s","Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"%s","io.software-factory.workspace":"%s"}}}}]' "$name" "$owner" "$workspace" > "$state"
+  echo create-end >> "$log"
+  exit 0
+fi
+exit 1
+"#,
+            state = state.display(),
+            log = log.display()
+        )
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_create_for_different_owners_serializes_per_name() {
+        let volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let state =
+            std::env::temp_dir().join(format!("factory-stateful-volume-{}", uuid::Uuid::new_v4()));
+        let log = std::env::temp_dir().join(format!(
+            "factory-stateful-volume-log-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let (podman, _serial) = fake_podman(&stateful_volume_script(&volume, &state, &log)).await;
+        let app = test_app(podman);
+        let (supervisor, verifier) = tokio::join!(
+            create_volume(
+                State(Arc::clone(&app)),
+                test_headers(ResourceOwner::Supervisor),
+                Json(NewVolume {
+                    volume: volume.clone(),
+                    workspace_id: "workspace-a".into(),
+                }),
+            ),
+            create_volume(
+                State(Arc::clone(&app)),
+                test_headers(ResourceOwner::Verifier),
+                Json(NewVolume {
+                    volume: volume.clone(),
+                    workspace_id: "workspace-a".into(),
+                }),
+            ),
+        );
+        let supervisor_status = supervisor.status();
+        let supervisor_body = response_body(supervisor).await;
+        let verifier_status = verifier.status();
+        let verifier_body = response_body(verifier).await;
+        let statuses = [supervisor_status, verifier_status];
+        assert_eq!(
+            statuses
+                .iter()
+                .filter(|status| **status == StatusCode::CREATED)
+                .count(),
+            1,
+            "supervisor={supervisor_status} {supervisor_body}; verifier={verifier_status} {verifier_body}"
+        );
+        assert_eq!(
+            statuses
+                .iter()
+                .filter(|status| **status == StatusCode::CONFLICT)
+                .count(),
+            1,
+            "supervisor={supervisor_status} {supervisor_body}; verifier={verifier_status} {verifier_body}"
+        );
+        let state = std::fs::read_to_string(&state).unwrap();
+        let created_owner = if supervisor_status == StatusCode::CREATED {
+            "supervisor"
+        } else {
+            "verifier"
+        };
+        assert!(state.contains(created_owner));
+        let _ = std::fs::remove_file(&log);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn execution_cleanup_serializes_with_container_delete() {
+        let volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let container = format!("factory-exec-{}", uuid::Uuid::new_v4());
+        let log =
+            std::env::temp_dir().join(format!("factory-cleanup-lock-log-{}", uuid::Uuid::new_v4()));
+        let script = format!(
+            r#"#!/bin/sh
+log="{log}"
+volume="{volume}"
+if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then
+  printf '%s\n' '[{{"Name":"{volume}","Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor"}}}}]'
+  exit 0
+fi
+if [ "$1" = "run" ]; then
+  sleep 0.25
+  exit 0
+fi
+if [ "$1" = "inspect" ]; then
+  echo inspect-start >> "$log"
+  sleep 0.4
+  echo inspect-end >> "$log"
+  printf '%s\n' '[{{"Config":{{"Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor","io.software-factory.workspace":"{volume}"}}}}}}]'
+  exit 0
+fi
+if [ "$1" = "rm" ]; then
+  echo rm >> "$log"
+  exit 0
+fi
+if [ "$1" = "container" ] && [ "$2" = "exists" ]; then
+  exit 1
+fi
+exit 1
+"#,
+            log = log.display()
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app(podman);
+        let run = run_container(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Supervisor),
+            Json(RunContainer {
+                volume: volume.clone(),
+                container: container.clone(),
+                image: "test/image:1".into(),
+                argv: vec!["/bin/true".into()],
+                timeout_secs: 10,
+            }),
+        );
+        let delete = async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            remove_container(
+                State(Arc::clone(&app)),
+                test_headers(ResourceOwner::Supervisor),
+                AxumPath(container),
+            )
+            .await
+        };
+        let (run_response, delete_response) = tokio::join!(run, delete);
+        let run_status = run_response.status();
+        let run_body = response_body(run_response).await;
+        assert_eq!(run_status, StatusCode::OK, "run body: {run_body}");
+        assert_eq!(delete_response.status(), StatusCode::NO_CONTENT);
+        let log = std::fs::read_to_string(&log).unwrap();
+        let lines: Vec<&str> = log.lines().collect();
+        assert!(!lines.is_empty() && lines.len().is_multiple_of(3));
+        for chunk in lines.chunks(3) {
+            assert_eq!(
+                chunk,
+                ["inspect-start", "inspect-end", "rm"],
+                "execution cleanup interleaved with container deletion: {lines:?}"
+            );
+        }
+        let _ = std::fs::remove_file(&log);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn execution_cleanup_works_when_volume_and_container_share_overflow() {
+        let volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let container = format!("factory-exec-{}", uuid::Uuid::new_v4());
+        let script = format!(
+            r#"#!/bin/sh
+if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then
+  printf '%s\n' '[{{"Name":"{volume}","Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor"}}}}]'
+  exit 0
+fi
+if [ "$1" = "run" ]; then
+  sleep 0.1
+  exit 0
+fi
+if [ "$1" = "inspect" ]; then
+  printf '%s\n' '[{{"Config":{{"Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor","io.software-factory.workspace":"{volume}"}}}}}}]'
+  exit 0
+fi
+if [ "$1" = "rm" ]; then
+  exit 0
+fi
+if [ "$1" = "container" ] && [ "$2" = "exists" ]; then
+  exit 1
+fi
+exit 1
+"#
+        );
+        // A zero-entry exact table sends both the volume and container names to
+        // the shared overflow mutex. This is the former self-deadlock case.
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app_with_lock_limit(podman, 0);
+        let response = tokio::time::timeout(
+            Duration::from_secs(2),
+            run_container(
+                State(app),
+                test_headers(ResourceOwner::Supervisor),
+                Json(RunContainer {
+                    volume,
+                    container,
+                    image: "test/image:1".into(),
+                    argv: vec!["/bin/true".into()],
+                    timeout_secs: 10,
+                }),
+            ),
+        )
+        .await
+        .expect("execution cleanup deadlocked on the shared overflow lock");
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn active_execution_blocks_volume_mutation_without_holding_the_lock() {
+        let volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let script = format!(
+            r#"#!/bin/sh
+if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then
+  printf '%s\n' '[{{"Name":"{volume}","Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor"}}}}]'
+  exit 0
+fi
+if [ "$1" = "run" ]; then
+  sleep 0.5
+  exit 0
+fi
+if [ "$1" = "inspect" ]; then
+  printf '%s\n' '[{{"Config":{{"Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor","io.software-factory.workspace":"{volume}"}}}}}}]'
+  exit 0
+fi
+if [ "$1" = "rm" ]; then
+  exit 0
+fi
+if [ "$1" = "container" ] && [ "$2" = "exists" ]; then
+  exit 1
+fi
+exit 1
+"#
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app(podman);
+        let run = run_container(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Supervisor),
+            Json(RunContainer {
+                volume: volume.clone(),
+                container: format!("factory-exec-{}", uuid::Uuid::new_v4()),
+                image: "test/image:1".into(),
+                argv: vec!["/bin/true".into()],
+                timeout_secs: 10,
+            }),
+        );
+        tokio::pin!(run);
+        tokio::select! {
+            biased;
+            result = &mut run => panic!("execution finished before registration probe: {}", result.status()),
+            _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+        }
+        let removed = tokio::time::timeout(
+            Duration::from_millis(500),
+            remove_volume(
+                State(Arc::clone(&app)),
+                test_headers(ResourceOwner::Supervisor),
+                AxumPath(volume.clone()),
+            ),
+        )
+        .await
+        .expect("volume removal blocked on a lock held by the execution");
+        assert_eq!(removed.status(), StatusCode::CONFLICT);
+        let created = create_volume(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Supervisor),
+            Json(NewVolume {
+                volume: volume.clone(),
+                workspace_id: "workspace-a".into(),
+            }),
+        )
+        .await;
+        assert_eq!(created.status(), StatusCode::CONFLICT);
+        assert_eq!(run.await.status(), StatusCode::OK);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn cancelled_execution_keeps_volume_blocked_until_cleanup_is_confirmed() {
+        let volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let container = format!("factory-exec-{}", uuid::Uuid::new_v4());
+        let log =
+            std::env::temp_dir().join(format!("factory-cancel-exec-log-{}", uuid::Uuid::new_v4()));
+        let state = std::env::temp_dir().join(format!(
+            "factory-cancel-exec-state-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let cleanup = std::env::temp_dir().join(format!(
+            "factory-cancel-exec-cleanup-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let script = format!(
+            r#"#!/bin/sh
+log="{log}"
+state="{state}"
+cleanup="{cleanup}"
+if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then
+  printf '%s\n' '[{{"Name":"{volume}","Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor"}}}}]'
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "rm" ]; then
+  exit 0
+fi
+if [ "$1" = "run" ]; then
+  echo run-start >> "$log"
+  touch "$state"
+  sleep 0.5
+  exit 0
+fi
+if [ "$1" = "inspect" ]; then
+  if [ ! -f "$state" ]; then exit 1; fi
+  printf '%s\n' '[{{"Config":{{"Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor","io.software-factory.workspace":"{volume}"}}}}}}]'
+  exit 0
+fi
+if [ "$1" = "rm" ]; then
+  rm -f "$state"
+  touch "$cleanup"
+  exit 0
+fi
+if [ "$1" = "container" ] && [ "$2" = "exists" ]; then
+  if [ -f "$state" ]; then exit 0; else exit 1; fi
+fi
+exit 1
+"#,
+            log = log.display(),
+            state = state.display(),
+            cleanup = cleanup.display()
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app(podman);
+        let handler = tokio::spawn(run_container(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Supervisor),
+            Json(RunContainer {
+                volume: volume.clone(),
+                container,
+                image: "test/image:1".into(),
+                argv: vec!["/bin/true".into()],
+                timeout_secs: 10,
+            }),
+        ));
+        for _ in 0..100 {
+            if std::fs::read_to_string(&log)
+                .map(|log| log.contains("run-start"))
+                .unwrap_or(false)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        handler.abort();
+        let _ = handler.await;
+
+        let blocked = remove_volume(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Supervisor),
+            AxumPath(volume.clone()),
+        )
+        .await;
+        assert_eq!(
+            blocked.status(),
+            StatusCode::CONFLICT,
+            "cancelled execution released the volume before cleanup confirmation"
+        );
+
+        let mut released = None;
+        for _ in 0..100 {
+            let response = remove_volume(
+                State(Arc::clone(&app)),
+                test_headers(ResourceOwner::Supervisor),
+                AxumPath(volume.clone()),
+            )
+            .await;
+            if response.status() == StatusCode::NO_CONTENT {
+                released = Some(response.status());
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(released, Some(StatusCode::NO_CONTENT));
+        assert!(cleanup.exists());
+        let _ = std::fs::remove_file(&log);
+        let _ = std::fs::remove_file(&cleanup);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn normal_execution_releases_the_volume_marker_after_cleanup() {
+        let volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let container = format!("factory-exec-{}", uuid::Uuid::new_v4());
+        let state = std::env::temp_dir().join(format!(
+            "factory-normal-exec-state-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let cleanup = std::env::temp_dir().join(format!(
+            "factory-normal-exec-cleanup-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let script = format!(
+            r#"#!/bin/sh
+state="{state}"
+cleanup="{cleanup}"
+if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then
+  printf '%s\n' '[{{"Name":"{volume}","Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor"}}}}]'
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "rm" ]; then
+  exit 0
+fi
+if [ "$1" = "run" ]; then
+  touch "$state"
+  exit 0
+fi
+if [ "$1" = "inspect" ]; then
+  if [ ! -f "$state" ]; then exit 1; fi
+  printf '%s\n' '[{{"Config":{{"Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor","io.software-factory.workspace":"{volume}"}}}}}}]'
+  exit 0
+fi
+if [ "$1" = "rm" ]; then
+  rm -f "$state"
+  touch "$cleanup"
+  exit 0
+fi
+if [ "$1" = "container" ] && [ "$2" = "exists" ]; then
+  if [ -f "$state" ]; then exit 0; else exit 1; fi
+fi
+exit 1
+"#,
+            state = state.display(),
+            cleanup = cleanup.display()
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app(podman);
+        let response = run_container(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Supervisor),
+            Json(RunContainer {
+                volume: volume.clone(),
+                container,
+                image: "test/image:1".into(),
+                argv: vec!["/bin/true".into()],
+                timeout_secs: 10,
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(cleanup.exists());
+        let removed = remove_volume(
+            State(app),
+            test_headers(ResourceOwner::Supervisor),
+            AxumPath(volume),
+        )
+        .await;
+        assert_eq!(removed.status(), StatusCode::NO_CONTENT);
+        let _ = std::fs::remove_file(&cleanup);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn duplicate_active_container_name_is_rejected_without_removal() {
+        let volume_a = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let volume_b = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let container = format!("factory-exec-{}", uuid::Uuid::new_v4());
+        let state = std::env::temp_dir().join(format!(
+            "factory-duplicate-active-state-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let runlog = std::env::temp_dir().join(format!(
+            "factory-duplicate-active-run-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let cleanup = std::env::temp_dir().join(format!(
+            "factory-duplicate-active-cleanup-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let script = format!(
+            r#"#!/bin/sh
+state="{state}"
+runlog="{runlog}"
+cleanup="{cleanup}"
+if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then
+  printf '[{{"Name":"%s","Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor"}}}}]\n' "$5"
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "rm" ]; then
+  exit 0
+fi
+if [ "$1" = "run" ]; then
+  workspace=""
+  for arg in "$@"; do
+    case "$arg" in
+      --label=io.software-factory.workspace=*) workspace="${{arg##*workspace=}}" ;;
+    esac
+  done
+  echo run-start >> "$runlog"
+  echo "$workspace" > "$state"
+  sleep 1.0
+  exit 0
+fi
+if [ "$1" = "inspect" ]; then
+  if [ ! -f "$state" ]; then exit 1; fi
+  workspace="$(cat "$state")"
+  printf '[{{"Config":{{"Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor","io.software-factory.workspace":"%s"}}}}}}]' "$workspace"
+  exit 0
+fi
+if [ "$1" = "rm" ]; then
+  rm -f "$state"
+  touch "$cleanup"
+  exit 0
+fi
+if [ "$1" = "container" ] && [ "$2" = "exists" ]; then
+  if [ -f "$state" ]; then exit 0; else exit 1; fi
+fi
+exit 1
+"#,
+            state = state.display(),
+            runlog = runlog.display(),
+            cleanup = cleanup.display()
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app(podman);
+        let first = tokio::spawn(run_container(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Supervisor),
+            Json(RunContainer {
+                volume: volume_a.clone(),
+                container: container.clone(),
+                image: "test/image:1".into(),
+                argv: vec!["/bin/true".into()],
+                timeout_secs: 10,
+            }),
+        ));
+        for _ in 0..100 {
+            if std::fs::read_to_string(&runlog)
+                .map(|log| log.lines().count() == 1)
+                .unwrap_or(false)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let duplicate = run_container(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Supervisor),
+            Json(RunContainer {
+                volume: volume_b,
+                container: container.clone(),
+                image: "test/image:1".into(),
+                argv: vec!["/bin/true".into()],
+                timeout_secs: 10,
+            }),
+        )
+        .await;
+        let duplicate_status = duplicate.status();
+        let duplicate_body = response_body(duplicate).await;
+        assert_eq!(
+            duplicate_status,
+            StatusCode::CONFLICT,
+            "duplicate body: {duplicate_body}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&runlog).unwrap().lines().count(),
+            1,
+            "duplicate execution started its own container"
+        );
+        assert_eq!(std::fs::read_to_string(&state).unwrap().trim(), volume_a);
+        assert!(!cleanup.exists());
+        assert_eq!(first.await.unwrap().status(), StatusCode::OK);
+        let removed = remove_volume(
+            State(app),
+            test_headers(ResourceOwner::Supervisor),
+            AxumPath(volume_a),
+        )
+        .await;
+        assert_eq!(removed.status(), StatusCode::NO_CONTENT);
+        let _ = std::fs::remove_file(&runlog);
+        let _ = std::fs::remove_file(&cleanup);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn duplicate_present_container_with_foreign_workspace_is_not_removed() {
+        let volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let foreign_volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let container = format!("factory-exec-{}", uuid::Uuid::new_v4());
+        let run_marker = std::env::temp_dir().join(format!(
+            "factory-duplicate-present-run-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let rm_marker = std::env::temp_dir().join(format!(
+            "factory-duplicate-present-rm-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let script = format!(
+            r#"#!/bin/sh
+if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then
+  printf '%s\n' '[{{"Name":"{volume}","Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor"}}}}]'
+  exit 0
+fi
+if [ "$1" = "run" ]; then
+  touch "{run_marker}"
+  exit 0
+fi
+if [ "$1" = "inspect" ]; then
+  printf '%s\n' '[{{"Config":{{"Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor","io.software-factory.workspace":"{foreign_volume}"}}}}}}]'
+  exit 0
+fi
+if [ "$1" = "rm" ]; then
+  touch "{rm_marker}"
+  exit 0
+fi
+if [ "$1" = "container" ] && [ "$2" = "exists" ]; then
+  exit 0
+fi
+exit 1
+"#,
+            run_marker = run_marker.display(),
+            rm_marker = rm_marker.display()
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app(podman);
+        let response = run_container(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Supervisor),
+            Json(RunContainer {
+                volume: volume.clone(),
+                container: container.clone(),
+                image: "test/image:1".into(),
+                argv: vec!["/bin/true".into()],
+                timeout_secs: 10,
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(!run_marker.exists());
+        assert!(!rm_marker.exists());
+
+        // Defense in depth: even if the preflight is bypassed, execution cleanup
+        // refuses a container whose workspace label is not this volume.
+        assert!(
+            !app.confirm_execution_cleanup(&container, ResourceOwner::Supervisor, &volume)
+                .await
+        );
+        assert!(!rm_marker.exists());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn long_execution_does_not_block_an_unrelated_resource() {
+        let running_volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let other_volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let created =
+            std::env::temp_dir().join(format!("factory-unrelated-create-{}", uuid::Uuid::new_v4()));
+        let script = format!(
+            r#"#!/bin/sh
+other="{other_volume}"
+marker="{created}"
+if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then
+  if [ "$5" = "$other" ]; then
+    exit 1
+  fi
+  printf '%s\n' '[{{"Name":"{running_volume}","Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor"}}}}]'
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "exists" ]; then
+  if [ "$3" = "$other" ]; then exit 1; fi
+  exit 0
+fi
+if [ "$1" = "run" ]; then
+  sleep 0.8
+  exit 0
+fi
+if [ "$1" = "container" ] && [ "$2" = "exists" ]; then
+  exit 1
+fi
+if [ "$1" = "volume" ] && [ "$2" = "create" ]; then
+  touch "$marker"
+  exit 0
+fi
+exit 1
+"#,
+            created = created.display()
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app(podman);
+        let run = run_container(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Supervisor),
+            Json(RunContainer {
+                volume: running_volume,
+                container: format!("factory-exec-{}", uuid::Uuid::new_v4()),
+                image: "test/image:1".into(),
+                argv: vec!["/bin/true".into()],
+                timeout_secs: 10,
+            }),
+        );
+        tokio::pin!(run);
+        tokio::select! {
+            biased;
+            result = &mut run => panic!(
+                "long execution finished before the unrelated create: {}",
+                result.status()
+            ),
+            _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+        }
+        let create = async {
+            create_volume(
+                State(Arc::clone(&app)),
+                test_headers(ResourceOwner::Supervisor),
+                Json(NewVolume {
+                    volume: other_volume,
+                    workspace_id: "workspace-other".into(),
+                }),
+            )
+            .await
+        };
+        let created_response = tokio::time::timeout(Duration::from_millis(400), create)
+            .await
+            .expect("unrelated create was blocked by a long execution");
+        assert_eq!(created_response.status(), StatusCode::CREATED);
+        assert!(created.exists());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut run)
+                .await
+                .is_err(),
+            "the long execution unexpectedly finished before the 100 ms probe"
+        );
+        assert_eq!(run.await.status(), StatusCode::OK);
+        let _ = std::fs::remove_file(&created);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_delete_and_reset_never_removes_the_replacement() {
+        let volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let state =
+            std::env::temp_dir().join(format!("factory-stateful-replace-{}", uuid::Uuid::new_v4()));
+        let log = std::env::temp_dir().join(format!(
+            "factory-stateful-replace-log-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(
+            &state,
+            format!(
+                r#"[{{"Name":"{volume}","Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor","io.software-factory.workspace":"workspace-a"}}}}]"#
+            ),
+        )
+        .unwrap();
+        let (podman, _serial) = fake_podman(&stateful_volume_script(&volume, &state, &log)).await;
+        let app = test_app(podman);
+        let (created, removed) = tokio::join!(
+            create_volume(
+                State(Arc::clone(&app)),
+                test_headers(ResourceOwner::Supervisor),
+                Json(NewVolume {
+                    volume: volume.clone(),
+                    workspace_id: "workspace-a".into(),
+                }),
+            ),
+            remove_volume(
+                State(Arc::clone(&app)),
+                test_headers(ResourceOwner::Supervisor),
+                AxumPath(volume.clone()),
+            ),
+        );
+        assert_eq!(created.status(), StatusCode::CREATED);
+        assert_eq!(removed.status(), StatusCode::NO_CONTENT);
+        let log = std::fs::read_to_string(&log).unwrap();
+        let lines: Vec<&str> = log.lines().collect();
+        let start = lines
+            .iter()
+            .position(|line| *line == "create-start")
+            .unwrap();
+        let end = lines.iter().position(|line| *line == "create-end").unwrap();
+        assert!(start < end);
+        assert!(
+            !lines[start + 1..end].contains(&"rm"),
+            "delete interleaved with create reset: {lines:?}"
+        );
+        let _ = std::fs::remove_file(&state);
+        let _ = std::fs::remove_file(&log);
     }
 }

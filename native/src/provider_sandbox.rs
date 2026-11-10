@@ -22,7 +22,7 @@ use std::{
 
 use crate::{
     provider_egress::{EgressBroker, EgressConfig},
-    runtime_broker::RuntimeBrokerClient,
+    runtime_broker::{ResourceOwner, RuntimeBrokerClient},
 };
 use serde::{Deserialize, Serialize};
 use tokio::{
@@ -163,8 +163,12 @@ impl ContainerProviderSandbox {
                 "provider lifetime is outside the allowed bound".into(),
             ));
         }
-        let broker = RuntimeBrokerClient::new(&config.broker_base, config.broker_token)
-            .map_err(|error| SandboxError::Invalid(error.to_string()))?;
+        let broker = RuntimeBrokerClient::new(
+            &config.broker_base,
+            config.broker_token,
+            ResourceOwner::Provider,
+        )
+        .map_err(|error| SandboxError::Invalid(error.to_string()))?;
         std::fs::create_dir_all(&config.session_dir)?;
         set_private_directory(&config.session_dir)?;
         let session_subdir = config

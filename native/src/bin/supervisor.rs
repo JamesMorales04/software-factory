@@ -25,9 +25,10 @@ use axum::{
 use factory_native::{
     execution::{
         ApplyFilesRequest, BoundedOutput, BrokerVolumes, ExecuteWorkspace, ExecutionError,
-        MAX_EXECUTION_RUNTIME, RootlessPodmanVolumes, ToolRunRequest, VolumeBackend,
-        WorkspaceAllocation, WorkspaceManager, WriteFilesRequest,
+        MAX_EXECUTION_RUNTIME, ReconcileReport, RootlessPodmanVolumes, ToolRunRequest,
+        VolumeBackend, WorkspaceAllocation, WorkspaceManager, WriteFilesRequest,
     },
+    runtime_broker::{ManagedResources, ResourceOwner},
     workspace::WorkspaceError,
     workspace_archive::ArchiveError,
 };
@@ -56,6 +57,14 @@ enum SupervisorBackend {
 }
 
 impl VolumeBackend for SupervisorBackend {
+    fn owner(&self) -> ResourceOwner {
+        match self {
+            Self::Podman(backend) => backend.owner(),
+            Self::Broker(backend) => backend.owner(),
+            #[cfg(debug_assertions)]
+            Self::Local(backend) => backend.owner(),
+        }
+    }
     async fn create_volume(&self, name: &str, workspace_id: &str) -> Result<(), ExecutionError> {
         match self {
             Self::Podman(backend) => backend.create_volume(name, workspace_id).await,
@@ -111,12 +120,23 @@ impl VolumeBackend for SupervisorBackend {
             Self::Local(backend) => backend.remove_container(name).await,
         }
     }
+    async fn list_managed(&self) -> Result<Option<ManagedResources>, ExecutionError> {
+        match self {
+            Self::Podman(backend) => backend.list_managed().await,
+            Self::Broker(backend) => backend.list_managed().await,
+            #[cfg(debug_assertions)]
+            Self::Local(backend) => backend.list_managed().await,
+        }
+    }
 }
 
 #[cfg(debug_assertions)]
 struct LocalVolumeBackend {
     root: PathBuf,
     volumes: std::sync::Mutex<std::collections::HashMap<String, PathBuf>>,
+    meta: std::sync::Mutex<
+        std::collections::HashMap<String, factory_native::runtime_broker::ManagedResource>,
+    >,
 }
 
 #[cfg(debug_assertions)]
@@ -131,6 +151,7 @@ impl LocalVolumeBackend {
         Ok(Self {
             root,
             volumes: std::sync::Mutex::new(std::collections::HashMap::new()),
+            meta: std::sync::Mutex::new(std::collections::HashMap::new()),
         })
     }
 
@@ -146,16 +167,40 @@ impl LocalVolumeBackend {
 
 #[cfg(debug_assertions)]
 impl VolumeBackend for LocalVolumeBackend {
-    async fn create_volume(&self, name: &str, _workspace_id: &str) -> Result<(), ExecutionError> {
+    fn owner(&self) -> ResourceOwner {
+        ResourceOwner::Supervisor
+    }
+    async fn create_volume(&self, name: &str, workspace_id: &str) -> Result<(), ExecutionError> {
+        if let Some(existing) = self.meta.lock().unwrap().get(name).cloned() {
+            let same_owner = existing.owner.as_deref() == Some(ResourceOwner::Supervisor.as_str());
+            let same_workspace = existing.workspace.as_deref() == Some(workspace_id);
+            if !same_owner || !same_workspace {
+                return Err(ExecutionError::Conflict);
+            }
+        }
         let path = self.root.join(name);
         if path.exists() {
             std::fs::remove_dir_all(&path)?;
         }
         std::fs::create_dir(&path)?;
         self.volumes.lock().unwrap().insert(name.into(), path);
+        self.meta.lock().unwrap().insert(
+            name.into(),
+            factory_native::runtime_broker::ManagedResource {
+                name: name.into(),
+                workspace: Some(workspace_id.to_owned()),
+                owner: Some(ResourceOwner::Supervisor.as_str().to_owned()),
+            },
+        );
         Ok(())
     }
     async fn remove_volume(&self, name: &str) -> Result<(), ExecutionError> {
+        if let Some(existing) = self.meta.lock().unwrap().get(name)
+            && existing.owner.as_deref() != Some(ResourceOwner::Supervisor.as_str())
+        {
+            return Err(ExecutionError::Conflict);
+        }
+        self.meta.lock().unwrap().remove(name);
         if let Some(path) = self.volumes.lock().unwrap().remove(name) {
             let _ = std::fs::remove_dir_all(path);
         }
@@ -208,6 +253,14 @@ impl VolumeBackend for LocalVolumeBackend {
     }
     async fn remove_container(&self, _name: &str) -> Result<(), ExecutionError> {
         Ok(())
+    }
+    async fn list_managed(&self) -> Result<Option<ManagedResources>, ExecutionError> {
+        let mut volumes: Vec<_> = self.meta.lock().unwrap().values().cloned().collect();
+        volumes.sort_by(|left, right| left.name.cmp(&right.name));
+        Ok(Some(ManagedResources {
+            volumes,
+            containers: Vec::new(),
+        }))
     }
 }
 
@@ -284,7 +337,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(not(debug_assertions))]
         unreachable!("release builds reject the local backend above")
     } else if let (Some(url), Some(token)) = (broker_url.as_deref(), broker_token.as_deref()) {
-        let backend = BrokerVolumes::new(url, token.to_owned())?;
+        let backend = BrokerVolumes::new(url, token.to_owned(), ResourceOwner::Supervisor)?;
         backend.preflight().await?;
         SupervisorBackend::Broker(backend)
     } else if broker_url.is_some() || broker_token.is_some() {
@@ -298,16 +351,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .into(),
         );
     } else {
-        let backend = RootlessPodmanVolumes::new(images.iter().cloned())?;
+        let backend =
+            RootlessPodmanVolumes::new(images.iter().cloned(), ResourceOwner::Supervisor)?;
         backend.preflight().await?;
         SupervisorBackend::Podman(backend)
     };
     let manager =
         WorkspaceManager::new(&workspace_root, &state_root, project_roots.clone(), backend)?;
-    let removed = manager.reconcile().await?;
-    if removed > 0 {
-        tracing::warn!(removed, "reconciled stale workspace executions");
-    }
+    let report = manager.reconcile().await?;
+    log_reconcile(&report);
     let bind = env::var("FACTORY_SUPERVISOR_BIND").unwrap_or_else(|_| DEFAULT_BIND.into());
     let addr = factory_native::service_network::validate_bind(&bind, container_mode)?;
     let app = Arc::new(App {
@@ -351,6 +403,22 @@ async fn health() -> Json<serde_json::Value> {
         "mount": "named-volume",
         "host_workspace_mounted": false
     }))
+}
+
+fn log_reconcile(report: &ReconcileReport) {
+    tracing::info!(
+        recovered_running = report.recovered_running,
+        removed_records = report.removed_records,
+        removed_orphan_volumes = report.removed_orphan_volumes,
+        removed_orphan_containers = report.removed_orphan_containers,
+        preserved_managed = report.preserved_managed,
+        cleanup_failures = report.cleanup_failures,
+        sweep_supported = report.sweep_supported,
+        "workspace reconciliation finished"
+    );
+    if let Some(error) = &report.sweep_error {
+        tracing::warn!(%error, "managed resource sweep did not complete");
+    }
 }
 
 async fn allocate<B: factory_native::execution::VolumeBackend>(
@@ -699,7 +767,10 @@ async fn reconcile<B: factory_native::execution::VolumeBackend>(
         return StatusCode::UNAUTHORIZED.into_response();
     }
     match app.manager.reconcile().await {
-        Ok(removed) => (StatusCode::OK, Json(json!({"removed": removed}))).into_response(),
+        Ok(report) => {
+            log_reconcile(&report);
+            (StatusCode::OK, Json(report)).into_response()
+        }
         Err(error) => execution_error(error),
     }
 }
@@ -1006,6 +1077,9 @@ mod tests {
     }
 
     impl VolumeBackend for TestBackend {
+        fn owner(&self) -> ResourceOwner {
+            ResourceOwner::Supervisor
+        }
         async fn create_volume(
             &self,
             name: &str,
@@ -1303,6 +1377,25 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         assert_eq!(status(&router, reconcile).await, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn reconcile_reports_durable_and_sweep_state() {
+        let fixture = fixture();
+        let router = build_router(fixture.app.clone());
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/reconcile")
+            .header("authorization", format!("Bearer {TEST_TOKEN}"))
+            .body(Body::empty())
+            .unwrap();
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let value = body_json(response).await;
+        assert_eq!(value["recoveredRunning"], 0);
+        assert_eq!(value["removedOrphanVolumes"], 0);
+        assert_eq!(value["removedOrphanContainers"], 0);
+        assert_eq!(value["sweepSupported"], false);
     }
 
     #[tokio::test]
