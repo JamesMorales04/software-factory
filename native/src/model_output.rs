@@ -8,7 +8,7 @@ use schemars::schema_for;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::lead::{AssessmentInput, LeadAssessment};
+use crate::lead::{AssessmentInput, Intent, LeadAssessment, bound_suggested_next_action};
 use crate::semantic_review::{SemanticReview, SemanticReviewError, SemanticReviewInput};
 
 #[derive(Debug, thiserror::Error)]
@@ -161,7 +161,31 @@ pub fn decode_lead_assessment(
     raw: &[u8],
     input: &AssessmentInput,
 ) -> Result<LeadAssessment, ModelOutputError> {
-    validate_lead_assessment_schema(raw)?;
+    let mut value: Value = serde_json::from_slice(raw)?;
+    // The schema requires 1..=MAX_NOTE_CHARS characters so provider-native
+    // structured output is guided correctly. The advisory field is also
+    // deterministically bounded before schema validation so an otherwise safe
+    // assessment is not blocked by a missing or overlong next action. Unknown
+    // fields and non-string values are left untouched and still fail the schema.
+    let intent = value
+        .get("intent")
+        .cloned()
+        .and_then(|raw| serde_json::from_value::<Intent>(raw).ok());
+    if let Some(intent) = intent
+        && let Some(action) = value.get_mut("suggestedNextAction")
+        && let Some(text) = action.as_str()
+    {
+        let mut bounded = text.to_owned();
+        if bound_suggested_next_action(&mut bounded, intent) {
+            *action = Value::String(bounded);
+        }
+    }
+    let schema = lead_assessment_schema();
+    let validator = jsonschema::validator_for(&schema)
+        .map_err(|error| ModelOutputError::Schema(error.to_string()))?;
+    validator
+        .validate(&value)
+        .map_err(|error| ModelOutputError::Schema(error.to_string()))?;
     LeadAssessment::from_json(raw, input)
         .map_err(|error| ModelOutputError::Domain(error.to_string()))
 }
@@ -305,6 +329,18 @@ mod tests {
         let schema = lead_assessment_schema();
         assert_eq!(schema["type"], "object");
         assert_eq!(schema["additionalProperties"], false);
+        assert_eq!(
+            schema["properties"]["suggestedNextAction"]["type"],
+            "string"
+        );
+        assert_eq!(
+            schema["properties"]["suggestedNextAction"]["minLength"],
+            serde_json::json!(1)
+        );
+        assert_eq!(
+            schema["properties"]["suggestedNextAction"]["maxLength"],
+            serde_json::json!(crate::lead::MAX_NOTE_CHARS)
+        );
         validate_provider_schema(&schema).unwrap();
         assert_eq!(lead_assessment_schema_sha256().len(), 64);
     }
@@ -320,6 +356,47 @@ mod tests {
             decode_lead_assessment(&raw, &input()),
             Err(ModelOutputError::Schema(_))
         ));
+
+        let mut wrong_type: Value =
+            serde_json::from_slice(&serde_json::to_vec(&assessment()).unwrap()).unwrap();
+        wrong_type["suggestedNextAction"] = serde_json::json!(7);
+        assert!(matches!(
+            decode_lead_assessment(&serde_json::to_vec(&wrong_type).unwrap(), &input()),
+            Err(ModelOutputError::Schema(_))
+        ));
+    }
+
+    #[test]
+    fn informational_assessment_next_action_is_bounded_and_planless() {
+        let mut value = serde_json::to_value(assessment()).unwrap();
+        value["intent"] = serde_json::json!("informational");
+        for action in [serde_json::json!(""), serde_json::json!("   ")] {
+            value["suggestedNextAction"] = action;
+            let decoded =
+                decode_lead_assessment(&serde_json::to_vec(&value).unwrap(), &input()).unwrap();
+            assert_eq!(decoded.intent, Intent::Informational);
+            assert_eq!(
+                decoded.suggested_next_action,
+                crate::lead::SUGGESTED_NEXT_ACTION_NO_ACTION
+            );
+            assert!(decoded.proposal.is_none());
+        }
+    }
+
+    #[test]
+    fn overlong_next_action_is_truncated_on_a_character_boundary() {
+        let mut value = serde_json::to_value(assessment()).unwrap();
+        value["intent"] = serde_json::json!("informational");
+        value["suggestedNextAction"] =
+            serde_json::json!("é".repeat(crate::lead::MAX_NOTE_CHARS + 25));
+        let decoded =
+            decode_lead_assessment(&serde_json::to_vec(&value).unwrap(), &input()).unwrap();
+        assert_eq!(
+            decoded.suggested_next_action.chars().count(),
+            crate::lead::MAX_NOTE_CHARS
+        );
+        assert!(decoded.suggested_next_action.starts_with('é'));
+        assert!(decoded.proposal.is_none());
     }
 
     #[test]

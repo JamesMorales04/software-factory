@@ -31,6 +31,11 @@ pub const MAX_NOTE_CHARS: usize = 500;
 pub const MAX_EVIDENCE_REFS: usize = 32;
 pub const MAX_EFFORT_PERSON_HOURS: u32 = 10_000;
 
+/// Bounded advisory text used when a model omits or overruns the next-action
+/// field. It never creates a proposal, plan, Campaign or authority.
+pub const SUGGESTED_NEXT_ACTION_REVIEW: &str = "Review the assessment before proceeding.";
+pub const SUGGESTED_NEXT_ACTION_NO_ACTION: &str = "No action required; answer only.";
+
 /// Legacy V1 evidence bounds. They remain only to validate the exact bytes of
 /// historical grants; no V2 admission path uses them.
 pub const LEGACY_MAX_CAMPAIGN_IMPLEMENTER_RUNS: usize = 64;
@@ -1234,6 +1239,40 @@ pub enum Intent {
     Change,
 }
 
+pub(crate) fn default_suggested_next_action(intent: Intent) -> &'static str {
+    match intent {
+        Intent::Informational | Intent::Audit => SUGGESTED_NEXT_ACTION_NO_ACTION,
+        Intent::Change => SUGGESTED_NEXT_ACTION_REVIEW,
+    }
+}
+
+/// Deterministically bound the advisory next-action text. Empty or whitespace
+/// values fall back to a truthful default for the intent; overlong values are
+/// truncated on a character boundary. Returns whether the value changed.
+pub(crate) fn bound_suggested_next_action(action: &mut String, intent: Intent) -> bool {
+    let trimmed = action.trim();
+    if trimmed.is_empty() {
+        *action = default_suggested_next_action(intent).to_owned();
+        return true;
+    }
+    let bounded = if trimmed.chars().count() > MAX_NOTE_CHARS {
+        trimmed
+            .chars()
+            .take(MAX_NOTE_CHARS)
+            .collect::<String>()
+            .trim_end()
+            .to_owned()
+    } else {
+        trimmed.to_owned()
+    };
+    if *action == bounded {
+        false
+    } else {
+        *action = bounded;
+        true
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Complexity {
@@ -1330,6 +1369,7 @@ pub struct LeadAssessment {
     pub assumptions: Vec<String>,
     #[serde(default)]
     pub uncertainty: Vec<String>,
+    #[schemars(length(min = 1, max = MAX_NOTE_CHARS))]
     pub suggested_next_action: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proposal: Option<LeadPlanProposal>,
@@ -1350,6 +1390,16 @@ impl LeadAssessment {
     pub fn from_json(raw: &[u8], input: &AssessmentInput) -> Result<Self, LeadError> {
         let mut assessment: Self = serde_json::from_slice(raw)
             .map_err(|error| LeadError::Assessment(format!("invalid assessment JSON: {error}")))?;
+        // suggestedNextAction is advisory text. Bound it deterministically so a
+        // harmless model omission cannot block an informational assessment, and
+        // so a change assessment still carries a truthful review step. This
+        // normalization cannot create a proposal, plan, Campaign or authority.
+        if bound_suggested_next_action(&mut assessment.suggested_next_action, assessment.intent) {
+            tracing::debug!(
+                intent = ?assessment.intent,
+                "normalized advisory suggestedNextAction"
+            );
+        }
         // The effort estimate is advisory. When the intent is informational or
         // audit and the operator did not ask for an estimate, a model-supplied
         // estimate cannot affect execution; normalize it to not_requested
@@ -2539,6 +2589,65 @@ mod tests {
         let decoded = LeadAssessment::from_json(&raw, &input).unwrap();
         assert_eq!(decoded.effort_estimate.status, EffortStatus::NotRequested);
         assert_eq!(decoded.effort_estimate.max_person_hours, 0);
+    }
+
+    #[test]
+    fn informational_no_agent_assessment_with_blank_next_action_is_planless_and_assessed() {
+        let mut value = assessment();
+        value.intent = Intent::Informational;
+        value.proposal = None;
+        value.suggested_next_action = " \t ".into();
+        let input = AssessmentInput {
+            objective: "Explain what a vlog is and list typical features.".into(),
+            ..assessment_input()
+        };
+        let raw = serde_json::to_vec(&value).unwrap();
+        let decoded = LeadAssessment::from_json(&raw, &input).unwrap();
+        assert_eq!(decoded.intent, Intent::Informational);
+        assert_eq!(
+            decoded.suggested_next_action,
+            SUGGESTED_NEXT_ACTION_NO_ACTION
+        );
+        assert!(decoded.proposal.is_none());
+        assert_eq!(
+            project_lead_request_state_with_reason(
+                LeadRequestState::Blocked,
+                None,
+                None,
+                false,
+                Some("informational_assessment: no execution plan is required for this intent"),
+            ),
+            LeadRequestProjectionState::Assessed
+        );
+    }
+
+    #[test]
+    fn change_assessment_with_blank_next_action_gets_review_default_and_requires_a_proposal() {
+        let mut value = assessment();
+        value.suggested_next_action = String::new();
+        let input = assessment_input();
+        let decoded =
+            LeadAssessment::from_json(&serde_json::to_vec(&value).unwrap(), &input).unwrap();
+        assert_eq!(decoded.suggested_next_action, SUGGESTED_NEXT_ACTION_REVIEW);
+        assert!(decoded.proposal.is_some());
+
+        value.proposal = None;
+        assert!(LeadAssessment::from_json(&serde_json::to_vec(&value).unwrap(), &input).is_err());
+    }
+
+    #[test]
+    fn overlong_next_action_is_truncated_on_a_character_boundary() {
+        let mut value = assessment();
+        value.intent = Intent::Audit;
+        value.proposal = None;
+        value.suggested_next_action = "é".repeat(MAX_NOTE_CHARS + 17);
+        let raw = serde_json::to_vec(&value).unwrap();
+        let decoded = LeadAssessment::from_json(&raw, &assessment_input()).unwrap();
+        assert_eq!(
+            decoded.suggested_next_action.chars().count(),
+            MAX_NOTE_CHARS
+        );
+        assert!(decoded.suggested_next_action.starts_with('é'));
     }
 
     #[test]
