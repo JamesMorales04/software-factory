@@ -573,6 +573,76 @@ P1: K, M. P2: broader provider matrix and cross-repo OpenSpec stores.
 6. OpenSpec toolchain packaging (Node image/cache vs Rust subset).
 7. Owner escalation threshold for automatic repair/replan.
 
+## 21. Live findings and repairs (2026-11-10)
+
+A real R0 `TRUSTED_LOCAL_PROVIDER` Campaign ran through the ordinary Office
+intake path against `JamesMorales04/vlog-cli-factory-live-test`:
+
+- request `037165ad-bc3f-4b5e-b8bc-db9f59338f83`;
+- Campaign `d61a09f9-1564-4625-bb74-8e4a0ceded19`;
+- candidate `be5eb14f-1742-4c86-922e-11c9dda5bb3c` at
+  `ff1c0c8ced8a67d38cf286b342fd14432c7b6002`, tree
+  `c4afcab70427889402081f584700dfa1b6c41367`;
+- Gate `ACCEPTED` at `2026-11-10T16:51:03Z`.
+
+The full record, including the exact receipts and browser artifacts, is
+[`docs/evidence/live-vlog-acceptance-2026-11-10.md`](../evidence/live-vlog-acceptance-2026-11-10.md).
+It is implementer/orchestrator evidence, not independent acceptance.
+
+### Blockers found and repaired
+
+| Live symptom | Repair commits |
+|---|---|
+| Runtime workspace bootstrap/adoption | `0b0547c` |
+| Informational Lead assessment could block the next action | `1d7053b` |
+| A final response could skip frozen checks | `dc57840` |
+| Model reservation/accounting overflow | `61fea3d`, `9e4cdc9`, `4ff4090` |
+| Plan approval before complete review/readiness | `86ee70c`, `ef77ca8`, `3958610`, `8b36501` |
+| Truncated Planner output | `6ccb9c4`, `11f3a08` |
+| Invalid Planner WorkGraph | `b0db72a` |
+| Control-plane Core URL via `core-control` | `513f948`, `949f33f` |
+| Stagnant Implementer with checked workspace | `8d11a05`, `3e8fc87` |
+| Informational findings blocked Gate re-evaluation | `59e7b3f`, `44455cb` |
+| Project summary used raw Campaign status | `934eabf` |
+| Repair authorization shown on a non-repairable Gate | `fc2b957` (**pending merge**, `fix/gate-repair-banner`) |
+
+### Accepted candidate evidence
+
+- All four frozen checks passed (`cargo build --all-targets`,
+  `cargo test --all-targets`, `cargo run --quiet -- --help`, and the negative
+  unknown-command check expecting exit 2); eight check receipts, all `PASS`.
+- One deterministic verifier and five required reviewers (`functional`,
+  `architecture`, `code_quality`, `security`, `testing`) returned `PASS` with
+  executed evidence. `operability` was not required at assurance `NONE`.
+- The initial Gate was `REPAIR_REQUIRED` on five informational findings
+  (four unique IDs). The finding dispositions were resolved and the Gate
+  re-evaluated to `ACCEPTED` under the observation-only policy.
+- A local export of the exact candidate passed `cargo build --locked` and
+  `cargo test --locked`; the accepted commit contains **five** integration
+  tests, not eleven.
+- Chromium checks covered Campaign detail, Director, the Request workspace and
+  Issues at 1440/768/390: no document/body overflow, no unnamed controls, no
+  images without alt text and one `h1` per surface.
+
+### Evidence limits
+
+- The durable provider events show an invalid first `final` at `15:00:29Z`,
+  continued writes and checks, and a later valid `final-explanation` at
+  `15:04:31Z`. No durable `worker.stagnation_finalized` event is recorded for
+  this attempt, and the campaign progress state reports one stagnant
+  checkpoint, below the three-checkpoint `Diagnose` threshold. The salvage
+  repair is merged and deterministically tested, but this run does not prove
+  that salvage finalized `be5eb14f`. The earlier `f8ea5e85` Campaign was
+  blocked at `IMPLEMENTER_PROGRESS_Diagnose`.
+- Request `037165ad` compiled its WorkGraph in one Planner call and
+  auto-approved revision 1; no Planner validation repair is recorded for this
+  request. The Planner repairs above come from the broader live sequence.
+- The exact Factory runtime image digest/commit was not recorded. The run is
+  bound to the target candidate and to the durable Core records above, not to a
+  frozen Factory runtime image.
+- Independent acceptance, `TRUSTED_LOCAL` isolation/certification, push/PR/
+  merge and automatic issue-to-Campaign synchronization remain outstanding.
+
 ## References
 
 - Cargo vendor: https://doc.rust-lang.org/cargo/commands/cargo-vendor.html
