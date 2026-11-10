@@ -159,8 +159,10 @@ why the engine is trusted infrastructure and why SEC-01 remains blocked.
 - Broker create/reset/delete/import/export/execute operations use exact
   per-resource-name async locks, not shared shards. Execution holds only its
   volume lock; cleanup acquires the container lock in the fixed
-  volume -> container order. Unrelated resources are not serialized by a long
-  execution.
+  volume -> container order. Unrelated resources within the 4096-entry exact
+  table are not serialized by a long execution. Entries are never reclaimed, so
+  a name keeps one lock identity; names beyond capacity intentionally serialize
+  on one overflow lock.
 - Provider session cleanup returned `container_removed_verified_absent` in the
   fixture journey.
 

@@ -136,10 +136,11 @@ enum MutationError {
     Failed(String),
 }
 
-/// Exact per-resource-name async locks. Entries are bounded and removed only
-/// when no caller holds or awaits them. If every entry is in use at the bound,
-/// new names fall back to one overflow lock: correctness (exclusion) is
-/// preserved, at the cost of serializing names beyond the capacity.
+/// Exact per-resource-name async locks. The exact table is permanently bounded.
+/// Entries are never reclaimed: a name that once fell back to the overflow lock
+/// must keep that identity forever, because reclaiming an idle exact entry could
+/// later create a second lock for the same overflowed name. Names beyond the
+/// table capacity intentionally serialize on one overflow lock.
 ///
 /// Lock order is volume -> container. Long executions hold only their volume
 /// lock; cleanup then takes the container lock. No path acquires a volume lock
@@ -165,9 +166,6 @@ impl ResourceLocks {
         let mut entries = self.entries.lock().unwrap();
         if let Some(lock) = entries.get(name) {
             return Arc::clone(lock);
-        }
-        if entries.len() >= limit {
-            entries.retain(|_, lock| Arc::strong_count(lock) > 1);
         }
         if entries.len() >= limit {
             return Arc::clone(&self.overflow);
@@ -1757,8 +1755,8 @@ mod tests {
         assert_eq!(bytes, b"small");
     }
 
-    #[test]
-    fn resource_locks_are_exact_and_reclaim_unused_entries() {
+    #[tokio::test]
+    async fn resource_locks_keep_one_identity_per_name_at_saturation() {
         let locks = ResourceLocks::new();
         let first = locks.acquire("factory-ws-a");
         assert!(Arc::ptr_eq(&first, &locks.acquire("factory-ws-a")));
@@ -1766,18 +1764,32 @@ mod tests {
 
         let bounded = ResourceLocks::new();
         let a = bounded.acquire_with_limit("a", 2);
+        let a_identity = Arc::clone(&a);
         let b = bounded.acquire_with_limit("b", 2);
-        drop(a);
         let c = bounded.acquire_with_limit("c", 2);
-        {
-            let entries = bounded.entries.lock().unwrap();
-            assert!(!entries.contains_key("a"));
-            assert!(entries.contains_key("b"));
-            assert!(entries.contains_key("c"));
-        }
-        let d = bounded.acquire_with_limit("d", 2);
-        assert!(Arc::ptr_eq(&d, &bounded.overflow));
-        drop((b, c, d));
+        assert!(Arc::ptr_eq(&c, &bounded.overflow));
+
+        let overflow_guard = c.lock().await;
+        drop(a);
+        let c_again = bounded.acquire_with_limit("c", 2);
+        assert!(
+            Arc::ptr_eq(&c, &c_again),
+            "overflowed name received a second lock identity"
+        );
+        assert!(
+            c_again.try_lock().is_err(),
+            "same name bypassed the held overflow lock"
+        );
+        assert!(!bounded.entries.lock().unwrap().contains_key("c"));
+
+        let a_again = bounded.acquire_with_limit("a", 2);
+        assert!(
+            Arc::ptr_eq(&a_again, &a_identity),
+            "idle exact entry was reclaimed and replaced"
+        );
+        drop(overflow_guard);
+        assert!(c_again.try_lock().is_ok());
+        drop((b, c, c_again, a_again));
     }
 
     static FAKE_PODMAN_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
