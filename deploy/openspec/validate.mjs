@@ -215,49 +215,74 @@ async function fetchProjection() {
   );
   let response;
   try {
-    response = await fetch(
-      `${coreUrl}/agentic/requests/${encodeURIComponent(requestId)}/openspec`,
-      {
-        method: "GET",
-        headers: { authorization: `Bearer ${token}` },
-        redirect: "error",
-        signal: controller.signal,
-      },
-    );
-  } catch (error) {
-    throw new ValidationError(
-      "CORE_UNREACHABLE",
-      `Core request failed: ${error.name}`,
-    );
+    try {
+      response = await fetch(
+        `${coreUrl}/agentic/requests/${encodeURIComponent(requestId)}/openspec`,
+        {
+          method: "GET",
+          headers: { authorization: `Bearer ${token}` },
+          redirect: "error",
+          signal: controller.signal,
+        },
+      );
+    } catch (error) {
+      if (controller.signal.aborted) {
+        throw new ValidationError(
+          "CORE_TIMEOUT",
+          "Core request exceeded its deadline",
+        );
+      }
+      throw new ValidationError(
+        "CORE_UNREACHABLE",
+        `Core request failed: ${error.name}`,
+      );
+    }
+    let body;
+    try {
+      body = await readBoundedBody(response);
+    } catch (error) {
+      if (error instanceof ValidationError) {
+        throw error;
+      }
+      if (controller.signal.aborted) {
+        throw new ValidationError(
+          "CORE_TIMEOUT",
+          "Core response body exceeded its deadline",
+        );
+      }
+      throw new ValidationError(
+        "CORE_BODY_FAILED",
+        "Core response body could not be read",
+      );
+    }
+    if (!response.ok) {
+      let code = "";
+      try {
+        const parsed = JSON.parse(body);
+        if (typeof parsed.code === "string" && /^[A-Z_]{1,64}$/.test(parsed.code)) {
+          code = ` (${parsed.code})`;
+        }
+      } catch {
+        // The status is enough; never echo an unparsed body.
+      }
+      throw new ValidationError(
+        "CORE_HTTP_ERROR",
+        `Core returned HTTP ${response.status}${code}`,
+      );
+    }
+    let payload;
+    try {
+      payload = JSON.parse(body);
+    } catch {
+      throw new ValidationError(
+        "CORE_RESPONSE_INVALID",
+        "Core response is not valid JSON",
+      );
+    }
+    return { requestId, payload };
   } finally {
     clearTimeout(timer);
   }
-  const body = await readBoundedBody(response);
-  if (!response.ok) {
-    let code = "";
-    try {
-      const parsed = JSON.parse(body);
-      if (typeof parsed.code === "string" && /^[A-Z_]{1,64}$/.test(parsed.code)) {
-        code = ` (${parsed.code})`;
-      }
-    } catch {
-      // The status is enough; never echo an unparsed body.
-    }
-    throw new ValidationError(
-      "CORE_HTTP_ERROR",
-      `Core returned HTTP ${response.status}${code}`,
-    );
-  }
-  let payload;
-  try {
-    payload = JSON.parse(body);
-  } catch {
-    throw new ValidationError(
-      "CORE_RESPONSE_INVALID",
-      "Core response is not valid JSON",
-    );
-  }
-  return { requestId, payload };
 }
 
 function validateProjection(payload, requestId) {

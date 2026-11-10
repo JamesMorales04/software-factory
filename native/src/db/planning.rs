@@ -740,6 +740,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn openspec_archive_is_idempotent_and_immutable() {
+        let db = seeded_db("request-archive").await;
+        let projection = crate::planning::OpenSpecProjection {
+            change_id: "add-validator".into(),
+            revision: 1,
+            proposal_sha256: "a".repeat(64),
+            specs_sha256: "b".repeat(64),
+            design_sha256: "c".repeat(64),
+            tasks_sha256: "d".repeat(64),
+            validated: true,
+            archived: false,
+        };
+        db.save_openspec_projection("request-archive", &projection)
+            .await
+            .unwrap();
+        let first = db
+            .archive_openspec_projection("request-archive", &projection)
+            .await
+            .unwrap();
+        assert!(first.record.archived);
+        assert!(!first.already_archived);
+        let replay = db
+            .archive_openspec_projection("request-archive", &projection)
+            .await
+            .unwrap();
+        assert_eq!(replay.record.id, first.record.id);
+        assert_eq!(replay.record.updated_at, first.record.updated_at);
+        assert!(replay.already_archived);
+
+        let mut changed = projection.clone();
+        changed.tasks_sha256 = "e".repeat(64);
+        assert!(
+            db.archive_openspec_projection("request-archive", &changed)
+                .await
+                .is_err()
+        );
+
+        let mut unvalidated = projection.clone();
+        unvalidated.validated = false;
+        assert!(
+            db.archive_openspec_projection("request-archive", &unvalidated)
+                .await
+                .is_err()
+        );
+
+        let mut different_revision = projection.clone();
+        different_revision.revision = 2;
+        assert!(
+            db.archive_openspec_projection("request-archive", &different_revision)
+                .await
+                .is_err()
+        );
+
+        // A changed projection for an already archived revision remains a
+        // conflict, and the archived row is unchanged.
+        let mut changed_identity = projection.clone();
+        changed_identity.change_id = "add-other".into();
+        assert!(
+            db.archive_openspec_projection("request-archive", &changed_identity)
+                .await
+                .is_err()
+        );
+        let latest = db
+            .latest_openspec_projection("request-archive")
+            .await
+            .unwrap();
+        assert!(latest.archived);
+        assert_eq!(latest.change_id, "add-validator");
+        assert_eq!(latest.updated_at, first.record.updated_at);
+    }
+
+    #[tokio::test]
     async fn skill_packs_are_immutable_and_fresh() {
         let db = seeded_db("request-skill").await;
         let pack = crate::planning::skills::builtin_skill_pack("rust").unwrap();
@@ -768,6 +840,12 @@ pub struct OpenSpecProjectionRecord {
     pub archived: bool,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenSpecArchiveTransition {
+    pub record: OpenSpecProjectionRecord,
+    pub already_archived: bool,
 }
 
 impl Database {
@@ -866,6 +944,85 @@ impl Database {
         .fetch_optional(&self.pool)
         .await?;
         row.ok_or(Error::NotFound).and_then(openspec_from_row)
+    }
+
+    /// Move one validated OpenSpec projection to its archive state exactly once.
+    ///
+    /// The expected projection must match the durable row byte-for-byte in its
+    /// identity and hashes. Replaying the same archive binding returns the same
+    /// archived record without changing `updated_at`; a different binding,
+    /// an unvalidated row, or a stale pre-archive binding is rejected. This is a
+    /// projection transition only; it never accepts a candidate or closes a
+    /// finding.
+    pub async fn archive_openspec_projection(
+        &self,
+        request_id: &str,
+        expected: &crate::planning::OpenSpecProjection,
+    ) -> Result<OpenSpecArchiveTransition, Error> {
+        expected
+            .validate()
+            .map_err(|error| Error::Validation(format!("OpenSpec projection: {error}")))?;
+        if !expected.validated {
+            return Err(Error::Conflict(
+                "only a validated OpenSpec projection can be archived",
+            ));
+        }
+        let now = Utc::now().to_rfc3339();
+        let _write = self.write_lock.lock().await;
+        let update = sqlx::query::query(
+            "UPDATE openspec_projections SET archived=1,updated_at=?3
+             WHERE request_id=?1 AND revision=?2 AND validated=1 AND archived=0
+               AND change_id=?4 AND proposal_sha256=?5 AND specs_sha256=?6
+               AND design_sha256=?7 AND tasks_sha256=?8",
+        )
+        .bind(request_id)
+        .bind(i64::from(expected.revision))
+        .bind(&now)
+        .bind(&expected.change_id)
+        .bind(&expected.proposal_sha256)
+        .bind(&expected.specs_sha256)
+        .bind(&expected.design_sha256)
+        .bind(&expected.tasks_sha256)
+        .execute(&self.pool)
+        .await?;
+        let row: Option<OpenSpecRow> = sqlx::query_as::query_as(
+            "SELECT id,request_id,change_id,revision,proposal_sha256,specs_sha256,
+                    design_sha256,tasks_sha256,validated,archived,created_at,updated_at
+             FROM openspec_projections WHERE request_id=?1 AND revision=?2",
+        )
+        .bind(request_id)
+        .bind(i64::from(expected.revision))
+        .fetch_optional(&self.pool)
+        .await?;
+        let record = openspec_from_row(row.ok_or(Error::NotFound)?)?;
+        if update.rows_affected() == 0 {
+            if !record.validated {
+                return Err(Error::Conflict(
+                    "only a validated OpenSpec projection can be archived",
+                ));
+            }
+            if !record.archived {
+                return Err(Error::Conflict(
+                    "OpenSpec projection changed since the archive binding",
+                ));
+            }
+            if record.change_id != expected.change_id
+                || record.proposal_sha256 != expected.proposal_sha256
+                || record.specs_sha256 != expected.specs_sha256
+                || record.design_sha256 != expected.design_sha256
+                || record.tasks_sha256 != expected.tasks_sha256
+            {
+                return Err(Error::Conflict("archived OpenSpec projection is immutable"));
+            }
+            return Ok(OpenSpecArchiveTransition {
+                record,
+                already_archived: true,
+            });
+        }
+        Ok(OpenSpecArchiveTransition {
+            record,
+            already_archived: false,
+        })
     }
 }
 

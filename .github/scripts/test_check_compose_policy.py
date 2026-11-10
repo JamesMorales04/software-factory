@@ -155,7 +155,7 @@ class ComposePolicyTests(unittest.TestCase):
 
         self.assert_rejected(
             cross_role,
-            "openspec-validate: must mount only factory-config-openspec",
+            "openspec-validate: exactly one volume factory-config-openspec is allowed",
         )
 
         def writable(config):
@@ -167,6 +167,27 @@ class ComposePolicyTests(unittest.TestCase):
             writable,
             "openspec-validate: its config volume must be read-only at /config",
         )
+
+    def test_rejects_openspec_validation_project_and_data_mounts(self):
+        if "openspec-validate" not in base_config()["services"]:
+            self.skipTest("OpenSpec validation profile is not active in this config")
+
+        for source in ("factory-projects", "factory-data"):
+            with self.subTest(source=source):
+                def mount_extra_volume(config, source=source):
+                    config["services"]["openspec-validate"]["volumes"].append(
+                        {
+                            "type": "volume",
+                            "source": source,
+                            "target": f"/{source}",
+                            "read_only": True,
+                        }
+                    )
+
+                self.assert_rejected(
+                    mount_extra_volume,
+                    "openspec-validate: exactly one volume factory-config-openspec is allowed",
+                )
 
     def test_rejects_unsafe_security_options(self):
         self.assert_rejected(

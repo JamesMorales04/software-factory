@@ -1102,6 +1102,10 @@ fn office_api_router(app: Arc<App>) -> Router {
         .route("/agentic/requests/{id}/planning", get(get_agentic_planning))
         .route("/agentic/requests/{id}/openspec", get(get_agentic_openspec))
         .route(
+            "/agentic/requests/{id}/openspec/archive",
+            post(archive_agentic_openspec),
+        )
+        .route(
             "/agentic/requests/{id}/plan-review",
             post(review_agentic_plan),
         )
@@ -1391,6 +1395,10 @@ fn api_router(app: Arc<App>) -> Router {
         )
         .route("/agentic/requests/{id}/planning", get(get_agentic_planning))
         .route("/agentic/requests/{id}/openspec", get(get_agentic_openspec))
+        .route(
+            "/agentic/requests/{id}/openspec/archive",
+            post(archive_agentic_openspec),
+        )
         .route(
             "/agentic/requests/{id}/plan-review",
             post(review_agentic_plan),
@@ -11411,6 +11419,99 @@ async fn planning_readiness(
     Ok(missing)
 }
 
+struct LoadedOpenSpecProjection {
+    record: factory_native::db::IntakeRequestRecord,
+    projection: factory_native::db::OpenSpecProjectionRecord,
+    planning_projection: factory_native::planning::OpenSpecProjection,
+    model: factory_native::openspec::OpenSpecReadModel,
+}
+
+async fn load_agentic_openspec(app: &App, id: &str) -> Result<LoadedOpenSpecProjection, Response> {
+    let record = app.db.intake_request(id).await.map_err(api_error)?;
+    let projection = match app.db.latest_openspec_projection(&record.id).await {
+        Ok(projection) => projection,
+        Err(Error::NotFound) => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(json!({
+                    "error": "no OpenSpec projection exists for this request",
+                    "code": "OPENSPEC_NOT_FOUND",
+                })),
+            )
+                .into_response());
+        }
+        Err(error) => return Err(api_error(error)),
+    };
+    let artifact = match app
+        .db
+        .planning_artifact(&record.id, "OPENSPEC", projection.revision)
+        .await
+    {
+        Ok(artifact) => artifact,
+        Err(Error::NotFound) => {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": "the durable projection has no matching rendered artifact",
+                    "code": "OPENSPEC_ARTIFACT_MISSING",
+                })),
+            )
+                .into_response());
+        }
+        Err(error) => return Err(api_error(error)),
+    };
+    let artifacts = match factory_native::openspec::parse_stored_artifact(
+        &artifact.content_json,
+        &artifact.content_sha256,
+    ) {
+        Ok(artifacts) => artifacts,
+        Err(error) => {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": error.to_string(),
+                    "code": "OPENSPEC_ARTIFACT_INVALID",
+                })),
+            )
+                .into_response());
+        }
+    };
+    let planning_projection = factory_native::planning::OpenSpecProjection {
+        change_id: projection.change_id.clone(),
+        revision: projection.revision,
+        proposal_sha256: projection.proposal_sha256.clone(),
+        specs_sha256: projection.specs_sha256.clone(),
+        design_sha256: projection.design_sha256.clone(),
+        tasks_sha256: projection.tasks_sha256.clone(),
+        validated: projection.validated,
+        archived: projection.archived,
+    };
+    let model = match factory_native::openspec::read_model(
+        &record.id,
+        &planning_projection,
+        &artifact.content_sha256,
+        &artifacts,
+    ) {
+        Ok(model) => model,
+        Err(error) => {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": error.to_string(),
+                    "code": "OPENSPEC_PROJECTION_STALE",
+                })),
+            )
+                .into_response());
+        }
+    };
+    Ok(LoadedOpenSpecProjection {
+        record,
+        projection,
+        planning_projection,
+        model,
+    })
+}
+
 async fn get_agentic_openspec(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
@@ -11429,78 +11530,104 @@ async fn get_agentic_openspec(
         )
             .into_response();
     }
-    let record = match app.db.intake_request(&id).await {
-        Ok(record) => record,
-        Err(error) => return api_error(error),
+    match load_agentic_openspec(&app, &id).await {
+        Ok(loaded) => Json(loaded.model).into_response(),
+        Err(response) => response,
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct OpenSpecArchiveInput {
+    change_id: String,
+    revision: u32,
+    artifact_content_sha256: String,
+}
+
+async fn archive_agentic_openspec(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<OpenSpecArchiveInput>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if id.is_empty() || id.chars().count() > 200 || id.chars().any(char::is_control) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "request id is required, bounded and control-free",
+                "code": "REQUEST_ID_INVALID",
+            })),
+        )
+            .into_response();
+    }
+    let loaded = match load_agentic_openspec(&app, &id).await {
+        Ok(loaded) => loaded,
+        Err(response) => return response,
     };
-    let projection = match app.db.latest_openspec_projection(&record.id).await {
-        Ok(projection) => projection,
-        Err(Error::NotFound) => {
-            return (
-                StatusCode::NOT_FOUND,
+    if input.change_id != loaded.model.change_id
+        || input.revision != loaded.model.revision
+        || input.artifact_content_sha256 != loaded.model.artifact_content_sha256
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "the archive request does not bind the latest validated projection",
+                "code": "OPENSPEC_ARCHIVE_STALE",
+            })),
+        )
+            .into_response();
+    }
+    if loaded.projection.archived {
+        return match factory_native::openspec::archive_outcome(&loaded.model, true) {
+            Ok(outcome) => Json(outcome).into_response(),
+            Err(error) => (
+                StatusCode::CONFLICT,
                 Json(json!({
-                    "error": "no OpenSpec projection exists for this request",
-                    "code": "OPENSPEC_NOT_FOUND",
+                    "error": error.to_string(),
+                    "code": "OPENSPEC_ARCHIVE_IMMUTABLE",
                 })),
             )
-                .into_response();
-        }
-        Err(error) => return api_error(error),
-    };
-    let artifact = match app
+                .into_response(),
+        };
+    }
+    let transition = match app
         .db
-        .planning_artifact(&record.id, "OPENSPEC", projection.revision)
+        .archive_openspec_projection(&loaded.record.id, &loaded.planning_projection)
         .await
     {
-        Ok(artifact) => artifact,
-        Err(Error::NotFound) => {
+        Ok(transition) => transition,
+        Err(Error::Conflict(message)) => {
             return (
                 StatusCode::CONFLICT,
                 Json(json!({
-                    "error": "the durable projection has no matching rendered artifact",
-                    "code": "OPENSPEC_ARTIFACT_MISSING",
+                    "error": message,
+                    "code": "OPENSPEC_ARCHIVE_CONFLICT",
                 })),
             )
                 .into_response();
         }
         Err(error) => return api_error(error),
     };
-    let artifacts: factory_native::openspec::OpenSpecArtifacts =
-        match serde_json::from_str(&artifact.content_json) {
-            Ok(artifacts) => artifacts,
-            Err(_) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({
-                        "error": "the stored OpenSpec artifact is not decodable",
-                        "code": "OPENSPEC_ARTIFACT_INVALID",
-                    })),
-                )
-                    .into_response();
-            }
-        };
-    let planning_projection = factory_native::planning::OpenSpecProjection {
-        change_id: projection.change_id.clone(),
-        revision: projection.revision,
-        proposal_sha256: projection.proposal_sha256.clone(),
-        specs_sha256: projection.specs_sha256.clone(),
-        design_sha256: projection.design_sha256.clone(),
-        tasks_sha256: projection.tasks_sha256.clone(),
-        validated: projection.validated,
-        archived: projection.archived,
-    };
-    match factory_native::openspec::read_model(
-        &record.id,
-        &planning_projection,
-        &artifact.content_sha256,
-        &artifacts,
-    ) {
-        Ok(model) => Json(model).into_response(),
+    if !transition.record.archived {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "the durable projection did not enter the archive state",
+                "code": "OPENSPEC_ARCHIVE_CONFLICT",
+            })),
+        )
+            .into_response();
+    }
+    match factory_native::openspec::archive_outcome(&loaded.model, transition.already_archived) {
+        Ok(outcome) => Json(outcome).into_response(),
         Err(error) => (
             StatusCode::CONFLICT,
             Json(json!({
                 "error": error.to_string(),
-                "code": "OPENSPEC_PROJECTION_STALE",
+                "code": "OPENSPEC_ARCHIVE_IMMUTABLE",
             })),
         )
             .into_response(),
@@ -15667,6 +15794,7 @@ mod tests {
 
             let oversized = format!("/agentic/requests/{}/openspec", "a".repeat(201));
             let bounded = router
+                .clone()
                 .oneshot(
                     axum::http::Request::builder()
                         .method("GET")
@@ -15680,6 +15808,71 @@ mod tests {
             assert_eq!(bounded.status(), StatusCode::BAD_REQUEST);
             let body: Value = serde_json::from_slice(
                 &axum::body::to_bytes(bounded.into_body(), 4096)
+                    .await
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(body["code"], "REQUEST_ID_INVALID");
+
+            let archive_body = serde_json::to_vec(&json!({
+                "changeId": "missing",
+                "revision": 1,
+                "artifactContentSha256": "a".repeat(64),
+            }))
+            .unwrap();
+            let archive_unauthenticated = router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri("/agentic/requests/missing/openspec/archive")
+                        .header("content-type", "application/json")
+                        .body(axum::body::Body::from(archive_body.clone()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(archive_unauthenticated.status(), StatusCode::UNAUTHORIZED);
+
+            let archive_missing = router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri("/agentic/requests/missing/openspec/archive")
+                        .header("content-type", "application/json")
+                        .header("authorization", "Bearer operator-token")
+                        .body(axum::body::Body::from(archive_body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(archive_missing.status(), StatusCode::NOT_FOUND);
+
+            let archive_oversized =
+                format!("/agentic/requests/{}/openspec/archive", "a".repeat(201));
+            let archive_bounded = router
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri(archive_oversized)
+                        .header("content-type", "application/json")
+                        .header("authorization", "Bearer operator-token")
+                        .body(axum::body::Body::from(
+                            serde_json::to_vec(&json!({
+                                "changeId": "missing",
+                                "revision": 1,
+                                "artifactContentSha256": "a".repeat(64),
+                            }))
+                            .unwrap(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(archive_bounded.status(), StatusCode::BAD_REQUEST);
+            let body: Value = serde_json::from_slice(
+                &axum::body::to_bytes(archive_bounded.into_body(), 4096)
                     .await
                     .unwrap(),
             )

@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import {
   chmodSync,
+  existsSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -46,6 +47,9 @@ function fakeOpenSpec(root, { version = "1.16.1", failValidate = false } = {}) {
   writeFileSync(
     executable,
     `#!/bin/sh
+if [ -n "$FAKE_OPENSPEC_MARKER" ]; then
+  printf '%s\\n' "$1" >> "$FAKE_OPENSPEC_MARKER"
+fi
 if [ "$1" = "--version" ]; then
   echo "openspec ${version}"
   exit 0
@@ -67,7 +71,11 @@ exit 9
   return bin;
 }
 
-async function startFakeCore({ payload = fixture, expectedToken = token } = {}) {
+async function startFakeCore({
+  expectedToken = token,
+  rawBody = null,
+  stalledBody = false,
+} = {}) {
   const server = createServer((request, response) => {
     if (request.headers.authorization !== `Bearer ${expectedToken}`) {
       response.writeHead(401, { "content-type": "application/json" });
@@ -76,9 +84,17 @@ async function startFakeCore({ payload = fixture, expectedToken = token } = {}) 
     }
     if (
       request.method === "GET" &&
-      request.url === `/agentic/requests/${payload.requestId}/openspec`
+      request.url === `/agentic/requests/${fixture.requestId}/openspec`
     ) {
-      const body = JSON.stringify(payload);
+      if (stalledBody) {
+        response.writeHead(200, {
+          "content-type": "application/json",
+          "content-length": 2048,
+        });
+        response.flushHeaders();
+        return;
+      }
+      const body = rawBody ?? JSON.stringify(fixture);
       response.writeHead(200, {
         "content-type": "application/json",
         "content-length": Buffer.byteLength(body),
@@ -93,7 +109,11 @@ async function startFakeCore({ payload = fixture, expectedToken = token } = {}) 
   const { port } = server.address();
   return {
     url: `http://127.0.0.1:${port}`,
-    close: () => new Promise((resolve) => server.close(resolve)),
+    close: () =>
+      new Promise((resolve) => {
+        server.closeAllConnections?.();
+        server.close(resolve);
+      }),
   };
 }
 
@@ -107,6 +127,7 @@ function runJob({ coreUrl, root, bin, workspace, extraEnv = {} }) {
         FACTORY_OPERATOR_TOKEN_FILE: path.join(root, "operator.token"),
         FACTORY_OPENSPEC_REQUEST_ID: fixture.requestId,
         FACTORY_OPENSPEC_WORKSPACE: workspace,
+        FAKE_OPENSPEC_MARKER: path.join(root, "openspec-invoked"),
         ...extraEnv,
       },
     });
@@ -216,7 +237,7 @@ test("rejects a response whose file does not match the Core manifest hash", asyn
   const workspace = path.join(root, "workspace");
   const tampered = structuredClone(fixture);
   tampered.files[0].content += "\n<!-- tampered -->\n";
-  const core = await startFakeCore({ payload: tampered });
+  const core = await startFakeCore({ rawBody: JSON.stringify(tampered) });
   try {
     const bin = fakeOpenSpec(root);
     writeToken(root);
@@ -280,6 +301,96 @@ test("rejects an unpinned OpenSpec version before validating", async () => {
     assert.equal(result.checks.versionPinned, false);
     assert.equal(result.command, null);
     assert.equal(result.checks.workspaceCleaned, true);
+  } finally {
+    await core.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("rejects bare and escaped Core responses before invoking openspec", async () => {
+  for (const rawBody of [
+    JSON.stringify("not an object"),
+    JSON.stringify(JSON.stringify(fixture)),
+  ]) {
+    const root = tempRoot();
+    const workspace = path.join(root, "workspace");
+    const core = await startFakeCore({ rawBody });
+    try {
+      const bin = fakeOpenSpec(root);
+      writeToken(root);
+      const { completed, result } = await runJob({
+        coreUrl: core.url,
+        root,
+        bin,
+        workspace,
+      });
+      assert.equal(completed.status, 1);
+      assert.equal(result.code, "CORE_RESPONSE_INVALID");
+      assert.equal(result.command, null);
+      assert.equal(result.checks.openspecValidate, false);
+      assert.equal(
+        existsSync(path.join(root, "openspec-invoked")),
+        false,
+        "openspec must not run for a non-object response",
+      );
+    } finally {
+      await core.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("rejects a mismatched Core request identity before invoking openspec", async () => {
+  const root = tempRoot();
+  const workspace = path.join(root, "workspace");
+  const mismatched = { ...fixture, requestId: "different-request" };
+  const core = await startFakeCore({ rawBody: JSON.stringify(mismatched) });
+  try {
+    const bin = fakeOpenSpec(root);
+    writeToken(root);
+    const { completed, result } = await runJob({
+      coreUrl: core.url,
+      root,
+      bin,
+      workspace,
+    });
+    assert.equal(completed.status, 1);
+    assert.equal(result.code, "CORE_RESPONSE_MISMATCH");
+    assert.equal(result.command, null);
+    assert.equal(
+      existsSync(path.join(root, "openspec-invoked")),
+      false,
+      "openspec must not run for a mismatched response",
+    );
+  } finally {
+    await core.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("times out while reading a stalled Core response body", async () => {
+  const root = tempRoot();
+  const workspace = path.join(root, "workspace");
+  const core = await startFakeCore({ stalledBody: true });
+  try {
+    const bin = fakeOpenSpec(root);
+    writeToken(root);
+    const { completed, result } = await runJob({
+      coreUrl: core.url,
+      root,
+      bin,
+      workspace,
+      extraEnv: { FACTORY_OPENSPEC_FETCH_TIMEOUT_MS: "250" },
+    });
+    assert.equal(completed.status, 1);
+    assert.equal(result.code, "CORE_TIMEOUT");
+    assert.equal(result.checks.coreResponse, false);
+    assert.equal(result.command, null);
+    assert.equal(
+      existsSync(path.join(root, "openspec-invoked")),
+      false,
+      "openspec must not run after a body timeout",
+    );
   } finally {
     await core.close();
     rmSync(root, { recursive: true, force: true });

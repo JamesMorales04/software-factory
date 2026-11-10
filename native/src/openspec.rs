@@ -364,6 +364,76 @@ pub fn read_model(
     })
 }
 
+/// Verify the exact stored artifact JSON before decoding it.
+///
+/// The durable record stores both the JSON bytes and their SHA-256. A row whose
+/// digest no longer matches its bytes is drift or corruption; Core fails closed
+/// instead of serving or archiving it.
+pub fn parse_stored_artifact(
+    content_json: &str,
+    stored_sha256: &str,
+) -> Result<OpenSpecArtifacts, OpenSpecError> {
+    if stored_sha256.len() != 64
+        || !stored_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err(OpenSpecError::InvalidArtifact(
+            "stored artifact hash must be a lowercase SHA-256".into(),
+        ));
+    }
+    if sha256_hex(content_json.as_bytes()) != stored_sha256 {
+        return Err(OpenSpecError::InvalidArtifact(
+            "stored artifact JSON does not match its stored hash".into(),
+        ));
+    }
+    let artifacts: OpenSpecArtifacts = serde_json::from_str(content_json).map_err(|_| {
+        OpenSpecError::InvalidArtifact("stored artifact JSON is not decodable".into())
+    })?;
+    validate_artifacts(&artifacts)?;
+    Ok(artifacts)
+}
+
+/// The exact Core-owned archive transition result.
+///
+/// Archiving is a projection transition only. It never accepts a candidate,
+/// closes a finding or grants delivery authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct OpenSpecArchiveOutcome {
+    pub request_id: String,
+    pub change_id: String,
+    pub revision: u32,
+    pub archive_path: String,
+    pub archived: bool,
+    pub already_archived: bool,
+    pub artifact_content_sha256: String,
+    pub hashes: OpenSpecProjectionHashes,
+}
+
+/// Build the archive response from the exact read model that passed drift and
+/// hash verification.
+pub fn archive_outcome(
+    model: &OpenSpecReadModel,
+    already_archived: bool,
+) -> Result<OpenSpecArchiveOutcome, OpenSpecError> {
+    if !model.validated {
+        return Err(OpenSpecError::InvalidArtifact(
+            "only a validated OpenSpec projection can be archived".into(),
+        ));
+    }
+    Ok(OpenSpecArchiveOutcome {
+        request_id: model.request_id.clone(),
+        change_id: model.change_id.clone(),
+        revision: model.revision,
+        archive_path: archive_path(&model.change_id)?,
+        archived: true,
+        already_archived,
+        artifact_content_sha256: model.artifact_content_sha256.clone(),
+        hashes: model.hashes.clone(),
+    })
+}
+
 impl OpenSpecChange {
     pub fn validate(&self) -> Result<(), OpenSpecError> {
         validate_change(self)
@@ -2297,6 +2367,55 @@ mod tests {
         assert!(read_model("request-1", &projection, "not-a-hash", &artifacts).is_err());
         assert!(read_model("request\n1", &projection, &artifact_sha, &artifacts).is_err());
         assert!(read_model(&"r".repeat(201), &projection, &artifact_sha, &artifacts).is_err());
+    }
+
+    #[test]
+    fn stored_artifact_digest_is_recomputed_before_decoding() {
+        let artifacts = render(&sample_change()).expect("valid change");
+        let content_json = serde_json::to_string(&artifacts).unwrap();
+        let digest = sha256_hex(content_json.as_bytes());
+        let parsed = parse_stored_artifact(&content_json, &digest).expect("exact artifact");
+        assert_eq!(parsed, artifacts);
+
+        let mut changed = content_json.clone();
+        changed.push(' ');
+        let error = parse_stored_artifact(&changed, &digest).expect_err("changed JSON");
+        assert!(error.to_string().contains("does not match its stored hash"));
+
+        let error = parse_stored_artifact(&content_json, &"0".repeat(64)).expect_err("wrong hash");
+        assert!(error.to_string().contains("does not match its stored hash"));
+
+        let error = parse_stored_artifact(&content_json, "not-a-hash").expect_err("malformed hash");
+        assert!(error.to_string().contains("SHA-256"));
+
+        let mut tampered = artifacts.clone();
+        tampered.tasks.push_str("\n<!-- drift -->");
+        let tampered_json = serde_json::to_string(&tampered).unwrap();
+        let tampered_digest = sha256_hex(tampered_json.as_bytes());
+        let error =
+            parse_stored_artifact(&tampered_json, &tampered_digest).expect_err("stale manifest");
+        assert!(error.to_string().contains("manifest hash"));
+    }
+
+    #[test]
+    fn archive_outcome_requires_a_validated_projection_and_uses_the_archive_path() {
+        let artifacts = render(&sample_change()).expect("valid change");
+        let projection = artifacts.projection(true).expect("valid projection");
+        let artifact_sha = sha256_hex(serde_json::to_string(&artifacts).unwrap().as_bytes());
+        let model = read_model("request-1", &projection, &artifact_sha, &artifacts).unwrap();
+        let first = archive_outcome(&model, false).unwrap();
+        let replay = archive_outcome(&model, true).unwrap();
+        assert_eq!(first.archive_path, "openspec/changes/archive/add-validator");
+        assert!(first.archived);
+        assert!(!first.already_archived);
+        assert!(replay.already_archived);
+        assert_eq!(first.hashes, replay.hashes);
+
+        let mut unvalidated = projection.clone();
+        unvalidated.validated = false;
+        let model = read_model("request-1", &unvalidated, &artifact_sha, &artifacts).unwrap();
+        let error = archive_outcome(&model, false).expect_err("unvalidated archive");
+        assert!(error.to_string().contains("validated"));
     }
 
     #[test]

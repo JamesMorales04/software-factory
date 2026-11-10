@@ -18,7 +18,8 @@ acceptance, certification or an isolation claim. Core remains authoritative.
 | Area | Files |
 |---|---|
 | Core read model | `native/src/openspec.rs` |
-| Core endpoint | `native/src/bin/core.rs` (`GET /agentic/requests/{id}/openspec`) |
+| Core endpoints | `native/src/bin/core.rs` (`GET /agentic/requests/{id}/openspec`, `POST /agentic/requests/{id}/openspec/archive`) |
+| Archive persistence | `native/src/db/planning.rs` |
 | Validation script | `deploy/openspec/validate.mjs` |
 | Pinned image | `deploy/openspec/Dockerfile` (OpenSpec 1.16.1, Node 22.23.2) |
 | Compose job | `compose.yaml` (`openspec-validate`, profile `openspec-validation`) |
@@ -27,12 +28,32 @@ acceptance, certification or an isolation claim. Core remains authoritative.
 | Compose policy | `.github/scripts/check-compose-policy.py`, `.github/scripts/test_check_compose_policy.py`, `.github/workflows/native-rust.yml` |
 | Docs | `docs/operations/compose-deployment.md`, this document |
 
+This revision also repairs the independent review findings: Core now has an
+idempotent archive transition with stored-artifact/projection drift checks; the
+Compose policy enforces an exact single volume allowlist; the read path
+recomputes the stored artifact JSON SHA-256; Node tests cover bare/escaped and
+mismatched Core responses; and the Core fetch deadline now covers body
+consumption.
+
 The endpoint returns the latest durable projection only when the stored
 artifact validates, its change id/revision match the projection row, and all
 manifest hashes match. It is authenticated with the Core operator token, bounds
 the request id, and returns `OPENSPEC_NOT_FOUND`, `OPENSPEC_ARTIFACT_MISSING`,
 `OPENSPEC_ARTIFACT_INVALID` or `OPENSPEC_PROJECTION_STALE` as typed failures.
 It never returns the operator token, master key or unrelated Core secrets.
+
+The validation job bounds the Core response to 8 MiB, each rendered file to
+512 KiB, total artifacts to 2 MiB, CLI output to 256 KiB and the whole fetch
+(including body consumption) to 15 seconds by default. The fetch abort deadline
+stays active until the body is fully read.
+
+The archive endpoint recomputes the exact stored artifact JSON SHA-256 before
+decoding it, then verifies the change id, revision and every projection/manifest
+hash. It archives the durable projection only when the binding matches. A replay
+returns `alreadyArchived: true` without changing `updated_at`; a changed
+artifact, stale binding or different archived identity is rejected as
+drift/immutability. Archiving never accepts a candidate, closes a finding or
+grants delivery authority.
 
 ## Verification results
 
@@ -43,10 +64,10 @@ cargo fmt --all -- --check
 PASS
 
 cargo test -p factory-native --lib
-733 passed; 0 failed; 2 ignored
+736 passed; 0 failed; 2 ignored
 
 cargo test -p factory-native --test openspec_compose_validation
-4 passed; 0 failed
+5 passed; 0 failed
 
 cargo test -p factory-native --test planning_pipeline
 1 passed; 0 failed
@@ -62,7 +83,7 @@ From the repository root:
 
 ```text
 node --test deploy/openspec/validate.test.mjs
-5 passed; 0 failed
+8 passed; 0 failed
 
 podman compose -f compose.yaml config
 PASS (podman-compose 1.6.0)
@@ -80,7 +101,7 @@ compose-policy: PASS
 
 COMPOSE_CONFIG_JSON=<base or profile JSON> \
   python3 .github/scripts/test_check_compose_policy.py
-31 tests; OK (profile-specific negative tests skip on the base config)
+32 tests; OK (profile-specific negative tests skip on the base config)
 ```
 
 Host Node was used only to run the deterministic Node contract test. The
@@ -93,8 +114,8 @@ not use host Node or a host OpenSpec installation.
 podman compose --profile openspec-validation -f compose.yaml build openspec-validate
 openspec --version -> 1.16.1
 image: localhost/software-factory-openspec:1.16.1
-image ID: 449864dea6e00bc239a7437e902fb4166a83037d044541704469b7b045db3d26
-local digest: sha256:eb3084625952f757a5efd9ee29935568bfe8720dcad2d8a56c5e0757933408d5
+image ID: dfb131b984ad267a4fb82ff4beffc1dcb07dab62703264110003553456ac77ac
+local digest: sha256:6881e126148eca823c05258ab7edd6b8d1c3269319b3eaa1666f06504e453c51
 ```
 
 The base image was moved from `node:22.12.0` to `node:22.23.2` after the first
@@ -166,15 +187,24 @@ from this source.
 ## Negative and authority evidence
 
 - `native/src/openspec.rs` tests reject stale revisions, mismatched hashes,
-  tampered artifacts, invalid artifact hashes and unsafe request ids.
+  tampered artifacts, invalid artifact hashes, changed stored JSON bytes, an
+  unvalidated archive and unsafe request ids.
+- `native/src/db/planning.rs` tests prove the archive transition is idempotent,
+  preserves `updated_at` on replay, rejects a changed hash/revision/identity,
+  and leaves the archived row immutable.
 - The Core route test rejects unauthenticated calls, a missing request and a
-  201-character request id on both router variants.
-- `deploy/openspec/validate.test.mjs` rejects a file/hash mismatch, an
-  unpinned version, a Core 401 (without leaking the token) and a failing
-  `openspec validate`, always returning non-zero and cleaning the workspace.
+  201-character request id for both the read and archive routes on both router
+  variants.
+- `deploy/openspec/validate.test.mjs` rejects a file/hash mismatch, bare or
+  escaped non-object responses, a mismatched request identity, an unpinned
+  version, a Core 401 (without leaking the token), a stalled body deadline and a
+  failing `openspec validate`, always returning non-zero and cleaning the
+  workspace. The fail-closed cases prove the fake OpenSpec executable was never
+  invoked.
 - The Compose policy rejects a writable job root, extra capabilities, an egress
-  network, cross-role config volumes, a writable config volume and an
-  environment-supplied token.
+  network, any volume other than the exact `factory-config-openspec` mount
+  (including `factory-projects`/`factory-data`), a writable config volume and
+  an environment-supplied token.
 - A PASS never accepts a candidate, closes a finding or edits the Core database
   or project source. The job has no project volume, no Core data volume, no
   egress network and no published port.

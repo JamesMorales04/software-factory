@@ -284,24 +284,22 @@ def main(path: str) -> int:
             if job.get("image") != "localhost/software-factory-openspec:1.16.1":
                 fail("openspec-validate: the pinned OpenSpec image is required")
             expected_config = OPTIONAL_CONFIG_VOLUMES["openspec-validate"]
-            config_mounts = [
-                volume
-                for volume in job.get("volumes", []) or []
-                if str(volume.get("source", "")) in ALL_CONFIG_VOLUMES
-            ]
-            if (
-                len(config_mounts) != 1
-                or str(config_mounts[0].get("source", "")) != expected_config
-            ):
+            volumes = job.get("volumes") or []
+            volume_sources = [str(volume.get("source", "")) for volume in volumes]
+            if len(volumes) != 1 or volume_sources != [expected_config]:
                 fail(
-                    f"openspec-validate: must mount only {expected_config}; got "
-                    f"{[str(volume.get('source', '')) for volume in config_mounts]}"
+                    "openspec-validate: exactly one volume "
+                    f"{expected_config} is allowed; got {volume_sources}"
                 )
-            elif (
-                str(config_mounts[0].get("target", "")) != "/config"
-                or config_mounts[0].get("read_only") is not True
-            ):
-                fail("openspec-validate: its config volume must be read-only at /config")
+            else:
+                volume = volumes[0]
+                if str(volume.get("type", "")) != "volume":
+                    fail("openspec-validate: the config mount must be a named volume")
+                if (
+                    str(volume.get("target", "")) != "/config"
+                    or volume.get("read_only") is not True
+                ):
+                    fail("openspec-validate: its config volume must be read-only at /config")
             actual_networks = network_names(job)
             if actual_networks != {"factory-control"}:
                 fail(

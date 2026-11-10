@@ -111,6 +111,25 @@ returns `OPENSPEC_PROJECTION_STALE` and the job fails closed. Keep the
 `FACTORY_OPENSPEC_REQUEST_ID` value in the operator environment; it is not a
 secret.
 
+### Archive and drift
+
+Core exposes `POST /agentic/requests/{id}/openspec/archive` for the exact
+projection read by the job. The request binds `changeId`, `revision` and
+`artifactContentSha256`. Core recomputes the stored artifact JSON digest,
+verifies the projection and manifest hashes, and only then moves the durable
+projection to `archived: true`:
+
+- replaying the same binding is idempotent and returns
+  `alreadyArchived: true` without changing the row;
+- a changed artifact, stale revision/hash, or different archive binding is
+  rejected as drift/immutability, never silently repaired;
+- the response carries `archivePath` (`openspec/changes/archive/<change-id>`)
+  and the exact projection hashes.
+
+Archiving is a projection transition only. It never accepts a candidate, closes
+a finding or grants delivery authority. A drift failure is surfaced to the
+operator; Core does not rewrite the stored artifact or archive it.
+
 ## First-run enrollment
 
 Start and open Office with the host launcher:

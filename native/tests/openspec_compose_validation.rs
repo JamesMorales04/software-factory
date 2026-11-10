@@ -12,7 +12,7 @@ use std::path::Path;
 
 use factory_native::openspec::{
     OpenSpecArtifacts, OpenSpecChange, OpenSpecReadModel, OpenSpecRequirement, OpenSpecTask,
-    read_model, render,
+    archive_outcome, parse_stored_artifact, read_model, render,
 };
 use factory_native::openspec_cli::{OpenSpecCliError, OpenSpecRunner, validate_with_pinned_cli};
 use sha2::{Digest, Sha256};
@@ -173,6 +173,34 @@ fn read_model_rejects_a_changed_artifact() {
     let mut tampered: OpenSpecArtifacts = artifacts.clone();
     tampered.tasks.push_str("\n<!-- tampered -->\n");
     assert!(read_model("wp7-compose-fixture", &projection, &digest, &tampered).is_err());
+}
+
+#[test]
+fn archive_contract_is_idempotent_and_rejects_stored_artifact_drift() {
+    let artifacts = render(&sample_change()).expect("valid Core render");
+    let projection = artifacts.projection(true).expect("valid projection");
+    let content_json = serde_json::to_string(&artifacts).expect("artifact JSON");
+    let digest = sha256_hex(content_json.as_bytes());
+    let parsed = parse_stored_artifact(&content_json, &digest).expect("exact stored artifact");
+    let model =
+        read_model("wp7-compose-fixture", &projection, &digest, &parsed).expect("valid read model");
+    let first = archive_outcome(&model, false).expect("archive outcome");
+    let replay = archive_outcome(&model, true).expect("archive replay");
+    assert_eq!(
+        first.archive_path,
+        "openspec/changes/archive/add-bounded-request-validation"
+    );
+    assert!(first.archived);
+    assert!(!first.already_archived);
+    assert!(replay.already_archived);
+
+    let mut changed = artifacts.clone();
+    changed.tasks.push_str("\n<!-- drift -->\n");
+    let changed_json = serde_json::to_string(&changed).expect("changed JSON");
+    let changed_digest = sha256_hex(changed_json.as_bytes());
+    let error = parse_stored_artifact(&changed_json, &changed_digest)
+        .expect_err("changed artifact must not archive");
+    assert!(error.to_string().contains("manifest hash"));
 }
 
 #[test]
