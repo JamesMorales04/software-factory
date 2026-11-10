@@ -1,0 +1,943 @@
+//! Deterministic provider stream, structured-output and reservation chaos.
+//!
+//! Every fixture in this file is local and offline: scripted in-memory streams
+//! or a loopback-only HTTP server bound to `127.0.0.1`. No test resolves or
+//! contacts an external provider. The suite exercises the same reconnect
+//! waiter and OpenCode SSE classifier used by the Worker.
+
+use std::{
+    collections::{BTreeMap, VecDeque},
+    future::Future,
+    pin::Pin,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
+    task::{Context, Poll},
+    time::Duration,
+};
+
+use axum::{
+    Json, Router,
+    extract::State,
+    http::{HeaderMap, HeaderValue, StatusCode, header::CONTENT_TYPE},
+    response::{IntoResponse, Response},
+    routing::{get, post},
+};
+use bytes::Bytes;
+use factory_native::{
+    db::ProviderTerminal,
+    provider_lifecycle::{
+        ProviderLifecycleError, post_provider_terminal, recover_unresolved_provider_sessions,
+        release_provider_turn, settle_provider_turn,
+    },
+    provider_patch::{ProviderAction, ProviderUsage, extract_action_text},
+    provider_reliability::{
+        MAX_STRUCTURED_REPAIRS, SseReconnectPolicy, StructuredOutputError, StructuredOutputRepair,
+        TerminalCompletion, TurnReservation, candidate_allowed, decode_structured_output,
+    },
+    provider_session::{
+        PermissionDecision, ProviderEvent, ProviderKind, ProviderSession, SessionError,
+        SessionState, TerminalStatus,
+    },
+    provider_stream::{
+        BoxEventStream, EventChunk, EventStreamConnector, ProviderStreamError, ReconnectWaiter,
+        StreamTransportError, TerminalDecision, WaitClock,
+    },
+    runtime::{OpenCodeEventConnector, OpenCodePromptTerminal, classify_opencode_terminal_event},
+    sse::{OpenCodeEvent, SseEvent},
+};
+use futures_util::Stream;
+use serde_json::json;
+
+const SESSION: &str = "ses_chaos";
+
+#[derive(Debug, Default)]
+struct Observations {
+    effects: u64,
+    candidates: u64,
+}
+
+fn frame(id: &str, kind: &str, session: &str) -> String {
+    format!(
+        "id: {id}\ndata: {}\n\n",
+        json!({"type": kind, "properties": {"sessionID": session}})
+    )
+}
+
+fn provider_error(id: &str, session: &str) -> String {
+    format!(
+        "id: {id}\ndata: {}\n\n",
+        json!({
+            "type": "session.error",
+            "properties": {"sessionID": session, "error": {"name": "ProviderError"}}
+        })
+    )
+}
+
+fn chunk(body: String) -> EventChunk {
+    Ok(Bytes::from(body))
+}
+
+fn classify(
+    event: &SseEvent,
+    observations: &mut Observations,
+) -> TerminalDecision<OpenCodePromptTerminal> {
+    match classify_opencode_terminal_event(event, SESSION, false) {
+        Ok(Some(
+            terminal @ OpenCodePromptTerminal::Idle {
+                cancel_requested: false,
+                ..
+            },
+        )) => {
+            observations.candidates = observations.candidates.saturating_add(1);
+            TerminalDecision::Terminal(terminal)
+        }
+        Ok(Some(terminal)) => TerminalDecision::Terminal(terminal),
+        Ok(None) => {
+            match OpenCodeEvent::parse(&event.data) {
+                Ok(parsed) if parsed.kind.starts_with("message.") => {
+                    observations.effects = observations.effects.saturating_add(1);
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    return TerminalDecision::Fatal(ProviderStreamError::Protocol(
+                        error.to_string(),
+                    ));
+                }
+            }
+            TerminalDecision::Continue
+        }
+        Err(error) => TerminalDecision::Fatal(ProviderStreamError::Protocol(error.to_string())),
+    }
+}
+
+struct ScriptedConnector {
+    scripts: VecDeque<Vec<EventChunk>>,
+    cursors: Arc<Mutex<Vec<Option<String>>>>,
+}
+
+impl ScriptedConnector {
+    fn new(scripts: Vec<Vec<EventChunk>>) -> (Self, Arc<Mutex<Vec<Option<String>>>>) {
+        let cursors = Arc::new(Mutex::new(Vec::new()));
+        (
+            Self {
+                scripts: scripts.into(),
+                cursors: cursors.clone(),
+            },
+            cursors,
+        )
+    }
+}
+
+impl EventStreamConnector for ScriptedConnector {
+    fn connect(
+        &mut self,
+        last_event_id: Option<&str>,
+    ) -> impl Future<Output = Result<BoxEventStream, ProviderStreamError>> + Send {
+        self.cursors
+            .lock()
+            .expect("cursor log")
+            .push(last_event_id.map(str::to_owned));
+        let chunks = self.scripts.pop_front().unwrap_or_default();
+        async move { Ok(Box::pin(futures_util::stream::iter(chunks)) as BoxEventStream) }
+    }
+}
+
+#[derive(Debug, Default)]
+struct VirtualClock {
+    elapsed_ms: AtomicU64,
+    sleeps: Mutex<Vec<Duration>>,
+}
+
+impl VirtualClock {
+    fn advance(&self, millis: u64) {
+        self.elapsed_ms.fetch_add(millis, Ordering::SeqCst);
+    }
+
+    fn elapsed(&self) -> Duration {
+        Duration::from_millis(self.elapsed_ms.load(Ordering::SeqCst))
+    }
+}
+
+impl WaitClock for VirtualClock {
+    fn sleep(&self, duration: Duration) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        self.sleeps.lock().expect("sleep log").push(duration);
+        self.advance(u64::try_from(duration.as_millis()).unwrap_or(u64::MAX));
+        Box::pin(std::future::ready(()))
+    }
+}
+
+fn policy(max_attempts: u32) -> SseReconnectPolicy {
+    SseReconnectPolicy {
+        max_attempts,
+        base_delay_ms: 1,
+        max_delay_ms: 4,
+    }
+}
+
+#[tokio::test]
+async fn sse_cut_reconnects_with_last_event_id_and_does_not_repeat_effects() {
+    let (connector, cursors) = ScriptedConnector::new(vec![
+        vec![
+            chunk(frame("e1", "message.updated", SESSION)),
+            chunk(frame("e2", "message.part.updated", SESSION)),
+            Err(StreamTransportError::new("fixture cut mid-turn")),
+        ],
+        vec![
+            chunk(frame("e2", "message.part.updated", SESSION)),
+            chunk(frame("e3", "session.idle", SESSION)),
+        ],
+    ]);
+    let mut waiter = ReconnectWaiter::new(connector, policy(4));
+    let clock = VirtualClock::default();
+    let mut observations = Observations::default();
+    let terminal = waiter
+        .wait(&clock, |event| classify(event, &mut observations))
+        .await
+        .expect("reconnect must reach the terminal event");
+    assert!(matches!(
+        terminal,
+        OpenCodePromptTerminal::Idle {
+            cancel_requested: false,
+            ..
+        }
+    ));
+    assert_eq!(observations.effects, 2, "replayed e2 must not repeat work");
+    assert_eq!(observations.candidates, 1);
+    assert_eq!(
+        *cursors.lock().unwrap(),
+        vec![None, Some("e2".into())],
+        "reconnect must carry the last complete event id"
+    );
+    assert_eq!(
+        clock.sleeps.lock().unwrap().as_slice(),
+        [Duration::from_millis(1)],
+        "one bounded backoff between the two connections"
+    );
+}
+
+#[tokio::test]
+async fn repeated_cuts_exhaust_the_reconnect_bound_and_fail_closed() {
+    let scripts = (0..4)
+        .map(|_| {
+            vec![
+                chunk(frame("e1", "message.updated", SESSION)),
+                Err(StreamTransportError::new("fixture cut")),
+            ]
+        })
+        .collect();
+    let (connector, cursors) = ScriptedConnector::new(scripts);
+    let mut waiter = ReconnectWaiter::new(connector, policy(3));
+    let mut observations = Observations::default();
+    let error = waiter
+        .wait(&VirtualClock::default(), |event| {
+            classify(event, &mut observations)
+        })
+        .await
+        .expect_err("every connection cuts before the terminal event");
+    assert_eq!(
+        error,
+        ProviderStreamError::ReconnectExhausted { attempts: 3 }
+    );
+    assert_eq!(cursors.lock().unwrap().len(), 4, "initial + three retries");
+    assert_eq!(observations.candidates, 0);
+    assert_eq!(observations.effects, 1, "duplicate replay is suppressed");
+}
+
+#[tokio::test]
+async fn long_turn_stays_live_beyond_the_former_three_hundred_second_deadline() {
+    struct TickingConnector {
+        clock: Arc<VirtualClock>,
+    }
+
+    struct TickingStream {
+        remaining: usize,
+        terminal_sent: bool,
+        clock: Arc<VirtualClock>,
+    }
+
+    impl Stream for TickingStream {
+        type Item = EventChunk;
+
+        fn poll_next(
+            mut self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<Option<Self::Item>> {
+            let this = self.as_mut().get_mut();
+            if this.remaining > 0 {
+                this.remaining -= 1;
+                this.clock.advance(1_000);
+                return Poll::Ready(Some(chunk(frame(
+                    &format!("h{}", this.remaining),
+                    "message.part.updated",
+                    SESSION,
+                ))));
+            }
+            if !this.terminal_sent {
+                this.terminal_sent = true;
+                return Poll::Ready(Some(chunk(frame("done", "session.idle", SESSION))));
+            }
+            Poll::Ready(None)
+        }
+    }
+
+    impl EventStreamConnector for TickingConnector {
+        fn connect(
+            &mut self,
+            _last_event_id: Option<&str>,
+        ) -> impl Future<Output = Result<BoxEventStream, ProviderStreamError>> + Send {
+            let clock = self.clock.clone();
+            async move {
+                Ok(Box::pin(TickingStream {
+                    // 301 provider-observed seconds, without any real sleep.
+                    remaining: 301,
+                    terminal_sent: false,
+                    clock,
+                }) as BoxEventStream)
+            }
+        }
+    }
+
+    let clock = Arc::new(VirtualClock::default());
+    let mut waiter = ReconnectWaiter::new(
+        TickingConnector {
+            clock: clock.clone(),
+        },
+        policy(2),
+    );
+    let mut observations = Observations::default();
+    let terminal = waiter
+        .wait(clock.as_ref(), |event| classify(event, &mut observations))
+        .await
+        .expect("a long healthy turn must not hit a hidden deadline");
+    assert!(matches!(terminal, OpenCodePromptTerminal::Idle { .. }));
+    assert!(
+        clock.elapsed() > Duration::from_secs(300),
+        "fixture advanced {:?} of virtual provider time",
+        clock.elapsed()
+    );
+    assert_eq!(observations.effects, 301);
+    assert_eq!(observations.candidates, 1);
+}
+
+#[tokio::test]
+async fn duplicate_event_ids_do_not_repeat_effects() {
+    let (connector, _) = ScriptedConnector::new(vec![vec![
+        chunk(frame("e1", "message.updated", SESSION)),
+        chunk(frame("e1", "message.updated", SESSION)),
+        chunk(frame("e2", "session.idle", SESSION)),
+    ]]);
+    let mut waiter = ReconnectWaiter::new(connector, policy(2));
+    let mut observations = Observations::default();
+    waiter
+        .wait(&VirtualClock::default(), |event| {
+            classify(event, &mut observations)
+        })
+        .await
+        .unwrap();
+    assert_eq!(observations.effects, 1);
+    assert_eq!(observations.candidates, 1);
+}
+
+#[tokio::test]
+async fn nonconsecutive_duplicate_event_ids_are_not_reapplied() {
+    let (connector, _) = ScriptedConnector::new(vec![vec![
+        chunk(frame("e1", "message.updated", SESSION)),
+        chunk(frame("e2", "message.part.updated", SESSION)),
+        chunk(frame("e1", "message.updated", SESSION)),
+        chunk(frame("e3", "session.idle", SESSION)),
+    ]]);
+    let mut waiter = ReconnectWaiter::new(connector, policy(2));
+    let mut observations = Observations::default();
+    waiter
+        .wait(&VirtualClock::default(), |event| {
+            classify(event, &mut observations)
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        observations.effects, 2,
+        "e1, e2, e1 must apply e1 only once"
+    );
+    assert_eq!(observations.candidates, 1);
+}
+
+#[tokio::test]
+async fn reconnect_exhaustion_after_checks_pass_yields_no_candidate() {
+    let (connector, _) = ScriptedConnector::new(vec![
+        vec![
+            chunk(frame("e1", "message.part.updated", SESSION)),
+            Err(StreamTransportError::new("cut after complete checks")),
+        ],
+        vec![
+            chunk(frame("e1", "message.part.updated", SESSION)),
+            Err(StreamTransportError::new("cut after complete checks")),
+        ],
+    ]);
+    let mut waiter = ReconnectWaiter::new(connector, policy(1));
+    let mut observations = Observations::default();
+    let error = waiter
+        .wait(&VirtualClock::default(), |event| {
+            classify(event, &mut observations)
+        })
+        .await
+        .expect_err("reconnect exhaustion is not terminal completion");
+    assert_eq!(
+        error,
+        ProviderStreamError::ReconnectExhausted { attempts: 1 }
+    );
+    // The Worker may have applied writes and passed every frozen check before
+    // the stream cut, but a missing terminal still forbids a candidate.
+    assert!(!candidate_allowed(TerminalCompletion::Missing, true, true));
+    assert_eq!(observations.candidates, 0);
+}
+
+#[tokio::test]
+async fn missing_terminal_event_returns_no_candidate() {
+    let (connector, cursors) = ScriptedConnector::new(vec![
+        vec![
+            chunk(frame("e1", "message.part.updated", SESSION)),
+            Err(StreamTransportError::new("stream ends before terminal")),
+        ],
+        vec![
+            chunk(frame("e1", "message.part.updated", SESSION)),
+            Err(StreamTransportError::new("stream ends before terminal")),
+        ],
+    ]);
+    let mut waiter = ReconnectWaiter::new(connector, policy(1));
+    let mut observations = Observations::default();
+    let error = waiter
+        .wait(&VirtualClock::default(), |event| {
+            classify(event, &mut observations)
+        })
+        .await
+        .expect_err("a cut stream is not completion evidence");
+    assert_eq!(
+        error,
+        ProviderStreamError::ReconnectExhausted { attempts: 1 }
+    );
+    assert_eq!(observations.candidates, 0, "no terminal means no candidate");
+    assert_eq!(observations.effects, 1);
+    assert_eq!(*cursors.lock().unwrap(), vec![None, Some("e1".into())]);
+}
+
+#[tokio::test]
+async fn provider_error_terminal_is_not_a_completed_candidate() {
+    let (connector, _) = ScriptedConnector::new(vec![vec![
+        chunk(frame("e1", "message.partial.updated", SESSION)),
+        chunk(provider_error("e2", SESSION)),
+    ]]);
+    let mut waiter = ReconnectWaiter::new(connector, policy(2));
+    let mut observations = Observations::default();
+    let terminal = waiter
+        .wait(&VirtualClock::default(), |event| {
+            classify(event, &mut observations)
+        })
+        .await
+        .unwrap();
+    assert!(matches!(terminal, OpenCodePromptTerminal::Failed { .. }));
+    assert_eq!(observations.effects, 1);
+    assert_eq!(
+        observations.candidates, 0,
+        "a provider error terminal never creates a candidate"
+    );
+}
+
+#[test]
+fn malformed_structured_json_is_repaired_then_accepted() {
+    let mut repair = StructuredOutputRepair::new(MAX_STRUCTURED_REPAIRS).unwrap();
+    let rejected = decode_structured_output(&mut repair, || {
+        extract_action_text("{\"type\":\"final\",\"files\":[").map_err(|error| error.to_string())
+    })
+    .expect_err("truncated JSON must not become an action");
+    assert!(matches!(
+        rejected,
+        StructuredOutputError::Repair {
+            attempt: 1,
+            max_repairs: MAX_STRUCTURED_REPAIRS,
+            ..
+        }
+    ));
+    let action = decode_structured_output(&mut repair, || {
+        extract_action_text("{\"type\":\"final\",\"files\":[],\"explanation\":\"repaired\"}")
+            .map_err(|error| error.to_string())
+    })
+    .expect("the repaired object is valid");
+    assert!(matches!(action, ProviderAction::Final { .. }));
+    assert_eq!(repair.attempts(), 0);
+}
+
+#[test]
+fn structured_json_repair_exhaustion_is_a_typed_failure() {
+    let mut repair = StructuredOutputRepair::new(2).unwrap();
+    for attempt in 1..=2 {
+        let error = decode_structured_output(&mut repair, || {
+            extract_action_text("{\"type\":\"final\",\"files\":[")
+                .map_err(|parse| parse.to_string())
+        })
+        .expect_err("malformed JSON must fail");
+        assert!(matches!(
+            error,
+            StructuredOutputError::Repair {
+                attempt: observed,
+                ..
+            } if observed == attempt
+        ));
+    }
+    let exhausted = decode_structured_output(&mut repair, || {
+        extract_action_text("{\"type\":\"final\",\"files\":[").map_err(|parse| parse.to_string())
+    })
+    .expect_err("budget is exhausted");
+    assert!(matches!(
+        exhausted,
+        StructuredOutputError::Exhausted { attempts: 2, .. }
+    ));
+}
+
+#[test]
+fn failed_turn_releases_or_settles_a_reservation_exactly_once() {
+    let mut released = TurnReservation::reserved();
+    released.release().unwrap();
+    assert!(released.is_terminal());
+    assert!(released.release().is_err());
+    assert!(released.settle().is_err());
+
+    let mut settled = TurnReservation::reserved();
+    settled.settle().unwrap();
+    assert!(settled.is_terminal());
+    assert!(settled.settle().is_err());
+    assert!(settled.release().is_err());
+}
+
+#[test]
+fn provider_session_reconnect_and_cleanup_are_exactly_once() {
+    let mut session =
+        ProviderSession::new(ProviderKind::OpenCode, "deepseek-v4.1-flash", "build").unwrap();
+    session
+        .apply(&ProviderEvent::SessionStarted {
+            sequence: 1,
+            session_id: SESSION.into(),
+        })
+        .unwrap();
+    session
+        .apply(&ProviderEvent::TurnStarted {
+            sequence: 2,
+            turn_id: "turn-1".into(),
+        })
+        .unwrap();
+    // A cut before terminal evidence keeps the same session identity; reconnect
+    // never creates a second session.
+    session.reconnect(SESSION).unwrap();
+    assert_eq!(
+        session.reconnect("ses_other"),
+        Err(SessionError::IdentityMismatch)
+    );
+    session
+        .apply(&ProviderEvent::TurnTerminal {
+            sequence: 3,
+            turn_id: "turn-1".into(),
+            status: TerminalStatus::Completed,
+        })
+        .unwrap();
+    assert_eq!(session.state, SessionState::CleanupPending);
+    // A replayed terminal event cannot drive a second cleanup effect.
+    assert_eq!(
+        session.apply(&ProviderEvent::TurnTerminal {
+            sequence: 3,
+            turn_id: "turn-1".into(),
+            status: TerminalStatus::Completed,
+        }),
+        Ok(()),
+        "identical replay is idempotent"
+    );
+    assert_eq!(
+        session.apply(&ProviderEvent::TurnTerminal {
+            sequence: 4,
+            turn_id: "turn-1".into(),
+            status: TerminalStatus::Completed,
+        }),
+        Err(SessionError::Terminal)
+    );
+    assert_eq!(
+        session.confirm_cleanup(""),
+        Err(SessionError::CleanupUnconfirmed)
+    );
+    session
+        .confirm_cleanup("session_delete_verified_absent")
+        .unwrap();
+    assert_eq!(session.state, SessionState::Cleaned);
+    assert_eq!(
+        session.confirm_cleanup("second cleanup"),
+        Err(SessionError::CleanupUnconfirmed)
+    );
+    assert_eq!(
+        session.decide_permission("call", PermissionDecision::Allow),
+        Err(SessionError::NoPermission)
+    );
+}
+
+#[derive(Clone, Default)]
+struct CoreFixture {
+    calls: Arc<Mutex<Vec<(String, serde_json::Value)>>>,
+    rejected: Arc<Mutex<Vec<(String, serde_json::Value)>>>,
+    reservations: Arc<Mutex<BTreeMap<String, String>>>,
+}
+
+impl CoreFixture {
+    fn record(&self, route: &str, body: serde_json::Value) {
+        self.calls.lock().unwrap().push((route.to_string(), body));
+    }
+
+    fn reject(&self, route: &str, body: serde_json::Value) {
+        self.rejected
+            .lock()
+            .unwrap()
+            .push((route.to_string(), body));
+    }
+
+    /// Mimics the Core invariant: a reservation reaches exactly one terminal
+    /// state. A second settle or release is a conflict, not another effect.
+    fn transition(
+        &self,
+        route: &str,
+        body: serde_json::Value,
+        reservation_id: &str,
+        next: &str,
+    ) -> bool {
+        if reservation_id.trim().is_empty() {
+            self.reject(route, body);
+            return false;
+        }
+        let mut reservations = self.reservations.lock().unwrap();
+        if reservations.contains_key(reservation_id) {
+            drop(reservations);
+            self.reject(route, body);
+            return false;
+        }
+        reservations.insert(reservation_id.to_string(), next.to_string());
+        drop(reservations);
+        self.record(route, body);
+        true
+    }
+}
+
+async fn fixture_settle(
+    State(state): State<CoreFixture>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    let reservation_id = body
+        .pointer("/usage/reservation_id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    if !state.transition("settle", body, &reservation_id, "SETTLED") {
+        return StatusCode::CONFLICT.into_response();
+    }
+    Json(json!({"usage": {"reservation_id": reservation_id}})).into_response()
+}
+
+async fn fixture_release(
+    State(state): State<CoreFixture>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    let reservation_id = body
+        .get("reservation_id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    if !state.transition("release", body, &reservation_id, "RELEASED") {
+        return StatusCode::CONFLICT.into_response();
+    }
+    StatusCode::NO_CONTENT.into_response()
+}
+
+async fn fixture_terminal(
+    State(state): State<CoreFixture>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    state.record("terminal", body);
+    Json(json!({"state": "FAILED"})).into_response()
+}
+
+async fn fixture_unresolved(State(state): State<CoreFixture>) -> Response {
+    state.record("unresolved", json!({"worker_id": "worker"}));
+    Json(json!([{
+        "session_record_id": "session-record",
+        "generation": 7,
+        "provider_session_id": "ses_orphan",
+        "provider_directory": "/sessions/01234567-89ab-cdef-0123-456789abcdef"
+    }]))
+    .into_response()
+}
+
+async fn fixture_cleanup(
+    State(state): State<CoreFixture>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    state.record("cleanup", body);
+    Json(json!({"state": "CLEANED"})).into_response()
+}
+
+async fn start_core_fixture() -> (CoreFixture, reqwest::Url, tokio::task::JoinHandle<()>) {
+    let state = CoreFixture::default();
+    let app = Router::new()
+        .route("/worker/provider_turn_settle", post(fixture_settle))
+        .route("/worker/provider_turn_release", post(fixture_release))
+        .route("/worker/provider_terminal", post(fixture_terminal))
+        .route("/worker/provider_unresolved", get(fixture_unresolved))
+        .route("/worker/provider_cleanup", post(fixture_cleanup))
+        .with_state(state.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let core = reqwest::Url::parse(&format!("http://{address}")).unwrap();
+    (state, core, server)
+}
+
+#[tokio::test]
+async fn production_worker_http_lifecycle_settles_releases_and_reconciles_cleanup() {
+    let (state, core, server) = start_core_fixture().await;
+    let client = reqwest::Client::new();
+    let token = "worker-session-token-0123456789abcdef";
+
+    let usage = ProviderUsage {
+        input_tokens: 10,
+        output_tokens: 20,
+        total_tokens: 30,
+        cost_micros: 40,
+        known: true,
+    };
+    settle_provider_turn(
+        &client,
+        &core,
+        token,
+        "worker",
+        "reservation-settle",
+        &usage,
+    )
+    .await
+    .unwrap();
+    release_provider_turn(
+        &client,
+        &core,
+        token,
+        "reservation-release",
+        "session-record",
+        "worker",
+        7,
+    )
+    .await
+    .unwrap();
+    let terminal = ProviderTerminal {
+        session_record_id: "session-record".into(),
+        worker_id: "worker".into(),
+        generation: 7,
+        state: "FAILED".into(),
+        provider_session_id: "ses_1".into(),
+        turn_id: "turn-1".into(),
+        input_tokens: 10,
+        output_tokens: 20,
+        total_tokens: 30,
+        cost_micros: 40,
+        usage_known: true,
+        cleanup_receipt: "container_removed_verified_absent".into(),
+        error: "fixture terminal".into(),
+    };
+    post_provider_terminal(&client, &core, token, &terminal)
+        .await
+        .unwrap();
+    recover_unresolved_provider_sessions(&client, &core, token, "worker", |session| {
+        assert_eq!(session.session_record_id, "session-record");
+        assert_eq!(session.generation, 7);
+        async { Ok("container_removed_verified_absent".to_string()) }
+    })
+    .await
+    .unwrap();
+
+    let calls = state.calls.lock().unwrap().clone();
+    let routes = calls
+        .iter()
+        .map(|(route, _)| route.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        routes,
+        ["settle", "release", "terminal", "unresolved", "cleanup"]
+    );
+    assert_eq!(calls[0].1["usage"]["reservation_id"], "reservation-settle");
+    assert_eq!(calls[0].1["usage"]["worker_id"], "worker");
+    assert_eq!(calls[0].1["usage"]["input_tokens"], 10);
+    assert_eq!(calls[0].1["usage"]["usage_known"], true);
+    assert_eq!(calls[1].1["reservation_id"], "reservation-release");
+    assert_eq!(calls[1].1["session_record_id"], "session-record");
+    assert_eq!(calls[1].1["generation"], 7);
+    assert_eq!(
+        calls[2].1["cleanup_receipt"],
+        "container_removed_verified_absent"
+    );
+    assert_eq!(calls[4].1["session_record_id"], "session-record");
+    assert_eq!(calls[4].1["generation"], 7);
+    assert_eq!(
+        calls[4].1["cleanup_receipt"],
+        "container_removed_verified_absent"
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn settle_then_release_of_the_same_reservation_is_rejected() {
+    let (state, core, server) = start_core_fixture().await;
+    let client = reqwest::Client::new();
+    let token = "worker-session-token-0123456789abcdef";
+    let usage = ProviderUsage {
+        input_tokens: 1,
+        output_tokens: 2,
+        total_tokens: 3,
+        cost_micros: 4,
+        known: true,
+    };
+    settle_provider_turn(&client, &core, token, "worker", "reservation-both", &usage)
+        .await
+        .unwrap();
+    let error = release_provider_turn(
+        &client,
+        &core,
+        token,
+        "reservation-both",
+        "session-record",
+        "worker",
+        7,
+    )
+    .await
+    .expect_err("a settled reservation must not be released");
+    assert!(matches!(error, ProviderLifecycleError::Refused(_)));
+    assert_eq!(
+        state
+            .reservations
+            .lock()
+            .unwrap()
+            .get("reservation-both")
+            .map(String::as_str),
+        Some("SETTLED"),
+        "the first terminal transition wins"
+    );
+    assert_eq!(
+        state
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(route, _)| route.as_str())
+            .collect::<Vec<_>>(),
+        ["settle"]
+    );
+    assert_eq!(
+        state
+            .rejected
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(route, _)| route.as_str())
+            .collect::<Vec<_>>(),
+        ["release"],
+        "the conflicting release was rejected by the Core fixture"
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn failed_cleanup_receipt_never_claims_an_orphan_is_cleaned() {
+    let (state, core, server) = start_core_fixture().await;
+    let error = recover_unresolved_provider_sessions(
+        &reqwest::Client::new(),
+        &core,
+        "worker-session-token-0123456789abcdef",
+        "worker",
+        |_| async { Err("provider container survived reconciliation".to_string()) },
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("container survived"));
+    let routes = state
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(route, _)| route.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(routes, ["unresolved"]);
+    server.abort();
+}
+
+#[tokio::test]
+async fn production_connector_forwards_last_event_id_to_a_local_fixture() {
+    #[derive(Clone)]
+    struct FixtureState {
+        cursors: Arc<Mutex<Vec<Option<String>>>>,
+    }
+
+    async fn event_stream(State(state): State<FixtureState>, headers: HeaderMap) -> Response {
+        let cursor = headers
+            .get("last-event-id")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        state.cursors.lock().unwrap().push(cursor.clone());
+        let body = if cursor.as_deref() == Some("e2") {
+            format!(
+                "{}{}",
+                frame("e2", "message.part.updated", SESSION),
+                frame("e3", "session.idle", SESSION)
+            )
+        } else {
+            format!(
+                "{}{}",
+                frame("e1", "message.updated", SESSION),
+                frame("e2", "message.part.updated", SESSION)
+            )
+        };
+        let mut response = body.into_response();
+        response
+            .headers_mut()
+            .insert(CONTENT_TYPE, HeaderValue::from_static("text/event-stream"));
+        response
+    }
+
+    let cursors = Arc::new(Mutex::new(Vec::new()));
+    let app = Router::new()
+        .route("/event", get(event_stream))
+        .with_state(FixtureState {
+            cursors: cursors.clone(),
+        });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let connector =
+        OpenCodeEventConnector::new(client, &format!("http://{address}"), "password", "/session")
+            .unwrap();
+    let mut waiter = ReconnectWaiter::new(connector, policy(3));
+    let mut observations = Observations::default();
+    let terminal = waiter
+        .wait(&VirtualClock::default(), |event| {
+            classify(event, &mut observations)
+        })
+        .await
+        .unwrap();
+    assert!(matches!(terminal, OpenCodePromptTerminal::Idle { .. }));
+    assert_eq!(observations.effects, 2);
+    assert_eq!(observations.candidates, 1);
+    assert_eq!(
+        *cursors.lock().unwrap(),
+        vec![None, Some("e2".into())],
+        "the production connector must forward the last complete event id"
+    );
+    server.abort();
+}

@@ -5,12 +5,17 @@
 //! once, and limit schema-repair loops. A model response is still decoded by
 //! the typed decoder; this module never accepts malformed output.
 
+use std::collections::VecDeque;
 use std::time::Duration;
 
 pub const MAX_SSE_RECONNECT_ATTEMPTS: u32 = 8;
 pub const DEFAULT_RECONNECT_BASE_MS: u64 = 250;
 pub const DEFAULT_RECONNECT_MAX_MS: u64 = 30_000;
 pub const MAX_STRUCTURED_REPAIRS: u8 = 2;
+/// Bounded replay window. Event ids older than this many unique events may be
+/// accepted again; the window bounds memory while catching normal SSE replay
+/// duplication across reconnects.
+pub const MAX_TRACKED_EVENT_IDS: usize = 4_096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SseReconnectPolicy {
@@ -64,6 +69,7 @@ impl SseReconnectPolicy {
 pub struct SseCursor {
     pub last_event_id: Option<String>,
     pub reconnects: u32,
+    seen_event_ids: VecDeque<String>,
 }
 
 impl SseCursor {
@@ -71,6 +77,7 @@ impl SseCursor {
         Self {
             last_event_id: None,
             reconnects: 0,
+            seen_event_ids: VecDeque::new(),
         }
     }
 
@@ -81,8 +88,12 @@ impl SseCursor {
         if event_id.trim().is_empty() || event_id.len() > 512 {
             return Err("SSE event id is empty or unbounded".into());
         }
-        if self.last_event_id.as_deref() == Some(event_id) {
+        if self.seen_event_ids.iter().any(|seen| seen == event_id) {
             return Ok(false);
+        }
+        self.seen_event_ids.push_back(event_id.to_string());
+        while self.seen_event_ids.len() > MAX_TRACKED_EVENT_IDS {
+            self.seen_event_ids.pop_front();
         }
         self.last_event_id = Some(event_id.to_string());
         Ok(true)
@@ -95,6 +106,13 @@ impl SseCursor {
         }
         self.reconnects = self.reconnects.saturating_add(1);
         Ok(policy.delay(self.reconnects))
+    }
+
+    /// Start a new wait/turn with a fresh reconnect budget. The replay cursor
+    /// (`last_event_id`) is retained: a later reconnect must still resume from
+    /// the last event observed across turns.
+    pub fn reset_reconnects(&mut self) {
+        self.reconnects = 0;
     }
 }
 
@@ -141,6 +159,30 @@ impl TurnReservation {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalCompletion {
+    /// Provider terminal evidence reconciled to a completed assistant message.
+    Completed,
+    /// Explicit provider failure, cancellation or protocol error.
+    Failed,
+    /// Stream cut/reconnect exhaustion or an unreconciled turn.
+    Missing,
+}
+
+/// Candidate gate for provider-produced work.
+///
+/// A candidate requires an independently reconciled completed terminal, at
+/// least one applied write and every frozen check passed. A reconnect, an HTTP
+/// 200, a stream opening or a turn error after earlier checks passed is not
+/// completion evidence.
+pub fn candidate_allowed(
+    terminal: TerminalCompletion,
+    wrote: bool,
+    all_checks_passed: bool,
+) -> bool {
+    terminal == TerminalCompletion::Completed && wrote && all_checks_passed
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructuredOutputRepair {
     repairs: u8,
@@ -173,6 +215,70 @@ impl StructuredOutputRepair {
     pub fn attempts(&self) -> u8 {
         self.repairs
     }
+
+    pub fn max_repairs(&self) -> u8 {
+        self.max_repairs
+    }
+
+    /// A valid structured response ends the current repair sequence. The next
+    /// malformed response gets a fresh bounded repair budget.
+    pub fn reset(&mut self) {
+        self.repairs = 0;
+    }
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum StructuredOutputError {
+    #[error("structured-output repair {attempt}/{max_repairs} required after rejection: {detail}")]
+    Repair {
+        attempt: u8,
+        max_repairs: u8,
+        detail: String,
+    },
+    #[error("structured-output repair attempts exhausted after {attempts}: {detail}")]
+    Exhausted { attempts: u8, detail: String },
+}
+
+/// Decode one machine-readable model result with a bounded repair sequence.
+///
+/// A malformed result returns `Repair` while the policy still allows another
+/// attempt; the caller must submit the bounded repair prompt and try again. An
+/// exhausted policy returns `Exhausted`, which is a typed failure, never a
+/// free-text fallback or an accepted partial object.
+pub fn decode_structured_output<T, F>(
+    repair: &mut StructuredOutputRepair,
+    decode: F,
+) -> Result<T, StructuredOutputError>
+where
+    F: FnOnce() -> Result<T, String>,
+{
+    match decode() {
+        Ok(value) => {
+            repair.reset();
+            Ok(value)
+        }
+        Err(detail) => {
+            if repair.can_repair() {
+                let attempt =
+                    repair
+                        .record_repair()
+                        .map_err(|_| StructuredOutputError::Exhausted {
+                            attempts: repair.attempts(),
+                            detail: detail.clone(),
+                        })?;
+                Err(StructuredOutputError::Repair {
+                    attempt,
+                    max_repairs: repair.max_repairs(),
+                    detail,
+                })
+            } else {
+                Err(StructuredOutputError::Exhausted {
+                    attempts: repair.attempts(),
+                    detail,
+                })
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -195,11 +301,16 @@ mod tests {
     }
 
     #[test]
-    fn cursor_deduplicates_event_ids() {
+    fn cursor_deduplicates_nonconsecutive_event_ids_within_a_bounded_window() {
         let mut cursor = SseCursor::new();
         assert!(cursor.observe(Some("event-1")).unwrap());
-        assert!(!cursor.observe(Some("event-1")).unwrap());
         assert!(cursor.observe(Some("event-2")).unwrap());
+        assert!(
+            !cursor.observe(Some("event-1")).unwrap(),
+            "a nonconsecutive replay must be suppressed"
+        );
+        assert!(cursor.observe(Some("event-3")).unwrap());
+        assert_eq!(cursor.last_event_id.as_deref(), Some("event-3"));
         assert!(cursor.observe(Some("")).is_err());
     }
 
@@ -222,5 +333,85 @@ mod tests {
         assert!(!repair.can_repair());
         assert!(repair.record_repair().is_err());
         assert!(StructuredOutputRepair::new(MAX_STRUCTURED_REPAIRS + 1).is_err());
+    }
+
+    #[test]
+    fn malformed_structured_output_is_repaired_then_accepted() {
+        let mut repair = StructuredOutputRepair::new(MAX_STRUCTURED_REPAIRS).unwrap();
+        let malformed =
+            decode_structured_output(&mut repair, || Err::<&str, _>("truncated JSON".into()))
+                .unwrap_err();
+        assert_eq!(
+            malformed,
+            StructuredOutputError::Repair {
+                attempt: 1,
+                max_repairs: MAX_STRUCTURED_REPAIRS,
+                detail: "truncated JSON".into(),
+            }
+        );
+        let value = decode_structured_output(&mut repair, || Ok::<_, String>("valid")).unwrap();
+        assert_eq!(value, "valid");
+        assert_eq!(repair.attempts(), 0, "success resets the repair sequence");
+    }
+
+    #[test]
+    fn structured_output_repair_exhaustion_is_a_typed_failure() {
+        let mut repair = StructuredOutputRepair::new(1).unwrap();
+        assert!(matches!(
+            decode_structured_output(&mut repair, || Err::<(), _>("bad".into())),
+            Err(StructuredOutputError::Repair { attempt: 1, .. })
+        ));
+        assert_eq!(
+            decode_structured_output(&mut repair, || Err::<(), _>("still bad".into())),
+            Err(StructuredOutputError::Exhausted {
+                attempts: 1,
+                detail: "still bad".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn cursor_window_is_bounded() {
+        let mut cursor = SseCursor::new();
+        for index in 0..MAX_TRACKED_EVENT_IDS + 8 {
+            cursor.observe(Some(&format!("event-{index}"))).unwrap();
+        }
+        assert_eq!(cursor.seen_event_ids.len(), MAX_TRACKED_EVENT_IDS);
+        assert_eq!(
+            cursor.last_event_id,
+            Some(format!("event-{}", MAX_TRACKED_EVENT_IDS + 7))
+        );
+    }
+
+    #[test]
+    fn reconnect_budget_resets_without_losing_the_replay_cursor() {
+        let policy = SseReconnectPolicy::default();
+        let mut cursor = SseCursor::new();
+        cursor.observe(Some("event-7")).unwrap();
+        for _ in 0..policy.max_attempts {
+            cursor.reconnect(&policy).unwrap();
+        }
+        assert!(cursor.reconnect(&policy).is_err());
+        cursor.reset_reconnects();
+        assert_eq!(cursor.reconnects, 0);
+        assert_eq!(cursor.last_event_id.as_deref(), Some("event-7"));
+        cursor.reconnect(&policy).unwrap();
+    }
+
+    #[test]
+    fn candidate_requires_completed_terminal_and_checks() {
+        assert!(candidate_allowed(TerminalCompletion::Completed, true, true));
+        assert!(!candidate_allowed(TerminalCompletion::Missing, true, true));
+        assert!(!candidate_allowed(TerminalCompletion::Failed, true, true));
+        assert!(!candidate_allowed(
+            TerminalCompletion::Completed,
+            false,
+            true
+        ));
+        assert!(!candidate_allowed(
+            TerminalCompletion::Completed,
+            true,
+            false
+        ));
     }
 }
