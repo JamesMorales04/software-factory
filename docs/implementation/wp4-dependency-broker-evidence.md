@@ -38,7 +38,7 @@ without weakening the offline check container:
  deploy/Containerfile
  deploy/runtime-entrypoint.sh
  docs/operations/compose-deployment.md
- migrations/0065_pre_authorization_dependency_plan.sql (new)
+ migrations/0069_pre_authorization_dependency_plan.sql (new)
  native/Cargo.toml
  native/src/bin/core.rs
  native/src/bin/dependency_acquire.rs          (new)
@@ -198,7 +198,7 @@ Evidence content:
   and bind it into the stored spec hash.
 - The planning route converts the frozen planning dependency decision into an
   execution plan and attaches it to the ActionSpec before plan review and
-  Campaign authorization. Migration `0065` permits that one pre-authorization
+  Campaign authorization. Migration `0069` permits that one pre-authorization
   ActionSpec update only while no Campaign exists; the spec is immutable after
   Campaign start and the migration keeps that invariant in the database.
   - Existing Rust repository with a lockfile and no committed `vendor/`:
@@ -342,7 +342,7 @@ Remaining integration work for the integration owner:
    acquisition strategy, evidence, blocker and receipt. Office parity impact
    for this slice is `none` because the change is an internal execution
    boundary, but the plan-review surface is still required by WP10.
-4. Migration `0065` is a shared migration-owner file. It permits the single
+4. Migration `0069` is a shared migration-owner file. It permits the single
    pre-Campaign ActionSpec dependency-plan update; review it in the next
    migration wave.
 
