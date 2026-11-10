@@ -15,12 +15,30 @@ use thiserror::Error;
 /// Largest amount representable without overflowing SQLite's signed INTEGER.
 pub const MAX_USD_MICROS: u64 = i64::MAX as u64;
 
-/// Sentinel used by the legacy reservation columns when a subscription-funded
-/// call is intentionally uncapped. The value is finite only so SQLite and the
-/// aggregation arithmetic remain valid; no execution path enforces it as a
-/// productivity ceiling. New telemetry reports observed usage, not this value.
-pub const UNCAPPED_TOKENS: u64 = 100_000_000;
-pub const UNCAPPED_COST_MICROS: u64 = i64::MAX as u64 / 4;
+/// Hard per-reservation arithmetic ceilings for the model-call ledger.
+///
+/// These values are **technical safety bounds, not productivity or spending
+/// policy**. Every durable reservation column is a signed SQLite `INTEGER`, and
+/// budget projections add several reservations together. A policy that used an
+/// effectively unbounded sentinel (for example `i64::MAX / 4` for cost) could
+/// overflow those sums after only a handful of calls, producing a database
+/// error instead of a model call. Keeping each reservation at or below these
+/// ceilings leaves enough headroom for millions of concurrent reservations
+/// without lowering any real, lower policy budget: callers clamp only values
+/// that exceed the ceiling and still enforce their own smaller budget.
+///
+/// `SAFE_MAX_MODEL_CALL_COST_MICROS` is $1,000,000, far above any per-call
+/// invoice-bound quote in this product, so it never acts as a practical spend
+/// cap. Token ceilings cover the largest provider context/output envelopes
+/// currently permitted by the provider catalog.
+pub const SAFE_MAX_MODEL_CALL_INPUT_TOKENS: u64 = 10_000_000;
+pub const SAFE_MAX_MODEL_CALL_OUTPUT_TOKENS: u64 = 1_000_000;
+pub const SAFE_MAX_MODEL_CALL_TOTAL_TOKENS: u64 =
+    SAFE_MAX_MODEL_CALL_INPUT_TOKENS + SAFE_MAX_MODEL_CALL_OUTPUT_TOKENS;
+pub const SAFE_MAX_MODEL_CALL_COST_MICROS: u64 = 1_000_000_000_000;
+
+/// Reserved deadline sentinel for a subscription call with no total deadline.
+/// This is a timestamp, not a budget, and cannot overflow a cost/token sum.
 pub const UNCAPPED_EXPIRES_AT_MS: i64 = i64::MAX - 1;
 
 #[derive(Debug, Error, PartialEq, Eq)]

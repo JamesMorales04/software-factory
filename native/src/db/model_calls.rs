@@ -369,25 +369,30 @@ type DispatchReservationRow = (
 
 /// Subscription cost is telemetry. This bound exists only to keep SQLite and
 /// aggregation arithmetic finite; it is not a spending cap.
-const SUBSCRIPTION_COST_BOUND: u64 = crate::execution_policy::UNCAPPED_COST_MICROS;
+const SUBSCRIPTION_COST_BOUND: u64 = crate::execution_policy::SAFE_MAX_MODEL_CALL_COST_MICROS;
 
 impl Database {
     pub async fn authorize_model_call(
         &self,
         input: &NewModelCallAuthorization,
     ) -> Result<ModelCallDecision, Error> {
-        validate_model_call_authorization(input)?;
+        // A policy may arrive with an intentionally unbounded sentinel (the
+        // deployment default or a legacy profile). Clamp it to the technical
+        // reservation ceiling before it can reach durable arithmetic. A lower
+        // policy is preserved unchanged and remains authoritative below.
+        let (input, policy_capped) = clamp_model_call_authorization(input);
+        validate_model_call_authorization(&input)?;
         let _write = self.write_lock.lock().await;
         // Withdrawal uses the same immediate write transaction. Whichever
         // commits first defines the outcome: a committed withdrawal makes this
         // authorization fail before any reservation or upstream effect.
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        self.validate_model_call_scope(&mut transaction, input)
+        self.validate_model_call_scope(&mut transaction, &input)
             .await?;
         let now = Utc::now();
         let now_ms = now.timestamp_millis();
         expire_reserved_model_calls(&mut transaction, now_ms).await?;
-        if let Some(existing) = load_model_call_identity(&mut transaction, input).await? {
+        if let Some(existing) = load_model_call_identity(&mut transaction, &input).await? {
             match existing.state.as_str() {
                 "SETTLED" => {
                     let result = replay_model_call(&mut transaction, &existing).await?;
@@ -533,12 +538,13 @@ impl Database {
             // role token allowance and no fixed output/token policy ceiling.
             // Model/provider capability plus the request body bound decide what
             // can be sent; observed usage remains telemetry.
-            // The legacy reservation columns still need finite values; the
-            // sentinel is never enforced.
-            let uncapped = crate::execution_policy::UNCAPPED_TOKENS;
+            // The legacy reservation columns still need finite values. Use the
+            // per-reservation technical ceilings so a handful of calls can
+            // never overflow SQLite's signed integer aggregation; these are not
+            // enforced productivity caps.
             (
-                uncapped,
-                uncapped,
+                crate::execution_policy::SAFE_MAX_MODEL_CALL_INPUT_TOKENS,
+                crate::execution_policy::SAFE_MAX_MODEL_CALL_OUTPUT_TOKENS,
                 UsdMicros::new(SUBSCRIPTION_COST_BOUND)
                     .map_err(|_| Error::Invalid("model call cost reservation"))?,
             )
@@ -567,7 +573,22 @@ impl Database {
                     .map_err(|_| Error::Invalid("model call cost reservation"))?,
             )
         };
-        let max_total = max_input.saturating_add(max_output);
+        let max_total = max_input
+            .checked_add(max_output)
+            .ok_or(Error::Invalid("model call total token reservation"))?;
+        // A frozen quote is the only path that can supply a value larger than
+        // the policy clamp. Never store a reservation that exceeds the
+        // technical ceiling: clamping it would under-reserve the real amount,
+        // so fail with a bounded error before any upstream effect.
+        if max_input > crate::execution_policy::SAFE_MAX_MODEL_CALL_INPUT_TOKENS
+            || max_output > crate::execution_policy::SAFE_MAX_MODEL_CALL_OUTPUT_TOKENS
+            || max_total > crate::execution_policy::SAFE_MAX_MODEL_CALL_TOTAL_TOKENS
+            || max_cost.get() > crate::execution_policy::SAFE_MAX_MODEL_CALL_COST_MICROS
+        {
+            return Err(Error::Invalid(
+                "model call reservation exceeds the technical ceiling",
+            ));
+        }
         let request_sha256 = input.request_sha256.to_ascii_lowercase();
         let reservation_id = Uuid::new_v4().to_string();
         // There is no total model-call deadline. Latency is telemetry; an
@@ -661,7 +682,7 @@ impl Database {
             &input.objective_id,
             "model.call_authorized",
             &format!(
-                "role={} reservation={reservation_id} provider={} model={} input={max_input} output={max_output} cost={}",
+                "role={} reservation={reservation_id} provider={} model={} input={max_input} output={max_output} cost={} capped={policy_capped}",
                 input.role.as_str(),
                 input.provider,
                 input.model,
@@ -1358,17 +1379,23 @@ impl Database {
     pub async fn unresolved_model_call_budget(&self) -> Result<(u64, u64), Error> {
         self.expire_model_calls(Utc::now().timestamp_millis())
             .await?;
-        let row: (i64, i64) = sqlx::query_as::query_as(
-            "SELECT COUNT(*),COALESCE(SUM(max_cost_micros),0)
+        let rows: Vec<(i64,)> = sqlx::query_as::query_as(
+            "SELECT max_cost_micros
              FROM model_call_reservations
              WHERE state IN ('AMBIGUOUS','UNKNOWN') AND usage_known=0",
         )
-        .fetch_one(&self.pool)
+        .fetch_all(&self.pool)
         .await?;
-        Ok((
-            u64::try_from(row.0).map_err(|_| Error::Invalid("model call count"))?,
-            u64::try_from(row.1).map_err(|_| Error::Invalid("model reservation"))?,
-        ))
+        let count = u64::try_from(rows.len()).map_err(|_| Error::Invalid("model call count"))?;
+        let mut bound = 0u128;
+        for (value,) in rows {
+            bound = bound
+                .checked_add(
+                    u128::try_from(value).map_err(|_| Error::Invalid("model reservation"))?,
+                )
+                .ok_or(Error::Invalid("model reservation"))?;
+        }
+        Ok((count, u64::try_from(bound).unwrap_or(u64::MAX)))
     }
 
     pub async fn model_calls(&self, limit: usize) -> Result<Vec<ModelCallRecord>, Error> {
@@ -1626,21 +1653,46 @@ fn validate_model_call_authorization(input: &NewModelCallAuthorization) -> Resul
     if input.estimated_input_tokens == 0 || input.estimated_cost_micros == 0 {
         return Err(Error::Invalid("model call budget request"));
     }
-    let uncapped_input = input.policy.max_input_tokens == crate::execution_policy::UNCAPPED_TOKENS;
-    let uncapped_output =
-        input.policy.max_output_tokens == crate::execution_policy::UNCAPPED_TOKENS;
-    let uncapped_cost =
-        input.policy.max_cost_micros == crate::execution_policy::UNCAPPED_COST_MICROS;
-    if (!uncapped_input
-        && (input.policy.max_input_tokens == 0 || input.policy.max_input_tokens > 10_000_000))
-        || (!uncapped_output
-            && (input.policy.max_output_tokens == 0 || input.policy.max_output_tokens > 1_000_000))
-        || (!uncapped_cost
-            && (input.policy.max_cost_micros == 0 || input.policy.max_cost_micros > 100_000_000))
+    // `clamp_model_call_authorization` has already reduced every policy field
+    // to its technical ceiling. Reject only impossible values here; the
+    // ceiling itself remains available for subscription/legacy callers and is
+    // never interpreted as a productivity or spending policy by Core.
+    if input.policy.max_input_tokens == 0
+        || input.policy.max_output_tokens == 0
+        || input.policy.max_cost_micros == 0
     {
         return Err(Error::Invalid("model call policy"));
     }
     Ok(())
+}
+
+fn clamp_model_call_policy(policy: ModelCallPolicy) -> (ModelCallPolicy, bool) {
+    let clamped = ModelCallPolicy {
+        max_input_tokens: policy
+            .max_input_tokens
+            .min(crate::execution_policy::SAFE_MAX_MODEL_CALL_INPUT_TOKENS),
+        max_output_tokens: policy
+            .max_output_tokens
+            .min(crate::execution_policy::SAFE_MAX_MODEL_CALL_OUTPUT_TOKENS),
+        max_cost_micros: policy
+            .max_cost_micros
+            .min(crate::execution_policy::SAFE_MAX_MODEL_CALL_COST_MICROS),
+    };
+    (clamped, clamped != policy)
+}
+
+fn clamp_model_call_authorization(
+    input: &NewModelCallAuthorization,
+) -> (NewModelCallAuthorization, bool) {
+    let mut normalized = input.clone();
+    let (policy, mut capped) = clamp_model_call_policy(input.policy);
+    normalized.policy = policy;
+    if let Some(global) = input.global_policy {
+        let (global, global_capped) = clamp_model_call_policy(global);
+        normalized.global_policy = Some(global);
+        capped |= global_capped;
+    }
+    (normalized, capped)
 }
 
 fn scope_id_mismatch(expected: &str, input: &NewModelCallAuthorization) -> bool {
@@ -1854,83 +1906,102 @@ fn model_call_records(rows: Vec<sqlx_sqlite::SqliteRow>) -> Result<Vec<ModelCall
     Ok(records)
 }
 
+/// Sum model-call token/cost columns in checked `u128` arithmetic.
+///
+/// SQLite's `SUM()` over a signed `INTEGER` column raises `integer overflow`
+/// as soon as a single scope contains enough legacy large reservations. A
+/// database error here used to abort a perfectly valid model call. Reading the
+/// individual rows and adding them in `u128` keeps legacy rows readable. If a
+/// total exceeds `u64` it saturates at `u64::MAX`, which can only make a budget
+/// look exhausted (fail-closed) and never grants additional authority.
+async fn model_call_totals(
+    connection: &mut SqliteConnection,
+    sql: &str,
+    key: &str,
+    field: &'static str,
+) -> Result<(u64, u64, u64), Error> {
+    let rows: Vec<(i64, i64, i64)> = sqlx::query_as::query_as(sql)
+        .bind(key)
+        .fetch_all(&mut *connection)
+        .await?;
+    let mut totals = (0u128, 0u128, 0u128);
+    for (input, output, cost) in rows {
+        totals.0 = totals
+            .0
+            .checked_add(u128::try_from(input).map_err(|_| Error::Invalid(field))?)
+            .ok_or(Error::Invalid(field))?;
+        totals.1 = totals
+            .1
+            .checked_add(u128::try_from(output).map_err(|_| Error::Invalid(field))?)
+            .ok_or(Error::Invalid(field))?;
+        totals.2 = totals
+            .2
+            .checked_add(u128::try_from(cost).map_err(|_| Error::Invalid(field))?)
+            .ok_or(Error::Invalid(field))?;
+    }
+    Ok((
+        u64::try_from(totals.0).unwrap_or(u64::MAX),
+        u64::try_from(totals.1).unwrap_or(u64::MAX),
+        u64::try_from(totals.2).unwrap_or(u64::MAX),
+    ))
+}
+
 async fn model_call_role_usage(
     connection: &mut SqliteConnection,
     role: ModelCallRole,
 ) -> Result<(u64, u64, u64), Error> {
-    let row: (i64, i64, i64) = sqlx::query_as::query_as(
-        "SELECT COALESCE(SUM(input_tokens),0),COALESCE(SUM(output_tokens),0),
-                COALESCE(SUM(cost_micros),0)
+    model_call_totals(
+        connection,
+        "SELECT input_tokens,output_tokens,cost_micros
          FROM model_call_reservations WHERE role=?1 AND state='SETTLED'",
+        role.as_str(),
+        "model usage",
     )
-    .bind(role.as_str())
-    .fetch_one(&mut *connection)
-    .await?;
-    Ok((
-        u64::try_from(row.0).map_err(|_| Error::Invalid("model usage"))?,
-        u64::try_from(row.1).map_err(|_| Error::Invalid("model usage"))?,
-        u64::try_from(row.2).map_err(|_| Error::Invalid("model usage"))?,
-    ))
+    .await
 }
 
 async fn model_call_role_reservations(
     connection: &mut SqliteConnection,
     role: ModelCallRole,
 ) -> Result<(u64, u64, u64), Error> {
-    let row: (i64, i64, i64) = sqlx::query_as::query_as(
-        "SELECT COALESCE(SUM(max_input_tokens),0),COALESCE(SUM(max_output_tokens),0),
-                COALESCE(SUM(max_cost_micros),0)
+    model_call_totals(
+        connection,
+        "SELECT max_input_tokens,max_output_tokens,max_cost_micros
          FROM model_call_reservations
          WHERE role=?1 AND state IN ('RESERVED','AMBIGUOUS','UNKNOWN')",
+        role.as_str(),
+        "model reservation",
     )
-    .bind(role.as_str())
-    .fetch_one(&mut *connection)
-    .await?;
-    Ok((
-        u64::try_from(row.0).map_err(|_| Error::Invalid("model reservation"))?,
-        u64::try_from(row.1).map_err(|_| Error::Invalid("model reservation"))?,
-        u64::try_from(row.2).map_err(|_| Error::Invalid("model reservation"))?,
-    ))
+    .await
 }
 
 async fn model_call_usage(
     connection: &mut SqliteConnection,
     scope_id: &str,
 ) -> Result<(u64, u64, u64), Error> {
-    let row: (i64, i64, i64) = sqlx::query_as::query_as(
-        "SELECT COALESCE(SUM(input_tokens),0),COALESCE(SUM(output_tokens),0),
-                COALESCE(SUM(cost_micros),0)
-         FROM model_call_reservations
-         WHERE scope_id=?1 AND state='SETTLED'",
+    model_call_totals(
+        connection,
+        "SELECT input_tokens,output_tokens,cost_micros
+         FROM model_call_reservations WHERE scope_id=?1 AND state='SETTLED'",
+        scope_id,
+        "model usage",
     )
-    .bind(scope_id)
-    .fetch_one(&mut *connection)
-    .await?;
-    Ok((
-        u64::try_from(row.0).map_err(|_| Error::Invalid("model usage"))?,
-        u64::try_from(row.1).map_err(|_| Error::Invalid("model usage"))?,
-        u64::try_from(row.2).map_err(|_| Error::Invalid("model usage"))?,
-    ))
+    .await
 }
 
 async fn model_call_reservations(
     connection: &mut SqliteConnection,
     scope_id: &str,
 ) -> Result<(u64, u64, u64), Error> {
-    let row: (i64, i64, i64) = sqlx::query_as::query_as(
-        "SELECT COALESCE(SUM(max_input_tokens),0),COALESCE(SUM(max_output_tokens),0),
-                COALESCE(SUM(max_cost_micros),0)
+    model_call_totals(
+        connection,
+        "SELECT max_input_tokens,max_output_tokens,max_cost_micros
          FROM model_call_reservations
          WHERE scope_id=?1 AND state IN ('RESERVED','AMBIGUOUS','UNKNOWN')",
+        scope_id,
+        "model reservation",
     )
-    .bind(scope_id)
-    .fetch_one(&mut *connection)
-    .await?;
-    Ok((
-        u64::try_from(row.0).map_err(|_| Error::Invalid("model reservation"))?,
-        u64::try_from(row.1).map_err(|_| Error::Invalid("model reservation"))?,
-        u64::try_from(row.2).map_err(|_| Error::Invalid("model reservation"))?,
-    ))
+    .await
 }
 
 #[cfg(test)]
@@ -1973,6 +2044,48 @@ mod tests {
         .await
         .unwrap();
         (path, db)
+    }
+
+    #[test]
+    fn every_model_call_role_uses_the_same_technical_ceiling() {
+        for role in [
+            ModelCallRole::Lead,
+            ModelCallRole::SemanticReviewer,
+            ModelCallRole::Evaluation,
+        ] {
+            let mut input = evaluation_input("ceiling-scope");
+            input.role = role;
+            input.policy = ModelCallPolicy {
+                max_input_tokens: u64::MAX,
+                max_output_tokens: i64::MAX as u64,
+                max_cost_micros: i64::MAX as u64,
+            };
+            input.global_policy = Some(input.policy);
+            let (normalized, capped) = clamp_model_call_authorization(&input);
+            assert!(capped, "{role:?} must report the ceiling clamp");
+            assert_eq!(
+                normalized.policy,
+                ModelCallPolicy {
+                    max_input_tokens: crate::execution_policy::SAFE_MAX_MODEL_CALL_INPUT_TOKENS,
+                    max_output_tokens: crate::execution_policy::SAFE_MAX_MODEL_CALL_OUTPUT_TOKENS,
+                    max_cost_micros: crate::execution_policy::SAFE_MAX_MODEL_CALL_COST_MICROS,
+                }
+            );
+            assert_eq!(normalized.global_policy, Some(normalized.policy));
+        }
+    }
+
+    #[test]
+    fn lower_model_call_policy_is_not_reinterpreted_by_the_ceiling() {
+        let mut input = evaluation_input("lower-budget");
+        input.policy = ModelCallPolicy {
+            max_input_tokens: 400,
+            max_output_tokens: 50,
+            max_cost_micros: 1_000,
+        };
+        let (normalized, capped) = clamp_model_call_authorization(&input);
+        assert!(!capped);
+        assert_eq!(normalized.policy, input.policy);
     }
 
     async fn envelope_for(db: &Database, request_id: &str) -> String {

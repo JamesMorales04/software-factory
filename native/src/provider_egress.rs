@@ -429,7 +429,7 @@ async fn handle(
                                         // output and record observed usage.
                                         if turn.max_output_tokens > 0
                                             && turn.max_output_tokens
-                                                < crate::execution_policy::UNCAPPED_TOKENS
+                                                < crate::execution_policy::SAFE_MAX_MODEL_CALL_OUTPUT_TOKENS
                                         {
                                             let max_output =
                                                 turn.max_output_tokens.min(u64::from(u32::MAX));
@@ -514,7 +514,7 @@ async fn handle(
             // the external-effect boundary and runs before any binder or send.
             if let Some((_, _, max_input_tokens, _)) = &bound_turn
                 && *max_input_tokens > 0
-                && *max_input_tokens < crate::execution_policy::UNCAPPED_TOKENS
+                && *max_input_tokens < crate::execution_policy::SAFE_MAX_MODEL_CALL_INPUT_TOKENS
             {
                 let max_body_bytes = (*max_input_tokens).min(MAX_REQUEST_BODY as u64);
                 if body.len() as u64 > max_body_bytes {
