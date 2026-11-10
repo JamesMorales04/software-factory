@@ -20824,6 +20824,28 @@ mod tests {
                 )
                 .await
                 .unwrap();
+            let pool = sqlx_sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx_sqlite::SqliteConnectOptions::new()
+                        .filename(&fixture.path)
+                        .create_if_missing(false),
+                )
+                .await
+                .unwrap();
+            sqlx::query::query(
+                "INSERT INTO events(subject_id,kind,detail,recorded_at)
+                 VALUES (?1,'run.created',?2,?3)",
+            )
+            .bind(&run_id)
+            .bind(
+                r#"{"state":"raw prompt or token","status":"raw prompt or token","stepId":"raw prompt or token"}"#,
+            )
+            .bind(chrono::Utc::now().to_rfc3339())
+            .execute(&pool)
+            .await
+            .unwrap();
+            pool.close().await;
 
             let (status, trace) = send(
                 &fixture.router,
@@ -20834,18 +20856,33 @@ mod tests {
             .await;
             assert_eq!(status, StatusCode::OK, "{trace}");
             assert_eq!(trace["run"]["state"], "ASSESSING");
-            assert_eq!(trace["events"].as_array().unwrap().len(), 4);
+            assert_eq!(trace["events"].as_array().unwrap().len(), 5);
+            assert_eq!(trace["stepLimit"], 500);
+            assert_eq!(trace["stepsTruncated"], false);
             assert_eq!(trace["steps"][0]["status"], "SUCCEEDED");
             assert_eq!(trace["steps"][0]["stepId"], step.id);
             let serialized = trace.to_string();
             assert!(!serialized.contains("super-secret-token-value"));
             assert!(!serialized.contains("raw prompt body"));
+            assert!(!serialized.contains("raw prompt or token"));
+            assert!(trace["events"].as_array().unwrap().iter().any(|event| {
+                event["payload"]["state"]
+                    .as_str()
+                    .is_some_and(|value| value.starts_with("sha256:"))
+            }));
             assert!(
                 trace["alerts"]
                     .as_array()
                     .unwrap()
                     .iter()
                     .any(|alert| alert["kind"] == "NON_TERMINAL_STATE")
+            );
+            assert!(
+                trace["alerts"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|alert| alert["kind"] == "MALFORMED_EVENT")
             );
 
             let (status, bounded) = send(

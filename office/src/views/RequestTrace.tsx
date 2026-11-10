@@ -39,6 +39,91 @@ function isSecretPayloadKey(key: string): boolean {
   return SECRET_KEY_MARKERS.some((marker) => normalized.includes(marker));
 }
 
+const WORKFLOW_STATES = new Set([
+  "SUBMITTED",
+  "ASSESSING",
+  "PLANNED",
+  "PLAN_REVIEW",
+  "FROZEN",
+  "EXECUTING",
+  "VERIFYING",
+  "REVIEWING",
+  "GATE",
+  "REPAIRING",
+  "REPLANNING",
+  "CONVERGING",
+  "ACCEPTED",
+  "BLOCKED",
+  "FAILED",
+  "CANCELLED",
+]);
+
+const STEP_STATUSES = new Set([
+  "PENDING",
+  "RUNNING",
+  "SUCCEEDED",
+  "FAILED",
+  "BLOCKED",
+]);
+
+const GATE_OUTCOMES = new Set([
+  "ACCEPTED",
+  "REPAIR_REQUIRED",
+  "BLOCKED",
+  "HUMAN_REQUIRED",
+  "NOT_TESTED",
+  "PASS",
+  "FAIL",
+  "CHANGES_REQUESTED",
+]);
+
+function normalizePayloadKey(key: string): string {
+  return key.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+const OPERATIONAL_IDENTIFIER = /^[A-Za-z0-9._:/-]{1,200}$/;
+
+function operationalIdText(value: string | null): string {
+  return value !== null && OPERATIONAL_IDENTIFIER.test(value)
+    ? shortId(value)
+    : "[REDACTED]";
+}
+
+function isSafePayloadString(key: string, value: string): boolean {
+  switch (normalizePayloadKey(key)) {
+    case "state":
+    case "statefrom":
+    case "stateto":
+      return WORKFLOW_STATES.has(value);
+    case "status":
+      return WORKFLOW_STATES.has(value) || STEP_STATUSES.has(value);
+    case "outcome":
+      return GATE_OUTCOMES.has(value);
+    case "sha256":
+    case "payloadsha256":
+      return /^[a-f0-9]{64}$/.test(value);
+    case "stepid":
+    case "runid":
+    case "requestid":
+      return /^[A-Za-z0-9._:/-]{1,200}$/.test(value);
+    default:
+      return false;
+  }
+}
+
+function displayPayloadValue(key: string, value: unknown): string {
+  if (isSecretPayloadKey(key)) return "[REDACTED]";
+  if (typeof value === "string") {
+    return isSafePayloadString(key, value) ? value : "[REDACTED]";
+  }
+  if (typeof value === "boolean" || typeof value === "number") {
+    return String(value);
+  }
+  // Nested structures are not re-rendered in the browser; Core's redacted
+  // scalar projection is the only display contract.
+  return "[REDACTED]";
+}
+
 const ALERT_LABEL_KEYS: Record<TraceAlertKind, MessageKey> = {
   DUPLICATE_SEQUENCE: "request.trace.alert.DUPLICATE_SEQUENCE",
   MISSING_TRANSITION: "request.trace.alert.MISSING_TRANSITION",
@@ -46,6 +131,7 @@ const ALERT_LABEL_KEYS: Record<TraceAlertKind, MessageKey> = {
   TERMINAL_STATE: "request.trace.alert.TERMINAL_STATE",
   NON_TERMINAL_STATE: "request.trace.alert.NON_TERMINAL_STATE",
   TRACE_TRUNCATED: "request.trace.alert.TRACE_TRUNCATED",
+  STEP_TRUNCATED: "request.trace.alert.STEP_TRUNCATED",
   REPLAY_REJECTED: "request.trace.alert.REPLAY_REJECTED",
   STATE_DIVERGENCE: "request.trace.alert.STATE_DIVERGENCE",
   NO_EVENTS: "request.trace.alert.NO_EVENTS",
@@ -90,7 +176,7 @@ function alertDetail(
       return alert.stepId === null
         ? null
         : t("request.trace.alert.openStepDetail", {
-            stepId: shortId(alert.stepId),
+            stepId: operationalIdText(alert.stepId),
           });
     case "STATE_DIVERGENCE":
       return t("request.trace.alert.stateDivergenceDetail", {
@@ -105,6 +191,8 @@ function alertDetail(
           });
     case "TRACE_TRUNCATED":
       return t("request.trace.alert.truncatedDetail");
+    case "STEP_TRUNCATED":
+      return t("request.trace.alert.stepsTruncatedDetail");
     case "REPLAY_REJECTED":
       return t("request.trace.alert.rejectedDetail");
     case "NO_EVENTS":
@@ -118,30 +206,14 @@ function alertDetail(
   }
 }
 
-function payloadText(value: unknown): string {
-  if (value === null) return "null";
-  if (typeof value === "string") return value;
-  if (typeof value === "number" || typeof value === "boolean") {
-    return String(value);
-  }
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return "[REDACTED]";
-  }
-}
-
 function payloadEntries(payload: unknown): Array<[string, string]> {
   if (payload === null || payload === undefined) return [];
   if (typeof payload === "object" && !Array.isArray(payload)) {
     return Object.entries(payload as Record<string, unknown>)
       .slice(0, 50)
-      .map(([key, value]) => [
-        key,
-        isSecretPayloadKey(key) ? "[REDACTED]" : payloadText(value),
-      ]);
+      .map(([key, value]) => [key, displayPayloadValue(key, value)]);
   }
-  return [["value", payloadText(payload)]];
+  return [["value", displayPayloadValue("value", payload)]];
 }
 
 export function RequestTrace({ requestId }: { requestId: string }) {
@@ -239,6 +311,14 @@ export function RequestTrace({ requestId }: { requestId: string }) {
 
   const eventEntries = data.events;
   const run = data.run;
+  const replayOutcome =
+    data.replayError !== null
+      ? "rejected"
+      : data.trace === null
+        ? "unknown"
+        : data.terminal
+          ? "terminal"
+          : "inProgress";
 
   return (
     <Panel className="request-panel request-trace" as="section">
@@ -294,6 +374,13 @@ export function RequestTrace({ requestId }: { requestId: string }) {
           })}
         </p>
       )}
+      {data.stepsTruncated && (
+        <p className="ui-callout ui-callout--attention" role="status">
+          {t("request.trace.stepsTruncated", {
+            limit: formatNumber(data.stepLimit),
+          })}
+        </p>
+      )}
 
       {run === null ? (
         <EmptyState
@@ -332,10 +419,24 @@ export function RequestTrace({ requestId }: { requestId: string }) {
             <div>
               <dt>{t("request.trace.outcome")}</dt>
               <dd>
-                <Badge tone={data.terminal ? "success" : "info"}>
-                  {data.terminal
-                    ? t("request.trace.terminal")
-                    : t("request.trace.inProgress")}
+                <Badge
+                  tone={
+                    replayOutcome === "rejected"
+                      ? "danger"
+                      : replayOutcome === "unknown"
+                        ? "attention"
+                        : replayOutcome === "terminal"
+                          ? "success"
+                          : "info"
+                  }
+                >
+                  {replayOutcome === "rejected"
+                    ? t("request.trace.outcomeRejected")
+                    : replayOutcome === "unknown"
+                      ? t("request.trace.outcomeUnknown")
+                      : replayOutcome === "terminal"
+                        ? t("request.trace.terminal")
+                        : t("request.trace.inProgress")}
                 </Badge>
               </dd>
             </div>
@@ -388,8 +489,9 @@ export function RequestTrace({ requestId }: { requestId: string }) {
             <div className="section-heading">
               <h3>{t("request.trace.stepsTitle")}</h3>
               <span className="muted">
-                {t("request.trace.stepsCount", {
+                {t("request.trace.stepsCountValue", {
                   count: formatNumber(data.steps.length),
+                  limit: formatNumber(data.stepLimit),
                 })}
               </span>
             </div>
@@ -400,7 +502,9 @@ export function RequestTrace({ requestId }: { requestId: string }) {
                 {data.steps.map((step) => (
                   <li key={step.stepId} className="request-trace-step">
                     <div className="request-trace-step-head">
-                      <code title={step.stepId}>{shortId(step.stepId)}</code>
+                      <code title={operationalIdText(step.stepId)}>
+                        {operationalIdText(step.stepId)}
+                      </code>
                       <StatusBadge status={step.status} />
                       {step.open && (
                         <Badge tone="attention">
@@ -462,9 +566,9 @@ export function RequestTrace({ requestId }: { requestId: string }) {
                             {event.stepId && (
                               <code
                                 className="request-trace-event-step"
-                                title={event.stepId}
+                                title={operationalIdText(event.stepId)}
                               >
-                                {shortId(event.stepId)}
+                                {operationalIdText(event.stepId)}
                               </code>
                             )}
                             {event.stateFrom && event.stateTo && (

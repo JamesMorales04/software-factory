@@ -227,6 +227,8 @@ describe("RequestWorkspace", () => {
       terminal: false,
       eventLimit: 200,
       truncated: false,
+      stepLimit: 500,
+      stepsTruncated: false,
       replayError: null,
     });
     mocks.repairCampaign.mockReset().mockResolvedValue({

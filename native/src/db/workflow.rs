@@ -849,6 +849,38 @@ impl Database {
         .await?;
         rows.iter().map(step_from_row).collect()
     }
+
+    /// Load a bounded newest page of durable step rows for a trace read.
+    /// Returns the rows in creation order plus whether older rows were omitted.
+    pub async fn workflow_steps_bounded(
+        &self,
+        run_id: &str,
+        limit: usize,
+    ) -> Result<(Vec<WorkflowStepRecord>, bool), Error> {
+        workflow::validate_identifier("run id", run_id)?;
+        let limit = limit.clamp(1, crate::trace::TRACE_STEP_MAX);
+        let rows = sqlx::query::query(
+            "SELECT id,run_id,kind,status,attempt,input_sha256,output_sha256,detail,
+                    created_at,updated_at
+             FROM workflow_steps WHERE run_id=?1
+             ORDER BY created_at DESC,id DESC LIMIT ?2",
+        )
+        .bind(run_id)
+        .bind(i64::try_from(limit.saturating_add(1)).unwrap_or(i64::MAX))
+        .fetch_all(&self.pool)
+        .await?;
+        let truncated = rows.len() > limit;
+        let mut rows = rows;
+        if truncated {
+            rows.truncate(limit);
+        }
+        rows.reverse();
+        let steps = rows
+            .iter()
+            .map(step_from_row)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((steps, truncated))
+    }
 }
 
 #[cfg(test)]
@@ -1560,6 +1592,36 @@ mod tests {
 
         // A terminal workflow cannot start a new step.
         assert!(db.begin_step(&run_id, "unit.execute", "").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn bounded_step_history_reports_truncation_and_keeps_the_newest_rows() {
+        let db = seeded_db("request-bounded-steps").await;
+        let run_id = db
+            .ensure_workflow_run("request-bounded-steps", None, "")
+            .await
+            .unwrap();
+        let first = db.begin_step(&run_id, "unit.one", "").await.unwrap();
+        let second = db.begin_step(&run_id, "unit.two", "").await.unwrap();
+        let third = db.begin_step(&run_id, "unit.three", "").await.unwrap();
+        for (index, step) in [&first, &second, &third].iter().enumerate() {
+            sqlx::query::query("UPDATE workflow_steps SET created_at=?1 WHERE id=?2")
+                .bind(format!("2026-01-01T00:00:0{index}Z"))
+                .bind(&step.id)
+                .execute(&db.pool)
+                .await
+                .unwrap();
+        }
+
+        let (steps, truncated) = db.workflow_steps_bounded(&run_id, 2).await.unwrap();
+
+        assert!(truncated);
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[0].id, second.id);
+        assert_eq!(steps[1].id, third.id);
+        let (all, not_truncated) = db.workflow_steps_bounded(&run_id, 10).await.unwrap();
+        assert!(!not_truncated);
+        assert_eq!(all.len(), 3);
     }
 
     #[tokio::test]

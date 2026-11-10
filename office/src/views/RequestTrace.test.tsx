@@ -53,6 +53,8 @@ function emptyTrace(): WorkflowTraceView {
     terminal: false,
     eventLimit: 200,
     truncated: false,
+    stepLimit: 500,
+    stepsTruncated: false,
     replayError: null,
   };
 }
@@ -108,12 +110,13 @@ function runningTrace(
         payload: {
           stepId: "step-1",
           status: "RUNNING",
+          state: "raw prompt or token",
           prompt: "raw prompt body",
           token: "super-secret-token",
         },
       }),
       event(3, "workflow.step.started", {
-        stepId: "step-2",
+        stepId: "raw prompt or token",
         stateFrom: "SUBMITTED",
         stateTo: "EXECUTING",
         payload: {
@@ -209,6 +212,8 @@ function runningTrace(
     terminal: false,
     eventLimit: 200,
     truncated: false,
+    stepLimit: 500,
+    stepsTruncated: false,
     replayError: null,
     ...overrides,
   };
@@ -280,6 +285,65 @@ describe("RequestTrace", () => {
     // be rendered even if a malicious/buggy payload tries to include one.
     expect(screen.queryByText("raw prompt body")).toBeNull();
     expect(screen.queryByText("super-secret-token")).toBeNull();
+    expect(screen.queryByText("raw prompt or token")).toBeNull();
+  });
+
+  it("renders a rejected replay as unknown rather than in progress", async () => {
+    const base = runningTrace();
+    mocks.getRequestTrace.mockResolvedValue({
+      ...base,
+      run: base.run ? { ...base.run, state: "ACCEPTED" } : null,
+      trace: null,
+      terminal: false,
+      replayError: "ambiguous ledger",
+      alerts: [
+        {
+          kind: "REPLAY_REJECTED",
+          severity: "CRITICAL",
+          sequence: 3,
+          stepId: null,
+          occurrences: null,
+          expectedFrom: null,
+          observedFrom: null,
+          expectedState: null,
+          observedState: null,
+        },
+      ],
+    });
+    renderTrace();
+
+    expect(await screen.findByText("Unknown — replay rejected")).toBeDefined();
+    expect(screen.queryByText("In progress")).toBeNull();
+  });
+
+  it("reports bounded step history", async () => {
+    const base = runningTrace();
+    mocks.getRequestTrace.mockResolvedValue(
+      runningTrace({
+        steps: base.steps,
+        stepsTruncated: true,
+        stepLimit: 2,
+        alerts: [
+          ...base.alerts,
+          {
+            kind: "STEP_TRUNCATED",
+            severity: "WARNING",
+            sequence: null,
+            stepId: null,
+            occurrences: null,
+            expectedFrom: null,
+            observedFrom: null,
+            expectedState: null,
+            observedState: null,
+          },
+        ],
+      }),
+    );
+    renderTrace();
+
+    expect(await screen.findByText(/Showing the newest 2 steps/)).toBeDefined();
+    expect(screen.getByText("2 step(s) · limit 2")).toBeDefined();
+    expect(screen.getByText("Step trace truncated")).toBeDefined();
   });
 
   it("renders a bounded long event list and reports truncation", async () => {

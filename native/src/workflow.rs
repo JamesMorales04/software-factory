@@ -238,6 +238,33 @@ pub fn validate_identifier(field: &str, value: &str) -> Result<(), WorkflowError
     validate_text(field, value, MAX_IDENTIFIER_CHARS, false)
 }
 
+/// Validate an operational identifier used to correlate traces and records.
+///
+/// This is stricter than [`validate_identifier`]: whitespace and other
+/// free-form text are rejected so an event detail cannot smuggle a prompt or
+/// token into a field an operator UI renders as an identifier. Core-generated
+/// IDs (`workflow-<uuid>`, `step-<uuid>`, request UUIDs, unit kinds) satisfy it.
+pub fn validate_operational_identifier(field: &str, value: &str) -> Result<(), WorkflowError> {
+    validate_identifier(field, value)?;
+    if !is_operational_identifier(value) {
+        return Err(invalid(format!(
+            "{field} must contain only operational identifier characters"
+        )));
+    }
+    Ok(())
+}
+
+/// Return whether a non-empty, bounded value has the operational identifier
+/// shape. The caller is responsible for the empty/bounded check when it needs
+/// a typed error; this helper is for display/projection filtering.
+pub fn is_operational_identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value.chars().count() <= MAX_IDENTIFIER_CHARS
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':' | b'/')
+        })
+}
+
 /// Validate an optional identifier. `None` is accepted; `Some` must be valid.
 pub fn validate_optional_identifier(field: &str, value: Option<&str>) -> Result<(), WorkflowError> {
     match value {

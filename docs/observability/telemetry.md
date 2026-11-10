@@ -42,12 +42,14 @@ Avoid high-cardinality metric labels: `actionId`, `runId` and `sessionId` belong
 latest durable workflow run. It loads at most a bounded newest page of durable
 events (default 500, hard maximum 2,000) in ascending sequence order, maps them
 through the pure `native/src/replay.rs` projection without a second state
-machine, and returns the replayed final state, per-step rows, a redacted event
-log and structured alerts for duplicate sequences, state-chain gaps, open
-steps, terminal/non-terminal state, truncation, malformed rows and replay
-rejection. Payloads are redacted by Core before serialization; free-form step
-detail is not exposed. A truncated or rejected replay is reported as an alert;
-Core never invents the missing state.
+machine, and returns the replayed final state, a bounded newest page of step
+rows (hard maximum 500), a redacted event log and structured alerts for
+duplicate sequences, state-chain gaps, open steps, terminal/non-terminal state,
+event or step truncation, malformed rows and replay rejection. Payload values
+under allowlisted keys retain only validated enum codes, canonical hash shapes,
+operational identifiers or numbers/booleans; free-form strings are replaced by a
+SHA-256 fingerprint. Free-form step detail is not exposed. A truncated or
+rejected replay is reported as an alert; Core never invents the missing state.
 
 ## Native OTLP log export
 

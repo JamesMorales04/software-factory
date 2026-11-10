@@ -32,7 +32,7 @@ use serde_json::{Map, Value};
 
 use crate::{
     planning::{WorkflowState, WorkflowStepStatus},
-    workflow::{MAX_IDENTIFIER_CHARS, MAX_KIND_CHARS, sha256_hex},
+    workflow::{MAX_KIND_CHARS, sha256_hex},
 };
 
 const MAX_RECORDED_AT_CHARS: usize = 64;
@@ -348,15 +348,10 @@ pub fn compare_replay(expected: &ReplayTrace, actual: &ReplayTrace) -> Vec<Repla
 }
 
 fn validate_event(event: &ReplayEvent) -> Result<(), String> {
-    validate_text(
-        &event.request_id,
-        "requestId",
-        MAX_IDENTIFIER_CHARS,
-        event.sequence,
-    )?;
-    validate_text(&event.run_id, "runId", MAX_IDENTIFIER_CHARS, event.sequence)?;
+    validate_operational_text(&event.request_id, "requestId", event.sequence)?;
+    validate_operational_text(&event.run_id, "runId", event.sequence)?;
     if let Some(step_id) = &event.step_id {
-        validate_text(step_id, "stepId", MAX_IDENTIFIER_CHARS, event.sequence)?;
+        validate_operational_text(step_id, "stepId", event.sequence)?;
     }
     validate_text(&event.kind, "kind", MAX_KIND_CHARS, event.sequence)?;
     validate_text(
@@ -376,6 +371,11 @@ fn validate_event(event: &ReplayEvent) -> Result<(), String> {
 
 fn validate_text(value: &str, field: &str, max_chars: usize, sequence: u64) -> Result<(), String> {
     crate::workflow::validate_text(field, value, max_chars, false)
+        .map_err(|error| format!("replay event {sequence} has an invalid {field}: {error}"))
+}
+
+fn validate_operational_text(value: &str, field: &str, sequence: u64) -> Result<(), String> {
+    crate::workflow::validate_operational_identifier(field, value)
         .map_err(|error| format!("replay event {sequence} has an invalid {field}: {error}"))
 }
 
@@ -573,7 +573,7 @@ fn redact_value(value: &Value, depth: usize) -> Value {
         let replacement = if is_secret_key(&normalized) {
             Value::String(hash_label(value))
         } else if is_safe_key(&normalized) {
-            redact_safe_value(value, depth + 1)
+            redact_safe_value(&normalized, value, depth + 1)
         } else {
             Value::String(REDACTED_LABEL.to_owned())
         };
@@ -582,14 +582,20 @@ fn redact_value(value: &Value, depth: usize) -> Value {
     Value::Object(redacted)
 }
 
-fn redact_safe_value(value: &Value, depth: usize) -> Value {
+fn redact_safe_value(key: &str, value: &Value, depth: usize) -> Value {
     if depth >= MAX_REDACTION_DEPTH {
         return Value::String(hash_label(value));
     }
 
     match value {
         Value::Null | Value::Bool(_) | Value::Number(_) => value.clone(),
-        Value::String(text) => Value::String(text.chars().take(MAX_SAFE_STRING_CHARS).collect()),
+        Value::String(text) => {
+            if is_safe_payload_string(key, text) {
+                Value::String(text.chars().take(MAX_SAFE_STRING_CHARS).collect())
+            } else {
+                Value::String(hash_label(value))
+            }
+        }
         Value::Array(items) => {
             if items.len() > MAX_PAYLOAD_COLLECTION_ITEMS {
                 return Value::String(hash_label(value));
@@ -597,11 +603,45 @@ fn redact_safe_value(value: &Value, depth: usize) -> Value {
             Value::Array(
                 items
                     .iter()
-                    .map(|item| redact_safe_value(item, depth + 1))
+                    .map(|item| redact_safe_value(key, item, depth + 1))
                     .collect(),
             )
         }
         Value::Object(_) => redact_value(value, depth),
+    }
+}
+
+/// Retain a string only when its key has a validated operational grammar.
+///
+/// An allowlisted key is not permission to retain arbitrary free text. State
+/// and status must parse as the canonical workflow enums, hashes must be
+/// lowercase SHA-256, identifiers must have the operational identifier shape,
+/// and every other safe key retains only booleans/numbers. Invalid strings are
+/// replaced by a SHA-256 fingerprint before they can reach a trace response.
+fn is_safe_payload_string(key: &str, text: &str) -> bool {
+    match key {
+        "state" | "statefrom" | "stateto" => crate::workflow::parse_workflow_state(text).is_ok(),
+        "status" => {
+            crate::workflow::parse_workflow_state(text).is_ok()
+                || crate::workflow::parse_workflow_step_status(text).is_ok()
+        }
+        "outcome" => matches!(
+            text,
+            "ACCEPTED"
+                | "REPAIR_REQUIRED"
+                | "BLOCKED"
+                | "HUMAN_REQUIRED"
+                | "NOT_TESTED"
+                | "PASS"
+                | "FAIL"
+                | "CHANGES_REQUESTED"
+        ),
+        "sha256" | "payloadsha256" => is_lowercase_sha256(text),
+        "stepid" | "runid" | "requestid" => crate::workflow::is_operational_identifier(text),
+        // `kind` is already exposed as the validated top-level event kind.
+        // Numeric keys retain numbers via the scalar branch. Any string value
+        // for these or any other allowlisted key is hashed.
+        _ => false,
     }
 }
 
@@ -932,6 +972,43 @@ mod tests {
                 .as_str()
                 .is_some_and(|value| value.starts_with("sha256:"))
         );
+    }
+
+    #[test]
+    fn allowlisted_keys_do_not_retain_free_form_strings() {
+        let payload = serde_json::json!({
+            "state": "raw prompt or token",
+            "status": "raw token",
+            "stepId": "raw prompt",
+            "sha256": "not-a-hash",
+            "kind": "raw prompt",
+            "outcome": "ACCEPTED",
+            "sequence": 7,
+            "terminal": false,
+        });
+
+        let redacted = redact_payload(&payload);
+        let serialized = serde_json::to_string(&redacted).expect("serializable redaction");
+
+        for raw in [
+            "raw prompt or token",
+            "raw token",
+            "raw prompt",
+            "not-a-hash",
+        ] {
+            assert!(!serialized.contains(raw), "redaction retained {raw}");
+        }
+        assert_eq!(redacted["outcome"], "ACCEPTED");
+        assert_eq!(redacted["sequence"], 7);
+        assert_eq!(redacted["terminal"], false);
+        for key in ["state", "status", "stepId", "sha256", "kind"] {
+            assert!(
+                redacted[key]
+                    .as_str()
+                    .is_some_and(|value| value.starts_with("sha256:")),
+                "{key} must be hashed"
+            );
+        }
     }
 
     #[test]

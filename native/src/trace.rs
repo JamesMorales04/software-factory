@@ -25,6 +25,8 @@ use crate::workflow::{WorkflowRunRecord, WorkflowStepRecord};
 pub const TRACE_EVENT_DEFAULT: usize = 500;
 /// Hard bound for a trace read. A caller may request fewer events, never more.
 pub const TRACE_EVENT_MAX: usize = 2_000;
+/// Hard bound for durable step rows returned with one trace read.
+pub const TRACE_STEP_MAX: usize = 500;
 /// Bound for a replay error string exposed to an operator client.
 const MAX_TRACE_ERROR_CHARS: usize = 512;
 
@@ -114,6 +116,7 @@ pub enum TraceAlertKind {
     TerminalState,
     NonTerminalState,
     TraceTruncated,
+    StepTruncated,
     ReplayRejected,
     StateDivergence,
     NoEvents,
@@ -177,11 +180,50 @@ pub struct WorkflowTraceView {
     pub terminal: bool,
     pub event_limit: usize,
     pub truncated: bool,
+    pub step_limit: usize,
+    pub steps_truncated: bool,
     pub replay_error: Option<String>,
+}
+
+/// Bounds applied to one trace read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TraceBounds {
+    pub event_limit: usize,
+    pub event_truncated: bool,
+    pub step_limit: usize,
+    pub steps_truncated: bool,
+}
+
+impl Default for TraceBounds {
+    fn default() -> Self {
+        Self {
+            event_limit: TRACE_EVENT_DEFAULT,
+            event_truncated: false,
+            step_limit: TRACE_STEP_MAX,
+            steps_truncated: false,
+        }
+    }
+}
+
+impl TraceBounds {
+    pub fn new(
+        event_limit: usize,
+        event_truncated: bool,
+        step_limit: usize,
+        steps_truncated: bool,
+    ) -> Self {
+        Self {
+            event_limit: event_limit.clamp(1, TRACE_EVENT_MAX),
+            event_truncated,
+            step_limit: step_limit.clamp(1, TRACE_STEP_MAX),
+            steps_truncated,
+        }
+    }
 }
 
 /// Empty trace for a request that has no durable workflow run yet.
 pub fn empty(request_id: &str, event_limit: usize) -> WorkflowTraceView {
+    let bounds = TraceBounds::new(event_limit, false, TRACE_STEP_MAX, false);
     WorkflowTraceView {
         request_id: request_id.to_owned(),
         run: None,
@@ -190,8 +232,10 @@ pub fn empty(request_id: &str, event_limit: usize) -> WorkflowTraceView {
         steps: Vec::new(),
         alerts: Vec::new(),
         terminal: false,
-        event_limit: event_limit.clamp(1, TRACE_EVENT_MAX),
-        truncated: false,
+        event_limit: bounds.event_limit,
+        truncated: bounds.event_truncated,
+        step_limit: bounds.step_limit,
+        steps_truncated: bounds.steps_truncated,
         replay_error: None,
     }
 }
@@ -206,10 +250,18 @@ pub fn project(
     run: WorkflowRunRecord,
     events: Vec<LoadedTraceEvent>,
     steps: Vec<WorkflowStepRecord>,
-    truncated: bool,
-    event_limit: usize,
+    bounds: TraceBounds,
 ) -> WorkflowTraceView {
-    let event_limit = event_limit.clamp(1, TRACE_EVENT_MAX);
+    let bounds = TraceBounds::new(
+        bounds.event_limit,
+        bounds.event_truncated,
+        bounds.step_limit,
+        bounds.steps_truncated,
+    );
+    let event_limit = bounds.event_limit;
+    let step_limit = bounds.step_limit;
+    let truncated = bounds.event_truncated;
+    let steps_truncated = bounds.steps_truncated;
     let mut alerts = Vec::new();
     let mut malformed_sequences = Vec::new();
     let mut payload_by_sequence = BTreeMap::new();
@@ -342,6 +394,13 @@ pub fn project(
         alerts.push(alert);
     }
 
+    if steps_truncated {
+        alerts.push(TraceAlert::new(
+            TraceAlertKind::StepTruncated,
+            TraceAlertSeverity::Warning,
+        ));
+    }
+
     let last_sequence_by_step =
         display_events
             .iter()
@@ -381,6 +440,8 @@ pub fn project(
         terminal,
         event_limit,
         truncated,
+        step_limit,
+        steps_truncated,
         replay_error,
     }
 }
@@ -525,8 +586,7 @@ mod tests {
             run(WorkflowState::Accepted),
             valid_terminal_events(),
             vec![step("step-1", WorkflowStepStatus::Succeeded)],
-            false,
-            TRACE_EVENT_DEFAULT,
+            TraceBounds::default(),
         );
 
         assert!(view.terminal);
@@ -571,8 +631,7 @@ mod tests {
             run(WorkflowState::Accepted),
             step_events,
             vec![step("step-open", WorkflowStepStatus::Running)],
-            false,
-            TRACE_EVENT_DEFAULT,
+            TraceBounds::default(),
         );
 
         let kinds = view
@@ -602,8 +661,7 @@ mod tests {
             run(WorkflowState::Executing),
             vec![loaded(event(1, "workflow.event", None, None), payload)],
             Vec::new(),
-            false,
-            TRACE_EVENT_DEFAULT,
+            TraceBounds::default(),
         );
 
         let serialized = serde_json::to_string(&view).expect("serializable trace view");
@@ -632,8 +690,7 @@ mod tests {
                 payload,
             )],
             Vec::new(),
-            false,
-            TRACE_EVENT_DEFAULT,
+            TraceBounds::default(),
         );
 
         assert!(view.trace.is_none());
@@ -657,8 +714,11 @@ mod tests {
                 Value::Null,
             )],
             Vec::new(),
-            true,
-            25,
+            TraceBounds {
+                event_limit: 25,
+                event_truncated: true,
+                ..TraceBounds::default()
+            },
         );
 
         assert!(view.truncated);
@@ -667,6 +727,29 @@ mod tests {
             view.alerts
                 .iter()
                 .any(|alert| alert.kind == TraceAlertKind::TraceTruncated)
+        );
+    }
+
+    #[test]
+    fn step_truncation_is_reported_and_bounded() {
+        let view = project(
+            "request-1",
+            run(WorkflowState::Submitted),
+            Vec::new(),
+            vec![step("step-1", WorkflowStepStatus::Succeeded)],
+            TraceBounds {
+                step_limit: 2,
+                steps_truncated: true,
+                ..TraceBounds::default()
+            },
+        );
+
+        assert!(view.steps_truncated);
+        assert_eq!(view.step_limit, 2);
+        assert!(
+            view.alerts
+                .iter()
+                .any(|alert| alert.kind == TraceAlertKind::StepTruncated)
         );
     }
 
@@ -680,8 +763,7 @@ mod tests {
             run(WorkflowState::Submitted),
             vec![malformed],
             Vec::new(),
-            false,
-            TRACE_EVENT_DEFAULT,
+            TraceBounds::default(),
         );
 
         assert!(

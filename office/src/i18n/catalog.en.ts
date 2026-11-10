@@ -535,6 +535,8 @@ export const en = {
   "request.trace.revision": "Revision",
   "request.trace.finalState": "Replayed final state",
   "request.trace.outcome": "Replay outcome",
+  "request.trace.outcomeRejected": "Unknown — replay rejected",
+  "request.trace.outcomeUnknown": "Unknown",
   "request.trace.terminal": "Terminal",
   "request.trace.inProgress": "In progress",
   "request.trace.eventCount": "Events",
@@ -544,8 +546,10 @@ export const en = {
   "request.trace.alertsEmpty": "No replay anomalies recorded.",
   "request.trace.sequence": "Sequence {sequence}",
   "request.trace.stepsTitle": "Step trace",
-  "request.trace.stepsCount": "{count} step(s)",
+  "request.trace.stepsCountValue": "{count} step(s) · limit {limit}",
   "request.trace.stepsEmpty": "No durable workflow steps recorded.",
+  "request.trace.stepsTruncated":
+    "Showing the newest {limit} steps because the step trace is bounded. Older steps may be omitted.",
   "request.trace.stepOpen": "Open in replay",
   "request.trace.stepKind": "Kind",
   "request.trace.stepAttempt": "Attempt",
@@ -568,6 +572,7 @@ export const en = {
   "request.trace.alert.TERMINAL_STATE": "Terminal state",
   "request.trace.alert.NON_TERMINAL_STATE": "In progress",
   "request.trace.alert.TRACE_TRUNCATED": "Trace truncated",
+  "request.trace.alert.STEP_TRUNCATED": "Step trace truncated",
   "request.trace.alert.REPLAY_REJECTED": "Replay rejected",
   "request.trace.alert.STATE_DIVERGENCE": "State divergence",
   "request.trace.alert.NO_EVENTS": "No events",
@@ -583,6 +588,8 @@ export const en = {
     "Sequence {sequence} is not a complete workflow event.",
   "request.trace.alert.truncatedDetail":
     "The oldest events are outside the requested bound.",
+  "request.trace.alert.stepsTruncatedDetail":
+    "The oldest durable steps are outside the requested step bound.",
   "request.trace.alert.rejectedDetail":
     "The pure replay projection refused this ledger.",
   "request.trace.alert.noEventsDetail": "The run has no durable events.",

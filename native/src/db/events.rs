@@ -53,10 +53,16 @@ impl Database {
                 loaded_event(&run, sequence, kind, detail, recorded_at)
             })
             .collect::<Vec<_>>();
-        let steps = self.workflow_steps(&run.id).await?;
+        let (steps, steps_truncated) = self
+            .workflow_steps_bounded(&run.id, trace::TRACE_STEP_MAX)
+            .await?;
 
         Ok(trace::project(
-            request_id, run, events, steps, truncated, limit,
+            request_id,
+            run,
+            events,
+            steps,
+            trace::TraceBounds::new(limit, truncated, trace::TRACE_STEP_MAX, steps_truncated),
         ))
     }
 }
@@ -68,12 +74,21 @@ fn loaded_event(
     detail: String,
     recorded_at: String,
 ) -> LoadedTraceEvent {
-    let detail_value = serde_json::from_str::<Value>(&detail).ok();
-    let mut malformed = false;
+    let detail_parse = serde_json::from_str::<Value>(&detail);
+    let detail_is_json_like = matches!(
+        detail.trim_start().as_bytes().first(),
+        Some(b'{') | Some(b'[')
+    );
+    let detail_value = detail_parse.as_ref().ok().cloned();
     let transition_event = matches!(
         kind.as_str(),
         "run.status_changed" | "workflow.transitioned"
     );
+    // A transition row must carry a JSON object with both canonical states.
+    // Legacy run status rows use a plain `status=...` string; those are not
+    // claimed to be transitions. JSON-looking text that fails to parse is a
+    // malformed transition, not an ordinary event.
+    let mut malformed = transition_event && detail_parse.is_err() && detail_is_json_like;
 
     let state_from = transition_event
         .then(|| {
@@ -106,9 +121,12 @@ fn loaded_event(
             }
         });
     if transition_event
-        && detail_value
-            .as_ref()
-            .is_some_and(|value| value.get("from").is_some() != value.get("to").is_some())
+        && detail_value.as_ref().is_some_and(|value| {
+            value.get("from").and_then(Value::as_str).is_none()
+                || value.get("to").and_then(Value::as_str).is_none()
+                || state_from.is_none()
+                || state_to.is_none()
+        })
     {
         malformed = true;
     }
@@ -118,7 +136,7 @@ fn loaded_event(
         .and_then(|value| value.get("stepId").or_else(|| value.get("step_id")))
         .and_then(Value::as_str)
         .and_then(
-            |value| match workflow::validate_identifier("step id", value) {
+            |value| match workflow::validate_operational_identifier("step id", value) {
                 Ok(()) => Some(value.to_owned()),
                 Err(_) => {
                     malformed = true;
@@ -330,6 +348,49 @@ mod tests {
                 .alerts
                 .iter()
                 .any(|alert| alert.kind == TraceAlertKind::TraceTruncated)
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_transition_rows_are_flagged() {
+        let db = temp_db().await;
+        seed_request(&db, "request-malformed").await;
+        let run_id = db
+            .ensure_workflow_run("request-malformed", None, "")
+            .await
+            .unwrap();
+        let now = Utc::now().to_rfc3339();
+        for detail in [
+            "{broken",
+            r#"{"status":"RUNNING"}"#,
+            r#"{"from":"NOT_A_STATE","to":"ASSESSING"}"#,
+        ] {
+            sqlx::query::query(
+                "INSERT INTO events(subject_id,kind,detail,recorded_at)
+                 VALUES (?1,'run.status_changed',?2,?3)",
+            )
+            .bind(&run_id)
+            .bind(detail)
+            .bind(&now)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        }
+
+        let view = db.workflow_trace("request-malformed", 100).await.unwrap();
+
+        assert!(
+            view.alerts
+                .iter()
+                .filter(|alert| alert.kind == TraceAlertKind::MalformedEvent)
+                .count()
+                >= 3
+        );
+        assert!(view.replay_error.is_some());
+        assert!(
+            view.alerts
+                .iter()
+                .any(|alert| alert.kind == TraceAlertKind::ReplayRejected)
         );
     }
 

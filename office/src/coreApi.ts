@@ -1772,6 +1772,7 @@ export type TraceAlertKind =
   | "TERMINAL_STATE"
   | "NON_TERMINAL_STATE"
   | "TRACE_TRUNCATED"
+  | "STEP_TRUNCATED"
   | "REPLAY_REJECTED"
   | "STATE_DIVERGENCE"
   | "NO_EVENTS"
@@ -1883,6 +1884,8 @@ export interface WorkflowTraceView {
   terminal: boolean;
   eventLimit: number;
   truncated: boolean;
+  stepLimit: number;
+  stepsTruncated: boolean;
   replayError: string | null;
 }
 

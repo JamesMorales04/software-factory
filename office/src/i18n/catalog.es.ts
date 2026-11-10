@@ -547,6 +547,8 @@ export const es: Catalog = {
   "request.trace.revision": "Revisión",
   "request.trace.finalState": "Estado final reproducido",
   "request.trace.outcome": "Resultado de la repetición",
+  "request.trace.outcomeRejected": "Desconocido — repetición rechazada",
+  "request.trace.outcomeUnknown": "Desconocido",
   "request.trace.terminal": "Terminal",
   "request.trace.inProgress": "En curso",
   "request.trace.eventCount": "Eventos",
@@ -556,8 +558,10 @@ export const es: Catalog = {
   "request.trace.alertsEmpty": "No se registraron anomalías de repetición.",
   "request.trace.sequence": "Secuencia {sequence}",
   "request.trace.stepsTitle": "Traza de pasos",
-  "request.trace.stepsCount": "{count} paso(s)",
+  "request.trace.stepsCountValue": "{count} paso(s) · límite {limit}",
   "request.trace.stepsEmpty": "No hay pasos duraderos registrados.",
+  "request.trace.stepsTruncated":
+    "Se muestran los {limit} pasos más recientes porque la traza de pasos está acotada. Los pasos anteriores pueden faltar.",
   "request.trace.stepOpen": "Abierto en la repetición",
   "request.trace.stepKind": "Tipo",
   "request.trace.stepAttempt": "Intento",
@@ -580,6 +584,7 @@ export const es: Catalog = {
   "request.trace.alert.TERMINAL_STATE": "Estado terminal",
   "request.trace.alert.NON_TERMINAL_STATE": "En curso",
   "request.trace.alert.TRACE_TRUNCATED": "Traza truncada",
+  "request.trace.alert.STEP_TRUNCATED": "Traza de pasos truncada",
   "request.trace.alert.REPLAY_REJECTED": "Repetición rechazada",
   "request.trace.alert.STATE_DIVERGENCE": "Divergencia de estado",
   "request.trace.alert.NO_EVENTS": "Sin eventos",
@@ -596,6 +601,8 @@ export const es: Catalog = {
     "La secuencia {sequence} no es un evento de flujo completo.",
   "request.trace.alert.truncatedDetail":
     "Los eventos más antiguos quedan fuera del límite solicitado.",
+  "request.trace.alert.stepsTruncatedDetail":
+    "Los pasos duraderos más antiguos quedan fuera del límite solicitado.",
   "request.trace.alert.rejectedDetail":
     "La proyección pura de repetición rechazó este registro.",
   "request.trace.alert.noEventsDetail":
