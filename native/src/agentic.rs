@@ -528,6 +528,11 @@ pub struct ParticipantPlan {
     pub reviewer_count: u32,
     #[serde(default)]
     pub reviewer_roles: Vec<crate::planning::ReviewerRole>,
+    /// Concrete role-to-principal assignments compiled from trusted reviewer
+    /// identities. Empty for a route with no reviewer or before Core compiles
+    /// them. Model/provider equality is never a reason to reject an assignment.
+    #[serde(default)]
+    pub reviewer_assignments: Vec<crate::review_roles::ReviewerIdentityAssignment>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -572,11 +577,15 @@ pub fn participant_plan(
         .cloned()
         .unwrap_or_else(|| "cross-cutting".into());
     let units = work_units.max(1);
-    let reviewers = if assurance >= Assurance::Elevated {
-        2
-    } else {
-        1
-    };
+    let lane = lane_for_route(route);
+    let reviewer_plan = lane.map(|lane| {
+        crate::planning::ReviewerPlan::for_lane(lane, assurance >= Assurance::Elevated)
+    });
+    let reviewer_roles = reviewer_plan
+        .as_ref()
+        .map(|plan| plan.required.clone())
+        .unwrap_or_default();
+    let reviewers = u32::try_from(reviewer_roles.len()).unwrap_or(u32::MAX);
     let mut assignments = Vec::new();
     match route {
         ChangeRoute::NoAgent => {
@@ -660,19 +669,20 @@ pub fn participant_plan(
         reasons,
         unit_assignments: Vec::new(),
         reviewer_count: reviewers,
-        reviewer_roles: reviewer_roles(route, assurance),
+        reviewer_roles,
+        reviewer_assignments: Vec::new(),
     }
 }
 
-fn reviewer_roles(route: ChangeRoute, assurance: Assurance) -> Vec<crate::planning::ReviewerRole> {
-    let lane = match route {
-        ChangeRoute::NoAgent => return Vec::new(),
-        ChangeRoute::Direct => crate::planning::PlanningLane::Direct,
-        ChangeRoute::Delegated => crate::planning::PlanningLane::Delegated,
-        ChangeRoute::FormalSpec => crate::planning::PlanningLane::FormalSpec,
-        ChangeRoute::Repair => crate::planning::PlanningLane::Repair,
-    };
-    crate::planning::ReviewerPlan::for_lane(lane, assurance >= Assurance::Elevated).roles
+/// Planning lane for an executable route. `NoAgent` has no reviewer plan.
+pub fn lane_for_route(route: ChangeRoute) -> Option<crate::planning::PlanningLane> {
+    match route {
+        ChangeRoute::NoAgent => None,
+        ChangeRoute::Direct => Some(crate::planning::PlanningLane::Direct),
+        ChangeRoute::Delegated => Some(crate::planning::PlanningLane::Delegated),
+        ChangeRoute::FormalSpec => Some(crate::planning::PlanningLane::FormalSpec),
+        ChangeRoute::Repair => Some(crate::planning::PlanningLane::Repair),
+    }
 }
 
 /// Compile the deterministic plan for an exact validated WorkGraph. Each
@@ -1510,7 +1520,8 @@ mod tests {
             "deepseek-v4.1-flash",
             "build",
         );
-        assert_eq!(plan.reviewer_count, 2);
+        assert_eq!(plan.reviewer_count, 6);
+        assert_eq!(plan.reviewer_roles.len(), 6);
         assert_eq!(plan.unit_assignments.len(), 2);
         assert_eq!(plan.unit_assignments[0].specialization, "rust");
         assert_eq!(
@@ -1520,7 +1531,7 @@ mod tests {
         assert!(
             plan.assignments
                 .iter()
-                .any(|assignment| assignment.role == "Reviewer" && assignment.count == 2)
+                .any(|assignment| assignment.role == "Reviewer" && assignment.count == 6)
         );
     }
 

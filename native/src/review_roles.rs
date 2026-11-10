@@ -10,6 +10,17 @@ use crate::planning::{FindingStatus, ReviewerPlan, ReviewerRole};
 
 pub const MAX_PROMPT_CHARS: usize = 4_000;
 
+/// A concrete role-to-identity assignment compiled by Core from trusted
+/// deployment configuration. It carries no prompt and no authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ReviewerIdentityAssignment {
+    pub role: ReviewerRole,
+    pub principal_id: String,
+    pub provider: String,
+    pub model: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ReviewerAssignment {
@@ -118,20 +129,100 @@ pub fn assignments(
     Ok(assignments)
 }
 
-/// Critical assurance requires at least two distinct reviewer provider/model
-/// pairs. This is a plan-level check; it never accepts a receipt.
-pub fn validate_critical_diversity(assignments: &[ReviewerAssignment]) -> Result<(), String> {
-    if assignments.len() < 2 {
-        return Err("critical assurance requires at least two reviewers".into());
+/// Validate reviewer independence from authenticated identity, not from
+/// provider/model choice.
+///
+/// The required reviewer count and the required role set both come from the
+/// frozen [`ReviewerPlan`]. Every required role needs exactly one assignment,
+/// every assignment needs a unique non-empty principal, and no reviewer may
+/// share a principal with the implementer, the verifier or another reviewer.
+/// Provider and model may be identical across assignments.
+pub fn validate_reviewer_independence(
+    plan: &ReviewerPlan,
+    assignments: &[ReviewerIdentityAssignment],
+    implementer_principal: &str,
+    verifier_principal: &str,
+) -> Result<(), String> {
+    plan.validate()?;
+    let required = plan.required_count();
+    if assignments.len() < required {
+        return Err(format!(
+            "reviewer independence requires {required} independent reviewer identities"
+        ));
     }
-    let distinct = assignments
-        .iter()
-        .map(|assignment| (assignment.provider.as_str(), assignment.model.as_str()))
-        .collect::<std::collections::BTreeSet<_>>();
-    if distinct.len() < 2 {
-        return Err("critical assurance requires provider or model diversity".into());
+    if implementer_principal.trim().is_empty() || verifier_principal.trim().is_empty() {
+        return Err("implementer and verifier principals are required".into());
+    }
+    let mut principals = std::collections::BTreeSet::new();
+    let mut roles = std::collections::BTreeSet::new();
+    for assignment in assignments {
+        if assignment.principal_id.trim().is_empty() {
+            return Err("every reviewer assignment requires a non-empty principal".into());
+        }
+        if !plan.required.contains(&assignment.role) {
+            return Err(format!(
+                "reviewer role {:?} is not required by the frozen plan",
+                assignment.role
+            ));
+        }
+        if !roles.insert(assignment.role) {
+            return Err(format!(
+                "reviewer role {:?} has more than one assignment",
+                assignment.role
+            ));
+        }
+        if !principals.insert(assignment.principal_id.as_str()) {
+            return Err("reviewer principals must be independent and unique".into());
+        }
+        if assignment.principal_id == implementer_principal {
+            return Err("the implementer cannot be assigned a reviewer role".into());
+        }
+        if assignment.principal_id == verifier_principal {
+            return Err("the verifier cannot be assigned a reviewer role".into());
+        }
+    }
+    for role in &plan.required {
+        if !roles.contains(role) {
+            return Err(format!("required reviewer role {role:?} has no assignment"));
+        }
     }
     Ok(())
+}
+
+/// Non-blocking observation: whether the assignments happen to use more than
+/// one provider/model pair. It never affects plan or Gate acceptance.
+pub fn model_diversity_observation(assignments: &[ReviewerIdentityAssignment]) -> bool {
+    assignments
+        .iter()
+        .map(|assignment| (assignment.provider.as_str(), assignment.model.as_str()))
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
+        > 1
+}
+
+/// Compile one identity assignment per required role from a trusted
+/// role-to-principal map. Missing roles fail closed.
+pub fn identity_assignments(
+    plan: &ReviewerPlan,
+    provider: &str,
+    model: &str,
+    principals: &std::collections::BTreeMap<ReviewerRole, String>,
+) -> Result<Vec<ReviewerIdentityAssignment>, String> {
+    plan.validate()?;
+    let mut assignments = Vec::new();
+    for role in &plan.required {
+        let principal = principals
+            .get(role)
+            .filter(|principal| !principal.trim().is_empty())
+            .ok_or_else(|| format!("required reviewer role {role:?} has no identity"))?;
+        assignments.push(ReviewerIdentityAssignment {
+            role: *role,
+            principal_id: principal.clone(),
+            provider: provider.to_owned(),
+            model: model.to_owned(),
+        });
+    }
+    Ok(assignments)
 }
 
 pub fn role_slug(role: ReviewerRole) -> &'static str {
@@ -242,14 +333,73 @@ mod tests {
         assert!(evidence.validate().is_err());
     }
 
+    fn identities(plan: &ReviewerPlan) -> Vec<ReviewerIdentityAssignment> {
+        plan.required
+            .iter()
+            .map(|role| ReviewerIdentityAssignment {
+                role: *role,
+                principal_id: format!("reviewer-{}", role_slug(*role)),
+                provider: "codex".into(),
+                model: "gpt-6-luna".into(),
+            })
+            .collect()
+    }
+
     #[test]
-    fn critical_diversity_requires_two_provider_or_model_pairs() {
+    fn same_provider_and_model_with_distinct_principals_is_independent() {
         let plan = ReviewerPlan::for_lane(PlanningLane::FormalSpec, true);
-        let assignments = assignments(&plan, "codex", "gpt-6-luna").unwrap();
-        assert!(validate_critical_diversity(&assignments).is_err());
-        let mut diverse = assignments;
-        diverse[0].model = "other-model".into();
-        validate_critical_diversity(&diverse).unwrap();
+        let assignments = identities(&plan);
+        validate_reviewer_independence(&plan, &assignments, "implementer", "verifier").unwrap();
+        assert!(!model_diversity_observation(&assignments));
+    }
+
+    #[test]
+    fn duplicate_reviewer_principal_is_rejected() {
+        let plan = ReviewerPlan::for_lane(PlanningLane::FormalSpec, true);
+        let mut assignments = identities(&plan);
+        assignments[1].principal_id = assignments[0].principal_id.clone();
+        let error = validate_reviewer_independence(&plan, &assignments, "implementer", "verifier")
+            .unwrap_err();
+        assert!(error.contains("independent and unique"));
+    }
+
+    #[test]
+    fn one_reviewer_for_critical_or_elevated_is_rejected() {
+        let plan = ReviewerPlan::for_lane(PlanningLane::FormalSpec, true);
+        assert!(plan.required_count() >= 2);
+        let assignments = identities(&plan);
+        let error =
+            validate_reviewer_independence(&plan, &assignments[..1], "implementer", "verifier")
+                .unwrap_err();
+        assert!(error.contains("independent reviewer identities"));
+    }
+
+    #[test]
+    fn implementer_or_verifier_collusion_is_rejected() {
+        let plan = ReviewerPlan::for_lane(PlanningLane::FormalSpec, true);
+        let assignments = identities(&plan);
+        let mut implementer = assignments.clone();
+        implementer[0].principal_id = "implementer".into();
+        assert!(
+            validate_reviewer_independence(&plan, &implementer, "implementer", "verifier")
+                .unwrap_err()
+                .contains("implementer")
+        );
+        let mut verifier = assignments;
+        verifier[0].principal_id = "verifier".into();
+        assert!(
+            validate_reviewer_independence(&plan, &verifier, "implementer", "verifier")
+                .unwrap_err()
+                .contains("verifier")
+        );
+    }
+
+    #[test]
+    fn identity_assignments_fail_closed_when_a_role_is_missing() {
+        let plan = ReviewerPlan::for_lane(PlanningLane::FormalSpec, true);
+        let mut principals = std::collections::BTreeMap::new();
+        principals.insert(ReviewerRole::Functional, "reviewer-functional".into());
+        assert!(identity_assignments(&plan, "codex", "gpt-6-luna", &principals).is_err());
     }
 
     #[test]

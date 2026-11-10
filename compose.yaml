@@ -22,6 +22,29 @@ x-control-env: &control-env
   FACTORY_CORE_URL: http://core:8765
   FACTORY_CONTAINER_MODE: "1"
 
+# Every reviewer role runs as its own process with its own token file,
+# principal and role. The model route may be identical; independence is the
+# authenticated identity/process, not model or provider diversity.
+x-reviewer-base: &reviewer-base
+  build:
+    context: .
+    dockerfile: deploy/Containerfile
+    target: reviewer
+  image: software-factory-reviewer:dev
+  user: "10001:10001"
+  <<: *restricted
+  read_only: true
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=512m
+  command:
+    - /bin/sh
+    - -c
+    - until [ -f /config/.ready ]; do sleep 1; done; until curl -fsS http://runtime:8770/health >/dev/null 2>&1; do sleep 1; done; exec /usr/local/bin/factory-reviewer
+  networks:
+    - factory-control
+    - factory-egress
+  stop_grace_period: 20s
+
 services:
   init:
     build:
@@ -47,7 +70,13 @@ services:
       FACTORY_CONFIG_WORKER_DIR: /config-worker
       FACTORY_CONFIG_SUPERVISOR_DIR: /config-supervisor
       FACTORY_CONFIG_VERIFIER_DIR: /config-verifier
-      FACTORY_CONFIG_REVIEWER_DIR: /config-reviewer
+      FACTORY_CONFIG_REVIEWER_FUNCTIONAL_DIR: /config-reviewer-functional
+      FACTORY_CONFIG_REVIEWER_ARCHITECTURE_DIR: /config-reviewer-architecture
+      FACTORY_CONFIG_REVIEWER_CODE_QUALITY_DIR: /config-reviewer-code-quality
+      FACTORY_CONFIG_REVIEWER_SECURITY_DIR: /config-reviewer-security
+      FACTORY_CONFIG_REVIEWER_TESTING_DIR: /config-reviewer-testing
+      FACTORY_CONFIG_REVIEWER_OPERABILITY_DIR: /config-reviewer-operability
+      FACTORY_CORE_CONFIG_DIR: /config
       FACTORY_CONFIG_RUNTIME_DIR: /config-runtime
       FACTORY_CONFIG_OPENSPEC_DIR: /config-openspec
       FACTORY_DATA_DIR: /data
@@ -61,7 +90,12 @@ services:
       - factory-config-worker:/config-worker
       - factory-config-supervisor:/config-supervisor
       - factory-config-verifier:/config-verifier
-      - factory-config-reviewer:/config-reviewer
+      - factory-config-reviewer-functional:/config-reviewer-functional
+      - factory-config-reviewer-architecture:/config-reviewer-architecture
+      - factory-config-reviewer-code-quality:/config-reviewer-code-quality
+      - factory-config-reviewer-security:/config-reviewer-security
+      - factory-config-reviewer-testing:/config-reviewer-testing
+      - factory-config-reviewer-operability:/config-reviewer-operability
       - factory-config-runtime:/config-runtime
       - factory-config-openspec:/config-openspec
       - factory-data:/data
@@ -203,9 +237,8 @@ services:
       FACTORY_OPERATOR_TOKEN_FILE: /config/operator.token
       FACTORY_WORKER_BOOTSTRAP_TOKEN_FILE: /config/worker-bootstrap.token
       FACTORY_VERIFIER_TOKEN_FILE: /config/verifier.token
-      FACTORY_REVIEWER_TOKEN_FILE: /config/reviewer.token
       FACTORY_VERIFIER_PRINCIPAL: verifier-process
-      FACTORY_REVIEWER_PRINCIPAL: reviewer-process
+      FACTORY_REVIEWER_IDENTITIES_FILE: /config/reviewer-identities.json
       FACTORY_ATTEMPT_GRANT_KEY_FILE: /config/attempt-grant.key
       FACTORY_LEAD_FIXTURE_ASSESSOR: ${FACTORY_LEAD_FIXTURE_ASSESSOR:-0}
       FACTORY_ENABLE_AUTONOMOUS_START: "1"
@@ -339,39 +372,119 @@ services:
       - factory-control
     stop_grace_period: 20s
 
-  reviewer:
-    build:
-      context: .
-      dockerfile: deploy/Containerfile
-      target: reviewer
-    image: software-factory-reviewer:dev
-    user: "10001:10001"
-    <<: *restricted
-    read_only: true
-    tmpfs:
-      - /tmp:rw,noexec,nosuid,size=512m
-    command:
-      - /bin/sh
-      - -c
-      - until [ -f /config/.ready ]; do sleep 1; done; until curl -fsS http://runtime:8770/health >/dev/null 2>&1; do sleep 1; done; exec /usr/local/bin/factory-reviewer
+  reviewer-functional:
+    <<: *reviewer-base
     volumes:
       - factory-projects:/projects:ro
-      - factory-reviewer-state:/state
-      - factory-config-reviewer:/config:ro
+      - factory-reviewer-functional-state:/state
+      - factory-config-reviewer-functional:/config:ro
       - factory-codex-home:/codex-home
     environment:
       <<: *control-env
-      FACTORY_REVIEWER_TOKEN_FILE: /config/reviewer.token
+      FACTORY_REVIEWER_TOKEN_FILE: /config/reviewer-functional.token
+      FACTORY_REVIEWER_PRINCIPAL: reviewer-functional-process
+      FACTORY_REVIEWER_ROLE: FUNCTIONAL
       FACTORY_REVIEW_MECHANISM: AUTO
       FACTORY_REVIEWER_WATCH: "1"
       FACTORY_CODEX_HOME: /codex-home
       FACTORY_CODEX_BINARY: /usr/local/bin/codex
       FACTORY_REVIEW_WORKSPACE: /state
       FACTORY_CODEX_REVIEW_TIMEOUT_SECS: "300"
-    networks:
-      - factory-control
-      - factory-egress
-    stop_grace_period: 20s
+
+  reviewer-architecture:
+    <<: *reviewer-base
+    volumes:
+      - factory-projects:/projects:ro
+      - factory-reviewer-architecture-state:/state
+      - factory-config-reviewer-architecture:/config:ro
+      - factory-codex-home:/codex-home
+    environment:
+      <<: *control-env
+      FACTORY_REVIEWER_TOKEN_FILE: /config/reviewer-architecture.token
+      FACTORY_REVIEWER_PRINCIPAL: reviewer-architecture-process
+      FACTORY_REVIEWER_ROLE: ARCHITECTURE
+      FACTORY_REVIEW_MECHANISM: AUTO
+      FACTORY_REVIEWER_WATCH: "1"
+      FACTORY_CODEX_HOME: /codex-home
+      FACTORY_CODEX_BINARY: /usr/local/bin/codex
+      FACTORY_REVIEW_WORKSPACE: /state
+      FACTORY_CODEX_REVIEW_TIMEOUT_SECS: "300"
+
+  reviewer-code-quality:
+    <<: *reviewer-base
+    volumes:
+      - factory-projects:/projects:ro
+      - factory-reviewer-code-quality-state:/state
+      - factory-config-reviewer-code-quality:/config:ro
+      - factory-codex-home:/codex-home
+    environment:
+      <<: *control-env
+      FACTORY_REVIEWER_TOKEN_FILE: /config/reviewer-code-quality.token
+      FACTORY_REVIEWER_PRINCIPAL: reviewer-code-quality-process
+      FACTORY_REVIEWER_ROLE: CODE_QUALITY
+      FACTORY_REVIEW_MECHANISM: AUTO
+      FACTORY_REVIEWER_WATCH: "1"
+      FACTORY_CODEX_HOME: /codex-home
+      FACTORY_CODEX_BINARY: /usr/local/bin/codex
+      FACTORY_REVIEW_WORKSPACE: /state
+      FACTORY_CODEX_REVIEW_TIMEOUT_SECS: "300"
+
+  reviewer-security:
+    <<: *reviewer-base
+    volumes:
+      - factory-projects:/projects:ro
+      - factory-reviewer-security-state:/state
+      - factory-config-reviewer-security:/config:ro
+      - factory-codex-home:/codex-home
+    environment:
+      <<: *control-env
+      FACTORY_REVIEWER_TOKEN_FILE: /config/reviewer-security.token
+      FACTORY_REVIEWER_PRINCIPAL: reviewer-security-process
+      FACTORY_REVIEWER_ROLE: SECURITY
+      FACTORY_REVIEW_MECHANISM: AUTO
+      FACTORY_REVIEWER_WATCH: "1"
+      FACTORY_CODEX_HOME: /codex-home
+      FACTORY_CODEX_BINARY: /usr/local/bin/codex
+      FACTORY_REVIEW_WORKSPACE: /state
+      FACTORY_CODEX_REVIEW_TIMEOUT_SECS: "300"
+
+  reviewer-testing:
+    <<: *reviewer-base
+    volumes:
+      - factory-projects:/projects:ro
+      - factory-reviewer-testing-state:/state
+      - factory-config-reviewer-testing:/config:ro
+      - factory-codex-home:/codex-home
+    environment:
+      <<: *control-env
+      FACTORY_REVIEWER_TOKEN_FILE: /config/reviewer-testing.token
+      FACTORY_REVIEWER_PRINCIPAL: reviewer-testing-process
+      FACTORY_REVIEWER_ROLE: TESTING
+      FACTORY_REVIEW_MECHANISM: AUTO
+      FACTORY_REVIEWER_WATCH: "1"
+      FACTORY_CODEX_HOME: /codex-home
+      FACTORY_CODEX_BINARY: /usr/local/bin/codex
+      FACTORY_REVIEW_WORKSPACE: /state
+      FACTORY_CODEX_REVIEW_TIMEOUT_SECS: "300"
+
+  reviewer-operability:
+    <<: *reviewer-base
+    volumes:
+      - factory-projects:/projects:ro
+      - factory-reviewer-operability-state:/state
+      - factory-config-reviewer-operability:/config:ro
+      - factory-codex-home:/codex-home
+    environment:
+      <<: *control-env
+      FACTORY_REVIEWER_TOKEN_FILE: /config/reviewer-operability.token
+      FACTORY_REVIEWER_PRINCIPAL: reviewer-operability-process
+      FACTORY_REVIEWER_ROLE: OPERABILITY
+      FACTORY_REVIEW_MECHANISM: AUTO
+      FACTORY_REVIEWER_WATCH: "1"
+      FACTORY_CODEX_HOME: /codex-home
+      FACTORY_CODEX_BINARY: /usr/local/bin/codex
+      FACTORY_REVIEW_WORKSPACE: /state
+      FACTORY_CODEX_REVIEW_TIMEOUT_SECS: "300"
 
   # Profile-gated, one-shot OpenSpec validation job. It fetches the latest
   # Core-rendered projection over the private control network, writes the change
@@ -456,7 +569,12 @@ volumes:
   factory-config-worker:
   factory-config-supervisor:
   factory-config-verifier:
-  factory-config-reviewer:
+  factory-config-reviewer-functional:
+  factory-config-reviewer-architecture:
+  factory-config-reviewer-code-quality:
+  factory-config-reviewer-security:
+  factory-config-reviewer-testing:
+  factory-config-reviewer-operability:
   factory-config-runtime:
   factory-config-openspec:
   factory-data:
@@ -466,7 +584,12 @@ volumes:
   factory-engine:
   factory-supervisor-state:
   factory-verifier-state:
-  factory-reviewer-state:
+  factory-reviewer-functional-state:
+  factory-reviewer-architecture-state:
+  factory-reviewer-code-quality-state:
+  factory-reviewer-security-state:
+  factory-reviewer-testing-state:
+  factory-reviewer-operability-state:
   factory-codex-home:
 
 networks:

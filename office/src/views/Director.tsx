@@ -60,6 +60,26 @@ function assuranceTone(assurance: AgenticAssurance) {
   }
 }
 
+function reviewerReceiptTone(result: string) {
+  if (result === "PASS") return "success" as const;
+  if (result === "FAIL" || result === "CHANGES_REQUESTED") {
+    return "danger" as const;
+  }
+  return "attention" as const;
+}
+
+export function reviewerAssignmentsMatch(
+  detail: AgenticRequestDetail,
+): boolean {
+  const roles = detail.participants.reviewerRoles ?? [];
+  const assignments = detail.participants.reviewerAssignments ?? [];
+  if (roles.length === 0) return assignments.length === 0;
+  return (
+    assignments.length === roles.length &&
+    roles.every((role) => assignments.some((entry) => entry.role === role))
+  );
+}
+
 export function Director() {
   const { t, formatDate } = useI18n();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -774,7 +794,92 @@ export function Director() {
                           <dt>{t("director.participants.reviewers")}</dt>
                           <dd>{detail.participants.reviewerCount}</dd>
                         </div>
+                        <div>
+                          <dt>
+                            {t(
+                              "director.participants.independentReceiptsLabel",
+                            )}
+                          </dt>
+                          <dd>
+                            {detail.reviewerEvidence
+                              ?.independentReviewerCount ?? 0}
+                          </dd>
+                        </div>
                       </dl>
+                      <div className="director-reviewers">
+                        <h3>{t("director.participants.requiredRoles")}</h3>
+                        {!reviewerAssignmentsMatch(detail) && (
+                          <p
+                            className="ui-callout ui-callout--danger"
+                            role="alert"
+                          >
+                            {t("director.participants.planMismatch")}
+                          </p>
+                        )}
+                        {detail.participants.reviewerRoles.length > 0 ? (
+                          <ul>
+                            {detail.participants.reviewerRoles.map((role) => {
+                              const assignment =
+                                detail.participants.reviewerAssignments.find(
+                                  (candidate) => candidate.role === role,
+                                );
+                              const receipt =
+                                detail.reviewerEvidence?.receipts.find(
+                                  (candidate) => candidate.role === role,
+                                );
+                              return (
+                                <li key={role}>
+                                  <Badge tone="info">
+                                    {t(`director.reviewerRole.${role}`)}
+                                  </Badge>{" "}
+                                  <code>
+                                    {assignment?.principalId ??
+                                      t("director.participants.unassigned")}
+                                  </code>{" "}
+                                  {receipt ? (
+                                    <>
+                                      <Badge
+                                        tone={reviewerReceiptTone(
+                                          receipt.result,
+                                        )}
+                                      >
+                                        {t(
+                                          "director.participants.receiptStatus",
+                                          {
+                                            result: receipt.result,
+                                            evidence: receipt.evidence,
+                                          },
+                                        )}
+                                      </Badge>{" "}
+                                      <span className="muted">
+                                        {receipt.principalId}
+                                      </span>
+                                    </>
+                                  ) : (
+                                    <Badge tone="attention">
+                                      {t(
+                                        "director.participants.receiptMissing",
+                                      )}
+                                    </Badge>
+                                  )}
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        ) : (
+                          <p className="muted">
+                            {t("director.participants.noRoles")}
+                          </p>
+                        )}
+                        <p className="muted">
+                          {t("director.participants.independentReceipts", {
+                            count:
+                              detail.reviewerEvidence
+                                ?.independentReviewerCount ?? 0,
+                            required: detail.participants.reviewerCount,
+                          })}
+                        </p>
+                      </div>
                       {detail.participants.unitAssignments.length > 0 && (
                         <div className="director-unit-routing">
                           <h3>{t("director.participants.unitRouting")}</h3>

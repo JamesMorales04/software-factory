@@ -3071,22 +3071,23 @@ capabilities:
     - docs/architecture/decisions/ADR-0037-agent-topology-context-and-composition.md
     contract:
     - docs/contracts/agentic-flow.md
-    source: [native/src/agentic.rs, native/src/db/agentic_participants.rs, native/src/quality.rs, native/src/cheap_ops.rs, office/src/components/office/CheapOpsPanel.tsx]
-    test: [native/src/agentic.rs, native/src/db/tests.rs, native/src/quality.rs, native/src/cheap_ops.rs]
+    source: [native/src/agentic.rs, native/src/db/agentic_participants.rs, native/src/review_roles.rs, native/src/reviewer_identity.rs, native/src/quality.rs, native/src/cheap_ops.rs, office/src/components/office/CheapOpsPanel.tsx]
+    test: [native/src/agentic.rs, native/src/db/tests.rs, native/src/review_roles.rs, native/src/reviewer_identity.rs, native/src/quality.rs, native/src/cheap_ops.rs]
   acceptance:
-    deterministic: AgentTopology freezes available roles, specializations, routes, tools and classes; ParticipantPlan is compiled from the WorkGraph, CandidateImpact, policies, skills and budgets; an implementer is assigned per independent unit; reviewers are read-only and independent; the same model family is allowed; no extra provider or dimension requirement is imposed in this phase; the cheap interpreter classifies test and command output without deciding pass or fail.
+    deterministic: AgentTopology freezes available roles, specializations, routes, tools and classes; ParticipantPlan is compiled from the WorkGraph, CandidateImpact, policies, skills and budgets; an implementer is assigned per independent unit; reviewer independence is the authenticated identity, process, principal and token, not provider/model choice; the Gate requires an exact frozen role-to-principal assignment set, required role coverage and one receipt per role, rejects roleless receipts or receipts for roles outside the frozen plan, and blocks when assignments are missing or unexpected; the cheap interpreter classifies test and command output without deciding pass or fail.
     real: A multi-stack browser operation compiles two or more implementers and independent reviewers, uses a cheap interpreter and records per-participant usage without self-acceptance.
   evidence:
     deterministic:
     - docs/evidence/dynamic-fleets-2026-11-09/deterministic.json
+    - docs/implementation/wp9-reviewer-independence-evidence.md
     live_agent: []
     uat: []
     deployment: []
     isolation: []
   limitations:
-  - Provider diversity is not required; the same model family is allowed.
-  - A live Campaign with two independent reviewer processes was not run; the real E2E Campaign used one reviewer and multi-reviewer aggregation is deterministically tested.
-  - The current Compose topology provisions one reviewer identity, so plans are capped at one reviewer; multi-reviewer requires independent reviewer identities and tokens.
+  - Provider/model diversity is neither required nor sufficient for independence; two reviewers with the same model are independent when their authenticated principals and processes differ.
+  - The Compose topology provisions six reviewer services with separate tokens, principals, roles and state volumes; Core derives the principal/role from trusted identity configuration and rejects a caller-selected mismatch.
+  - A live Campaign with two or more reviewer role receipts was not run in this slice; role coverage, same-model acceptance, duplicate-principal rejection and single-receipt deferral are deterministically tested.
   blockers:
   - Real multi-unit Campaign, two-reviewer aggregation and per-unit execution state remain pending.
 

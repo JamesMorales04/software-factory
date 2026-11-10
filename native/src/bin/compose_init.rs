@@ -18,11 +18,57 @@ use std::{
 
 const DEFAULT_UID: u32 = 10001;
 
+/// One independent reviewer process identity per required role. Tokens are
+/// generated per identity and never shared across roles.
+const REVIEWER_IDENTITIES: &[(&str, &str, &str, &str)] = &[
+    (
+        "reviewer-functional",
+        "reviewer-functional.token",
+        "reviewer-functional-process",
+        "FUNCTIONAL",
+    ),
+    (
+        "reviewer-architecture",
+        "reviewer-architecture.token",
+        "reviewer-architecture-process",
+        "ARCHITECTURE",
+    ),
+    (
+        "reviewer-code-quality",
+        "reviewer-code-quality.token",
+        "reviewer-code-quality-process",
+        "CODE_QUALITY",
+    ),
+    (
+        "reviewer-security",
+        "reviewer-security.token",
+        "reviewer-security-process",
+        "SECURITY",
+    ),
+    (
+        "reviewer-testing",
+        "reviewer-testing.token",
+        "reviewer-testing-process",
+        "TESTING",
+    ),
+    (
+        "reviewer-operability",
+        "reviewer-operability.token",
+        "reviewer-operability-process",
+        "OPERABILITY",
+    ),
+];
+
 const CORE_SECRETS: &[&str] = &[
     "operator.token",
     "worker-bootstrap.token",
     "verifier.token",
-    "reviewer.token",
+    "reviewer-functional.token",
+    "reviewer-architecture.token",
+    "reviewer-code-quality.token",
+    "reviewer-security.token",
+    "reviewer-testing.token",
+    "reviewer-operability.token",
     "attempt-grant.key",
     "master.key",
 ];
@@ -39,7 +85,12 @@ const SUPERVISOR_SECRETS: &[&str] = &[
     "runtime-broker.token",
 ];
 const VERIFIER_SECRETS: &[&str] = &["verifier.token", "runtime-broker.token"];
-const REVIEWER_SECRETS: &[&str] = &["reviewer.token"];
+const REVIEWER_FUNCTIONAL_SECRETS: &[&str] = &["reviewer-functional.token"];
+const REVIEWER_ARCHITECTURE_SECRETS: &[&str] = &["reviewer-architecture.token"];
+const REVIEWER_CODE_QUALITY_SECRETS: &[&str] = &["reviewer-code-quality.token"];
+const REVIEWER_SECURITY_SECRETS: &[&str] = &["reviewer-security.token"];
+const REVIEWER_TESTING_SECRETS: &[&str] = &["reviewer-testing.token"];
+const REVIEWER_OPERABILITY_SECRETS: &[&str] = &["reviewer-operability.token"];
 const RUNTIME_SECRETS: &[&str] = &["runtime-broker.token"];
 // The profile-gated OpenSpec validation job reads the latest durable
 // projection through the operator-authenticated Core endpoint. It receives only
@@ -87,8 +138,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             secrets: VERIFIER_SECRETS,
         },
         Placement {
-            directory: config_dir("FACTORY_CONFIG_REVIEWER_DIR", "/config-reviewer"),
-            secrets: REVIEWER_SECRETS,
+            directory: config_dir(
+                "FACTORY_CONFIG_REVIEWER_FUNCTIONAL_DIR",
+                "/config-reviewer-functional",
+            ),
+            secrets: REVIEWER_FUNCTIONAL_SECRETS,
+        },
+        Placement {
+            directory: config_dir(
+                "FACTORY_CONFIG_REVIEWER_ARCHITECTURE_DIR",
+                "/config-reviewer-architecture",
+            ),
+            secrets: REVIEWER_ARCHITECTURE_SECRETS,
+        },
+        Placement {
+            directory: config_dir(
+                "FACTORY_CONFIG_REVIEWER_CODE_QUALITY_DIR",
+                "/config-reviewer-code-quality",
+            ),
+            secrets: REVIEWER_CODE_QUALITY_SECRETS,
+        },
+        Placement {
+            directory: config_dir(
+                "FACTORY_CONFIG_REVIEWER_SECURITY_DIR",
+                "/config-reviewer-security",
+            ),
+            secrets: REVIEWER_SECURITY_SECRETS,
+        },
+        Placement {
+            directory: config_dir(
+                "FACTORY_CONFIG_REVIEWER_TESTING_DIR",
+                "/config-reviewer-testing",
+            ),
+            secrets: REVIEWER_TESTING_SECRETS,
+        },
+        Placement {
+            directory: config_dir(
+                "FACTORY_CONFIG_REVIEWER_OPERABILITY_DIR",
+                "/config-reviewer-operability",
+            ),
+            secrets: REVIEWER_OPERABILITY_SECRETS,
         },
         Placement {
             directory: config_dir("FACTORY_CONFIG_RUNTIME_DIR", "/config-runtime"),
@@ -147,6 +236,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         values.insert(name, value);
     }
+
+    let core_config_dir = PathBuf::from(
+        std::env::var("FACTORY_CORE_CONFIG_DIR").unwrap_or_else(|_| "/config".into()),
+    );
+    if !core_config_dir.is_absolute() {
+        return Err("FACTORY_CORE_CONFIG_DIR must be absolute".into());
+    }
+    let identities = REVIEWER_IDENTITIES
+        .iter()
+        .map(|(_, token, principal, role)| {
+            serde_json::json!({
+                "principalId": principal,
+                "role": role,
+                "tokenFile": core_config_dir.join(token).to_string_lossy(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let identities_json = serde_json::to_string_pretty(&identities)?;
+    let identities_path =
+        config_dir("FACTORY_CONFIG_CORE_DIR", "/config-core").join("reviewer-identities.json");
+    write_config(&identities_path, &identities_json, uid)?;
 
     for placement in &placements {
         write_secret(&placement.directory.join(".ready"), "ready", uid)?;
@@ -220,6 +330,10 @@ fn ensure_mode(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         fs::set_permissions(path, fs::Permissions::from_mode(0o640))?;
     }
     Ok(())
+}
+
+fn write_config(path: &Path, value: &str, uid: u32) -> Result<(), Box<dyn std::error::Error>> {
+    write_secret(path, value, uid)
 }
 
 fn write_secret(path: &Path, value: &str, uid: u32) -> Result<(), Box<dyn std::error::Error>> {

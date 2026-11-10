@@ -478,7 +478,7 @@ Decision: `proposed`
 - CAP-060 — Planner and Spec Manager (proposed, in_progress; quality-first plan review and finding closure implemented, browser acceptance pending)
 - CAP-061 — Spec issue projection and kanban (proposed, in_progress)
 - CAP-062 — Explorer, Librarian and temporary skills (proposed, in_progress)
-- CAP-063 — Dynamic participant composition and cheap operations (proposed, in_progress)
+- CAP-063 — Dynamic participant composition and cheap operations (proposed, in_progress; six-identity reviewer fleet and role-coverage Gate implemented, live multi-reviewer Campaign pending)
 - CAP-064 — Bounded repair orchestration (proposed, in_progress)
 - CAP-065 — Owner charter and delegated autonomy (proposed, in_progress)
 - CAP-066 — Agent fleet observability and cost (proposed, not_implemented)

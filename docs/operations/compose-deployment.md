@@ -46,13 +46,24 @@ podman compose up -d --build
 This builds the images (the first build compiles all binaries once), creates
 the private networks and durable volumes, generates per-service secrets,
 imports the provider image into the dedicated engine, starts Core/Office,
-Supervisor, Worker, verifier, reviewer and the runtime broker, and waits for
-the Core, Supervisor, Worker and runtime health checks. The verifier and reviewer
-are started after the runtime is healthy but have no Compose healthcheck.
+Supervisor, Worker, verifier, the six-service reviewer fleet and the runtime
+broker, and waits for the Core, Supervisor, Worker and runtime health checks.
+The verifier and reviewer services are started after the runtime is healthy but
+have no Compose healthcheck.
+
+The reviewer fleet is `reviewer-functional`, `reviewer-architecture`,
+`reviewer-code-quality`, `reviewer-security`, `reviewer-testing` and
+`reviewer-operability`. Each service has its own token file, principal, role
+and state volume. `factory-compose-init` writes one token per identity into the
+matching service volume and into Core's `/config`, plus
+`/config/reviewer-identities.json`, which Core reads through
+`FACTORY_REVIEWER_IDENTITIES_FILE`. No reviewer token is shared across roles and
+no token is printed. Reviewer independence is identity/process based; the same
+provider/model may serve every role.
 
 Codex ChatGPT authentication and native review are opt-in. The reviewer image
 contains the pinned Codex App Server, and the dedicated `factory-codex-home`
-volume is mounted only into the reviewer and the one-shot `codex-auth` /
+volume is mounted into every reviewer role and the one-shot `codex-auth` /
 `codex-status` services. See
 [Codex ChatGPT authentication and native review](codex-review-auth.md) for the
 device-code login and `FACTORY_ENABLE_CODEX_REVIEW=1` activation steps.

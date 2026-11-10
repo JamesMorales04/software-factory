@@ -259,7 +259,7 @@ Report: changed files, interfaces, tests, migrations, remaining integration.
 | WP6 | Content-addressed snapshot; generated artifacts excluded; corrupt snapshot rejected; cleanup/orphan reconciliation |
 | WP7 | OpenSpec folder deterministic; validate; archive idempotent; drift detected; Core authority |
 | WP8 | Every finding blocks; router; automatic repair/replan; budget exhaustion owner decision; no silent accept |
-| WP9 | Separate reviewer identities/processes; required roles; zero-finding Gate; no self-review; critical model diversity |
+| WP9 | Separate reviewer identities/processes; required roles; zero-finding Gate; no self-review; identity-based independence with model diversity only a non-blocking observation |
 | WP10 | Plan review all lanes; auto-approval; stack/arch/docs/skills/traceability; reviewer/finding states; responsive/a11y |
 | WP11 | Trace per step; event log; replay; alerts; no secrets |
 | WP12 | Chaos matrix; golden E2E; per-option browser; flaky-free repeat runs |

@@ -3728,6 +3728,23 @@ export const es: Catalog = {
   "director.participants.error":
     "No se pudo registrar el plan de participantes.",
   "director.participants.reviewers": "Revisores independientes",
+  "director.participants.independentReceiptsLabel": "Recibos independientes",
+  "director.participants.requiredRoles": "Roles de revisión requeridos",
+  "director.participants.unassigned": "Sin asignar",
+  "director.participants.noRoles":
+    "No hay roles de revisión registrados para esta ruta.",
+  "director.participants.independentReceipts":
+    "{count} de {required} recibos de revisión independientes registrados",
+  "director.participants.receiptStatus": "{result} · {evidence}",
+  "director.participants.receiptMissing": "Sin recibo",
+  "director.participants.planMismatch":
+    "El plan de revisión congelado no vincula los roles requeridos con principals. La aceptación queda bloqueada hasta que Core registre un conjunto exacto de asignaciones.",
+  "director.reviewerRole.FUNCTIONAL": "Funcional",
+  "director.reviewerRole.ARCHITECTURE": "Arquitectura",
+  "director.reviewerRole.CODE_QUALITY": "Calidad de código",
+  "director.reviewerRole.SECURITY": "Seguridad",
+  "director.reviewerRole.TESTING": "Pruebas y trazabilidad",
+  "director.reviewerRole.OPERABILITY": "Operabilidad y rendimiento",
   "director.participants.unitRouting": "Enrutamiento por unidad",
   "evidence.gate.reviewers":
     "{count} recibo(s) de revisores independientes agregados",

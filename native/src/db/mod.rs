@@ -435,6 +435,8 @@ impl ReviewMechanism {
 pub struct QualityReceiptInput {
     pub receipt_id: String,
     pub principal_id: String,
+    #[serde(default)]
+    pub reviewer_role: Option<crate::planning::ReviewerRole>,
     pub action_spec_sha256: String,
     pub commit_sha: String,
     pub tree_sha: String,
@@ -470,6 +472,7 @@ pub struct QualityReceiptRecord {
     pub candidate_id: String,
     pub role: QualityRole,
     pub principal_id: String,
+    pub reviewer_role: Option<crate::planning::ReviewerRole>,
     pub action_spec_sha256: String,
     pub commit_sha: String,
     pub tree_sha: String,

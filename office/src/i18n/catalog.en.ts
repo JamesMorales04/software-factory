@@ -3590,6 +3590,23 @@ export const en = {
     "The deterministic participant plan was recorded.",
   "director.participants.error": "The participant plan could not be recorded.",
   "director.participants.reviewers": "Independent reviewers",
+  "director.participants.independentReceiptsLabel": "Independent receipts",
+  "director.participants.requiredRoles": "Required reviewer roles",
+  "director.participants.unassigned": "Not assigned",
+  "director.participants.noRoles":
+    "No reviewer roles are recorded for this route.",
+  "director.participants.independentReceipts":
+    "{count} of {required} independent reviewer receipts recorded",
+  "director.participants.receiptStatus": "{result} · {evidence}",
+  "director.participants.receiptMissing": "No receipt",
+  "director.participants.planMismatch":
+    "The frozen reviewer plan does not bind the required roles to principals. Acceptance is blocked until Core records an exact assignment set.",
+  "director.reviewerRole.FUNCTIONAL": "Functional",
+  "director.reviewerRole.ARCHITECTURE": "Architecture",
+  "director.reviewerRole.CODE_QUALITY": "Code quality",
+  "director.reviewerRole.SECURITY": "Security",
+  "director.reviewerRole.TESTING": "Testing and traceability",
+  "director.reviewerRole.OPERABILITY": "Operability and performance",
   "director.participants.unitRouting": "Unit routing",
   "evidence.gate.reviewers":
     "{count} independent reviewer receipt(s) aggregated",

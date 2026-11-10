@@ -46,9 +46,8 @@ struct App {
     setup: Mutex<SetupState>,
     worker_bootstrap_token: String,
     verifier_token: String,
-    reviewer_token: String,
     verifier_principal: String,
-    reviewer_principal: String,
+    reviewer_identities: factory_native::reviewer_identity::ReviewerIdentitySet,
     lead_fixture_assessor: bool,
     lead_autonomous_start: bool,
     model_gateway: Option<factory_native::model_gateway::ModelGateway>,
@@ -695,6 +694,8 @@ struct QualityReceiptRequest {
     candidate_id: String,
     receipt_id: String,
     principal_id: String,
+    #[serde(default, rename = "reviewerRole")]
+    reviewer_role: Option<factory_native::planning::ReviewerRole>,
     #[serde(rename = "actionSpecSha256")]
     action_spec_sha256: String,
     #[serde(rename = "commitSha")]
@@ -744,21 +745,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let worker_bootstrap_token =
         factory_native::secrets::required("FACTORY_WORKER_BOOTSTRAP_TOKEN")?;
     let verifier_token = factory_native::secrets::required("FACTORY_VERIFIER_TOKEN")?;
-    let reviewer_token = factory_native::secrets::required("FACTORY_REVIEWER_TOKEN")?;
     let verifier_principal =
         env::var("FACTORY_VERIFIER_PRINCIPAL").unwrap_or_else(|_| "verifier-process".into());
-    let reviewer_principal =
-        env::var("FACTORY_REVIEWER_PRINCIPAL").unwrap_or_else(|_| "reviewer-process".into());
-    let tokens = [
+    let reviewer_identities = factory_native::reviewer_identity::ReviewerIdentitySet::from_env()?;
+    let mut tokens = vec![
         operator_token.as_str(),
         worker_bootstrap_token.as_str(),
         verifier_token.as_str(),
-        reviewer_token.as_str(),
     ];
+    tokens.extend(reviewer_identities.tokens());
     if operator_token.is_empty()
         || worker_bootstrap_token.len() < 32
         || verifier_token.len() < 32
-        || reviewer_token.len() < 32
         || tokens
             .iter()
             .enumerate()
@@ -823,9 +821,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
         worker_bootstrap_token,
         verifier_token,
-        reviewer_token,
         verifier_principal,
-        reviewer_principal,
+        reviewer_identities,
         lead_fixture_assessor: env::var("FACTORY_LEAD_FIXTURE_ASSESSOR").ok().as_deref()
             == Some("1"),
         lead_autonomous_start: env::var("FACTORY_ENABLE_AUTONOMOUS_START").ok().as_deref()
@@ -2375,13 +2372,10 @@ async fn review_config(
     headers: HeaderMap,
     AxumPath(id): AxumPath<String>,
 ) -> Response {
-    let token = headers
-        .get("authorization")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "));
-    let authorized = token
-        .is_some_and(|token| constant_time_eq(token.as_bytes(), app.reviewer_token.as_bytes()));
-    if !authorized {
+    let Some(identity) = quality_identity(&app, &headers) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    if identity.role != QualityRole::Reviewer {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     let selection = match app.db.reviewer_selection(&id).await {
@@ -2425,6 +2419,8 @@ async fn review_config(
         "model": model,
         "maxOutputTokens": 0,
         "reason": reason,
+        "principalId": identity.principal_id,
+        "reviewerRole": identity.reviewer_role.map(|role| role.as_str()),
     }))
     .into_response()
 }
@@ -2434,23 +2430,21 @@ async fn pending_quality(
     headers: HeaderMap,
     Query(query): Query<PendingQualityQuery>,
 ) -> Response {
-    let token = headers
-        .get("authorization")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "));
-    let authorized = match (query.role.as_str(), token) {
-        ("verifier", Some(token)) => {
-            constant_time_eq(token.as_bytes(), app.verifier_token.as_bytes())
-        }
-        ("reviewer", Some(token)) => {
-            constant_time_eq(token.as_bytes(), app.reviewer_token.as_bytes())
-        }
-        _ => false,
+    let Some(identity) = quality_identity(&app, &headers) else {
+        return StatusCode::UNAUTHORIZED.into_response();
     };
-    if !authorized {
+    if query.role != identity.role.as_str() {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    match app.db.pending_quality_candidates(&query.role).await {
+    let candidates = match (identity.role, identity.reviewer_role) {
+        (QualityRole::Reviewer, Some(reviewer_role)) => {
+            app.db
+                .pending_quality_candidates_for_reviewer(&identity.principal_id, reviewer_role)
+                .await
+        }
+        _ => app.db.pending_quality_candidates(&query.role).await,
+    };
+    match candidates {
         Ok(candidates) => Json(json!({"candidates": candidates})).into_response(),
         Err(error) => api_error(error),
     }
@@ -8772,7 +8766,7 @@ async fn model_call(
 }
 
 async fn quality_receipt(State(app): State<Arc<App>>, headers: HeaderMap, body: Bytes) -> Response {
-    let Some(role) = quality_role(&app, &headers) else {
+    let Some(identity) = quality_identity(&app, &headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
     let input: QualityReceiptRequest = match serde_json::from_slice(&body) {
@@ -8785,17 +8779,42 @@ async fn quality_receipt(State(app): State<Arc<App>>, headers: HeaderMap, body: 
                 .into_response();
         }
     };
-    if !cfg!(any(test, feature = "test-support")) {
-        let expected = match role {
-            QualityRole::Verifier => &app.verifier_principal,
-            QualityRole::Reviewer => &app.reviewer_principal,
+    if input.principal_id != identity.principal_id {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "receipt principal does not match the authenticated quality identity",
+                "code": "QUALITY_PRINCIPAL_MISMATCH",
+            })),
+        )
+            .into_response();
+    }
+    if input.reviewer_role != identity.reviewer_role {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "receipt reviewer role does not match the authenticated quality identity",
+                "code": "QUALITY_ROLE_MISMATCH",
+            })),
+        )
+            .into_response();
+    }
+    let role = identity.role;
+    if role == QualityRole::Reviewer {
+        let required = match app.db.candidate_reviewer_roles(&input.candidate_id).await {
+            Ok(required) => required,
+            Err(error) => return api_error(error),
         };
-        if input.principal_id != *expected {
+        if !required.is_empty()
+            && !input
+                .reviewer_role
+                .is_some_and(|reviewer_role| required.contains(&reviewer_role))
+        {
             return (
                 StatusCode::FORBIDDEN,
                 Json(json!({
-                    "error": "receipt principal does not match the authenticated quality role",
-                    "code": "QUALITY_PRINCIPAL_MISMATCH",
+                    "error": "receipt reviewer role is not required by the frozen reviewer plan",
+                    "code": "QUALITY_ROLE_MISMATCH",
                 })),
             )
                 .into_response();
@@ -8804,6 +8823,7 @@ async fn quality_receipt(State(app): State<Arc<App>>, headers: HeaderMap, body: 
     let receipt = QualityReceiptInput {
         receipt_id: input.receipt_id,
         principal_id: input.principal_id,
+        reviewer_role: input.reviewer_role,
         action_spec_sha256: input.action_spec_sha256,
         commit_sha: input.commit_sha,
         tree_sha: input.tree_sha,
@@ -10303,7 +10323,9 @@ async fn agentic_projection_for_request(
             match serde_json::from_str::<factory_native::agentic::ValidatedWorkGraph>(
                 &graph_record.graph_json,
             ) {
-                Ok(graph) => deterministic_participant_plan(app, record, &context, &graph).await,
+                Ok(graph) => deterministic_participant_plan(app, record, &context, &graph)
+                    .await
+                    .ok(),
                 Err(_) => None,
             }
         }
@@ -10331,6 +10353,38 @@ async fn agentic_projection_for_request(
             &stack,
         )
     });
+    let reviewer_receipts = match record.campaign_id.as_deref() {
+        Some(campaign_id) => match app.db.latest_candidate_for_campaign(campaign_id).await {
+            Ok(candidate) => app
+                .db
+                .quality_receipts(&candidate.id)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|receipt| receipt.role == QualityRole::Reviewer)
+                .collect::<Vec<_>>(),
+            Err(_) => Vec::new(),
+        },
+        None => Vec::new(),
+    };
+    let independent_reviewer_count = reviewer_receipts
+        .iter()
+        .filter(|receipt| receipt.result == ReceiptResult::Pass)
+        .map(|receipt| receipt.principal_id.as_str())
+        .collect::<BTreeSet<_>>()
+        .len();
+    let reviewer_receipt_view = reviewer_receipts
+        .iter()
+        .map(|receipt| {
+            json!({
+                "receiptId": receipt.receipt_id,
+                "principalId": receipt.principal_id,
+                "role": receipt.reviewer_role.map(|role| role.as_str()),
+                "result": receipt.result.as_str(),
+                "evidence": receipt.evidence.as_str(),
+            })
+        })
+        .collect::<Vec<_>>();
     let planning_artifacts = app.db.planning_artifacts(&record.id).await?;
     let plan_review = match app.db.latest_plan_review(&record.id).await {
         Ok(review) => Some(review),
@@ -10393,6 +10447,13 @@ async fn agentic_projection_for_request(
         "findings": findings,
         "stack": stack,
         "participants": participants,
+        "reviewerEvidence": {
+            "requiredReviewerCount": participants.reviewer_count,
+            "requiredRoles": participants.reviewer_roles,
+            "assignedPrincipals": participants.reviewer_assignments,
+            "independentReviewerCount": independent_reviewer_count,
+            "receipts": reviewer_receipt_view,
+        },
         "specifications": specifications,
         "plan": plan.map(|plan| serde_json::json!({
             "id": plan.id,
@@ -10583,10 +10644,10 @@ async fn call_agentic_lead_model(
     })
 }
 
-fn agentic_conflict(code: &'static str, message: &'static str) -> Response {
+fn agentic_conflict(code: &'static str, message: impl Into<String>) -> Response {
     (
         StatusCode::CONFLICT,
-        Json(json!({"error": message, "code": code})),
+        Json(json!({"error": message.into(), "code": code})),
     )
         .into_response()
 }
@@ -10982,11 +11043,12 @@ async fn plan_agentic_request(
             "informational requests do not compile a Planner WorkGraph",
         );
     }
-    if context.assurance() >= factory_native::agentic::Assurance::Critical {
-        return agentic_conflict(
-            "REVIEWER_DIVERSITY_REQUIRED",
-            "critical assurance requires two independent reviewer provider/model pairs; this deployment has one reviewer identity and fails closed",
-        );
+    let reviewer_plan = factory_native::planning::route::required_reviewers(
+        context.planning_lane,
+        context.assurance(),
+    );
+    if let Err(message) = app.reviewer_identities.validate_plan(&reviewer_plan) {
+        return agentic_conflict("REVIEWER_INDEPENDENCE_REQUIRED", &message);
     }
     if app.db.agentic_spec(&record.id).await.is_ok() {
         return agentic_conflict(
@@ -11096,15 +11158,17 @@ JSON Schema:
     {
         Ok(saved_graph) => {
             let participants =
-                deterministic_participant_plan(&app, &record, &context, &graph).await;
-            let participant_record = match participants {
-                Some(plan) => app
-                    .db
-                    .save_agentic_participant_plan(&record.id, Some(&graph.graph_sha256), &plan)
-                    .await
-                    .ok(),
-                None => None,
-            };
+                match deterministic_participant_plan(&app, &record, &context, &graph).await {
+                    Ok(plan) => plan,
+                    Err(failure) => {
+                        return agentic_conflict(failure.code, &failure.message);
+                    }
+                };
+            let participant_record = app
+                .db
+                .save_agentic_participant_plan(&record.id, Some(&graph.graph_sha256), &participants)
+                .await
+                .ok();
             let planning = match persist_planning_plan(&app, &record, &context, &graph).await {
                 Ok(value) => value,
                 Err(response) => return response,
@@ -11940,24 +12004,44 @@ async fn resolve_agentic_finding(
     }
 }
 
+struct ParticipantPlanFailure {
+    code: &'static str,
+    message: String,
+}
+
 async fn deterministic_participant_plan(
     app: &App,
     record: &factory_native::db::IntakeRequestRecord,
     context: &AgenticTriageContext,
     graph: &factory_native::agentic::ValidatedWorkGraph,
-) -> Option<factory_native::agentic::ParticipantPlan> {
+) -> Result<factory_native::agentic::ParticipantPlan, ParticipantPlanFailure> {
     let profile = app
         .db
         .execution_profile_revision(&record.profile_id, &record.profile_revision_id)
         .await
-        .ok()?;
-    if context.assurance() >= factory_native::agentic::Assurance::Critical {
-        // Defense in depth: the plan route already fails closed, and this path
-        // must never fabricate a multi-reviewer plan that the deployment cannot
-        // staff.
-        return None;
-    }
-    let content = profile.content.v2()?;
+        .map_err(|_| ParticipantPlanFailure {
+            code: "PROFILE_NOT_EXECUTABLE",
+            message: "the frozen execution profile is not executable".into(),
+        })?;
+    let content = profile.content.v2().ok_or(ParticipantPlanFailure {
+        code: "PROFILE_NOT_EXECUTABLE",
+        message: "the frozen execution profile has no executable v2 content".into(),
+    })?;
+    let reviewer_plan = factory_native::planning::route::required_reviewers(
+        context.planning_lane,
+        context.assurance(),
+    );
+    let reviewer_assignments = app
+        .reviewer_identities
+        .assignments_for_plan(
+            &reviewer_plan,
+            &content.roles.semantic_reviewer.provider,
+            &content.roles.semantic_reviewer.model,
+        )
+        .map_err(|message| ParticipantPlanFailure {
+            code: "REVIEWER_INDEPENDENCE_REQUIRED",
+            message,
+        })?;
     let mut plan = factory_native::agentic::participant_plan_for_graph(
         context.triage.route,
         context.assurance(),
@@ -11967,24 +12051,20 @@ async fn deterministic_participant_plan(
         &content.roles.implementer.model,
         "",
     );
-    // The current Compose topology authenticates one reviewer identity/token.
-    // Do not require a second receipt that no reviewer can submit. Multi-
-    // reviewer aggregation remains implemented and tested for a deployment
-    // that provisions independent reviewer identities.
-    if plan.reviewer_count > 1 {
-        plan.reviewer_count = 1;
-        plan.reviewer_roles = vec![factory_native::planning::ReviewerRole::Functional];
-        for assignment in &mut plan.assignments {
-            if assignment.role == "Reviewer" {
-                assignment.count = 1;
-            }
+    plan.reviewer_count = u32::try_from(reviewer_assignments.len()).unwrap_or(u32::MAX);
+    plan.reviewer_roles = reviewer_plan.required.clone();
+    plan.reviewer_assignments = reviewer_assignments;
+    for assignment in &mut plan.assignments {
+        if assignment.role == "Reviewer" {
+            assignment.count = plan.reviewer_count;
         }
-        plan.reasons.push(
-            "Only one independent reviewer identity is configured; the plan uses one Functional reviewer and does not claim multi-role coverage."
-                .into(),
-        );
     }
-    Some(plan)
+    plan.reasons.push(format!(
+        "{} required reviewer roles are staffed by {} distinct authenticated reviewer identities; provider and model equality is not a rejection criterion.",
+        plan.reviewer_roles.len(),
+        plan.reviewer_count
+    ));
+    Ok(plan)
 }
 
 async fn get_agentic_participants(
@@ -12037,17 +12117,8 @@ async fn record_agentic_participants(
         Err(error) => return api_error(error),
     };
     let plan = match deterministic_participant_plan(&app, &record, &context, &graph).await {
-        Some(plan) => plan,
-        None => {
-            return (
-                StatusCode::CONFLICT,
-                Json(json!({
-                    "error": "the frozen execution profile is not executable",
-                    "code": "PROFILE_NOT_EXECUTABLE",
-                })),
-            )
-                .into_response();
-        }
+        Ok(plan) => plan,
+        Err(failure) => return agentic_conflict(failure.code, &failure.message),
     };
     match app
         .db
@@ -15318,18 +15389,35 @@ async fn quality_gate(
     }
 }
 
-fn quality_role(app: &App, headers: &HeaderMap) -> Option<QualityRole> {
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AuthenticatedQuality {
+    role: QualityRole,
+    principal_id: String,
+    reviewer_role: Option<factory_native::planning::ReviewerRole>,
+}
+
+fn quality_identity(app: &App, headers: &HeaderMap) -> Option<AuthenticatedQuality> {
     let token = headers
         .get("authorization")
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))?;
     if constant_time_eq(token.as_bytes(), app.verifier_token.as_bytes()) {
-        Some(QualityRole::Verifier)
-    } else if constant_time_eq(token.as_bytes(), app.reviewer_token.as_bytes()) {
-        Some(QualityRole::Reviewer)
-    } else {
-        None
+        return Some(AuthenticatedQuality {
+            role: QualityRole::Verifier,
+            principal_id: app.verifier_principal.clone(),
+            reviewer_role: None,
+        });
     }
+    let identity = app.reviewer_identities.authenticate(token)?;
+    Some(AuthenticatedQuality {
+        role: QualityRole::Reviewer,
+        principal_id: identity.principal_id().to_owned(),
+        reviewer_role: Some(identity.role()),
+    })
+}
+
+fn quality_role(app: &App, headers: &HeaderMap) -> Option<QualityRole> {
+    quality_identity(app, headers).map(|identity| identity.role)
 }
 
 fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
@@ -15682,6 +15770,42 @@ mod tests {
     use super::*;
     use axum::http::HeaderValue;
     use serde_json::Value;
+
+    fn test_reviewer_identities() -> factory_native::reviewer_identity::ReviewerIdentitySet {
+        factory_native::reviewer_identity::ReviewerIdentitySet::from_material(vec![
+            (
+                "reviewer-functional-process".into(),
+                factory_native::planning::ReviewerRole::Functional,
+                "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            ),
+            (
+                "reviewer-architecture-process".into(),
+                factory_native::planning::ReviewerRole::Architecture,
+                "reviewer-token-cccccccccccccccccccccccc".into(),
+            ),
+            (
+                "reviewer-code-quality-process".into(),
+                factory_native::planning::ReviewerRole::CodeQuality,
+                "reviewer-token-dddddddddddddddddddddddd".into(),
+            ),
+            (
+                "reviewer-security-process".into(),
+                factory_native::planning::ReviewerRole::Security,
+                "reviewer-token-eeeeeeeeeeeeeeeeeeeeeeee".into(),
+            ),
+            (
+                "reviewer-testing-process".into(),
+                factory_native::planning::ReviewerRole::Testing,
+                "reviewer-token-ffffffffffffffffffffffff".into(),
+            ),
+            (
+                "reviewer-operability-process".into(),
+                factory_native::planning::ReviewerRole::Operability,
+                "reviewer-token-111111111111111111111111".into(),
+            ),
+        ])
+        .unwrap()
+    }
 
     #[tokio::test]
     async fn subscription_funding_readiness_is_authenticated_and_never_claims_verification() {
@@ -16127,9 +16251,8 @@ mod tests {
             operator_token: "operator".into(),
             worker_bootstrap_token: "bootstrap".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
-            reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
             verifier_principal: "verifier-process".into(),
-            reviewer_principal: "reviewer-process".into(),
+            reviewer_identities: test_reviewer_identities(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
@@ -16226,9 +16349,8 @@ mod tests {
             operator_token: "operator-token".into(),
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
-            reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
             verifier_principal: "verifier-process".into(),
-            reviewer_principal: "reviewer-process".into(),
+            reviewer_identities: test_reviewer_identities(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
@@ -16441,9 +16563,8 @@ mod tests {
             operator_token: "operator-token".into(),
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
-            reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
             verifier_principal: "verifier-process".into(),
-            reviewer_principal: "reviewer-process".into(),
+            reviewer_identities: test_reviewer_identities(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
@@ -16635,9 +16756,8 @@ mod tests {
             operator_token: "operator-token".into(),
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
-            reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
             verifier_principal: "verifier-process".into(),
-            reviewer_principal: "reviewer-process".into(),
+            reviewer_identities: test_reviewer_identities(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
@@ -16802,6 +16922,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn quality_receipt_rejects_caller_selected_principal_or_role() {
+        use tower::ServiceExt;
+        let path = std::env::temp_dir().join(format!(
+            "factory-core-receipt-identity-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let app = test_app(&path).await;
+        let router = build_router(app);
+        let body = |principal: &str, role: &str| {
+            serde_json::json!({
+                "candidate_id": "candidate-1",
+                "receipt_id": "reviewer-receipt-identity-test",
+                "principal_id": principal,
+                "reviewerRole": role,
+                "actionSpecSha256": "a".repeat(64),
+                "commitSha": "b".repeat(40),
+                "treeSha": "c".repeat(40),
+                "result": "PASS",
+                "evidence": "EXECUTED",
+                "findings": [],
+            })
+            .to_string()
+        };
+        let wrong_principal = axum::http::Request::builder()
+            .method("POST")
+            .uri("/quality/receipts")
+            .header("content-type", "application/json")
+            .header(
+                "authorization",
+                "Bearer reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb",
+            )
+            .body(axum::body::Body::from(body(
+                "caller-chosen-principal",
+                "FUNCTIONAL",
+            )))
+            .unwrap();
+        let response = router.clone().oneshot(wrong_principal).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let wrong_role = axum::http::Request::builder()
+            .method("POST")
+            .uri("/quality/receipts")
+            .header("content-type", "application/json")
+            .header(
+                "authorization",
+                "Bearer reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb",
+            )
+            .body(axum::body::Body::from(body(
+                "reviewer-functional-process",
+                "SECURITY",
+            )))
+            .unwrap();
+        let response = router.oneshot(wrong_role).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
     async fn quality_routes_reject_missing_or_cross_role_credentials() {
         use tower::ServiceExt;
         let path = std::env::temp_dir().join(format!(
@@ -16813,9 +16990,8 @@ mod tests {
             operator_token: "operator-token".into(),
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
-            reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
             verifier_principal: "verifier-process".into(),
-            reviewer_principal: "reviewer-process".into(),
+            reviewer_identities: test_reviewer_identities(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
@@ -16883,9 +17059,8 @@ mod tests {
             operator_token: "operator-token".into(),
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
-            reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
             verifier_principal: "verifier-process".into(),
-            reviewer_principal: "reviewer-process".into(),
+            reviewer_identities: test_reviewer_identities(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
@@ -16932,9 +17107,8 @@ mod tests {
             operator_token: "operator-token".into(),
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
-            reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
             verifier_principal: "verifier-process".into(),
-            reviewer_principal: "reviewer-process".into(),
+            reviewer_identities: test_reviewer_identities(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
@@ -18159,9 +18333,8 @@ mod tests {
             operator_token: "operator".into(),
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
-            reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
             verifier_principal: "verifier-process".into(),
-            reviewer_principal: "reviewer-process".into(),
+            reviewer_identities: test_reviewer_identities(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
@@ -18213,9 +18386,8 @@ mod tests {
             operator_token: "operator-token".into(),
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
-            reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
             verifier_principal: "verifier-process".into(),
-            reviewer_principal: "reviewer-process".into(),
+            reviewer_identities: test_reviewer_identities(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
@@ -18375,9 +18547,8 @@ mod tests {
             operator_token: "operator-token".into(),
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
-            reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
             verifier_principal: "verifier-process".into(),
-            reviewer_principal: "reviewer-process".into(),
+            reviewer_identities: test_reviewer_identities(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
@@ -18612,9 +18783,8 @@ mod tests {
             operator_token: "operator-token".into(),
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
-            reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
             verifier_principal: "verifier-process".into(),
-            reviewer_principal: "reviewer-process".into(),
+            reviewer_identities: test_reviewer_identities(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
@@ -19453,9 +19623,8 @@ mod tests {
             operator_token: "operator-token".into(),
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
-            reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
             verifier_principal: "verifier-process".into(),
-            reviewer_principal: "reviewer-process".into(),
+            reviewer_identities: test_reviewer_identities(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
