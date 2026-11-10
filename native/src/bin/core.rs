@@ -12005,6 +12005,12 @@ async fn get_agentic_findings(
     }
 }
 
+/// Exact owner-decision matter and selected option that authorize a finding
+/// refutation. A generic APPROVED decision for another purpose must never close
+/// a reviewer finding.
+const FINDING_REFUTATION_MATTER: &str = "FINDING_REFUTATION";
+const FINDING_REFUTATION_APPROVE_OPTION: &str = "APPROVE_REFUTATION";
+
 fn owner_decision_allows_refutation(
     decision: &factory_native::db::AgenticOwnerDecisionRecord,
     principal: &str,
@@ -12013,7 +12019,15 @@ fn owner_decision_allows_refutation(
 ) -> bool {
     let scoped = decision.request_id.as_deref() == Some(request_id)
         || (decision.request_id.is_none() && decision.project_id == project_id);
-    decision.status == "APPROVED" && decision.resolved_by.as_deref() == Some(principal) && scoped
+    decision.status == "APPROVED"
+        && decision.resolved_by.as_deref() == Some(principal)
+        && decision.matter == FINDING_REFUTATION_MATTER
+        && decision.selected_option.as_deref() == Some(FINDING_REFUTATION_APPROVE_OPTION)
+        && decision
+            .options
+            .iter()
+            .any(|option| option == FINDING_REFUTATION_APPROVE_OPTION)
+        && scoped
 }
 
 #[derive(Deserialize)]
@@ -16040,6 +16054,41 @@ mod tests {
         ));
         assert!(!owner_decision_allows_refutation(
             &owner_decision("APPROVED", Some("device:owner"), None, "other-project"),
+            "device:owner",
+            request,
+            project,
+        ));
+
+        // An approval for an unrelated matter must not close a finding.
+        let mut unrelated_matter =
+            owner_decision("APPROVED", Some("device:owner"), Some(request), project);
+        unrelated_matter.matter = "DEPLOYMENT".into();
+        assert!(!owner_decision_allows_refutation(
+            &unrelated_matter,
+            "device:owner",
+            request,
+            project,
+        ));
+
+        // The selected option must be the exact refutation option, not merely
+        // another approved option on the same decision.
+        let mut unrelated_option =
+            owner_decision("APPROVED", Some("device:owner"), Some(request), project);
+        unrelated_option.selected_option = Some("APPROVE_DEPLOYMENT".into());
+        assert!(!owner_decision_allows_refutation(
+            &unrelated_option,
+            "device:owner",
+            request,
+            project,
+        ));
+
+        // A row that claims the option was selected without listing it in the
+        // resolved option set is not a trustworthy owner decision.
+        let mut missing_option =
+            owner_decision("APPROVED", Some("device:owner"), Some(request), project);
+        missing_option.options.clear();
+        assert!(!owner_decision_allows_refutation(
+            &missing_option,
             "device:owner",
             request,
             project,

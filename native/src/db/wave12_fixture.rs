@@ -775,7 +775,7 @@ impl Database {
              (id,project_id,request_id,campaign_id,matter,risk,status,options_json,
               evidence_json,recommendation,deadline,selected_option,rationale,resolved_by,
               created_at,updated_at,resolved_at)
-             VALUES (?1,?2,?3,NULL,'FINDING_REFUTATION','R1','APPROVED','[]','[]',
+             VALUES (?1,?2,?3,NULL,'FINDING_REFUTATION','R1','APPROVED','[\"APPROVE_REFUTATION\"]','[]',
                      'Refute the finding with the recorded owner decision.',?4,
                      'APPROVE_REFUTATION',
                      'The owner confirmed the reviewer finding is invalid.',
@@ -1227,6 +1227,17 @@ mod tests {
             .unwrap();
         assert_eq!(decision.status, "APPROVED");
         assert_eq!(decision.resolved_by.as_deref(), Some("device:owner"));
+        assert_eq!(decision.matter, "FINDING_REFUTATION");
+        assert_eq!(
+            decision.selected_option.as_deref(),
+            Some("APPROVE_REFUTATION")
+        );
+        assert!(
+            decision
+                .options
+                .iter()
+                .any(|option| option == "APPROVE_REFUTATION")
+        );
 
         let populated = db
             .workflow_trace(TRACE_POPULATED_REQUEST, 200)
