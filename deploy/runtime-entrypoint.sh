@@ -30,6 +30,16 @@ if [ ! -f /sys/fs/cgroup/cgroup.controllers ]; then
   exit 78
 fi
 
+# Rootless netavark creates a bridge on first attachment and configures its
+# namespaced network sysctls. The outer container's read-only root filesystem
+# exposes /proc/sys read-only, so make only this mount writable. The sysctls
+# remain scoped to the runtime container's network namespace; no host sysctl is
+# changed and the dependency path fails closed if the engine cannot configure
+# its private bridge.
+if ! mount -o remount,rw /proc/sys 2>/dev/null; then
+  echo "factory-runtime: /proc/sys is not writable; private bridge setup may be unavailable" >&2
+fi
+
 # Podman mounts /sys/fs/cgroup read-only by default. The dedicated engine owns
 # only its own delegated subtree; remounting cgroup2 here does not grant host
 # cgroup authority.

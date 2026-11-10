@@ -117,11 +117,30 @@ gateway; the acquisition container receives only the proxy URL and can reach no
 other destination. Cargo's `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY` and
 `CARGO_HTTP_PROXY` are fixed to the proxy, and the proxy allows only the
 configured crates.io/GitHub hosts (`FACTORY_RUNTIME_DEPENDENCY_EGRESS_ALLOW`).
-Direct egress and non-allowlisted CONNECT destinations are refused; broker
-startup fails closed if the network or proxy cannot be established. An existing
+Direct egress and non-allowlisted CONNECT destinations are refused.
+
+Dependency acquisition is optional and never blocks the runtime broker. At
+startup the broker attempts the dependency bundle import, exact image-ID pin,
+network inspection and proxy bind. Any failure is logged once as a bounded
+warning, only the acquisition endpoint is disabled, and the broker continues to
+serve health, volumes, checks and provider sessions. `/health` reports
+`dependencyAcquisition: { "enabled": false, "code": "...", "reason": "..." }`;
+an authenticated acquisition request to the disabled endpoint fails closed with
+`503` and `DEPENDENCY_EGRESS_UNAVAILABLE` or
+`DEPENDENCY_RUNTIME_UNAVAILABLE`. There is no direct-egress fallback and the
+owner-token and workspace-lock checks are unchanged.
+
+Rootless nested Podman creates a bridge network interface only when a container
+attaches. The runtime entrypoint therefore makes the container-local `/proc/sys`
+mount writable so netavark can apply namespaced bridge sysctls, and the broker
+binds the configured gateway when it exists. If the gateway address is not
+present yet, it binds a wildcard listener and accepts connections only from the
+configured dependency subnet; the acquisition container is still
+sent the fixed gateway proxy URL and has no other route. An existing
 `factory-deps-egress` network is accepted only when it is still marked
 `internal` and carries the `io.software-factory.managed=true` label; a
-non-internal or unmanaged network is refused.
+non-internal or unmanaged network is refused and disables only the dependency
+endpoint.
 
 The planning route attaches a frozen dependency plan to the ActionSpec before
 plan review and Campaign authorization; the spec is immutable after Campaign

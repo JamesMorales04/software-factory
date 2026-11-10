@@ -10,7 +10,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    net::{IpAddr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -34,8 +34,57 @@ pub const TUNNEL_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 pub enum EgressProxyError {
     #[error("dependency egress allowlist is invalid: {0}")]
     InvalidAllowlist(String),
+    #[error("dependency egress subnet is invalid: {0}")]
+    InvalidSubnet(String),
     #[error("dependency egress proxy I/O: {0}")]
     Io(#[from] std::io::Error),
+}
+
+/// IPv4 network allowed to reach a wildcard-bound proxy listener. Rootless
+/// nested Podman creates the bridge interface only while a container is
+/// attached, so the broker may need to bind before the configured gateway
+/// address exists. The wildcard listener remains restricted to the dedicated
+/// dependency subnet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PeerSubnet {
+    network: Ipv4Addr,
+    prefix: u8,
+}
+
+impl PeerSubnet {
+    pub fn parse(value: &str) -> Result<Self, EgressProxyError> {
+        let (network, prefix) = value.split_once('/').ok_or_else(|| {
+            EgressProxyError::InvalidSubnet(format!("{value:?} is not a CIDR subnet"))
+        })?;
+        let network: Ipv4Addr = network.trim().parse().map_err(|_| {
+            EgressProxyError::InvalidSubnet(format!("{value:?} is not an IPv4 subnet"))
+        })?;
+        let prefix: u8 = prefix.trim().parse().map_err(|_| {
+            EgressProxyError::InvalidSubnet(format!("{value:?} has an invalid prefix"))
+        })?;
+        if prefix == 0 || prefix > 32 {
+            return Err(EgressProxyError::InvalidSubnet(format!(
+                "{value:?} prefix must be between 1 and 32"
+            )));
+        }
+        let mask = u32::MAX.checked_shl(u32::from(32 - prefix)).unwrap_or(0);
+        if u32::from(network) & !mask != 0 {
+            return Err(EgressProxyError::InvalidSubnet(format!(
+                "{value:?} has host bits set"
+            )));
+        }
+        Ok(Self { network, prefix })
+    }
+
+    pub fn contains(self, address: IpAddr) -> bool {
+        let IpAddr::V4(address) = address else {
+            return false;
+        };
+        let mask = u32::MAX
+            .checked_shl(u32::from(32 - self.prefix))
+            .unwrap_or(0);
+        u32::from(address) & mask == u32::from(self.network) & mask
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -181,6 +230,18 @@ pub async fn spawn(
     address: SocketAddr,
     allowlist: EgressAllowlist,
 ) -> Result<RunningProxy, EgressProxyError> {
+    spawn_scoped(address, allowlist, None).await
+}
+
+/// Bind and start the proxy with an optional source-network restriction. The
+/// restriction is required when the listener binds a wildcard address because
+/// the dedicated bridge does not exist yet; connections from every other
+/// network are dropped before any HTTP request is parsed.
+pub async fn spawn_scoped(
+    address: SocketAddr,
+    allowlist: EgressAllowlist,
+    peers: Option<PeerSubnet>,
+) -> Result<RunningProxy, EgressProxyError> {
     let listener = TcpListener::bind(address).await?;
     let address = listener.local_addr()?;
     let ready = Arc::new(AtomicBool::new(true));
@@ -189,10 +250,15 @@ pub async fn spawn(
     let task = tokio::spawn(async move {
         let permits = Arc::new(Semaphore::new(MAX_PROXY_CONNECTIONS));
         loop {
-            let (socket, _peer) = match listener.accept().await {
+            let (socket, peer) = match listener.accept().await {
                 Ok(value) => value,
                 Err(_) => break,
             };
+            if peers.is_some_and(|subnet| !subnet.contains(peer.ip())) {
+                tracing::warn!(%peer, "dependency egress peer rejected");
+                drop(socket);
+                continue;
+            }
             let Ok(permit) = permits.clone().try_acquire_owned() else {
                 drop(socket);
                 continue;
@@ -372,6 +438,56 @@ mod tests {
             .unwrap_or_default()
             .to_owned();
         Ok((socket, status))
+    }
+
+    #[test]
+    fn peer_subnet_requires_a_bounded_ipv4_network() {
+        let subnet = PeerSubnet::parse("10.90.0.0/24").unwrap();
+        assert!(subnet.contains("10.90.0.1".parse().unwrap()));
+        assert!(subnet.contains("10.90.0.254".parse().unwrap()));
+        assert!(!subnet.contains("10.90.1.1".parse().unwrap()));
+        assert!(!subnet.contains("127.0.0.1".parse().unwrap()));
+        assert!(!subnet.contains("::1".parse().unwrap()));
+
+        for invalid in [
+            "10.90.0.0",
+            "10.90.0.0/0",
+            "10.90.0.0/33",
+            "10.90.0.1/24",
+            "not-a-subnet/24",
+            "2001:db8::/64",
+        ] {
+            assert!(
+                PeerSubnet::parse(invalid).is_err(),
+                "invalid subnet {invalid} was accepted"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn scoped_proxy_drops_peers_outside_the_dependency_subnet() {
+        let allowlist = EgressAllowlist::new(["index.crates.io:443".into()]).unwrap();
+        let proxy = spawn_scoped(
+            "127.0.0.1:0".parse().unwrap(),
+            allowlist,
+            Some(PeerSubnet::parse("10.90.0.0/24").unwrap()),
+        )
+        .await
+        .unwrap();
+        let mut socket = TcpStream::connect(proxy.address()).await.unwrap();
+        socket
+            .write_all(b"GET /health HTTP/1.1\r\nHost: proxy\r\n\r\n")
+            .await
+            .unwrap();
+        let mut buffer = [0u8; 64];
+        match time::timeout(Duration::from_secs(2), socket.read(&mut buffer)).await {
+            Ok(Ok(0)) => {}
+            Ok(Err(error)) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+            Ok(Ok(read)) => panic!("out-of-scope peer received {read} response bytes"),
+            Ok(Err(error)) => panic!("out-of-scope peer failed unexpectedly: {error}"),
+            Err(_) => panic!("out-of-scope proxy connection remained open"),
+        }
+        proxy.abort();
     }
 
     #[tokio::test]
