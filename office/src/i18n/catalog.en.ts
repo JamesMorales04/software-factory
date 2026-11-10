@@ -3597,6 +3597,10 @@ export const en = {
     "No reviewer roles are recorded for this route.",
   "director.participants.independentReceipts":
     "{count} of {required} independent reviewer receipts recorded",
+  "director.participants.receiptStatus": "{result} · {evidence}",
+  "director.participants.receiptMissing": "No receipt",
+  "director.participants.planMismatch":
+    "The frozen reviewer plan does not bind the required roles to principals. Acceptance is blocked until Core records an exact assignment set.",
   "director.reviewerRole.FUNCTIONAL": "Functional",
   "director.reviewerRole.ARCHITECTURE": "Architecture",
   "director.reviewerRole.CODE_QUALITY": "Code quality",

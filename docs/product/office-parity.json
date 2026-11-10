@@ -985,7 +985,7 @@
    "user_actions": [
     "record the participant plan",
     "inspect unit specialization and provider/model routing",
-    "inspect required reviewer roles, assigned principals and the independent receipt count",
+    "inspect required reviewer roles, assigned principals, per-role receipt result/evidence and the independent receipt count",
     "interpret verifier and reviewer receipts without changing the Gate"
    ],
    "states": [
@@ -1005,7 +1005,7 @@
     "office/src/components/office/CheapOpsPanel.test.tsx",
     "docs/implementation/wp9-reviewer-independence-evidence.md"
    ],
-   "notes": "The plan is deterministic and cannot be widened by a model. Reviewer independence is the authenticated identity/process, not provider/model choice; the Office shows required roles, assigned principals and distinct PASS receipts from Core. Cheap Ops is OBSERVATION_ONLY: it restates receipts and the Gate but cannot accept, repair or fail a candidate."
+   "notes": "The plan is deterministic and cannot be widened by a model. Reviewer independence is the authenticated identity/process, not provider/model choice; the Office shows required roles, assigned principals, per-role receipt result/evidence and distinct PASS receipts from Core, including a missing-receipt state and a frozen-plan assignment-mismatch alert. Cheap Ops is OBSERVATION_ONLY: it restates receipts and the Gate but cannot accept, repair or fail a candidate."
   },
   "CAP-065": {
    "name": "Owner charter and delegated autonomy",

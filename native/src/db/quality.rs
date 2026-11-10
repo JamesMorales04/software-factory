@@ -1384,33 +1384,64 @@ struct ReviewerRequirement {
     assignments: BTreeMap<crate::planning::ReviewerRole, String>,
 }
 
+type ReviewerRequirementRow = (i64, Option<String>, Option<String>, Option<String>);
+
+impl ReviewerRequirement {
+    /// A multi-role Gate may only count receipts when the frozen plan binds
+    /// exactly the required role set to principals. An empty assignment set is
+    /// valid only for a legacy plan with no required roles.
+    fn assignments_match_roles(&self) -> bool {
+        if self.roles.is_empty() {
+            return self.assignments.is_empty();
+        }
+        self.assignments.len() == self.roles.len()
+            && self
+                .roles
+                .iter()
+                .all(|role| self.assignments.contains_key(role))
+    }
+}
+
+fn unique_roles(
+    roles: impl IntoIterator<Item = crate::planning::ReviewerRole>,
+) -> Vec<crate::planning::ReviewerRole> {
+    let mut seen = std::collections::BTreeSet::new();
+    roles
+        .into_iter()
+        .filter(|role| seen.insert(*role))
+        .collect()
+}
+
 async fn reviewer_requirement_for_candidate(
     connection: &mut SqliteConnection,
     candidate_id: &str,
 ) -> Result<ReviewerRequirement, Error> {
-    let row: Option<(i64, Option<String>, Option<String>)> = sqlx::query_as::query_as(
+    let row: Option<ReviewerRequirementRow> = sqlx::query_as::query_as(
         "SELECT COALESCE(
-           (SELECT rr.reviewer_count FROM campaign_review_requirements rr
-            WHERE rr.campaign_id=c.id),
-           (SELECT pp.reviewer_count FROM intake_requests ir
-            JOIN agentic_participant_plans pp ON pp.request_id=ir.id
-            WHERE ir.campaign_id=c.id),
-           1),
-           (SELECT rr.required_roles_json FROM campaign_review_requirements rr
-            WHERE rr.campaign_id=c.id),
-           (SELECT pp.plan_json FROM intake_requests ir
-            JOIN agentic_participant_plans pp ON pp.request_id=ir.id
-            WHERE ir.campaign_id=c.id)
-         FROM candidates cd
-         JOIN attempts a ON a.id=cd.attempt_id
-         JOIN runs r ON r.id=a.run_id
-         JOIN campaigns c ON c.id=r.campaign_id
-         WHERE cd.id=?1",
+               (SELECT rr.reviewer_count FROM campaign_review_requirements rr
+                WHERE rr.campaign_id=c.id),
+               (SELECT pp.reviewer_count FROM intake_requests ir
+                JOIN agentic_participant_plans pp ON pp.request_id=ir.id
+                WHERE ir.campaign_id=c.id),
+               1),
+               (SELECT rr.required_roles_json FROM campaign_review_requirements rr
+                WHERE rr.campaign_id=c.id),
+               (SELECT rr.required_assignments_json FROM campaign_review_requirements rr
+                WHERE rr.campaign_id=c.id),
+               (SELECT pp.plan_json FROM intake_requests ir
+                JOIN agentic_participant_plans pp ON pp.request_id=ir.id
+                WHERE ir.campaign_id=c.id)
+             FROM candidates cd
+             JOIN attempts a ON a.id=cd.attempt_id
+             JOIN runs r ON r.id=a.run_id
+             JOIN campaigns c ON c.id=r.campaign_id
+             WHERE cd.id=?1",
     )
     .bind(candidate_id)
     .fetch_optional(&mut *connection)
     .await?;
-    let (stored_count, roles_json, plan_json) = row.unwrap_or((1, None, None));
+    let (stored_count, roles_json, assignments_json, plan_json) =
+        row.unwrap_or((1, None, None, None));
     let mut requirement = ReviewerRequirement {
         count: usize::try_from(stored_count).unwrap_or(1).max(1),
         ..ReviewerRequirement::default()
@@ -1418,22 +1449,35 @@ async fn reviewer_requirement_for_candidate(
     if let Some(roles_json) = roles_json
         && let Ok(values) = serde_json::from_str::<Vec<String>>(&roles_json)
     {
-        requirement.roles = values
-            .iter()
-            .filter_map(|value| crate::planning::ReviewerRole::parse(value))
+        requirement.roles = unique_roles(
+            values
+                .iter()
+                .filter_map(|value| crate::planning::ReviewerRole::parse(value)),
+        );
+    }
+    if let Some(assignments_json) = assignments_json
+        && let Ok(assignments) = serde_json::from_str::<
+            Vec<crate::review_roles::ReviewerIdentityAssignment>,
+        >(&assignments_json)
+    {
+        requirement.assignments = assignments
+            .into_iter()
+            .map(|assignment| (assignment.role, assignment.principal_id))
             .collect();
     }
     if let Some(plan_json) = plan_json
         && let Ok(plan) = serde_json::from_str::<crate::agentic::ParticipantPlan>(&plan_json)
     {
         if requirement.roles.is_empty() {
-            requirement.roles = plan.reviewer_roles;
+            requirement.roles = unique_roles(plan.reviewer_roles);
         }
-        requirement.assignments = plan
-            .reviewer_assignments
-            .into_iter()
-            .map(|assignment| (assignment.role, assignment.principal_id))
-            .collect();
+        if requirement.assignments.is_empty() {
+            requirement.assignments = plan
+                .reviewer_assignments
+                .into_iter()
+                .map(|assignment| (assignment.role, assignment.principal_id))
+                .collect();
+        }
     }
     requirement.count = requirement.count.max(requirement.roles.len());
     Ok(requirement)
@@ -1457,6 +1501,7 @@ async fn decide_gate(
             ReceiptResult::Fail | ReceiptResult::ChangesRequested
         )
     });
+    let assignment_set_invalid = !requirement.assignments_match_roles();
     let mut principals = std::collections::BTreeSet::new();
     let mut covered_roles = std::collections::BTreeSet::new();
     let mut assignment_mismatch = false;
@@ -1477,7 +1522,8 @@ async fn decide_gate(
         }
         covered_roles.insert(role);
     }
-    let coverage_ok = !assignment_mismatch
+    let coverage_ok = !assignment_set_invalid
+        && !assignment_mismatch
         && principals.len() >= requirement.count
         && covered_roles.len() >= requirement.roles.len();
 
@@ -1501,7 +1547,15 @@ async fn decide_gate(
         &reviewer_refs,
         policy,
     );
-    if assignment_mismatch {
+    if !reviewer_records.is_empty() && assignment_set_invalid {
+        decision = crate::quality::GateDecision {
+            outcome: GateOutcome::Blocked,
+            reasons: vec![
+                "reviewer plan does not bind every required role to an authenticated principal"
+                    .into(),
+            ],
+        };
+    } else if !reviewer_records.is_empty() && assignment_mismatch {
         decision = crate::quality::GateDecision {
             outcome: GateOutcome::Blocked,
             reasons: vec!["reviewer principal does not match the frozen role assignment".into()],

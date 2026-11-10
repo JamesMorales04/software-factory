@@ -3735,6 +3735,10 @@ export const es: Catalog = {
     "No hay roles de revisión registrados para esta ruta.",
   "director.participants.independentReceipts":
     "{count} de {required} recibos de revisión independientes registrados",
+  "director.participants.receiptStatus": "{result} · {evidence}",
+  "director.participants.receiptMissing": "Sin recibo",
+  "director.participants.planMismatch":
+    "El plan de revisión congelado no vincula los roles requeridos con principals. La aceptación queda bloqueada hasta que Core registre un conjunto exacto de asignaciones.",
   "director.reviewerRole.FUNCTIONAL": "Funcional",
   "director.reviewerRole.ARCHITECTURE": "Arquitectura",
   "director.reviewerRole.CODE_QUALITY": "Calidad de código",

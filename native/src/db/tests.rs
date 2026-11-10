@@ -1225,6 +1225,7 @@ async fn set_reviewer_requirement(
     candidate_id: &str,
     count: i64,
     roles: &[crate::planning::ReviewerRole],
+    assignments: &[(crate::planning::ReviewerRole, &str)],
 ) {
     let (campaign_id,): (String,) = sqlx::query_as::query_as(
         "SELECT r.campaign_id FROM candidates cd
@@ -1238,14 +1239,29 @@ async fn set_reviewer_requirement(
     .unwrap();
     let roles_json =
         serde_json::to_string(&roles.iter().map(|role| role.as_str()).collect::<Vec<_>>()).unwrap();
+    let assignments_json = serde_json::to_string(
+        &assignments
+            .iter()
+            .map(|(role, principal)| {
+                serde_json::json!({
+                    "role": role.as_str(),
+                    "principalId": principal,
+                    "provider": "opencode",
+                    "model": "deepseek-v4.1-flash",
+                })
+            })
+            .collect::<Vec<_>>(),
+    )
+    .unwrap();
     sqlx::query::query(
         "INSERT INTO campaign_review_requirements
-           (campaign_id,reviewer_count,required_roles_json,created_at)
-         VALUES (?1,?2,?3,?4)",
+           (campaign_id,reviewer_count,required_roles_json,required_assignments_json,created_at)
+         VALUES (?1,?2,?3,?4,?5)",
     )
     .bind(campaign_id)
     .bind(count)
     .bind(roles_json)
+    .bind(assignments_json)
     .bind(Utc::now().to_rfc3339())
     .execute(&db.pool)
     .await
@@ -1416,7 +1432,7 @@ async fn multiple_independent_reviewers_are_aggregated_into_one_gate() {
 }
 
 #[tokio::test]
-async fn gate_accepts_distinct_principals_with_the_same_model_and_required_roles() {
+async fn gate_accepts_distinct_principals_with_same_model_and_exact_role_assignments() {
     use crate::planning::ReviewerRole;
     let fixture = candidate_fixture().await;
     set_reviewer_requirement(
@@ -1424,6 +1440,10 @@ async fn gate_accepts_distinct_principals_with_the_same_model_and_required_roles
         &fixture.candidate_id,
         2,
         &[ReviewerRole::Functional, ReviewerRole::CodeQuality],
+        &[
+            (ReviewerRole::Functional, "reviewer-a"),
+            (ReviewerRole::CodeQuality, "reviewer-b"),
+        ],
     )
     .await;
     fixture
@@ -1491,6 +1511,97 @@ async fn gate_accepts_distinct_principals_with_the_same_model_and_required_roles
 }
 
 #[tokio::test]
+async fn gate_blocks_required_roles_without_frozen_principal_assignments() {
+    use crate::planning::ReviewerRole;
+    let fixture = candidate_fixture().await;
+    set_reviewer_requirement(
+        &fixture.db,
+        &fixture.candidate_id,
+        2,
+        &[ReviewerRole::Functional, ReviewerRole::CodeQuality],
+        &[],
+    )
+    .await;
+    fixture
+        .db
+        .record_quality_receipt(
+            &fixture.candidate_id,
+            QualityRole::Verifier,
+            &quality_receipt(&fixture, "verifier-unassigned-roles", "verifier-1"),
+        )
+        .await
+        .unwrap();
+    let receipt = quality_reviewer_receipt(
+        &fixture,
+        "reviewer-unassigned-roles",
+        "reviewer-a",
+        ReviewerRole::Functional,
+    );
+    let ingested = fixture
+        .db
+        .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &receipt)
+        .await
+        .unwrap();
+    let gate = ingested.gate.expect("an unbound plan must decide the Gate");
+    assert_eq!(gate.outcome, GateOutcome::Blocked);
+    assert!(
+        gate.reasons
+            .iter()
+            .any(|reason| reason.contains("does not bind every required role"))
+    );
+    fixture.db.close().await;
+    let _ = std::fs::remove_file(fixture.root.join("factory.sqlite"));
+}
+
+#[tokio::test]
+async fn gate_rejects_an_assignment_set_with_an_unexpected_role() {
+    use crate::planning::ReviewerRole;
+    let fixture = candidate_fixture().await;
+    set_reviewer_requirement(
+        &fixture.db,
+        &fixture.candidate_id,
+        2,
+        &[ReviewerRole::Functional, ReviewerRole::CodeQuality],
+        &[
+            (ReviewerRole::Functional, "reviewer-a"),
+            (ReviewerRole::Security, "reviewer-b"),
+        ],
+    )
+    .await;
+    fixture
+        .db
+        .record_quality_receipt(
+            &fixture.candidate_id,
+            QualityRole::Verifier,
+            &quality_receipt(&fixture, "verifier-unexpected-assignment", "verifier-1"),
+        )
+        .await
+        .unwrap();
+    let receipt = quality_reviewer_receipt(
+        &fixture,
+        "reviewer-unexpected-assignment",
+        "reviewer-a",
+        ReviewerRole::Functional,
+    );
+    let ingested = fixture
+        .db
+        .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &receipt)
+        .await
+        .unwrap();
+    let gate = ingested
+        .gate
+        .expect("a mismatched plan must decide the Gate");
+    assert_eq!(gate.outcome, GateOutcome::Blocked);
+    assert!(
+        gate.reasons
+            .iter()
+            .any(|reason| reason.contains("does not bind every required role"))
+    );
+    fixture.db.close().await;
+    let _ = std::fs::remove_file(fixture.root.join("factory.sqlite"));
+}
+
+#[tokio::test]
 async fn gate_rejects_a_second_receipt_from_the_same_principal() {
     use crate::planning::ReviewerRole;
     let fixture = candidate_fixture().await;
@@ -1499,6 +1610,10 @@ async fn gate_rejects_a_second_receipt_from_the_same_principal() {
         &fixture.candidate_id,
         2,
         &[ReviewerRole::Functional, ReviewerRole::CodeQuality],
+        &[
+            (ReviewerRole::Functional, "reviewer-a"),
+            (ReviewerRole::CodeQuality, "reviewer-b"),
+        ],
     )
     .await;
     fixture
@@ -1547,6 +1662,10 @@ async fn gate_waits_for_role_coverage_even_when_the_count_is_met() {
         &fixture.candidate_id,
         2,
         &[ReviewerRole::Functional, ReviewerRole::CodeQuality],
+        &[
+            (ReviewerRole::Functional, "reviewer-a"),
+            (ReviewerRole::CodeQuality, "reviewer-c"),
+        ],
     )
     .await;
     fixture
