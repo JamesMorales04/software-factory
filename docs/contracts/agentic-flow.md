@@ -91,6 +91,21 @@ returns `502 AGENTIC_MODEL_OUTPUT_TRUNCATED` with a bounded diagnostic, and no
 WorkGraph, assessment, specification or plan artifact is persisted from
 truncated output.
 
+Planner output has a separate bounded repair loop. After a schema decode
+failure (`AGENTIC_PLAN_OUTPUT_INVALID`) or a WorkGraph validation failure
+(`AGENTIC_PLAN_INVALID`), Core retries at most twice with the same objective,
+system prompt and schema. Each repair appends one bounded instruction to the
+user prompt containing the exact Core error, the repair attempt index and the
+reflexive rule: independent units that share a write path must gain a
+dependency or become one unit, without changing the objective, allowed paths or
+scope. Every repair is a new Lead call with a new request digest and reservation.
+Core persists no WorkGraph or planning artifact until an attempt decodes and
+validates; the successful attempt alone supplies the stored provider, model,
+request digest and usage. After the third failed attempt Core returns the last
+bounded `400 AGENTIC_PLAN_INVALID` or `502 AGENTIC_PLAN_OUTPUT_INVALID` response
+and creates no Campaign. The truncation retry above remains independent and
+bounded.
+
 ## Repair
 
 A RepairPacket binds the exact rejected candidate, findings, failed checks,
