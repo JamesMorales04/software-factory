@@ -95,6 +95,64 @@ test_check_compose_policy.py                   36 tests passed (profile, 5 skipp
 Migration smoke: fresh and upgrade-from-0064 databases apply migrations
 `0065`-`0069` exactly once in order.
 
+### WP12 acceptance run
+
+Candidate `4769b9ed0ca1b67c2afde2edafdcfb02dca14c1c` (clean tree
+`9d094cc9188f27270e470fb608ebf4980ddbac1f`) was exercised with
+`scripts/quality-wave12-acceptance.sh --require-clean`. Exact results and the
+per-step logs are recorded in the
+[WP12 manifest](../evidence/quality-wave12-chaos-2026-11-10/manifest.json).
+
+```text
+scripts/quality-wave12-acceptance.sh --require-clean
+19/19 steps PASS; 0 failed; 0 skipped steps; 225 s
+
+cargo test -p factory-native --locked --lib
+830 passed; 0 failed; 4 ignored
+
+cargo test -p factory-native --locked --bins
+125 passed; 0 failed
+
+targeted integration suites
+29 passed; 0 failed
+(planning 1, provider chaos 16, dependency HTTP 6, OpenSpec 5, migration 1)
+
+focused filters
+workflow 16; quality 12; trace 17; review_roles 9; gate_ 18; all passed
+
+provider_chaos repeat
+3/3 runs; 16 passed each; 0 failed
+
+cargo clippy -p factory-native --locked --all-targets --all-features -- -D warnings
+clean
+
+cd office && npm test -- --run
+317 passed across 46 files
+
+npm run typecheck
+clean
+
+npm run lint
+clean (163 files)
+
+podman compose -f compose.yaml config
+PASS (14 services)
+
+podman compose --profile openspec-validation -f compose.yaml config
+PASS (15 services)
+
+compose policy (base/profile)
+PASS/PASS; 36 policy tests each (8/5 profile-specific skips)
+```
+
+The other flaky-sensitive integration suites and the focused filters were
+repeated three times each after the script; all passed. The four ignored
+library tests are the opt-in real-Podman tests and are `SKIPPED`, not passes.
+Live provider inference, real Compose dependency acquisition, a real
+multi-reviewer Campaign, a real Core-backed OpenSpec projection, browser
+acceptance and independent acceptance remain `NOT_TESTED`/`BLOCKED` as listed
+in the manifest. No paid inference was used.
+
 Independent read-only Codex reviews at the work-package review-fix commits
 reported no remaining findings for WP0, WP1, WP2, WP3, WP4, WP7, WP8, WP9 and
 WP10. The earlier WP9 review recorded the one-reviewer Compose fleet as a

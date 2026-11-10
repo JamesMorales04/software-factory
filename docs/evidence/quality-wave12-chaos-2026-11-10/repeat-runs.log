@@ -1,0 +1,547 @@
+===== repeat run 1/3 =====
+--- planning_pipeline run 1 ---
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.16s
+     Running tests/planning_pipeline.rs (target/debug/deps/planning_pipeline-bf9c2aeead5a3c20)
+
+running 1 test
+test formal_planning_pipeline_is_deterministic_and_traceable ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+--- provider_chaos run 1 ---
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
+     Running tests/provider_chaos.rs (target/debug/deps/provider_chaos-e76f67889ff5b956)
+
+running 16 tests
+test failed_turn_releases_or_settles_a_reservation_exactly_once ... ok
+test malformed_structured_json_is_repaired_then_accepted ... ok
+test duplicate_event_ids_do_not_repeat_effects ... ok
+test nonconsecutive_duplicate_event_ids_are_not_reapplied ... ok
+test provider_session_reconnect_and_cleanup_are_exactly_once ... ok
+test missing_terminal_event_returns_no_candidate ... ok
+test provider_error_terminal_is_not_a_completed_candidate ... ok
+test reconnect_exhaustion_after_checks_pass_yields_no_candidate ... ok
+test structured_json_repair_exhaustion_is_a_typed_failure ... ok
+test sse_cut_reconnects_with_last_event_id_and_does_not_repeat_effects ... ok
+test repeated_cuts_exhaust_the_reconnect_bound_and_fail_closed ... ok
+test failed_cleanup_receipt_never_claims_an_orphan_is_cleaned ... ok
+test settle_then_release_of_the_same_reservation_is_rejected ... ok
+test production_connector_forwards_last_event_id_to_a_local_fixture ... ok
+test production_worker_http_lifecycle_settles_releases_and_reconciles_cleanup ... ok
+test long_turn_stays_live_beyond_the_former_three_hundred_second_deadline ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+--- dependency_broker_http run 1 ---
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
+     Running tests/dependency_broker_http.rs (target/debug/deps/dependency_broker_http-97cfbb2eec652654)
+
+running 6 tests
+test evidence_file_type_is_exported_for_callers ... ok
+test unauthorized_and_malformed_requests_are_rejected ... ok
+test broker_logs_do_not_contain_credentials ... ok
+test command_failure_preserves_the_previous_vendor_tree ... ok
+test valid_request_promotes_vendor_and_evidence_atomically ... ok
+test unsafe_paths_registry_bounds_and_lockfile_mismatch_do_not_touch_vendor ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+--- openspec_compose_validation run 1 ---
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running tests/openspec_compose_validation.rs (target/debug/deps/openspec_compose_validation-5bffc481881ce26b)
+
+running 5 tests
+test rendered_files_drive_the_pinned_validation_runner ... ok
+test read_model_rejects_a_changed_artifact ... ok
+test fixture_declares_core_authority_and_exact_hashes ... ok
+test archive_contract_is_idempotent_and_rejects_stored_artifact_drift ... ok
+test committed_fixture_matches_the_core_renderer ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+--- migration_skill_refresh run 1 ---
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
+     Running tests/migration_skill_refresh.rs (target/debug/deps/migration_skill_refresh-a92e765e6b4b5c46)
+
+running 1 test
+test migration_0067_cursor_and_0068_review_split_preserve_history ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.97s
+
+--- lib filter workflow run 1 ---
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
+     Running unittests src/lib.rs (target/debug/deps/factory_native-d0177661df931b88)
+
+running 16 tests
+test db::workflow::tests::transition_validation_matches_the_contract ... ok
+test workflow::tests::every_non_terminal_state_can_fail_closed ... ok
+test workflow::tests::forward_path_is_accepted ... ok
+test workflow::tests::repair_and_replan_paths_return_to_execution ... ok
+test workflow::tests::hash_is_deterministic_sha256 ... ok
+test workflow::tests::state_skips_and_terminal_mutations_are_rejected ... ok
+test workflow::tests::identifiers_hashes_and_json_are_bounded ... ok
+test db::workflow::tests::ensure_workflow_run_is_idempotent_and_rejects_conflicts ... ok
+test db::workflow::tests::idempotency_replay_returns_prior_result_and_conflicts_are_rejected ... ok
+test db::workflow::tests::workflow_transitions_are_validated_fenced_and_terminal ... ok
+test db::workflow::tests::bounded_step_history_reports_truncation_and_keeps_the_newest_rows ... ok
+test db::workflow::tests::checkpoint_hash_is_content_addressed_and_replay_safe ... ok
+test db::workflow::tests::workflow_state_and_effects_survive_reopen ... ok
+test db::workflow::tests::outbox_lifecycle_is_replay_safe ... ok
+test db::workflow::tests::recovery_returns_only_running_steps_and_finish_is_exactly_once ... ok
+test db::workflow::tests::restart_at_each_state_preserves_durable_workflow_and_resumes ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 818 filtered out; finished in 7.14s
+
+--- lib filter quality run 1 ---
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
+     Running unittests src/lib.rs (target/debug/deps/factory_native-d0177661df931b88)
+
+running 12 tests
+test quality::tests::accepts_only_exact_candidate_with_independent_executed_passes ... ok
+test quality::tests::duplicate_reviewer_principals_or_receipts_are_blocked ... ok
+test quality::tests::implementer_cannot_supply_independent_receipts ... ok
+test quality::tests::policy_can_block_or_require_human_authority ... ok
+test planning::docs::tests::delegated_requires_architecture_and_quality_docs ... ok
+test quality::tests::failed_verifier_requires_repair_without_a_reviewer ... ok
+test quality::tests::missing_receipt_is_not_tested ... ok
+test quality::tests::mocked_unknown_and_failed_evidence_never_accept ... ok
+test quality::tests::spec_and_candidate_mismatches_block_even_if_receipts_pass ... ok
+test quality::tests::multiple_independent_reviewers_all_pass_before_acceptance ... ok
+test quality::tests::verifier_and_reviewer_must_be_distinct ... ok
+test quality::tests::strict_receipt_deserialization_rejects_unknown_fields ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 822 filtered out; finished in 0.00s
+
+--- lib filter trace run 1 ---
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
+     Running unittests src/lib.rs (target/debug/deps/factory_native-d0177661df931b88)
+
+running 17 tests
+test replay::tests::terminal_trace_reports_open_steps_for_diagnosis ... ok
+test replay::tests::valid_trace_is_sorted_and_reaches_terminal_state ... ok
+test trace::tests::empty_view_has_no_run_and_no_alerts ... ok
+test replay::tests::trace_must_replay_a_single_run ... ok
+test trace::tests::duplicate_gap_open_step_and_state_divergence_are_reported ... ok
+test trace::tests::malformed_event_is_reported ... ok
+test agentic::tests::spec_compilation_is_deterministic_and_traceable ... ok
+test trace::tests::step_truncation_is_reported_and_bounded ... ok
+test trace::tests::replay_rejection_is_reported_without_raw_payload ... ok
+test trace::tests::truncated_read_is_reported_and_bounded ... ok
+test trace::tests::payloads_are_redacted_before_they_reach_the_view ... ok
+test trace::tests::terminal_run_reports_terminal_alert_and_no_open_steps ... ok
+test spec_publish::tests::targets_are_deterministic_and_carry_traceability ... ok
+test openspec::tests::traceability_gap_is_rejected ... ok
+test db::events::tests::trace_loader_returns_empty_view_without_a_run ... ok
+test db::events::tests::trace_loader_maps_transitions_and_step_lifecycle_in_sequence_order ... ok
+test db::events::tests::trace_loader_reports_a_gap_and_bounds_the_newest_events ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 817 filtered out; finished in 0.74s
+
+--- lib filter review_roles run 1 ---
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
+     Running unittests src/lib.rs (target/debug/deps/factory_native-d0177661df931b88)
+
+running 9 tests
+test review_roles::tests::closed_finding_requires_evidence ... ok
+test review_roles::tests::duplicate_ids_and_noncanonical_severity_are_rejected ... ok
+test review_roles::tests::passing_review_rejects_open_findings ... ok
+test review_roles::tests::duplicate_reviewer_principal_is_rejected ... ok
+test review_roles::tests::one_reviewer_for_critical_or_elevated_is_rejected ... ok
+test review_roles::tests::implementer_or_verifier_collusion_is_rejected ... ok
+test review_roles::tests::identity_assignments_fail_closed_when_a_role_is_missing ... ok
+test review_roles::tests::assignments_are_separate_per_required_role ... ok
+test review_roles::tests::same_provider_and_model_with_distinct_principals_is_independent ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 825 filtered out; finished in 0.00s
+
+--- lib filter gate_ run 1 ---
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running unittests src/lib.rs (target/debug/deps/factory_native-d0177661df931b88)
+
+running 18 tests
+test db::lead::tests::progress_acceptance_rejects_a_forged_gate_record ... ok
+test progress::tests::acceptance_requires_a_core_gate_for_the_exact_candidate ... ok
+test progress::tests::gate_accepts_a_raw_git_commit_against_the_progress_digest ... ok
+test db::lead::tests::forty_character_gate_candidate_accepts_and_retires ... ok
+test db::tests::gate_blocks_required_roles_without_frozen_principal_assignments ... ok
+test db::tests::gate_blocks_a_roleless_legacy_receipt_when_required_roles_exist ... ok
+test db::tests::candidate_gate_and_receipt_rows_are_immutable ... ok
+test db::tests::human_required_gate_projects_run_status_to_rejected ... ok
+test db::tests::gate_rejects_a_second_receipt_from_the_same_principal ... ok
+test db::tests::gate_does_not_overwrite_a_terminal_run ... ok
+test db::tests::gate_rejects_an_assignment_set_with_an_unexpected_role ... ok
+test db::tests::gate_accepts_distinct_principals_with_same_model_and_exact_role_assignments ... ok
+test db::tests::blocked_gate_projects_run_status_to_rejected ... ok
+test db::tests::repair_required_gate_projects_run_status ... ok
+test db::tests::not_tested_gate_projects_run_status_to_rejected ... ok
+test db::tests::gate_blocks_an_extra_role_receipt_even_when_required_roles_pass ... ok
+test db::tests::gate_requires_pass_verifier_and_reviewer ... ok
+test db::tests::accepted_gate_projects_run_status_and_survives_restart ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 816 filtered out; finished in 7.59s
+
+===== repeat run 2/3 =====
+--- planning_pipeline run 2 ---
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running tests/planning_pipeline.rs (target/debug/deps/planning_pipeline-bf9c2aeead5a3c20)
+
+running 1 test
+test formal_planning_pipeline_is_deterministic_and_traceable ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+--- provider_chaos run 2 ---
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running tests/provider_chaos.rs (target/debug/deps/provider_chaos-e76f67889ff5b956)
+
+running 16 tests
+test malformed_structured_json_is_repaired_then_accepted ... ok
+test failed_turn_releases_or_settles_a_reservation_exactly_once ... ok
+test provider_session_reconnect_and_cleanup_are_exactly_once ... ok
+test duplicate_event_ids_do_not_repeat_effects ... ok
+test structured_json_repair_exhaustion_is_a_typed_failure ... ok
+test missing_terminal_event_returns_no_candidate ... ok
+test repeated_cuts_exhaust_the_reconnect_bound_and_fail_closed ... ok
+test provider_error_terminal_is_not_a_completed_candidate ... ok
+test nonconsecutive_duplicate_event_ids_are_not_reapplied ... ok
+test reconnect_exhaustion_after_checks_pass_yields_no_candidate ... ok
+test sse_cut_reconnects_with_last_event_id_and_does_not_repeat_effects ... ok
+test failed_cleanup_receipt_never_claims_an_orphan_is_cleaned ... ok
+test settle_then_release_of_the_same_reservation_is_rejected ... ok
+test production_connector_forwards_last_event_id_to_a_local_fixture ... ok
+test production_worker_http_lifecycle_settles_releases_and_reconciles_cleanup ... ok
+test long_turn_stays_live_beyond_the_former_three_hundred_second_deadline ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+--- dependency_broker_http run 2 ---
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
+     Running tests/dependency_broker_http.rs (target/debug/deps/dependency_broker_http-97cfbb2eec652654)
+
+running 6 tests
+test evidence_file_type_is_exported_for_callers ... ok
+test command_failure_preserves_the_previous_vendor_tree ... ok
+test broker_logs_do_not_contain_credentials ... ok
+test unauthorized_and_malformed_requests_are_rejected ... ok
+test valid_request_promotes_vendor_and_evidence_atomically ... ok
+test unsafe_paths_registry_bounds_and_lockfile_mismatch_do_not_touch_vendor ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+--- openspec_compose_validation run 2 ---
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running tests/openspec_compose_validation.rs (target/debug/deps/openspec_compose_validation-5bffc481881ce26b)
+
+running 5 tests
+test rendered_files_drive_the_pinned_validation_runner ... ok
+test fixture_declares_core_authority_and_exact_hashes ... ok
+test read_model_rejects_a_changed_artifact ... ok
+test archive_contract_is_idempotent_and_rejects_stored_artifact_drift ... ok
+test committed_fixture_matches_the_core_renderer ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+--- migration_skill_refresh run 2 ---
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.13s
+     Running tests/migration_skill_refresh.rs (target/debug/deps/migration_skill_refresh-a92e765e6b4b5c46)
+
+running 1 test
+test migration_0067_cursor_and_0068_review_split_preserve_history ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.01s
+
+--- lib filter workflow run 2 ---
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running unittests src/lib.rs (target/debug/deps/factory_native-d0177661df931b88)
+
+running 16 tests
+test workflow::tests::state_skips_and_terminal_mutations_are_rejected ... ok
+test workflow::tests::every_non_terminal_state_can_fail_closed ... ok
+test workflow::tests::repair_and_replan_paths_return_to_execution ... ok
+test db::workflow::tests::transition_validation_matches_the_contract ... ok
+test workflow::tests::forward_path_is_accepted ... ok
+test workflow::tests::hash_is_deterministic_sha256 ... ok
+test workflow::tests::identifiers_hashes_and_json_are_bounded ... ok
+test db::workflow::tests::idempotency_replay_returns_prior_result_and_conflicts_are_rejected ... ok
+test db::workflow::tests::ensure_workflow_run_is_idempotent_and_rejects_conflicts ... ok
+test db::workflow::tests::bounded_step_history_reports_truncation_and_keeps_the_newest_rows ... ok
+test db::workflow::tests::workflow_transitions_are_validated_fenced_and_terminal ... ok
+test db::workflow::tests::outbox_lifecycle_is_replay_safe ... ok
+test db::workflow::tests::checkpoint_hash_is_content_addressed_and_replay_safe ... ok
+test db::workflow::tests::recovery_returns_only_running_steps_and_finish_is_exactly_once ... ok
+test db::workflow::tests::workflow_state_and_effects_survive_reopen ... ok
+test db::workflow::tests::restart_at_each_state_preserves_durable_workflow_and_resumes ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 818 filtered out; finished in 7.07s
+
+--- lib filter quality run 2 ---
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
+     Running unittests src/lib.rs (target/debug/deps/factory_native-d0177661df931b88)
+
+running 12 tests
+test quality::tests::duplicate_reviewer_principals_or_receipts_are_blocked ... ok
+test quality::tests::implementer_cannot_supply_independent_receipts ... ok
+test quality::tests::accepts_only_exact_candidate_with_independent_executed_passes ... ok
+test quality::tests::failed_verifier_requires_repair_without_a_reviewer ... ok
+test quality::tests::mocked_unknown_and_failed_evidence_never_accept ... ok
+test quality::tests::missing_receipt_is_not_tested ... ok
+test quality::tests::policy_can_block_or_require_human_authority ... ok
+test quality::tests::verifier_and_reviewer_must_be_distinct ... ok
+test quality::tests::spec_and_candidate_mismatches_block_even_if_receipts_pass ... ok
+test quality::tests::multiple_independent_reviewers_all_pass_before_acceptance ... ok
+test planning::docs::tests::delegated_requires_architecture_and_quality_docs ... ok
+test quality::tests::strict_receipt_deserialization_rejects_unknown_fields ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 822 filtered out; finished in 0.00s
+
+--- lib filter trace run 2 ---
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
+     Running unittests src/lib.rs (target/debug/deps/factory_native-d0177661df931b88)
+
+running 17 tests
+test trace::tests::empty_view_has_no_run_and_no_alerts ... ok
+test replay::tests::trace_must_replay_a_single_run ... ok
+test replay::tests::valid_trace_is_sorted_and_reaches_terminal_state ... ok
+test trace::tests::step_truncation_is_reported_and_bounded ... ok
+test trace::tests::malformed_event_is_reported ... ok
+test replay::tests::terminal_trace_reports_open_steps_for_diagnosis ... ok
+test trace::tests::truncated_read_is_reported_and_bounded ... ok
+test trace::tests::duplicate_gap_open_step_and_state_divergence_are_reported ... ok
+test trace::tests::terminal_run_reports_terminal_alert_and_no_open_steps ... ok
+test trace::tests::replay_rejection_is_reported_without_raw_payload ... ok
+test trace::tests::payloads_are_redacted_before_they_reach_the_view ... ok
+test agentic::tests::spec_compilation_is_deterministic_and_traceable ... ok
+test spec_publish::tests::targets_are_deterministic_and_carry_traceability ... ok
+test openspec::tests::traceability_gap_is_rejected ... ok
+test db::events::tests::trace_loader_returns_empty_view_without_a_run ... ok
+test db::events::tests::trace_loader_maps_transitions_and_step_lifecycle_in_sequence_order ... ok
+test db::events::tests::trace_loader_reports_a_gap_and_bounds_the_newest_events ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 817 filtered out; finished in 0.74s
+
+--- lib filter review_roles run 2 ---
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
+     Running unittests src/lib.rs (target/debug/deps/factory_native-d0177661df931b88)
+
+running 9 tests
+test review_roles::tests::closed_finding_requires_evidence ... ok
+test review_roles::tests::duplicate_ids_and_noncanonical_severity_are_rejected ... ok
+test review_roles::tests::passing_review_rejects_open_findings ... ok
+test review_roles::tests::identity_assignments_fail_closed_when_a_role_is_missing ... ok
+test review_roles::tests::assignments_are_separate_per_required_role ... ok
+test review_roles::tests::one_reviewer_for_critical_or_elevated_is_rejected ... ok
+test review_roles::tests::duplicate_reviewer_principal_is_rejected ... ok
+test review_roles::tests::implementer_or_verifier_collusion_is_rejected ... ok
+test review_roles::tests::same_provider_and_model_with_distinct_principals_is_independent ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 825 filtered out; finished in 0.00s
+
+--- lib filter gate_ run 2 ---
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
+     Running unittests src/lib.rs (target/debug/deps/factory_native-d0177661df931b88)
+
+running 18 tests
+test db::lead::tests::forty_character_gate_candidate_accepts_and_retires ... ok
+test progress::tests::acceptance_requires_a_core_gate_for_the_exact_candidate ... ok
+test progress::tests::gate_accepts_a_raw_git_commit_against_the_progress_digest ... ok
+test db::lead::tests::progress_acceptance_rejects_a_forged_gate_record ... ok
+test db::tests::human_required_gate_projects_run_status_to_rejected ... ok
+test db::tests::gate_accepts_distinct_principals_with_same_model_and_exact_role_assignments ... ok
+test db::tests::gate_does_not_overwrite_a_terminal_run ... ok
+test db::tests::gate_blocks_a_roleless_legacy_receipt_when_required_roles_exist ... ok
+test db::tests::gate_blocks_required_roles_without_frozen_principal_assignments ... ok
+test db::tests::not_tested_gate_projects_run_status_to_rejected ... ok
+test db::tests::candidate_gate_and_receipt_rows_are_immutable ... ok
+test db::tests::gate_rejects_a_second_receipt_from_the_same_principal ... ok
+test db::tests::repair_required_gate_projects_run_status ... ok
+test db::tests::gate_requires_pass_verifier_and_reviewer ... ok
+test db::tests::gate_rejects_an_assignment_set_with_an_unexpected_role ... ok
+test db::tests::blocked_gate_projects_run_status_to_rejected ... ok
+test db::tests::gate_blocks_an_extra_role_receipt_even_when_required_roles_pass ... ok
+test db::tests::accepted_gate_projects_run_status_and_survives_restart ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 816 filtered out; finished in 7.61s
+
+===== repeat run 3/3 =====
+--- planning_pipeline run 3 ---
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running tests/planning_pipeline.rs (target/debug/deps/planning_pipeline-bf9c2aeead5a3c20)
+
+running 1 test
+test formal_planning_pipeline_is_deterministic_and_traceable ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+--- provider_chaos run 3 ---
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.13s
+     Running tests/provider_chaos.rs (target/debug/deps/provider_chaos-e76f67889ff5b956)
+
+running 16 tests
+test failed_turn_releases_or_settles_a_reservation_exactly_once ... ok
+test malformed_structured_json_is_repaired_then_accepted ... ok
+test provider_session_reconnect_and_cleanup_are_exactly_once ... ok
+test duplicate_event_ids_do_not_repeat_effects ... ok
+test missing_terminal_event_returns_no_candidate ... ok
+test repeated_cuts_exhaust_the_reconnect_bound_and_fail_closed ... ok
+test nonconsecutive_duplicate_event_ids_are_not_reapplied ... ok
+test structured_json_repair_exhaustion_is_a_typed_failure ... ok
+test provider_error_terminal_is_not_a_completed_candidate ... ok
+test reconnect_exhaustion_after_checks_pass_yields_no_candidate ... ok
+test sse_cut_reconnects_with_last_event_id_and_does_not_repeat_effects ... ok
+test failed_cleanup_receipt_never_claims_an_orphan_is_cleaned ... ok
+test production_connector_forwards_last_event_id_to_a_local_fixture ... ok
+test settle_then_release_of_the_same_reservation_is_rejected ... ok
+test production_worker_http_lifecycle_settles_releases_and_reconciles_cleanup ... ok
+test long_turn_stays_live_beyond_the_former_three_hundred_second_deadline ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+--- dependency_broker_http run 3 ---
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running tests/dependency_broker_http.rs (target/debug/deps/dependency_broker_http-97cfbb2eec652654)
+
+running 6 tests
+test evidence_file_type_is_exported_for_callers ... ok
+test unauthorized_and_malformed_requests_are_rejected ... ok
+test command_failure_preserves_the_previous_vendor_tree ... ok
+test broker_logs_do_not_contain_credentials ... ok
+test valid_request_promotes_vendor_and_evidence_atomically ... ok
+test unsafe_paths_registry_bounds_and_lockfile_mismatch_do_not_touch_vendor ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+--- openspec_compose_validation run 3 ---
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
+     Running tests/openspec_compose_validation.rs (target/debug/deps/openspec_compose_validation-5bffc481881ce26b)
+
+running 5 tests
+test rendered_files_drive_the_pinned_validation_runner ... ok
+test read_model_rejects_a_changed_artifact ... ok
+test committed_fixture_matches_the_core_renderer ... ok
+test fixture_declares_core_authority_and_exact_hashes ... ok
+test archive_contract_is_idempotent_and_rejects_stored_artifact_drift ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+--- migration_skill_refresh run 3 ---
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running tests/migration_skill_refresh.rs (target/debug/deps/migration_skill_refresh-a92e765e6b4b5c46)
+
+running 1 test
+test migration_0067_cursor_and_0068_review_split_preserve_history ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.98s
+
+--- lib filter workflow run 3 ---
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running unittests src/lib.rs (target/debug/deps/factory_native-d0177661df931b88)
+
+running 16 tests
+test db::workflow::tests::transition_validation_matches_the_contract ... ok
+test workflow::tests::every_non_terminal_state_can_fail_closed ... ok
+test workflow::tests::forward_path_is_accepted ... ok
+test workflow::tests::repair_and_replan_paths_return_to_execution ... ok
+test workflow::tests::state_skips_and_terminal_mutations_are_rejected ... ok
+test workflow::tests::hash_is_deterministic_sha256 ... ok
+test workflow::tests::identifiers_hashes_and_json_are_bounded ... ok
+test db::workflow::tests::idempotency_replay_returns_prior_result_and_conflicts_are_rejected ... ok
+test db::workflow::tests::outbox_lifecycle_is_replay_safe ... ok
+test db::workflow::tests::ensure_workflow_run_is_idempotent_and_rejects_conflicts ... ok
+test db::workflow::tests::bounded_step_history_reports_truncation_and_keeps_the_newest_rows ... ok
+test db::workflow::tests::checkpoint_hash_is_content_addressed_and_replay_safe ... ok
+test db::workflow::tests::recovery_returns_only_running_steps_and_finish_is_exactly_once ... ok
+test db::workflow::tests::workflow_transitions_are_validated_fenced_and_terminal ... ok
+test db::workflow::tests::workflow_state_and_effects_survive_reopen ... ok
+test db::workflow::tests::restart_at_each_state_preserves_durable_workflow_and_resumes ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 818 filtered out; finished in 7.37s
+
+--- lib filter quality run 3 ---
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
+     Running unittests src/lib.rs (target/debug/deps/factory_native-d0177661df931b88)
+
+running 12 tests
+test quality::tests::implementer_cannot_supply_independent_receipts ... ok
+test quality::tests::accepts_only_exact_candidate_with_independent_executed_passes ... ok
+test quality::tests::missing_receipt_is_not_tested ... ok
+test quality::tests::failed_verifier_requires_repair_without_a_reviewer ... ok
+test quality::tests::duplicate_reviewer_principals_or_receipts_are_blocked ... ok
+test quality::tests::mocked_unknown_and_failed_evidence_never_accept ... ok
+test quality::tests::multiple_independent_reviewers_all_pass_before_acceptance ... ok
+test quality::tests::policy_can_block_or_require_human_authority ... ok
+test quality::tests::spec_and_candidate_mismatches_block_even_if_receipts_pass ... ok
+test quality::tests::verifier_and_reviewer_must_be_distinct ... ok
+test planning::docs::tests::delegated_requires_architecture_and_quality_docs ... ok
+test quality::tests::strict_receipt_deserialization_rejects_unknown_fields ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 822 filtered out; finished in 0.00s
+
+--- lib filter trace run 3 ---
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running unittests src/lib.rs (target/debug/deps/factory_native-d0177661df931b88)
+
+running 17 tests
+test trace::tests::empty_view_has_no_run_and_no_alerts ... ok
+test replay::tests::trace_must_replay_a_single_run ... ok
+test replay::tests::terminal_trace_reports_open_steps_for_diagnosis ... ok
+test replay::tests::valid_trace_is_sorted_and_reaches_terminal_state ... ok
+test trace::tests::malformed_event_is_reported ... ok
+test trace::tests::duplicate_gap_open_step_and_state_divergence_are_reported ... ok
+test agentic::tests::spec_compilation_is_deterministic_and_traceable ... ok
+test trace::tests::replay_rejection_is_reported_without_raw_payload ... ok
+test trace::tests::step_truncation_is_reported_and_bounded ... ok
+test trace::tests::terminal_run_reports_terminal_alert_and_no_open_steps ... ok
+test trace::tests::truncated_read_is_reported_and_bounded ... ok
+test spec_publish::tests::targets_are_deterministic_and_carry_traceability ... ok
+test trace::tests::payloads_are_redacted_before_they_reach_the_view ... ok
+test openspec::tests::traceability_gap_is_rejected ... ok
+test db::events::tests::trace_loader_returns_empty_view_without_a_run ... ok
+test db::events::tests::trace_loader_reports_a_gap_and_bounds_the_newest_events ... ok
+test db::events::tests::trace_loader_maps_transitions_and_step_lifecycle_in_sequence_order ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 817 filtered out; finished in 0.77s
+
+--- lib filter review_roles run 3 ---
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running unittests src/lib.rs (target/debug/deps/factory_native-d0177661df931b88)
+
+running 9 tests
+test review_roles::tests::duplicate_ids_and_noncanonical_severity_are_rejected ... ok
+test review_roles::tests::closed_finding_requires_evidence ... ok
+test review_roles::tests::passing_review_rejects_open_findings ... ok
+test review_roles::tests::one_reviewer_for_critical_or_elevated_is_rejected ... ok
+test review_roles::tests::identity_assignments_fail_closed_when_a_role_is_missing ... ok
+test review_roles::tests::duplicate_reviewer_principal_is_rejected ... ok
+test review_roles::tests::implementer_or_verifier_collusion_is_rejected ... ok
+test review_roles::tests::assignments_are_separate_per_required_role ... ok
+test review_roles::tests::same_provider_and_model_with_distinct_principals_is_independent ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 825 filtered out; finished in 0.00s
+
+--- lib filter gate_ run 3 ---
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running unittests src/lib.rs (target/debug/deps/factory_native-d0177661df931b88)
+
+running 18 tests
+test db::lead::tests::forty_character_gate_candidate_accepts_and_retires ... ok
+test progress::tests::acceptance_requires_a_core_gate_for_the_exact_candidate ... ok
+test progress::tests::gate_accepts_a_raw_git_commit_against_the_progress_digest ... ok
+test db::lead::tests::progress_acceptance_rejects_a_forged_gate_record ... ok
+test db::tests::gate_blocks_an_extra_role_receipt_even_when_required_roles_pass ... ok
+test db::tests::blocked_gate_projects_run_status_to_rejected ... ok
+test db::tests::gate_blocks_a_roleless_legacy_receipt_when_required_roles_exist ... ok
+test db::tests::candidate_gate_and_receipt_rows_are_immutable ... ok
+test db::tests::human_required_gate_projects_run_status_to_rejected ... ok
+test db::tests::gate_requires_pass_verifier_and_reviewer ... ok
+test db::tests::gate_accepts_distinct_principals_with_same_model_and_exact_role_assignments ... ok
+test db::tests::gate_blocks_required_roles_without_frozen_principal_assignments ... ok
+test db::tests::gate_rejects_a_second_receipt_from_the_same_principal ... ok
+test db::tests::repair_required_gate_projects_run_status ... ok
+test db::tests::gate_rejects_an_assignment_set_with_an_unexpected_role ... ok
+test db::tests::not_tested_gate_projects_run_status_to_rejected ... ok
+test db::tests::gate_does_not_overwrite_a_terminal_run ... ok
+test db::tests::accepted_gate_projects_run_status_and_survives_restart ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 816 filtered out; finished in 7.64s
+
+repeat suites: 3/3 passed
