@@ -8294,8 +8294,10 @@ async fn worker_workspace_operation(
             // lifetime made that fence cancel commands that legitimately
             // outlived it. Write/apply/finalize are quick, unfenced mutations
             // and keep a short admission lifetime so revocation remains fresh.
-            let lifetime_ms = if matches!(input.operation.as_str(), "execute" | "run" | "integrate")
-            {
+            let lifetime_ms = if matches!(
+                input.operation.as_str(),
+                "execute" | "run" | "integrate" | "dependencies"
+            ) {
                 WORKSPACE_OPERATION_GRANT_MILLIS
             } else {
                 5_000

@@ -21,6 +21,9 @@ done
 until [ -f /bundles/provider-rootfs.tar.ready ]; do
   sleep 1
 done
+until [ -f /bundles/dependency-rootfs.tar.ready ]; do
+  sleep 1
+done
 
 if [ ! -f /sys/fs/cgroup/cgroup.controllers ]; then
   echo "factory-runtime: cgroup v2 is required for bounded child execution" >&2

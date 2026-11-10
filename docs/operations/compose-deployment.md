@@ -73,6 +73,14 @@ provider in one shared builder stage. A cold build is several minutes; later
 builds reuse the cache. The provider image contains pinned OpenCode/Codex
 executables and Node, so its bundle is large (about 1.5 GiB on the tested host).
 
+The `dependency` target is a separate credential-free Rust acquisition image.
+`dependency-bundle` exports its rootfs to the shared image-bundle volume and the
+runtime entrypoint waits for the bundle marker before starting the broker. The
+broker imports it into the dedicated engine and exposes only
+`POST /v1/dependencies/acquire`; the check container remains `--network=none`
+and `--offline`. Registry access is limited to the configured logical allowlist;
+network-level egress allowlisting is not implemented in this slice.
+
 ## First-run enrollment
 
 Start and open Office with the host launcher:

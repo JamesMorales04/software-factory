@@ -103,6 +103,31 @@ impl VolumeBackend for SupervisorBackend {
             Self::Local(backend) => backend.run(volume, container, image, argv, timeout).await,
         }
     }
+    async fn acquire_dependencies(
+        &self,
+        volume: &str,
+        container: &str,
+        request: &factory_native::dependency_service::DependencyAcquireRequest,
+    ) -> Result<factory_native::dependency_service::DependencyAcquireReceipt, ExecutionError> {
+        match self {
+            Self::Podman(backend) => {
+                backend
+                    .acquire_dependencies(volume, container, request)
+                    .await
+            }
+            Self::Broker(backend) => {
+                backend
+                    .acquire_dependencies(volume, container, request)
+                    .await
+            }
+            #[cfg(debug_assertions)]
+            Self::Local(backend) => {
+                backend
+                    .acquire_dependencies(volume, container, request)
+                    .await
+            }
+        }
+    }
     async fn remove_container(&self, name: &str) -> Result<(), ExecutionError> {
         match self {
             Self::Podman(backend) => backend.remove_container(name).await,
@@ -205,6 +230,16 @@ impl VolumeBackend for LocalVolumeBackend {
             stdout_truncated: false,
             stderr_truncated: false,
         })
+    }
+    async fn acquire_dependencies(
+        &self,
+        _volume: &str,
+        _container: &str,
+        _request: &factory_native::dependency_service::DependencyAcquireRequest,
+    ) -> Result<factory_native::dependency_service::DependencyAcquireReceipt, ExecutionError> {
+        Err(ExecutionError::Dependency(
+            "local Supervisor backend does not support dependency acquisition".into(),
+        ))
     }
     async fn remove_container(&self, _name: &str) -> Result<(), ExecutionError> {
         Ok(())
@@ -337,6 +372,10 @@ fn build_router<B: factory_native::execution::VolumeBackend + 'static>(app: Arc<
         .route("/v1/workspaces/{workspace_id}/apply", post(apply_files))
         .route("/v1/workspaces/{workspace_id}/write", post(write_files))
         .route("/v1/workspaces/{workspace_id}/run", post(run_tool))
+        .route(
+            "/v1/workspaces/{workspace_id}/dependencies",
+            post(acquire_dependencies),
+        )
         .route("/v1/workspaces/{workspace_id}/finalize", post(finalize))
         .route("/v1/integrate", post(integrate))
         .route("/v1/reconcile", post(reconcile))
@@ -564,6 +603,44 @@ async fn run_tool<B: factory_native::execution::VolumeBackend + 'static>(
     }
     match result {
         Ok(result) => (StatusCode::OK, Json(result)).into_response(),
+        Err(error) => execution_error(error),
+    }
+}
+
+async fn acquire_dependencies<B: factory_native::execution::VolumeBackend + 'static>(
+    State(app): State<Arc<App<B>>>,
+    headers: HeaderMap,
+    Path(workspace_id): Path<String>,
+    Json(input): Json<factory_native::dependency_service::DependencyAcquireRequest>,
+) -> Response {
+    let Some(handle) = authorized_workspace(&headers, &app, &workspace_id) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    if let Err(message) = factory_native::dependency_service::validate_request_shape(&input) {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": message}))).into_response();
+    }
+    let Ok(digest) = input.digest() else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    if operation_grant(&headers, &app, &handle, "dependencies", &digest).is_none() {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let fence = spawn_operation_fence(
+        app.clone(),
+        workspace_id.clone(),
+        headers
+            .get("x-factory-operation-grant")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_owned(),
+    );
+    let result = app
+        .manager
+        .acquire_dependencies(&workspace_id, &input)
+        .await;
+    fence.abort();
+    match result {
+        Ok(receipt) => (StatusCode::OK, Json(receipt)).into_response(),
         Err(error) => execution_error(error),
     }
 }
@@ -899,6 +976,7 @@ fn execution_error(error: ExecutionError) -> Response {
         ExecutionError::Archive(ArchiveError::TooLarge(_)) => StatusCode::PAYLOAD_TOO_LARGE,
         ExecutionError::Workspace(WorkspaceError::Invalid(_)) => StatusCode::BAD_REQUEST,
         ExecutionError::Volume(_) | ExecutionError::Sandbox(_) => StatusCode::SERVICE_UNAVAILABLE,
+        ExecutionError::Dependency(_) => StatusCode::BAD_GATEWAY,
         ExecutionError::Io(_) | ExecutionError::Archive(_) | ExecutionError::Workspace(_) => {
             StatusCode::INTERNAL_SERVER_ERROR
         }
@@ -1056,6 +1134,67 @@ mod tests {
                 stderr_truncated: false,
             })
         }
+        async fn acquire_dependencies(
+            &self,
+            volume: &str,
+            _container: &str,
+            request: &factory_native::dependency_service::DependencyAcquireRequest,
+        ) -> Result<factory_native::dependency_service::DependencyAcquireReceipt, ExecutionError>
+        {
+            use sha2::{Digest, Sha256};
+            let path = self.path(volume);
+            let evidence = path
+                .join(&request.vendor_path)
+                .join(factory_native::dependency_broker::EVIDENCE_DIR);
+            fs::create_dir_all(&evidence)?;
+            for (name, body) in [
+                (
+                    factory_native::dependency_broker::SBOM_FILE,
+                    b"sbom".as_slice(),
+                ),
+                (
+                    factory_native::dependency_broker::LICENSE_FILE,
+                    b"licenses".as_slice(),
+                ),
+                (
+                    factory_native::dependency_broker::ADVISORY_FILE,
+                    b"advisories".as_slice(),
+                ),
+            ] {
+                fs::write(evidence.join(name), body)?;
+            }
+            let hex = |bytes: &[u8]| format!("{:x}", Sha256::digest(bytes));
+            Ok(
+                factory_native::dependency_service::DependencyAcquireReceipt {
+                    image: "localhost/software-factory-dependency:dev".into(),
+                    lockfile_sha256: request.lockfile_sha256.clone(),
+                    vendor_sha256: hex(b"vendor"),
+                    vendor_entries: 1,
+                    sbom_path: format!(
+                        "{}/{}/{}",
+                        request.vendor_path,
+                        factory_native::dependency_broker::EVIDENCE_DIR,
+                        factory_native::dependency_broker::SBOM_FILE
+                    ),
+                    sbom_sha256: hex(b"sbom"),
+                    license_path: format!(
+                        "{}/{}/{}",
+                        request.vendor_path,
+                        factory_native::dependency_broker::EVIDENCE_DIR,
+                        factory_native::dependency_broker::LICENSE_FILE
+                    ),
+                    license_sha256: hex(b"licenses"),
+                    advisory_path: format!(
+                        "{}/{}/{}",
+                        request.vendor_path,
+                        factory_native::dependency_broker::EVIDENCE_DIR,
+                        factory_native::dependency_broker::ADVISORY_FILE
+                    ),
+                    advisory_sha256: hex(b"advisories"),
+                    staging_cleaned: true,
+                },
+            )
+        }
         async fn remove_container(&self, _name: &str) -> Result<(), ExecutionError> {
             Ok(())
         }
@@ -1202,6 +1341,11 @@ mod tests {
                 "timeout_secs": body["timeoutSecs"]
             }))
             .unwrap(),
+            "dependencies" => {
+                let request: factory_native::dependency_service::DependencyAcquireRequest =
+                    serde_json::from_value(body.clone()).unwrap();
+                request.digest().unwrap()
+            }
             _ => "b".repeat(64),
         };
         let claims = factory_native::attempt_grant::OperationGrantClaims {
@@ -1303,6 +1447,78 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         assert_eq!(status(&router, reconcile).await, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn dependency_acquisition_requires_capability_and_operation_grant() {
+        let fixture = fixture();
+        let router = build_router(fixture.app.clone());
+        let allocate = allocation_body("attempt-deps", &fixture.repository);
+        let response = router
+            .clone()
+            .oneshot(json_request("/v1/workspaces", Some(TEST_TOKEN), &allocate))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let handle = body_json(response).await;
+        let workspace_id = handle["workspaceId"].as_str().unwrap().to_owned();
+        let capability = handle["capability"].as_str().unwrap().to_owned();
+        let request = json!({
+            "workdir": ".",
+            "lockfilePath": "Cargo.lock",
+            "lockfileSha256": "a".repeat(64),
+            "vendorPath": "vendor",
+            "registry": "sparse+https://index.crates.io/",
+            "timeoutSecs": 600
+        });
+        let uri = format!("/v1/workspaces/{workspace_id}/dependencies");
+
+        let unauthorized = Request::builder()
+            .method("POST")
+            .uri(&uri)
+            .header("content-type", "application/json")
+            .body(Body::from(request.to_string()))
+            .unwrap();
+        assert_eq!(
+            status(&router, unauthorized).await,
+            StatusCode::UNAUTHORIZED
+        );
+
+        let missing_grant = Request::builder()
+            .method("POST")
+            .uri(&uri)
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {capability}"))
+            .body(Body::from(request.to_string()))
+            .unwrap();
+        assert_eq!(status(&router, missing_grant).await, StatusCode::FORBIDDEN);
+
+        let response = router
+            .clone()
+            .oneshot(operation_request(
+                &uri,
+                &capability,
+                &operation_grant(&handle, "dependencies", &request),
+                &request,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let receipt = body_json(response).await;
+        assert_eq!(receipt["lockfileSha256"], "a".repeat(64));
+        assert_eq!(receipt["stagingCleaned"], true);
+        assert_eq!(
+            receipt["sbomPath"],
+            "vendor/.factory-supply-chain/sbom.cdx.json"
+        );
+        let stale_grant = operation_grant(&handle, "dependencies", &request);
+        let mut changed = request;
+        changed["lockfileSha256"] = json!("b".repeat(64));
+        let response = router
+            .oneshot(operation_request(&uri, &capability, &stale_grant, &changed))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

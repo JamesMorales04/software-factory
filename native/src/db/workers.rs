@@ -547,7 +547,7 @@ impl Database {
     ) -> Result<WorkspaceOperationAuthorization, Error> {
         if !matches!(
             operation,
-            "write" | "run" | "finalize" | "apply" | "execute"
+            "write" | "run" | "finalize" | "apply" | "execute" | "dependencies"
         ) {
             return Err(Error::Invalid("workspace operation"));
         }
@@ -594,7 +594,10 @@ impl Database {
                 "execute operation is reserved for FIXTURE attempts".into(),
             ));
         }
-        if matches!(operation, "write" | "run" | "finalize" | "apply") {
+        if matches!(
+            operation,
+            "write" | "run" | "finalize" | "apply" | "dependencies"
+        ) {
             let provider_state: Option<(String,)> = sqlx::query_as::query_as(
                 "SELECT state FROM provider_sessions WHERE attempt_id=?1 AND generation=?2",
             )

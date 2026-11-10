@@ -104,6 +104,40 @@ services:
     network_mode: none
     restart: "no"
 
+  dependency-bundle:
+    build:
+      context: .
+      dockerfile: deploy/Containerfile
+      target: dependency
+    image: localhost/software-factory-dependency:dev
+    user: "0:0"
+    cap_drop:
+      - ALL
+    cap_add:
+      - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        mkdir -p /bundle
+        rm -f /bundle/dependency-rootfs.tar /bundle/dependency-rootfs.tar.tmp /bundle/dependency-rootfs.tar.ready
+        tar --one-file-system \
+          --exclude=./proc --exclude=./sys --exclude=./dev \
+          --exclude=./bundle --exclude=./run --exclude=./tmp \
+          -C / -cf /bundle/dependency-rootfs.tar.tmp .
+        sync /bundle/dependency-rootfs.tar.tmp || true
+        mv /bundle/dependency-rootfs.tar.tmp /bundle/dependency-rootfs.tar
+        touch /bundle/dependency-rootfs.tar.ready
+    volumes:
+      - factory-image-bundle:/bundle
+    network_mode: none
+    restart: "no"
+
   runtime:
     build:
       context: .
@@ -154,6 +188,9 @@ services:
       FACTORY_RUNTIME_PROVIDER_KIND: ${FACTORY_PROVIDER_KIND:-opencode}
       FACTORY_RUNTIME_PROVIDER_SESSION_ROOT: /provider-sessions
       FACTORY_RUNTIME_IMPORT_IMAGES: localhost/software-factory-provider:dev=/bundles/provider-rootfs.tar
+      FACTORY_RUNTIME_DEPENDENCY_IMAGE: localhost/software-factory-dependency:dev
+      FACTORY_RUNTIME_DEPENDENCY_BUNDLE: /bundles/dependency-rootfs.tar
+      FACTORY_RUNTIME_DEPENDENCY_REGISTRIES: sparse+https://index.crates.io/,registry+https://github.com/rust-lang/crates.io-index
     networks:
       - factory-control
       - factory-egress

@@ -806,12 +806,7 @@ impl BrokeredFetch {
                 "brokered fetch requires a non-empty registry allowlist".into(),
             ));
         }
-        let registry = normalize_registry(&self.registry);
-        if !self
-            .allowed_registries
-            .iter()
-            .any(|allowed| normalize_registry(allowed) == registry)
-        {
+        if !registry_allowed(&self.registry, &self.allowed_registries) {
             return Err(DependencyError::RegistryNotAllowlisted(
                 self.registry.clone(),
             ));
@@ -1185,6 +1180,17 @@ fn normalize_registry(value: &str) -> String {
         .or_else(|| value.strip_prefix("sparse+"))
         .unwrap_or(value);
     value.trim_end_matches('/').to_ascii_lowercase()
+}
+
+/// Whether a registry reference matches one of the explicitly allowed
+/// registries. Prefix (`registry+`/`sparse+`) and trailing-slash differences
+/// are normalized; no wildcard or prefix matching is performed.
+pub fn registry_allowed(registry: &str, allowed: &[String]) -> bool {
+    let registry = normalize_registry(registry);
+    !registry.is_empty()
+        && allowed
+            .iter()
+            .any(|candidate| normalize_registry(candidate) == registry)
 }
 
 fn command_eq(command: &[String], expected: &[&str]) -> bool {

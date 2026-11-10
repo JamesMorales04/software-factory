@@ -78,6 +78,10 @@ name = "factory-runtime-broker"
 path = "src/bin/runtime_broker.rs"
 
 [[bin]]
+name = "factory-dependency-acquire"
+path = "src/bin/dependency_acquire.rs"
+
+[[bin]]
 name = "factory-compose-init"
 path = "src/bin/compose_init.rs"
 

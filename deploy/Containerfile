@@ -28,6 +28,7 @@ RUN cargo build --locked --release -p factory-native \
       --bin factory-verifier \
       --bin factory-reviewer \
       --bin factory-runtime-broker \
+      --bin factory-dependency-acquire \
       --bin factory-egress-bridge \
       --bin factory-provider-bridge \
       --bin factory-fixture-provider
@@ -181,6 +182,30 @@ ENV HOME=/tmp \
     TMPDIR=/tmp \
     PATH=/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 ENTRYPOINT ["/usr/local/bin/factory-runtime-entrypoint"]
+STOPSIGNAL SIGTERM
+
+# Dedicated credential-free dependency acquisition image. It contains the
+# pinned Rust toolchain and the Factory acquisition binary, not Core authority,
+# provider credentials or repository content. Compose exports its rootfs to the
+# shared image-bundle volume; the runtime broker imports it into the dedicated
+# engine with the fixed acquisition entrypoint.
+FROM rust:${RUST_VERSION}-bookworm AS dependency
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates git \
+    && rm -rf /var/lib/apt/lists/* \
+    && install -d -m 0755 /workspace
+
+COPY --from=workspace /build/target/release/factory-dependency-acquire /usr/local/bin/factory-dependency-acquire
+RUN chmod 755 /usr/local/bin/factory-dependency-acquire
+
+ENV HOME=/tmp \
+    TMPDIR=/tmp \
+    CARGO_HOME=/cargo-home \
+    RUSTUP_HOME=/usr/local/rustup \
+    PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+WORKDIR /workspace
+ENTRYPOINT ["/usr/local/bin/factory-dependency-acquire"]
 STOPSIGNAL SIGTERM
 
 FROM node:${NODE_VERSION}-bookworm-slim AS provider

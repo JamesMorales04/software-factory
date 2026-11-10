@@ -38,6 +38,7 @@ const MAX_REPOSITORY_ROOTS: usize = 32;
 const STATE_PREFIX: &str = "workspace-";
 const VOLUME_PREFIX: &str = "factory-ws-";
 const CONTAINER_PREFIX: &str = "factory-exec-";
+const DEPENDENCY_CONTAINER_PREFIX: &str = "factory-deps-";
 
 #[derive(Debug, thiserror::Error)]
 pub enum ExecutionError {
@@ -51,6 +52,8 @@ pub enum ExecutionError {
     Workspace(#[from] WorkspaceError),
     #[error("workspace volume operation failed: {0}")]
     Volume(String),
+    #[error("dependency acquisition failed: {0}")]
+    Dependency(String),
     #[error("sandbox operation failed: {0}")]
     Sandbox(#[from] SandboxError),
     #[error("workspace already has a different identity")]
@@ -245,6 +248,14 @@ pub trait VolumeBackend: Send + Sync {
         argv: &[String],
         timeout: Duration,
     ) -> impl std::future::Future<Output = Result<BoundedOutput, ExecutionError>> + Send;
+    fn acquire_dependencies(
+        &self,
+        volume: &str,
+        container: &str,
+        request: &crate::dependency_service::DependencyAcquireRequest,
+    ) -> impl std::future::Future<
+        Output = Result<crate::dependency_service::DependencyAcquireReceipt, ExecutionError>,
+    > + Send;
     fn remove_container(
         &self,
         name: &str,
@@ -483,6 +494,35 @@ impl VolumeBackend for BrokerVolumes {
         Ok(crate::runtime_broker::run_result(result))
     }
 
+    async fn acquire_dependencies(
+        &self,
+        volume: &str,
+        container: &str,
+        request: &crate::dependency_service::DependencyAcquireRequest,
+    ) -> Result<crate::dependency_service::DependencyAcquireReceipt, ExecutionError> {
+        validate_volume_name(volume)?;
+        validate_container_name(container)?;
+        if !container.starts_with(DEPENDENCY_CONTAINER_PREFIX) {
+            return Err(ExecutionError::Invalid(
+                "dependency acquisition requires a dependency container identity".into(),
+            ));
+        }
+        let wire = crate::dependency_service::DependencyAcquireWireRequest {
+            volume: volume.to_owned(),
+            container: container.to_owned(),
+            workdir: request.workdir.clone(),
+            lockfile_path: request.lockfile_path.clone(),
+            lockfile_sha256: request.lockfile_sha256.clone(),
+            vendor_path: request.vendor_path.clone(),
+            registry: request.registry.clone(),
+            timeout_secs: request.timeout_secs,
+        };
+        self.client
+            .acquire_dependencies(&wire)
+            .await
+            .map_err(|error| ExecutionError::Dependency(error.to_string()))
+    }
+
     async fn remove_container(&self, name: &str) -> Result<(), ExecutionError> {
         validate_container_name(name)?;
         self.client
@@ -684,6 +724,20 @@ impl VolumeBackend for RootlessPodmanVolumes {
             stdout_truncated,
             stderr_truncated,
         })
+    }
+
+    async fn acquire_dependencies(
+        &self,
+        _volume: &str,
+        _container: &str,
+        _request: &crate::dependency_service::DependencyAcquireRequest,
+    ) -> Result<crate::dependency_service::DependencyAcquireReceipt, ExecutionError> {
+        // Host-only development must not acquire dependencies outside the
+        // runtime broker. The installed product fails closed rather than
+        // falling back to a host Cargo/network path.
+        Err(ExecutionError::Dependency(
+            "dependency acquisition requires the runtime broker".into(),
+        ))
     }
 
     async fn remove_container(&self, name: &str) -> Result<(), ExecutionError> {
@@ -984,6 +1038,109 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
             workspace: record.handle(),
             confinement: confinement(&input.image),
         })
+    }
+
+    /// Acquire dependencies for an allocated workspace through the trusted
+    /// backend. The host worktree and the workspace volume are reconciled in
+    /// both directions so the vendor tree and evidence survive the next check
+    /// snapshot. The broker remains the only network-enabled step; the check
+    /// container stays offline.
+    pub async fn acquire_dependencies(
+        &self,
+        workspace_id: &str,
+        input: &crate::dependency_service::DependencyAcquireRequest,
+    ) -> Result<crate::dependency_service::DependencyAcquireReceipt, ExecutionError> {
+        validate_workspace_id(workspace_id)?;
+        crate::dependency_service::validate_request_shape(input)
+            .map_err(ExecutionError::Invalid)?;
+        let _write = self.lock.lock().await;
+        if self.cancelled.lock().unwrap().remove(workspace_id) {
+            return Err(ExecutionError::Conflict);
+        }
+        let mut record = self.find_by_id(workspace_id)?;
+        if record.status != WorkspaceStatus::Allocated {
+            return Err(ExecutionError::Conflict);
+        }
+        let workspace = self.open_existing(&record)?;
+        workspace.verify_identity((record.worktree_device, record.worktree_inode))?;
+        let snapshot = tokio::task::spawn_blocking({
+            let path = workspace.path().to_owned();
+            move || workspace_archive::snapshot(&path)
+        })
+        .await
+        .map_err(|error| ExecutionError::Invalid(format!("snapshot task: {error}")))??;
+        self.backend
+            .import_volume(&record.volume, &snapshot.bytes)
+            .await?;
+        let container = format!("{DEPENDENCY_CONTAINER_PREFIX}{}", Uuid::new_v4());
+        record.status = WorkspaceStatus::Running;
+        record.container = Some(container.clone());
+        record.updated_at_ms = now_ms();
+        self.write_record(&record)?;
+        self.active
+            .lock()
+            .unwrap()
+            .insert(workspace_id.to_owned(), container.clone());
+        let result = self
+            .backend
+            .acquire_dependencies(&record.volume, &container, input)
+            .await;
+        self.active.lock().unwrap().remove(workspace_id);
+        let _ = self.backend.remove_container(&container).await;
+        record.container = None;
+        record.updated_at_ms = now_ms();
+        let receipt = match result {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                record.status = WorkspaceStatus::Allocated;
+                record.error = Some(error.to_string());
+                let _ = self.write_record(&record);
+                return Err(error);
+            }
+        };
+        let exported = match self.backend.export_volume(&record.volume).await {
+            Ok(exported) => exported,
+            Err(error) => {
+                record.status = WorkspaceStatus::Allocated;
+                record.error = Some(error.to_string());
+                let _ = self.write_record(&record);
+                return Err(error);
+            }
+        };
+        let staging = self
+            .workspace_root
+            .join(format!("stage-{}", Uuid::new_v4()));
+        let extracted = tokio::task::spawn_blocking({
+            let bytes = exported;
+            let staging = staging.clone();
+            move || workspace_archive::extract(&bytes, &staging)
+        })
+        .await
+        .map_err(|error| ExecutionError::Invalid(format!("extract task: {error}")))?;
+        if let Err(error) = extracted {
+            record.status = WorkspaceStatus::Allocated;
+            record.error = Some(error.to_string());
+            let _ = self.write_record(&record);
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(ExecutionError::Archive(error));
+        }
+        if let Err(error) = workspace
+            .verify_identity((record.worktree_device, record.worktree_inode))
+            .and_then(|()| workspace.replace_contents(&staging))
+            .and_then(|()| {
+                workspace.verify_identity((record.worktree_device, record.worktree_inode))
+            })
+        {
+            record.status = WorkspaceStatus::Allocated;
+            record.error = Some(error.to_string());
+            let _ = self.write_record(&record);
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(ExecutionError::Workspace(error));
+        }
+        record.status = WorkspaceStatus::Allocated;
+        record.error = None;
+        self.write_record(&record)?;
+        Ok(receipt)
     }
 
     /// Restore workspace paths outside the verified allowed scope after a
@@ -1608,11 +1765,10 @@ fn validate_volume_name(value: &str) -> Result<(), ExecutionError> {
 }
 
 fn validate_container_name(value: &str) -> Result<(), ExecutionError> {
-    let Some(id) = value.strip_prefix(CONTAINER_PREFIX) else {
-        return Err(ExecutionError::Invalid(
-            "sandbox container has an invalid name".into(),
-        ));
-    };
+    let id = value
+        .strip_prefix(CONTAINER_PREFIX)
+        .or_else(|| value.strip_prefix(DEPENDENCY_CONTAINER_PREFIX))
+        .ok_or_else(|| ExecutionError::Invalid("sandbox container has an invalid name".into()))?;
     Uuid::parse_str(id)
         .map(|_| ())
         .map_err(|_| ExecutionError::Invalid("sandbox container has an invalid name".into()))
@@ -1789,6 +1945,61 @@ mod tests {
                 }
             }
             Ok(())
+        }
+        async fn acquire_dependencies(
+            &self,
+            volume: &str,
+            _container: &str,
+            request: &crate::dependency_service::DependencyAcquireRequest,
+        ) -> Result<crate::dependency_service::DependencyAcquireReceipt, ExecutionError> {
+            use sha2::{Digest, Sha256};
+            let path = self.volume_path(volume)?;
+            let vendor = path.join(&request.vendor_path);
+            let evidence = vendor.join(crate::dependency_broker::EVIDENCE_DIR);
+            fs::create_dir_all(&evidence)?;
+            fs::write(vendor.join("vendor.txt"), "vendored")?;
+            for (name, body) in [
+                (crate::dependency_broker::SBOM_FILE, b"sbom".as_slice()),
+                (
+                    crate::dependency_broker::LICENSE_FILE,
+                    b"licenses".as_slice(),
+                ),
+                (
+                    crate::dependency_broker::ADVISORY_FILE,
+                    b"advisories".as_slice(),
+                ),
+            ] {
+                fs::write(evidence.join(name), body)?;
+            }
+            let hex = |bytes: &[u8]| format!("{:x}", Sha256::digest(bytes));
+            Ok(crate::dependency_service::DependencyAcquireReceipt {
+                image: "test/dependency:1".into(),
+                lockfile_sha256: request.lockfile_sha256.clone(),
+                vendor_sha256: hex(b"vendor"),
+                vendor_entries: 2,
+                sbom_path: format!(
+                    "{}/{}/{}",
+                    request.vendor_path,
+                    crate::dependency_broker::EVIDENCE_DIR,
+                    crate::dependency_broker::SBOM_FILE
+                ),
+                sbom_sha256: hex(b"sbom"),
+                license_path: format!(
+                    "{}/{}/{}",
+                    request.vendor_path,
+                    crate::dependency_broker::EVIDENCE_DIR,
+                    crate::dependency_broker::LICENSE_FILE
+                ),
+                license_sha256: hex(b"licenses"),
+                advisory_path: format!(
+                    "{}/{}/{}",
+                    request.vendor_path,
+                    crate::dependency_broker::EVIDENCE_DIR,
+                    crate::dependency_broker::ADVISORY_FILE
+                ),
+                advisory_sha256: hex(b"advisories"),
+                staging_cleaned: true,
+            })
         }
     }
 
