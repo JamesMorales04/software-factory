@@ -449,14 +449,20 @@ both provider loops:
 - only a `Diagnose` decision with at least one applied write is eligible;
 - the Worker executes every remaining frozen check through the existing
   Supervisor path;
-- only when all checks pass does it persist the final progress checkpoint
-  best-effort, close the provider session, call `finalize_candidate`, clean up
-  the workspace and emit `worker.stagnation_finalized` with the receipt count;
+- only when all checks pass does it persist a distinct salvage progress
+  checkpoint best-effort, close the provider session, call
+  `finalize_candidate`, clean up the workspace and emit
+  `worker.stagnation_finalized` with the receipt count;
+- the salvage checkpoint appends `-salvage` to the normal turn checkpoint id,
+  so Core accepts it and persists the check receipts instead of rejecting the
+  stagnation checkpoint id as reused with different content;
 - a failed check, an unchanged workspace or any other decision returns the
   original `WorkerProgressHalt` and submits no candidate.
 
 The model loop still stops. Frozen checks, allowed paths, budgets, artifact
-paths and the independent Quality Gate are unchanged.
+paths and the independent Quality Gate are unchanged. The fake progress
+endpoint in the Worker tests enforces Core's id-plus-content replay rule and
+asserts that the salvage evidence is persisted under the distinct id.
 
 Validation:
 
@@ -465,7 +471,7 @@ cargo fmt --all -- --check
 clean
 
 cargo test -p factory-native --bin factory-worker
-27 passed; 0 failed
+28 passed; 0 failed
 
 cargo test -p factory-native --test provider_chaos
 16 passed; 0 failed

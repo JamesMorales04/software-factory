@@ -2003,21 +2003,38 @@ impl TurnProgress {
     /// Build the checkpoint for the completed turn. The evidence is cleared so
     /// each terminal operation is submitted exactly once.
     fn checkpoint_request(&mut self) -> Option<ProgressCheckpointRequest> {
+        self.checkpoint_request_with_phase(None)
+    }
+
+    /// Build the terminal checkpoint after a Diagnose halt. It must not reuse
+    /// the stagnation checkpoint identity: Core rejects a repeated id with
+    /// different content, which would discard the salvage check receipts.
+    fn salvage_checkpoint_request(&mut self) -> Option<ProgressCheckpointRequest> {
+        self.checkpoint_request_with_phase(Some("salvage"))
+    }
+
+    fn checkpoint_request_with_phase(
+        &mut self,
+        phase: Option<&str>,
+    ) -> Option<ProgressCheckpointRequest> {
         if self.turn == 0 {
             return None;
         }
-        let checkpoint_id = format!("{}-turn-{}", self.operation_prefix, self.turn);
+        let checkpoint_id = match phase {
+            Some(phase) => format!("{}-turn-{}-{phase}", self.operation_prefix, self.turn),
+            None => format!("{}-turn-{}", self.operation_prefix, self.turn),
+        };
         let operation_id = checkpoint_id.clone();
-        let outcome_sha256 = sha256_hex(
-            serde_json::to_string(&serde_json::json!({
-                "workItemId": self.work_item_id,
-                "operation": self.operation_prefix,
-                "turn": self.turn,
-                "evidence": self.evidence.iter().map(|item| item.evidence_id.clone()).collect::<Vec<_>>(),
-            }))
-            .ok()?
-            .as_bytes(),
-        );
+        let mut outcome = serde_json::json!({
+            "workItemId": self.work_item_id,
+            "operation": self.operation_prefix,
+            "turn": self.turn,
+            "evidence": self.evidence.iter().map(|item| item.evidence_id.clone()).collect::<Vec<_>>(),
+        });
+        if let Some(phase) = phase {
+            outcome["phase"] = serde_json::Value::String(phase.to_owned());
+        }
+        let outcome_sha256 = sha256_hex(serde_json::to_string(&outcome).ok()?.as_bytes());
         let checkpoint = ProgressCheckpoint {
             checkpoint_id,
             work_item_id: self.work_item_id.clone(),
@@ -2127,14 +2144,11 @@ async fn submit_progress_checkpoint(
         })
 }
 
-/// Persist the final terminal operation before the candidate is reported. The
-/// Quality Gate remains independent; an open progress hold blocks the next
-/// attempt, not the gate for this candidate.
-async fn persist_final_progress_checkpoint(
+async fn persist_progress_checkpoint(
     context: &ProviderContext<'_>,
-    progress: &mut TurnProgress,
+    request: Option<ProgressCheckpointRequest>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if let Some(request) = progress.checkpoint_request() {
+    if let Some(request) = request {
         let _ = submit_progress_checkpoint(
             context.client,
             context.core,
@@ -2146,6 +2160,25 @@ async fn persist_final_progress_checkpoint(
         .await?;
     }
     Ok(())
+}
+
+/// Persist the final terminal operation before the candidate is reported. The
+/// Quality Gate remains independent; an open progress hold blocks the next
+/// attempt, not the gate for this candidate.
+async fn persist_final_progress_checkpoint(
+    context: &ProviderContext<'_>,
+    progress: &mut TurnProgress,
+) -> Result<(), Box<dyn std::error::Error>> {
+    persist_progress_checkpoint(context, progress.checkpoint_request()).await
+}
+
+/// Persist the post-diagnosis salvage operation under its own checkpoint
+/// identity so Core keeps the check receipts instead of rejecting a reused id.
+async fn persist_salvage_progress_checkpoint(
+    context: &ProviderContext<'_>,
+    progress: &mut TurnProgress,
+) -> Result<(), Box<dyn std::error::Error>> {
+    persist_progress_checkpoint(context, progress.salvage_checkpoint_request()).await
 }
 
 enum ProviderSessionCleanup<'a> {
@@ -2225,10 +2258,8 @@ async fn finalize_stagnant_candidate(
         return Ok(StagnationSalvage::Halted(halt));
     }
     let executed_checks = executions.len();
-    if let Err(error) = persist_final_progress_checkpoint(context, progress).await {
-        eprintln!(
-            "worker: final progress checkpoint after stagnation salvage was not persisted: {error}"
-        );
+    if let Err(error) = persist_salvage_progress_checkpoint(context, progress).await {
+        eprintln!("worker: salvage progress checkpoint was not persisted: {error}");
     }
     session.close().await?;
     let candidate = finalize_candidate(context, handle, dependencies).await?;
@@ -5341,6 +5372,10 @@ mod tests {
         checkpoint_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
         progress_decisions:
             std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<ContinuationDecision>>>,
+        progress_checkpoint_hashes:
+            std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, String>>>,
+        progress_requests: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+        progress_rejections: std::sync::Arc<std::sync::atomic::AtomicUsize>,
         receipts: std::sync::Arc<std::sync::Mutex<Vec<ExecutionCheckReceiptRecord>>>,
         sequence: std::sync::Arc<std::sync::atomic::AtomicI64>,
     }
@@ -5413,9 +5448,52 @@ mod tests {
 
     async fn auto_check_progress_checkpoint(
         axum::extract::State(state): axum::extract::State<AutoCheckBackendState>,
-    ) -> axum::Json<serde_json::Value> {
+        axum::Json(input): axum::Json<serde_json::Value>,
+    ) -> axum::response::Response {
+        use axum::response::IntoResponse;
         use std::sync::atomic::Ordering;
         state.checkpoint_calls.fetch_add(1, Ordering::SeqCst);
+        let Some(checkpoint) = input.get("checkpoint") else {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                axum::Json(serde_json::json!({"error": "missing checkpoint"})),
+            )
+                .into_response();
+        };
+        let Some(checkpoint_id) = checkpoint
+            .get("checkpointId")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+        else {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                axum::Json(serde_json::json!({"error": "missing checkpoint id"})),
+            )
+                .into_response();
+        };
+        let checkpoint_sha256 = sha256_hex(
+            serde_json::to_string(checkpoint)
+                .unwrap_or_default()
+                .as_bytes(),
+        );
+        {
+            let mut stored = state.progress_checkpoint_hashes.lock().unwrap();
+            if let Some(existing) = stored.get(&checkpoint_id) {
+                if existing != &checkpoint_sha256 {
+                    state.progress_rejections.fetch_add(1, Ordering::SeqCst);
+                    return (
+                        axum::http::StatusCode::CONFLICT,
+                        axum::Json(serde_json::json!({
+                            "error": "progress checkpoint id was reused with different content"
+                        })),
+                    )
+                        .into_response();
+                }
+            } else {
+                stored.insert(checkpoint_id.to_owned(), checkpoint_sha256);
+            }
+        }
+        state.progress_requests.lock().unwrap().push(input);
         let decision = state
             .progress_decisions
             .lock()
@@ -5428,13 +5506,14 @@ mod tests {
             _ => ("PROVISIONAL", 0, false),
         };
         axum::Json(serde_json::json!({
-            "checkpointId": "checkpoint",
+            "checkpointId": checkpoint_id,
             "decision": decision,
             "classification": classification,
             "stagnantCheckpoints": stagnant_checkpoints,
             "unsuccessfulReplans": 0,
             "holdOpen": hold_open
         }))
+        .into_response()
     }
 
     async fn auto_check_workspace_operation() -> axum::Json<serde_json::Value> {
@@ -5538,6 +5617,8 @@ mod tests {
         runs: AutoCheckRuns,
         finalize_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
         checkpoint_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        progress_requests: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+        progress_rejections: std::sync::Arc<std::sync::atomic::AtomicUsize>,
         receipts: std::sync::Arc<std::sync::Mutex<Vec<ExecutionCheckReceiptRecord>>>,
         provider_server: tokio::task::JoinHandle<()>,
         backend_server: tokio::task::JoinHandle<()>,
@@ -5630,6 +5711,8 @@ mod tests {
             let runs = Arc::new(Mutex::new(Vec::new()));
             let finalize_calls = Arc::new(AtomicUsize::new(0));
             let checkpoint_calls = Arc::new(AtomicUsize::new(0));
+            let progress_requests = Arc::new(Mutex::new(Vec::new()));
+            let progress_rejections = Arc::new(AtomicUsize::new(0));
             let receipts = Arc::new(Mutex::new(Vec::new()));
             let backend_state = AutoCheckBackendState {
                 base: base.clone(),
@@ -5640,6 +5723,9 @@ mod tests {
                 write_calls: Arc::new(AtomicUsize::new(0)),
                 checkpoint_calls: Arc::clone(&checkpoint_calls),
                 progress_decisions: Arc::new(Mutex::new(progress_decisions.into())),
+                progress_checkpoint_hashes: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
+                progress_requests: Arc::clone(&progress_requests),
+                progress_rejections: Arc::clone(&progress_rejections),
                 receipts: Arc::clone(&receipts),
                 sequence: Arc::new(std::sync::atomic::AtomicI64::new(1)),
             };
@@ -5700,6 +5786,8 @@ mod tests {
                 runs,
                 finalize_calls,
                 checkpoint_calls,
+                progress_requests,
+                progress_rejections,
                 receipts,
                 provider_server,
                 backend_server,
@@ -5818,7 +5906,42 @@ mod tests {
         assert_eq!(
             harness.checkpoint_calls.load(Ordering::SeqCst),
             2,
-            "the stagnation checkpoint and the final checkpoint must both be submitted"
+            "the stagnation checkpoint and the salvage checkpoint must both be submitted"
+        );
+        assert_eq!(
+            harness.progress_rejections.load(Ordering::SeqCst),
+            0,
+            "the salvage checkpoint must not reuse the stagnation checkpoint id"
+        );
+        let requests = harness.progress_requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        let stagnation_id = requests[0]
+            .pointer("/checkpoint/checkpointId")
+            .and_then(serde_json::Value::as_str)
+            .expect("stagnation checkpoint id");
+        let salvage_id = requests[1]
+            .pointer("/checkpoint/checkpointId")
+            .and_then(serde_json::Value::as_str)
+            .expect("salvage checkpoint id");
+        assert_ne!(stagnation_id, salvage_id);
+        assert!(
+            salvage_id.ends_with("-salvage"),
+            "salvage checkpoint id should be distinct: {salvage_id}"
+        );
+        let evidence_ids = requests[1]
+            .pointer("/checkpoint/evidenceIds")
+            .and_then(serde_json::Value::as_array)
+            .expect("declared salvage evidence ids");
+        assert!(!evidence_ids.is_empty());
+        let evidence = requests[1]
+            .get("evidence")
+            .and_then(serde_json::Value::as_array)
+            .expect("salvage evidence");
+        assert!(
+            evidence.iter().any(|item| {
+                item.get("kind").and_then(serde_json::Value::as_str) == Some("TESTS_IMPROVED")
+            }),
+            "the salvage checkpoint must persist the frozen-check receipt: {evidence:?}"
         );
     }
 
@@ -6225,6 +6348,44 @@ mod tests {
         }
         assert_eq!(progress.turn, 12);
         assert!(progress.checkpoint_request().is_none() || progress.evidence.is_empty());
+    }
+
+    #[test]
+    fn salvage_checkpoint_identity_differs_from_the_stagnation_checkpoint() {
+        let mut progress = TurnProgress::from_identity(
+            "campaign".into(),
+            "unit-1".into(),
+            "attempt-1".into(),
+            1,
+            "run-1".into(),
+            0,
+        );
+        progress.begin_turn();
+        progress.observe_write("src/lib.rs", "changed");
+        let stagnation = progress
+            .checkpoint_request()
+            .expect("stagnation checkpoint");
+        progress.observe_check(&check_receipt("call-salvage", "PASS", "pass", true));
+        let salvage = progress
+            .salvage_checkpoint_request()
+            .expect("salvage checkpoint");
+        assert_eq!(
+            stagnation.checkpoint.checkpoint_id, "unit-1/attempt-1-g1-run-1-turn-1",
+            "the normal terminal checkpoint identity must not change"
+        );
+        assert_eq!(
+            salvage.checkpoint.checkpoint_id,
+            "unit-1/attempt-1-g1-run-1-turn-1-salvage"
+        );
+        assert_ne!(
+            stagnation.checkpoint.outcome_sha256, salvage.checkpoint.outcome_sha256,
+            "a distinct phase must produce a distinct replay digest"
+        );
+        assert_eq!(salvage.evidence.len(), 1);
+        assert_eq!(
+            salvage.checkpoint.evidence_ids,
+            vec![salvage.evidence[0].evidence_id.clone()]
+        );
     }
 
     #[test]
