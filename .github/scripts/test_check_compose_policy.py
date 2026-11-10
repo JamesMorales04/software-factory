@@ -62,6 +62,14 @@ class ComposePolicyTests(unittest.TestCase):
             "must use the canonical core-control control host",
         )
 
+    def test_rejects_noncanonical_core_control_url(self):
+        self.assert_rejected(
+            lambda c: c["services"]["worker"]["environment"].__setitem__(
+                "FACTORY_CORE_URL", "http://core-control:8765/"
+            ),
+            "FACTORY_CORE_URL must be http://core-control:8765 on the control network",
+        )
+
     def test_rejects_control_url_without_the_control_network(self):
         def drop_control_network(config):
             networks = config["services"]["worker"]["networks"]
