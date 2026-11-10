@@ -182,9 +182,12 @@ semantically; a green form check is not proof of the claim.
 - Office shows provider/session/campaign/gate state truthfully. Container-level
   health that Core cannot observe is not invented; use the documented Compose
   command instead.
-- A broker-only restart removes managed containers, including containers that
-  may belong to live attempts. Record the resulting failure and recovery; do
-  not describe it as graceful.
+- A broker-only restart no longer deletes managed containers. In-flight
+  operations still fail and are reconciled by their owning service. The
+  Supervisor removes stale `RUNNING` workspaces and its own owner-labelled
+  orphan resources at startup; unlabelled, foreign-owner and provider resources
+  are preserved. Record the failure and recovery; do not describe it as
+  graceful.
 - Remove disposable projects, volumes, provider sessions and credentials after
   a test or UAT and record the cleanup result.
 

@@ -30,6 +30,12 @@ use tokio::{
     time,
 };
 
+use factory_native::runtime_broker::{
+    ManagedResources, ResourceOwner, is_valid_container_name, is_valid_exec_container_name,
+    is_valid_provider_container_name, is_valid_volume_name, parse_container_inventory,
+    parse_volume_inventory,
+};
+
 const MAX_JSON_BYTES: usize = 2 * 1024 * 1024;
 const MAX_ARCHIVE_BYTES: usize = 128 * 1024 * 1024;
 const MAX_STREAM_BYTES: usize = 1024 * 1024;
@@ -43,6 +49,7 @@ const MAX_EXECUTION_RUNTIME: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 const MAX_PROVIDER_RUNTIME: Duration = Duration::from_secs(60 * 60);
 const MANAGED_LABEL: &str = "io.software-factory.managed=true";
 const WORKSPACE_LABEL: &str = "io.software-factory.workspace";
+const OWNER_LABEL: &str = "io.software-factory.owner";
 
 const PROVIDER_ENV_KEYS: [&str; 19] = [
     "FACTORY_PROVIDER_SOCKET",
@@ -153,11 +160,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         import_images,
     });
     app.preflight().await?;
-    app.remove_managed_containers().await;
     app.prepull_images().await?;
 
     let router = Router::new()
         .route("/health", get(health))
+        .route("/v1/resources", get(list_resources))
         .route("/v1/volumes", post(create_volume))
         .route("/v1/volumes/{volume}", axum::routing::delete(remove_volume))
         .route(
@@ -361,40 +368,37 @@ impl App {
         Ok(())
     }
 
-    async fn remove_managed_containers(&self) {
-        let output = self
-            .podman_command([
-                "ps",
-                "-a",
-                "--filter",
-                &format!("label={MANAGED_LABEL}"),
-                "--format",
-                "{{.Names}}",
-            ])
-            .output()
-            .await;
-        let Ok(output) = output else {
-            tracing::warn!("could not list managed containers during reconciliation");
-            return;
-        };
-        if !output.status.success() {
-            tracing::warn!("managed container listing failed during reconciliation");
-            return;
-        }
-        let names: Vec<String> = String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .map(str::trim)
-            .filter(|name| valid_container_name(name))
-            .map(str::to_owned)
-            .collect();
-        for name in names {
-            if let Err(error) = self
-                .podman_output(["rm", "--force", "--time=0", name.as_str()])
-                .await
-            {
-                tracing::warn!(%name, %error, "could not remove reconciled container");
-            }
-        }
+    async fn managed_resources(&self) -> Result<ManagedResources, String> {
+        let volumes = self
+            .run_checked(
+                [
+                    "volume",
+                    "ls",
+                    "--filter",
+                    &format!("label={MANAGED_LABEL}"),
+                    "--format",
+                    "json",
+                ],
+                "managed volume listing",
+            )
+            .await?;
+        let containers = self
+            .run_checked(
+                [
+                    "ps",
+                    "-a",
+                    "--filter",
+                    &format!("label={MANAGED_LABEL}"),
+                    "--format",
+                    "json",
+                ],
+                "managed container listing",
+            )
+            .await?;
+        Ok(ManagedResources {
+            volumes: parse_volume_inventory(&volumes)?,
+            containers: parse_container_inventory(&containers)?,
+        })
     }
 
     fn podman_command<I, S>(&self, args: I) -> Command
@@ -457,6 +461,16 @@ async fn health() -> Json<serde_json::Value> {
     }))
 }
 
+async fn list_resources(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if !authorized(&headers, &app.token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.managed_resources().await {
+        Ok(resources) => Json(resources).into_response(),
+        Err(error) => operation_error(error),
+    }
+}
+
 fn authorized(headers: &HeaderMap, expected: &str) -> bool {
     let Some(value) = headers
         .get("authorization")
@@ -477,28 +491,6 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
         diff |= left ^ right;
     }
     diff == 0
-}
-
-fn valid_volume_name(name: &str) -> bool {
-    let Some(rest) = name.strip_prefix("factory-ws-") else {
-        return false;
-    };
-    rest.len() == 36
-        && rest
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() || byte == b'-')
-}
-
-fn valid_container_name(name: &str) -> bool {
-    let prefixes = ["factory-exec-", "factory-provider-"];
-    prefixes.iter().any(|prefix| {
-        name.strip_prefix(prefix).is_some_and(|rest| {
-            rest.len() == 36
-                && rest
-                    .bytes()
-                    .all(|byte| byte.is_ascii_hexdigit() || byte == b'-')
-        })
-    })
 }
 
 fn valid_workspace_id(value: &str) -> bool {
@@ -630,6 +622,7 @@ fn validate_env(env: &[(String, String)]) -> Result<(), String> {
 struct NewVolume {
     volume: String,
     workspace_id: String,
+    owner: ResourceOwner,
 }
 
 async fn create_volume(
@@ -640,10 +633,14 @@ async fn create_volume(
     if !authorized(&headers, &app.token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    if !valid_volume_name(&input.volume) || !valid_workspace_id(&input.workspace_id) {
+    if !is_valid_volume_name(&input.volume) || !valid_workspace_id(&input.workspace_id) {
         return bad_request("invalid volume or workspace identity");
     }
+    if input.owner == ResourceOwner::Provider {
+        return bad_request("provider owner cannot create workspace volumes");
+    }
     let label = format!("{WORKSPACE_LABEL}={}", input.workspace_id);
+    let owner = format!("{OWNER_LABEL}={}", input.owner.as_str());
     match app
         .run_checked(
             [
@@ -651,6 +648,8 @@ async fn create_volume(
                 "create",
                 "--label",
                 &label,
+                "--label",
+                &owner,
                 "--label",
                 MANAGED_LABEL,
                 input.volume.as_str(),
@@ -680,7 +679,7 @@ async fn remove_volume(
     if !authorized(&headers, &app.token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    if !valid_volume_name(&volume) {
+    if !is_valid_volume_name(&volume) {
         return bad_request("invalid volume name");
     }
     let output = match app
@@ -712,7 +711,7 @@ async fn import_volume(
     if !authorized(&headers, &app.token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    if !valid_volume_name(&volume) || body.is_empty() || body.len() > MAX_ARCHIVE_BYTES {
+    if !is_valid_volume_name(&volume) || body.is_empty() || body.len() > MAX_ARCHIVE_BYTES {
         return bad_request("invalid volume import");
     }
     let mut child = match app
@@ -764,7 +763,7 @@ async fn export_volume(
     if !authorized(&headers, &app.token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    if !valid_volume_name(&volume) {
+    if !is_valid_volume_name(&volume) {
         return bad_request("invalid volume name");
     }
     let mut child = match app
@@ -825,6 +824,7 @@ struct RunContainer {
     image: String,
     argv: Vec<String>,
     timeout_secs: u64,
+    owner: ResourceOwner,
 }
 
 async fn run_container(
@@ -835,8 +835,14 @@ async fn run_container(
     if !authorized(&headers, &app.token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    if !valid_volume_name(&input.volume) || !valid_container_name(&input.container) {
+    if !is_valid_volume_name(&input.volume) || !is_valid_container_name(&input.container) {
         return bad_request("invalid volume or container identity");
+    }
+    if !is_valid_exec_container_name(&input.container) {
+        return bad_request("execution container has an invalid owner prefix");
+    }
+    if input.owner == ResourceOwner::Provider {
+        return bad_request("provider owner cannot start execution containers");
     }
     if !app.images.contains(&input.image) {
         return bad_request("image is not allowlisted");
@@ -880,12 +886,14 @@ struct ChildOutput {
 
 async fn run_child(app: &App, input: &RunContainer) -> Result<ChildOutput, String> {
     let timeout = Duration::from_secs(input.timeout_secs);
+    let owner = format!("{OWNER_LABEL}={}", input.owner.as_str());
     let args = vec![
         "run".to_owned(),
         "--rm".to_owned(),
         format!("--name={}", input.container),
         format!("--label={MANAGED_LABEL}"),
         format!("--label={WORKSPACE_LABEL}={}", input.volume),
+        format!("--label={owner}"),
         "--pull=never".to_owned(),
         "--network=none".to_owned(),
         "--read-only".to_owned(),
@@ -972,7 +980,7 @@ async fn remove_container(
     if !authorized(&headers, &app.token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    if !valid_container_name(&container) {
+    if !is_valid_container_name(&container) {
         return bad_request("invalid container name");
     }
     let output = match app
@@ -1003,7 +1011,7 @@ async fn container_status(
     if !authorized(&headers, &app.token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    if !valid_container_name(&container) {
+    if !is_valid_container_name(&container) {
         return bad_request("invalid container name");
     }
     let output = match app
@@ -1052,8 +1060,7 @@ async fn start_provider(
     if !authorized(&headers, &app.token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    if !valid_container_name(&input.container) || !input.container.starts_with("factory-provider-")
-    {
+    if !is_valid_provider_container_name(&input.container) {
         return bad_request("invalid provider container identity");
     }
     if !valid_provider_session_subdir(&input.session_subdir) {
@@ -1101,6 +1108,7 @@ async fn start_provider(
         "--detach".into(),
         format!("--name={}", input.container),
         format!("--label={MANAGED_LABEL}"),
+        format!("--label={OWNER_LABEL}=provider"),
         "--pull=never".into(),
         "--network=none".into(),
         "--read-only".into(),
@@ -1218,17 +1226,17 @@ mod tests {
 
     #[test]
     fn identities_are_strict() {
-        assert!(valid_volume_name(
+        assert!(is_valid_volume_name(
             "factory-ws-123e4567-e89b-12d3-a456-426614174000"
         ));
-        assert!(!valid_volume_name("factory-ws-../../etc"));
-        assert!(valid_container_name(
+        assert!(!is_valid_volume_name("factory-ws-../../etc"));
+        assert!(is_valid_container_name(
             "factory-exec-123e4567-e89b-12d3-a456-426614174000"
         ));
-        assert!(valid_container_name(
+        assert!(is_valid_container_name(
             "factory-provider-123e4567-e89b-12d3-a456-426614174000"
         ));
-        assert!(!valid_container_name("factory-provider-123"));
+        assert!(!is_valid_container_name("factory-provider-123"));
         assert!(valid_provider_session_subdir("provider-session-a"));
         assert!(!valid_provider_session_subdir("../escape"));
         assert!(valid_workspace_id("attempt-1"));
@@ -1259,6 +1267,20 @@ mod tests {
         assert!(parse_import_images("factory-provider:dev=/bundles/provider.tar".into()).is_ok());
         assert!(parse_import_images("factory-provider:dev=relative.tar".into()).is_err());
         assert!(parse_import_images("no-equals".into()).is_err());
+    }
+
+    #[test]
+    fn volume_owner_is_required_and_typed() {
+        let volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let valid =
+            format!(r#"{{"volume":"{volume}","workspaceId":"attempt-1","owner":"supervisor"}}"#);
+        let input: NewVolume = serde_json::from_str(&valid).unwrap();
+        assert_eq!(input.owner, ResourceOwner::Supervisor);
+        let unknown =
+            format!(r#"{{"volume":"{volume}","workspaceId":"attempt-1","owner":"worker"}}"#);
+        assert!(serde_json::from_str::<NewVolume>(&unknown).is_err());
+        let missing = format!(r#"{{"volume":"{volume}","workspaceId":"attempt-1"}}"#);
+        assert!(serde_json::from_str::<NewVolume>(&missing).is_err());
     }
 
     #[test]

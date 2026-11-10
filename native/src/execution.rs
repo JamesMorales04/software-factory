@@ -26,6 +26,7 @@ use tokio::{
 use uuid::Uuid;
 
 use crate::{
+    runtime_broker::{self, ManagedResources, ResourceOwner},
     sandbox::SandboxError,
     workspace::{CandidateRevision, WorkspaceAllocator, WorkspaceError},
     workspace_archive::{self, ArchiveError},
@@ -35,6 +36,7 @@ pub const STATE_SCHEMA_VERSION: u32 = 1;
 pub const MAX_EXECUTION_RUNTIME: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 const OUTPUT_LIMIT: usize = 1024 * 1024;
 const MAX_REPOSITORY_ROOTS: usize = 32;
+const MAX_STATE_RECORDS: usize = 4096;
 const STATE_PREFIX: &str = "workspace-";
 const VOLUME_PREFIX: &str = "factory-ws-";
 const CONTAINER_PREFIX: &str = "factory-exec-";
@@ -219,6 +221,9 @@ pub struct BoundedOutput {
 
 /// Narrow asynchronous volume/container port. Production uses rootless Podman.
 pub trait VolumeBackend: Send + Sync {
+    /// Service that owns resources created by this backend. Orphan
+    /// reconciliation removes only resources carrying this owner label.
+    fn owner(&self) -> ResourceOwner;
     fn create_volume(
         &self,
         name: &str,
@@ -249,6 +254,29 @@ pub trait VolumeBackend: Send + Sync {
         &self,
         name: &str,
     ) -> impl std::future::Future<Output = Result<(), ExecutionError>> + Send;
+    /// Read-only managed-resource inventory used by startup reconciliation.
+    /// Backends that cannot enumerate return `None` and the sweep is skipped.
+    fn list_managed(
+        &self,
+    ) -> impl std::future::Future<Output = Result<Option<ManagedResources>, ExecutionError>> + Send
+    {
+        async { Ok(None) }
+    }
+}
+
+/// Outcome of one idempotent reconciliation pass.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReconcileReport {
+    pub recovered_running: usize,
+    pub removed_records: usize,
+    pub removed_orphan_volumes: usize,
+    pub removed_orphan_containers: usize,
+    pub preserved_managed: usize,
+    pub cleanup_failures: usize,
+    pub sweep_supported: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sweep_error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -256,10 +284,14 @@ pub struct RootlessPodmanVolumes {
     executable: OsString,
     allowed_images: BTreeSet<String>,
     max_runtime: Duration,
+    owner: ResourceOwner,
 }
 
 impl RootlessPodmanVolumes {
-    pub fn new(allowed_images: impl IntoIterator<Item = String>) -> Result<Self, ExecutionError> {
+    pub fn new(
+        allowed_images: impl IntoIterator<Item = String>,
+        owner: ResourceOwner,
+    ) -> Result<Self, ExecutionError> {
         let allowed_images: BTreeSet<String> = allowed_images.into_iter().collect();
         if allowed_images.is_empty()
             || allowed_images.iter().any(|image| {
@@ -274,6 +306,7 @@ impl RootlessPodmanVolumes {
             executable: OsString::from("podman"),
             allowed_images,
             max_runtime: MAX_EXECUTION_RUNTIME,
+            owner,
         })
     }
 
@@ -357,7 +390,9 @@ impl RootlessPodmanVolumes {
             "run".into(),
             "--rm".into(),
             format!("--name={container}").into(),
+            "--label=io.software-factory.managed=true".into(),
             format!("--label=io.software-factory.workspace={volume}").into(),
+            format!("--label=io.software-factory.owner={}", self.owner.as_str()).into(),
             "--pull=never".into(),
             "--network=none".into(),
             "--read-only".into(),
@@ -387,15 +422,17 @@ impl RootlessPodmanVolumes {
 pub struct BrokerVolumes {
     client: crate::runtime_broker::RuntimeBrokerClient,
     max_runtime: Duration,
+    owner: ResourceOwner,
 }
 
 impl BrokerVolumes {
-    pub fn new(base: &str, token: String) -> Result<Self, ExecutionError> {
+    pub fn new(base: &str, token: String, owner: ResourceOwner) -> Result<Self, ExecutionError> {
         let client = crate::runtime_broker::RuntimeBrokerClient::new(base, token)
             .map_err(|error| ExecutionError::Volume(error.to_string()))?;
         Ok(Self {
             client,
             max_runtime: MAX_EXECUTION_RUNTIME,
+            owner,
         })
     }
 
@@ -412,6 +449,10 @@ impl BrokerVolumes {
 }
 
 impl VolumeBackend for BrokerVolumes {
+    fn owner(&self) -> ResourceOwner {
+        self.owner
+    }
+
     async fn create_volume(&self, name: &str, workspace_id: &str) -> Result<(), ExecutionError> {
         validate_volume_name(name)?;
         validate_workspace_id(workspace_id)?;
@@ -420,6 +461,7 @@ impl VolumeBackend for BrokerVolumes {
             .create_volume(&crate::runtime_broker::NewVolume {
                 volume: name.to_owned(),
                 workspace_id: workspace_id.to_owned(),
+                owner: self.owner,
             })
             .await
             .map_err(ExecutionError::from)
@@ -477,6 +519,7 @@ impl VolumeBackend for BrokerVolumes {
                 image,
                 argv,
                 timeout_secs: timeout.as_secs(),
+                owner: self.owner,
             })
             .await
             .map_err(ExecutionError::from)?;
@@ -490,9 +533,21 @@ impl VolumeBackend for BrokerVolumes {
             .await
             .map_err(ExecutionError::from)
     }
+
+    async fn list_managed(&self) -> Result<Option<ManagedResources>, ExecutionError> {
+        self.client
+            .list_managed_resources()
+            .await
+            .map(Some)
+            .map_err(ExecutionError::from)
+    }
 }
 
 impl VolumeBackend for RootlessPodmanVolumes {
+    fn owner(&self) -> ResourceOwner {
+        self.owner
+    }
+
     async fn create_volume(&self, name: &str, workspace_id: &str) -> Result<(), ExecutionError> {
         validate_volume_name(name)?;
         validate_workspace_id(workspace_id)?;
@@ -503,7 +558,11 @@ impl VolumeBackend for RootlessPodmanVolumes {
                 "volume",
                 "create",
                 "--label",
+                "io.software-factory.managed=true",
+                "--label",
                 &format!("io.software-factory.workspace={workspace_id}"),
+                "--label",
+                &format!("io.software-factory.owner={}", self.owner.as_str()),
                 name,
             ])
             .await?;
@@ -704,6 +763,50 @@ impl VolumeBackend for RootlessPodmanVolumes {
             "container removal failed: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         )))
+    }
+
+    async fn list_managed(&self) -> Result<Option<ManagedResources>, ExecutionError> {
+        let filter = "label=io.software-factory.managed=true";
+        let volumes = self
+            .podman([
+                "--remote=false",
+                "volume",
+                "ls",
+                "--filter",
+                filter,
+                "--format",
+                "json",
+            ])
+            .await?;
+        if !volumes.status.success() {
+            return Err(ExecutionError::Volume(format!(
+                "managed volume listing failed: {}",
+                String::from_utf8_lossy(&volumes.stderr).trim()
+            )));
+        }
+        let containers = self
+            .podman([
+                "--remote=false",
+                "ps",
+                "-a",
+                "--filter",
+                filter,
+                "--format",
+                "json",
+            ])
+            .await?;
+        if !containers.status.success() {
+            return Err(ExecutionError::Volume(format!(
+                "managed container listing failed: {}",
+                String::from_utf8_lossy(&containers.stderr).trim()
+            )));
+        }
+        Ok(Some(ManagedResources {
+            volumes: runtime_broker::parse_volume_inventory(&volumes.stdout)
+                .map_err(ExecutionError::Volume)?,
+            containers: runtime_broker::parse_container_inventory(&containers.stdout)
+                .map_err(ExecutionError::Volume)?,
+        }))
     }
 }
 
@@ -1258,43 +1361,130 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
         Ok(())
     }
 
-    pub async fn reconcile(&self) -> Result<usize, ExecutionError> {
+    /// Idempotent restart reconciliation.
+    ///
+    /// The manager lock serializes this pass with allocation, execution and
+    /// cleanup, so an in-process active execution cannot have its volume or
+    /// container removed underneath it. Across a Supervisor restart no
+    /// execution is live; durable `Running` records are failed closed. After
+    /// the durable records are reconciled, the read-only managed inventory is
+    /// swept: only resources labelled with this backend's owner and absent from
+    /// every durable record are removed. Foreign, unlabelled and provider
+    /// resources are preserved.
+    pub async fn reconcile(&self) -> Result<ReconcileReport, ExecutionError> {
         let _write = self.lock.lock().await;
-        let mut removed = 0usize;
-        for record in self.records()? {
-            let mut record = record;
-            let mut changed = false;
-            if record.status == WorkspaceStatus::Running {
-                if let Some(container) = &record.container {
-                    let _ = self.backend.remove_container(container).await;
+        let mut report = ReconcileReport::default();
+        let mut referenced_volumes = BTreeSet::new();
+        let mut referenced_containers = BTreeSet::new();
+        for mut record in self.records()? {
+            match record.status {
+                WorkspaceStatus::Running => {
+                    // The process that owned this execution is gone. Remove the
+                    // external resources, then record the failure so an
+                    // idempotent re-allocation can recover the worktree.
+                    if let Some(container) = &record.container
+                        && self.backend.remove_container(container).await.is_err()
+                    {
+                        report.cleanup_failures = report.cleanup_failures.saturating_add(1);
+                    }
+                    if self.backend.remove_volume(&record.volume).await.is_err() {
+                        report.cleanup_failures = report.cleanup_failures.saturating_add(1);
+                    }
+                    record.status = WorkspaceStatus::Failed;
+                    record.error = Some("Supervisor restarted during execution".into());
+                    record.container = None;
+                    record.updated_at_ms = now_ms();
+                    self.write_record(&record)?;
+                    report.recovered_running = report.recovered_running.saturating_add(1);
                 }
-                let _ = self.backend.remove_volume(&record.volume).await;
-                record.status = WorkspaceStatus::Failed;
-                record.error = Some("Supervisor restarted during execution".into());
-                record.container = None;
-                record.updated_at_ms = now_ms();
-                changed = true;
-                removed += 1;
-            } else if matches!(record.status, WorkspaceStatus::Completed) {
-                let _ = self.backend.remove_volume(&record.volume).await;
-            } else if matches!(record.status, WorkspaceStatus::Failed) {
-                let _ = self.backend.remove_volume(&record.volume).await;
-                if let Ok(mut workspace) = self.open_existing(&record) {
-                    let _ = workspace.cleanup();
+                WorkspaceStatus::Failed => {
+                    if self.backend.remove_volume(&record.volume).await.is_err() {
+                        report.cleanup_failures = report.cleanup_failures.saturating_add(1);
+                    }
+                    if let Ok(mut workspace) = self.open_existing(&record) {
+                        let _ = workspace.cleanup();
+                    }
+                    self.remove_record(&record.attempt_id)?;
+                    report.removed_records = report.removed_records.saturating_add(1);
                 }
-                let _ = self.remove_record(&record.attempt_id);
-                removed += 1;
-                continue;
-            } else if record.status == WorkspaceStatus::Allocated {
-                self.backend
-                    .create_volume(&record.volume, &record.workspace_id)
-                    .await?;
-            }
-            if changed {
-                self.write_record(&record)?;
+                WorkspaceStatus::Completed => {
+                    // The candidate commit is durable in Git; the transfer
+                    // volume is disposable. Keep the record for idempotent
+                    // reopen.
+                    if self.backend.remove_volume(&record.volume).await.is_err() {
+                        report.cleanup_failures = report.cleanup_failures.saturating_add(1);
+                    }
+                }
+                WorkspaceStatus::Allocated => {
+                    // A stale record with a missing volume is repaired here.
+                    // An existing volume is re-imported before the next run.
+                    self.backend
+                        .create_volume(&record.volume, &record.workspace_id)
+                        .await?;
+                    referenced_volumes.insert(record.volume);
+                    if let Some(container) = record.container {
+                        referenced_containers.insert(container);
+                    }
+                }
             }
         }
-        Ok(removed)
+        // Defense in depth: never delete a container this process still tracks
+        // as active, even if a future state transition were to leave a gap.
+        referenced_containers.extend(self.active.lock().unwrap().values().cloned());
+        self.sweep_orphans(&mut report, &referenced_volumes, &referenced_containers)
+            .await;
+        Ok(report)
+    }
+
+    async fn sweep_orphans(
+        &self,
+        report: &mut ReconcileReport,
+        referenced_volumes: &BTreeSet<String>,
+        referenced_containers: &BTreeSet<String>,
+    ) {
+        let inventory = match self.backend.list_managed().await {
+            Ok(Some(inventory)) => inventory,
+            Ok(None) => return,
+            Err(error) => {
+                report.sweep_supported = true;
+                report.sweep_error = Some(error.to_string());
+                return;
+            }
+        };
+        report.sweep_supported = true;
+        let owner = self.backend.owner();
+        let owner_label = owner.as_str();
+        for container in &inventory.containers {
+            if container.owner.as_deref() != Some(owner_label)
+                || !runtime_broker::is_valid_exec_container_name(&container.name)
+                || referenced_containers.contains(&container.name)
+            {
+                report.preserved_managed = report.preserved_managed.saturating_add(1);
+                continue;
+            }
+            match self.backend.remove_container(&container.name).await {
+                Ok(()) => {
+                    report.removed_orphan_containers =
+                        report.removed_orphan_containers.saturating_add(1);
+                }
+                Err(_) => report.cleanup_failures = report.cleanup_failures.saturating_add(1),
+            }
+        }
+        for volume in &inventory.volumes {
+            if volume.owner.as_deref() != Some(owner_label)
+                || !runtime_broker::is_valid_volume_name(&volume.name)
+                || referenced_volumes.contains(&volume.name)
+            {
+                report.preserved_managed = report.preserved_managed.saturating_add(1);
+                continue;
+            }
+            match self.backend.remove_volume(&volume.name).await {
+                Ok(()) => {
+                    report.removed_orphan_volumes = report.removed_orphan_volumes.saturating_add(1);
+                }
+                Err(_) => report.cleanup_failures = report.cleanup_failures.saturating_add(1),
+            }
+        }
     }
 
     pub fn status(&self, workspace_id: &str) -> Result<WorkspaceHandle, ExecutionError> {
@@ -1382,6 +1572,11 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
             };
             if name.starts_with('.') || !name.starts_with(STATE_PREFIX) {
                 continue;
+            }
+            if records.len() >= MAX_STATE_RECORDS {
+                return Err(ExecutionError::Invalid(
+                    "too many durable workspace records".into(),
+                ));
             }
             let bytes = fs::read(entry.path())?;
             let record: WorkspaceRecord = serde_json::from_slice(&bytes)
@@ -1597,25 +1792,23 @@ fn validate_workspace_id(value: &str) -> Result<(), ExecutionError> {
 }
 
 fn validate_volume_name(value: &str) -> Result<(), ExecutionError> {
-    let Some(id) = value.strip_prefix(VOLUME_PREFIX) else {
-        return Err(ExecutionError::Invalid(
+    if runtime_broker::is_valid_volume_name(value) {
+        Ok(())
+    } else {
+        Err(ExecutionError::Invalid(
             "workspace volume has an invalid name".into(),
-        ));
-    };
-    Uuid::parse_str(id)
-        .map(|_| ())
-        .map_err(|_| ExecutionError::Invalid("workspace volume has an invalid name".into()))
+        ))
+    }
 }
 
 fn validate_container_name(value: &str) -> Result<(), ExecutionError> {
-    let Some(id) = value.strip_prefix(CONTAINER_PREFIX) else {
-        return Err(ExecutionError::Invalid(
+    if runtime_broker::is_valid_exec_container_name(value) {
+        Ok(())
+    } else {
+        Err(ExecutionError::Invalid(
             "sandbox container has an invalid name".into(),
-        ));
-    };
-    Uuid::parse_str(id)
-        .map(|_| ())
-        .map_err(|_| ExecutionError::Invalid("sandbox container has an invalid name".into()))
+        ))
+    }
 }
 
 fn validate_record(record: &WorkspaceRecord) -> Result<(), ExecutionError> {
@@ -1677,21 +1870,38 @@ async fn read_bounded<R: AsyncRead + Unpin>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime_broker::ManagedResource;
     use std::{collections::HashMap, process::Command as StdCommand, sync::Mutex};
 
-    #[derive(Default)]
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum InventoryMode {
+        Supported,
+        Unsupported,
+        Failing,
+    }
+
     struct LocalBackend {
         volumes: Mutex<HashMap<String, PathBuf>>,
+        volume_meta: Mutex<HashMap<String, ManagedResource>>,
+        containers: Mutex<HashMap<String, ManagedResource>>,
         root: Mutex<Option<PathBuf>>,
         children: Arc<Mutex<HashMap<String, u32>>>,
+        inventory: Mutex<InventoryMode>,
+        corrupt_export: Mutex<bool>,
+        owner: ResourceOwner,
     }
 
     impl LocalBackend {
         fn new(root: PathBuf) -> Self {
             Self {
                 volumes: Mutex::new(HashMap::new()),
+                volume_meta: Mutex::new(HashMap::new()),
+                containers: Mutex::new(HashMap::new()),
                 root: Mutex::new(Some(root)),
                 children: Arc::new(Mutex::new(HashMap::new())),
+                inventory: Mutex::new(InventoryMode::Supported),
+                corrupt_export: Mutex::new(false),
+                owner: ResourceOwner::Supervisor,
             }
         }
         fn volume_path(&self, name: &str) -> Result<PathBuf, ExecutionError> {
@@ -1702,13 +1912,67 @@ mod tests {
                 .cloned()
                 .ok_or_else(|| ExecutionError::Volume("missing test volume".into()))
         }
+        fn insert_volume(
+            &self,
+            name: &str,
+            owner: Option<ResourceOwner>,
+            workspace: Option<&str>,
+        ) -> PathBuf {
+            let root = self.root.lock().unwrap().clone().unwrap();
+            let path = root.join(name);
+            fs::create_dir_all(&path).unwrap();
+            self.volumes
+                .lock()
+                .unwrap()
+                .insert(name.into(), path.clone());
+            self.volume_meta.lock().unwrap().insert(
+                name.into(),
+                ManagedResource {
+                    name: name.into(),
+                    workspace: workspace.map(str::to_owned),
+                    owner: owner.map(|owner| owner.as_str().to_owned()),
+                },
+            );
+            path
+        }
+        fn insert_container(
+            &self,
+            name: &str,
+            owner: Option<ResourceOwner>,
+            workspace: Option<&str>,
+        ) {
+            self.containers.lock().unwrap().insert(
+                name.into(),
+                ManagedResource {
+                    name: name.into(),
+                    workspace: workspace.map(str::to_owned),
+                    owner: owner.map(|owner| owner.as_str().to_owned()),
+                },
+            );
+        }
+        fn set_inventory(&self, mode: InventoryMode) {
+            *self.inventory.lock().unwrap() = mode;
+        }
+        fn set_corrupt_export(&self, corrupt: bool) {
+            *self.corrupt_export.lock().unwrap() = corrupt;
+        }
+        fn has_volume(&self, name: &str) -> bool {
+            self.volumes.lock().unwrap().contains_key(name)
+        }
+        fn has_container(&self, name: &str) -> bool {
+            self.containers.lock().unwrap().contains_key(name)
+        }
     }
 
     impl VolumeBackend for LocalBackend {
+        fn owner(&self) -> ResourceOwner {
+            self.owner
+        }
+
         async fn create_volume(
             &self,
             name: &str,
-            _workspace_id: &str,
+            workspace_id: &str,
         ) -> Result<(), ExecutionError> {
             validate_volume_name(name)?;
             let root = self.root.lock().unwrap().clone().unwrap();
@@ -1718,10 +1982,19 @@ mod tests {
             }
             fs::create_dir(&path)?;
             self.volumes.lock().unwrap().insert(name.into(), path);
+            self.volume_meta.lock().unwrap().insert(
+                name.into(),
+                ManagedResource {
+                    name: name.into(),
+                    workspace: Some(workspace_id.to_owned()),
+                    owner: Some(self.owner.as_str().to_owned()),
+                },
+            );
             Ok(())
         }
 
         async fn remove_volume(&self, name: &str) -> Result<(), ExecutionError> {
+            self.volume_meta.lock().unwrap().remove(name);
             if let Some(path) = self.volumes.lock().unwrap().remove(name) {
                 let _ = fs::remove_dir_all(path);
             }
@@ -1740,7 +2013,12 @@ mod tests {
 
         async fn export_volume(&self, name: &str) -> Result<Vec<u8>, ExecutionError> {
             let path = self.volume_path(name)?;
-            Ok(workspace_archive::snapshot(&path)?.bytes)
+            let mut bytes = workspace_archive::snapshot(&path)?.bytes;
+            if *self.corrupt_export.lock().unwrap() {
+                let keep = bytes.len().min(16);
+                bytes.truncate(keep);
+            }
+            Ok(bytes)
         }
 
         async fn run(
@@ -1753,8 +2031,17 @@ mod tests {
         ) -> Result<BoundedOutput, ExecutionError> {
             assert_eq!(image, "test/image:1");
             let path = self.volume_path(volume)?;
+            self.containers.lock().unwrap().insert(
+                container.into(),
+                ManagedResource {
+                    name: container.into(),
+                    workspace: Some(volume.into()),
+                    owner: Some(self.owner.as_str().to_owned()),
+                },
+            );
             let argv = argv.to_vec();
-            let container = container.to_owned();
+            let container_name = container.to_owned();
+            let container_for_task = container_name.clone();
             let children = self.children.clone();
             let output = tokio::task::spawn_blocking(move || {
                 let child = StdCommand::new(&argv[0])
@@ -1764,14 +2051,18 @@ mod tests {
                     .env("PATH", "/usr/bin:/bin")
                     .spawn()?;
                 if let Some(pid) = Some(child.id()) {
-                    children.lock().unwrap().insert(container.clone(), pid);
+                    children
+                        .lock()
+                        .unwrap()
+                        .insert(container_for_task.clone(), pid);
                 }
                 let output = child.wait_with_output();
-                children.lock().unwrap().remove(&container);
+                children.lock().unwrap().remove(&container_for_task);
                 output
             })
             .await
             .map_err(|error| ExecutionError::Volume(format!("test runner: {error}")))??;
+            self.containers.lock().unwrap().remove(&container_name);
             Ok(BoundedOutput {
                 exit_code: output.status.code(),
                 stdout: output.stdout,
@@ -1782,6 +2073,7 @@ mod tests {
         }
 
         async fn remove_container(&self, name: &str) -> Result<(), ExecutionError> {
+            self.containers.lock().unwrap().remove(name);
             if let Some(pid) = self.children.lock().unwrap().get(name).copied() {
                 #[cfg(unix)]
                 unsafe {
@@ -1789,6 +2081,27 @@ mod tests {
                 }
             }
             Ok(())
+        }
+
+        async fn list_managed(&self) -> Result<Option<ManagedResources>, ExecutionError> {
+            match *self.inventory.lock().unwrap() {
+                InventoryMode::Supported => {}
+                InventoryMode::Unsupported => return Ok(None),
+                InventoryMode::Failing => {
+                    return Err(ExecutionError::Volume(
+                        "test inventory is unavailable".into(),
+                    ));
+                }
+            }
+            let mut volumes: Vec<_> = self.volume_meta.lock().unwrap().values().cloned().collect();
+            volumes.sort_by(|left, right| left.name.cmp(&right.name));
+            let mut containers: Vec<_> =
+                self.containers.lock().unwrap().values().cloned().collect();
+            containers.sort_by(|left, right| left.name.cmp(&right.name));
+            Ok(Some(ManagedResources {
+                volumes,
+                containers,
+            }))
         }
     }
 
@@ -2037,10 +2350,88 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires rootless Podman and a cached alpine:3.20 image"]
+    async fn real_podman_reconcile_removes_only_its_orphan_volume() {
+        let fixture = Fixture::new();
+        let backend =
+            RootlessPodmanVolumes::new(["alpine:3.20".to_owned()], ResourceOwner::Supervisor)
+                .unwrap();
+        backend.preflight().await.unwrap();
+        let manager = WorkspaceManager::new(
+            fixture.root.join("podman-orphan-work"),
+            fixture.root.join("podman-orphan-state"),
+            [fixture.repository.clone()],
+            backend,
+        )
+        .unwrap();
+        let orphan = format!("factory-ws-{}", Uuid::new_v4());
+        let orphan_workspace = Uuid::new_v4().to_string();
+        manager
+            .backend
+            .create_volume(&orphan, &orphan_workspace)
+            .await
+            .unwrap();
+        let handle = manager
+            .allocate(&WorkspaceAllocation {
+                attempt_id: "real-podman-orphan".into(),
+                repository: fixture.repository.to_string_lossy().into_owned(),
+                base_commit: fixture.base(),
+                action_spec_sha256: String::new(),
+                attempt_grant: String::new(),
+                generation: 1,
+            })
+            .await
+            .unwrap();
+        let referenced = format!("factory-ws-{}", handle.workspace_id);
+        let inventory = manager.backend.list_managed().await.unwrap().unwrap();
+        let unexpected: Vec<_> = inventory
+            .volumes
+            .iter()
+            .filter(|resource| resource.name != orphan && resource.name != referenced)
+            .map(|resource| resource.name.clone())
+            .collect();
+        assert!(
+            unexpected.is_empty(),
+            "refusing a destructive sweep with unrelated managed volumes: {unexpected:?}"
+        );
+        assert!(
+            inventory.containers.is_empty(),
+            "refusing a destructive sweep with unrelated managed containers"
+        );
+        let report = manager.reconcile().await.unwrap();
+        assert!(report.sweep_supported);
+        assert_eq!(report.removed_orphan_volumes, 1);
+        assert_eq!(report.removed_orphan_containers, 0);
+        let inventory = manager.backend.list_managed().await.unwrap().unwrap();
+        assert!(
+            inventory
+                .volumes
+                .iter()
+                .any(|resource| resource.name == referenced)
+        );
+        assert!(
+            !inventory
+                .volumes
+                .iter()
+                .any(|resource| resource.name == orphan)
+        );
+        manager.cleanup(&handle.workspace_id).await.unwrap();
+        let inventory = manager.backend.list_managed().await.unwrap().unwrap();
+        assert!(
+            !inventory
+                .volumes
+                .iter()
+                .any(|resource| resource.name == referenced)
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires rootless Podman and a cached alpine:3.20 image"]
     async fn real_podman_named_volume_execution_produces_candidate() {
         let fixture = Fixture::new();
         let base = fixture.base();
-        let backend = RootlessPodmanVolumes::new(["alpine:3.20".to_owned()]).unwrap();
+        let backend =
+            RootlessPodmanVolumes::new(["alpine:3.20".to_owned()], ResourceOwner::Supervisor)
+                .unwrap();
         backend.preflight().await.unwrap();
         let manager = WorkspaceManager::new(
             fixture.root.join("podman-work"),
@@ -2193,6 +2584,331 @@ mod tests {
         assert!(retried.candidate.is_some());
     }
 
+    #[tokio::test]
+    async fn reconcile_removes_only_owned_unreferenced_managed_resources() {
+        let fixture = Fixture::new();
+        let handle = fixture
+            .manager
+            .allocate(&WorkspaceAllocation {
+                attempt_id: "reconcile-owned".into(),
+                repository: fixture.repository.to_string_lossy().into_owned(),
+                base_commit: fixture.base(),
+                action_spec_sha256: String::new(),
+                attempt_grant: String::new(),
+                generation: 1,
+            })
+            .await
+            .unwrap();
+        let referenced_volume = format!("factory-ws-{}", handle.workspace_id);
+        let orphan_volume = format!("factory-ws-{}", Uuid::new_v4());
+        let foreign_volume = format!("factory-ws-{}", Uuid::new_v4());
+        let unlabelled_volume = format!("factory-ws-{}", Uuid::new_v4());
+        let orphan_container = format!("factory-exec-{}", Uuid::new_v4());
+        let foreign_container = format!("factory-exec-{}", Uuid::new_v4());
+        let provider_container = format!("factory-provider-{}", Uuid::new_v4());
+        let unlabelled_container = format!("factory-exec-{}", Uuid::new_v4());
+        {
+            let backend = &fixture.manager.backend;
+            backend.insert_volume(
+                &orphan_volume,
+                Some(ResourceOwner::Supervisor),
+                Some("orphan-attempt"),
+            );
+            backend.insert_volume(
+                &foreign_volume,
+                Some(ResourceOwner::Verifier),
+                Some("verify-attempt"),
+            );
+            backend.insert_volume(&unlabelled_volume, None, Some("legacy-attempt"));
+            backend.insert_container(
+                &orphan_container,
+                Some(ResourceOwner::Supervisor),
+                Some(&orphan_volume),
+            );
+            backend.insert_container(
+                &foreign_container,
+                Some(ResourceOwner::Verifier),
+                Some(&foreign_volume),
+            );
+            backend.insert_container(&provider_container, Some(ResourceOwner::Provider), None);
+            backend.insert_container(&unlabelled_container, None, None);
+        }
+        let report = fixture.manager.reconcile().await.unwrap();
+        assert!(report.sweep_supported);
+        assert_eq!(report.sweep_error, None);
+        assert_eq!(report.removed_orphan_volumes, 1);
+        assert_eq!(report.removed_orphan_containers, 1);
+        assert_eq!(report.preserved_managed, 6);
+        assert_eq!(report.cleanup_failures, 0);
+        {
+            let backend = &fixture.manager.backend;
+            assert!(backend.has_volume(&referenced_volume));
+            assert!(!backend.has_volume(&orphan_volume));
+            assert!(backend.has_volume(&foreign_volume));
+            assert!(backend.has_volume(&unlabelled_volume));
+            assert!(!backend.has_container(&orphan_container));
+            assert!(backend.has_container(&foreign_container));
+            assert!(backend.has_container(&provider_container));
+            assert!(backend.has_container(&unlabelled_container));
+        }
+        let second = fixture.manager.reconcile().await.unwrap();
+        assert_eq!(second.removed_orphan_volumes, 0);
+        assert_eq!(second.removed_orphan_containers, 0);
+        fixture.manager.cleanup(&handle.workspace_id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn reconcile_repairs_missing_volume_and_recovers_running_record() {
+        let fixture = Fixture::new();
+        let handle = fixture
+            .manager
+            .allocate(&WorkspaceAllocation {
+                attempt_id: "reconcile-restart".into(),
+                repository: fixture.repository.to_string_lossy().into_owned(),
+                base_commit: fixture.base(),
+                action_spec_sha256: String::new(),
+                attempt_grant: String::new(),
+                generation: 1,
+            })
+            .await
+            .unwrap();
+        let volume = format!("factory-ws-{}", handle.workspace_id);
+        fixture
+            .manager
+            .backend
+            .remove_volume(&volume)
+            .await
+            .unwrap();
+        assert!(!fixture.manager.backend.has_volume(&volume));
+
+        let repaired = fixture.manager.reconcile().await.unwrap();
+        assert_eq!(repaired.recovered_running, 0);
+        assert!(fixture.manager.backend.has_volume(&volume));
+
+        let mut record = fixture
+            .manager
+            .load_record("reconcile-restart")
+            .unwrap()
+            .unwrap();
+        let container = format!("factory-exec-{}", Uuid::new_v4());
+        record.status = WorkspaceStatus::Running;
+        record.container = Some(container.clone());
+        fixture.manager.write_record(&record).unwrap();
+        fixture.manager.backend.insert_container(
+            &container,
+            Some(ResourceOwner::Supervisor),
+            Some(&volume),
+        );
+
+        let recovered = fixture.manager.reconcile().await.unwrap();
+        assert_eq!(recovered.recovered_running, 1);
+        assert!(!fixture.manager.backend.has_container(&container));
+        assert!(!fixture.manager.backend.has_volume(&volume));
+        let record = fixture
+            .manager
+            .load_record("reconcile-restart")
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.status, WorkspaceStatus::Failed);
+        assert_eq!(record.container, None);
+        assert!(record.error.as_deref().unwrap_or("").contains("restarted"));
+
+        let cleaned = fixture.manager.reconcile().await.unwrap();
+        assert_eq!(cleaned.removed_records, 1);
+        assert!(
+            fixture
+                .manager
+                .load_record("reconcile-restart")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn duplicate_concurrent_reconciliation_is_idempotent() {
+        let fixture = Fixture::new();
+        let orphans: Vec<String> = (0..3)
+            .map(|_| format!("factory-ws-{}", Uuid::new_v4()))
+            .collect();
+        for orphan in &orphans {
+            fixture.manager.backend.insert_volume(
+                orphan,
+                Some(ResourceOwner::Supervisor),
+                Some("orphan"),
+            );
+        }
+        let (first, second) =
+            tokio::join!(fixture.manager.reconcile(), fixture.manager.reconcile());
+        let first = first.unwrap();
+        let second = second.unwrap();
+        assert_eq!(
+            first.removed_orphan_volumes + second.removed_orphan_volumes,
+            orphans.len()
+        );
+        assert_eq!(first.cleanup_failures + second.cleanup_failures, 0);
+        let third = fixture.manager.reconcile().await.unwrap();
+        assert_eq!(third.removed_orphan_volumes, 0);
+        for orphan in &orphans {
+            assert!(!fixture.manager.backend.has_volume(orphan));
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn active_execution_outlives_concurrent_reconciliation() {
+        let fixture = Fixture::new();
+        let handle = fixture
+            .manager
+            .allocate(&WorkspaceAllocation {
+                attempt_id: "reconcile-active".into(),
+                repository: fixture.repository.to_string_lossy().into_owned(),
+                base_commit: fixture.base(),
+                action_spec_sha256: String::new(),
+                attempt_grant: String::new(),
+                generation: 1,
+            })
+            .await
+            .unwrap();
+        let volume = format!("factory-ws-{}", handle.workspace_id);
+        let release = fixture
+            .manager
+            .backend
+            .volume_path(&volume)
+            .unwrap()
+            .join("release");
+        let input = ExecuteWorkspace {
+            image: "test/image:1".into(),
+            argv: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "while [ ! -f release ]; do sleep 0.05; done; printf 'live\\n' > live.txt".into(),
+            ],
+            timeout_secs: 30,
+        };
+        let execute =
+            fixture
+                .manager
+                .execute(&handle.workspace_id, &input, Duration::from_secs(60));
+        let reconcile = fixture.manager.reconcile();
+        tokio::pin!(execute);
+        tokio::pin!(reconcile);
+        tokio::select! {
+            biased;
+            _ = tokio::time::sleep(Duration::from_millis(300)) => {}
+            result = &mut execute => panic!("execution completed before reconciliation: {result:?}"),
+            _ = &mut reconcile => panic!("reconciliation did not wait for the active execution"),
+        }
+        fs::write(&release, "go").unwrap();
+        let (execution, reconciliation) = tokio::join!(&mut execute, &mut reconcile);
+        let result = execution.unwrap();
+        assert!(result.candidate.is_some());
+        assert_eq!(
+            fs::read_to_string(fixture.repository.join("seed.txt")).unwrap_or_default(),
+            "base\n"
+        );
+        let report = reconciliation.unwrap();
+        assert_eq!(report.removed_orphan_volumes, 0);
+        assert_eq!(report.removed_orphan_containers, 0);
+        assert_eq!(report.cleanup_failures, 0);
+        fixture.manager.cleanup(&handle.workspace_id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn reconcile_handles_unsupported_and_failed_inventory() {
+        let fixture = Fixture::new();
+        let orphan = format!("factory-ws-{}", Uuid::new_v4());
+        fixture.manager.backend.insert_volume(
+            &orphan,
+            Some(ResourceOwner::Supervisor),
+            Some("orphan"),
+        );
+        fixture
+            .manager
+            .backend
+            .set_inventory(InventoryMode::Unsupported);
+        let unsupported = fixture.manager.reconcile().await.unwrap();
+        assert!(!unsupported.sweep_supported);
+        assert_eq!(unsupported.sweep_error, None);
+        assert!(fixture.manager.backend.has_volume(&orphan));
+
+        fixture
+            .manager
+            .backend
+            .set_inventory(InventoryMode::Failing);
+        let failed = fixture.manager.reconcile().await.unwrap();
+        assert!(failed.sweep_supported);
+        assert!(failed.sweep_error.is_some());
+        assert!(fixture.manager.backend.has_volume(&orphan));
+
+        fixture
+            .manager
+            .backend
+            .set_inventory(InventoryMode::Supported);
+        let swept = fixture.manager.reconcile().await.unwrap();
+        assert_eq!(swept.removed_orphan_volumes, 1);
+        assert!(!fixture.manager.backend.has_volume(&orphan));
+    }
+
+    #[tokio::test]
+    async fn corrupt_exported_archive_fails_closed_without_replacing_the_worktree() {
+        let fixture = Fixture::new();
+        let base = fixture.base();
+        let handle = fixture
+            .manager
+            .allocate(&WorkspaceAllocation {
+                attempt_id: "corrupt-export".into(),
+                repository: fixture.repository.to_string_lossy().into_owned(),
+                base_commit: base.clone(),
+                action_spec_sha256: String::new(),
+                attempt_grant: String::new(),
+                generation: 1,
+            })
+            .await
+            .unwrap();
+        fixture.manager.backend.set_corrupt_export(true);
+        let error = fixture
+            .manager
+            .execute(
+                &handle.workspace_id,
+                &ExecuteWorkspace {
+                    image: "test/image:1".into(),
+                    argv: vec![
+                        "/bin/sh".into(),
+                        "-c".into(),
+                        "printf 'candidate\\n' > result.txt".into(),
+                    ],
+                    timeout_secs: 30,
+                },
+                Duration::from_secs(60),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ExecutionError::Archive(_)), "{error:?}");
+        assert_eq!(
+            fixture.manager.status(&handle.workspace_id).unwrap().status,
+            WorkspaceStatus::Failed
+        );
+        let head = StdCommand::new("git")
+            .args([
+                "-C",
+                fixture.repository.to_str().unwrap(),
+                "rev-parse",
+                "HEAD",
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&head.stdout).trim(), base);
+        let status = StdCommand::new("git")
+            .args([
+                "-C",
+                fixture.repository.to_str().unwrap(),
+                "status",
+                "--porcelain",
+            ])
+            .output()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&status.stdout).trim().is_empty());
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn path_replacement_during_execution_fails_closed() {
         let fixture = Fixture::new();
@@ -2261,7 +2977,9 @@ mod tests {
 
     #[test]
     fn podman_arguments_mount_only_the_named_volume() {
-        let backend = RootlessPodmanVolumes::new(["alpine:3.20".to_owned()]).unwrap();
+        let backend =
+            RootlessPodmanVolumes::new(["alpine:3.20".to_owned()], ResourceOwner::Supervisor)
+                .unwrap();
         let volume = format!("factory-ws-{}", Uuid::new_v4());
         let container = format!("factory-exec-{}", Uuid::new_v4());
         let args = backend

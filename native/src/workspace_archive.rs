@@ -163,15 +163,25 @@ fn append_directory(
 }
 
 /// Extract a sandbox-produced archive into a fresh staging directory. The
-/// caller then replaces the Git worktree contents except `.git`.
+/// caller then replaces the Git worktree contents except `.git`. A failed or
+/// truncated extraction removes the staging directory it created, so no partial
+/// archive content can reach the worktree.
 pub fn extract(bytes: &[u8], destination: &Path) -> Result<usize, ArchiveError> {
-    if bytes.len() as u64 > MAX_TRANSPORT_ARCHIVE_BYTES {
-        return Err(ArchiveError::TooLarge("archive is too large".into()));
-    }
     if destination.exists() {
         return Err(ArchiveError::Invalid(
             "staging destination already exists".into(),
         ));
+    }
+    let result = extract_inner(bytes, destination);
+    if result.is_err() {
+        remove_staging(destination);
+    }
+    result
+}
+
+fn extract_inner(bytes: &[u8], destination: &Path) -> Result<usize, ArchiveError> {
+    if bytes.len() as u64 > MAX_TRANSPORT_ARCHIVE_BYTES {
+        return Err(ArchiveError::TooLarge("archive is too large".into()));
     }
     fs::create_dir_all(destination)?;
     set_mode(destination, 0o700)?;
@@ -235,6 +245,15 @@ pub fn extract(bytes: &[u8], destination: &Path) -> Result<usize, ArchiveError> 
         set_mode(&target, if mode == 0 { 0o644 } else { mode })?;
     }
     Ok(count)
+}
+
+fn remove_staging(path: &Path) {
+    if let Ok(metadata) = fs::symlink_metadata(path)
+        && metadata.is_dir()
+        && !metadata.file_type().is_symlink()
+    {
+        let _ = fs::remove_dir_all(path);
+    }
 }
 
 /// Generated build state is not workspace source. It is safe to ignore only at
@@ -402,6 +421,60 @@ mod tests {
             "fn main() {}\n"
         );
         assert!(!destination.join("target").exists());
+    }
+
+    #[test]
+    fn rejects_truncated_archives_and_removes_partial_staging() {
+        let mut builder = Builder::new(Vec::new());
+        let mut header = Header::new_gnu();
+        header.set_entry_type(EntryType::Regular);
+        header.set_size(13);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, "src/main.rs", &b"fn main() {}\n"[..])
+            .unwrap();
+        let complete = builder.into_inner().unwrap();
+
+        for truncated in [&complete[..900], &complete[..64]] {
+            let output = Temp::new();
+            let destination = output.0.join("stage");
+            assert!(extract(truncated, &destination).is_err());
+            assert!(
+                !destination.exists(),
+                "a failed extraction left a partial staging directory"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_archive_truncated_mid_entry_and_leaves_existing_destination() {
+        let mut builder = Builder::new(Vec::new());
+        let mut header = Header::new_gnu();
+        header.set_entry_type(EntryType::Regular);
+        header.set_size(1024);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, "src/big.bin", std::io::repeat(b'x').take(1024))
+            .unwrap();
+        let complete = builder.into_inner().unwrap();
+        let truncated = &complete[..700];
+
+        let output = Temp::new();
+        let destination = output.0.join("stage");
+        assert!(extract(truncated, &destination).is_err());
+        assert!(!destination.exists());
+
+        let existing = Temp::new();
+        let existing_path = existing.0.join("stage");
+        fs::create_dir(&existing_path).unwrap();
+        fs::write(existing_path.join("keep.txt"), "keep\n").unwrap();
+        assert!(extract(&complete, &existing_path).is_err());
+        assert_eq!(
+            fs::read_to_string(existing_path.join("keep.txt")).unwrap(),
+            "keep\n"
+        );
     }
 
     #[test]

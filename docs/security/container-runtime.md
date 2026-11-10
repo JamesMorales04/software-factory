@@ -24,9 +24,11 @@ isolated execution remains fail-closed.
 
 Phase zero created at least two independent child containers, distinct named
 volumes, a network-disabled verifier child, bounded cgroups, and verified
-cleanup. A controlled engine restart preserved engine storage; the broker
-removes managed containers on startup and the Supervisor reconciles stale
-workspace state.
+cleanup. A controlled engine restart preserved engine storage. Managed-resource
+reconciliation is owned by the service that created the resource: at startup the
+Supervisor repairs durable workspace state and removes only orphaned
+`io.software-factory.owner=supervisor` volumes/containers through the broker's
+read-only inventory. The broker no longer deletes managed containers on startup.
 
 A nested **rootless** engine inside the rootless outer container failed for
 child ID mapping:
@@ -127,9 +129,12 @@ why the engine is trusted infrastructure and why SEC-01 remains blocked.
   verifier and runtime) share the runtime-broker credential. This is a scoped
   shared engine authority, not per-role secret isolation. The reviewer does not
   receive this token.
-- A broker-only restart removes all managed containers, including containers
-  that may still belong to live attempts. The Worker/Core recovery path records
-  the resulting failure; graceful in-place broker restart is not supported.
+- A broker-only restart no longer deletes managed containers. In-flight broker
+  operations still fail and are reconciled by their owning service: the
+  Supervisor fails durable `RUNNING` records and removes their resources at
+  startup, the Worker recovers unresolved provider sessions, and the verifier
+  cleans its own attempt volume. Graceful in-place broker restart is not
+  supported.
 - The verifier mounts the managed projects volume read-write to create a clean
   worktree; the reviewer mounts it read-only. A verifier role remains a trusted
   process, not an isolation boundary.
@@ -140,8 +145,10 @@ why the engine is trusted infrastructure and why SEC-01 remains blocked.
 - Named-volume-only mount; no host path in the child specification.
 - Child cgroup limits read back from inside the child.
 - Parallel attempts produced separate candidates and worktrees.
-- The broker prunes managed containers at startup; the Supervisor removes stale
-  workspaces on reconciliation.
+- The broker exposes a read-only managed-resource inventory; the Supervisor
+  removes stale workspaces and its own owner-labelled orphan resources on
+  reconciliation. Unlabelled, foreign-owner and provider resources are
+  preserved.
 - Provider session cleanup returned `container_removed_verified_absent` in the
   fixture journey.
 

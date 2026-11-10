@@ -4,7 +4,7 @@
 //! containers in the dedicated nested Podman engine. Callers supply typed
 //! operations, never Podman flags, images outside the allowlist or host paths.
 
-use std::time::Duration;
+use std::{collections::BTreeMap, time::Duration};
 
 use serde::{Deserialize, Serialize};
 
@@ -12,6 +12,192 @@ use crate::execution::{BoundedOutput, ExecutionError};
 
 const MAX_ERROR_BYTES: usize = 4096;
 const MAX_ARCHIVE_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_RESOURCE_INVENTORY_BYTES: usize = 4 * 1024 * 1024;
+const MAX_MANAGED_RESOURCES: usize = 4096;
+const MAX_LABEL_BYTES: usize = 128;
+
+const MANAGED_LABEL_KEY: &str = "io.software-factory.managed";
+const WORKSPACE_LABEL_KEY: &str = "io.software-factory.workspace";
+const OWNER_LABEL_KEY: &str = "io.software-factory.owner";
+
+/// The trusted service that owns a managed execution resource. Reconciliation
+/// may remove only resources carrying its own owner label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ResourceOwner {
+    Supervisor,
+    Verifier,
+    Provider,
+}
+
+impl ResourceOwner {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Supervisor => "supervisor",
+            Self::Verifier => "verifier",
+            Self::Provider => "provider",
+        }
+    }
+}
+
+/// One labelled volume or container returned by the runtime broker.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManagedResource {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+}
+
+/// Read-only inventory of resources that carry the managed-execution label.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManagedResources {
+    #[serde(default)]
+    pub volumes: Vec<ManagedResource>,
+    #[serde(default)]
+    pub containers: Vec<ManagedResource>,
+}
+
+pub fn is_valid_volume_name(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix("factory-ws-") else {
+        return false;
+    };
+    rest.len() == 36
+        && rest
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() || byte == b'-')
+}
+
+pub fn is_valid_exec_container_name(name: &str) -> bool {
+    valid_prefixed_uuid(name, "factory-exec-")
+}
+
+pub fn is_valid_provider_container_name(name: &str) -> bool {
+    valid_prefixed_uuid(name, "factory-provider-")
+}
+
+pub fn is_valid_container_name(name: &str) -> bool {
+    is_valid_exec_container_name(name) || is_valid_provider_container_name(name)
+}
+
+fn valid_prefixed_uuid(name: &str, prefix: &str) -> bool {
+    let Some(rest) = name.strip_prefix(prefix) else {
+        return false;
+    };
+    rest.len() == 36
+        && rest
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() || byte == b'-')
+}
+
+/// Parse the bounded JSON emitted by `podman volume ls --format json` for the
+/// managed label. Entries without a valid managed/name identity are ignored so
+/// a foreign resource can never become a deletion candidate.
+pub fn parse_volume_inventory(bytes: &[u8]) -> Result<Vec<ManagedResource>, String> {
+    if bytes.len() > MAX_RESOURCE_INVENTORY_BYTES {
+        return Err("volume inventory exceeds its bound".into());
+    }
+    let entries: Vec<PodmanVolumeEntry> = serde_json::from_slice(bytes)
+        .map_err(|error| format!("volume inventory is invalid JSON: {error}"))?;
+    if entries.len() > MAX_MANAGED_RESOURCES {
+        return Err("volume inventory has too many entries".into());
+    }
+    let mut resources = BTreeMap::new();
+    for entry in entries {
+        let labels = entry.labels.unwrap_or_default();
+        if !is_managed(&labels) || !is_valid_volume_name(&entry.name) {
+            continue;
+        }
+        resources.insert(
+            entry.name.clone(),
+            ManagedResource {
+                name: entry.name,
+                workspace: labels
+                    .get(WORKSPACE_LABEL_KEY)
+                    .and_then(|value| bounded_label(value)),
+                owner: labels
+                    .get(OWNER_LABEL_KEY)
+                    .and_then(|value| bounded_label(value)),
+            },
+        );
+    }
+    Ok(resources.into_values().collect())
+}
+
+/// Parse the bounded JSON emitted by `podman ps -a --format json` for the
+/// managed label.
+pub fn parse_container_inventory(bytes: &[u8]) -> Result<Vec<ManagedResource>, String> {
+    if bytes.len() > MAX_RESOURCE_INVENTORY_BYTES {
+        return Err("container inventory exceeds its bound".into());
+    }
+    let entries: Vec<PodmanContainerEntry> = serde_json::from_slice(bytes)
+        .map_err(|error| format!("container inventory is invalid JSON: {error}"))?;
+    if entries.len() > MAX_MANAGED_RESOURCES {
+        return Err("container inventory has too many entries".into());
+    }
+    let mut resources = BTreeMap::new();
+    for entry in entries {
+        let labels = entry.labels.unwrap_or_default();
+        let name = match entry.names {
+            PodmanNames::List(names) => names.into_iter().next(),
+            PodmanNames::Single(name) => Some(name),
+        };
+        let Some(name) = name else {
+            continue;
+        };
+        if !is_managed(&labels) || !is_valid_container_name(&name) {
+            continue;
+        }
+        resources.insert(
+            name.clone(),
+            ManagedResource {
+                name,
+                workspace: labels
+                    .get(WORKSPACE_LABEL_KEY)
+                    .and_then(|value| bounded_label(value)),
+                owner: labels
+                    .get(OWNER_LABEL_KEY)
+                    .and_then(|value| bounded_label(value)),
+            },
+        );
+    }
+    Ok(resources.into_values().collect())
+}
+
+#[derive(Deserialize)]
+struct PodmanVolumeEntry {
+    #[serde(rename = "Name")]
+    name: String,
+    #[serde(rename = "Labels", default)]
+    labels: Option<BTreeMap<String, String>>,
+}
+
+#[derive(Deserialize)]
+struct PodmanContainerEntry {
+    #[serde(rename = "Names")]
+    names: PodmanNames,
+    #[serde(rename = "Labels", default)]
+    labels: Option<BTreeMap<String, String>>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum PodmanNames {
+    List(Vec<String>),
+    Single(String),
+}
+
+fn is_managed(labels: &BTreeMap<String, String>) -> bool {
+    labels.get(MANAGED_LABEL_KEY).map(String::as_str) == Some("true")
+}
+
+fn bounded_label(value: &str) -> Option<String> {
+    (value.len() <= MAX_LABEL_BYTES && value.bytes().all(|byte| byte.is_ascii_graphic()))
+        .then(|| value.to_owned())
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum BrokerError {
@@ -49,6 +235,7 @@ impl std::fmt::Debug for RuntimeBrokerClient {
 pub struct NewVolume {
     pub volume: String,
     pub workspace_id: String,
+    pub owner: ResourceOwner,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -59,6 +246,7 @@ pub struct RunContainer<'a> {
     pub image: &'a str,
     pub argv: &'a [String],
     pub timeout_secs: u64,
+    pub owner: ResourceOwner,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -209,6 +397,45 @@ impl RuntimeBrokerClient {
         Ok(bytes.to_vec())
     }
 
+    /// Read-only enumeration of managed execution resources. Used by the
+    /// Supervisor to remove orphaned volumes/containers that no durable record
+    /// references.
+    pub async fn list_managed_resources(&self) -> Result<ManagedResources, BrokerError> {
+        let response = self
+            .client
+            .get(self.join("v1/resources")?)
+            .bearer_auth(&self.token)
+            .timeout(Duration::from_secs(60))
+            .send()
+            .await?;
+        if !response.status().is_success() {
+            return Err(self.refusal(response).await);
+        }
+        if let Some(length) = response.content_length()
+            && length as usize > MAX_RESOURCE_INVENTORY_BYTES
+        {
+            return Err(BrokerError::InvalidResponse(
+                "managed resource inventory exceeds the broker bound".into(),
+            ));
+        }
+        let bytes = response.bytes().await?;
+        if bytes.len() > MAX_RESOURCE_INVENTORY_BYTES {
+            return Err(BrokerError::InvalidResponse(
+                "managed resource inventory exceeds the broker bound".into(),
+            ));
+        }
+        let resources: ManagedResources = serde_json::from_slice(&bytes)
+            .map_err(|error| BrokerError::InvalidResponse(format!("inventory JSON: {error}")))?;
+        if resources.volumes.len() > MAX_MANAGED_RESOURCES
+            || resources.containers.len() > MAX_MANAGED_RESOURCES
+        {
+            return Err(BrokerError::InvalidResponse(
+                "managed resource inventory has too many entries".into(),
+            ));
+        }
+        Ok(resources)
+    }
+
     pub async fn run_container(
         &self,
         input: &RunContainer<'_>,
@@ -327,5 +554,80 @@ mod tests {
         assert!(RuntimeBrokerClient::new("http://runtime:8770/path", "x".repeat(32)).is_err());
         assert!(RuntimeBrokerClient::new("https://runtime:8770", "x".repeat(32)).is_err());
         assert!(RuntimeBrokerClient::new("http://runtime:8770", "short".into()).is_err());
+    }
+
+    #[test]
+    fn volume_inventory_keeps_only_managed_valid_volumes() {
+        let managed = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let foreign = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let json = format!(
+            r#"[
+              {{"Name":"{managed}","Labels":{{"io.software-factory.managed":"true","io.software-factory.workspace":"attempt-1","io.software-factory.owner":"supervisor"}}}},
+              {{"Name":"{foreign}","Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"verifier"}}}},
+              {{"Name":"unmanaged","Labels":{{"io.software-factory.workspace":"attempt-2"}}}},
+              {{"Name":"not-a-factory-volume","Labels":{{"io.software-factory.managed":"true"}}}},
+              {{"Name":"../escape","Labels":{{"io.software-factory.managed":"true"}}}}
+            ]"#
+        );
+        let resources = parse_volume_inventory(json.as_bytes()).unwrap();
+        assert_eq!(resources.len(), 2);
+        let foreign_resource = resources
+            .iter()
+            .find(|resource| resource.name == foreign)
+            .unwrap();
+        assert_eq!(foreign_resource.owner.as_deref(), Some("verifier"));
+        assert!(foreign_resource.workspace.is_none());
+        let managed_resource = resources
+            .iter()
+            .find(|resource| resource.name == managed)
+            .unwrap();
+        assert_eq!(managed_resource.workspace.as_deref(), Some("attempt-1"));
+        assert_eq!(managed_resource.owner.as_deref(), Some("supervisor"));
+    }
+
+    #[test]
+    fn container_inventory_keeps_only_managed_exec_and_provider_containers() {
+        let exec = format!("factory-exec-{}", uuid::Uuid::new_v4());
+        let provider = format!("factory-provider-{}", uuid::Uuid::new_v4());
+        let json = format!(
+            r#"[
+              {{"Names":["{exec}"],"Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor"}}}},
+              {{"Names":["{provider}"],"Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"provider"}}}},
+              {{"Names":["factory-exec-not-a-uuid"],"Labels":{{"io.software-factory.managed":"true"}}}},
+              {{"Names":["other"],"Labels":{{"io.software-factory.managed":"true"}}}},
+              {{"Names":["unmanaged"],"Labels":{{}}}}
+            ]"#
+        );
+        let resources = parse_container_inventory(json.as_bytes()).unwrap();
+        assert_eq!(resources.len(), 2);
+        assert!(resources.iter().any(|resource| resource.name == exec));
+        assert!(resources.iter().any(|resource| resource.name == provider));
+    }
+
+    #[test]
+    fn inventories_reject_invalid_and_oversized_json() {
+        assert!(parse_volume_inventory(b"not json").is_err());
+        assert!(parse_container_inventory(b"{}").is_err());
+        let oversized = format!("[{}]", " ".repeat(MAX_RESOURCE_INVENTORY_BYTES));
+        assert!(parse_volume_inventory(oversized.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn owner_labels_are_strict() {
+        assert!(is_valid_volume_name(&format!(
+            "factory-ws-{}",
+            uuid::Uuid::new_v4()
+        )));
+        assert!(!is_valid_volume_name("factory-ws-../../etc"));
+        assert!(is_valid_exec_container_name(&format!(
+            "factory-exec-{}",
+            uuid::Uuid::new_v4()
+        )));
+        assert!(is_valid_provider_container_name(&format!(
+            "factory-provider-{}",
+            uuid::Uuid::new_v4()
+        )));
+        assert!(!is_valid_container_name("factory-exec-123"));
+        assert_eq!(ResourceOwner::Supervisor.as_str(), "supervisor");
     }
 }
