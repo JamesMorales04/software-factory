@@ -157,12 +157,14 @@ why the engine is trusted infrastructure and why SEC-01 remains blocked.
   owner and workspace identity match; a foreign or unlabelled pre-existing
   volume is preserved and the request fails closed.
 - Broker create/reset/delete/import/export/execute operations use exact
-  per-resource-name async locks, not shared shards. Execution holds only its
-  volume lock; cleanup acquires the container lock in the fixed
-  volume -> container order. Unrelated resources within the 4096-entry exact
-  table are not serialized by a long execution. Entries are never reclaimed, so
-  a name keeps one lock identity; names beyond capacity intentionally serialize
-  on one overflow lock.
+  per-resource-name async locks (permanent 4096-entry table, then one shared
+  overflow lock). Execution takes the volume lock only to validate and register
+  an active-execution entry, then releases it for the run. Volume
+  delete/reset/import/export is rejected while the registry marks the volume
+  active. Cleanup takes the container lock after the volume lock is released,
+  so volume -> container ordering is preserved and an overflowed volume/container
+  pair cannot self-deadlock. Unrelated resources within the exact table are not
+  serialized; overflow names intentionally serialize.
 - Provider session cleanup returned `container_removed_verified_absent` in the
   fixture journey.
 

@@ -59,6 +59,7 @@ const MANAGED_LABEL: &str = "io.software-factory.managed=true";
 const WORKSPACE_LABEL: &str = "io.software-factory.workspace";
 const OWNER_LABEL: &str = "io.software-factory.owner";
 const RESOURCE_LOCK_ENTRIES: usize = 4096;
+const MAX_ACTIVE_EXECUTIONS: usize = 4096;
 const OWNER_TOKEN_FILES: [(ResourceOwner, &str); 3] = [
     (ResourceOwner::Supervisor, "runtime-broker-supervisor.token"),
     (ResourceOwner::Verifier, "runtime-broker-verifier.token"),
@@ -136,15 +137,61 @@ enum MutationError {
     Failed(String),
 }
 
+/// Active execution identity, registered under the volume lock for the short
+/// validation window and removed by its owner guard after cleanup. Volume
+/// delete/reset/import/export checks this registry instead of holding a lock
+/// across the execution lifetime.
+struct ActiveExecutions {
+    entries: std::sync::Mutex<HashMap<String, String>>,
+}
+
+impl ActiveExecutions {
+    fn new() -> Self {
+        Self {
+            entries: std::sync::Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn register(&self, volume: &str, container: &str) -> bool {
+        let mut entries = self.entries.lock().unwrap();
+        if entries.len() >= MAX_ACTIVE_EXECUTIONS || entries.contains_key(volume) {
+            return false;
+        }
+        entries.insert(volume.to_owned(), container.to_owned());
+        true
+    }
+
+    fn remove(&self, volume: &str, container: &str) {
+        let mut entries = self.entries.lock().unwrap();
+        if entries.get(volume).map(String::as_str) == Some(container) {
+            entries.remove(volume);
+        }
+    }
+
+    fn is_active(&self, volume: &str) -> bool {
+        self.entries.lock().unwrap().contains_key(volume)
+    }
+}
+
+struct ActiveExecutionGuard {
+    active: Arc<ActiveExecutions>,
+    volume: String,
+    container: String,
+}
+
+impl Drop for ActiveExecutionGuard {
+    fn drop(&mut self) {
+        self.active.remove(&self.volume, &self.container);
+    }
+}
+
 /// Exact per-resource-name async locks. The exact table is permanently bounded.
 /// Entries are never reclaimed: a name that once fell back to the overflow lock
 /// must keep that identity forever, because reclaiming an idle exact entry could
 /// later create a second lock for the same overflowed name. Names beyond the
-/// table capacity intentionally serialize on one overflow lock.
-///
-/// Lock order is volume -> container. Long executions hold only their volume
-/// lock; cleanup then takes the container lock. No path acquires a volume lock
-/// while holding a container lock, so the order cannot deadlock.
+/// table capacity intentionally serialize on one overflow lock. Locks are never
+/// held across a long execution; the active-execution registry provides volume
+/// exclusion for the run lifetime.
 struct ResourceLocks {
     entries: std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     overflow: Arc<tokio::sync::Mutex<()>>,
@@ -156,10 +203,6 @@ impl ResourceLocks {
             entries: std::sync::Mutex::new(HashMap::new()),
             overflow: Arc::new(tokio::sync::Mutex::new(())),
         }
-    }
-
-    fn acquire(&self, name: &str) -> Arc<tokio::sync::Mutex<()>> {
-        self.acquire_with_limit(name, RESOURCE_LOCK_ENTRIES)
     }
 
     fn acquire_with_limit(&self, name: &str, limit: usize) -> Arc<tokio::sync::Mutex<()>> {
@@ -189,6 +232,8 @@ impl std::fmt::Display for MutationError {
 struct App {
     tokens: Arc<OwnerTokens>,
     resource_locks: Arc<ResourceLocks>,
+    lock_limit: usize,
+    active: Arc<ActiveExecutions>,
     podman: PathBuf,
     images: Arc<BTreeSet<String>>,
     provider_images: Arc<BTreeSet<String>>,
@@ -271,6 +316,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let app = Arc::new(App {
         tokens: Arc::new(tokens),
         resource_locks: Arc::new(ResourceLocks::new()),
+        lock_limit: RESOURCE_LOCK_ENTRIES,
+        active: Arc::new(ActiveExecutions::new()),
         podman,
         images: Arc::new(images),
         provider_images: Arc::new(provider_images),
@@ -492,7 +539,8 @@ impl App {
     }
 
     fn resource_lock(&self, name: &str) -> Arc<tokio::sync::Mutex<()>> {
-        self.resource_locks.acquire(name)
+        self.resource_locks
+            .acquire_with_limit(name, self.lock_limit)
     }
 
     async fn managed_resources(&self, owner: ResourceOwner) -> Result<ManagedResources, String> {
@@ -994,6 +1042,9 @@ async fn create_volume(
     }
     let lock = app.resource_lock(&input.volume);
     let _guard = lock.lock().await;
+    if app.active.is_active(&input.volume) {
+        return conflict("volume has an active execution");
+    }
     match app.volume_labels(&input.volume).await {
         Ok(Some(labels)) => {
             if !volume_identity_matches(&labels, owner, &input.workspace_id) {
@@ -1051,6 +1102,9 @@ async fn remove_volume(
     }
     let lock = app.resource_lock(&volume);
     let _guard = lock.lock().await;
+    if app.active.is_active(&volume) {
+        return conflict("volume has an active execution");
+    }
     match app.remove_volume_locked(&volume, owner).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => mutation_error(error),
@@ -1071,6 +1125,9 @@ async fn import_volume(
     }
     let lock = app.resource_lock(&volume);
     let _guard = lock.lock().await;
+    if app.active.is_active(&volume) {
+        return conflict("volume has an active execution");
+    }
     if let Err(error) = app.require_volume_owner(&volume, owner).await {
         return mutation_error(error);
     }
@@ -1126,6 +1183,9 @@ async fn export_volume(
     }
     let lock = app.resource_lock(&volume);
     let _guard = lock.lock().await;
+    if app.active.is_active(&volume) {
+        return conflict("volume has an active execution");
+    }
     if let Err(error) = app.require_volume_owner(&volume, owner).await {
         return mutation_error(error);
     }
@@ -1216,12 +1276,23 @@ async fn run_container(
         return bad_request("execution timeout is outside the allowed bound");
     }
     let lock = app.resource_lock(&input.volume);
-    let _guard = lock.lock().await;
-    // Lock order: volume -> container. run_child cleanup acquires the
-    // container lock while this volume lock is still held.
+    let volume_guard = lock.lock().await;
+    // Volume validation and active-execution registration happen under the
+    // volume lock. The lock is released before the long execution; the registry
+    // blocks volume deletion/reset/import/export for the run lifetime.
     if let Err(error) = app.require_volume_owner(&input.volume, owner).await {
         return mutation_error(error);
     }
+    if !app.active.register(&input.volume, &input.container) {
+        return conflict("volume already has an active execution");
+    }
+    let _execution = ActiveExecutionGuard {
+        active: Arc::clone(&app.active),
+        volume: input.volume.clone(),
+        container: input.container.clone(),
+    };
+    drop(volume_guard);
+    drop(lock);
     tracing::info!(container=%input.container, volume=%input.volume, "child execution started");
     let result = run_child(&app, &input, owner).await;
     match &result {
@@ -1758,9 +1829,15 @@ mod tests {
     #[tokio::test]
     async fn resource_locks_keep_one_identity_per_name_at_saturation() {
         let locks = ResourceLocks::new();
-        let first = locks.acquire("factory-ws-a");
-        assert!(Arc::ptr_eq(&first, &locks.acquire("factory-ws-a")));
-        assert!(!Arc::ptr_eq(&first, &locks.acquire("factory-ws-b")));
+        let first = locks.acquire_with_limit("factory-ws-a", RESOURCE_LOCK_ENTRIES);
+        assert!(Arc::ptr_eq(
+            &first,
+            &locks.acquire_with_limit("factory-ws-a", RESOURCE_LOCK_ENTRIES)
+        ));
+        assert!(!Arc::ptr_eq(
+            &first,
+            &locks.acquire_with_limit("factory-ws-b", RESOURCE_LOCK_ENTRIES)
+        ));
 
         let bounded = ResourceLocks::new();
         let a = bounded.acquire_with_limit("a", 2);
@@ -1822,6 +1899,10 @@ mod tests {
     const TEST_PROVIDER_TOKEN: &str = "provider-token-0123456789abcdef012345678901";
 
     fn test_app(podman: PathBuf) -> Arc<App> {
+        test_app_with_lock_limit(podman, RESOURCE_LOCK_ENTRIES)
+    }
+
+    fn test_app_with_lock_limit(podman: PathBuf, lock_limit: usize) -> Arc<App> {
         Arc::new(App {
             tokens: Arc::new(OwnerTokens {
                 entries: vec![
@@ -1831,6 +1912,8 @@ mod tests {
                 ],
             }),
             resource_locks: Arc::new(ResourceLocks::new()),
+            lock_limit,
+            active: Arc::new(ActiveExecutions::new()),
             podman,
             images: Arc::new(BTreeSet::from(["test/image:1".to_owned()])),
             provider_images: Arc::new(BTreeSet::new()),
@@ -2393,6 +2476,125 @@ exit 1
             "execution cleanup interleaved with container deletion: {lines:?}"
         );
         let _ = std::fs::remove_file(&log);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn execution_cleanup_works_when_volume_and_container_share_overflow() {
+        let volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let container = format!("factory-exec-{}", uuid::Uuid::new_v4());
+        let script = format!(
+            r#"#!/bin/sh
+if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then
+  printf '%s\n' '[{{"Name":"{volume}","Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor"}}}}]'
+  exit 0
+fi
+if [ "$1" = "run" ]; then
+  sleep 0.1
+  exit 0
+fi
+if [ "$1" = "inspect" ]; then
+  printf '%s\n' '[{{"Config":{{"Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor"}}}}}}]'
+  exit 0
+fi
+if [ "$1" = "rm" ]; then
+  exit 0
+fi
+if [ "$1" = "container" ] && [ "$2" = "exists" ]; then
+  exit 1
+fi
+exit 1
+"#
+        );
+        // A zero-entry exact table sends both the volume and container names to
+        // the shared overflow mutex. This is the former self-deadlock case.
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app_with_lock_limit(podman, 0);
+        let response = tokio::time::timeout(
+            Duration::from_secs(2),
+            run_container(
+                State(app),
+                test_headers(ResourceOwner::Supervisor),
+                Json(RunContainer {
+                    volume,
+                    container,
+                    image: "test/image:1".into(),
+                    argv: vec!["/bin/true".into()],
+                    timeout_secs: 10,
+                }),
+            ),
+        )
+        .await
+        .expect("execution cleanup deadlocked on the shared overflow lock");
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn active_execution_blocks_volume_mutation_without_holding_the_lock() {
+        let volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let script = format!(
+            r#"#!/bin/sh
+if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then
+  printf '%s\n' '[{{"Name":"{volume}","Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor"}}}}]'
+  exit 0
+fi
+if [ "$1" = "run" ]; then
+  sleep 0.5
+  exit 0
+fi
+if [ "$1" = "inspect" ]; then
+  printf '%s\n' '[{{"Config":{{"Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor"}}}}}}]'
+  exit 0
+fi
+if [ "$1" = "rm" ]; then
+  exit 0
+fi
+if [ "$1" = "container" ] && [ "$2" = "exists" ]; then
+  exit 1
+fi
+exit 1
+"#
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app(podman);
+        let run = run_container(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Supervisor),
+            Json(RunContainer {
+                volume: volume.clone(),
+                container: format!("factory-exec-{}", uuid::Uuid::new_v4()),
+                image: "test/image:1".into(),
+                argv: vec!["/bin/true".into()],
+                timeout_secs: 10,
+            }),
+        );
+        tokio::pin!(run);
+        tokio::select! {
+            biased;
+            result = &mut run => panic!("execution finished before registration probe: {}", result.status()),
+            _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+        }
+        let removed = tokio::time::timeout(
+            Duration::from_millis(500),
+            remove_volume(
+                State(Arc::clone(&app)),
+                test_headers(ResourceOwner::Supervisor),
+                AxumPath(volume.clone()),
+            ),
+        )
+        .await
+        .expect("volume removal blocked on a lock held by the execution");
+        assert_eq!(removed.status(), StatusCode::CONFLICT);
+        let created = create_volume(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Supervisor),
+            Json(NewVolume {
+                volume: volume.clone(),
+                workspace_id: "workspace-a".into(),
+            }),
+        )
+        .await;
+        assert_eq!(created.status(), StatusCode::CONFLICT);
+        assert_eq!(run.await.status(), StatusCode::OK);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
