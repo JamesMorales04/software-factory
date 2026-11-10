@@ -17,6 +17,7 @@ pub mod dod;
 pub mod findings;
 pub mod prompts;
 pub mod route;
+pub mod skill_refresh;
 pub mod skills;
 pub mod stack;
 

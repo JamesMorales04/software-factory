@@ -1,12 +1,14 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { AgenticSkillRegistryEntry } from "../coreApi";
+import type { AgenticSkillRegistryEntry, SkillRefreshStatus } from "../coreApi";
 import { I18nProvider } from "../i18n";
 import { Skills } from "./Skills";
 
 const mocks = vi.hoisted(() => ({
   listAgenticSkills: vi.fn(),
+  getSkillRefreshStatus: vi.fn(),
+  runSkillRefresh: vi.fn(),
   reviewAgenticSkill: vi.fn(),
   reviewAgenticSkillLicense: vi.fn(),
   promoteAgenticSkill: vi.fn(),
@@ -62,6 +64,24 @@ function entry(
   };
 }
 
+function refreshStatus(
+  overrides: Partial<SkillRefreshStatus> = {},
+): SkillRefreshStatus {
+  return {
+    running: true,
+    intervalSeconds: 86400,
+    lastRunAt: "2026-11-09T00:00:00Z",
+    nextRunAt: "2026-11-10T00:00:00Z",
+    lastOutcome: null,
+    lastError: null,
+    packs: [],
+    due: 0,
+    blocked: 0,
+    truncated: false,
+    ...overrides,
+  };
+}
+
 function renderSkills() {
   return render(
     <I18nProvider initialLocale="en">
@@ -75,6 +95,19 @@ describe("Skills", () => {
     mocks.listAgenticSkills
       .mockReset()
       .mockResolvedValue({ skills: [entry()] });
+    mocks.getSkillRefreshStatus.mockReset().mockResolvedValue(refreshStatus());
+    mocks.runSkillRefresh.mockReset().mockResolvedValue({
+      report: {
+        startedAt: "2026-11-09T00:00:00Z",
+        finishedAt: "2026-11-09T00:00:01Z",
+        checked: 1,
+        refreshed: [],
+        due: [],
+        blocked: [],
+        failed: [],
+        ok: true,
+      },
+    });
     mocks.reviewAgenticSkill.mockReset().mockResolvedValue({});
     mocks.reviewAgenticSkillLicense.mockReset().mockResolvedValue({});
     mocks.promoteAgenticSkill.mockReset().mockResolvedValue({});
@@ -148,6 +181,66 @@ describe("Skills", () => {
       "skill-1",
       "superseded",
     );
+  });
+
+  it("shows due and blocked technology packs and runs a refresh pass", async () => {
+    mocks.getSkillRefreshStatus.mockResolvedValue(
+      refreshStatus({
+        due: 1,
+        blocked: 1,
+        packs: [
+          {
+            technology: "rust",
+            state: "REFRESHABLE",
+            blocking: false,
+            persisted: {
+              version: "current",
+              contentSha256: "a".repeat(64),
+              lastVerifiedAt: "2026-01-01T00:00:00Z",
+              reviewAfter: "2026-04-01T00:00:00Z",
+            },
+            builtin: {
+              version: "current",
+              contentSha256: "b".repeat(64),
+              lastVerifiedAt: "2026-11-09T00:00:00Z",
+              reviewAfter: "2027-02-07T00:00:00Z",
+            },
+            reason: "the persisted revision is due",
+          },
+          {
+            technology: "legacy-tool",
+            state: "STALE",
+            blocking: true,
+            persisted: null,
+            builtin: null,
+            reason: "no source exists",
+          },
+        ],
+      }),
+    );
+    mocks.runSkillRefresh.mockResolvedValue({
+      report: {
+        startedAt: "2026-11-09T00:00:00Z",
+        finishedAt: "2026-11-09T00:00:01Z",
+        checked: 2,
+        refreshed: ["rust"],
+        due: ["rust"],
+        blocked: ["legacy-tool"],
+        failed: [],
+        ok: true,
+      },
+    });
+    renderSkills();
+    expect(await screen.findByText("rust")).toBeDefined();
+    expect(screen.getByText("REFRESHABLE")).toBeDefined();
+    expect(screen.getByText("STALE")).toBeDefined();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Run refresh pass" }),
+    );
+    expect(mocks.runSkillRefresh).toHaveBeenCalled();
+    expect(
+      await screen.findByText("Refresh pass complete: 1 refreshed, 1 blocked."),
+    ).toBeDefined();
   });
 
   it("shows review due state and an empty registry", async () => {

@@ -2070,6 +2070,53 @@ export interface AgenticSkillRegistryEntry {
   reviewDue: boolean;
 }
 
+export type SkillPackState =
+  | "FRESH"
+  | "DUE"
+  | "REFRESHABLE"
+  | "STALE"
+  | "MISSING";
+
+export interface SkillPackSummary {
+  version: string;
+  contentSha256: string;
+  lastVerifiedAt: string;
+  reviewAfter: string;
+}
+
+export interface SkillPackStatus {
+  technology: string;
+  state: SkillPackState;
+  blocking: boolean;
+  persisted: SkillPackSummary | null;
+  builtin: SkillPackSummary | null;
+  reason: string;
+}
+
+export interface SkillRefreshReport {
+  startedAt: string;
+  finishedAt: string;
+  checked: number;
+  refreshed: string[];
+  due: string[];
+  blocked: string[];
+  failed: string[];
+  ok: boolean;
+}
+
+export interface SkillRefreshStatus {
+  running: boolean;
+  intervalSeconds: number;
+  lastRunAt: string | null;
+  nextRunAt: string | null;
+  lastOutcome: SkillRefreshReport | null;
+  lastError: string | null;
+  packs: SkillPackStatus[];
+  due: number;
+  blocked: number;
+  truncated: boolean;
+}
+
 export interface AgenticSpecBoard {
   columns: string[];
   specs: AgenticSpecBoardCard[];
@@ -3518,6 +3565,12 @@ export const coreApi = {
     request<{ skills: AgenticSkillRegistryEntry[] }>(
       `/agentic/skills${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ""}`,
     ),
+  getSkillRefreshStatus: () =>
+    request<SkillRefreshStatus>("/agentic/skills/refresh"),
+  runSkillRefresh: () =>
+    request<{ report: SkillRefreshReport }>("/agentic/skills/refresh", {
+      method: "POST",
+    }),
   recordAgenticSkillUse: (
     skillId: string,
     input: {

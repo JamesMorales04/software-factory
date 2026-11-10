@@ -5,12 +5,196 @@
 //! `FORMAL_SPEC` planning until it is refreshed or explicitly waived by the
 //! owner through the existing decision mechanism.
 
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
 use crate::agentic::StackProfile;
 use crate::planning::{SkillPack, SkillPlan};
 
+mod catalog;
+
+pub use catalog::{
+    BUILTIN_LAST_VERIFIED_AT, BUILTIN_REVIEW_AFTER, BUILTIN_TECHNOLOGIES, builtin_skill_pack,
+};
+
 pub const SKILL_PACK_REVIEW_DAYS: i64 = 90;
-pub const BUILTIN_LAST_VERIFIED_AT: &str = "2026-11-09T00:00:00Z";
-pub const BUILTIN_REVIEW_AFTER: &str = "2027-02-07T00:00:00Z";
+pub const MAX_SKILL_PACK_STATUSES: usize = 256;
+
+/// Effective freshness of a technology pack. `blocking` states prevent a
+/// `FORMAL_SPEC` plan from proceeding until the pack is refreshed or the owner
+/// explicitly waives it through the existing decision mechanism.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum SkillPackState {
+    /// A usable, in-date pack exists (persisted or builtin).
+    Fresh,
+    /// A persisted pack is past `review_after` and no newer builtin source
+    /// exists; it cannot be refreshed without human research.
+    Due,
+    /// A persisted pack is due and a newer builtin revision with a different
+    /// content hash can be installed immutably.
+    Refreshable,
+    /// The builtin catalog entry is past `review_after` or invalid and no
+    /// usable persisted revision exists.
+    Stale,
+    /// Neither a persisted revision nor a builtin pack exists.
+    Missing,
+}
+
+impl SkillPackState {
+    pub const fn is_blocking(self) -> bool {
+        matches!(self, Self::Due | Self::Stale | Self::Missing)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillPackSummary {
+    pub version: String,
+    pub content_sha256: String,
+    pub last_verified_at: String,
+    pub review_after: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillPackStatus {
+    pub technology: String,
+    pub state: SkillPackState,
+    pub blocking: bool,
+    pub persisted: Option<SkillPackSummary>,
+    pub builtin: Option<SkillPackSummary>,
+    pub reason: String,
+}
+
+fn pack_content_sha256(pack: &SkillPack) -> String {
+    let bytes = serde_json::to_vec(pack).expect("skill pack is serializable");
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn summary(pack: &SkillPack) -> SkillPackSummary {
+    SkillPackSummary {
+        version: pack.version.clone(),
+        content_sha256: pack_content_sha256(pack),
+        last_verified_at: pack.last_verified_at.clone(),
+        review_after: pack.review_after.clone(),
+    }
+}
+
+fn timestamp(value: &str) -> Option<chrono::DateTime<chrono::FixedOffset>> {
+    chrono::DateTime::parse_from_rfc3339(value).ok()
+}
+
+fn builtin_is_usable(pack: &SkillPack, now: &str) -> bool {
+    pack.validate().is_ok() && !pack.is_stale(now)
+}
+
+/// Classify one required technology from the latest persisted revision and the
+/// curated builtin catalog. Callers must pass persisted packs in append order so
+/// the last matching revision is the newest immutable record.
+pub fn classify_technology(
+    technology: &str,
+    persisted: &[SkillPack],
+    now: &str,
+) -> SkillPackStatus {
+    let builtin = builtin_skill_pack(technology);
+    let persisted_pack = persisted
+        .iter()
+        .filter(|pack| pack.technology.eq_ignore_ascii_case(technology))
+        .next_back();
+
+    let persisted_summary = persisted_pack.map(summary);
+    let builtin_summary = builtin.as_ref().map(summary);
+    let persisted_fresh =
+        persisted_pack.is_some_and(|pack| pack.validate().is_ok() && !pack.is_stale(now));
+    let builtin_usable = builtin
+        .as_ref()
+        .is_some_and(|pack| builtin_is_usable(pack, now));
+
+    let (state, reason) = if persisted_fresh {
+        (
+            SkillPackState::Fresh,
+            "the latest persisted revision is valid and before review_after".to_string(),
+        )
+    } else if persisted_pack.is_none() {
+        match builtin.as_ref() {
+            Some(_) if builtin_usable => (
+                SkillPackState::Fresh,
+                "no persisted revision exists and the builtin pack is current".to_string(),
+            ),
+            Some(_) => (
+                SkillPackState::Stale,
+                "the builtin pack is past review_after or invalid".to_string(),
+            ),
+            None => (
+                SkillPackState::Missing,
+                "no persisted revision or builtin pack exists".to_string(),
+            ),
+        }
+    } else if let Some(builtin) = builtin.as_ref() {
+        let newer_than_persisted = persisted_pack.is_some_and(|persisted| {
+            match (
+                timestamp(&builtin.last_verified_at),
+                timestamp(&persisted.last_verified_at),
+            ) {
+                (Some(builtin_verified), Some(persisted_verified)) => {
+                    builtin_verified > persisted_verified
+                }
+                _ => false,
+            }
+        });
+        let different_content = persisted_pack.is_some_and(|persisted| {
+            pack_content_sha256(builtin) != pack_content_sha256(persisted)
+        });
+        if builtin_usable && newer_than_persisted && different_content {
+            (
+                SkillPackState::Refreshable,
+                "the persisted revision is due and the builtin revision is newer with different content"
+                    .to_string(),
+            )
+        } else if builtin_usable {
+            (
+                SkillPackState::Due,
+                "the persisted revision is due and the builtin pack has no newer, different revision"
+                    .to_string(),
+            )
+        } else {
+            (
+                SkillPackState::Stale,
+                "the builtin pack is past review_after or invalid".to_string(),
+            )
+        }
+    } else {
+        (
+            SkillPackState::Due,
+            "the persisted revision is due and no builtin refresh source exists".to_string(),
+        )
+    };
+
+    SkillPackStatus {
+        technology: technology.to_string(),
+        state,
+        blocking: state.is_blocking(),
+        persisted: persisted_summary,
+        builtin: builtin_summary,
+        reason,
+    }
+}
+
+/// Classify a bounded, de-duplicated technology list. The input order is
+/// preserved so callers can keep a deterministic presentation order.
+pub fn classify_skill_packs(
+    technologies: &[String],
+    persisted: &[SkillPack],
+    now: &str,
+) -> Vec<SkillPackStatus> {
+    technologies
+        .iter()
+        .take(MAX_SKILL_PACK_STATUSES)
+        .map(|technology| classify_technology(technology, persisted, now))
+        .collect()
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SkillPlanError {
@@ -47,33 +231,37 @@ pub fn required_technologies(stack: &StackProfile) -> Vec<String> {
 }
 
 /// Build a skill plan from fresh persisted packs and curated official-source
-/// packs. Unknown technologies fail closed instead of receiving invented
-/// guidance.
+/// packs. Unknown technologies and stale knowledge fail closed instead of
+/// receiving invented guidance. A refreshable pack is proposed as a new
+/// immutable revision; its review dates are never extended in place.
 pub fn build_skill_plan(
     stack: &StackProfile,
     persisted: &[SkillPack],
     now: &str,
 ) -> Result<SkillPlan, SkillPlanError> {
     let needs = required_technologies(stack);
+    let statuses = classify_skill_packs(&needs, persisted, now);
     let mut existing = Vec::new();
     let mut proposed = Vec::new();
-    for technology in &needs {
-        let fresh = persisted
-            .iter()
-            .filter(|pack| pack.technology.eq_ignore_ascii_case(technology))
-            .find(|pack| pack.validate().is_ok() && !pack.is_stale(now));
-        if fresh.is_some() {
-            existing.push(technology.clone());
-            continue;
-        }
-        let stale = persisted
-            .iter()
-            .any(|pack| pack.technology.eq_ignore_ascii_case(technology) && pack.is_stale(now));
-        match builtin_skill_pack(technology) {
-            Some(pack) if !pack.is_stale(now) => proposed.push(pack),
-            Some(_) => return Err(SkillPlanError::Stale(technology.clone())),
-            None if stale => return Err(SkillPlanError::Stale(technology.clone())),
-            None => return Err(SkillPlanError::Missing(technology.clone())),
+    for status in statuses {
+        match status.state {
+            SkillPackState::Fresh if status.persisted.is_some() => {
+                existing.push(status.technology);
+            }
+            SkillPackState::Fresh | SkillPackState::Refreshable => {
+                let pack = builtin_skill_pack(&status.technology)
+                    .ok_or_else(|| SkillPlanError::Missing(status.technology.clone()))?;
+                if pack.validate().is_err() || pack.is_stale(now) {
+                    return Err(SkillPlanError::Stale(status.technology));
+                }
+                proposed.push(pack);
+            }
+            SkillPackState::Due | SkillPackState::Stale => {
+                return Err(SkillPlanError::Stale(status.technology));
+            }
+            SkillPackState::Missing => {
+                return Err(SkillPlanError::Missing(status.technology));
+            }
         }
     }
     let plan = SkillPlan {
@@ -84,295 +272,6 @@ pub fn build_skill_plan(
     };
     plan.validate().map_err(SkillPlanError::Invalid)?;
     Ok(plan)
-}
-
-fn pack(
-    technology: &str,
-    sources: &[&str],
-    best_practices: &[&str],
-    anti_patterns: &[&str],
-    security_notes: &[&str],
-    commands: &[&str],
-) -> SkillPack {
-    SkillPack {
-        technology: technology.into(),
-        version: "current".into(),
-        source_urls: sources.iter().map(|source| (*source).to_string()).collect(),
-        last_verified_at: BUILTIN_LAST_VERIFIED_AT.into(),
-        review_after: BUILTIN_REVIEW_AFTER.into(),
-        best_practices: best_practices
-            .iter()
-            .map(|value| (*value).to_string())
-            .collect(),
-        anti_patterns: anti_patterns
-            .iter()
-            .map(|value| (*value).to_string())
-            .collect(),
-        commands: commands.iter().map(|value| (*value).to_string()).collect(),
-        security_notes: security_notes
-            .iter()
-            .map(|value| (*value).to_string())
-            .collect(),
-        deprecations: Vec::new(),
-        license: "Official documentation terms; verify upstream license.".into(),
-        provenance: "Factory curated pack built from the cited official documentation.".into(),
-        content_sha256: String::new(),
-    }
-}
-
-/// Curated packs for the technologies the Factory supports. These are not a
-/// substitute for refreshing upstream documentation; `review_after` forces a
-/// periodic review.
-pub fn builtin_skill_pack(technology: &str) -> Option<SkillPack> {
-    let pack = match technology.to_ascii_lowercase().as_str() {
-        "rust" => pack(
-            "rust",
-            &[
-                "https://doc.rust-lang.org/book/",
-                "https://doc.rust-lang.org/cargo/",
-                "https://rust-lang.github.io/rust-clippy/",
-            ],
-            &[
-                "Prefer ownership and explicit error types over panics in library code.",
-                "Use `cargo fmt`, Clippy with `-D warnings`, and tests as deterministic checks.",
-            ],
-            &[
-                "Do not add `unsafe` without a documented safety argument.",
-                "Do not hide fallible operations behind `unwrap` in production paths.",
-            ],
-            &["Treat dependency advisories as blocking findings."],
-            &[
-                "cargo fmt --check",
-                "cargo clippy -- -D warnings",
-                "cargo test",
-            ],
-        ),
-        "cargo" => pack(
-            "cargo",
-            &["https://doc.rust-lang.org/cargo/"],
-            &[
-                "Commit `Cargo.lock` for applications and use `--locked` in checks.",
-                "Vendor dependencies for offline, reproducible builds.",
-            ],
-            &["Do not let a check command resolve new dependencies implicitly."],
-            &["Verify registry and source replacement before an offline build."],
-            &["cargo metadata --locked", "cargo vendor --locked vendor"],
-        ),
-        "typescript" => pack(
-            "typescript",
-            &["https://www.typescriptlang.org/docs/"],
-            &[
-                "Keep strict type checking enabled for application code.",
-                "Prefer explicit domain types at API boundaries.",
-            ],
-            &["Do not silence errors with `any` or blanket `ts-ignore`."],
-            &["Treat untrusted JSON as `unknown` until validated."],
-            &["npm run typecheck"],
-        ),
-        "react" => pack(
-            "react",
-            &["https://react.dev/"],
-            &[
-                "Keep state close to the component that owns it.",
-                "Use accessible semantic elements before adding ARIA.",
-            ],
-            &["Do not derive authoritative state from presentation state."],
-            &["Render untrusted text as text, never as raw HTML."],
-            &["npm test"],
-        ),
-        "vite" => pack(
-            "vite",
-            &["https://vite.dev/guide/"],
-            &["Keep build-time environment values non-secret."],
-            &["Do not expose server credentials through `VITE_` variables."],
-            &["Treat client bundles as public artifacts."],
-            &["npm run build"],
-        ),
-        "playwright" => pack(
-            "playwright",
-            &["https://playwright.dev/docs/intro"],
-            &[
-                "Prefer role and label locators over CSS selectors.",
-                "Test the real application state and observable outcomes.",
-            ],
-            &["Do not use fixed sleeps as synchronization."],
-            &["Never store credentials in test source or traces."],
-            &["npx playwright test"],
-        ),
-        "sqlx" => pack(
-            "sqlx",
-            &["https://docs.rs/sqlx/latest/sqlx/"],
-            &[
-                "Use versioned migrations and explicit transactions.",
-                "Bind parameters instead of interpolating SQL.",
-            ],
-            &["Do not run unchecked schema changes against production data."],
-            &["Treat database errors as typed, recoverable outcomes."],
-            &["cargo test"],
-        ),
-        "axum" => pack(
-            "axum",
-            &["https://docs.rs/axum/latest/axum/"],
-            &[
-                "Keep handlers thin and domain decisions in typed services.",
-                "Return explicit status codes and typed error bodies.",
-            ],
-            &["Do not trust request bodies before validation."],
-            &["Enforce authorization in the service boundary."],
-            &["cargo test"],
-        ),
-        "tokio" => pack(
-            "tokio",
-            &["https://tokio.rs/"],
-            &[
-                "Bound concurrency and cancel work on shutdown.",
-                "Never hold a lock across an await unless the design requires it.",
-            ],
-            &["Do not spawn unbounded background tasks."],
-            &["Propagate cancellation to external calls."],
-            &["cargo test"],
-        ),
-        "python" => pack(
-            "python",
-            &["https://docs.python.org/3/"],
-            &[
-                "Use type hints at module and public function boundaries.",
-                "Keep dependencies pinned for reproducible environments.",
-            ],
-            &["Do not use mutable default arguments."],
-            &["Validate untrusted input before parsing or executing it."],
-            &["python3 -m pytest"],
-        ),
-        "fastapi" => pack(
-            "fastapi",
-            &["https://fastapi.tiangolo.com/"],
-            &[
-                "Declare request and response models explicitly.",
-                "Keep authorization checks in dependencies or services.",
-            ],
-            &["Do not return raw exception text to clients."],
-            &["Treat generated OpenAPI as a contract to review."],
-            &["python3 -m pytest"],
-        ),
-        "pytest" => pack(
-            "pytest",
-            &["https://docs.pytest.org/"],
-            &["Prefer fixtures with explicit scope and cleanup."],
-            &["Do not depend on test execution order."],
-            &["Never embed live credentials in fixtures."],
-            &["python3 -m pytest"],
-        ),
-        "node" => pack(
-            "node",
-            &["https://nodejs.org/docs/latest/api/"],
-            &["Pin the runtime version in the repository."],
-            &["Do not run untrusted scripts with ambient credentials."],
-            &["Treat the runtime as a public client for network calls."],
-            &["npm test"],
-        ),
-        "npm" => pack(
-            "npm",
-            &["https://docs.npmjs.com/"],
-            &["Commit the lockfile and use `npm ci` for deterministic installs."],
-            &["Do not install packages from unreviewed registries."],
-            &["Review install scripts before execution."],
-            &["npm ci"],
-        ),
-        "sqlite" => pack(
-            "sqlite",
-            &["https://www.sqlite.org/docs.html"],
-            &["Use WAL mode and explicit transactions for concurrent writers."],
-            &["Do not rely on implicit column affinity for validation."],
-            &["Treat database files as sensitive local state."],
-            &["cargo test"],
-        ),
-        "migrations" => pack(
-            "migrations",
-            &["https://www.sqlite.org/lang_altertable.html"],
-            &[
-                "Use versioned, forward-only migrations.",
-                "Test migrations against a fresh database and an upgraded database.",
-            ],
-            &["Do not edit an applied migration in place."],
-            &["Treat destructive schema changes as owner-reserved."],
-            &["cargo test"],
-        ),
-        "go" => pack(
-            "go",
-            &["https://go.dev/doc/"],
-            &["Use `go test ./...` and `go vet ./...` as deterministic checks."],
-            &["Do not ignore returned errors."],
-            &["Pin module versions and verify checksums."],
-            &["go test ./..."],
-        ),
-        "podman-compose" | "podman" | "container" | "docker" => pack(
-            "container",
-            &[
-                "https://docs.podman.io/",
-                "https://podman-desktop.io/docs/compose",
-            ],
-            &[
-                "Run rootless with an explicit network and least privilege.",
-                "Pin image digests for reproducible deployments.",
-            ],
-            &[
-                "Do not mount the host Podman socket or use privileged mode.",
-                "Do not add host networking as a shortcut.",
-            ],
-            &["Treat container images and mounts as a trust boundary."],
-            &["podman compose config"],
-        ),
-        "next" => pack(
-            "next",
-            &["https://nextjs.org/docs"],
-            &["Keep server-only secrets out of client bundles."],
-            &["Validate route inputs on the server."],
-            &["Treat server actions as authenticated endpoints."],
-            &["npm run build"],
-        ),
-        "vitest" => pack(
-            "vitest",
-            &["https://vitest.dev/guide/"],
-            &["Keep tests deterministic and independent."],
-            &["Do not depend on shared mutable module state."],
-            &["Never commit live credentials to test fixtures."],
-            &["npx vitest run"],
-        ),
-        "jest" => pack(
-            "jest",
-            &["https://jestjs.io/docs/getting-started"],
-            &["Keep tests deterministic and independent."],
-            &["Do not depend on execution order."],
-            &["Never commit live credentials to test fixtures."],
-            &["npx jest --runInBand"],
-        ),
-        "clap" => pack(
-            "clap",
-            &["https://docs.rs/clap/latest/clap/"],
-            &["Declare arguments with typed parsers and help text."],
-            &["Return non-zero exit codes for invalid input."],
-            &["Do not echo secrets in error output."],
-            &["cargo test"],
-        ),
-        "ruff" => pack(
-            "ruff",
-            &["https://docs.astral.sh/ruff/"],
-            &["Run lint and format checks in CI."],
-            &["Do not blanket-disable rules without a scoped rationale."],
-            &["Treat lint findings as review findings."],
-            &["python3 -m ruff check ."],
-        ),
-        "uv" => pack(
-            "uv",
-            &["https://docs.astral.sh/uv/"],
-            &["Commit the lockfile and use locked syncs."],
-            &["Do not resolve new dependencies during a frozen check."],
-            &["Verify package sources before installation."],
-            &["uv sync --locked"],
-        ),
-        _ => return None,
-    };
-    Some(pack)
 }
 
 #[cfg(test)]
@@ -414,5 +313,181 @@ mod tests {
             build_skill_plan(&stack, &[], "2026-11-09T00:00:00Z"),
             Err(SkillPlanError::Missing(_))
         ));
+    }
+
+    fn persisted(technology: &str, last_verified_at: &str, review_after: &str) -> SkillPack {
+        let mut pack = builtin_skill_pack(technology).unwrap();
+        pack.last_verified_at = last_verified_at.into();
+        pack.review_after = review_after.into();
+        pack.best_practices
+            .push("persisted revision content marker".into());
+        pack
+    }
+
+    #[test]
+    fn classification_covers_fresh_due_refreshable_stale_and_missing() {
+        let now = "2026-11-09T00:00:00Z";
+        let builtin = builtin_skill_pack("rust").unwrap();
+
+        let fresh = classify_technology("rust", std::slice::from_ref(&builtin), now);
+        assert_eq!(fresh.state, SkillPackState::Fresh);
+        assert!(!fresh.blocking);
+
+        let due = classify_technology(
+            "legacy-tool",
+            &[{
+                let mut pack = builtin.clone();
+                pack.technology = "legacy-tool".into();
+                pack.last_verified_at = "2026-01-01T00:00:00Z".into();
+                pack.review_after = "2026-02-01T00:00:00Z".into();
+                pack
+            }],
+            now,
+        );
+        assert_eq!(due.state, SkillPackState::Due);
+        assert!(due.blocking);
+
+        let refreshable = classify_technology(
+            "rust",
+            &[persisted(
+                "rust",
+                "2026-01-01T00:00:00Z",
+                "2026-04-01T00:00:00Z",
+            )],
+            now,
+        );
+        assert_eq!(refreshable.state, SkillPackState::Refreshable);
+        assert!(!refreshable.blocking);
+
+        let stale = classify_technology("rust", &[], "2028-01-01T00:00:00Z");
+        assert_eq!(stale.state, SkillPackState::Stale);
+        assert!(stale.blocking);
+
+        let missing = classify_technology("brainfuck", &[], now);
+        assert_eq!(missing.state, SkillPackState::Missing);
+        assert!(missing.blocking);
+    }
+
+    #[test]
+    fn catalog_is_bounded_source_cited_and_valid() {
+        let mut seen = std::collections::BTreeSet::new();
+        for technology in BUILTIN_TECHNOLOGIES {
+            assert!(seen.insert(*technology), "duplicate catalog entry");
+            let pack = builtin_skill_pack(technology)
+                .unwrap_or_else(|| panic!("missing builtin pack for {technology}"));
+            pack.validate()
+                .unwrap_or_else(|error| panic!("invalid pack for {technology}: {error}"));
+            assert!(!pack.best_practices.is_empty());
+            assert!(!pack.security_notes.is_empty());
+            assert!(!pack.commands.is_empty());
+            assert!(
+                pack.source_urls
+                    .iter()
+                    .all(|url| url.starts_with("https://")),
+                "pack for {technology} must cite HTTPS sources"
+            );
+        }
+    }
+
+    #[test]
+    fn broad_detected_stack_is_fully_covered_by_the_catalog() {
+        let root =
+            std::env::temp_dir().join(format!("factory-skill-catalog-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("migrations")).unwrap();
+        std::fs::create_dir_all(root.join("k8s")).unwrap();
+        std::fs::create_dir_all(root.join("terraform")).unwrap();
+        std::fs::create_dir_all(root.join(".github/workflows")).unwrap();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            r#"[dependencies]
+axum = "1"
+actix-web = "4"
+rocket = "0.5"
+sqlx = "0.8"
+serde = "1"
+tracing = "0.1"
+reqwest = "0.12"
+hyper = "1"
+tonic = "0.12"
+diesel = "2"
+tauri = "2"
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("package.json"),
+            r#"{"packageManager":"pnpm@9.0.0","dependencies":{"react":"1","vite":"1","vue":"3","svelte":"4","@angular/core":"18","electron":"30","@tauri-apps/api":"2"},"devDependencies":{"vitest":"1","@playwright/test":"1"}}"#,
+        )
+        .unwrap();
+        std::fs::write(root.join("pnpm-lock.yaml"), "lockfileVersion: '9.0'\n").unwrap();
+        std::fs::write(root.join("pom.xml"), "<project/>").unwrap();
+        std::fs::write(root.join("build.gradle.kts"), "plugins { kotlin(\"jvm\") }").unwrap();
+        std::fs::write(root.join("App.csproj"), "<Project/>").unwrap();
+        std::fs::write(root.join("Gemfile"), "gem \"rails\"\n").unwrap();
+        std::fs::write(
+            root.join("composer.json"),
+            r#"{"require":{"laravel/framework":"11"}}"#,
+        )
+        .unwrap();
+        std::fs::write(root.join("Package.swift"), "// swift-tools-version: 6.0\n").unwrap();
+        std::fs::write(root.join("deno.json"), "{}\n").unwrap();
+        std::fs::write(
+            root.join("compose.yaml"),
+            "services:\n  db:\n    image: postgres:16\n  cache:\n    image: redis:7\n  sql:\n    image: mysql:8\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("Dockerfile"), "FROM scratch\n").unwrap();
+        std::fs::write(root.join("playwright.config.ts"), "export default {}\n").unwrap();
+
+        let stack = crate::agentic::detect_stack(&root);
+        let required = required_technologies(&stack);
+        assert!(
+            required.len() >= 20,
+            "unexpectedly narrow detection: {required:?}"
+        );
+        for technology in &required {
+            assert!(
+                builtin_skill_pack(technology).is_some(),
+                "detected technology {technology} has no catalog pack"
+            );
+        }
+        for expected in [
+            "java",
+            "gradle",
+            "kotlin",
+            "csharp",
+            "dotnet",
+            "ruby",
+            "rails",
+            "php",
+            "laravel",
+            "swift",
+            "vue",
+            "svelte",
+            "angular",
+            "pnpm",
+            "deno",
+            "postgresql",
+            "mysql",
+            "redis",
+            "kubernetes",
+            "terraform",
+            "github-actions",
+            "tauri",
+            "electron",
+            "actix-web",
+            "rocket",
+            "serde",
+            "tracing",
+            "reqwest",
+            "hyper",
+            "tonic",
+        ] {
+            assert!(
+                required.contains(&expected.to_string()),
+                "expected {expected} in detected stack {required:?}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(root);
     }
 }

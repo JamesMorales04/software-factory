@@ -484,7 +484,7 @@ impl Database {
             "SELECT id,technology,version,content_json,content_sha256,source_urls_json,
                     last_verified_at,review_after,license,provenance,created_at
              FROM skill_packs WHERE technology=?1
-             ORDER BY created_at DESC,id DESC LIMIT 1",
+             ORDER BY created_at DESC,rowid DESC LIMIT 1",
         )
         .bind(technology)
         .fetch_optional(&self.pool)
@@ -496,7 +496,7 @@ impl Database {
         let rows: Vec<SkillPackRow> = sqlx::query_as::query_as(
             "SELECT id,technology,version,content_json,content_sha256,source_urls_json,
                     last_verified_at,review_after,license,provenance,created_at
-             FROM skill_packs ORDER BY technology,created_at,id",
+             FROM skill_packs ORDER BY technology,created_at,rowid",
         )
         .fetch_all(&self.pool)
         .await?;

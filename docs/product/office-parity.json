@@ -895,6 +895,8 @@
    ],
    "core_api": [
     "GET /agentic/skills",
+    "GET /agentic/skills/refresh",
+    "POST /agentic/skills/refresh",
     "POST /agentic/skills/{id}/uses",
     "POST /agentic/skills/{id}/license",
     "POST /agentic/skills/{id}/promote",
@@ -903,6 +905,8 @@
    ],
    "user_actions": [
     "inspect skill scope status provenance license uses and review dates",
+    "inspect technology-pack freshness, review deadlines and the last refresh outcome",
+    "run an explicit deterministic technology-pack refresh pass",
     "record a license review",
     "record a weekly review",
     "promote a ready RUN skill to PROJECT",
@@ -922,13 +926,20 @@
     "expired",
     "license-required",
     "owner-decision-required",
+    "pack-fresh",
+    "pack-due",
+    "pack-refreshable",
+    "pack-stale",
+    "pack-missing",
+    "refresh-blocked",
     "responsive"
    ],
    "acceptance": [
     "office/src/views/Skills.test.tsx",
+    "docs/implementation/wp3-skill-refresh-evidence.md",
     "docs/evidence/knowledge-skills-2026-11-09/manifest.json"
    ],
-   "notes": "The registry enforces read-only tools, license review, two-use PROJECT promotion, an explicit owner decision for GLOBAL, weekly review and revocation. A skill never grants write or execution tools."
+   "notes": "The registry enforces read-only tools, license review, two-use PROJECT promotion, an explicit owner decision for GLOBAL, weekly review and revocation. A skill never grants write or execution tools. The same Skills route shows Core-backed technology-pack freshness; the explicit refresh action only persists a newer curated revision and never approves a plan, hides a stale pack or grants authority."
   },
   "CAP-062": {
    "name": "Explorer, Librarian and temporary skills",

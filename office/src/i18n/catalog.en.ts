@@ -3570,6 +3570,28 @@ export const en = {
   "skills.revoke.action": "Revoke",
   "skills.revoke.required": "A revocation reason is required.",
   "skills.revoke.done": "The skill was revoked.",
+  "skills.refresh.title": "Technology knowledge packs",
+  "skills.refresh.description":
+    "Core checks persisted and curated technology packs for review dates. A stale or missing pack blocks FORMAL_SPEC planning; this control only runs the deterministic refresh pass.",
+  "skills.refresh.action": "Run refresh pass",
+  "skills.refresh.interval": "Refresh interval",
+  "skills.refresh.hours": "{hours} h",
+  "skills.refresh.lastRun": "Last pass",
+  "skills.refresh.nextRun": "Next pass",
+  "skills.refresh.never": "not run yet",
+  "skills.refresh.notScheduled": "not scheduled",
+  "skills.refresh.due": "Due or refreshable",
+  "skills.refresh.blocked": "Blocking",
+  "skills.refresh.reviewAfter": "review after {date}",
+  "skills.refresh.allFresh": "All {count} checked packs are fresh.",
+  "skills.refresh.lastOutcome":
+    "Last outcome: {refreshed} refreshed, {blocked} blocked.",
+  "skills.refresh.truncated":
+    "Only the first 256 technologies are shown; the list is bounded.",
+  "skills.refresh.unavailable":
+    "Refresh status is unavailable because the scheduler has not started in this process.",
+  "skills.refresh.done":
+    "Refresh pass complete: {refreshed} refreshed, {blocked} blocked.",
   "cheapOps.title": "Evidence interpretation",
   "cheapOps.authority": "OBSERVATION_ONLY — never the Gate",
   "cheapOps.description":
