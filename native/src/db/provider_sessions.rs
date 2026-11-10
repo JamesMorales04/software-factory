@@ -2232,6 +2232,95 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn provider_egress_binding_refuses_over_ceiling_token_quote_without_rows() {
+        let (_path, db, session) = active_turn_fixture(100).await;
+        ledger_link_tests::setup_turn_envelope(
+            &db,
+            "opencode",
+            "deepseek-v4.1-flash",
+            "request-egress-token-ceiling",
+            1_000,
+        )
+        .await;
+        db.admit_test_subscription_dispatch("campaign")
+            .await
+            .unwrap();
+        insert_reserved_turn(
+            &db,
+            &session,
+            "reserved-egress-ceiling",
+            "opencode",
+            "deepseek-v4.1-flash",
+        )
+        .await;
+        // Replace the trusted quote with a newer revision whose cost is well
+        // under the monetary ceiling but whose output token envelope is above
+        // the shared token ceiling. The egress binding must draw the same
+        // boundary as a direct ledger reservation and roll back its intent.
+        let now = Utc::now().to_rfc3339();
+        sqlx::query::query(
+            "UPDATE provider_settings
+             SET max_input_tokens=1000000,max_output_tokens=?1,max_cost_micros=?2,
+                 revision=2,updated_at=?3
+             WHERE provider='opencode'",
+        )
+        .bind(
+            i64::try_from(crate::execution_policy::SAFE_MAX_MODEL_CALL_OUTPUT_TOKENS + 1).unwrap(),
+        )
+        .bind(2_000_001_i64)
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        db.create_inference_pricing_quote(&NewInferencePricingQuote {
+            provider: "opencode".into(),
+            model: "deepseek-v4.1-flash".into(),
+            revision: 2,
+            evidence_sha256: "f".repeat(64),
+            actor: "operator".into(),
+        })
+        .await
+        .unwrap();
+
+        let error = db
+            .bind_provider_turn(&ProviderTurnBindingInput {
+                reservation_id: "reserved-egress-ceiling".into(),
+                session_record_id: session,
+                worker_id: "worker".into(),
+                generation: 1,
+                request_sha256: "b".repeat(64),
+                model: "deepseek-v4.1-flash".into(),
+                path: "/v1/chat/completions".into(),
+                body_bytes: 123,
+                sequence: 0,
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::Invalid(_)),
+            "provider egress must inherit the ledger token ceiling: {error:?}"
+        );
+        let counts: (i64, i64, i64, i64) = sqlx::query_as::query_as(
+            "SELECT (SELECT COUNT(*) FROM provider_turn_egress_requests
+                     WHERE reservation_id='reserved-egress-ceiling'),
+                    (SELECT COUNT(*) FROM provider_turn_ledger_requests
+                     WHERE reservation_id='reserved-egress-ceiling'),
+                    (SELECT COUNT(*) FROM inference_reservations),
+                    (SELECT requests_bound FROM provider_turn_reservations
+                     WHERE reservation_id='reserved-egress-ceiling')",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            counts,
+            (0, 0, 0, 0),
+            "the refused egress binding must leave no durable intent or reservation"
+        );
+        db.close().await;
+    }
+
+    #[tokio::test]
     async fn legacy_provider_accounting_folds_near_i64_rows_without_sql_overflow() {
         let (path, db, session) = active_turn_fixture(100).await;
         let now = Utc::now().to_rfc3339();
@@ -3601,7 +3690,7 @@ mod ledger_link_tests {
     use crate::execution_policy::ReservationState;
     use crate::inference_ledger::NewInferenceEnvelope;
 
-    async fn setup_turn_envelope(
+    pub(super) async fn setup_turn_envelope(
         db: &Database,
         provider: &str,
         model: &str,
