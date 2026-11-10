@@ -977,6 +977,113 @@ mod tests {
         db
     }
 
+    /// Drive one legal workflow path and close/reopen the database after every
+    /// transition. Each reopen must restore the exact durable state, revision
+    /// and external-effect records, and the next transition must still be
+    /// fenced by that restored revision.
+    async fn restart_after_each_transition(label: &str, path: &[(WorkflowState, WorkflowState)]) {
+        let db_path = temp_path();
+        let request_id = format!("request-restart-{label}");
+        let db = Database::open(&db_path).await.unwrap();
+        seed_request(&db, &request_id).await;
+        let run_id = db.ensure_workflow_run(&request_id, None, "").await.unwrap();
+        db.close().await;
+
+        let mut db = Database::open(&db_path).await.unwrap();
+        let mut revision = 1_u32;
+        for (from, to) in path {
+            let current = db.workflow_run(&run_id).await.unwrap();
+            assert_eq!(current.state, *from, "{label}: unexpected source state");
+            assert_eq!(
+                current.revision, revision,
+                "{label}: revision drifted before transition"
+            );
+            db.transition_workflow(&run_id, *from, *to, "advance")
+                .await
+                .unwrap();
+            revision += 1;
+            db.close().await;
+
+            db = Database::open(&db_path).await.unwrap();
+            let restored = db.workflow_run(&run_id).await.unwrap();
+            assert_eq!(restored.state, *to, "{label}: state lost across reopen");
+            assert_eq!(
+                restored.revision, revision,
+                "{label}: revision lost across reopen"
+            );
+        }
+
+        if let Some((_, last)) = path.last() {
+            assert!(last.is_terminal(), "{label}: path must end terminal");
+            assert!(
+                db.transition_workflow(&run_id, *last, WorkflowState::Cancelled, "late")
+                    .await
+                    .is_err(),
+                "{label}: terminal state accepted a transition after reopen"
+            );
+        }
+        db.close().await;
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(format!("{}-wal", db_path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", db_path.display()));
+    }
+
+    #[tokio::test]
+    async fn restart_at_each_state_preserves_durable_workflow_and_resumes() {
+        let forward = [
+            (WorkflowState::Submitted, WorkflowState::Assessing),
+            (WorkflowState::Assessing, WorkflowState::Planned),
+            (WorkflowState::Planned, WorkflowState::PlanReview),
+            (WorkflowState::PlanReview, WorkflowState::Frozen),
+            (WorkflowState::Frozen, WorkflowState::Executing),
+            (WorkflowState::Executing, WorkflowState::Verifying),
+            (WorkflowState::Verifying, WorkflowState::Reviewing),
+            (WorkflowState::Reviewing, WorkflowState::Gate),
+            (WorkflowState::Gate, WorkflowState::Converging),
+            (WorkflowState::Converging, WorkflowState::Accepted),
+        ];
+        restart_after_each_transition("forward", &forward).await;
+
+        let mut repair = forward[..8].to_vec();
+        repair.extend([
+            (WorkflowState::Gate, WorkflowState::Repairing),
+            (WorkflowState::Repairing, WorkflowState::Executing),
+            (WorkflowState::Executing, WorkflowState::Verifying),
+            (WorkflowState::Verifying, WorkflowState::Reviewing),
+            (WorkflowState::Reviewing, WorkflowState::Gate),
+            (WorkflowState::Gate, WorkflowState::Converging),
+            (WorkflowState::Converging, WorkflowState::Accepted),
+        ]);
+        restart_after_each_transition("repair", &repair).await;
+
+        let mut replan = forward[..2].to_vec();
+        replan.extend([
+            (WorkflowState::Planned, WorkflowState::Replanning),
+            (WorkflowState::Replanning, WorkflowState::Planned),
+            (WorkflowState::Planned, WorkflowState::PlanReview),
+            (WorkflowState::PlanReview, WorkflowState::Frozen),
+            (WorkflowState::Frozen, WorkflowState::Executing),
+            (WorkflowState::Executing, WorkflowState::Verifying),
+            (WorkflowState::Verifying, WorkflowState::Reviewing),
+            (WorkflowState::Reviewing, WorkflowState::Gate),
+            (WorkflowState::Gate, WorkflowState::Converging),
+            (WorkflowState::Converging, WorkflowState::Accepted),
+        ]);
+        restart_after_each_transition("replan", &replan).await;
+
+        for terminal in [
+            WorkflowState::Blocked,
+            WorkflowState::Failed,
+            WorkflowState::Cancelled,
+        ] {
+            restart_after_each_transition(
+                &format!("{terminal:?}").to_lowercase(),
+                &[(WorkflowState::Submitted, terminal)],
+            )
+            .await;
+        }
+    }
+
     #[tokio::test]
     async fn workflow_transitions_are_validated_fenced_and_terminal() {
         let db = seeded_db("request-transition").await;

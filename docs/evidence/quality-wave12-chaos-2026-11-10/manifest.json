@@ -1,0 +1,507 @@
+{
+  "schemaVersion": 1,
+  "kind": "wp12-deterministic-chaos-and-acceptance",
+  "status": "IMPLEMENTER_EVIDENCE_NOT_ACCEPTANCE",
+  "workPackage": "WP12",
+  "title": "Deterministic chaos/fault-injection matrix and repeat-run acceptance",
+  "branch": "factory/quality-wp12-chaos-matrix",
+  "baseCommit": "452bb40fba2d74ef4cbfbb108191900d4159d9dd",
+  "candidateCommit": "ec4519ec293f0fd8d49f94ee6a2ff52e9143210d",
+  "candidateTree": "25d72c49e61ff9b5cfced8012a666ade924c1d50",
+  "candidateClean": true,
+  "acceptanceScript": "scripts/quality-wave12-acceptance.sh",
+  "matrix": "docs/implementation/wp12-chaos-matrix.md",
+  "logs": {
+    "acceptance": "docs/evidence/quality-wave12-chaos-2026-11-10/acceptance.log",
+    "repeatRuns": "docs/evidence/quality-wave12-chaos-2026-11-10/repeat-runs.log"
+  },
+  "command": "scripts/quality-wave12-acceptance.sh --require-clean",
+  "startedAt": "2026-11-09T23:42:19-05:00",
+  "finishedAt": "2026-11-09T23:46:15-05:00",
+  "durationSeconds": 236,
+  "exitStatus": 0,
+  "paidInference": false,
+  "installedStackTouched": false,
+  "summary": {
+    "stepsPassed": 20,
+    "stepsFailed": 0,
+    "stepsSkipped": 0,
+    "result": "PASS"
+  },
+  "partialRunSemantics": {
+    "pass": "Only a full run with no required skip can print RESULT: PASS.",
+    "partial": "--skip-office or --skip-compose is diagnostic only and prints RESULT: PARTIAL.",
+    "partialExitStatus": 3,
+    "failedExitStatus": 1,
+    "blockedExitStatus": 2,
+    "noInstall": "--no-install fails closed when Office dependencies are missing or stale.",
+    "selfTest": "scripts/quality-wave12-acceptance.test.sh proves PASS/PARTIAL/FAIL results and the missing/stale/fresh dependency cases."
+  },
+  "environment": {
+    "hostname": "cachyos-x8664",
+    "os": "CachyOS",
+    "kernel": "Linux 7.3.1-1-cachyos x86_64",
+    "rootlessPodman": true,
+    "cargo": "cargo 1.90.0 (840b83a10 2025-07-30)",
+    "rustc": "rustc 1.90.0 (1159e78c4 2025-09-14)",
+    "node": "v22.23.2",
+    "npm": "12.1.0",
+    "podman": "podman version 6.1.4",
+    "podmanCompose": "podman-compose version 1.6.0",
+    "dockerComposeJsonNormalizer": "Docker Compose version 5.6.1 (docker-compose config --format json only; no daemon)",
+    "cargoTargetDir": "target",
+    "testTempDir": "/var/tmp/factory-wave12",
+    "logDir": "target/quality-wave12 (git-ignored; not committed)"
+  },
+  "steps": [
+    {
+      "id": "self_test",
+      "command": "scripts/quality-wave12-acceptance.test.sh",
+      "result": "PASS",
+      "durationSeconds": 1,
+      "assertions": [
+        "full run result/exit: PASS/0",
+        "required skip result/exit: PARTIAL/3",
+        "failed step result/exit: FAIL/1",
+        "missing Office dependencies with --no-install: fail closed",
+        "stale Office dependencies with --no-install: fail closed",
+        "fresh Office dependencies with --no-install: pass without npm"
+      ]
+    },
+    {
+      "id": "fmt",
+      "command": "cargo fmt --all -- --check",
+      "result": "PASS",
+      "durationSeconds": 1
+    },
+    {
+      "id": "lib",
+      "command": "cargo test -p factory-native --locked --lib",
+      "result": "PASS",
+      "durationSeconds": 156,
+      "tests": {
+        "passed": 830,
+        "failed": 0,
+        "ignored": 4
+      }
+    },
+    {
+      "id": "bins",
+      "command": "cargo test -p factory-native --locked --bins",
+      "result": "PASS",
+      "durationSeconds": 21,
+      "tests": {
+        "passed": 125,
+        "failed": 0,
+        "ignored": 0
+      },
+      "nonZeroBinaries": {
+        "factory-architecture-check": 8,
+        "factory-core": 38,
+        "factory-dependency-acquire": 3,
+        "factory-provider-smoke": 3,
+        "factory-repo-hygiene": 7,
+        "factory-reviewer": 4,
+        "factory-runtime-broker": 29,
+        "factory-supervisor": 9,
+        "factory-verifier": 7,
+        "factory-worker": 17
+      }
+    },
+    {
+      "id": "targeted_integration",
+      "command": "cargo test -p factory-native --locked --test planning_pipeline --test provider_chaos --test dependency_broker_http --test openspec_compose_validation --test migration_skill_refresh",
+      "result": "PASS",
+      "durationSeconds": 1,
+      "tests": {
+        "passed": 29,
+        "failed": 0,
+        "ignored": 0
+      },
+      "suites": {
+        "planning_pipeline": 1,
+        "provider_chaos": 16,
+        "dependency_broker_http": 6,
+        "openspec_compose_validation": 5,
+        "migration_skill_refresh": 1
+      }
+    },
+    {
+      "id": "filter_workflow",
+      "command": "cargo test -p factory-native --locked --lib workflow",
+      "result": "PASS",
+      "durationSeconds": 7,
+      "tests": {
+        "passed": 16,
+        "failed": 0,
+        "ignored": 0
+      }
+    },
+    {
+      "id": "filter_quality",
+      "command": "cargo test -p factory-native --locked --lib quality",
+      "result": "PASS",
+      "durationSeconds": 0,
+      "tests": {
+        "passed": 12,
+        "failed": 0,
+        "ignored": 0
+      }
+    },
+    {
+      "id": "filter_trace",
+      "command": "cargo test -p factory-native --locked --lib trace",
+      "result": "PASS",
+      "durationSeconds": 1,
+      "tests": {
+        "passed": 17,
+        "failed": 0,
+        "ignored": 0
+      }
+    },
+    {
+      "id": "filter_review_roles",
+      "command": "cargo test -p factory-native --locked --lib review_roles",
+      "result": "PASS",
+      "durationSeconds": 0,
+      "tests": {
+        "passed": 9,
+        "failed": 0,
+        "ignored": 0
+      }
+    },
+    {
+      "id": "filter_gate",
+      "command": "cargo test -p factory-native --locked --lib gate_",
+      "result": "PASS",
+      "durationSeconds": 8,
+      "tests": {
+        "passed": 18,
+        "failed": 0,
+        "ignored": 0
+      }
+    },
+    {
+      "id": "provider_repeat",
+      "command": "for run in 1 2 3; do cargo test -p factory-native --locked --test provider_chaos; done",
+      "result": "PASS",
+      "durationSeconds": 1,
+      "runs": [
+        {
+          "run": 1,
+          "passed": 16,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "run": 2,
+          "passed": 16,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "run": 3,
+          "passed": 16,
+          "failed": 0,
+          "ignored": 0
+        }
+      ]
+    },
+    {
+      "id": "clippy",
+      "command": "cargo clippy -p factory-native --locked --all-targets --all-features -- -D warnings",
+      "result": "PASS",
+      "durationSeconds": 0,
+      "warnings": 0
+    },
+    {
+      "id": "office_install",
+      "command": "cd office && npm ci --no-audit --no-fund --prefer-offline",
+      "result": "PASS",
+      "durationSeconds": 0,
+      "note": "Dependencies already matched package-lock.json in the recorded run; the immediately preceding pre-check installed 214 packages."
+    },
+    {
+      "id": "office_test",
+      "command": "cd office && npm test -- --run",
+      "result": "PASS",
+      "durationSeconds": 11,
+      "testFiles": 46,
+      "tests": {
+        "passed": 317,
+        "failed": 0
+      }
+    },
+    {
+      "id": "office_typecheck",
+      "command": "cd office && npm run typecheck",
+      "result": "PASS",
+      "durationSeconds": 9
+    },
+    {
+      "id": "office_lint",
+      "command": "cd office && npm run lint",
+      "result": "PASS",
+      "durationSeconds": 0,
+      "filesChecked": 163
+    },
+    {
+      "id": "compose_config_base",
+      "command": "podman compose -f compose.yaml config",
+      "result": "PASS",
+      "durationSeconds": 1,
+      "services": 14,
+      "volumes": 27,
+      "networks": 2
+    },
+    {
+      "id": "compose_config_profile",
+      "command": "podman compose --profile openspec-validation -f compose.yaml config",
+      "result": "PASS",
+      "durationSeconds": 2,
+      "services": 15,
+      "volumes": 27,
+      "networks": 2
+    },
+    {
+      "id": "compose_policy_base",
+      "command": "docker-compose -f target/quality-wave12/compose-base.yaml config --format json > target/quality-wave12/compose-base.json && python3 .github/scripts/check-compose-policy.py target/quality-wave12/compose-base.json && COMPOSE_CONFIG_JSON=target/quality-wave12/compose-base.json python3 .github/scripts/test_check_compose_policy.py",
+      "result": "PASS",
+      "durationSeconds": 6,
+      "policy": "PASS",
+      "policyTests": {
+        "run": 36,
+        "ok": 36,
+        "skipped": 8
+      }
+    },
+    {
+      "id": "compose_policy_profile",
+      "command": "docker-compose --profile openspec-validation -f target/quality-wave12/compose-openspec.yaml config --format json > target/quality-wave12/compose-openspec.json && python3 .github/scripts/check-compose-policy.py target/quality-wave12/compose-openspec.json && COMPOSE_CONFIG_JSON=target/quality-wave12/compose-openspec.json python3 .github/scripts/test_check_compose_policy.py",
+      "result": "PASS",
+      "durationSeconds": 11,
+      "policy": "PASS",
+      "policyTests": {
+        "run": 36,
+        "ok": 36,
+        "skipped": 5
+      }
+    }
+  ],
+  "repeatRuns": {
+    "policy": "The provider_chaos suite ran three consecutive times inside the acceptance script and three more times in the repeat loop (six runs total; all 16 tests passed in every run). The other flaky-sensitive integration suites and the focused workflow/quality/trace/reviewer/Gate filters then ran three consecutive times each. No retry was used to turn a failure green.",
+    "providerChaos": [
+      {
+        "run": 1,
+        "passed": 16,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "run": 2,
+        "passed": 16,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "run": 3,
+        "passed": 16,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "targetedIntegration": {
+      "runs": 3,
+      "suites": {
+        "planning_pipeline": {
+          "perRunPassed": [
+            1,
+            1,
+            1
+          ],
+          "totalPassed": 3,
+          "failed": 0
+        },
+        "provider_chaos": {
+          "perRunPassed": [
+            16,
+            16,
+            16
+          ],
+          "totalPassed": 48,
+          "failed": 0
+        },
+        "dependency_broker_http": {
+          "perRunPassed": [
+            6,
+            6,
+            6
+          ],
+          "totalPassed": 18,
+          "failed": 0
+        },
+        "openspec_compose_validation": {
+          "perRunPassed": [
+            5,
+            5,
+            5
+          ],
+          "totalPassed": 15,
+          "failed": 0
+        },
+        "migration_skill_refresh": {
+          "perRunPassed": [
+            1,
+            1,
+            1
+          ],
+          "totalPassed": 3,
+          "failed": 0
+        }
+      }
+    },
+    "filters": {
+      "runs": 3,
+      "workflow": {
+        "perRunPassed": [
+          16,
+          16,
+          16
+        ],
+        "totalPassed": 48,
+        "failed": 0
+      },
+      "quality": {
+        "perRunPassed": [
+          12,
+          12,
+          12
+        ],
+        "totalPassed": 36,
+        "failed": 0
+      },
+      "trace": {
+        "perRunPassed": [
+          17,
+          17,
+          17
+        ],
+        "totalPassed": 51,
+        "failed": 0
+      },
+      "review_roles": {
+        "perRunPassed": [
+          9,
+          9,
+          9
+        ],
+        "totalPassed": 27,
+        "failed": 0
+      },
+      "gate_": {
+        "perRunPassed": [
+          18,
+          18,
+          18
+        ],
+        "totalPassed": 54,
+        "failed": 0
+      }
+    }
+  },
+  "skips": [
+    {
+      "id": "lib.real_podman_named_volume_execution",
+      "status": "SKIPPED",
+      "reason": "Ignored by default; requires rootless Podman and a cached alpine:3.20 image. The deterministic fake-Podman execution tests passed."
+    },
+    {
+      "id": "lib.real_podman_reconcile",
+      "status": "SKIPPED",
+      "reason": "Ignored by default; requires rootless Podman and a cached alpine:3.20 image. The deterministic reconciliation tests passed."
+    },
+    {
+      "id": "lib.real_podman_refuses_foreign_volume_reuse",
+      "status": "SKIPPED",
+      "reason": "Ignored by default; requires rootless Podman and a cached alpine:3.20 image. The deterministic ownership tests passed."
+    },
+    {
+      "id": "lib.rootless_alpine_sandbox_fixture",
+      "status": "SKIPPED",
+      "reason": "Ignored by default; requires rootless Podman and a cached alpine:3.20 image."
+    },
+    {
+      "id": "compose_policy.base_profile_specific_negatives",
+      "status": "SKIPPED",
+      "reason": "8 of 36 policy negative tests are intentionally not applicable to the base config; the suite reported OK (skipped=8)."
+    },
+    {
+      "id": "compose_policy.openspec_profile_specific_negatives",
+      "status": "SKIPPED",
+      "reason": "5 of 36 policy negative tests are intentionally not applicable to the openspec-validation profile; the suite reported OK (skipped=5)."
+    }
+  ],
+  "notTested": [
+    {
+      "id": "dependency_broker_podman.podman_acquirer_enforces_egress_and_pins_the_image",
+      "reason": "Opt-in real rootless-Podman test. Not enabled because FACTORY_PODMAN_DEPENDENCY_TEST was not set; the deterministic egress/pin unit tests passed."
+    },
+    {
+      "id": "dependency_acquire_live.live_registry_acquisition_is_explicit_and_optional",
+      "reason": "Opt-in live registry test. Not enabled because FACTORY_LIVE_DEPENDENCY_FETCH was not set."
+    },
+    {
+      "id": "provider.live_inference",
+      "reason": "No paid model inference was authorized or used. All provider/stream tests are deterministic local fixtures."
+    },
+    {
+      "id": "provider.live_long_turn_and_sse_cut",
+      "reason": "The 301-second long turn and SSE cut/reconnect are virtual-clock/loopback fixtures, not a live OpenCode/Codex UAT."
+    },
+    {
+      "id": "dependency.real_compose_acquisition_and_allowlisted_proxy",
+      "reason": "The script validates Compose configuration and policy only; it does not start the stack, run a real acquisition or chase the internal proxy path."
+    },
+    {
+      "id": "workspace.real_compose_supervisor_restart_and_http_inventory",
+      "reason": "Deterministic durable-record recovery and fake-Podman broker tests passed; a real Compose Supervisor kill/restart and HTTP inventory journey was not run."
+    },
+    {
+      "id": "reviewer.real_multi_reviewer_campaign",
+      "reason": "Deterministic DB/plan/Gate tests for role coverage, distinct principals, roleless/extra-role receipts and frozen assignments passed; no real Compose Campaign with two or more reviewer receipts was run."
+    },
+    {
+      "id": "openspec.real_core_backed_projection",
+      "reason": "The committed Core renderer/read-model fixture and pinned-validation runner contract passed; a projection produced by the paid model planning pipeline was not run. WP7 retains the separate real pinned-image fixture run."
+    },
+    {
+      "id": "office.real_browser_per_option_acceptance",
+      "reason": "WP10 owns the Office views and browser harnesses. This run executed the component/unit suite, typecheck and lint only."
+    },
+    {
+      "id": "platform.windows_and_docker_provider",
+      "reason": "Not exercised. The run used rootless Podman 6.1.4 and the local Compose provider."
+    }
+  ],
+  "blocked": [
+    {
+      "id": "independent_verifier_and_reviewer_acceptance",
+      "reason": "No independent verifier or reviewer process ran against this candidate. This manifest is implementer self-test evidence."
+    },
+    {
+      "id": "quality_gate_acceptance_and_certification",
+      "reason": "No Quality Gate decision, Product Owner approval, deployment or certification is claimed."
+    },
+    {
+      "id": "deployment",
+      "reason": "The installed stack was not started or modified; deployment readiness is out of scope for WP12."
+    }
+  ],
+  "warnings": [
+    "The recorded run reused Office dependencies installed by the immediately preceding pre-check; the install step verified the package-lock hash instead of downloading again. The earlier install reported one blocked esbuild@0.28.2 postinstall script; the Office test, typecheck and lint commands passed with the installed package.",
+    "The Compose policy JSON input was normalized with docker-compose because the local podman-compose 1.6.0 does not implement config --format json. This is a parser-only step; it does not touch a Docker daemon or the installed stack.",
+    "The four ignored library tests are reported as SKIPPED, not as passes.",
+    "The compose_config_base and compose_config_profile step logs are empty because config output was redirected to the YAML artifacts; both commands exited 0 and the rendered service counts are recorded above."
+  ],
+  "claimBoundary": "Deterministic implementer evidence for candidate ec4519e. It is not independent acceptance, a Quality Gate decision, deployment, certification, live-provider evidence or a TRUSTED_LOCAL isolation claim."
+}

@@ -3,12 +3,17 @@
 **Status:** implementation integrated on
 `factory/quality-wave12-integration` through WP3, WP4, WP5, WP6, WP7, WP9 and
 WP11; **not certified and not accepted**. WP10 implementation and WP12
-acceptance remain pending. This document records what is implemented, what was
-tested, and what remains unverified. It is not acceptance evidence and does not
-claim `TRUSTED_LOCAL` isolation. Exact merge commits, conflicts and validation
-results are in [Wave 12 integration evidence](wave12-integration-evidence.md).
+browser/independent acceptance remain pending. WP12 adds a deterministic
+chaos/cross-workstream matrix and a repeat-run acceptance script; its
+candidate-bound results are implementer evidence only. This document records
+what is implemented, what was tested, and what remains unverified. It is not
+acceptance evidence and does not claim `TRUSTED_LOCAL` isolation. Exact merge
+commits, conflicts and validation results are in
+[Wave 12 integration evidence](wave12-integration-evidence.md).
 
 - Branch: `factory/quality-wave12-integration`
+- WP12 branch: `factory/quality-wp12-chaos-matrix` (base `452bb40`)
+- WP12 matrix: [deterministic chaos and cross-workstream matrix](wp12-chaos-matrix.md)
 - Baseline: `bcb8b5b` (`factory/agentic-flow-20261108`)
 - Merged work packages: WP3 `35fcae7`, WP5 `bd81c27`, WP7 `0b7fc3d`, WP9
   `55c43e8`, WP11 `fbc105c`, WP6 `b5dd282`, WP4 `6cde43c`
@@ -33,7 +38,7 @@ results are in [Wave 12 integration evidence](wave12-integration-evidence.md).
 | WP9 | Implemented and integrated | Role definitions, bounded role prompts, identity-based independence validation, six-service Compose reviewer fleet with per-identity tokens/principals/roles, reviewer identity registry, authenticated role binding, participant-plan role preservation, exact frozen role-to-principal assignment set, fail-closed Gate when assignments are missing/unexpected or a receipt is roleless/unrequired, Director per-role receipts, migrations `0065`/`0066` | Real two-reviewer Campaign/E2E with the fixture provider; independent acceptance |
 | WP10 | Implemented; acceptance pending | Director plan-review panel, lane/artifact/stack/architecture/docs/skills/DoD/OpenSpec summaries, approve/request-changes/reject, finding list and disposition form | Real Core/Compose browser acceptance and visual review |
 | WP11 | Implemented and integrated | Deterministic replay trace, bounded steps/events, redaction, comparison, typed alerts, operator-authenticated `GET /agentic/requests/{id}/trace` and the Office Request trace view | Real Core/Compose browser acceptance; independent acceptance |
-| WP12 | Partial; acceptance pending | Golden planning-pipeline integration test, existing Rust/Office suites, workflow, provider, dependency, migration and Compose-policy tests | Chaos/fault-injection matrix and per-option browser matrix for the new surfaces |
+| WP12 | Deterministic matrix implemented and run; acceptance pending | Reproducible chaos/fault-injection and cross-workstream matrix, repeat-run acceptance script, golden planning-pipeline integration test, workflow/provider/workspace/dependency/reviewer/OpenSpec/trace tests, existing Rust/Office suites and Compose policy checks | Independent acceptance and real Core/Compose browser acceptance of the WP10-owned Office surfaces; live/paid/provider/Podman paths remain `NOT_TESTED` |
 
 ## Verification run
 
@@ -89,6 +94,72 @@ test_check_compose_policy.py                   36 tests passed (profile, 5 skipp
 
 Migration smoke: fresh and upgrade-from-0064 databases apply migrations
 `0065`-`0069` exactly once in order.
+
+### WP12 acceptance run
+
+Candidate `ec4519ec293f0fd8d49f94ee6a2ff52e9143210d` (clean tree
+`25d72c49e61ff9b5cfced8012a666ade924c1d50`) was exercised with
+`scripts/quality-wave12-acceptance.sh --require-clean`. Exact results and the
+per-step logs are recorded in the
+[WP12 manifest](../evidence/quality-wave12-chaos-2026-11-10/manifest.json).
+
+```text
+scripts/quality-wave12-acceptance.sh --require-clean
+20/20 steps PASS; 0 failed; 0 skipped steps; 236 s
+
+scripts/quality-wave12-acceptance.test.sh
+PASS (PASS/PARTIAL/FAIL results; missing/stale/fresh --no-install dependencies)
+
+cargo test -p factory-native --locked --lib
+830 passed; 0 failed; 4 ignored
+
+cargo test -p factory-native --locked --bins
+125 passed; 0 failed
+
+targeted integration suites
+29 passed; 0 failed
+(planning 1, provider chaos 16, dependency HTTP 6, OpenSpec 5, migration 1)
+
+focused filters
+workflow 16; quality 12; trace 17; review_roles 9; gate_ 18; all passed
+
+provider_chaos repeat
+3/3 runs; 16 passed each; 0 failed
+
+cargo clippy -p factory-native --locked --all-targets --all-features -- -D warnings
+clean
+
+cd office && npm test -- --run
+317 passed across 46 files
+
+npm run typecheck
+clean
+
+npm run lint
+clean (163 files)
+
+podman compose -f compose.yaml config
+PASS (14 services)
+
+podman compose --profile openspec-validation -f compose.yaml config
+PASS (15 services)
+
+compose policy (base/profile)
+PASS/PASS; 36 policy tests each (8/5 profile-specific skips)
+```
+
+The other flaky-sensitive integration suites and the focused filters were
+repeated three times each after the script; all passed. Only a full run can
+print `RESULT: PASS`; `--skip-office` or `--skip-compose` produce
+`RESULT: PARTIAL` with exit 3, and `--no-install` fails closed when Office
+dependencies are missing or stale. `scripts/quality-wave12-acceptance.test.sh`
+asserts those control-flow cases without running the full suite. The four
+ignored library tests are the opt-in real-Podman tests and are `SKIPPED`, not
+passes.
+Live provider inference, real Compose dependency acquisition, a real
+multi-reviewer Campaign, a real Core-backed OpenSpec projection, browser
+acceptance and independent acceptance remain `NOT_TESTED`/`BLOCKED` as listed
+in the manifest. No paid inference was used.
 
 Independent read-only Codex reviews at the work-package review-fix commits
 reported no remaining findings for WP0, WP1, WP2, WP3, WP4, WP7, WP8, WP9 and
@@ -146,4 +217,10 @@ document does not claim that a live multi-reviewer Campaign has run.
   exercised.
 - Compose end-to-end workspace restart/inventory recovery (WP6).
 - Real Compose scheduler restart evidence for skill-pack refresh (WP3).
-- The full chaos/fault-injection and per-option browser matrices (WP12).
+- The deterministic WP12 chaos/cross-workstream matrix and acceptance script are
+  recorded in [wp12-chaos-matrix.md](wp12-chaos-matrix.md) and the
+  [WP12 manifest](../evidence/quality-wave12-chaos-2026-11-10/manifest.json);
+  those are implementer evidence, not independent acceptance. Real
+  Core/Compose browser acceptance of the WP10 surfaces, live provider/Podman
+  and dependency paths, a real multi-reviewer Campaign and the per-option
+  browser matrix remain `NOT_TESTED`.
