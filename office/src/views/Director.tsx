@@ -172,12 +172,36 @@ export function Director() {
     (portfolio !== null && portfolio.length > 0 ? portfolio[0].id : "");
 
   useEffect(() => {
+    // Action-scoped notices belong to the request that produced them. Keeping
+    // them across a selection change showed a success message from one request
+    // on another request's panel.
+    if (activeId === "") return;
+    setPriorityNotice(null);
+    setPriorityError(null);
+    setPlanNotice(null);
+    setPlanError(null);
+    setSpecNotice(null);
+    setSpecError(null);
+    setPlanningNotice(null);
+    setPlanningError(null);
+    setReviewRationale("");
+    setFindingId("");
+    setFindingEvidence("");
+    setFindingOwnerDecision("");
+    setFindingNotice(null);
+    setFindingError(null);
+    setTriageNotice(null);
+    setTriageError(null);
+  }, [activeId]);
+
+  useEffect(() => {
     if (!activeId) {
       setDetail(null);
       setDetailError(null);
       return;
     }
     let active = true;
+    setDetail(null);
     setDetailLoading(true);
     setDetailError(null);
     coreApi
@@ -205,9 +229,13 @@ export function Director() {
     if (!activeId) {
       setPlan(null);
       setSpec(null);
+      setPlanning(null);
       return;
     }
     let active = true;
+    setPlan(null);
+    setSpec(null);
+    setPlanning(null);
     setPlanError(null);
     setSpecError(null);
     Promise.allSettled([
@@ -1334,9 +1362,7 @@ export function Director() {
                         </div>
                       )}
                       {!spec?.frozen && !spec?.draft && (
-                        <p className="muted">
-                          {t("director.spec.notRequired")}
-                        </p>
+                        <p className="muted">{t("director.spec.empty")}</p>
                       )}
                       <div className="director-priority">
                         <Button

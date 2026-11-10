@@ -32,6 +32,10 @@ use factory_native::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+#[cfg(feature = "test-support")]
+#[path = "core_support/wave12_support.rs"]
+mod wave12_support;
+
 struct SetupState {
     failures: u32,
     blocked_until_ms: i64,
@@ -1251,10 +1255,16 @@ fn office_api_router(app: Arc<App>) -> Router {
         .merge(issue_intake_routes());
 
     #[cfg(feature = "test-support")]
-    let api = api.route(
-        "/test-support/subscription-dispatch-admissions",
-        post(admit_test_subscription_dispatch),
-    );
+    let api = api
+        .route(
+            "/test-support/subscription-dispatch-admissions",
+            post(admit_test_subscription_dispatch),
+        )
+        .route("/test-support/wave12/seed", post(wave12_support::seed))
+        .route(
+            "/test-support/wave12/trace-fault/{id}",
+            post(wave12_support::arm_trace_failure),
+        );
 
     let api = api
         .with_state(Arc::clone(&app))
@@ -1614,10 +1624,16 @@ fn api_router(app: Arc<App>) -> Router {
         .merge(issue_intake_routes());
 
     #[cfg(feature = "test-support")]
-    let api = api.route(
-        "/test-support/subscription-dispatch-admissions",
-        post(admit_test_subscription_dispatch),
-    );
+    let api = api
+        .route(
+            "/test-support/subscription-dispatch-admissions",
+            post(admit_test_subscription_dispatch),
+        )
+        .route("/test-support/wave12/seed", post(wave12_support::seed))
+        .route(
+            "/test-support/wave12/trace-fault/{id}",
+            post(wave12_support::arm_trace_failure),
+        );
 
     api.with_state(app)
 }
@@ -11989,6 +12005,17 @@ async fn get_agentic_findings(
     }
 }
 
+fn owner_decision_allows_refutation(
+    decision: &factory_native::db::AgenticOwnerDecisionRecord,
+    principal: &str,
+    request_id: &str,
+    project_id: &str,
+) -> bool {
+    let scoped = decision.request_id.as_deref() == Some(request_id)
+        || (decision.request_id.is_none() && decision.project_id == project_id);
+    decision.status == "APPROVED" && decision.resolved_by.as_deref() == Some(principal) && scoped
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct AgenticFindingDispositionInput {
@@ -12058,15 +12085,14 @@ async fn resolve_agentic_finding(
             }
             Err(error) => return api_error(error),
         };
-        let scoped = decision.request_id.as_deref() == Some(record.id.as_str())
-            || (decision.request_id.is_none() && decision.project_id == record.project_id);
-        if decision.status != "RESOLVED"
-            || decision.resolved_by.as_deref() != Some(principal.as_str())
-            || !scoped
+        // A refutation is permitted only by the authenticated owner's approved
+        // decision. The owner-decision schema records APPROVED/DENIED; it never
+        // records a separate RESOLVED status, so acceptance must bind APPROVED.
+        if !owner_decision_allows_refutation(&decision, &principal, &record.id, &record.project_id)
         {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({"error": "the owner decision is not a resolved decision by this owner for this request", "code": "OWNER_DECISION_INVALID"})),
+                Json(json!({"error": "the owner decision is not an approved decision by this owner for this request", "code": "OWNER_DECISION_INVALID"})),
             )
                 .into_response();
         }
@@ -14049,6 +14075,10 @@ async fn agentic_request_trace(
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
+    #[cfg(feature = "test-support")]
+    if let Some(response) = wave12_support::trace_intercept(&id).await {
+        return response;
+    }
     if let Err(error) = app.db.intake_request(&id).await {
         return api_error(error);
     }
@@ -15949,6 +15979,71 @@ mod tests {
             ),
         ])
         .unwrap()
+    }
+
+    fn owner_decision(
+        status: &str,
+        resolved_by: Option<&str>,
+        request_id: Option<&str>,
+        project_id: &str,
+    ) -> factory_native::db::AgenticOwnerDecisionRecord {
+        factory_native::db::AgenticOwnerDecisionRecord {
+            id: "decision".into(),
+            project_id: project_id.into(),
+            request_id: request_id.map(str::to_owned),
+            campaign_id: None,
+            matter: "FINDING_REFUTATION".into(),
+            risk: factory_native::lead::RiskClass::R1,
+            status: status.into(),
+            options: vec!["APPROVE_REFUTATION".into()],
+            evidence: serde_json::json!([]),
+            recommendation: "Refute the finding.".into(),
+            deadline: "2099-01-01T00:00:00Z".into(),
+            selected_option: Some("APPROVE_REFUTATION".into()),
+            rationale: Some("The owner approved the refutation.".into()),
+            resolved_by: resolved_by.map(str::to_owned),
+            created_at: "2026-11-09T00:00:00Z".into(),
+            updated_at: "2026-11-09T00:00:00Z".into(),
+            resolved_at: Some("2026-11-09T00:00:00Z".into()),
+        }
+    }
+
+    #[test]
+    fn refutation_requires_the_authenticated_owners_approved_decision() {
+        let request = "11111111-1111-4111-8111-111111111111";
+        let project = "project-wp10";
+        assert!(owner_decision_allows_refutation(
+            &owner_decision("APPROVED", Some("device:owner"), Some(request), project),
+            "device:owner",
+            request,
+            project,
+        ));
+        assert!(owner_decision_allows_refutation(
+            &owner_decision("APPROVED", Some("device:owner"), None, project),
+            "device:owner",
+            request,
+            project,
+        ));
+        // The owner-decision schema never stores RESOLVED; accepting only
+        // APPROVED fixes the previously unreachable refutation path.
+        assert!(!owner_decision_allows_refutation(
+            &owner_decision("RESOLVED", Some("device:owner"), Some(request), project),
+            "device:owner",
+            request,
+            project,
+        ));
+        assert!(!owner_decision_allows_refutation(
+            &owner_decision("APPROVED", Some("device:other"), Some(request), project),
+            "device:owner",
+            request,
+            project,
+        ));
+        assert!(!owner_decision_allows_refutation(
+            &owner_decision("APPROVED", Some("device:owner"), None, "other-project"),
+            "device:owner",
+            request,
+            project,
+        ));
     }
 
     #[tokio::test]

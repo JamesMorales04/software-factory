@@ -1045,6 +1045,8 @@ pub use runtime_settings::FactorySettings;
 mod projects;
 pub use projects::{ProjectCampaignSummary, ProjectDiscoveryRecord, RegisterProjectSource};
 mod planning;
+#[cfg(feature = "test-support")]
+mod wave12_fixture;
 pub use planning::{
     NewPlanReview, OpenSpecProjectionRecord, PlanReviewRecord, PlanningArtifactRecord,
     SkillPackRecord,

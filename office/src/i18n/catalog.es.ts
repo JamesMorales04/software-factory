@@ -3631,7 +3631,7 @@ export const es: Catalog = {
   "director.plan.compiling": "Compilando plan",
   "director.plan.empty": "No hay un WorkGraph registrado para esta solicitud.",
   "director.plan.units": "{count} unidad(es)",
-  "director.plan.order": "Orden: {order}",
+  "director.plan.order": "Orden",
   "director.plan.graphSha": "SHA-256 del grafo",
   "director.plan.success":
     "El WorkGraph del Planner fue validado y registrado.",
