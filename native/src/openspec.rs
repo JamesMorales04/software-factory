@@ -165,6 +165,45 @@ pub struct OpenSpecArtifacts {
     pub manifest: OpenSpecManifest,
 }
 
+/// One rendered file in the read model consumed by the Compose validation job.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct OpenSpecRenderedFile {
+    pub path: String,
+    pub sha256: String,
+    pub content: String,
+}
+
+/// The exact hashes Core stores for the latest durable projection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct OpenSpecProjectionHashes {
+    pub proposal_sha256: String,
+    pub specs_sha256: String,
+    pub design_sha256: String,
+    pub tasks_sha256: String,
+}
+
+/// A request-bound, read-only projection of the latest OpenSpec revision.
+///
+/// This is a transport model for the operator-authenticated validation
+/// endpoint. It is not authority: Core still owns the stored projection and the
+/// rendered files remain a projection until Core freezes a revision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct OpenSpecReadModel {
+    pub request_id: String,
+    pub change_id: String,
+    pub change_path: String,
+    pub revision: u32,
+    pub validated: bool,
+    pub archived: bool,
+    pub artifact_content_sha256: String,
+    pub hashes: OpenSpecProjectionHashes,
+    pub manifest: OpenSpecManifest,
+    pub files: Vec<OpenSpecRenderedFile>,
+}
+
 impl OpenSpecArtifacts {
     /// The hashed artifacts in deterministic write order. `manifest.json` is
     /// deliberately absent because the manifest cannot hash itself.
@@ -242,6 +281,87 @@ impl OpenSpecArtifacts {
             .map_err(OpenSpecError::InvalidArtifact)?;
         Ok(projection)
     }
+}
+
+/// Build the exact read model for the latest persisted projection.
+///
+/// The projection record and the stored artifact JSON must describe the same
+/// change, revision and hashes. A mismatch fails closed; Core never serves a
+/// stale artifact as if it were the current projection.
+pub fn read_model(
+    request_id: &str,
+    projection: &crate::planning::OpenSpecProjection,
+    artifact_content_sha256: &str,
+    artifacts: &OpenSpecArtifacts,
+) -> Result<OpenSpecReadModel, OpenSpecError> {
+    if request_id.is_empty()
+        || request_id.chars().count() > 200
+        || request_id.chars().any(char::is_control)
+    {
+        return Err(OpenSpecError::InvalidArtifact(
+            "request id is required, bounded and control-free".into(),
+        ));
+    }
+    projection
+        .validate()
+        .map_err(OpenSpecError::InvalidArtifact)?;
+    validate_artifacts(artifacts)?;
+    if artifacts.change_id != projection.change_id || artifacts.revision != projection.revision {
+        return Err(OpenSpecError::InvalidArtifact(
+            "stored artifact does not match the projected change revision".into(),
+        ));
+    }
+    if artifact_content_sha256.len() != 64
+        || !artifact_content_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err(OpenSpecError::InvalidArtifact(
+            "stored artifact hash must be a lowercase SHA-256".into(),
+        ));
+    }
+    let expected = artifacts.projection(projection.validated)?;
+    if expected.change_id != projection.change_id
+        || expected.revision != projection.revision
+        || expected.proposal_sha256 != projection.proposal_sha256
+        || expected.specs_sha256 != projection.specs_sha256
+        || expected.design_sha256 != projection.design_sha256
+        || expected.tasks_sha256 != projection.tasks_sha256
+    {
+        return Err(OpenSpecError::InvalidArtifact(
+            "stored artifact hashes do not match the durable projection".into(),
+        ));
+    }
+
+    let mut files = Vec::with_capacity(artifacts.files().len());
+    for (path, content) in artifacts.files() {
+        let sha256 = artifacts.manifest.hash(path).ok_or_else(|| {
+            OpenSpecError::InvalidArtifact(format!("artifact {path} is missing its manifest hash"))
+        })?;
+        files.push(OpenSpecRenderedFile {
+            path: path.to_owned(),
+            sha256: sha256.to_owned(),
+            content: content.to_owned(),
+        });
+    }
+
+    Ok(OpenSpecReadModel {
+        request_id: request_id.to_owned(),
+        change_id: projection.change_id.clone(),
+        change_path: change_path(&projection.change_id)?,
+        revision: projection.revision,
+        validated: projection.validated,
+        archived: projection.archived,
+        artifact_content_sha256: artifact_content_sha256.to_owned(),
+        hashes: OpenSpecProjectionHashes {
+            proposal_sha256: projection.proposal_sha256.clone(),
+            specs_sha256: projection.specs_sha256.clone(),
+            design_sha256: projection.design_sha256.clone(),
+            tasks_sha256: projection.tasks_sha256.clone(),
+        },
+        manifest: artifacts.manifest.clone(),
+        files,
+    })
 }
 
 impl OpenSpecChange {
@@ -432,7 +552,7 @@ pub fn render_revision(
     let specs = vec![OpenSpecSpecArtifact {
         capability: change.change_id.clone(),
         path: format!("specs/{}/spec.md", change.change_id),
-        content: render_spec(change, revision),
+        content: render_spec(change),
     }];
     let design = has_design(change).then(|| render_design(change, revision));
     let tasks = render_tasks(change, revision);
@@ -804,14 +924,12 @@ fn render_proposal(change: &OpenSpecChange, revision: u32) -> String {
     output
 }
 
-fn render_spec(change: &OpenSpecChange, revision: u32) -> String {
+fn render_spec(change: &OpenSpecChange) -> String {
     let mut output = String::new();
-    output.push_str(&format!("# {} Specification\n\n", change.change_id));
-    output.push_str(&format!(
-        "**Change:** {} (`{}`, revision {revision})\n\n",
-        change.title.trim(),
-        change.change_id
-    ));
+    // OpenSpec archives the first `## ` section onward. A title or metadata
+    // preamble above the delta is not carried into `openspec/specs/` and is a
+    // strict-validation warning. The proposal and design already carry the
+    // change identity and revision.
     output.push_str("## ADDED Requirements\n\n");
     for requirement in &change.requirements {
         output.push_str(&format!("### Requirement: {}\n\n", requirement.id));
@@ -1176,15 +1294,14 @@ fn validate_spec_path(spec: &OpenSpecSpecArtifact) -> Result<(), OpenSpecError> 
 }
 
 fn validate_spec_headings(content: &str, capability: &str) -> Result<(), OpenSpecError> {
-    let expected = format!("# {capability} Specification");
-    if content.lines().next() != Some(expected.as_str()) {
+    if !is_lowercase_slug(capability, MAX_CHANGE_ID_CHARS) {
         return Err(OpenSpecError::InvalidArtifact(
-            "spec is missing its capability heading".into(),
+            "spec capability must be a lowercase slug".into(),
         ));
     }
-    if !content.lines().any(|line| line == "## ADDED Requirements") {
+    if content.lines().next() != Some("## ADDED Requirements") {
         return Err(OpenSpecError::InvalidArtifact(
-            "spec is missing the ADDED Requirements heading".into(),
+            "spec must start with the ADDED Requirements section".into(),
         ));
     }
     Ok(())
@@ -2127,6 +2244,62 @@ mod tests {
     }
 
     #[test]
+    fn read_model_is_deterministic_and_binds_projection_hashes() {
+        let artifacts = render(&sample_change()).expect("valid change");
+        let projection = artifacts.projection(true).expect("valid projection");
+        let artifact_sha = sha256_hex(serde_json::to_string(&artifacts).unwrap().as_bytes());
+        let first = read_model("request-1", &projection, &artifact_sha, &artifacts).unwrap();
+        let second = read_model("request-1", &projection, &artifact_sha, &artifacts).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(first.request_id, "request-1");
+        assert_eq!(first.change_id, "add-validator");
+        assert_eq!(first.change_path, "openspec/changes/add-validator");
+        assert_eq!(first.revision, 1);
+        assert!(first.validated);
+        assert!(!first.archived);
+        assert_eq!(first.files.len(), artifacts.files().len());
+        for file in &first.files {
+            assert_eq!(
+                artifacts.manifest.hash(&file.path),
+                Some(file.sha256.as_str())
+            );
+            assert_eq!(file.content, artifacts.artifact(&file.path).unwrap());
+        }
+        assert_eq!(first.manifest.change_id, "add-validator");
+        assert_eq!(
+            first.hashes.proposal_sha256,
+            artifacts.manifest.hash("proposal.md").unwrap()
+        );
+        assert_eq!(
+            first.hashes.specs_sha256,
+            artifacts.manifest.specs_sha256().unwrap()
+        );
+    }
+
+    #[test]
+    fn read_model_rejects_stale_or_mismatched_records() {
+        let artifacts = render(&sample_change()).expect("valid change");
+        let projection = artifacts.projection(true).expect("valid projection");
+        let artifact_sha = sha256_hex(serde_json::to_string(&artifacts).unwrap().as_bytes());
+
+        let mut stale = projection.clone();
+        stale.revision += 1;
+        assert!(read_model("request-1", &stale, &artifact_sha, &artifacts).is_err());
+
+        let mut different = projection.clone();
+        different.tasks_sha256 = "0".repeat(64);
+        assert!(read_model("request-1", &different, &artifact_sha, &artifacts).is_err());
+
+        let mut tampered = artifacts.clone();
+        tampered.tasks.push_str("\n<!-- tampered -->\n");
+        assert!(read_model("request-1", &projection, &artifact_sha, &tampered).is_err());
+
+        assert!(read_model("request-1", &projection, "not-a-hash", &artifacts).is_err());
+        assert!(read_model("request\n1", &projection, &artifact_sha, &artifacts).is_err());
+        assert!(read_model(&"r".repeat(201), &projection, &artifact_sha, &artifacts).is_err());
+    }
+
+    #[test]
     fn traceability_gap_is_rejected() {
         let mut change = sample_change();
         change.tasks[1].acceptance = vec!["Valid input is unchanged.".into()];
@@ -2232,6 +2405,12 @@ mod tests {
         artifacts.tasks = artifacts.tasks.replace("## Traceability", "## Coverage");
         refresh_manifest(&mut artifacts);
         assert!(validate_artifacts(&artifacts).is_err());
+
+        let mut artifacts = render(&sample_change()).expect("valid change");
+        artifacts.specs[0].content = format!("# Preamble\n\n{}", artifacts.specs[0].content);
+        refresh_manifest(&mut artifacts);
+        let error = validate_artifacts(&artifacts).expect_err("spec preamble is rejected");
+        assert!(error.to_string().contains("ADDED Requirements"));
     }
 
     #[test]
@@ -2351,7 +2530,12 @@ mod tests {
         assert_eq!(artifacts.revision, 7);
         assert_eq!(artifacts.manifest.revision, 7);
         assert!(artifacts.proposal.contains("revision 7"));
-        assert!(artifacts.specs[0].content.contains("revision 7"));
+        assert!(
+            artifacts.specs[0]
+                .content
+                .starts_with("## ADDED Requirements\n")
+        );
+        assert!(!artifacts.specs[0].content.contains("revision 7"));
         assert!(render_revision(&sample_change(), 0).is_err());
     }
 }

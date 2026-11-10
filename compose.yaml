@@ -49,6 +49,7 @@ services:
       FACTORY_CONFIG_VERIFIER_DIR: /config-verifier
       FACTORY_CONFIG_REVIEWER_DIR: /config-reviewer
       FACTORY_CONFIG_RUNTIME_DIR: /config-runtime
+      FACTORY_CONFIG_OPENSPEC_DIR: /config-openspec
       FACTORY_DATA_DIR: /data
       FACTORY_PROJECTS_DIR: /projects
       FACTORY_PROVIDER_SESSIONS_DIR: /provider-sessions
@@ -62,6 +63,7 @@ services:
       - factory-config-verifier:/config-verifier
       - factory-config-reviewer:/config-reviewer
       - factory-config-runtime:/config-runtime
+      - factory-config-openspec:/config-openspec
       - factory-data:/data
       - factory-projects:/projects
       - factory-provider-sessions:/provider-sessions
@@ -371,6 +373,38 @@ services:
       - factory-egress
     stop_grace_period: 20s
 
+  # Profile-gated, one-shot OpenSpec validation job. It fetches the latest
+  # Core-rendered projection over the private control network, writes the change
+  # into an isolated tmpfs workspace and runs the pinned CLI. It is not part of
+  # the steady-state stack and never mounts project source or the Core database.
+  openspec-validate:
+    build:
+      context: deploy/openspec
+      dockerfile: Dockerfile
+    image: localhost/software-factory-openspec:1.16.1
+    profiles: ["openspec-validation"]
+    user: "10001:10001"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /workspace:rw,nosuid,nodev,size=64m,mode=1777
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+    volumes:
+      - factory-config-openspec:/config:ro
+    environment:
+      FACTORY_CORE_URL: http://core:8765
+      FACTORY_OPERATOR_TOKEN_FILE: /config/operator.token
+      FACTORY_OPENSPEC_REQUEST_ID: ${FACTORY_OPENSPEC_REQUEST_ID:-}
+      FACTORY_OPENSPEC_WORKSPACE: /workspace
+    entrypoint: ["node", "/opt/openspec/validate.mjs"]
+    networks:
+      - factory-control
+
   codex-auth:
     build:
       context: .
@@ -424,6 +458,7 @@ volumes:
   factory-config-verifier:
   factory-config-reviewer:
   factory-config-runtime:
+  factory-config-openspec:
   factory-data:
   factory-projects:
   factory-provider-sessions:

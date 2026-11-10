@@ -25,7 +25,7 @@ what remains unverified. It is not acceptance evidence and does not claim
 | WP4 | Implemented at the library boundary | Lockfile/vendor/SBOM/license/advisory evidence binding, Cargo source-replacement parsing, private staging fetch/vendor, atomic promotion/rollback, aggregate bounds, timeout/output bounds, pinned cargo/rustup | Wiring the broker acquisition into the runtime-broker HTTP/Compose path |
 | WP5 | Implemented | Bounded SSE reconnect, no hidden 300-second turn deadline, reservation settle/release policy, bounded structured-output repair policy | Full provider/worker fault-injection matrix and live long-turn UAT |
 | WP6 | Existing implementation verified | Content-addressed workspace snapshots, generated-target exclusion, symlink/unsafe-archive rejection, cleanup paths | Startup orphan-volume reconciliation and a dedicated chaos run |
-| WP7 | Implemented | Canonical `## ADDED Requirements` / `### Requirement:` / `#### Scenario:` and numeric task IDs; pinned OpenSpec CLI `1.16.1` validator and container image | Compose validation job against a Core-rendered change |
+| WP7 | Implemented | Canonical `## ADDED Requirements` / `### Requirement:` / `#### Scenario:` and numeric task IDs; pinned OpenSpec CLI `1.16.1` validator and container image; profile-gated Compose validation job against a Core-rendered fixture | Real Core-backed Compose run against a projection produced by the model planning pipeline |
 | WP8 | Implemented | Deterministic Finding Router, durable OPEN dispositions, Gate blocks missing/OPEN findings even on reviewer PASS, authenticated resolve/refute, durable owner-decision validation, immutable closed dispositions | Browser acceptance of finding actions |
 | WP9 | Partial | Role definitions, bounded role prompts, separate principal IDs, reviewer evidence validation, critical-diversity fail-closed policy | Multi-process Compose reviewer fleet with distinct tokens/identities |
 | WP10 | Implemented for this slice | Director plan-review panel, lane/artifact/stack/architecture/docs/skills/DoD/OpenSpec summaries, approve/request-changes/reject, finding list and disposition form | Real Core/Compose browser acceptance and visual review |
@@ -94,6 +94,9 @@ limitation, not implemented coverage.
 - Real Core/Compose browser acceptance for plan review and finding actions.
 - Independent acceptance and Product Owner visual approval.
 - Compose reviewer fleet with independent reviewer tokens/processes.
-- OpenSpec Compose validation job.
+- OpenSpec Compose validation against a projection produced by the real Core
+  planning pipeline (the profile-gated job itself is implemented and exercised
+  against a Core-rendered fixture; see
+  [WP7 evidence](wp7-openspec-compose-evidence.md)).
 - Runtime-broker HTTP wiring for dependency acquisition.
 - Startup orphan-volume reconciliation and the full chaos matrix.

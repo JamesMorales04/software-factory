@@ -1100,6 +1100,7 @@ fn office_api_router(app: Arc<App>) -> Router {
             get(get_agentic_plan).post(plan_agentic_request),
         )
         .route("/agentic/requests/{id}/planning", get(get_agentic_planning))
+        .route("/agentic/requests/{id}/openspec", get(get_agentic_openspec))
         .route(
             "/agentic/requests/{id}/plan-review",
             post(review_agentic_plan),
@@ -1389,6 +1390,7 @@ fn api_router(app: Arc<App>) -> Router {
             get(get_agentic_plan).post(plan_agentic_request),
         )
         .route("/agentic/requests/{id}/planning", get(get_agentic_planning))
+        .route("/agentic/requests/{id}/openspec", get(get_agentic_openspec))
         .route(
             "/agentic/requests/{id}/plan-review",
             post(review_agentic_plan),
@@ -11409,6 +11411,102 @@ async fn planning_readiness(
     Ok(missing)
 }
 
+async fn get_agentic_openspec(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if id.is_empty() || id.chars().count() > 200 || id.chars().any(char::is_control) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "request id is required, bounded and control-free",
+                "code": "REQUEST_ID_INVALID",
+            })),
+        )
+            .into_response();
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    let projection = match app.db.latest_openspec_projection(&record.id).await {
+        Ok(projection) => projection,
+        Err(Error::NotFound) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({
+                    "error": "no OpenSpec projection exists for this request",
+                    "code": "OPENSPEC_NOT_FOUND",
+                })),
+            )
+                .into_response();
+        }
+        Err(error) => return api_error(error),
+    };
+    let artifact = match app
+        .db
+        .planning_artifact(&record.id, "OPENSPEC", projection.revision)
+        .await
+    {
+        Ok(artifact) => artifact,
+        Err(Error::NotFound) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": "the durable projection has no matching rendered artifact",
+                    "code": "OPENSPEC_ARTIFACT_MISSING",
+                })),
+            )
+                .into_response();
+        }
+        Err(error) => return api_error(error),
+    };
+    let artifacts: factory_native::openspec::OpenSpecArtifacts =
+        match serde_json::from_str(&artifact.content_json) {
+            Ok(artifacts) => artifacts,
+            Err(_) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
+                        "error": "the stored OpenSpec artifact is not decodable",
+                        "code": "OPENSPEC_ARTIFACT_INVALID",
+                    })),
+                )
+                    .into_response();
+            }
+        };
+    let planning_projection = factory_native::planning::OpenSpecProjection {
+        change_id: projection.change_id.clone(),
+        revision: projection.revision,
+        proposal_sha256: projection.proposal_sha256.clone(),
+        specs_sha256: projection.specs_sha256.clone(),
+        design_sha256: projection.design_sha256.clone(),
+        tasks_sha256: projection.tasks_sha256.clone(),
+        validated: projection.validated,
+        archived: projection.archived,
+    };
+    match factory_native::openspec::read_model(
+        &record.id,
+        &planning_projection,
+        &artifact.content_sha256,
+        &artifacts,
+    ) {
+        Ok(model) => Json(model).into_response(),
+        Err(error) => (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": error.to_string(),
+                "code": "OPENSPEC_PROJECTION_STALE",
+            })),
+        )
+            .into_response(),
+    }
+}
+
 async fn get_agentic_planning(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
@@ -15526,6 +15624,68 @@ mod tests {
             .unwrap();
         assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
 
+        app.db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn openspec_projection_route_requires_operator_authorization_and_bounds() {
+        use tower::ServiceExt;
+
+        let path = std::env::temp_dir().join(format!(
+            "factory-core-openspec-projection-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let app = test_app(&path).await;
+        for router in [api_router(app.clone()), office_api_router(app.clone())] {
+            let unauthenticated = router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("GET")
+                        .uri("/agentic/requests/missing/openspec")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+
+            let missing = router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("GET")
+                        .uri("/agentic/requests/missing/openspec")
+                        .header("authorization", "Bearer operator-token")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+
+            let oversized = format!("/agentic/requests/{}/openspec", "a".repeat(201));
+            let bounded = router
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("GET")
+                        .uri(oversized)
+                        .header("authorization", "Bearer operator-token")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(bounded.status(), StatusCode::BAD_REQUEST);
+            let body: Value = serde_json::from_slice(
+                &axum::body::to_bytes(bounded.into_body(), 4096)
+                    .await
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(body["code"], "REQUEST_ID_INVALID");
+        }
         app.db.close().await;
         let _ = std::fs::remove_file(path);
     }
