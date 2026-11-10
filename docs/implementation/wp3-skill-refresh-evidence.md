@@ -5,7 +5,7 @@ completion claim. No paid model inference was run. The stale/missing skill gate
 was not weakened.
 
 - Branch: `factory/quality-wp3-skill-refresh`
-- Implementation commit: `cbf45fd960fe6468feab96461cc99fbded777527`
+- Implementation commit: `ba2e2c99d0b289f59b86a763f492244e31fcee03`
 - Baseline: `bcb8b5b`
 - Design authority:
   [ADR-0039](../architecture/decisions/ADR-0039-quality-first-planning-and-stack-selection.md)
@@ -14,30 +14,46 @@ was not weakened.
 
 ## Review-finding repairs
 
-Independent review at `c91ea78` found five valid issues. The repair commit
-addresses them as follows:
+The first independent review at `c91ea78` found five valid issues; commit
+`cbf45fd` repaired them (pip pack, Docker-specific aliases, durable rotating
+project cursor, Office states, and an initial source manifest). The second
+review at `cf8f890` found two remaining issues, repaired here:
 
-1. **Python/pip blocking:** added a cited `pip` pack
-   (`pip.pypa.io` and `packaging.python.org`) and Python-manifest coverage tests
-   that prove Django/Flask/Pytest/Ruff projects no longer fail with `Missing`.
-2. **Unsupported freshness dates:** added
-   [skill-pack catalog review evidence](../evidence/skill-pack-catalog-2026-11-09/review.json)
-   covering every pack and cited source URL. On 2026-11-09 each URL was checked
-   by HTTP GET (redirects followed) and returned HTTP 200. A test fails if a
-   pack, source URL or `reviewedAt` date diverges from that manifest. This is
-   source availability/identity verification, not a claim of deep content
-   re-review; the limitation is recorded below.
-3. **Docker aliases used Podman guidance:** `docker` and `docker-compose` now
-   cite `docs.docker.com` and use `docker compose config`; a test rejects
-   Podman sources or commands for those names.
-4. **Hidden project truncation:** the refresh scan now uses a durable rotating
-   cursor (`migrations/0065_skill_refresh_cursor.sql`) with at most 64
-   non-overlapping projects per pass. Status and reports expose
-   `projectTotal`, `projectsChecked`, `projectsSkipped` and `projectOffset`.
-   Tests cover a 70-project rotation across two passes.
-5. **Missing Office states:** component tests now cover refresh-status loading,
-   load failure, refresh-action failure, technology truncation and deferred
-   projects.
+1. **HTTP availability was still used as freshness.** `SkillPack` now separates
+   `source_checked_at` from `content_reviewed_at` and carries an explicit
+   `review_basis` (`SOURCE_AVAILABILITY_ONLY` or `CONTENT_REVIEWED`),
+   `review_scope` and `reviewed_sections`. The classifier treats only
+   content-reviewed packs as fresh. Source-only packs validate as source
+   metadata but are always stale/blocking and cannot be persisted by
+   `Database::save_skill_pack`.
+2. **Office labeled the next project window as already scanned.** The panel now
+   labels status counts as the “Next scan window” and shows the completed pass
+   from `lastOutcome` separately.
+
+### Content-review basis
+
+The catalog has 68 pack entries including three compatibility aliases. Fifteen
+packs are content-reviewed against named official source sections on
+2026-11-09:
+
+`rust`, `cargo`, `axum`, `sqlx`, `tokio`, `typescript`, `react`, `vite`, `npm`,
+`python`, `pip`, `django`, `flask`, `pytest`, `ruff`.
+
+The other canonical packs and the `docker`/`docker-compose`/`podman` aliases are
+`SOURCE_AVAILABILITY_ONLY`: their cited URLs were checked, but their content was
+not reviewed. They remain blocking rather than claiming freshness. This is the
+explicit option (b) from the review: unreviewed packs stay fail-closed.
+
+[skill-pack catalog review evidence](../evidence/skill-pack-catalog-2026-11-09/review.json)
+records, per pack:
+
+- `sourceCheckedAt` and HTTP status for every cited source URL;
+- `contentReview` with `reviewedAt`, `reviewAfter`, scope and the exact source
+  section headings checked, or `null` for source-only packs.
+
+On 2026-11-09 all 74 unique source URLs returned HTTP 200 (HTTP GET, redirects
+followed). A test verifies that the manifest matches every pack’s source list,
+source-check date, review basis, content-review date, scope and section list.
 
 ## What changed
 
@@ -48,16 +64,16 @@ latest persisted revision and the curated builtin catalog:
 
 | State | Meaning | Blocks planning |
 |---|---|---|
-| `FRESH` | A persisted revision is valid and before `review_after`, or no persisted revision exists and the builtin pack is current. | No |
-| `DUE` | A persisted revision is past `review_after` and no newer, different builtin revision exists. | Yes |
-| `REFRESHABLE` | A persisted revision is due and the builtin revision has a later `last_verified_at` and a different content hash. | No; a refresh can append an immutable revision. |
-| `STALE` | The builtin pack is past `review_after` or invalid and no usable persisted revision exists. | Yes |
+| `FRESH` | A persisted revision or builtin is content-reviewed, valid and before `review_after`. | No |
+| `DUE` | A content-reviewed persisted revision is past `review_after` and no newer, different content-reviewed builtin exists. | Yes |
+| `REFRESHABLE` | A content-reviewed persisted revision is due and the builtin has a later `content_reviewed_at` and a different content hash. | No; a refresh can append an immutable revision. |
+| `STALE` | The builtin is past `review_after`, invalid, or only source-availability-checked; no usable persisted revision exists. | Yes |
 | `MISSING` | Neither a persisted revision nor a builtin pack exists. | Yes |
 
 `build_skill_plan` uses the same classification. Unknown technologies,
-stale builtins, invalid packs and due packs without a safe builtin remain
-fail-closed. Review dates are never extended in place, and no source URL is
-invented.
+source-only builtins, stale builtins, invalid packs and due packs without a safe
+builtin remain fail-closed. Review dates are never extended in place, and no
+source URL is invented.
 
 ### Core scheduler and API
 
@@ -70,13 +86,13 @@ invented.
 - one task only, with `watch`-based shutdown and an idempotent
   `shutdown_scheduler()` awaited before the database closes;
 - serializes passes with a process-wide async mutex;
-- scans at most 64 registered project roots per pass using a durable rotating
-  cursor, caps status output at 256 technologies and caps event detail at 700
-  characters;
+- scans at most 64 registered project roots per pass using the durable rotating
+  cursor in `skill_refresh_state`, caps status output at 256 technologies and
+  caps event detail at 700 characters;
 - reports checked/skipped/total projects in every status and report so a
   bounded pass never implies full coverage;
-- refreshes only a due persisted revision when the builtin revision is newer
-  and different; it does not pre-seed the whole catalog;
+- refreshes only a due persisted revision when the builtin is content-reviewed,
+  newer and different; it does not pre-seed the whole catalog;
 - records durable idempotent events through `Database::record_event_once`
   (`skill.pack.refresh_due`, `skill.pack.refreshed`,
   `skill.pack.refresh_blocked`);
@@ -105,34 +121,32 @@ does not recurse.
 
 The curated catalog moved to
 `native/src/planning/skills/catalog.rs` and now has 65 canonical entries plus
-three self-named compatibility aliases. New official-source packs include:
+three self-named compatibility aliases. The previously added
 `actix-web`, `angular`, `bun`, `bundler`, `composer`, `csharp`, `deno`,
 `diesel`, `django`, `dotnet`, `electron`, `flask`, `github-actions`, `gradle`,
 `hyper`, `java`, `kotlin`, `kubernetes`, `laravel`, `maven`, `mysql`, `nuget`,
 `php`, `pip`, `pnpm`, `postgresql`, `rails`, `redis`, `reqwest`, `rocket`,
 `ruby`, `serde`, `svelte`, `swift`, `tauri`, `terraform`, `tonic`, `tracing`,
-`vue` and `yarn`. `docker`, `docker-compose` and `podman` resolve to distinct
-self-named compatibility packs so a persisted technology name cannot silently
-diverge from its planning need. Docker aliases use Docker-specific sources and
-commands.
+`vue` and `yarn` packs remain present. Docker aliases use Docker-specific
+sources and commands.
 
-Every pack validates with HTTPS official sources, best practices,
-anti-patterns, security notes, commands, `last_verified_at` and `review_after`.
-Coverage tests fail if a detected technology lacks a pack or if the reviewed
-source manifest drifts from the catalog.
+Every pack validates its source list, source-check date, required best
+practices, anti-patterns, security notes and commands. Content-reviewed packs
+also require a valid review window, review scope and reviewed source sections.
 
 ### Office
 
 The existing Core-backed Skills route has a “Technology knowledge packs” panel:
 
-- shows interval, last/next pass, due/refreshable count, blocking count,
-  projects scanned/deferred and the last outcome;
-- lists only non-fresh packs with state badges, reason and review deadline;
+- shows interval, last/next pass, due/refreshable count, blocking count, the
+  **next scan window** and the last completed pass;
+- lists only non-fresh packs with state badges, reason and review deadline when
+  a content review exists;
 - exposes an explicit “Run refresh pass” action that calls the authenticated
   Core POST;
 - adds English and Spanish strings and component tests for loading, load
   failure, action failure, due/blocked states, truncated technologies, deferred
-  projects and the refresh action.
+  projects, next-window labeling and last-pass counts.
 
 The panel does not invent state or offer a decorative action. The agentic skill
 registry remains separate and unchanged in authority.
@@ -145,17 +159,19 @@ registry remains separate and unchanged in authority.
 - `native/src/db/planning.rs`
 - `native/src/db/projects.rs`
 - `native/src/planning/mod.rs`
-- `native/src/planning/skill_refresh.rs` (new)
+- `native/src/planning/skill_refresh.rs`
 - `native/src/planning/skills.rs`
-- `native/src/planning/skills/catalog.rs` (new)
-- `migrations/0065_skill_refresh_cursor.sql` (new)
+- `native/src/planning/skills/catalog.rs`
+- `migrations/0065_skill_refresh_cursor.sql`
+- `migrations/0066_skill_pack_content_review.sql`
+- `native/tests/migration_skill_refresh.rs`
 - `office/src/coreApi.ts`
 - `office/src/i18n/catalog.en.ts`
 - `office/src/i18n/catalog.es.ts`
 - `office/src/views/Skills.test.tsx`
 - `office/src/views/Skills.tsx`
 - `office/src/views/knowledge.css`
-- `docs/evidence/skill-pack-catalog-2026-11-09/review.json` (new)
+- `docs/evidence/skill-pack-catalog-2026-11-09/review.json`
 - `docs/product/office-parity.json` (CAP-038 only)
 - `docs/implementation/quality-first-planning-status.md` (WP3 row)
 - `docs/implementation/wp3-skill-refresh-evidence.md` (this file)
@@ -169,13 +185,16 @@ cargo fmt --all -- --check
 clean
 
 cargo test -p factory-native --lib planning::skills
-8 passed; 0 failed
+9 passed; 0 failed
 
 cargo test -p factory-native --lib planning::skill_refresh
 6 passed; 0 failed
 
 cargo test -p factory-native --lib
-743 passed; 0 failed; 2 ignored
+744 passed; 0 failed; 2 ignored
+
+cargo test -p factory-native --test migration_skill_refresh
+1 passed; 0 failed
 
 cargo test -p factory-native --test planning_pipeline
 1 passed; 0 failed
@@ -187,14 +206,14 @@ cargo clippy -p factory-native --all-targets --all-features -- -D warnings
 clean
 ```
 
-The two ignored tests are pre-existing Podman-dependent fixtures; no new test is
-ignored.
+The two ignored library tests are pre-existing Podman-dependent fixtures; no new
+test is ignored.
 
 From `office/`:
 
 ```text
 npm test -- --run
-302 passed across 45 files
+303 passed across 45 files
 
 npm run typecheck
 clean
@@ -210,33 +229,34 @@ podman compose config
 exit 0
 ```
 
-Catalog review evidence: 68 pack entries and 74 unique source URLs were checked
-on 2026-11-09; all returned HTTP 200. The manifest records each pack’s reviewed
-date and source statuses. No paid inference was used.
-
 Covered tests include FRESH/DUE/REFRESHABLE/STALE/MISSING classification,
-immutable refresh revision, idempotent scheduler pass and events, scheduler
-shutdown, missing-technology fail-closed behavior, Python/pip planning,
-detected-stack catalog coverage, catalog review-manifest integrity, Docker
-source correctness, durable project rotation with skipped counts, endpoint
-authentication/bounds and the Office loading/error/action/truncation/deferred
-states.
+source-only packs never being fresh, immutable refresh revision, idempotent
+scheduler pass and events, scheduler shutdown, missing-technology fail-closed
+behavior, Python/pip planning, detected-stack catalog coverage, catalog
+source/content-review manifest integrity, Docker source correctness, durable
+project rotation with skipped counts, migration `0065` cursor durability and
+`0066` historical-row preservation, endpoint authentication/bounds and the
+Office loading/error/action/truncation/deferred/next-window states.
 
 ## Limitations and NOT_TESTED
 
 - **NOT_TESTED:** a real Compose Core restart with the scheduler active, the
-  scheduler interval boundary in a running container, migration `0065` on an
-  upgraded Compose volume, and durable event inspection through the Compose
-  stack. Only `podman compose config` was run.
+  scheduler interval boundary in a running container, migrations on a populated
+  Compose volume, and durable event inspection through the Compose stack. The
+  migration upgrade path is covered by a local pre-change database test; only
+  `podman compose config` was run for Compose.
 - **NOT_TESTED:** real browser acceptance of the Skills technology-pack panel
   and a real operator-token POST from the browser. Component tests only.
 - **NOT_TESTED:** paid model inference. It was explicitly not run.
 - **NOT_TESTED:** independent verifier, reviewer and owner acceptance; this
   document is implementer evidence, not certification.
-- **KNOWN LIMITATION:** freshness evidence verifies that every cited official
-  source URL was reachable on 2026-11-09. It does not claim a deep re-read of
-  every document; the curated pack text and the 90-day review window remain the
-  maintenance trigger.
+- **KNOWN LIMITATION:** only 15 packs have a recorded content review. The
+  remaining 50 canonical packs and three compatibility aliases are
+  source-availability-only and block planning until content-reviewed. This is
+  intentional fail-closed behavior.
+- **KNOWN LIMITATION:** for the 15 reviewed packs, the review scope is the
+  named official section headings recorded in the manifest, not a verbatim
+  reproduction of the documentation.
 - **KNOWN LIMITATION:** the catalog uses `version = "current"` rather than a
   per-release version matrix.
 - **KNOWN LIMITATION:** an unreadable or corrupt persisted pack is logged and not
@@ -258,13 +278,16 @@ No items are marked `BLOCKED` for this WP.
   registered there.
 - `native/src/db/mod.rs`: three event kinds and `record_event_once` were added.
 - `native/src/db/planning.rs`: skill-pack reads use `rowid` as the
-  insertion-order tiebreaker, and the durable project cursor accessors live
-  there.
+  insertion-order tiebreaker, source-check/content-review columns are separate,
+  and the durable project cursor accessors live there.
 - `native/src/db/projects.rs`: project listing is ordered by `created_at,id` so
   the rotating scan is deterministic.
-- `native/src/planning/mod.rs`: `skill_refresh` module registration.
-- `migrations/0065_skill_refresh_cursor.sql`: new durable cursor table. The
-  migration owner should keep this number when merging the wave.
+- `native/src/planning/mod.rs`: `SkillReviewBasis` and the separated
+  source/content review contract.
+- `migrations/0065_skill_refresh_cursor.sql`: durable cursor table.
+- `migrations/0066_skill_pack_content_review.sql`: source-check/content-review
+  column split.
+- The migration owner should keep these numbers when merging the wave.
 
 ## Authority and security
 
