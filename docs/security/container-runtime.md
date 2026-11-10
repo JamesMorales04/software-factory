@@ -149,6 +149,10 @@ why the engine is trusted infrastructure and why SEC-01 remains blocked.
   removes stale workspaces and its own owner-labelled orphan resources on
   reconciliation. Unlabelled, foreign-owner and provider resources are
   preserved.
+- Broker deletion requires the caller's expected owner and verifies the stored
+  owner label before removal. Volume creation resets only a managed volume whose
+  owner and workspace identity match; a foreign or unlabelled pre-existing
+  volume is preserved and the request fails closed.
 - Provider session cleanup returned `container_removed_verified_absent` in the
   fixture journey.
 

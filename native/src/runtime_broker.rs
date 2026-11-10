@@ -12,7 +12,7 @@ use crate::execution::{BoundedOutput, ExecutionError};
 
 const MAX_ERROR_BYTES: usize = 4096;
 const MAX_ARCHIVE_BYTES: u64 = 128 * 1024 * 1024;
-const MAX_RESOURCE_INVENTORY_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_RESOURCE_INVENTORY_BYTES: usize = 4 * 1024 * 1024;
 const MAX_MANAGED_RESOURCES: usize = 4096;
 const MAX_LABEL_BYTES: usize = 128;
 
@@ -36,6 +36,15 @@ impl ResourceOwner {
             Self::Supervisor => "supervisor",
             Self::Verifier => "verifier",
             Self::Provider => "provider",
+        }
+    }
+
+    pub fn from_label(value: &str) -> Option<Self> {
+        match value {
+            "supervisor" => Some(Self::Supervisor),
+            "verifier" => Some(Self::Verifier),
+            "provider" => Some(Self::Provider),
+            _ => None,
         }
     }
 }
@@ -184,6 +193,18 @@ struct PodmanContainerEntry {
 }
 
 #[derive(Deserialize)]
+struct PodmanContainerInspect {
+    #[serde(rename = "Config", default)]
+    config: Option<PodmanContainerConfig>,
+}
+
+#[derive(Deserialize)]
+struct PodmanContainerConfig {
+    #[serde(rename = "Labels", default)]
+    labels: Option<BTreeMap<String, String>>,
+}
+
+#[derive(Deserialize)]
 #[serde(untagged)]
 enum PodmanNames {
     List(Vec<String>),
@@ -194,9 +215,74 @@ fn is_managed(labels: &BTreeMap<String, String>) -> bool {
     labels.get(MANAGED_LABEL_KEY).map(String::as_str) == Some("true")
 }
 
+/// A resource is removable only when it carries the managed label and the
+/// expected owner label. Missing or unknown owner labels fail closed.
+pub fn resource_owner_matches(labels: &BTreeMap<String, String>, expected: ResourceOwner) -> bool {
+    is_managed(labels)
+        && labels
+            .get(OWNER_LABEL_KEY)
+            .and_then(|value| ResourceOwner::from_label(value))
+            == Some(expected)
+}
+
+/// Volume reuse is allowed only when the existing volume is managed, owned by
+/// the same service and labelled with the same workspace identity.
+pub fn volume_identity_matches(
+    labels: &BTreeMap<String, String>,
+    expected: ResourceOwner,
+    workspace_id: &str,
+) -> bool {
+    resource_owner_matches(labels, expected)
+        && labels.get(WORKSPACE_LABEL_KEY).map(String::as_str) == Some(workspace_id)
+}
+
+/// Extract the label map from `podman volume inspect --format json`.
+pub fn parse_volume_labels(bytes: &[u8]) -> Result<BTreeMap<String, String>, String> {
+    if bytes.len() > MAX_RESOURCE_INVENTORY_BYTES {
+        return Err("volume inspect output exceeds its bound".into());
+    }
+    let entries: Vec<PodmanVolumeEntry> = serde_json::from_slice(bytes)
+        .map_err(|error| format!("volume inspect is invalid JSON: {error}"))?;
+    entries
+        .into_iter()
+        .next()
+        .map(|entry| entry.labels.unwrap_or_default())
+        .ok_or_else(|| "volume inspect returned no entry".to_owned())
+}
+
+/// Extract the label map from `podman container inspect --format json`.
+pub fn parse_container_labels(bytes: &[u8]) -> Result<BTreeMap<String, String>, String> {
+    if bytes.len() > MAX_RESOURCE_INVENTORY_BYTES {
+        return Err("container inspect output exceeds its bound".into());
+    }
+    let entries: Vec<PodmanContainerInspect> = serde_json::from_slice(bytes)
+        .map_err(|error| format!("container inspect is invalid JSON: {error}"))?;
+    entries
+        .into_iter()
+        .next()
+        .map(|entry| {
+            entry
+                .config
+                .and_then(|config| config.labels)
+                .unwrap_or_default()
+        })
+        .ok_or_else(|| "container inspect returned no entry".to_owned())
+}
+
 fn bounded_label(value: &str) -> Option<String> {
     (value.len() <= MAX_LABEL_BYTES && value.bytes().all(|byte| byte.is_ascii_graphic()))
         .then(|| value.to_owned())
+}
+
+/// Append a streamed chunk only while it stays inside `limit`. Returning
+/// `false` lets the caller terminate the response/process instead of buffering
+/// an unbounded body first.
+pub fn extend_bounded(target: &mut Vec<u8>, chunk: &[u8], limit: usize) -> bool {
+    if target.len().saturating_add(chunk.len()) > limit {
+        return false;
+    }
+    target.extend_from_slice(chunk);
+    true
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -341,10 +427,16 @@ impl RuntimeBrokerClient {
         self.expect_success(response).await
     }
 
-    pub async fn remove_volume(&self, volume: &str) -> Result<(), BrokerError> {
+    pub async fn remove_volume(
+        &self,
+        volume: &str,
+        owner: ResourceOwner,
+    ) -> Result<(), BrokerError> {
+        let mut url = self.join(&format!("v1/volumes/{volume}"))?;
+        url.query_pairs_mut().append_pair("owner", owner.as_str());
         let response = self
             .client
-            .delete(self.join(&format!("v1/volumes/{volume}"))?)
+            .delete(url)
             .bearer_auth(&self.token)
             .timeout(Duration::from_secs(60))
             .send()
@@ -401,7 +493,7 @@ impl RuntimeBrokerClient {
     /// Supervisor to remove orphaned volumes/containers that no durable record
     /// references.
     pub async fn list_managed_resources(&self) -> Result<ManagedResources, BrokerError> {
-        let response = self
+        let mut response = self
             .client
             .get(self.join("v1/resources")?)
             .bearer_auth(&self.token)
@@ -418,11 +510,13 @@ impl RuntimeBrokerClient {
                 "managed resource inventory exceeds the broker bound".into(),
             ));
         }
-        let bytes = response.bytes().await?;
-        if bytes.len() > MAX_RESOURCE_INVENTORY_BYTES {
-            return Err(BrokerError::InvalidResponse(
-                "managed resource inventory exceeds the broker bound".into(),
-            ));
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await? {
+            if !extend_bounded(&mut bytes, &chunk, MAX_RESOURCE_INVENTORY_BYTES) {
+                return Err(BrokerError::InvalidResponse(
+                    "managed resource inventory exceeds the broker bound".into(),
+                ));
+            }
         }
         let resources: ManagedResources = serde_json::from_slice(&bytes)
             .map_err(|error| BrokerError::InvalidResponse(format!("inventory JSON: {error}")))?;
@@ -454,10 +548,16 @@ impl RuntimeBrokerClient {
         response.json().await.map_err(BrokerError::Request)
     }
 
-    pub async fn remove_container(&self, container: &str) -> Result<(), BrokerError> {
+    pub async fn remove_container(
+        &self,
+        container: &str,
+        owner: ResourceOwner,
+    ) -> Result<(), BrokerError> {
+        let mut url = self.join(&format!("v1/containers/{container}"))?;
+        url.query_pairs_mut().append_pair("owner", owner.as_str());
         let response = self
             .client
-            .delete(self.join(&format!("v1/containers/{container}"))?)
+            .delete(url)
             .bearer_auth(&self.token)
             .timeout(Duration::from_secs(60))
             .send()
@@ -629,5 +729,80 @@ mod tests {
         )));
         assert!(!is_valid_container_name("factory-exec-123"));
         assert_eq!(ResourceOwner::Supervisor.as_str(), "supervisor");
+        assert_eq!(
+            ResourceOwner::from_label("verifier"),
+            Some(ResourceOwner::Verifier)
+        );
+        assert_eq!(ResourceOwner::from_label("worker"), None);
+    }
+
+    #[test]
+    fn resource_ownership_requires_managed_and_exact_owner_labels() {
+        let mut labels = BTreeMap::new();
+        assert!(!resource_owner_matches(&labels, ResourceOwner::Supervisor));
+        labels.insert(MANAGED_LABEL_KEY.into(), "true".into());
+        assert!(!resource_owner_matches(&labels, ResourceOwner::Supervisor));
+        labels.insert(OWNER_LABEL_KEY.into(), "verifier".into());
+        assert!(!resource_owner_matches(&labels, ResourceOwner::Supervisor));
+        assert!(resource_owner_matches(&labels, ResourceOwner::Verifier));
+        labels.insert(OWNER_LABEL_KEY.into(), "worker".into());
+        assert!(!resource_owner_matches(&labels, ResourceOwner::Verifier));
+        labels.insert(MANAGED_LABEL_KEY.into(), "false".into());
+        labels.insert(OWNER_LABEL_KEY.into(), "supervisor".into());
+        assert!(!resource_owner_matches(&labels, ResourceOwner::Supervisor));
+    }
+
+    #[test]
+    fn volume_identity_requires_owner_and_workspace_match() {
+        let mut labels = BTreeMap::new();
+        labels.insert(MANAGED_LABEL_KEY.into(), "true".into());
+        labels.insert(OWNER_LABEL_KEY.into(), "supervisor".into());
+        labels.insert(WORKSPACE_LABEL_KEY.into(), "workspace-a".into());
+        assert!(volume_identity_matches(
+            &labels,
+            ResourceOwner::Supervisor,
+            "workspace-a"
+        ));
+        assert!(!volume_identity_matches(
+            &labels,
+            ResourceOwner::Supervisor,
+            "workspace-b"
+        ));
+        assert!(!volume_identity_matches(
+            &labels,
+            ResourceOwner::Verifier,
+            "workspace-a"
+        ));
+        labels.remove(OWNER_LABEL_KEY);
+        assert!(!volume_identity_matches(
+            &labels,
+            ResourceOwner::Supervisor,
+            "workspace-a"
+        ));
+    }
+
+    #[test]
+    fn inspect_labels_and_bounded_streams_fail_closed() {
+        let volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let inspect = format!(
+            r#"[{{"Name":"{volume}","Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor"}}}}]"#
+        );
+        let labels = parse_volume_labels(inspect.as_bytes()).unwrap();
+        assert!(resource_owner_matches(&labels, ResourceOwner::Supervisor));
+
+        let container = format!("factory-exec-{}", uuid::Uuid::new_v4());
+        let inspect = format!(
+            r#"[{{"Name":"{container}","Config":{{"Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"verifier"}}}}}}]"#
+        );
+        let labels = parse_container_labels(inspect.as_bytes()).unwrap();
+        assert!(resource_owner_matches(&labels, ResourceOwner::Verifier));
+
+        assert!(parse_volume_labels(b"[]").is_err());
+        assert!(parse_container_labels(b"[]").is_err());
+
+        let mut bytes = Vec::new();
+        assert!(extend_bounded(&mut bytes, b"1234", 4));
+        assert!(!extend_bounded(&mut bytes, b"5", 4));
+        assert_eq!(bytes, b"1234");
     }
 }

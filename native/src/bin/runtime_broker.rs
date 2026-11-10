@@ -11,12 +11,19 @@
 //! namespace. It is a candidate TRUSTED_LOCAL boundary, not certified
 //! isolation. See docs/security/container-runtime.md.
 
-use std::{collections::BTreeSet, env, path::PathBuf, process::Stdio, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    env,
+    path::PathBuf,
+    process::Stdio,
+    sync::Arc,
+    time::Duration,
+};
 
 use axum::{
     Json, Router,
     body::Bytes,
-    extract::{DefaultBodyLimit, Path as AxumPath, State},
+    extract::{DefaultBodyLimit, Path as AxumPath, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -31,9 +38,10 @@ use tokio::{
 };
 
 use factory_native::runtime_broker::{
-    ManagedResources, ResourceOwner, is_valid_container_name, is_valid_exec_container_name,
-    is_valid_provider_container_name, is_valid_volume_name, parse_container_inventory,
-    parse_volume_inventory,
+    MAX_RESOURCE_INVENTORY_BYTES, ManagedResources, ResourceOwner, is_valid_container_name,
+    is_valid_exec_container_name, is_valid_provider_container_name, is_valid_volume_name,
+    parse_container_inventory, parse_container_labels, parse_volume_inventory, parse_volume_labels,
+    resource_owner_matches, volume_identity_matches,
 };
 
 const MAX_JSON_BYTES: usize = 2 * 1024 * 1024;
@@ -370,7 +378,7 @@ impl App {
 
     async fn managed_resources(&self) -> Result<ManagedResources, String> {
         let volumes = self
-            .run_checked(
+            .run_bounded(
                 [
                     "volume",
                     "ls",
@@ -380,10 +388,11 @@ impl App {
                     "json",
                 ],
                 "managed volume listing",
+                MAX_RESOURCE_INVENTORY_BYTES,
             )
             .await?;
         let containers = self
-            .run_checked(
+            .run_bounded(
                 [
                     "ps",
                     "-a",
@@ -393,12 +402,124 @@ impl App {
                     "json",
                 ],
                 "managed container listing",
+                MAX_RESOURCE_INVENTORY_BYTES,
             )
             .await?;
         Ok(ManagedResources {
             volumes: parse_volume_inventory(&volumes)?,
             containers: parse_container_inventory(&containers)?,
         })
+    }
+
+    async fn volume_labels(
+        &self,
+        volume: &str,
+    ) -> Result<Option<BTreeMap<String, String>>, String> {
+        let output = self
+            .podman_output(["volume", "inspect", "--format", "json", volume])
+            .await?;
+        if !output.status.success() {
+            let exists = self.podman_output(["volume", "exists", volume]).await?;
+            if exists.status.code() == Some(1) {
+                return Ok(None);
+            }
+            return Err(format!("volume inspect failed: {}", stderr(&output)));
+        }
+        parse_volume_labels(&output.stdout).map(Some)
+    }
+
+    async fn container_labels(
+        &self,
+        container: &str,
+    ) -> Result<Option<BTreeMap<String, String>>, String> {
+        let output = self
+            .podman_output(["inspect", "--format", "json", container])
+            .await?;
+        if !output.status.success() {
+            let exists = self
+                .podman_output(["container", "exists", container])
+                .await?;
+            if exists.status.code() == Some(1) {
+                return Ok(None);
+            }
+            return Err(format!("container inspect failed: {}", stderr(&output)));
+        }
+        parse_container_labels(&output.stdout).map(Some)
+    }
+
+    async fn run_bounded<I, S>(
+        &self,
+        args: I,
+        operation: &str,
+        limit: usize,
+    ) -> Result<Vec<u8>, String>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<std::ffi::OsStr>,
+    {
+        let mut child = self
+            .podman_command(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("{operation} could not start: {error}"))?;
+        let Some(stdout) = child.stdout.take() else {
+            return Err(format!("{operation} stdout unavailable"));
+        };
+        let Some(stderr) = child.stderr.take() else {
+            return Err(format!("{operation} stderr unavailable"));
+        };
+        let deadline = time::Instant::now() + COMMAND_TIMEOUT;
+        let stdout_task = tokio::spawn(read_capped(stdout, limit));
+        let stderr_task = tokio::spawn(read_bounded(stderr, MAX_STREAM_BYTES));
+        let (bytes, overflow) = match time::timeout_at(deadline, stdout_task).await {
+            Ok(Ok(Ok(value))) => value,
+            Ok(Ok(Err(error))) => {
+                let _ = child.kill().await;
+                return Err(format!("{operation} stdout: {error}"));
+            }
+            Ok(Err(error)) => {
+                let _ = child.kill().await;
+                return Err(format!("{operation} reader task: {error}"));
+            }
+            Err(_) => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                stderr_task.abort();
+                return Err(format!("{operation} timed out"));
+            }
+        };
+        if overflow {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            stderr_task.abort();
+            return Err(format!("{operation} exceeded its output bound"));
+        }
+        let status = match time::timeout_at(deadline, child.wait()).await {
+            Ok(Ok(status)) => status,
+            Ok(Err(error)) => return Err(format!("{operation} wait failed: {error}")),
+            Err(_) => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                stderr_task.abort();
+                return Err(format!("{operation} timed out"));
+            }
+        };
+        let stderr_bytes = match time::timeout_at(deadline, stderr_task).await {
+            Ok(Ok(Ok((bytes, _)))) => bytes,
+            Ok(Ok(Err(error))) => {
+                return Err(format!("{operation} stderr: {error}"));
+            }
+            Ok(Err(error)) => return Err(format!("{operation} stderr task: {error}")),
+            Err(_) => return Err(format!("{operation} stderr timed out")),
+        };
+        if !status.success() {
+            return Err(format!(
+                "{operation} failed: {}",
+                String::from_utf8_lossy(&stderr_bytes).trim()
+            ));
+        }
+        Ok(bytes)
     }
 
     fn podman_command<I, S>(&self, args: I) -> Command
@@ -639,6 +760,24 @@ async fn create_volume(
     if input.owner == ResourceOwner::Provider {
         return bad_request("provider owner cannot create workspace volumes");
     }
+    match app.volume_labels(&input.volume).await {
+        Ok(Some(labels)) => {
+            if !volume_identity_matches(&labels, input.owner, &input.workspace_id) {
+                return conflict("volume exists with a different owner or workspace");
+            }
+            if let Err(error) = app
+                .run_checked(
+                    ["volume", "rm", "--force", input.volume.as_str()],
+                    "volume reset",
+                )
+                .await
+            {
+                return operation_error(error);
+            }
+        }
+        Ok(None) => {}
+        Err(error) => return operation_error(error),
+    }
     let label = format!("{WORKSPACE_LABEL}={}", input.workspace_id);
     let owner = format!("{OWNER_LABEL}={}", input.owner.as_str());
     match app
@@ -671,10 +810,17 @@ async fn create_volume(
     }
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct OwnerQuery {
+    owner: ResourceOwner,
+}
+
 async fn remove_volume(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
     AxumPath(volume): AxumPath<String>,
+    Query(query): Query<OwnerQuery>,
 ) -> Response {
     if !authorized(&headers, &app.token) {
         return StatusCode::UNAUTHORIZED.into_response();
@@ -682,22 +828,33 @@ async fn remove_volume(
     if !is_valid_volume_name(&volume) {
         return bad_request("invalid volume name");
     }
-    let output = match app
-        .podman_output(["volume", "rm", "--force", volume.as_str()])
-        .await
-    {
-        Ok(output) => output,
-        Err(error) => return operation_error(error),
-    };
-    if output.status.success() {
-        return StatusCode::NO_CONTENT.into_response();
-    }
-    match app
-        .podman_output(["volume", "exists", volume.as_str()])
-        .await
-    {
-        Ok(exists) if exists.status.code() == Some(1) => StatusCode::NO_CONTENT.into_response(),
-        Ok(_) => operation_error(format!("volume removal failed: {}", stderr(&output))),
+    match app.volume_labels(&volume).await {
+        Ok(None) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Some(labels)) => {
+            if !resource_owner_matches(&labels, query.owner) {
+                return conflict("volume is not owned by the requesting service");
+            }
+            let output = match app
+                .podman_output(["volume", "rm", "--force", volume.as_str()])
+                .await
+            {
+                Ok(output) => output,
+                Err(error) => return operation_error(error),
+            };
+            if output.status.success() {
+                return StatusCode::NO_CONTENT.into_response();
+            }
+            match app
+                .podman_output(["volume", "exists", volume.as_str()])
+                .await
+            {
+                Ok(exists) if exists.status.code() == Some(1) => {
+                    StatusCode::NO_CONTENT.into_response()
+                }
+                Ok(_) => operation_error(format!("volume removal failed: {}", stderr(&output))),
+                Err(error) => operation_error(error),
+            }
+        }
         Err(error) => operation_error(error),
     }
 }
@@ -976,6 +1133,7 @@ async fn remove_container(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
     AxumPath(container): AxumPath<String>,
+    Query(query): Query<OwnerQuery>,
 ) -> Response {
     if !authorized(&headers, &app.token) {
         return StatusCode::UNAUTHORIZED.into_response();
@@ -983,22 +1141,33 @@ async fn remove_container(
     if !is_valid_container_name(&container) {
         return bad_request("invalid container name");
     }
-    let output = match app
-        .podman_output(["rm", "--force", "--time=0", container.as_str()])
-        .await
-    {
-        Ok(output) => output,
-        Err(error) => return operation_error(error),
-    };
-    if output.status.success() {
-        return StatusCode::NO_CONTENT.into_response();
-    }
-    match app
-        .podman_output(["container", "exists", container.as_str()])
-        .await
-    {
-        Ok(exists) if exists.status.code() == Some(1) => StatusCode::NO_CONTENT.into_response(),
-        Ok(_) => operation_error(format!("container removal failed: {}", stderr(&output))),
+    match app.container_labels(&container).await {
+        Ok(None) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Some(labels)) => {
+            if !resource_owner_matches(&labels, query.owner) {
+                return conflict("container is not owned by the requesting service");
+            }
+            let output = match app
+                .podman_output(["rm", "--force", "--time=0", container.as_str()])
+                .await
+            {
+                Ok(output) => output,
+                Err(error) => return operation_error(error),
+            };
+            if output.status.success() {
+                return StatusCode::NO_CONTENT.into_response();
+            }
+            match app
+                .podman_output(["container", "exists", container.as_str()])
+                .await
+            {
+                Ok(exists) if exists.status.code() == Some(1) => {
+                    StatusCode::NO_CONTENT.into_response()
+                }
+                Ok(_) => operation_error(format!("container removal failed: {}", stderr(&output))),
+                Err(error) => operation_error(error),
+            }
+        }
         Err(error) => operation_error(error),
     }
 }
@@ -1178,6 +1347,10 @@ fn bad_request(message: &str) -> Response {
     (StatusCode::BAD_REQUEST, Json(json!({"error": message}))).into_response()
 }
 
+fn conflict(message: &str) -> Response {
+    (StatusCode::CONFLICT, Json(json!({"error": message}))).into_response()
+}
+
 fn operation_error(message: impl Into<String>) -> Response {
     let message = message.into();
     let message: String = message.chars().take(1024).collect();
@@ -1207,6 +1380,27 @@ where
         }
     }
     Ok((captured, truncated))
+}
+
+/// Read at most `limit` bytes. Returning as soon as the next chunk would cross
+/// the limit lets the caller terminate the child instead of buffering an
+/// unbounded stream.
+async fn read_capped<R>(mut reader: R, limit: usize) -> std::io::Result<(Vec<u8>, bool)>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut captured = Vec::new();
+    let mut chunk = [0u8; 16 * 1024];
+    loop {
+        let read = reader.read(&mut chunk).await?;
+        if read == 0 {
+            return Ok((captured, false));
+        }
+        if captured.len().saturating_add(read) > limit {
+            return Ok((captured, true));
+        }
+        captured.extend_from_slice(&chunk[..read]);
+    }
 }
 
 #[cfg(test)]
@@ -1288,5 +1482,287 @@ mod tests {
         assert!(constant_time_eq(b"secret", b"secret"));
         assert!(!constant_time_eq(b"secret", b"secreT"));
         assert!(!constant_time_eq(b"secret", b"secret2"));
+    }
+
+    #[tokio::test]
+    async fn read_capped_stops_at_the_limit() {
+        let input = vec![b'x'; 32 * 1024];
+        let (bytes, overflow) = read_capped(&input[..], 1024).await.unwrap();
+        assert!(overflow);
+        assert!(bytes.len() <= 1024);
+
+        let exact = vec![b'y'; 1024];
+        let (bytes, overflow) = read_capped(&exact[..], 1024).await.unwrap();
+        assert!(!overflow);
+        assert_eq!(bytes.len(), 1024);
+
+        let (bytes, overflow) = read_capped(&b"small"[..], 1024).await.unwrap();
+        assert!(!overflow);
+        assert_eq!(bytes, b"small");
+    }
+
+    fn fake_podman(script: &str) -> PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("factory-fake-podman-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&path, script).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        path
+    }
+
+    fn test_app(podman: PathBuf) -> Arc<App> {
+        Arc::new(App {
+            token: "test-token-0123456789abcdef0123456789".into(),
+            podman,
+            images: Arc::new(BTreeSet::new()),
+            provider_images: Arc::new(BTreeSet::new()),
+            provider_kind: String::new(),
+            provider_session_root: std::env::temp_dir(),
+            import_images: Vec::new(),
+        })
+    }
+
+    fn test_headers() -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            "Bearer test-token-0123456789abcdef0123456789"
+                .parse()
+                .unwrap(),
+        );
+        headers
+    }
+
+    #[tokio::test]
+    async fn remove_volume_requires_the_expected_owner_label() {
+        let volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let marker =
+            std::env::temp_dir().join(format!("factory-fake-rm-volume-{}", uuid::Uuid::new_v4()));
+        let script = format!(
+            r#"#!/bin/sh
+if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then
+  printf '%s\n' '[{{"Name":"{volume}","Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"verifier"}}}}]'
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "rm" ]; then
+  touch "{marker}"
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "exists" ]; then
+  exit 0
+fi
+exit 1
+"#,
+            marker = marker.display()
+        );
+        let app = test_app(fake_podman(&script));
+        let rejected = remove_volume(
+            State(Arc::clone(&app)),
+            test_headers(),
+            AxumPath(volume.clone()),
+            Query(OwnerQuery {
+                owner: ResourceOwner::Supervisor,
+            }),
+        )
+        .await;
+        assert_eq!(rejected.status(), StatusCode::CONFLICT);
+        assert!(!marker.exists());
+
+        let accepted = remove_volume(
+            State(app),
+            test_headers(),
+            AxumPath(volume),
+            Query(OwnerQuery {
+                owner: ResourceOwner::Verifier,
+            }),
+        )
+        .await;
+        assert_eq!(accepted.status(), StatusCode::NO_CONTENT);
+        assert!(marker.exists());
+    }
+
+    #[tokio::test]
+    async fn remove_volume_rejects_missing_owner_and_missing_resource() {
+        let unlabelled = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let missing = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let script = format!(
+            r#"#!/bin/sh
+if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then
+  if [ "$5" = "{missing}" ]; then
+    exit 1
+  fi
+  printf '%s\n' '[{{"Name":"{unlabelled}","Labels":{{"io.software-factory.managed":"true"}}}}]'
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "rm" ]; then
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "exists" ]; then
+  exit 1
+fi
+exit 1
+"#
+        );
+        let app = test_app(fake_podman(&script));
+        let response = remove_volume(
+            State(Arc::clone(&app)),
+            test_headers(),
+            AxumPath(unlabelled),
+            Query(OwnerQuery {
+                owner: ResourceOwner::Supervisor,
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+
+        let response = remove_volume(
+            State(app),
+            test_headers(),
+            AxumPath(missing),
+            Query(OwnerQuery {
+                owner: ResourceOwner::Supervisor,
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn create_volume_refuses_a_preexisting_foreign_volume() {
+        let volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let rm_marker =
+            std::env::temp_dir().join(format!("factory-fake-create-rm-{}", uuid::Uuid::new_v4()));
+        let create_marker =
+            std::env::temp_dir().join(format!("factory-fake-create-new-{}", uuid::Uuid::new_v4()));
+        let script = format!(
+            r#"#!/bin/sh
+if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then
+  printf '%s\n' '[{{"Name":"{volume}","Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"verifier","io.software-factory.workspace":"other-workspace"}}}}]'
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "rm" ]; then
+  touch "{rm_marker}"
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "create" ]; then
+  touch "{create_marker}"
+  exit 0
+fi
+exit 1
+"#,
+            rm_marker = rm_marker.display(),
+            create_marker = create_marker.display()
+        );
+        let app = test_app(fake_podman(&script));
+        let response = create_volume(
+            State(app),
+            test_headers(),
+            Json(NewVolume {
+                volume,
+                workspace_id: "workspace-a".into(),
+                owner: ResourceOwner::Supervisor,
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(!rm_marker.exists());
+        assert!(!create_marker.exists());
+    }
+
+    #[tokio::test]
+    async fn create_volume_reuses_a_matching_owned_workspace() {
+        let volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let rm_marker =
+            std::env::temp_dir().join(format!("factory-fake-reuse-rm-{}", uuid::Uuid::new_v4()));
+        let create_marker = std::env::temp_dir().join(format!(
+            "factory-fake-reuse-create-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let script = format!(
+            r#"#!/bin/sh
+if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then
+  printf '%s\n' '[{{"Name":"{volume}","Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor","io.software-factory.workspace":"workspace-a"}}}}]'
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "rm" ]; then
+  touch "{rm_marker}"
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "create" ]; then
+  touch "{create_marker}"
+  exit 0
+fi
+exit 1
+"#,
+            rm_marker = rm_marker.display(),
+            create_marker = create_marker.display()
+        );
+        let app = test_app(fake_podman(&script));
+        let response = create_volume(
+            State(app),
+            test_headers(),
+            Json(NewVolume {
+                volume,
+                workspace_id: "workspace-a".into(),
+                owner: ResourceOwner::Supervisor,
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        assert!(rm_marker.exists());
+        assert!(create_marker.exists());
+    }
+
+    #[tokio::test]
+    async fn remove_container_requires_the_expected_owner_label() {
+        let container = format!("factory-exec-{}", uuid::Uuid::new_v4());
+        let marker = std::env::temp_dir().join(format!(
+            "factory-fake-rm-container-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let script = format!(
+            r#"#!/bin/sh
+if [ "$1" = "inspect" ]; then
+  printf '%s\n' '[{{"Config":{{"Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"provider"}}}}}}]'
+  exit 0
+fi
+if [ "$1" = "rm" ]; then
+  touch "{marker}"
+  exit 0
+fi
+if [ "$1" = "container" ] && [ "$2" = "exists" ]; then
+  exit 0
+fi
+exit 1
+"#,
+            marker = marker.display()
+        );
+        let app = test_app(fake_podman(&script));
+        let rejected = remove_container(
+            State(Arc::clone(&app)),
+            test_headers(),
+            AxumPath(container.clone()),
+            Query(OwnerQuery {
+                owner: ResourceOwner::Supervisor,
+            }),
+        )
+        .await;
+        assert_eq!(rejected.status(), StatusCode::CONFLICT);
+        assert!(!marker.exists());
+
+        let accepted = remove_container(
+            State(app),
+            test_headers(),
+            AxumPath(container),
+            Query(OwnerQuery {
+                owner: ResourceOwner::Provider,
+            }),
+        )
+        .await;
+        assert_eq!(accepted.status(), StatusCode::NO_CONTENT);
+        assert!(marker.exists());
     }
 }

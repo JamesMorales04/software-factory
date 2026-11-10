@@ -171,6 +171,13 @@ impl VolumeBackend for LocalVolumeBackend {
         ResourceOwner::Supervisor
     }
     async fn create_volume(&self, name: &str, workspace_id: &str) -> Result<(), ExecutionError> {
+        if let Some(existing) = self.meta.lock().unwrap().get(name).cloned() {
+            let same_owner = existing.owner.as_deref() == Some(ResourceOwner::Supervisor.as_str());
+            let same_workspace = existing.workspace.as_deref() == Some(workspace_id);
+            if !same_owner || !same_workspace {
+                return Err(ExecutionError::Conflict);
+            }
+        }
         let path = self.root.join(name);
         if path.exists() {
             std::fs::remove_dir_all(&path)?;
@@ -188,6 +195,11 @@ impl VolumeBackend for LocalVolumeBackend {
         Ok(())
     }
     async fn remove_volume(&self, name: &str) -> Result<(), ExecutionError> {
+        if let Some(existing) = self.meta.lock().unwrap().get(name)
+            && existing.owner.as_deref() != Some(ResourceOwner::Supervisor.as_str())
+        {
+            return Err(ExecutionError::Conflict);
+        }
         self.meta.lock().unwrap().remove(name);
         if let Some(path) = self.volumes.lock().unwrap().remove(name) {
             let _ = std::fs::remove_dir_all(path);

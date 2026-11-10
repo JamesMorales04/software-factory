@@ -520,7 +520,10 @@ async fn container_recovery_receipt(directory: &str) -> Result<&'static str, Str
     let broker = factory_native::runtime_broker::RuntimeBrokerClient::new(&url, token)
         .map_err(|error| error.to_string())?;
     broker
-        .remove_container(&container)
+        .remove_container(
+            &container,
+            factory_native::runtime_broker::ResourceOwner::Provider,
+        )
         .await
         .map_err(|error| format!("provider container removal failed: {error}"))?;
     match broker.container_status(&container).await {

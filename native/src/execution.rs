@@ -8,7 +8,7 @@
 //! certification.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     ffi::OsString,
     fs,
     path::{Path, PathBuf},
@@ -361,6 +361,61 @@ impl RootlessPodmanVolumes {
         .map_err(|_| ExecutionError::Volume("Podman command timed out".into()))??;
         Ok(output)
     }
+
+    async fn volume_labels(
+        &self,
+        name: &str,
+    ) -> Result<Option<BTreeMap<String, String>>, ExecutionError> {
+        let output = self
+            .podman([
+                "--remote=false",
+                "volume",
+                "inspect",
+                "--format",
+                "json",
+                name,
+            ])
+            .await?;
+        if !output.status.success() {
+            let exists = self
+                .podman(["--remote=false", "volume", "exists", name])
+                .await?;
+            if exists.status.code() == Some(1) {
+                return Ok(None);
+            }
+            return Err(ExecutionError::Volume(format!(
+                "volume inspect failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        runtime_broker::parse_volume_labels(&output.stdout)
+            .map(Some)
+            .map_err(ExecutionError::Volume)
+    }
+
+    async fn container_labels(
+        &self,
+        name: &str,
+    ) -> Result<Option<BTreeMap<String, String>>, ExecutionError> {
+        let output = self
+            .podman(["--remote=false", "inspect", "--format", "json", name])
+            .await?;
+        if !output.status.success() {
+            let exists = self
+                .podman(["--remote=false", "container", "exists", name])
+                .await?;
+            if exists.status.code() == Some(1) {
+                return Ok(None);
+            }
+            return Err(ExecutionError::Volume(format!(
+                "container inspect failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        runtime_broker::parse_container_labels(&output.stdout)
+            .map(Some)
+            .map_err(ExecutionError::Volume)
+    }
 }
 
 impl RootlessPodmanVolumes {
@@ -456,7 +511,6 @@ impl VolumeBackend for BrokerVolumes {
     async fn create_volume(&self, name: &str, workspace_id: &str) -> Result<(), ExecutionError> {
         validate_volume_name(name)?;
         validate_workspace_id(workspace_id)?;
-        let _ = self.remove_volume(name).await;
         self.client
             .create_volume(&crate::runtime_broker::NewVolume {
                 volume: name.to_owned(),
@@ -470,7 +524,7 @@ impl VolumeBackend for BrokerVolumes {
     async fn remove_volume(&self, name: &str) -> Result<(), ExecutionError> {
         validate_volume_name(name)?;
         self.client
-            .remove_volume(name)
+            .remove_volume(name, self.owner)
             .await
             .map_err(ExecutionError::from)
     }
@@ -529,7 +583,7 @@ impl VolumeBackend for BrokerVolumes {
     async fn remove_container(&self, name: &str) -> Result<(), ExecutionError> {
         validate_container_name(name)?;
         self.client
-            .remove_container(name)
+            .remove_container(name, self.owner)
             .await
             .map_err(ExecutionError::from)
     }
@@ -551,7 +605,12 @@ impl VolumeBackend for RootlessPodmanVolumes {
     async fn create_volume(&self, name: &str, workspace_id: &str) -> Result<(), ExecutionError> {
         validate_volume_name(name)?;
         validate_workspace_id(workspace_id)?;
-        let _ = self.remove_volume(name).await;
+        if let Some(labels) = self.volume_labels(name).await? {
+            if !runtime_broker::volume_identity_matches(&labels, self.owner, workspace_id) {
+                return Err(ExecutionError::Conflict);
+            }
+            self.remove_volume(name).await?;
+        }
         let output = self
             .podman([
                 "--remote=false",
@@ -577,22 +636,27 @@ impl VolumeBackend for RootlessPodmanVolumes {
 
     async fn remove_volume(&self, name: &str) -> Result<(), ExecutionError> {
         validate_volume_name(name)?;
-        let output = self
-            .podman(["--remote=false", "volume", "rm", "--force", name])
-            .await?;
-        if output.status.success() {
-            return Ok(());
+        if let Some(labels) = self.volume_labels(name).await? {
+            if !runtime_broker::resource_owner_matches(&labels, self.owner) {
+                return Err(ExecutionError::Conflict);
+            }
+            let output = self
+                .podman(["--remote=false", "volume", "rm", "--force", name])
+                .await?;
+            if !output.status.success() {
+                let exists = self
+                    .podman(["--remote=false", "volume", "exists", name])
+                    .await?;
+                if exists.status.code() == Some(1) {
+                    return Ok(());
+                }
+                return Err(ExecutionError::Volume(format!(
+                    "volume removal failed: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                )));
+            }
         }
-        let exists = self
-            .podman(["--remote=false", "volume", "exists", name])
-            .await?;
-        if exists.status.code() == Some(1) {
-            return Ok(());
-        }
-        Err(ExecutionError::Volume(format!(
-            "volume removal failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )))
+        Ok(())
     }
 
     async fn import_volume(&self, name: &str, bytes: &[u8]) -> Result<(), ExecutionError> {
@@ -747,22 +811,27 @@ impl VolumeBackend for RootlessPodmanVolumes {
 
     async fn remove_container(&self, name: &str) -> Result<(), ExecutionError> {
         validate_container_name(name)?;
-        let output = self
-            .podman(["--remote=false", "rm", "--force", "--time=0", name])
-            .await?;
-        if output.status.success() {
-            return Ok(());
+        if let Some(labels) = self.container_labels(name).await? {
+            if !runtime_broker::resource_owner_matches(&labels, self.owner) {
+                return Err(ExecutionError::Conflict);
+            }
+            let output = self
+                .podman(["--remote=false", "rm", "--force", "--time=0", name])
+                .await?;
+            if !output.status.success() {
+                let exists = self
+                    .podman(["--remote=false", "container", "exists", name])
+                    .await?;
+                if exists.status.code() == Some(1) {
+                    return Ok(());
+                }
+                return Err(ExecutionError::Volume(format!(
+                    "container removal failed: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                )));
+            }
         }
-        let exists = self
-            .podman(["--remote=false", "container", "exists", name])
-            .await?;
-        if exists.status.code() == Some(1) {
-            return Ok(());
-        }
-        Err(ExecutionError::Volume(format!(
-            "container removal failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )))
+        Ok(())
     }
 
     async fn list_managed(&self) -> Result<Option<ManagedResources>, ExecutionError> {
@@ -1873,6 +1942,8 @@ mod tests {
     use crate::runtime_broker::ManagedResource;
     use std::{collections::HashMap, process::Command as StdCommand, sync::Mutex};
 
+    static REAL_PODMAN_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum InventoryMode {
         Supported,
@@ -1975,6 +2046,13 @@ mod tests {
             workspace_id: &str,
         ) -> Result<(), ExecutionError> {
             validate_volume_name(name)?;
+            if let Some(existing) = self.volume_meta.lock().unwrap().get(name).cloned() {
+                let same_owner = existing.owner.as_deref() == Some(self.owner.as_str());
+                let same_workspace = existing.workspace.as_deref() == Some(workspace_id);
+                if !same_owner || !same_workspace {
+                    return Err(ExecutionError::Conflict);
+                }
+            }
             let root = self.root.lock().unwrap().clone().unwrap();
             let path = root.join(name);
             if path.exists() {
@@ -1994,6 +2072,11 @@ mod tests {
         }
 
         async fn remove_volume(&self, name: &str) -> Result<(), ExecutionError> {
+            if let Some(existing) = self.volume_meta.lock().unwrap().get(name)
+                && existing.owner.as_deref() != Some(self.owner.as_str())
+            {
+                return Err(ExecutionError::Conflict);
+            }
             self.volume_meta.lock().unwrap().remove(name);
             if let Some(path) = self.volumes.lock().unwrap().remove(name) {
                 let _ = fs::remove_dir_all(path);
@@ -2073,6 +2156,11 @@ mod tests {
         }
 
         async fn remove_container(&self, name: &str) -> Result<(), ExecutionError> {
+            if let Some(existing) = self.containers.lock().unwrap().get(name)
+                && existing.owner.as_deref() != Some(self.owner.as_str())
+            {
+                return Err(ExecutionError::Conflict);
+            }
             self.containers.lock().unwrap().remove(name);
             if let Some(pid) = self.children.lock().unwrap().get(name).copied() {
                 #[cfg(unix)]
@@ -2350,7 +2438,48 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires rootless Podman and a cached alpine:3.20 image"]
+    async fn real_podman_refuses_foreign_volume_reuse_and_deletion() {
+        let _serial = REAL_PODMAN_LOCK.lock().await;
+        let verifier =
+            RootlessPodmanVolumes::new(["alpine:3.20".to_owned()], ResourceOwner::Verifier)
+                .unwrap();
+        let supervisor =
+            RootlessPodmanVolumes::new(["alpine:3.20".to_owned()], ResourceOwner::Supervisor)
+                .unwrap();
+        verifier.preflight().await.unwrap();
+        let volume = format!("factory-ws-{}", Uuid::new_v4());
+        let workspace = Uuid::new_v4().to_string();
+        verifier.create_volume(&volume, &workspace).await.unwrap();
+        assert!(matches!(
+            supervisor.create_volume(&volume, &workspace).await,
+            Err(ExecutionError::Conflict)
+        ));
+        assert!(matches!(
+            supervisor.remove_volume(&volume).await,
+            Err(ExecutionError::Conflict)
+        ));
+        let inventory = supervisor.list_managed().await.unwrap().unwrap();
+        assert!(
+            inventory
+                .volumes
+                .iter()
+                .any(|resource| resource.name == volume
+                    && resource.owner.as_deref() == Some(ResourceOwner::Verifier.as_str()))
+        );
+        verifier.remove_volume(&volume).await.unwrap();
+        let inventory = supervisor.list_managed().await.unwrap().unwrap();
+        assert!(
+            !inventory
+                .volumes
+                .iter()
+                .any(|resource| resource.name == volume)
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires rootless Podman and a cached alpine:3.20 image"]
     async fn real_podman_reconcile_removes_only_its_orphan_volume() {
+        let _serial = REAL_PODMAN_LOCK.lock().await;
         let fixture = Fixture::new();
         let backend =
             RootlessPodmanVolumes::new(["alpine:3.20".to_owned()], ResourceOwner::Supervisor)
@@ -2427,6 +2556,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires rootless Podman and a cached alpine:3.20 image"]
     async fn real_podman_named_volume_execution_produces_candidate() {
+        let _serial = REAL_PODMAN_LOCK.lock().await;
         let fixture = Fixture::new();
         let base = fixture.base();
         let backend =
@@ -2582,6 +2712,72 @@ mod tests {
             .await
             .unwrap();
         assert!(retried.candidate.is_some());
+    }
+
+    #[tokio::test]
+    async fn create_and_remove_refuse_foreign_or_unlabelled_resources() {
+        let fixture = Fixture::new();
+        let backend = &fixture.manager.backend;
+        let foreign = format!("factory-ws-{}", Uuid::new_v4());
+        let foreign_workspace = Uuid::new_v4().to_string();
+        let foreign_path = backend.insert_volume(
+            &foreign,
+            Some(ResourceOwner::Verifier),
+            Some(&foreign_workspace),
+        );
+        fs::write(foreign_path.join("keep.txt"), "foreign\n").unwrap();
+        assert!(matches!(
+            backend
+                .create_volume(&foreign, &Uuid::new_v4().to_string())
+                .await,
+            Err(ExecutionError::Conflict)
+        ));
+        assert_eq!(
+            fs::read_to_string(foreign_path.join("keep.txt")).unwrap(),
+            "foreign\n"
+        );
+        assert!(matches!(
+            backend.remove_volume(&foreign).await,
+            Err(ExecutionError::Conflict)
+        ));
+        assert!(backend.has_volume(&foreign));
+
+        let unlabelled = format!("factory-ws-{}", Uuid::new_v4());
+        let unlabelled_path = backend.insert_volume(&unlabelled, None, Some("legacy"));
+        fs::write(unlabelled_path.join("keep.txt"), "legacy\n").unwrap();
+        assert!(matches!(
+            backend
+                .create_volume(&unlabelled, &Uuid::new_v4().to_string())
+                .await,
+            Err(ExecutionError::Conflict)
+        ));
+        assert!(matches!(
+            backend.remove_volume(&unlabelled).await,
+            Err(ExecutionError::Conflict)
+        ));
+        assert_eq!(
+            fs::read_to_string(unlabelled_path.join("keep.txt")).unwrap(),
+            "legacy\n"
+        );
+
+        let foreign_container = format!("factory-exec-{}", Uuid::new_v4());
+        backend.insert_container(
+            &foreign_container,
+            Some(ResourceOwner::Verifier),
+            Some(&foreign),
+        );
+        assert!(matches!(
+            backend.remove_container(&foreign_container).await,
+            Err(ExecutionError::Conflict)
+        ));
+        assert!(backend.has_container(&foreign_container));
+
+        let owned = format!("factory-ws-{}", Uuid::new_v4());
+        let owned_path = backend.insert_volume(&owned, Some(ResourceOwner::Supervisor), Some("ws"));
+        fs::write(owned_path.join("stale.txt"), "stale\n").unwrap();
+        backend.create_volume(&owned, "ws").await.unwrap();
+        assert!(backend.has_volume(&owned));
+        assert!(!owned_path.join("stale.txt").exists());
     }
 
     #[tokio::test]

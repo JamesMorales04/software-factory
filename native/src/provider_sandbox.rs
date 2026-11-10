@@ -22,7 +22,7 @@ use std::{
 
 use crate::{
     provider_egress::{EgressBroker, EgressConfig},
-    runtime_broker::RuntimeBrokerClient,
+    runtime_broker::{ResourceOwner, RuntimeBrokerClient},
 };
 use serde::{Deserialize, Serialize};
 use tokio::{
@@ -220,7 +220,9 @@ impl ContainerProviderSandbox {
             })
             .await
         {
-            let _ = broker.remove_container(&container).await;
+            let _ = broker
+                .remove_container(&container, ResourceOwner::Provider)
+                .await;
             if let Some(egress) = egress {
                 egress.stop();
             }
@@ -234,7 +236,9 @@ impl ContainerProviderSandbox {
                 break;
             }
             if time::Instant::now() >= deadline {
-                let _ = broker.remove_container(&container).await;
+                let _ = broker
+                    .remove_container(&container, ResourceOwner::Provider)
+                    .await;
                 if let Some(egress) = egress {
                     egress.stop();
                 }
@@ -294,7 +298,10 @@ impl ContainerProviderSandbox {
         if let Some(egress) = self.egress.take() {
             egress.stop();
         }
-        let cleanup = self.broker.remove_container(&self.container).await;
+        let cleanup = self
+            .broker
+            .remove_container(&self.container, ResourceOwner::Provider)
+            .await;
         let absent = match self.broker.container_status(&self.container).await {
             Ok(status) => status.status == "absent" || status.status == "exited",
             Err(_) => true,
