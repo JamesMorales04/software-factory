@@ -13,6 +13,7 @@ end-to-end coverage.
 - Second review-repair implementation: `394719a`
 - Third review-repair implementation: `22fd634`
 - Fourth review-repair implementation: `d6c53cb`
+- Fifth review-repair implementation: `cfaf20f`
 - Worktree: `/home/james/Escritorio/Development/sf-quality-wave12/wp6`
 
 ## Scope
@@ -73,6 +74,14 @@ valid issues. All were repaired:
    permanently share one overflow lock. A saturation test holds the overflow
    lock while an exact slot becomes idle and re-acquires the same name, proving
    exclusion is preserved.
+10. **No lock held across execution.** The fifth review found that when both the
+    volume and container names used the shared overflow mutex, cleanup waited on
+    a mutex held by its own execution task. Execution now holds the volume lock
+    only for validation and registry registration, releases it for the run, and
+    blocks volume delete/reset/import/export through an active-execution
+    registry. Cleanup takes only the container lock. A test with a zero-entry
+    exact table (both names overflow) asserts no deadlock, and a mutation test
+    asserts volume delete/reset are refused while the execution is active.
 
 ## Per-owner credential model
 
@@ -146,20 +155,24 @@ Authorization rules:
    inspecting and recheck ownership after the lock. The exact table is
    permanently bounded at 4096 entries and never reclaimed, so a name always has
    one lock identity. Names beyond capacity permanently share one overflow lock
-   and intentionally serialize. Lock order is volume -> container: execution
-   holds only its volume lock, cleanup then takes the container lock, and no path
-   acquires a volume lock while holding a container lock. Concurrent create for
-   different owners cannot return success for a volume owned by the other caller;
-   concurrent delete/reset cannot remove a replacement created under the lock,
-   and an unrelated resource within exact-table capacity is not blocked by a long
+   and intentionally serialize. Execution takes the volume lock only to verify
+   ownership and register an active-execution entry, then releases it for the
+   run; volume delete/reset/import/export returns `409` while that registry entry
+   exists. Cleanup takes the container lock after the volume lock is released, so
+   volume -> container ordering is preserved and an overflowed volume/container
+   pair cannot self-deadlock. Concurrent create for different owners cannot
+   return success for a volume owned by the other caller; concurrent
+   delete/reset cannot remove a replacement created under the lock, and an
+   unrelated resource within exact-table capacity is not blocked by a long
    execution.
 
 Limits: at most 4096 durable state records, 4096 inventory entries, 4096 exact
 resource-lock entries (entries are permanent; additional names permanently share
-one overflow lock and serialize), and 4 MiB of inventory/inspect subprocess
-output; Podman commands retain the existing 120 s command timeout. Inventory
-failure is reported (`sweepSupported: true`, `sweepError`) and does not delete
-anything; an unsupported backend reports `sweepSupported: false`.
+one overflow lock and serialize), 4096 concurrently registered active executions,
+and 4 MiB of inventory/inspect subprocess output; Podman commands retain the
+existing 120 s command timeout. Inventory failure is reported
+(`sweepSupported: true`, `sweepError`) and does not delete anything; an
+unsupported backend reports `sweepSupported: false`.
 
 ## Commands and results
 
@@ -173,7 +186,7 @@ cargo test -p factory-native --lib
 747 passed; 0 failed; 4 ignored
 
 cargo test -p factory-native --bin factory-runtime-broker
-21 passed; 0 failed
+23 passed; 0 failed
 
 cargo clippy -p factory-native --all-targets --all-features -- -D warnings
 clean
@@ -219,9 +232,15 @@ Concurrency tests (stateful fake Podman with a shared log):
 - `execution_cleanup_serializes_with_container_delete` — execution cleanup and a
   concurrent container delete produce two strict
   inspect-start/inspect-end/rm sequences; no replace-before-remove window.
+- `execution_cleanup_works_when_volume_and_container_share_overflow` — a
+  zero-entry exact table forces both names onto the overflow mutex; cleanup
+  completes instead of waiting on a mutex held by its own execution task.
+- `active_execution_blocks_volume_mutation_without_holding_the_lock` — an active
+  execution refuses volume deletion and reset without holding a lock across the
+  run.
 - `long_execution_does_not_block_an_unrelated_resource` — a create for another
-  volume within exact-table capacity completes while an 800 ms execution still
-  holds its own volume lock.
+  volume within exact-table capacity completes while an 800 ms execution is
+  active.
 
 Bounded-stream tests:
 
@@ -274,7 +293,9 @@ exit 0; 411 lines rendered
 | Concurrent create for different owners | `concurrent_create_for_different_owners_serializes_per_name` | One success, one conflict; ownership consistent |
 | Concurrent delete/reset | `concurrent_delete_and_reset_never_removes_the_replacement` | Serialized; no interleaved delete |
 | Execution cleanup vs container delete | `execution_cleanup_serializes_with_container_delete` | Strict inspect/remove sequences; no replacement race |
-| Long execution vs unrelated resource | `long_execution_does_not_block_an_unrelated_resource` | Unrelated create within exact-table capacity completes while execution holds its volume lock; overflow names intentionally serialize |
+| Overflowed volume + container cleanup | `execution_cleanup_works_when_volume_and_container_share_overflow` | No self-deadlock on the shared overflow mutex |
+| Volume mutation during active execution | `active_execution_blocks_volume_mutation_without_holding_the_lock` | Delete/reset `409`; run continues |
+| Long execution vs unrelated resource | `long_execution_does_not_block_an_unrelated_resource` | Unrelated create within exact-table capacity completes while the execution is active; overflow names intentionally serialize |
 | Inventory/inspect output overflow | `read_capped_stops_at_the_limit`, `inspect_output_is_bounded_before_parsing` | Stops at bound; process/response rejected |
 | Inventory unavailable or unsupported | `reconcile_handles_unsupported_and_failed_inventory` | No deletion; status/error reported |
 | Real Podman orphan sweep | `real_podman_reconcile_removes_only_its_orphan_volume` | Orphan removed; referenced volume preserved; cleanup confirmed |
@@ -297,10 +318,11 @@ exit 0; 411 lines rendered
   volume; foreign/unlabelled resources are preserved.
 - Mutations use exact per-resource locks with a permanent 4096-entry table.
   Entries are never reclaimed so a name cannot change lock identity; names
-  beyond capacity permanently share one overflow lock and serialize. Lock order
-  is volume -> container; long executions hold only their own volume lock, so
-  unrelated resources within capacity and cleanup are not blocked by a shared
-  shard.
+  beyond capacity permanently share one overflow lock and serialize. An
+  execution holds the volume lock only for validation/registration and then
+  blocks volume delete/reset/import/export through the active-execution registry;
+  cleanup takes only the container lock. No lock is held across the run, so an
+  overflowed volume/container pair cannot self-deadlock.
 - Legacy managed resources without an owner label are never deleted. They require
   explicit manual cleanup; this is intentional (`never remove unlabelled`).
 - Provider containers are owned by Worker recovery, not by Supervisor
