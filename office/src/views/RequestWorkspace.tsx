@@ -26,6 +26,7 @@ import {
   IntakeStateBadge,
   isTerminalIntakeState,
 } from "./RequestState";
+import { RequestTrace } from "./RequestTrace";
 
 function errorMessage(cause: unknown, fallback: string): string {
   return cause instanceof CoreApiError
@@ -706,6 +707,7 @@ export function RequestWorkspace() {
 
           <RequestAssessment assessment={data.assessment} />
           <RequestPlan proposal={data.proposal} plan={data.plan} />
+          <RequestTrace requestId={data.id} />
 
           {(data.campaignId || data.campaign) && (
             <Panel className="request-panel">

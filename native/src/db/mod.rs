@@ -317,6 +317,11 @@ pub const EVENT_KINDS: &[&str] = &[
     "worker.session_rotated",
     "worker.terminal_reported",
     "work_integration.started",
+    "workflow.checkpoint.recorded",
+    "workflow.step.blocked",
+    "workflow.step.failed",
+    "workflow.step.started",
+    "workflow.step.succeeded",
 ];
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -989,6 +994,7 @@ mod workers;
 mod workflow;
 
 mod device_pairing;
+mod events;
 #[cfg(test)]
 mod issue_intake_tests;
 #[cfg(test)]

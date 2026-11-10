@@ -238,6 +238,58 @@ pub fn validate_identifier(field: &str, value: &str) -> Result<(), WorkflowError
     validate_text(field, value, MAX_IDENTIFIER_CHARS, false)
 }
 
+/// Return whether a value is a canonical lowercase UUID string (36 chars,
+/// 8-4-4-4-12). Core request IDs use this shape.
+pub fn is_uuid(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 36
+        && bytes.iter().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                *byte == b'-'
+            } else {
+                matches!(byte, b'0'..=b'9' | b'a'..=b'f')
+            }
+        })
+}
+
+/// Core workflow runs use `workflow-<uuid>`.
+pub fn is_workflow_run_id(value: &str) -> bool {
+    value.strip_prefix("workflow-").is_some_and(is_uuid)
+}
+
+/// Core workflow steps use `step-<uuid>`.
+pub fn is_workflow_step_id(value: &str) -> bool {
+    value.strip_prefix("step-").is_some_and(is_uuid)
+}
+
+/// Validate a canonical UUID request identifier.
+pub fn validate_uuid(field: &str, value: &str) -> Result<(), WorkflowError> {
+    if !is_uuid(value) {
+        return Err(invalid(format!(
+            "{field} must be a canonical lowercase UUID"
+        )));
+    }
+    Ok(())
+}
+
+/// Validate a generated workflow run identifier.
+pub fn validate_workflow_run_id(field: &str, value: &str) -> Result<(), WorkflowError> {
+    if !is_workflow_run_id(value) {
+        return Err(invalid(format!(
+            "{field} must be a workflow-<uuid> identifier"
+        )));
+    }
+    Ok(())
+}
+
+/// Validate a generated workflow step identifier.
+pub fn validate_workflow_step_id(field: &str, value: &str) -> Result<(), WorkflowError> {
+    if !is_workflow_step_id(value) {
+        return Err(invalid(format!("{field} must be a step-<uuid> identifier")));
+    }
+    Ok(())
+}
+
 /// Validate an optional identifier. `None` is accepted; `Some` must be valid.
 pub fn validate_optional_identifier(field: &str, value: Option<&str>) -> Result<(), WorkflowError> {
     match value {

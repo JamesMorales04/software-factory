@@ -32,7 +32,7 @@ use serde_json::{Map, Value};
 
 use crate::{
     planning::{WorkflowState, WorkflowStepStatus},
-    workflow::{MAX_IDENTIFIER_CHARS, MAX_KIND_CHARS, sha256_hex},
+    workflow::{MAX_KIND_CHARS, sha256_hex},
 };
 
 const MAX_RECORDED_AT_CHARS: usize = 64;
@@ -348,15 +348,10 @@ pub fn compare_replay(expected: &ReplayTrace, actual: &ReplayTrace) -> Vec<Repla
 }
 
 fn validate_event(event: &ReplayEvent) -> Result<(), String> {
-    validate_text(
-        &event.request_id,
-        "requestId",
-        MAX_IDENTIFIER_CHARS,
-        event.sequence,
-    )?;
-    validate_text(&event.run_id, "runId", MAX_IDENTIFIER_CHARS, event.sequence)?;
+    validate_uuid_text(&event.request_id, "requestId", event.sequence)?;
+    validate_run_id_text(&event.run_id, "runId", event.sequence)?;
     if let Some(step_id) = &event.step_id {
-        validate_text(step_id, "stepId", MAX_IDENTIFIER_CHARS, event.sequence)?;
+        validate_step_id_text(step_id, "stepId", event.sequence)?;
     }
     validate_text(&event.kind, "kind", MAX_KIND_CHARS, event.sequence)?;
     validate_text(
@@ -376,6 +371,21 @@ fn validate_event(event: &ReplayEvent) -> Result<(), String> {
 
 fn validate_text(value: &str, field: &str, max_chars: usize, sequence: u64) -> Result<(), String> {
     crate::workflow::validate_text(field, value, max_chars, false)
+        .map_err(|error| format!("replay event {sequence} has an invalid {field}: {error}"))
+}
+
+fn validate_uuid_text(value: &str, field: &str, sequence: u64) -> Result<(), String> {
+    crate::workflow::validate_uuid(field, value)
+        .map_err(|error| format!("replay event {sequence} has an invalid {field}: {error}"))
+}
+
+fn validate_run_id_text(value: &str, field: &str, sequence: u64) -> Result<(), String> {
+    crate::workflow::validate_workflow_run_id(field, value)
+        .map_err(|error| format!("replay event {sequence} has an invalid {field}: {error}"))
+}
+
+fn validate_step_id_text(value: &str, field: &str, sequence: u64) -> Result<(), String> {
+    crate::workflow::validate_workflow_step_id(field, value)
         .map_err(|error| format!("replay event {sequence} has an invalid {field}: {error}"))
 }
 
@@ -570,26 +580,76 @@ fn redact_value(value: &Value, depth: usize) -> Value {
     let mut redacted = Map::new();
     for (key, value) in map {
         let normalized = normalize_key(key);
+        let display_key = canonical_payload_key(&normalized, key);
         let replacement = if is_secret_key(&normalized) {
             Value::String(hash_label(value))
         } else if is_safe_key(&normalized) {
-            redact_safe_value(value, depth + 1)
+            redact_safe_value(&normalized, value, depth + 1)
         } else {
             Value::String(REDACTED_LABEL.to_owned())
         };
-        redacted.insert(key.clone(), replacement);
+        redacted.insert(display_key, replacement);
     }
     Value::Object(redacted)
 }
 
-fn redact_safe_value(value: &Value, depth: usize) -> Value {
+/// Return the only property name that may be exposed for a payload key.
+///
+/// Known safe and secret keys use a canonical label; any other property name is
+/// replaced by a bounded, deterministic hash label. This prevents a sensitive
+/// value embedded in a property name from reaching a browser even when the
+/// value itself is redacted.
+fn canonical_payload_key(normalized: &str, original: &str) -> String {
+    let canonical = match normalized {
+        "kind" => Some("kind"),
+        "state" => Some("state"),
+        "statefrom" => Some("stateFrom"),
+        "stateto" => Some("stateTo"),
+        "status" => Some("status"),
+        "outcome" => Some("outcome"),
+        "sequence" => Some("sequence"),
+        "stepid" => Some("stepId"),
+        "runid" => Some("runId"),
+        "requestid" => Some("requestId"),
+        "attempt" => Some("attempt"),
+        "count" => Some("count"),
+        "durationms" => Some("durationMs"),
+        "bytes" => Some("bytes"),
+        "sha256" => Some("sha256"),
+        "payloadsha256" => Some("payloadSha256"),
+        "terminal" => Some("terminal"),
+        "token" => Some("token"),
+        "password" => Some("password"),
+        "secret" => Some("secret"),
+        "authorization" => Some("authorization"),
+        "apikey" => Some("api_key"),
+        "prompt" => Some("prompt"),
+        "content" => Some("content"),
+        _ => None,
+    };
+    canonical.map_or_else(
+        || {
+            let digest = sha256_hex(original.as_bytes());
+            format!("redacted_{}", &digest[..12])
+        },
+        str::to_owned,
+    )
+}
+
+fn redact_safe_value(key: &str, value: &Value, depth: usize) -> Value {
     if depth >= MAX_REDACTION_DEPTH {
         return Value::String(hash_label(value));
     }
 
     match value {
         Value::Null | Value::Bool(_) | Value::Number(_) => value.clone(),
-        Value::String(text) => Value::String(text.chars().take(MAX_SAFE_STRING_CHARS).collect()),
+        Value::String(text) => {
+            if is_safe_payload_string(key, text) {
+                Value::String(text.chars().take(MAX_SAFE_STRING_CHARS).collect())
+            } else {
+                Value::String(hash_label(value))
+            }
+        }
         Value::Array(items) => {
             if items.len() > MAX_PAYLOAD_COLLECTION_ITEMS {
                 return Value::String(hash_label(value));
@@ -597,11 +657,47 @@ fn redact_safe_value(value: &Value, depth: usize) -> Value {
             Value::Array(
                 items
                     .iter()
-                    .map(|item| redact_safe_value(item, depth + 1))
+                    .map(|item| redact_safe_value(key, item, depth + 1))
                     .collect(),
             )
         }
         Value::Object(_) => redact_value(value, depth),
+    }
+}
+
+/// Retain a string only when its key has a validated operational grammar.
+///
+/// An allowlisted key is not permission to retain arbitrary free text. State
+/// and status must parse as the canonical workflow enums, hashes must be
+/// lowercase SHA-256, identifiers must have the operational identifier shape,
+/// and every other safe key retains only booleans/numbers. Invalid strings are
+/// replaced by a SHA-256 fingerprint before they can reach a trace response.
+fn is_safe_payload_string(key: &str, text: &str) -> bool {
+    match key {
+        "state" | "statefrom" | "stateto" => crate::workflow::parse_workflow_state(text).is_ok(),
+        "status" => {
+            crate::workflow::parse_workflow_state(text).is_ok()
+                || crate::workflow::parse_workflow_step_status(text).is_ok()
+        }
+        "outcome" => matches!(
+            text,
+            "ACCEPTED"
+                | "REPAIR_REQUIRED"
+                | "BLOCKED"
+                | "HUMAN_REQUIRED"
+                | "NOT_TESTED"
+                | "PASS"
+                | "FAIL"
+                | "CHANGES_REQUESTED"
+        ),
+        "sha256" | "payloadsha256" => is_lowercase_sha256(text),
+        "stepid" => crate::workflow::is_workflow_step_id(text),
+        "runid" => crate::workflow::is_workflow_run_id(text),
+        "requestid" => crate::workflow::is_uuid(text),
+        // `kind` is already exposed as the validated top-level event kind.
+        // Numeric keys retain numbers via the scalar branch. Any string value
+        // for these or any other allowlisted key is hashed.
+        _ => false,
     }
 }
 
@@ -640,6 +736,13 @@ mod tests {
         character.to_string().repeat(64)
     }
 
+    const REQUEST_ID: &str = "00000000-0000-4000-8000-000000000001";
+    const RUN_ID: &str = "workflow-00000000-0000-4000-8000-000000000002";
+
+    fn step_id(suffix: u8) -> String {
+        format!("step-00000000-0000-4000-8000-{suffix:012}")
+    }
+
     fn event(
         sequence: u64,
         kind: &str,
@@ -648,8 +751,8 @@ mod tests {
     ) -> ReplayEvent {
         ReplayEvent {
             sequence,
-            request_id: "request-1".into(),
-            run_id: "run-1".into(),
+            request_id: REQUEST_ID.into(),
+            run_id: RUN_ID.into(),
             step_id: None,
             kind: kind.into(),
             state_from: from,
@@ -798,14 +901,17 @@ mod tests {
 
     #[test]
     fn pending_and_running_steps_remain_open_until_closed() {
+        let pending_id = step_id(1);
+        let running_id = step_id(2);
+        let closed_id = step_id(3);
         let mut pending = event(1, "step.pending", None, None);
-        pending.step_id = Some("a-pending".into());
+        pending.step_id = Some(pending_id.clone());
         let mut running = event(2, "step.running", None, None);
-        running.step_id = Some("b-running".into());
+        running.step_id = Some(running_id.clone());
         let mut started = event(3, "step.started", None, None);
-        started.step_id = Some("c-done".into());
+        started.step_id = Some(closed_id.clone());
         let mut succeeded = event(4, "step.succeeded", None, None);
-        succeeded.step_id = Some("c-done".into());
+        succeeded.step_id = Some(closed_id);
 
         let trace = build_trace(vec![pending, running, started, succeeded]).expect("open steps");
 
@@ -813,12 +919,12 @@ mod tests {
             trace.open_steps,
             vec![
                 OpenStep {
-                    step_id: "a-pending".into(),
+                    step_id: pending_id,
                     status: WorkflowStepStatus::Pending,
                     last_sequence: 1,
                 },
                 OpenStep {
-                    step_id: "b-running".into(),
+                    step_id: running_id,
                     status: WorkflowStepStatus::Running,
                     last_sequence: 2,
                 },
@@ -830,15 +936,16 @@ mod tests {
     #[test]
     fn terminal_trace_reports_open_steps_for_diagnosis() {
         let mut events = valid_trace_events();
+        let late_step = step_id(4);
         let mut running = event(11, "step.running", None, None);
-        running.step_id = Some("late-step".into());
+        running.step_id = Some(late_step.clone());
         events.push(running);
 
         let trace = build_trace(events).expect("projection still reports the anomaly");
 
         assert!(trace.terminal);
         assert_eq!(trace.open_steps.len(), 1);
-        assert_eq!(trace.open_steps[0].step_id, "late-step");
+        assert_eq!(trace.open_steps[0].step_id, late_step);
     }
 
     #[test]
@@ -879,7 +986,7 @@ mod tests {
     #[test]
     fn trace_must_replay_a_single_run() {
         let mut other = transition(1, WorkflowState::Submitted, WorkflowState::Assessing);
-        other.run_id = "run-2".into();
+        other.run_id = "workflow-00000000-0000-4000-8000-000000000003".into();
         let error = build_trace(vec![
             transition(1, WorkflowState::Submitted, WorkflowState::Assessing),
             other,
@@ -901,7 +1008,7 @@ mod tests {
             "content": "source body",
             "state": "EXECUTING",
             "sequence": 7,
-            "stepId": "step-1",
+            "stepId": "step-00000000-0000-4000-8000-000000000004",
             "unknown": "untrusted detail",
             "nested": {"token": "nested-secret"}
         });
@@ -925,12 +1032,80 @@ mod tests {
         }
         assert_eq!(redacted["state"], "EXECUTING");
         assert_eq!(redacted["sequence"], 7);
-        assert_eq!(redacted["stepId"], "step-1");
-        assert_eq!(redacted["unknown"], "[REDACTED]");
+        assert_eq!(
+            redacted["stepId"],
+            "step-00000000-0000-4000-8000-000000000004"
+        );
+        assert!(!serialized.contains("unknown"));
         assert!(
             redacted["token"]
                 .as_str()
                 .is_some_and(|value| value.starts_with("sha256:"))
+        );
+    }
+
+    #[test]
+    fn allowlisted_keys_do_not_retain_free_form_strings() {
+        let payload = serde_json::json!({
+            "state": "raw prompt or token",
+            "status": "raw token",
+            "stepId": "raw prompt",
+            "sha256": "not-a-hash",
+            "kind": "raw prompt",
+            "outcome": "ACCEPTED",
+            "sequence": 7,
+            "terminal": false,
+        });
+
+        let redacted = redact_payload(&payload);
+        let serialized = serde_json::to_string(&redacted).expect("serializable redaction");
+
+        for raw in [
+            "raw prompt or token",
+            "raw token",
+            "raw prompt",
+            "not-a-hash",
+        ] {
+            assert!(!serialized.contains(raw), "redaction retained {raw}");
+        }
+        assert_eq!(redacted["outcome"], "ACCEPTED");
+        assert_eq!(redacted["sequence"], 7);
+        assert_eq!(redacted["terminal"], false);
+        for key in ["state", "status", "stepId", "sha256", "kind"] {
+            assert!(
+                redacted[key]
+                    .as_str()
+                    .is_some_and(|value| value.starts_with("sha256:")),
+                "{key} must be hashed"
+            );
+        }
+    }
+
+    #[test]
+    fn sensitive_or_unrecognized_property_names_are_not_exposed() {
+        let payload = serde_json::json!({
+            "prompt sk-proj-very-secret": "value",
+            "state sk-other-secret": "EXECUTING",
+            "safe raw detail": "detail",
+            "state": "EXECUTING",
+        });
+
+        let redacted = redact_payload(&payload);
+        let object = redacted.as_object().expect("redacted object");
+        let serialized = serde_json::to_string(&redacted).expect("serializable redaction");
+
+        assert_eq!(object["state"], "EXECUTING");
+        for raw in [
+            "sk-proj-very-secret",
+            "state sk-other-secret",
+            "safe raw detail",
+        ] {
+            assert!(!serialized.contains(raw), "property name leaked {raw}");
+        }
+        assert!(
+            object
+                .keys()
+                .all(|key| key == "state" || key.starts_with("redacted_"))
         );
     }
 
@@ -1026,14 +1201,14 @@ mod tests {
         let expected = build_trace(valid_trace_events()).expect("expected trace");
         let mut events = valid_trace_events();
         for event in &mut events {
-            event.run_id = "run-2".into();
+            event.run_id = "workflow-00000000-0000-4000-8000-000000000003".into();
         }
         let actual = build_trace(events).expect("actual trace");
 
         assert!(
             compare_replay(&expected, &actual).contains(&ReplayDifference::Run {
-                expected: "run-1".into(),
-                actual: "run-2".into(),
+                expected: RUN_ID.into(),
+                actual: "workflow-00000000-0000-4000-8000-000000000003".into(),
             })
         );
     }

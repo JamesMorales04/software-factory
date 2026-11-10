@@ -1,6 +1,6 @@
 {
  "schema_version": 1,
- "updated_at": "2026-11-09T23:30:00Z",
+ "updated_at": "2026-11-10T02:30:00Z",
  "route_base_note": "Current Office uses hash routes. The design-foundation slice moves to a stable /office browser base while preserving these logical routes.",
  "capabilities": {
   "CAP-011": {
@@ -127,7 +127,8 @@
     "POST /projects/import/github",
     "GET /projects/{id}/summary",
     "GET /projects/{id}/discovery",
-    "POST /projects/{id}/discovery"
+    "POST /projects/{id}/discovery",
+    "GET /agentic/requests/{id}/trace"
    ],
    "user_actions": [
     "register a Project",
@@ -286,7 +287,8 @@
     "POST /campaigns/{id}/cancel",
     "POST /intake/requests/{id}/approve",
     "POST /intake/requests/{id}/cancel",
-    "POST /lead/requests/{id}/withdraw"
+    "POST /lead/requests/{id}/withdraw",
+    "GET /agentic/requests/{id}/trace"
    ],
    "user_actions": [
     "start a request, follow its human-readable state and filter the request list by Project or state",
@@ -296,7 +298,8 @@
     "resolve an AMBIGUOUS or UNKNOWN Core model call with an explicit operator reason",
     "withdraw a frozen Lead request or cancel a Campaign with a reason and proportionate confirmation",
     "open the exact request workspace, Campaign, Project or runtime object without exposing removed pages",
-    "cancel an autonomous request or Campaign through the authoritative Core boundary"
+    "cancel an autonomous request or Campaign through the authoritative Core boundary",
+    "inspect the bounded, redacted workflow trace for a request: replayed final state, per-step status, ordered event log and structured replay alerts"
    ],
    "states": [
     "loading",
@@ -310,7 +313,16 @@
     "stale-revision-guard",
     "offline-last-loaded",
     "double-submit-guard",
-    "destructive-confirmation"
+    "destructive-confirmation",
+    "trace-loading",
+    "trace-empty",
+    "trace-error",
+    "trace-offline",
+    "trace-truncated",
+    "trace-alerts",
+    "trace-replay-rejected",
+    "trace-step-truncated",
+    "trace-rejected-outcome"
    ],
    "acceptance": [
     "office/e2e-browser/rust-journey.mjs",
@@ -318,9 +330,14 @@
     "office/src/views/DecisionInbox.test.tsx",
     "office/src/views/RequestWorkspace.test.tsx",
     "office/src/views/Home.test.tsx",
-    "native/src/bin/core.rs"
+    "native/src/bin/core.rs",
+    "office/src/views/RequestTrace.test.tsx",
+    "native/src/trace.rs",
+    "native/src/db/events.rs",
+    "native/src/replay.rs",
+    "native/src/workflow.rs"
    ],
-   "notes": "Requests and decisions are operator-authenticated Core projections; the client does not synthesize state. Removed routes redirect to the closest current workspace, unknown routes return Home, and copied path URLs without a hash redirect for browser navigation. The request list and Decision Inbox filter by Project. A V2 profile whose auto_start policy enables R0 is an autopilot profile: the owner grants the autonomous policy and subscription confirmation once, then Core owns assessment, freeze and start for subsequent requests without per-request UI approval. Manual profiles keep the exact plan approval flow. The Inbox exposes exact-revision intake approval, model-call resolution, Lead withdrawal, Campaign cancellation and navigation; every action revalidates the current decision revision, requires proportionate confirmation and is disabled while Core is unreachable. Full-scope Campaign authorization is not posted from the Inbox. Autonomous Gate repair and provider-session termination remain outside the Inbox. A real Chromium run against Compose exercised the request list, Inbox, filters, deep links and the autonomous R0 path; see docs/evidence/office-autonomy-ux-2026-11-08/manifest.json and docs/evidence/autopilot-r0-2026-11-08/manifest.json. It is implementer evidence, not independent acceptance. No SSE or live-stream claim."
+   "notes": "Requests and decisions are operator-authenticated Core projections; the client does not synthesize state. Removed routes redirect to the closest current workspace, unknown routes return Home, and copied path URLs without a hash redirect for browser navigation. The request list and Decision Inbox filter by Project. A V2 profile whose auto_start policy enables R0 is an autopilot profile: the owner grants the autonomous policy and subscription confirmation once, then Core owns assessment, freeze and start for subsequent requests without per-request UI approval. Manual profiles keep the exact plan approval flow. The Inbox exposes exact-revision intake approval, model-call resolution, Lead withdrawal, Campaign cancellation and navigation; every action revalidates the current decision revision, requires proportionate confirmation and is disabled while Core is unreachable. Full-scope Campaign authorization is not posted from the Inbox. Autonomous Gate repair and provider-session termination remain outside the Inbox. A real Chromium run against Compose exercised the request list, Inbox, filters, deep links and the autonomous R0 path; see docs/evidence/office-autonomy-ux-2026-11-08/manifest.json and docs/evidence/autopilot-r0-2026-11-08/manifest.json. It is implementer evidence, not independent acceptance. No SSE or live-stream claim. WP11 adds an operator-authenticated GET /agentic/requests/{id}/trace read of the latest durable workflow run. It returns a bounded ReplayTrace, per-step rows, a redacted event log ordered by durable sequence, and structured alerts for duplicate sequences, gaps, open steps, terminal/non-terminal state, truncation, malformed rows and replay rejection. Payloads are redacted by Core; free-form step detail is not exposed. The Request workspace renders loading, empty, error/offline, alert, step and long event-log states. Endpoint and component tests pass; real Core/Compose browser acceptance remains NOT_TESTED and this is implementer evidence, not independent acceptance. WP11 review repair: allowlisted payload strings are retained only when they parse as canonical workflow/step/outcome enums, lowercase SHA-256, operational identifiers or numbers/booleans; free-form strings are hashed. Property names outside the canonical payload keys are replaced by a bounded hash label, event IDs must match canonical UUID / workflow-<uuid> / step-<uuid> formats, and the Office refuses invalid payload keys, values or identifier text again. Transition rows with JSON-looking invalid detail or missing/invalid from/to states raise MALFORMED_EVENT, and a rejected replay is shown as unknown rather than in progress. Step rows are bounded to the newest 500 with STEP_TRUNCATED and a visible step-truncation state."
   },
   "CAP-050": {
    "name": "Campaign operational workspace",
