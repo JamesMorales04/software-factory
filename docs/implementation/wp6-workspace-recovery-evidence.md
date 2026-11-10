@@ -2,14 +2,15 @@
 
 **Status:** implementer self-test evidence, **not** independent acceptance or
 certification. This document records startup orphan-volume reconciliation, the
-deterministic chaos tests and the review repairs for WP6. It does not claim
-`ACCEPTED`, whole-work-package `PASS`, `TRUSTED_LOCAL` isolation or Compose
+deterministic chaos tests and two review-repair rounds for WP6. It does not
+claim `ACCEPTED`, whole-work-package `PASS`, `TRUSTED_LOCAL` isolation or Compose
 end-to-end coverage.
 
 - Baseline: `bcb8b5b`
 - Branch: `factory/quality-wp6-workspace-recovery`
 - Original implementation commit: `e3b2454`
-- Review-repair implementation commit: `1dc9176`
+- First review-repair commit: `1dc9176`
+- Second review-repair implementation: `394719a`
 - Worktree: `/home/james/Escritorio/Development/sf-quality-wave12/wp6`
 
 ## Scope
@@ -26,43 +27,79 @@ resources labelled `io.software-factory.owner=supervisor` that no
 
 ## Review repairs
 
-Independent review at `90289ed` found three valid issues; all were repaired:
+Independent review at `90289ed` (P1/P2) and re-review at `fb3818b` (P1/P2) found
+valid issues. All were repaired:
 
-1. **Owner-scoped deletion.** Volume/container deletion now requires an
-   `owner` query value. The broker inspects the stored labels and refuses with
-   `409 CONFLICT` when `managed=true` or the expected owner label is missing,
-   unknown or different. Broker, verifier, Supervisor and Worker callers pass
-   their own owner. Direct backend deletion (`RootlessPodmanVolumes`) performs
-   the same label check.
+1. **Owner-scoped deletion.** The first repair added an `owner` query parameter.
+   The re-review correctly rejected caller-chosen ownership: every caller shared
+   one bearer token. The final model is three distinct owner tokens.
 2. **Safe volume creation.** `BrokerVolumes` no longer deletes a volume before
    creation. The broker inspects an existing volume and resets it only when it
-   is managed, owned by the requesting service and labelled with the same
+   is managed, owned by the authenticated service and labelled with the same
    workspace identity. A foreign or unlabelled pre-existing volume is preserved
    and the request fails closed. `RootlessPodmanVolumes` and the debug local
    backends implement the same rule.
-3. **Bounded inventory reads.** The broker inventory subprocess is read through
-   a capped stream and killed as soon as the next chunk would exceed 4 MiB; it
-   is no longer buffered with `.output()` first. The runtime-broker client also
-   accumulates the HTTP response chunk-by-chunk against the same bound instead
-   of `response.bytes()`.
-4. **Status truth.** `docs/implementation/quality-first-planning-status.md`
-   now records WP6 as implemented for this slice with the remaining independent
-   acceptance work, matching this evidence.
+3. **Bounded inventory/inspect reads.** Inventory and label-inspect subprocesses
+   are read through a capped stream and killed as soon as the next chunk would
+   exceed 4 MiB; they are no longer buffered with `.output()` first. The
+   runtime-broker client accumulates HTTP chunks against the same bound.
+4. **Per-owner credentials.** The runtime broker reads three token files and
+   derives `ResourceOwner` from the authenticated bearer token. No request body
+   or query parameter can choose an owner. Create, import, export, execute,
+   delete, reset, status and inventory operations enforce the derived owner.
+   Cleanup/reaper paths use the same checked helpers.
+5. **Serialize per-resource mutations.** Create/reset/delete/import/export/run
+   acquire a bounded sharded async lock per resource name and recheck ownership
+   after acquiring it. Concurrent create for different owners and concurrent
+   delete/reset are deterministic tests.
+6. **Status truth.** `docs/implementation/quality-first-planning-status.md`
+   records WP6 as implemented for this slice with the remaining independent
+   acceptance work.
+
+## Per-owner credential model
+
+`factory-compose-init` creates three distinct tokens:
+
+| Caller | Token file in its config volume | Runtime broker file |
+|---|---|---|
+| Supervisor | `runtime-broker-supervisor.token` | `/config/runtime-broker-supervisor.token` |
+| Verifier | `runtime-broker-verifier.token` | `/config/runtime-broker-verifier.token` |
+| Worker/provider | `runtime-broker-provider.token` | `/config/runtime-broker-provider.token` |
+
+The runtime service mounts `/config` read-only and receives
+`FACTORY_RUNTIME_BROKER_TOKEN_DIR=/config`. Each caller receives only its own
+token through its existing `FACTORY_RUNTIME_BROKER_TOKEN_FILE`. The retired
+shared `runtime-broker.token` is removed by compose-init. Tokens are file-loaded,
+never placed in argv, logs or the Office UI; the broker registers them for log
+redaction.
+
+Authorization rules:
+
+- Supervisor/verifier may create/reuse their own workspace volumes, import,
+  export, execute and delete their own resources.
+- Provider may start/status/delete its own provider containers; provider cannot
+  create workspace volumes or execute workspace children.
+- Inventory is filtered to the authenticated owner.
+- Unknown/missing token → `401`; wrong owner for a resource → `409`; provider
+  attempting an execution operation the provider does not own → `403`.
 
 ## Changed files
 
 | File | Change |
 |---|---|
-| `native/src/runtime_broker.rs` | `ResourceOwner`, `ManagedResource(s)`, strict inventory/inspect parsers, owner/workspace identity checks, bounded stream accumulator, `list_managed_resources`, owner-scoped delete client calls |
-| `native/src/bin/runtime_broker.rs` | Read-only authenticated `GET /v1/resources`; owner label on volume/container/provider creation; owner-verified delete endpoints; creation preserves foreign/mismatched volumes; bounded subprocess inventory reader; removal of broker startup container deletion |
+| `native/src/runtime_broker.rs` | `ResourceOwner`, managed-resource/inspect parsers, owner/workspace identity checks, bounded stream accumulator, owner-bound client, `list_managed_resources`; client constructors now take the owner |
+| `native/src/bin/runtime_broker.rs` | Three-token `OwnerTokens` registry, derived-owner authorization on every operation, filtered inventory, owner-verified delete/reset, capped inventory/inspect readers, per-resource async locks, checked reaper/cleanup paths |
 | `native/src/execution.rs` | `VolumeBackend::owner`/`list_managed`, owner-labelled resources, ownership-checked create/remove, bounded `ReconcileReport`, durable-record repair and owner-scoped orphan sweep, chaos tests and real-Podman probes |
-| `native/src/bin/supervisor.rs` | Startup reconciliation report logging, `/v1/reconcile` report, Supervisor-owned backend wiring, local inventory, ownership-checked debug backend |
-| `native/src/bin/verifier.rs` | Verifier-owned backend label so Supervisor reconciliation cannot delete verifier resources |
-| `native/src/bin/worker.rs` | Provider-owned container deletion during recovery |
-| `native/src/provider_sandbox.rs` | Provider-owned container deletion during cleanup |
-| `native/src/workspace_archive.rs` | Failed extraction removes its partial staging directory; truncated-archive rejection tests |
-| `docs/security/container-runtime.md` | Reconciliation ownership, owner-scoped deletion and broker-restart behavior |
-| `docs/engineering/container-native-engineering.md` | Broker-restart operational guidance |
+| `native/src/bin/supervisor.rs` | Startup reconciliation report, `/v1/reconcile`, Supervisor-owned backend wiring, local inventory, ownership-checked debug backend |
+| `native/src/bin/verifier.rs` | Verifier owner token/backend label |
+| `native/src/bin/worker.rs` | Provider-bound broker client for recovery |
+| `native/src/provider_sandbox.rs` | Provider-bound broker client for session cleanup |
+| `native/src/bin/compose_init.rs` | Three owner token files, legacy shared-token removal |
+| `compose.yaml` | Per-service broker token files; broker token directory |
+| `native/src/workspace_archive.rs` | Failed extraction removes partial staging; truncated-archive rejection tests |
+| `docs/security/container-runtime.md` | Per-owner credential model and reconciliation ownership |
+| `docs/engineering/container-native-engineering.md` | Per-owner broker credential rule |
+| `docs/operations/compose-deployment.md` | Owner-token deployment table and rules |
 | `docs/implementation/quality-first-planning-status.md` | WP6 status aligned with this evidence |
 
 ## Reconciliation behavior
@@ -79,26 +116,21 @@ Independent review at `90289ed` found three valid issues; all were repaired:
      Git candidate for idempotent reopen.
    - `ALLOCATED` → re-create/ensure the transfer volume (repairs a stale record
      whose volume disappeared).
-3. The Supervisor reads the broker's bounded managed inventory. It removes only
+3. The Supervisor reads its owner-scoped managed inventory. It removes only
    names that are valid `factory-ws-<uuid>` volumes or `factory-exec-<uuid>`
    containers, carry `io.software-factory.owner=supervisor`, and are absent from
    every durable record (including the in-process active map). Foreign-owner,
-   unlabelled, provider and invalid-name resources are counted and preserved.
-4. `GET /v1/resources` requires the runtime-broker bearer token, accepts no
-   arguments, does not mutate the engine and returns only resources filtered by
-   `io.software-factory.managed=true`.
-5. The broker no longer deletes managed containers on startup. A broker-only
+   unlabelled, provider and invalid-name resources are preserved.
+4. The broker no longer deletes managed containers on startup. A broker-only
    restart therefore cannot kill an active provider session or execution child
    merely by restarting; the owning service reconciles failures it observes.
-6. `DELETE /v1/volumes/{volume}` and `DELETE /v1/containers/{container}` require
-   `?owner=supervisor|verifier|provider`; the stored labels are verified before
-   removal. Missing resources remain idempotent `204`; owner mismatch is `409`.
-7. Volume creation is idempotent only for a matching managed owner/workspace
-   identity. Preserving a foreign resource is the safe outcome, even if it
-   delays a retry until an operator resolves the collision.
+5. Broker mutations acquire a sharded per-name lock before inspecting and again
+   recheck ownership after the lock. Concurrent create for different owners
+   cannot return success for a volume owned by the other caller; concurrent
+   delete/reset cannot remove a replacement created under the lock.
 
 Limits: at most 4096 durable state records, 4096 inventory entries and 4 MiB of
-inventory JSON/subprocess output; Podman commands retain the existing 120 s
+inventory/inspect subprocess output; Podman commands retain the existing 120 s
 command timeout. Inventory failure is reported (`sweepSupported: true`,
 `sweepError`) and does not delete anything; an unsupported backend reports
 `sweepSupported: false`.
@@ -115,13 +147,13 @@ cargo test -p factory-native --lib
 747 passed; 0 failed; 4 ignored
 
 cargo test -p factory-native --bin factory-runtime-broker
-13 passed; 0 failed
+18 passed; 0 failed
 
 cargo clippy -p factory-native --all-targets --all-features -- -D warnings
 clean
 ```
 
-Targeted new/affected tests:
+Targeted results:
 
 ```text
 cargo test -p factory-native --lib reconcile
@@ -134,18 +166,33 @@ cargo test -p factory-native --lib runtime_broker::tests
 8 passed
 ```
 
-Review-repair tests include:
+Owner-token spoofing and authorization tests (deterministic fake Podman):
 
-- `remove_volume_requires_the_expected_owner_label`
-- `remove_volume_rejects_missing_owner_and_missing_resource`
-- `remove_container_requires_the_expected_owner_label`
-- `create_volume_refuses_a_preexisting_foreign_volume`
-- `create_volume_reuses_a_matching_owned_workspace`
+- `remove_volume_requires_the_authenticated_owner` — no token `401`;
+  verifier token against a supervisor-owned volume `409` with no `rm`; correct
+  owner `204`.
+- `import_export_execute_and_provider_start_require_the_authenticated_owner` —
+  supervisor token against a verifier-owned volume is rejected for import,
+  export and execute; supervisor cannot start a provider session.
+- `remove_container_requires_the_expected_owner_label` — wrong owner `409`,
+  correct provider owner `204`.
+- `managed_inventory_is_scoped_to_the_authenticated_owner`.
+- `owner_tokens_are_distinct_and_authenticate_exactly` — duplicate or short
+  tokens fail startup.
+
+Concurrency tests (stateful fake Podman with a shared log):
+
+- `concurrent_create_for_different_owners_serializes_per_name` — one `201` and
+  one `409`; the stored owner matches the successful caller.
+- `concurrent_delete_and_reset_never_removes_the_replacement` — no `rm`
+  interleaves between create-reset start and completion.
+
+Bounded-stream tests:
+
 - `read_capped_stops_at_the_limit`
-- `resource_ownership_requires_managed_and_exact_owner_labels`
-- `volume_identity_requires_owner_and_workspace_match`
-- `inspect_labels_and_bounded_streams_fail_closed`
-- `create_and_remove_refuse_foreign_or_unlabelled_resources`
+- `inspect_output_is_bounded_before_parsing` (fake inspect emits 5 MB; the
+  capped reader rejects it)
+- runtime-broker client `extend_bounded` overflow test
 
 Real rootless Podman probes (host Podman `6.1.4`, rootless confirmed,
 `alpine:3.20` cached):
@@ -186,9 +233,11 @@ exit 0; 411 lines rendered
 | Corrupt/incomplete exported archive | `corrupt_exported_archive_fails_closed_without_replacing_the_worktree` | `Archive` error; record `FAILED`; repository HEAD/worktree unchanged |
 | Truncated tar header/content | `rejects_truncated_archives_and_removes_partial_staging`, `rejects_archive_truncated_mid_entry_and_leaves_existing_destination` | Rejected; partial staging removed; pre-existing destination untouched |
 | Foreign owner / unlabelled / provider resources | `reconcile_removes_only_owned_unreferenced_managed_resources` | Preserved and counted |
-| Wrong/missing owner on delete | broker handler tests with a fake Podman | `409`; no `rm` invocation |
+| Wrong/missing owner token or resource owner | broker handler tests with fake Podman | `401`/`403`/`409`; no mutation invoked |
 | Pre-existing foreign volume on create | broker handler test, execution backend test, real Podman probe | Preserved; request fails closed; no `rm`/`create` |
-| Inventory output overflow | `read_capped_stops_at_the_limit`; client `extend_bounded` test | Stops at bound; process/response rejected |
+| Concurrent create for different owners | `concurrent_create_for_different_owners_serializes_per_name` | One success, one conflict; ownership consistent |
+| Concurrent delete/reset | `concurrent_delete_and_reset_never_removes_the_replacement` | Serialized; no interleaved delete |
+| Inventory/inspect output overflow | `read_capped_stops_at_the_limit`, `inspect_output_is_bounded_before_parsing` | Stops at bound; process/response rejected |
 | Inventory unavailable or unsupported | `reconcile_handles_unsupported_and_failed_inventory` | No deletion; status/error reported |
 | Real Podman orphan sweep | `real_podman_reconcile_removes_only_its_orphan_volume` | Orphan removed; referenced volume preserved; cleanup confirmed |
 
@@ -200,11 +249,14 @@ exit 0; 411 lines rendered
 - No host Podman socket, host networking, privileged mode, host mount, arbitrary
   Podman flag or new image allowlist was added. The existing nested rootful
   engine inside the rootless outer container is unchanged.
-- The broker inventory is read-only, authenticated, argument-free and filtered by
-  the managed label; names are validated before any deletion.
-- Deletion is owner-scoped and verifies the stored label. Creation resets only a
-  managed, same-owner, same-workspace volume; foreign/unlabelled resources are
-  preserved.
+- Runtime-broker authorization is derived from three distinct file-loaded owner
+  tokens. The broker never accepts an owner from the request. The reviewer has
+  no broker token.
+- The broker inventory is read-only, authenticated, argument-free and scoped to
+  the authenticated owner.
+- Deletion is owner-scoped and verifies the stored label after acquiring the
+  per-name lock. Creation resets only a managed, same-owner, same-workspace
+  volume; foreign/unlabelled resources are preserved.
 - Legacy managed resources without an owner label are never deleted. They require
   explicit manual cleanup; this is intentional (`never remove unlabelled`).
 - Provider containers are owned by Worker recovery, not by Supervisor
@@ -213,9 +265,9 @@ exit 0; 411 lines rendered
 ## Limitations and NOT_TESTED / BLOCKED
 
 - **NOT_TESTED:** full `podman compose up` end-to-end run against the nested
-  engine and the HTTP `GET /v1/resources` endpoint. The endpoint handlers and
-  parsers are unit-tested, including fake-Podman owner rejection; the real-Podman
-  probes exercise the same inventory/sweep/ownership logic through
+  engine and the HTTP `GET /v1/resources` endpoint. The endpoint handlers,
+  tokens, parsers and concurrency are unit-tested with fake Podman; the
+  real-Podman probes exercise the execution/sweep/ownership logic through
   `RootlessPodmanVolumes`, not through the broker HTTP boundary.
 - **NOT_TESTED:** actual process kill/restart of the Compose Supervisor at every
   crash point. The durable-record scenarios are deterministic simulations.
@@ -227,10 +279,9 @@ exit 0; 411 lines rendered
 - **KNOWN LIMITATION:** an inventory failure during startup is logged and the
   Supervisor continues without sweeping; unresolved orphans remain until the
   next successful reconciliation.
-- **KNOWN LIMITATION:** the shared runtime-broker credential still lets a
-  compromised trusted service attempt deletion of a resource name it knows; the
-  owner-label check prevents accidental cross-owner deletion but is not a
-  per-role credential boundary.
+- **KNOWN LIMITATION:** a compromised trusted caller can perform any operation
+  within its own owner scope, and the runtime container necessarily holds all
+  three tokens. This is engine-scoped authority, not per-role isolation.
 - **BLOCKED for acceptance:** independent verifier/reviewer run, candidate-bound
   Compose/browser acceptance, and any certification claim. This document is
   implementer self-test evidence only.
