@@ -146,8 +146,13 @@ PASS/PASS; 36 policy tests each (8/5 profile-specific skips)
 ```
 
 The other flaky-sensitive integration suites and the focused filters were
-repeated three times each after the script; all passed. The four ignored
-library tests are the opt-in real-Podman tests and are `SKIPPED`, not passes.
+repeated three times each after the script; all passed. Only a full run can
+print `RESULT: PASS`; `--skip-office` or `--skip-compose` produce
+`RESULT: PARTIAL` with exit 3, and `--no-install` fails closed when Office
+dependencies are missing or stale. `scripts/quality-wave12-acceptance.test.sh`
+asserts those control-flow cases without running the full suite. The four
+ignored library tests are the opt-in real-Podman tests and are `SKIPPED`, not
+passes.
 Live provider inference, real Compose dependency acquisition, a real
 multi-reviewer Campaign, a real Core-backed OpenSpec projection, browser
 acceptance and independent acceptance remain `NOT_TESTED`/`BLOCKED` as listed

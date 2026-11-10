@@ -9,13 +9,21 @@
 # Usage:
 #   scripts/quality-wave12-acceptance.sh [--repeat N] [--skip-office]
 #                                        [--skip-compose] [--no-install]
-#                                        [--require-clean]
+#                                        [--require-clean] [--self-test]
+#
+# A full run (no --skip-* option) prints `RESULT: PASS` and exits 0. Any
+# required skipped step prints `RESULT: PARTIAL` and exits 3; it is not
+# acceptance. A failed step exits 1 and missing tooling exits 2.
+# `--skip-office`/`--skip-compose` are diagnostic only. `--no-install` fails
+# closed when Office dependencies are missing or stale. `--self-test` runs the
+# shell assertions for these semantics and exits without running acceptance.
 #
 # Environment:
 #   FACTORY_WAVE12_TARGET_DIR  Cargo target directory (default: <repo>/target)
 #   FACTORY_WAVE12_LOG_DIR     Per-step logs (default: <target>/quality-wave12)
 #   FACTORY_WAVE12_TMP_DIR     Test temp root outside the repo (default: /var/tmp/factory-wave12)
 #   FACTORY_WAVE12_REPEAT      Default repeat count for provider_chaos (3)
+#   FACTORY_WAVE12_OFFICE_DIR  Office directory for the dependency assertions
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -26,6 +34,7 @@ SKIP_OFFICE=0
 SKIP_COMPOSE=0
 NO_INSTALL=0
 REQUIRE_CLEAN=0
+SELF_TEST=0
 while (($#)); do
   case "$1" in
     --repeat)
@@ -49,8 +58,12 @@ while (($#)); do
       REQUIRE_CLEAN=1
       shift
       ;;
+    --self-test)
+      SELF_TEST=1
+      shift
+      ;;
     -h|--help)
-      sed -n '1,30p' "${BASH_SOURCE[0]}"
+      sed -n '1,45p' "${BASH_SOURCE[0]}"
       exit 0
       ;;
     *)
@@ -69,6 +82,7 @@ LOG_DIR="${FACTORY_WAVE12_LOG_DIR:-$TARGET_DIR/quality-wave12}"
 # Keep temporary test trees outside the repository. Several tests assert that
 # std::env::temp_dir() is not a Git worktree, and /tmp may be a small tmpfs.
 TMP_DIR="${FACTORY_WAVE12_TMP_DIR:-/var/tmp/factory-wave12}"
+OFFICE_DIR="${FACTORY_WAVE12_OFFICE_DIR:-$ROOT/office}"
 mkdir -p "$TARGET_DIR" "$LOG_DIR" "$TMP_DIR"
 export CARGO_TARGET_DIR="$TARGET_DIR"
 export TMPDIR="$TMP_DIR"
@@ -96,6 +110,7 @@ preflight() {
   require rustc
   require python3
   require podman
+  require sha256sum
   if ((SKIP_OFFICE == 0)); then
     require node
     require npm
@@ -132,6 +147,107 @@ skip_step() {
   SKIP+=("$name: $reason")
   printf '\n== %s ==\nRESULT %-32s SKIPPED (%s)\n' "$name" "$name" "$reason"
 }
+
+final_result() {
+  if ((FAILED != 0)); then
+    printf 'FAIL'
+    return 1
+  fi
+  if ((${#SKIP[@]} > 0)); then
+    printf 'PARTIAL'
+    return 3
+  fi
+  printf 'PASS'
+  return 0
+}
+
+self_check() {
+  local label="$1" actual="$2" expected="$3"
+  if [[ "$actual" == "$expected" ]]; then
+    printf 'self-test PASS: %s (%s)\n' "$label" "$actual"
+    return 0
+  fi
+  printf 'self-test FAIL: %s expected=%s actual=%s\n' "$label" "$expected" "$actual" >&2
+  return 1
+}
+
+self_test() {
+  local failures=0 actual status tmp expected
+  PASS=()
+  FAIL=()
+  SKIP=()
+  FAILED=0
+  status=0
+  actual="$(final_result)" || status=$?
+  self_check "full run result" "$actual" "PASS" || failures=$((failures + 1))
+  self_check "full run exit" "$status" "0" || failures=$((failures + 1))
+
+  SKIP=("office: disabled by --skip-office")
+  status=0
+  actual="$(final_result)" || status=$?
+  self_check "skipped run result" "$actual" "PARTIAL" || failures=$((failures + 1))
+  self_check "skipped run exit" "$status" "3" || failures=$((failures + 1))
+
+  FAIL=("lib")
+  SKIP=()
+  FAILED=1
+  status=0
+  actual="$(final_result)" || status=$?
+  self_check "failed run result" "$actual" "FAIL" || failures=$((failures + 1))
+  self_check "failed run exit" "$status" "1" || failures=$((failures + 1))
+
+  PASS=()
+  FAIL=()
+  SKIP=()
+  FAILED=0
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/factory-wave12-selftest.XXXXXXXX")"
+  printf '{"lockfileVersion":3}\n' >"$tmp/package-lock.json"
+
+  # Missing dependencies with --no-install must fail before npm.
+  status=0
+  if ( OFFICE_DIR="$tmp"; NO_INSTALL=1; step_office_install ) >/dev/null 2>&1; then
+    status=0
+  else
+    status=$?
+  fi
+  self_check "no-install missing dependencies exit" "$status" "1" || failures=$((failures + 1))
+
+  # Stale dependencies with --no-install must fail before npm.
+  mkdir -p "$tmp/node_modules"
+  printf 'stale\n' >"$tmp/node_modules/.factory-wave12-lock"
+  status=0
+  if ( OFFICE_DIR="$tmp"; NO_INSTALL=1; step_office_install ) >/dev/null 2>&1; then
+    status=0
+  else
+    status=$?
+  fi
+  self_check "no-install stale dependencies exit" "$status" "1" || failures=$((failures + 1))
+
+  # Fresh dependencies must pass without invoking npm. A failing npm shim
+  # proves the install path is not entered when --no-install is set.
+  mkdir -p "$tmp/bin"
+  printf '#!/bin/sh\nexit 99\n' >"$tmp/bin/npm"
+  chmod +x "$tmp/bin/npm"
+  expected="$(sha256sum "$tmp/package-lock.json" | awk '{print $1}')"
+  printf '%s\n' "$expected" >"$tmp/node_modules/.factory-wave12-lock"
+  status=0
+  if ( PATH="$tmp/bin:$PATH"; OFFICE_DIR="$tmp"; NO_INSTALL=1; step_office_install ) >/dev/null 2>&1; then
+    status=0
+  else
+    status=$?
+  fi
+  self_check "no-install fresh dependencies exit" "$status" "0" || failures=$((failures + 1))
+
+  rm -rf "$tmp"
+  if ((failures != 0)); then
+    printf 'self-test FAILED: %s assertion(s)\n' "$failures" >&2
+    return 1
+  fi
+  printf 'self-test PASS: all assertions passed\n'
+  return 0
+}
+
+step_self_test() { bash "$ROOT/scripts/quality-wave12-acceptance.test.sh"; }
 
 cargo_test() {
   cargo test -p factory-native --locked "$@"
@@ -191,27 +307,48 @@ step_clippy() {
   cargo clippy -p factory-native --locked --all-targets --all-features -- -D warnings
 }
 
-step_office_install() {
-  local stamp="office/node_modules/.factory-wave12-lock"
+office_dependencies_state() {
+  local stamp="$OFFICE_DIR/node_modules/.factory-wave12-lock"
   local expected
-  expected="$(sha256sum office/package-lock.json | awk '{print $1}')"
-  if [[ -d office/node_modules && -f "$stamp" ]] && [[ "$(cat "$stamp")" == "$expected" ]]; then
+  if [[ ! -d "$OFFICE_DIR/node_modules" ]]; then
+    printf 'missing\n'
+    return 1
+  fi
+  if [[ ! -f "$OFFICE_DIR/package-lock.json" ]]; then
+    printf 'lockfile-missing\n'
+    return 1
+  fi
+  expected="$(sha256sum "$OFFICE_DIR/package-lock.json" | awk '{print $1}')"
+  if [[ ! -f "$stamp" ]] || [[ "$(cat "$stamp")" != "$expected" ]]; then
+    printf 'stale\n'
+    return 1
+  fi
+  printf 'ready\n'
+  return 0
+}
+
+step_office_install() {
+  local stamp="$OFFICE_DIR/node_modules/.factory-wave12-lock"
+  local expected state
+  state="$(office_dependencies_state)" || true
+  if [[ "$state" == "ready" ]]; then
     printf 'office dependencies already match package-lock.json\n'
     return 0
   fi
-  if [[ -d office/node_modules && "$NO_INSTALL" == "1" ]]; then
-    printf 'error: office/node_modules is stale and --no-install was set\n' >&2
+  if [[ "$NO_INSTALL" == "1" ]]; then
+    printf 'error: --no-install was set but Office dependencies are %s\n' "$state" >&2
     return 1
   fi
-  ( cd office && npm ci --no-audit --no-fund --prefer-offline ) || return $?
+  ( cd "$OFFICE_DIR" && npm ci --no-audit --no-fund --prefer-offline ) || return $?
+  expected="$(sha256sum "$OFFICE_DIR/package-lock.json" | awk '{print $1}')"
   printf '%s\n' "$expected" >"$stamp"
 }
 
-step_office_test() { ( cd office && npm test -- --run ); }
+step_office_test() { ( cd "$OFFICE_DIR" && npm test -- --run ); }
 
-step_office_typecheck() { ( cd office && npm run typecheck ); }
+step_office_typecheck() { ( cd "$OFFICE_DIR" && npm run typecheck ); }
 
-step_office_lint() { ( cd office && npm run lint ); }
+step_office_lint() { ( cd "$OFFICE_DIR" && npm run lint ); }
 
 step_compose_base() {
   podman compose -f compose.yaml config >"$LOG_DIR/compose-base.yaml"
@@ -239,6 +376,11 @@ step_policy_profile() {
 
 # --- run -------------------------------------------------------------------
 
+if ((SELF_TEST == 1)); then
+  self_test
+  exit $?
+fi
+
 preflight
 if ((REQUIRE_CLEAN == 1)); then
   if [[ -n "$(git status --porcelain)" ]]; then
@@ -262,6 +404,9 @@ printf 'versions: %s | %s | %s | %s | %s\n' \
   "$(npm --version 2>/dev/null || printf 'npm skipped')" \
   "$(podman --version)"
 
+if [[ "${FACTORY_WAVE12_SKIP_SELF_TEST:-0}" != "1" ]]; then
+  run_step self_test step_self_test
+fi
 run_step fmt step_fmt
 run_step lib step_lib
 run_step bins step_bins
@@ -301,8 +446,10 @@ printf 'SKIPPED: %s\n' "${#SKIP[@]}"
 for entry in "${SKIP[@]}"; do printf '  SKIP %s\n' "$entry"; done
 printf 'logs: %s\n' "$LOG_DIR"
 
-if ((FAILED != 0)); then
-  printf 'RESULT: FAIL\n'
-  exit 1
+status=0
+result="$(final_result)" || status=$?
+printf 'RESULT: %s\n' "$result"
+if [[ "$result" == "PARTIAL" ]]; then
+  printf 'PARTIAL: required steps were skipped; this run is not acceptance.\n' >&2
 fi
-printf 'RESULT: PASS\n'
+exit "$status"

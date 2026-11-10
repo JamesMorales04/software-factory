@@ -33,12 +33,20 @@ three consecutive `provider_chaos` runs, Clippy with `-D warnings`, the Office
 tests for both profiles. It is read-only with respect to the installed stack:
 it never runs `podman compose up`, builds no image and starts no provider.
 
-The JSON policy input is produced by `podman compose config` and normalized by
-`docker-compose -f - config --format json`; this host's `podman-compose` does
-not implement `--format json`. The normalizer is a parser only, not a runtime
-dependency of the product. Test temporary files use `/var/tmp/factory-wave12`,
-outside the repository, because some tests assert that the temp root is not a
-Git worktree.
+Only a full run can print `RESULT: PASS`. `--skip-office` or `--skip-compose`
+is diagnostic only and produces `RESULT: PARTIAL` with exit 3. A failed step
+prints `RESULT: FAIL` and exits 1. `--no-install` fails closed when Office
+dependencies are missing or stale. `scripts/quality-wave12-acceptance.test.sh`
+exercises the skip/no-install control flow without running the full suite.
+
+The JSON policy input is rendered by `podman compose ... config` into
+`target/quality-wave12/compose-base.yaml` and
+`target/quality-wave12/compose-openspec.yaml`, then normalized from those saved
+files by `docker-compose -f <saved-file> config --format json`; this host's
+`podman-compose` does not implement `--format json`. The normalizer is a parser
+only, not a runtime dependency of the product. Test temporary files use
+`/var/tmp/factory-wave12`, outside the repository, because some tests assert
+that the temp root is not a Git worktree.
 
 ## Candidate result
 
