@@ -11692,6 +11692,61 @@ async fn persist_planning_plan(
     }))
 }
 
+/// One initial Planner attempt plus at most two bounded repairs. A repair is a
+/// fresh model call with its own request digest, reservation and budget hold;
+/// no graph is persisted until one attempt decodes and validates.
+const AGENTIC_PLAN_MAX_ATTEMPTS: usize = 3;
+
+#[derive(Debug)]
+enum PlannerWorkGraphFailure {
+    OutputInvalid(String),
+    GraphInvalid(String),
+}
+
+impl PlannerWorkGraphFailure {
+    fn output_invalid(error: impl std::fmt::Display) -> Self {
+        Self::OutputInvalid(bounded_agentic_model_error(&error.to_string()))
+    }
+
+    fn graph_invalid(error: impl std::fmt::Display) -> Self {
+        Self::GraphInvalid(bounded_agentic_model_error(&error.to_string()))
+    }
+
+    fn detail(&self) -> &str {
+        match self {
+            Self::OutputInvalid(detail) | Self::GraphInvalid(detail) => detail,
+        }
+    }
+
+    fn code(&self) -> &'static str {
+        match self {
+            Self::OutputInvalid(_) => "AGENTIC_PLAN_OUTPUT_INVALID",
+            Self::GraphInvalid(_) => "AGENTIC_PLAN_INVALID",
+        }
+    }
+
+    fn status(&self) -> StatusCode {
+        match self {
+            Self::OutputInvalid(_) => StatusCode::BAD_GATEWAY,
+            Self::GraphInvalid(_) => StatusCode::BAD_REQUEST,
+        }
+    }
+
+    fn response(self) -> Response {
+        (
+            self.status(),
+            Json(json!({"error": self.detail(), "code": self.code()})),
+        )
+            .into_response()
+    }
+}
+
+fn planner_repair_instruction(attempt: usize, error: &str) -> String {
+    format!(
+        "The previous WorkGraph was rejected by Core: {error}. Return a corrected WorkGraph. If independent units share a write path, add a dependency between them or merge them into one unit. Do not change the objective, allowed paths or scope. This is Planner repair attempt {attempt} of {AGENTIC_PLAN_MAX_ATTEMPTS}."
+    )
+}
+
 async fn plan_agentic_request(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
@@ -11959,41 +12014,55 @@ JSON Schema:
         }
     })
     .to_string();
-    let result = match call_agentic_lead_model(
-        &app,
-        &record,
-        "agentic_planner",
-        &system_prompt,
-        &user_prompt,
-        AGENTIC_LEAD_STRUCTURED_OUTPUT_TOKENS,
-    )
-    .await
-    {
-        Ok(result) => result,
-        Err(response) => return response,
-    };
-    let model = match factory_native::model_output::decode_work_graph(result.content.as_bytes()) {
-        Ok(model) => model,
-        Err(error) => {
-            return (
-                StatusCode::BAD_GATEWAY,
-                Json(json!({
-                    "error": error.to_string(),
-                    "code": "AGENTIC_PLAN_OUTPUT_INVALID",
-                })),
-            )
-                .into_response();
+    let mut repair_error: Option<String> = None;
+    let mut attempt = 1usize;
+    let (graph, result) = loop {
+        let attempt_prompt = match repair_error.as_deref() {
+            Some(error) => format!(
+                "{user_prompt}\n\n{}",
+                planner_repair_instruction(attempt, error)
+            ),
+            None => user_prompt.clone(),
+        };
+        let result = match call_agentic_lead_model(
+            &app,
+            &record,
+            "agentic_planner",
+            &system_prompt,
+            &attempt_prompt,
+            AGENTIC_LEAD_STRUCTURED_OUTPUT_TOKENS,
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(response) => return response,
+        };
+        let failure =
+            match factory_native::model_output::decode_work_graph(result.content.as_bytes()) {
+                Ok(model) => {
+                    match factory_native::agentic::validate_work_graph(
+                        &model,
+                        &config.allowed_paths,
+                    ) {
+                        Ok(graph) => break (graph, result),
+                        Err(error) => PlannerWorkGraphFailure::graph_invalid(error),
+                    }
+                }
+                Err(error) => PlannerWorkGraphFailure::output_invalid(error),
+            };
+        if attempt == AGENTIC_PLAN_MAX_ATTEMPTS {
+            return failure.response();
         }
-    };
-    let graph = match factory_native::agentic::validate_work_graph(&model, &config.allowed_paths) {
-        Ok(graph) => graph,
-        Err(error) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": error, "code": "AGENTIC_PLAN_INVALID"})),
-            )
-                .into_response();
-        }
+        tracing::warn!(
+            purpose = "agentic_planner",
+            attempt,
+            max_attempts = AGENTIC_PLAN_MAX_ATTEMPTS,
+            code = failure.code(),
+            diagnostic = failure.detail(),
+            "Planner WorkGraph was rejected by Core; retrying with a bounded repair instruction"
+        );
+        repair_error = Some(failure.detail().to_owned());
+        attempt += 1;
     };
     match app
         .db
@@ -17293,6 +17362,21 @@ mod tests {
     }
 
     #[test]
+    fn planner_repair_is_bounded_and_each_attempt_prompt_is_distinct() {
+        assert_eq!(AGENTIC_PLAN_MAX_ATTEMPTS, 3);
+        let second = planner_repair_instruction(2, "a Core graph error");
+        let third = planner_repair_instruction(3, "a Core graph error");
+        assert_ne!(second, third);
+        assert!(
+            second.contains("The previous WorkGraph was rejected by Core: a Core graph error.")
+        );
+        assert!(second.contains(
+            "If independent units share a write path, add a dependency between them or merge them into one unit."
+        ));
+        assert!(second.contains("Do not change the objective, allowed paths or scope."));
+    }
+
+    #[test]
     fn participant_plan_readiness_requires_the_full_frozen_reviewer_set() {
         use factory_native::agentic::{Assurance, ChangeRoute, StackProfile};
         use factory_native::planning::{PlanningLane, ReviewerPlan, ReviewerRole};
@@ -22567,8 +22651,16 @@ mod tests {
 
         #[cfg(feature = "test-support")]
         #[derive(Clone)]
+        enum StructuredLeadUpstreamReply {
+            Content(String),
+            Truncate,
+        }
+
+        #[cfg(feature = "test-support")]
+        #[derive(Clone)]
         enum StructuredLeadUpstreamBehavior {
             TruncateThen(String),
+            Sequence(Vec<StructuredLeadUpstreamReply>),
             AlwaysTruncate,
             EmptyStop,
             Reject,
@@ -22609,19 +22701,37 @@ mod tests {
                     }))
                     .into_response()
                 };
+                let content_reply = |content: &str| {
+                    axum::Json(json!({
+                        "choices": [{
+                            "message": {"content": content},
+                            "finish_reason": "stop"
+                        }],
+                        "usage": {"prompt_tokens": 12, "completion_tokens": 7, "total_tokens": 19}
+                    }))
+                    .into_response()
+                };
                 match &state.behavior {
                     StructuredLeadUpstreamBehavior::TruncateThen(content) => {
                         if call == 1 {
                             truncation()
                         } else {
-                            axum::Json(json!({
-                                "choices": [{
-                                    "message": {"content": content},
-                                    "finish_reason": "stop"
-                                }],
-                                "usage": {"prompt_tokens": 12, "completion_tokens": 7, "total_tokens": 19}
-                            }))
-                            .into_response()
+                            content_reply(content)
+                        }
+                    }
+                    StructuredLeadUpstreamBehavior::Sequence(replies) => {
+                        match replies.get(call - 1) {
+                            Some(StructuredLeadUpstreamReply::Content(content)) => {
+                                content_reply(content)
+                            }
+                            Some(StructuredLeadUpstreamReply::Truncate) => truncation(),
+                            None => (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                axum::Json(json!({
+                                    "error": "unexpected model call beyond the test sequence"
+                                })),
+                            )
+                                .into_response(),
                         }
                     }
                     StructuredLeadUpstreamBehavior::AlwaysTruncate => truncation(),
@@ -22751,6 +22861,33 @@ mod tests {
                     paths: vec!["src/api.rs".into()],
                     acceptance: vec!["The endpoint returns a bounded response.".into()],
                 }],
+                assumptions: Vec::new(),
+                risks: Vec::new(),
+            })
+            .unwrap()
+        }
+
+        #[cfg(feature = "test-support")]
+        fn planner_shared_path_model_content() -> String {
+            serde_json::to_string(&factory_native::agentic::WorkGraphModel {
+                units: vec![
+                    factory_native::agentic::PlannedWorkUnit {
+                        id: "comment-commands".into(),
+                        title: "Implement comment commands".into(),
+                        objective: "Add comment commands.".into(),
+                        depends_on: Vec::new(),
+                        paths: vec!["src/lib.rs".into()],
+                        acceptance: vec!["Comment commands are available.".into()],
+                    },
+                    factory_native::agentic::PlannedWorkUnit {
+                        id: "profile-commands".into(),
+                        title: "Implement profile commands".into(),
+                        objective: "Add profile commands.".into(),
+                        depends_on: Vec::new(),
+                        paths: vec!["src/lib.rs".into()],
+                        acceptance: vec!["Profile commands are available.".into()],
+                    },
+                ],
                 assumptions: Vec::new(),
                 risks: Vec::new(),
             })
@@ -22925,6 +23062,316 @@ mod tests {
                     .await
                     .unwrap()
                     .is_empty()
+            );
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn planner_repairs_a_shared_path_graph_once_and_saves_the_corrected_graph() {
+            let (fixture, calls) = structured_lead_fixture(
+                StructuredLeadUpstreamBehavior::Sequence(vec![
+                    StructuredLeadUpstreamReply::Content(planner_shared_path_model_content()),
+                    StructuredLeadUpstreamReply::Content(planner_model_content()),
+                ]),
+                "planner-graph-repair",
+            )
+            .await;
+            let intake_id = fixture_intake_id(&fixture).await;
+            let (status, planned) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{planned}");
+            assert_eq!(planned["planning"]["code"], Value::Null);
+            assert!(planned["graph"]["graphSha256"].is_string(), "{planned}");
+
+            let core_error =
+                "independent work units comment-commands and profile-commands share a write path";
+            {
+                let calls = calls.lock().unwrap();
+                assert_eq!(calls.len(), 2, "one invalid graph and one bounded repair");
+                assert_eq!(calls[0]["max_tokens"], json!(16_384));
+                assert_eq!(calls[1]["max_tokens"], json!(16_384));
+                let first_prompt = calls[0]["messages"][1]["content"].as_str().unwrap();
+                let repair_prompt = calls[1]["messages"][1]["content"].as_str().unwrap();
+                assert!(!first_prompt.contains("rejected by Core"));
+                assert!(
+                    repair_prompt.contains(&format!(
+                        "The previous WorkGraph was rejected by Core: {core_error}."
+                    )),
+                    "{repair_prompt}"
+                );
+                assert!(repair_prompt.contains(
+                    "If independent units share a write path, add a dependency between them or merge them into one unit."
+                ));
+                assert!(
+                    repair_prompt.contains("Do not change the objective, allowed paths or scope.")
+                );
+                assert_eq!(
+                    calls[0]["messages"][0], calls[1]["messages"][0],
+                    "the repair keeps the same system prompt and schema"
+                );
+            }
+
+            let records = structured_lead_records(&fixture).await;
+            assert_eq!(records.len(), 2);
+            assert!(records.iter().all(|record| record.state == "SETTLED"));
+            assert_ne!(records[0].reservation_id, records[1].reservation_id);
+            assert_ne!(records[0].request_sha256, records[1].request_sha256);
+
+            let graph_record = fixture.app.db.agentic_work_graph(&intake_id).await.unwrap();
+            let successful = records
+                .iter()
+                .find(|record| record.request_sha256 == graph_record.request_sha256)
+                .expect("the saved graph must identify the successful attempt");
+            assert_eq!(graph_record.planner_provider, successful.provider);
+            assert_eq!(graph_record.planner_model, successful.model);
+            assert_eq!(graph_record.input_tokens, successful.input_tokens);
+            assert_eq!(graph_record.output_tokens, successful.output_tokens);
+            assert_eq!(graph_record.total_tokens, successful.total_tokens);
+            assert_eq!(graph_record.usage_known, successful.usage_known);
+            assert_eq!(
+                planned["provider"].as_str(),
+                Some(successful.provider.as_str())
+            );
+            assert_eq!(planned["model"].as_str(), Some(successful.model.as_str()));
+            assert_eq!(
+                graph_record.graph_sha256,
+                planned["graph"]["graphSha256"].as_str().unwrap()
+            );
+
+            let saved = serde_json::from_str::<factory_native::agentic::ValidatedWorkGraph>(
+                &graph_record.graph_json,
+            )
+            .unwrap();
+            assert_eq!(saved.units.len(), 1);
+            assert_eq!(saved.units[0].id, "endpoint");
+            assert!(
+                fixture
+                    .app
+                    .db
+                    .planning_artifacts(&intake_id)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .any(|artifact| artifact.kind == "PLAN"),
+                "the successful repair persists the planning artifacts"
+            );
+            assert!(fixture.app.db.campaigns().await.unwrap().is_empty());
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn planner_stops_after_two_repairs_without_persisting_an_invalid_graph() {
+            let invalid = planner_shared_path_model_content();
+            let (fixture, calls) = structured_lead_fixture(
+                StructuredLeadUpstreamBehavior::Sequence(vec![
+                    StructuredLeadUpstreamReply::Content(invalid.clone()),
+                    StructuredLeadUpstreamReply::Content(invalid.clone()),
+                    StructuredLeadUpstreamReply::Content(invalid),
+                ]),
+                "planner-graph-repair-exhausted",
+            )
+            .await;
+            let intake_id = fixture_intake_id(&fixture).await;
+            let (status, planned) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{planned}");
+            assert_eq!(planned["code"], "AGENTIC_PLAN_INVALID");
+            let message = planned["error"].as_str().unwrap();
+            assert!(
+                message.contains(
+                    "independent work units comment-commands and profile-commands share a write path"
+                ),
+                "{message}"
+            );
+            assert!(message.chars().count() <= 480, "{message}");
+            assert_eq!(
+                calls.lock().unwrap().len(),
+                3,
+                "the initial attempt plus two repairs is the bound"
+            );
+
+            let records = structured_lead_records(&fixture).await;
+            assert_eq!(records.len(), 3);
+            assert!(records.iter().all(|record| record.state == "SETTLED"));
+            let reservations = records
+                .iter()
+                .map(|record| record.reservation_id.as_str())
+                .collect::<std::collections::BTreeSet<_>>();
+            let digests = records
+                .iter()
+                .map(|record| record.request_sha256.as_str())
+                .collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(reservations.len(), 3, "every repair owns a reservation");
+            assert_eq!(digests.len(), 3, "every repair owns a request digest");
+            assert!(matches!(
+                fixture.app.db.agentic_work_graph(&intake_id).await,
+                Err(Error::NotFound)
+            ));
+            assert!(
+                fixture
+                    .app
+                    .db
+                    .planning_artifacts(&intake_id)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(fixture.app.db.campaigns().await.unwrap().is_empty());
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn planner_repairs_decode_invalid_output_once() {
+            let (fixture, calls) = structured_lead_fixture(
+                StructuredLeadUpstreamBehavior::Sequence(vec![
+                    StructuredLeadUpstreamReply::Content("not json".into()),
+                    StructuredLeadUpstreamReply::Content(planner_model_content()),
+                ]),
+                "planner-decode-repair",
+            )
+            .await;
+            let intake_id = fixture_intake_id(&fixture).await;
+            let (status, planned) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{planned}");
+            assert_eq!(planned["planning"]["code"], Value::Null);
+
+            {
+                let calls = calls.lock().unwrap();
+                assert_eq!(calls.len(), 2, "one decode failure and one repair");
+                let repair_prompt = calls[1]["messages"][1]["content"].as_str().unwrap();
+                assert!(
+                    repair_prompt.contains(
+                        "The previous WorkGraph was rejected by Core: model output is not valid JSON"
+                    ),
+                    "{repair_prompt}"
+                );
+            }
+
+            let records = structured_lead_records(&fixture).await;
+            assert_eq!(records.len(), 2);
+            assert!(records.iter().all(|record| record.state == "SETTLED"));
+            assert_ne!(records[0].reservation_id, records[1].reservation_id);
+            assert_ne!(records[0].request_sha256, records[1].request_sha256);
+            let graph_record = fixture.app.db.agentic_work_graph(&intake_id).await.unwrap();
+            assert!(records.iter().any(|record| {
+                record.request_sha256 == graph_record.request_sha256 && record.state == "SETTLED"
+            }));
+            assert!(
+                fixture
+                    .app
+                    .db
+                    .planning_artifacts(&intake_id)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .any(|artifact| artifact.kind == "PLAN")
+            );
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn planner_truncation_retry_and_graph_repair_share_a_bounded_attempt_budget() {
+            let (fixture, calls) = structured_lead_fixture(
+                StructuredLeadUpstreamBehavior::Sequence(vec![
+                    StructuredLeadUpstreamReply::Truncate,
+                    StructuredLeadUpstreamReply::Content(planner_shared_path_model_content()),
+                    StructuredLeadUpstreamReply::Content(planner_model_content()),
+                ]),
+                "planner-truncation-and-graph-repair",
+            )
+            .await;
+            let intake_id = fixture_intake_id(&fixture).await;
+            let (status, planned) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{planned}");
+            assert_eq!(planned["planning"]["code"], Value::Null);
+
+            {
+                let calls = calls.lock().unwrap();
+                assert_eq!(calls.len(), 3, "one truncation retry plus one graph repair");
+                assert_eq!(calls[0]["max_tokens"], json!(16_384));
+                assert_eq!(calls[1]["max_tokens"], json!(32_768));
+                assert_eq!(calls[2]["max_tokens"], json!(16_384));
+                assert_eq!(
+                    calls[0]["messages"][1]["content"], calls[1]["messages"][1]["content"],
+                    "the truncation retry reuses the same prompt"
+                );
+                let repair_prompt = calls[2]["messages"][1]["content"].as_str().unwrap();
+                assert!(
+                    repair_prompt.contains(
+                        "The previous WorkGraph was rejected by Core: independent work units comment-commands and profile-commands share a write path."
+                    ),
+                    "{repair_prompt}"
+                );
+            }
+
+            let records = structured_lead_records(&fixture).await;
+            assert_eq!(records.len(), 3);
+            assert_eq!(
+                records
+                    .iter()
+                    .filter(|record| record.state == "UNKNOWN")
+                    .count(),
+                1,
+                "only the truncated attempt stays unknown"
+            );
+            assert_eq!(
+                records
+                    .iter()
+                    .filter(|record| record.state == "SETTLED")
+                    .count(),
+                2
+            );
+            let graph_record = fixture.app.db.agentic_work_graph(&intake_id).await.unwrap();
+            assert!(records.iter().any(|record| {
+                record.request_sha256 == graph_record.request_sha256 && record.state == "SETTLED"
+            }));
+            assert!(
+                fixture
+                    .app
+                    .db
+                    .planning_artifacts(&intake_id)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .any(|artifact| artifact.kind == "PLAN")
             );
 
             fixture.app.db.close().await;
