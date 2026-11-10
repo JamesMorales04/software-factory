@@ -442,7 +442,7 @@ impl Database {
         let rows: Vec<ProjectColumns> = sqlx::query_as::query_as(
             "SELECT id,repository,base_commit,created_at,identity,name,source_kind,source_url,
                     source_key,source_visibility,default_branch,remote_origin
-             FROM projects ORDER BY created_at",
+             FROM projects ORDER BY created_at,id",
         )
         .fetch_all(&self.pool)
         .await?;

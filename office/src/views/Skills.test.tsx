@@ -78,6 +78,10 @@ function refreshStatus(
     due: 0,
     blocked: 0,
     truncated: false,
+    projectOffset: 0,
+    projectsChecked: 0,
+    projectsSkipped: 0,
+    projectTotal: 0,
     ...overrides,
   };
 }
@@ -101,6 +105,9 @@ describe("Skills", () => {
         startedAt: "2026-11-09T00:00:00Z",
         finishedAt: "2026-11-09T00:00:01Z",
         checked: 1,
+        projectsChecked: 0,
+        projectsSkipped: 0,
+        projectTotal: 0,
         refreshed: [],
         due: [],
         blocked: [],
@@ -223,6 +230,9 @@ describe("Skills", () => {
         startedAt: "2026-11-09T00:00:00Z",
         finishedAt: "2026-11-09T00:00:01Z",
         checked: 2,
+        projectsChecked: 0,
+        projectsSkipped: 0,
+        projectTotal: 0,
         refreshed: ["rust"],
         due: ["rust"],
         blocked: ["legacy-tool"],
@@ -240,6 +250,53 @@ describe("Skills", () => {
     expect(mocks.runSkillRefresh).toHaveBeenCalled();
     expect(
       await screen.findByText("Refresh pass complete: 1 refreshed, 1 blocked."),
+    ).toBeDefined();
+  });
+
+  it("shows a loading state while refresh status is pending", async () => {
+    mocks.getSkillRefreshStatus.mockReturnValue(new Promise(() => {}));
+    renderSkills();
+    expect(await screen.findByText("Loading skills")).toBeDefined();
+  });
+
+  it("shows an error when refresh status cannot be loaded", async () => {
+    mocks.getSkillRefreshStatus.mockRejectedValue(new Error("status down"));
+    renderSkills();
+    expect(
+      await screen.findByText("The skill registry could not be loaded."),
+    ).toBeDefined();
+  });
+
+  it("reports a failed refresh action", async () => {
+    mocks.runSkillRefresh.mockRejectedValue(new Error("refresh failed"));
+    renderSkills();
+    await screen.findByText("context7-chrono");
+    await userEvent.click(
+      screen.getByRole("button", { name: "Run refresh pass" }),
+    );
+    expect(await screen.findByText("The skill action failed.")).toBeDefined();
+  });
+
+  it("shows truncated technologies and deferred projects", async () => {
+    mocks.getSkillRefreshStatus.mockResolvedValue(
+      refreshStatus({
+        truncated: true,
+        projectsChecked: 64,
+        projectsSkipped: 66,
+        projectTotal: 130,
+      }),
+    );
+    renderSkills();
+    expect(await screen.findByText("context7-chrono")).toBeDefined();
+    expect(
+      screen.getByText(
+        "Only the first 256 technologies are shown; the list is bounded.",
+      ),
+    ).toBeDefined();
+    expect(
+      screen.getByText(
+        "This pass scanned 64 of 130 projects; 66 are deferred to the next rotating pass.",
+      ),
     ).toBeDefined();
   });
 

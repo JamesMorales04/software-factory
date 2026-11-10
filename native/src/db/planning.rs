@@ -479,6 +479,53 @@ impl Database {
         })
     }
 
+    /// Durable rotating cursor for the bounded refresh project scan.
+    pub async fn skill_refresh_project_offset(&self) -> Result<usize, Error> {
+        let row: Option<(i64,)> =
+            sqlx::query_as::query_as("SELECT project_offset FROM skill_refresh_state WHERE id=1")
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row
+            .map(|(offset,)| usize::try_from(offset.max(0)).unwrap_or(0))
+            .unwrap_or(0))
+    }
+
+    pub async fn set_skill_refresh_project_offset(&self, offset: usize) -> Result<(), Error> {
+        let offset = i64::try_from(offset).map_err(|_| Error::Invalid("skill refresh offset"))?;
+        let _write = self.write_lock.lock().await;
+        sqlx::query::query(
+            "INSERT INTO skill_refresh_state(id,project_offset,updated_at) VALUES (1,?1,?2)
+             ON CONFLICT(id) DO UPDATE SET
+               project_offset=excluded.project_offset,
+               updated_at=excluded.updated_at",
+        )
+        .bind(offset)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn insert_project_for_test(
+        &self,
+        id: &str,
+        repository: &str,
+        created_at: &str,
+    ) -> Result<(), Error> {
+        sqlx::query::query(
+            "INSERT INTO projects(id,repository,base_commit,created_at,identity)
+             VALUES (?1,?2,?3,?4,'')",
+        )
+        .bind(id)
+        .bind(repository)
+        .bind("a".repeat(40))
+        .bind(created_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn latest_skill_pack(&self, technology: &str) -> Result<SkillPackRecord, Error> {
         let row: Option<SkillPackRow> = sqlx::query_as::query_as(
             "SELECT id,technology,version,content_json,content_sha256,source_urls_json,

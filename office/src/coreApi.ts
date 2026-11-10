@@ -2097,6 +2097,9 @@ export interface SkillRefreshReport {
   startedAt: string;
   finishedAt: string;
   checked: number;
+  projectsChecked: number;
+  projectsSkipped: number;
+  projectTotal: number;
   refreshed: string[];
   due: string[];
   blocked: string[];
@@ -2115,6 +2118,10 @@ export interface SkillRefreshStatus {
   due: number;
   blocked: number;
   truncated: boolean;
+  projectOffset: number;
+  projectsChecked: number;
+  projectsSkipped: number;
+  projectTotal: number;
 }
 
 export interface AgenticSpecBoard {

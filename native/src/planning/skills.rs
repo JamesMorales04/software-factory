@@ -430,6 +430,11 @@ tauri = "2"
         )
         .unwrap();
         std::fs::write(root.join("Package.swift"), "// swift-tools-version: 6.0\n").unwrap();
+        std::fs::write(
+            root.join("requirements.txt"),
+            "django==5\nflask==3\npytest==8\nruff==0.8\npsycopg==3\n",
+        )
+        .unwrap();
         std::fs::write(root.join("deno.json"), "{}\n").unwrap();
         std::fs::write(
             root.join("compose.yaml"),
@@ -455,6 +460,12 @@ tauri = "2"
             "java",
             "gradle",
             "kotlin",
+            "python",
+            "pip",
+            "django",
+            "flask",
+            "pytest",
+            "ruff",
             "csharp",
             "dotnet",
             "ruby",
@@ -489,5 +500,102 @@ tauri = "2"
             );
         }
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn python_manifest_with_pip_and_web_frameworks_does_not_block_planning() {
+        let root = std::env::temp_dir().join(format!(
+            "factory-python-skill-catalog-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("requirements.txt"),
+            "django==5\nflask==3\npytest==8\nruff==0.8\n",
+        )
+        .unwrap();
+        let stack = crate::agentic::detect_stack(&root);
+        let required = required_technologies(&stack);
+        for technology in ["python", "pip", "django", "flask", "pytest", "ruff"] {
+            assert!(
+                required.contains(&technology.to_string()),
+                "expected {technology} in detected stack {required:?}"
+            );
+        }
+        let plan = build_skill_plan(&stack, &[], "2026-11-09T00:00:00Z").unwrap();
+        assert!(plan.needs.contains(&"pip".to_string()));
+        assert!(plan.proposed.iter().any(|pack| pack.technology == "pip"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn docker_aliases_use_docker_specific_sources_and_commands() {
+        for technology in ["docker", "docker-compose"] {
+            let pack = builtin_skill_pack(technology).unwrap();
+            assert_eq!(pack.technology, technology);
+            assert!(
+                pack.source_urls
+                    .iter()
+                    .all(|url| url.starts_with("https://docs.docker.com/")),
+                "{technology} must cite Docker documentation"
+            );
+            assert!(
+                pack.commands
+                    .iter()
+                    .any(|command| command == "docker compose config"),
+                "{technology} must use the Docker Compose command"
+            );
+            assert!(
+                pack.source_urls.iter().all(|url| !url.contains("podman")),
+                "{technology} must not cite Podman documentation"
+            );
+        }
+    }
+
+    #[test]
+    fn catalog_review_manifest_backs_every_pack_freshness_date() {
+        let raw = include_str!("../../../docs/evidence/skill-pack-catalog-2026-11-09/review.json");
+        let manifest: serde_json::Value = serde_json::from_str(raw).unwrap();
+        assert_eq!(
+            manifest["reviewedAt"].as_str(),
+            Some(BUILTIN_LAST_VERIFIED_AT)
+        );
+        assert_eq!(
+            manifest["reviewWindowDays"].as_i64(),
+            Some(SKILL_PACK_REVIEW_DAYS)
+        );
+        let packs = manifest["packs"].as_object().unwrap();
+        for technology in BUILTIN_TECHNOLOGIES {
+            assert!(
+                packs.contains_key(*technology),
+                "catalog review evidence is missing {technology}"
+            );
+        }
+        for (technology, entry) in packs {
+            let pack = builtin_skill_pack(technology)
+                .unwrap_or_else(|| panic!("review evidence has unknown pack {technology}"));
+            assert_eq!(
+                entry["reviewedAt"].as_str(),
+                Some(pack.last_verified_at.as_str()),
+                "review date for {technology} must match its pack"
+            );
+            let mut expected = pack.source_urls.clone();
+            expected.sort();
+            let sources = entry["sources"].as_array().unwrap();
+            let mut actual = sources
+                .iter()
+                .map(|source| source["url"].as_str().unwrap().to_string())
+                .collect::<Vec<_>>();
+            actual.sort();
+            assert_eq!(actual, expected, "review sources for {technology}");
+            for source in sources {
+                let status = source["httpStatus"].as_u64().unwrap();
+                assert!(
+                    (200..=399).contains(&status),
+                    "source {} for {technology} was not reachable",
+                    source["url"]
+                );
+            }
+        }
     }
 }

@@ -1,0 +1,664 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-11-09T00:00:00Z",
+  "reviewWindowDays": 90,
+  "reviewMethod": "HTTP GET availability check for every cited official source URL on 2026-11-09; source identity and pack text curated by the Factory maintainer; no model inference.",
+  "packs": {
+    "actix-web": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://actix.rs/docs/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "angular": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://angular.dev/overview",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "axum": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://docs.rs/axum/latest/axum/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "bun": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://bun.sh/docs",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "bundler": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://bundler.io/docs.html",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "cargo": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://doc.rust-lang.org/cargo/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "clap": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://docs.rs/clap/latest/clap/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "composer": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://getcomposer.org/doc/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "container": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://docs.podman.io/",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://podman-desktop.io/docs/compose",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "csharp": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://learn.microsoft.com/en-us/dotnet/csharp/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "deno": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://docs.deno.com/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "diesel": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://diesel.rs/guides/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "django": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://docs.djangoproject.com/en/stable/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "docker": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://docs.docker.com/",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://docs.docker.com/engine/security/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "docker-compose": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://docs.docker.com/compose/",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://docs.docker.com/reference/cli/docker/compose/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "dotnet": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://learn.microsoft.com/en-us/dotnet/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "electron": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://www.electronjs.org/docs/latest/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "fastapi": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://fastapi.tiangolo.com/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "flask": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://flask.palletsprojects.com/en/stable/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "github-actions": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://docs.github.com/en/actions",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "go": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://go.dev/doc/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "gradle": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://docs.gradle.org/current/userguide/userguide.html",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "hyper": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://hyper.rs/guides/1/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "java": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://docs.oracle.com/en/java/",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://dev.java/learn/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "jest": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://jestjs.io/docs/getting-started",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "kotlin": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://kotlinlang.org/docs/home.html",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "kubernetes": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://kubernetes.io/docs/home/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "laravel": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://laravel.com/docs",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "maven": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://maven.apache.org/guides/index.html",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "migrations": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://www.sqlite.org/lang_altertable.html",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "mysql": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://dev.mysql.com/doc/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "next": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://nextjs.org/docs",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "node": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://nodejs.org/docs/latest/api/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "npm": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://docs.npmjs.com/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "nuget": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://learn.microsoft.com/en-us/nuget/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "php": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://www.php.net/docs.php",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "pip": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://pip.pypa.io/en/stable/",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://packaging.python.org/en/latest/tutorials/installing-packages/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "playwright": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://playwright.dev/docs/intro",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "pnpm": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://pnpm.io/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "podman": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://docs.podman.io/",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://podman-desktop.io/docs/compose",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "podman-compose": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://docs.podman.io/",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://podman-desktop.io/docs/compose",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "postgresql": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://www.postgresql.org/docs/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "pytest": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://docs.pytest.org/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "python": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://docs.python.org/3/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "rails": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://guides.rubyonrails.org/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "react": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://react.dev/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "redis": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://redis.io/docs/latest/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "reqwest": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://docs.rs/reqwest/latest/reqwest/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "rocket": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://rocket.rs/guide/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "ruby": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://docs.ruby-lang.org/en/",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://www.ruby-lang.org/en/documentation/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "ruff": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://docs.astral.sh/ruff/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "rust": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://doc.rust-lang.org/book/",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://doc.rust-lang.org/cargo/",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://rust-lang.github.io/rust-clippy/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "serde": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://serde.rs/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "sqlite": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://www.sqlite.org/docs.html",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "sqlx": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://docs.rs/sqlx/latest/sqlx/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "svelte": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://svelte.dev/docs",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "swift": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://www.swift.org/documentation/",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://developer.apple.com/documentation/swift",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "tauri": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://v2.tauri.app/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "terraform": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://developer.hashicorp.com/terraform/docs",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "tokio": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://tokio.rs/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "tonic": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://docs.rs/tonic/latest/tonic/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "tracing": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://docs.rs/tracing/latest/tracing/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "typescript": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://www.typescriptlang.org/docs/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "uv": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://docs.astral.sh/uv/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "vite": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://vite.dev/guide/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "vitest": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://vitest.dev/guide/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "vue": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://vuejs.org/guide/",
+          "httpStatus": 200
+        }
+      ]
+    },
+    "yarn": {
+      "reviewedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://yarnpkg.com/getting-started",
+          "httpStatus": 200
+        }
+      ]
+    }
+  }
+}

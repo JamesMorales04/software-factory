@@ -278,7 +278,29 @@ export function Skills() {
                 <dt>{t("skills.refresh.blocked")}</dt>
                 <dd>{refresh.blocked}</dd>
               </div>
+              <div>
+                <dt>{t("skills.refresh.projects")}</dt>
+                <dd>
+                  {t("skills.refresh.projectsValue", {
+                    checked: String(refresh.projectsChecked),
+                    total: String(refresh.projectTotal),
+                  })}
+                </dd>
+              </div>
+              <div>
+                <dt>{t("skills.refresh.projectsSkipped")}</dt>
+                <dd>{refresh.projectsSkipped}</dd>
+              </div>
             </dl>
+            {refresh.projectsSkipped > 0 && (
+              <p className="muted">
+                {t("skills.refresh.projectNote", {
+                  checked: String(refresh.projectsChecked),
+                  total: String(refresh.projectTotal),
+                  skipped: String(refresh.projectsSkipped),
+                })}
+              </p>
+            )}
             {refresh.lastError && (
               <p className="ui-callout ui-callout--danger" role="alert">
                 {refresh.lastError}

@@ -3582,6 +3582,11 @@ export const en = {
   "skills.refresh.notScheduled": "not scheduled",
   "skills.refresh.due": "Due or refreshable",
   "skills.refresh.blocked": "Blocking",
+  "skills.refresh.projects": "Projects scanned",
+  "skills.refresh.projectsValue": "{checked} of {total}",
+  "skills.refresh.projectsSkipped": "Projects deferred",
+  "skills.refresh.projectNote":
+    "This pass scanned {checked} of {total} projects; {skipped} are deferred to the next rotating pass.",
   "skills.refresh.reviewAfter": "review after {date}",
   "skills.refresh.allFresh": "All {count} checked packs are fresh.",
   "skills.refresh.lastOutcome":

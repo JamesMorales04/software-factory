@@ -86,6 +86,9 @@ pub struct SkillRefreshReport {
     pub started_at: String,
     pub finished_at: String,
     pub checked: usize,
+    pub projects_checked: usize,
+    pub projects_skipped: usize,
+    pub project_total: usize,
     pub refreshed: Vec<String>,
     pub due: Vec<String>,
     pub blocked: Vec<String>,
@@ -130,6 +133,10 @@ pub struct SkillRefreshStatus {
     pub due: usize,
     pub blocked: usize,
     pub truncated: bool,
+    pub project_offset: usize,
+    pub projects_checked: usize,
+    pub projects_skipped: usize,
+    pub project_total: usize,
 }
 
 impl SkillRefreshStatus {
@@ -137,6 +144,7 @@ impl SkillRefreshStatus {
         runtime: SkillRefreshRuntime,
         packs: Vec<SkillPackStatus>,
         truncated: bool,
+        projects: ProjectWindowStatus,
     ) -> Self {
         let due = packs
             .iter()
@@ -159,8 +167,29 @@ impl SkillRefreshStatus {
             due,
             blocked,
             truncated,
+            project_offset: projects.offset,
+            projects_checked: projects.checked,
+            projects_skipped: projects.skipped,
+            project_total: projects.total,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProjectWindowStatus {
+    offset: usize,
+    checked: usize,
+    skipped: usize,
+    total: usize,
+}
+
+#[derive(Debug)]
+struct TargetSnapshot {
+    persisted: Vec<crate::planning::SkillPack>,
+    technologies: Vec<String>,
+    technologies_truncated: bool,
+    projects: ProjectWindowStatus,
+    next_project_offset: usize,
 }
 
 #[derive(Clone)]
@@ -278,19 +307,22 @@ async fn execute_pass(
 pub async fn run_pass(db: &Database, now: &str) -> Result<SkillRefreshReport, Error> {
     let _guard = PASS_LOCK.lock().await;
     let started_at = now.to_string();
-    let (persisted, technologies, truncated) = load_targets(db).await?;
-    let statuses = classify_skill_packs(&technologies, &persisted, now);
+    let project_offset = db.skill_refresh_project_offset().await?;
+    let targets = load_targets(db, project_offset).await?;
+    let statuses = classify_skill_packs(&targets.technologies, &targets.persisted, now);
     let mut report = SkillRefreshReport {
         started_at,
         finished_at: String::new(),
         checked: statuses.len(),
+        projects_checked: targets.projects.checked,
+        projects_skipped: targets.projects.skipped,
+        project_total: targets.projects.total,
         refreshed: Vec::new(),
         due: Vec::new(),
         blocked: Vec::new(),
         failed: Vec::new(),
         ok: true,
     };
-    let _ = truncated;
 
     for status in &statuses {
         if matches!(
@@ -375,6 +407,8 @@ pub async fn run_pass(db: &Database, now: &str) -> Result<SkillRefreshReport, Er
         }
     }
 
+    db.set_skill_refresh_project_offset(targets.next_project_offset)
+        .await?;
     report.finished_at = Utc::now().to_rfc3339();
     let refreshed = report.refreshed.len();
     let blocked = report.blocked.len();
@@ -382,6 +416,9 @@ pub async fn run_pass(db: &Database, now: &str) -> Result<SkillRefreshReport, Er
     if failed > 0 {
         tracing::warn!(
             checked = report.checked,
+            projects_checked = report.projects_checked,
+            projects_skipped = report.projects_skipped,
+            project_total = report.project_total,
             refreshed,
             blocked,
             failed,
@@ -390,6 +427,9 @@ pub async fn run_pass(db: &Database, now: &str) -> Result<SkillRefreshReport, Er
     } else {
         tracing::info!(
             checked = report.checked,
+            projects_checked = report.projects_checked,
+            projects_skipped = report.projects_skipped,
+            project_total = report.project_total,
             refreshed,
             blocked,
             "skill-pack refresh pass completed"
@@ -398,9 +438,21 @@ pub async fn run_pass(db: &Database, now: &str) -> Result<SkillRefreshReport, Er
     Ok(report)
 }
 
-async fn load_targets(
-    db: &Database,
-) -> Result<(Vec<crate::planning::SkillPack>, Vec<String>, bool), Error> {
+fn project_window(total: usize, offset: usize, limit: usize) -> (usize, usize, usize) {
+    if total == 0 {
+        return (0, 0, 0);
+    }
+    let start = offset % total;
+    let checked = (total - start).min(limit);
+    let next = if start + checked >= total {
+        0
+    } else {
+        start + checked
+    };
+    (start, checked, next)
+}
+
+async fn load_targets(db: &Database, offset: usize) -> Result<TargetSnapshot, Error> {
     let records = db.skill_packs().await?;
     let mut persisted = Vec::with_capacity(records.len());
     let mut technologies = BTreeSet::new();
@@ -414,7 +466,12 @@ async fn load_targets(
             ),
         }
     }
-    for project in db.projects().await?.into_iter().take(MAX_PROJECTS_PER_PASS) {
+    let projects = db.projects().await?;
+    let total = projects.len();
+    let (start, checked, next_project_offset) =
+        project_window(total, offset, MAX_PROJECTS_PER_PASS);
+    for index in 0..checked {
+        let project = &projects[(start + index) % total];
         let stack = detect_stack(Path::new(&project.repository));
         technologies.extend(required_technologies(&stack));
     }
@@ -423,12 +480,23 @@ async fn load_targets(
             .iter()
             .map(|value| (*value).to_string()),
     );
-    let total = technologies.len();
+    let technology_total = technologies.len();
     let technologies = technologies
         .into_iter()
         .take(MAX_SKILL_PACK_STATUSES)
         .collect::<Vec<_>>();
-    Ok((persisted, technologies, total > MAX_SKILL_PACK_STATUSES))
+    Ok(TargetSnapshot {
+        persisted,
+        technologies,
+        technologies_truncated: technology_total > MAX_SKILL_PACK_STATUSES,
+        projects: ProjectWindowStatus {
+            offset: start,
+            checked,
+            skipped: total.saturating_sub(checked),
+            total,
+        },
+        next_project_offset,
+    })
 }
 
 fn due_detail(status: &SkillPackStatus) -> String {
@@ -477,13 +545,19 @@ fn bounded(value: &str, max: usize) -> String {
 }
 
 pub async fn status(db: &Database, now: &str) -> Result<SkillRefreshStatus, Error> {
-    let (persisted, technologies, truncated) = load_targets(db).await?;
-    let packs = classify_skill_packs(&technologies, &persisted, now);
+    let project_offset = db.skill_refresh_project_offset().await?;
+    let targets = load_targets(db, project_offset).await?;
+    let packs = classify_skill_packs(&targets.technologies, &targets.persisted, now);
     let runtime = match scheduler() {
         Some(handle) => handle.runtime().await,
         None => SkillRefreshRuntime::not_started(),
     };
-    Ok(SkillRefreshStatus::from_parts(runtime, packs, truncated))
+    Ok(SkillRefreshStatus::from_parts(
+        runtime,
+        packs,
+        targets.technologies_truncated,
+        targets.projects,
+    ))
 }
 
 pub async fn run_now(db: &Database, now: &str) -> Result<SkillRefreshReport, Error> {
@@ -548,6 +622,41 @@ mod tests {
         assert!(SkillRefreshConfig::from_seconds(Some("3599")).is_err());
         assert!(SkillRefreshConfig::from_seconds(Some("604801")).is_err());
         assert!(SkillRefreshConfig::from_seconds(Some("not-a-number")).is_err());
+    }
+
+    #[test]
+    fn project_window_rotates_and_reports_skipped_projects() {
+        assert_eq!(project_window(130, 0, 64), (0, 64, 64));
+        assert_eq!(project_window(130, 64, 64), (64, 64, 128));
+        assert_eq!(project_window(130, 128, 64), (128, 2, 0));
+        assert_eq!(project_window(3, 0, 64), (0, 3, 0));
+        assert_eq!(project_window(0, 0, 64), (0, 0, 0));
+    }
+
+    #[tokio::test]
+    async fn refresh_pass_reports_and_rotates_skipped_projects() {
+        let path = temp_path();
+        let db = Database::open(&path).await.unwrap();
+        for index in 0..70 {
+            db.insert_project_for_test(
+                &format!("project-{index}"),
+                &format!("/repo/{index}"),
+                &(Utc::now() + chrono::Duration::milliseconds(i64::from(index))).to_rfc3339(),
+            )
+            .await
+            .unwrap();
+        }
+        let first = run_pass(&db, "2026-11-09T00:00:00Z").await.unwrap();
+        assert_eq!(first.project_total, 70);
+        assert_eq!(first.projects_checked, 64);
+        assert_eq!(first.projects_skipped, 6);
+        assert_eq!(db.skill_refresh_project_offset().await.unwrap(), 64);
+        let second = run_pass(&db, "2026-11-09T00:00:01Z").await.unwrap();
+        assert_eq!(second.projects_checked, 6);
+        assert_eq!(second.projects_skipped, 64);
+        assert_eq!(db.skill_refresh_project_offset().await.unwrap(), 0);
+        db.close().await;
+        let _ = std::fs::remove_file(path);
     }
 
     #[tokio::test]

@@ -48,6 +48,7 @@ pub const BUILTIN_TECHNOLOGIES: &[&str] = &[
     "npm",
     "nuget",
     "php",
+    "pip",
     "playwright",
     "pnpm",
     "podman-compose",
@@ -347,7 +348,7 @@ pub fn builtin_skill_pack(technology: &str) -> Option<SkillPack> {
         ),
         "hyper" => pack(
             "hyper",
-            &["https://hyper.rs/guide/"],
+            &["https://hyper.rs/guides/1/"],
             &[
                 "Apply body limits and timeouts to every server path.",
                 "Keep protocol plumbing separate from domain decisions.",
@@ -495,6 +496,26 @@ pub fn builtin_skill_pack(technology: &str) -> Option<SkillPack> {
             &["Do not use `eval` or unserialize untrusted input."],
             &["Disable detailed error display in production."],
             &["php -l", "composer validate --strict"],
+        ),
+        "pip" => pack(
+            "pip",
+            &[
+                "https://pip.pypa.io/en/stable/",
+                "https://packaging.python.org/en/latest/tutorials/installing-packages/",
+            ],
+            &[
+                "Pin application dependencies in a lock file or pinned requirements.",
+                "Install into an isolated environment rather than a shared system Python.",
+            ],
+            &["Do not install packages from an unreviewed index or direct URL."],
+            &[
+                "Review package sources and installation scripts before execution.",
+                "Use `python3 -m pip check` to detect an inconsistent environment.",
+            ],
+            &[
+                "python3 -m pip install --requirement requirements.txt",
+                "python3 -m pip check",
+            ],
         ),
         "playwright" => pack(
             "playwright",
@@ -837,33 +858,36 @@ pub fn builtin_skill_pack(technology: &str) -> Option<SkillPack> {
         "docker" => pack(
             "docker",
             &[
-                "https://docs.podman.io/",
-                "https://podman-desktop.io/docs/compose",
+                "https://docs.docker.com/",
+                "https://docs.docker.com/engine/security/",
             ],
             &[
-                "Run rootless with an explicit network and least privilege.",
+                "Run containers with an explicit network and least privilege.",
                 "Pin image digests for reproducible deployments.",
             ],
-            &["Do not mount the host runtime socket or use privileged mode."],
-            &["Treat container images and mounts as a trust boundary."],
-            &["podman compose config"],
+            &[
+                "Do not mount the Docker socket into a container without a documented need.",
+                "Do not run privileged containers as a shortcut.",
+            ],
+            &["Treat container images, mounts and the runtime socket as a trust boundary."],
+            &["docker compose config"],
         ),
         "docker-compose" => pack(
             "docker-compose",
             &[
-                "https://docs.podman.io/",
-                "https://podman-desktop.io/docs/compose",
+                "https://docs.docker.com/compose/",
+                "https://docs.docker.com/reference/cli/docker/compose/",
             ],
             &[
-                "Run rootless with explicit networks and least privilege.",
+                "Run Compose with an explicit network and least privilege.",
                 "Pin image digests for reproducible deployments.",
             ],
             &[
-                "Do not mount the host Podman socket or use privileged mode.",
+                "Do not mount the Docker socket into a container without a documented need.",
                 "Do not add host networking as a shortcut.",
             ],
             &["Treat Compose files, images and volumes as a trust boundary."],
-            &["podman compose config"],
+            &["docker compose config"],
         ),
         "podman" => pack(
             "podman",

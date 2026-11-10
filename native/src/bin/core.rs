@@ -17838,6 +17838,9 @@ mod tests {
         assert!(status["packs"].as_array().unwrap().len() <= 256);
         assert!(status["due"].as_u64().unwrap() <= 256);
         assert!(status["blocked"].as_u64().unwrap() <= 256);
+        assert!(status["projectsChecked"].as_u64().unwrap() <= 64);
+        assert_eq!(status["projectsSkipped"], 0);
+        assert_eq!(status["projectsChecked"], status["projectTotal"]);
 
         let request = axum::http::Request::builder()
             .uri("/agentic/skills/refresh")
@@ -17852,6 +17855,8 @@ mod tests {
             .unwrap();
         let report: Value = serde_json::from_slice(&bytes).unwrap();
         assert!(report["report"]["checked"].as_u64().unwrap() <= 256);
+        assert!(report["report"]["projectsChecked"].as_u64().unwrap() <= 64);
+        assert_eq!(report["report"]["projectsSkipped"], 0);
         assert!(report["report"]["refreshed"].as_array().unwrap().len() <= 256);
         assert!(report["report"]["blocked"].as_array().unwrap().len() <= 256);
 
