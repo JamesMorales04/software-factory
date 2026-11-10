@@ -361,9 +361,10 @@ pub async fn run_pass(db: &Database, now: &str) -> Result<SkillRefreshReport, Er
                             &status.technology,
                             EVENT_REFRESHED,
                             &format!(
-                                "technology={};lastVerified={};reviewAfter={};previousSha256={};newSha256={}",
+                                "technology={};sourceCheckedAt={};contentReviewedAt={};reviewAfter={};previousSha256={};newSha256={}",
                                 status.technology,
-                                pack.last_verified_at,
+                                pack.source_checked_at,
+                                pack.content_reviewed_at,
                                 pack.review_after,
                                 status
                                     .persisted
@@ -602,7 +603,7 @@ mod tests {
             pack
         });
         pack.technology = technology.into();
-        pack.last_verified_at = "2026-01-01T00:00:00Z".into();
+        pack.content_reviewed_at = "2026-01-01T00:00:00Z".into();
         pack.review_after = "2026-04-01T00:00:00Z".into();
         pack.best_practices
             .push("persisted legacy revision content".into());

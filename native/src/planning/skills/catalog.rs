@@ -5,9 +5,14 @@
 //! A catalog entry is context only. It never grants tools, authority or a
 //! planning lane, and it cannot replace an owner decision.
 
-use crate::planning::SkillPack;
+use crate::planning::{SkillPack, SkillReviewBasis};
 
-pub const BUILTIN_LAST_VERIFIED_AT: &str = "2026-11-09T00:00:00Z";
+/// Date on which every cited source URL was checked for availability.
+pub const BUILTIN_SOURCE_CHECKED_AT: &str = "2026-11-09T00:00:00Z";
+/// Date on which the curated packs below were reviewed against the cited
+/// source sections. Packs without an entry in `content_review` remain
+/// source-availability-only and blocking.
+pub const BUILTIN_CONTENT_REVIEWED_AT: &str = "2026-11-09T00:00:00Z";
 pub const BUILTIN_REVIEW_AFTER: &str = "2027-02-07T00:00:00Z";
 
 /// Canonical technology names covered by the curated catalog. The list is used
@@ -93,8 +98,12 @@ fn pack(
         technology: technology.into(),
         version: "current".into(),
         source_urls: sources.iter().map(|source| (*source).to_string()).collect(),
-        last_verified_at: BUILTIN_LAST_VERIFIED_AT.into(),
-        review_after: BUILTIN_REVIEW_AFTER.into(),
+        source_checked_at: BUILTIN_SOURCE_CHECKED_AT.into(),
+        content_reviewed_at: String::new(),
+        review_basis: SkillReviewBasis::SourceAvailabilityOnly,
+        review_after: String::new(),
+        review_scope: String::new(),
+        reviewed_sections: Vec::new(),
         best_practices: best_practices
             .iter()
             .map(|value| (*value).to_string())
@@ -119,7 +128,7 @@ fn pack(
 /// substitute for refreshing upstream documentation; `review_after` forces a
 /// periodic review.
 pub fn builtin_skill_pack(technology: &str) -> Option<SkillPack> {
-    let pack = match technology.to_ascii_lowercase().as_str() {
+    let mut pack = match technology.to_ascii_lowercase().as_str() {
         "actix-web" => pack(
             "actix-web",
             &["https://actix.rs/docs/"],
@@ -908,5 +917,137 @@ pub fn builtin_skill_pack(technology: &str) -> Option<SkillPack> {
         ),
         _ => return None,
     };
+    apply_content_review(&mut pack);
     Some(pack)
+}
+
+/// Content-reviewed packs. Source availability alone never makes a pack fresh.
+/// Each scope names the official section headings checked on
+/// `BUILTIN_CONTENT_REVIEWED_AT`; packs not listed here remain
+/// source-availability-only and blocking.
+fn content_review(technology: &str) -> Option<(&'static str, &'static [&'static str])> {
+    let review = match technology {
+        "rust" => (
+            "Ownership, error handling and Cargo lockfile guidance for the curated Rust practices.",
+            &[
+                "https://doc.rust-lang.org/book/ch04-00-understanding-ownership.html :: Understanding Ownership",
+                "https://doc.rust-lang.org/book/ch09-00-error-handling.html :: Error Handling",
+                "https://doc.rust-lang.org/cargo/guide/cargo-toml-vs-cargo-lock.html :: Cargo.toml vs Cargo.lock",
+            ][..],
+        ),
+        "cargo" => (
+            "Cargo lockfile and dependency specification guidance.",
+            &[
+                "https://doc.rust-lang.org/cargo/guide/cargo-toml-vs-cargo-lock.html :: Cargo.toml vs Cargo.lock",
+                "https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html :: Specifying Dependencies",
+            ][..],
+        ),
+        "axum" => (
+            "Routing, handlers, extractors and error handling in the axum crate documentation.",
+            &[
+                "https://docs.rs/axum/latest/axum/ :: Routing",
+                "https://docs.rs/axum/latest/axum/ :: Handlers",
+                "https://docs.rs/axum/latest/axum/ :: Extractors",
+                "https://docs.rs/axum/latest/axum/ :: Error handling",
+            ][..],
+        ),
+        "sqlx" => (
+            "SQLx crate and query-macro requirements for database access and migrations.",
+            &[
+                "https://docs.rs/sqlx/latest/sqlx/ :: Crate sqlx",
+                "https://docs.rs/sqlx/latest/sqlx/macro.query.html :: Requirements",
+            ][..],
+        ),
+        "tokio" => (
+            "Tokio runtime, task and blocking-work guidance.",
+            &[
+                "https://docs.rs/tokio/latest/tokio/ :: A Tour of Tokio",
+                "https://docs.rs/tokio/latest/tokio/ :: Working With Tasks",
+                "https://docs.rs/tokio/latest/tokio/ :: CPU-bound tasks and blocking code",
+            ][..],
+        ),
+        "typescript" => (
+            "TypeScript handbook basics and compiler behavior.",
+            &["https://www.typescriptlang.org/docs/handbook/2/basic-types.html :: The Basics"][..],
+        ),
+        "react" => (
+            "React component design, purity and state guidance.",
+            &[
+                "https://react.dev/learn/thinking-in-react :: Thinking in React",
+                "https://react.dev/learn/keeping-components-pure :: Keeping Components Pure",
+            ][..],
+        ),
+        "vite" => (
+            "Vite production build guidance.",
+            &["https://vite.dev/guide/build.html :: Building for Production"][..],
+        ),
+        "npm" => (
+            "npm package-lock semantics and deterministic install guidance.",
+            &[
+                "https://docs.npmjs.com/cli/v10/configuring-npm/package-lock-json :: package-lock.json",
+                "https://docs.npmjs.com/cli/v10/configuring-npm/package-lock-json :: Description",
+            ][..],
+        ),
+        "python" => (
+            "Python language tutorial and documentation scope.",
+            &[
+                "https://docs.python.org/3/ :: Python 3.15.2 documentation",
+                "https://docs.python.org/3/tutorial/index.html :: The Python Tutorial",
+            ][..],
+        ),
+        "pip" => (
+            "pip requirements files and packaging installation guidance.",
+            &[
+                "https://pip.pypa.io/en/stable/user_guide/#requirements-files :: Requirements Files",
+                "https://packaging.python.org/en/latest/tutorials/installing-packages/ :: Installing Packages",
+                "https://packaging.python.org/en/latest/tutorials/installing-packages/ :: Requirements files",
+            ][..],
+        ),
+        "django" => (
+            "Django security topics and project documentation scope.",
+            &[
+                "https://docs.djangoproject.com/en/stable/topics/security/ :: Security in Django",
+                "https://docs.djangoproject.com/en/stable/topics/security/ :: Always sanitize user input",
+                "https://docs.djangoproject.com/en/stable/topics/security/ :: Cross-site request forgery (CSRF) protection",
+            ][..],
+        ),
+        "flask" => (
+            "Flask security considerations and user guide scope.",
+            &[
+                "https://flask.palletsprojects.com/en/stable/web-security/ :: Security Considerations",
+                "https://flask.palletsprojects.com/en/stable/web-security/ :: Cross-Site Scripting (XSS)",
+                "https://flask.palletsprojects.com/en/stable/web-security/ :: Cross-Site Request Forgery (CSRF)",
+            ][..],
+        ),
+        "pytest" => (
+            "pytest getting-started and test execution guidance.",
+            &[
+                "https://docs.pytest.org/en/stable/getting-started.html :: Get Started",
+                "https://docs.pytest.org/en/stable/getting-started.html :: Run multiple tests",
+            ][..],
+        ),
+        "ruff" => (
+            "Ruff linter command and rule-selection guidance.",
+            &[
+                "https://docs.astral.sh/ruff/linter/ :: The Ruff Linter",
+                "https://docs.astral.sh/ruff/linter/ :: Rule selection",
+            ][..],
+        ),
+        _ => return None,
+    };
+    Some(review)
+}
+
+fn apply_content_review(pack: &mut SkillPack) {
+    let Some((scope, sections)) = content_review(&pack.technology) else {
+        return;
+    };
+    pack.content_reviewed_at = BUILTIN_CONTENT_REVIEWED_AT.into();
+    pack.review_basis = SkillReviewBasis::ContentReviewed;
+    pack.review_after = BUILTIN_REVIEW_AFTER.into();
+    pack.review_scope = scope.into();
+    pack.reviewed_sections = sections
+        .iter()
+        .map(|section| (*section).to_string())
+        .collect();
 }

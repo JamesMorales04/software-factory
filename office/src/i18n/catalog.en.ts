@@ -3582,11 +3582,13 @@ export const en = {
   "skills.refresh.notScheduled": "not scheduled",
   "skills.refresh.due": "Due or refreshable",
   "skills.refresh.blocked": "Blocking",
-  "skills.refresh.projects": "Projects scanned",
-  "skills.refresh.projectsValue": "{checked} of {total}",
-  "skills.refresh.projectsSkipped": "Projects deferred",
-  "skills.refresh.projectNote":
-    "This pass scanned {checked} of {total} projects; {skipped} are deferred to the next rotating pass.",
+  "skills.refresh.nextWindow": "Next scan window",
+  "skills.refresh.nextWindowValue": "{checked} of {total}",
+  "skills.refresh.nextWindowDeferred": "Projects beyond next window",
+  "skills.refresh.nextWindowNote":
+    "The next pass will scan {checked} of {total} projects; {skipped} will be deferred.",
+  "skills.refresh.lastPassProjects":
+    "Last completed pass scanned {checked} of {total} projects; {skipped} deferred.",
   "skills.refresh.reviewAfter": "review after {date}",
   "skills.refresh.allFresh": "All {count} checked packs are fresh.",
   "skills.refresh.lastOutcome":

@@ -203,13 +203,17 @@ describe("Skills", () => {
             persisted: {
               version: "current",
               contentSha256: "a".repeat(64),
-              lastVerifiedAt: "2026-01-01T00:00:00Z",
+              sourceCheckedAt: "2026-01-01T00:00:00Z",
+              contentReviewedAt: "2026-01-01T00:00:00Z",
+              reviewBasis: "CONTENT_REVIEWED",
               reviewAfter: "2026-04-01T00:00:00Z",
             },
             builtin: {
               version: "current",
               contentSha256: "b".repeat(64),
-              lastVerifiedAt: "2026-11-09T00:00:00Z",
+              sourceCheckedAt: "2026-11-09T00:00:00Z",
+              contentReviewedAt: "2026-11-09T00:00:00Z",
+              reviewBasis: "CONTENT_REVIEWED",
               reviewAfter: "2027-02-07T00:00:00Z",
             },
             reason: "the persisted revision is due",
@@ -295,7 +299,42 @@ describe("Skills", () => {
     ).toBeDefined();
     expect(
       screen.getByText(
-        "This pass scanned 64 of 130 projects; 66 are deferred to the next rotating pass.",
+        "The next pass will scan 64 of 130 projects; 66 will be deferred.",
+      ),
+    ).toBeDefined();
+  });
+
+  it("distinguishes the next scan window from the last completed pass", async () => {
+    mocks.getSkillRefreshStatus.mockResolvedValue(
+      refreshStatus({
+        projectsChecked: 6,
+        projectsSkipped: 64,
+        projectTotal: 70,
+        lastOutcome: {
+          startedAt: "2026-11-09T00:00:00Z",
+          finishedAt: "2026-11-09T00:00:01Z",
+          checked: 70,
+          projectsChecked: 64,
+          projectsSkipped: 6,
+          projectTotal: 70,
+          refreshed: [],
+          due: [],
+          blocked: [],
+          failed: [],
+          ok: true,
+        },
+      }),
+    );
+    renderSkills();
+    expect(await screen.findByText("context7-chrono")).toBeDefined();
+    expect(
+      screen.getByText(
+        "The next pass will scan 6 of 70 projects; 64 will be deferred.",
+      ),
+    ).toBeDefined();
+    expect(
+      screen.getByText(
+        "Last completed pass scanned 64 of 70 projects; 6 deferred.",
       ),
     ).toBeDefined();
   });

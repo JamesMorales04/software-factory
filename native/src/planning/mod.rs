@@ -480,6 +480,18 @@ impl DocumentationPlan {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum SkillReviewBasis {
+    /// Only the cited URLs were checked for availability. This is not content
+    /// freshness and must remain blocking.
+    #[default]
+    SourceAvailabilityOnly,
+    /// The pack content was reviewed against the cited source sections on
+    /// `content_reviewed_at`.
+    ContentReviewed,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct SkillPack {
@@ -487,8 +499,17 @@ pub struct SkillPack {
     pub version: String,
     #[serde(default)]
     pub source_urls: Vec<String>,
-    pub last_verified_at: String,
+    pub source_checked_at: String,
+    #[serde(default)]
+    pub content_reviewed_at: String,
+    #[serde(default)]
+    pub review_basis: SkillReviewBasis,
+    #[serde(default)]
     pub review_after: String,
+    #[serde(default)]
+    pub review_scope: String,
+    #[serde(default)]
+    pub reviewed_sections: Vec<String>,
     #[serde(default)]
     pub best_practices: Vec<String>,
     #[serde(default)]
@@ -520,12 +541,42 @@ impl SkillPack {
                 return Err("skill source URLs must use HTTPS".into());
             }
         }
-        let last_verified = chrono::DateTime::parse_from_rfc3339(&self.last_verified_at)
-            .map_err(|_| "skill last_verified_at must be RFC 3339")?;
-        let review_after = chrono::DateTime::parse_from_rfc3339(&self.review_after)
-            .map_err(|_| "skill review_after must be RFC 3339")?;
-        if review_after <= last_verified {
-            return Err("skill pack review_after must be after last_verified_at".into());
+        chrono::DateTime::parse_from_rfc3339(&self.source_checked_at)
+            .map_err(|_| "skill source_checked_at must be RFC 3339")?;
+        match self.review_basis {
+            SkillReviewBasis::ContentReviewed => {
+                let content_reviewed =
+                    chrono::DateTime::parse_from_rfc3339(&self.content_reviewed_at)
+                        .map_err(|_| "skill content_reviewed_at must be RFC 3339")?;
+                let review_after = chrono::DateTime::parse_from_rfc3339(&self.review_after)
+                    .map_err(|_| "skill review_after must be RFC 3339")?;
+                if review_after <= content_reviewed {
+                    return Err("skill pack review_after must be after content_reviewed_at".into());
+                }
+                bounded_text("skill review scope", &self.review_scope, MAX_SHORT_CHARS)?;
+                if self.reviewed_sections.is_empty() {
+                    return Err(
+                        "content-reviewed skill pack requires reviewed source sections".into(),
+                    );
+                }
+                bounded_list(
+                    "skill reviewed sections",
+                    &self.reviewed_sections,
+                    MAX_LIST_ITEMS,
+                )?;
+            }
+            SkillReviewBasis::SourceAvailabilityOnly => {
+                if !self.content_reviewed_at.is_empty()
+                    || !self.review_after.is_empty()
+                    || !self.review_scope.is_empty()
+                    || !self.reviewed_sections.is_empty()
+                {
+                    return Err(
+                        "source-availability-only skill pack must not claim a content review"
+                            .into(),
+                    );
+                }
+            }
         }
         bounded_list("skill best practices", &self.best_practices, MAX_LIST_ITEMS)?;
         bounded_list("skill anti-patterns", &self.anti_patterns, MAX_LIST_ITEMS)?;
@@ -538,7 +589,17 @@ impl SkillPack {
         Ok(())
     }
 
+    pub fn is_content_reviewed(&self) -> bool {
+        self.review_basis == SkillReviewBasis::ContentReviewed
+            && !self.content_reviewed_at.is_empty()
+    }
+
+    /// Content freshness only. Source availability alone is intentionally stale
+    /// so an HTTP check can never satisfy the planning gate.
     pub fn is_stale(&self, now: &str) -> bool {
+        if !self.is_content_reviewed() {
+            return true;
+        }
         let (Ok(now), Ok(review_after)) = (
             chrono::DateTime::parse_from_rfc3339(now),
             chrono::DateTime::parse_from_rfc3339(&self.review_after),
@@ -1000,8 +1061,14 @@ mod tests {
             technology: "rust".into(),
             version: "1.90".into(),
             source_urls: vec!["https://doc.rust-lang.org/".into()],
-            last_verified_at: "2026-11-01T00:00:00Z".into(),
+            source_checked_at: "2026-11-01T00:00:00Z".into(),
+            content_reviewed_at: "2026-11-01T00:00:00Z".into(),
+            review_basis: SkillReviewBasis::ContentReviewed,
             review_after: "2026-12-01T00:00:00Z".into(),
+            review_scope: "Rust ownership and tooling documentation".into(),
+            reviewed_sections: vec![
+                "https://doc.rust-lang.org/book/ :: The Rust Programming Language".into(),
+            ],
             best_practices: vec!["use cargo test".into()],
             anti_patterns: vec![],
             commands: vec![],

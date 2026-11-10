@@ -9,12 +9,13 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::agentic::StackProfile;
-use crate::planning::{SkillPack, SkillPlan};
+use crate::planning::{SkillPack, SkillPlan, SkillReviewBasis};
 
 mod catalog;
 
 pub use catalog::{
-    BUILTIN_LAST_VERIFIED_AT, BUILTIN_REVIEW_AFTER, BUILTIN_TECHNOLOGIES, builtin_skill_pack,
+    BUILTIN_CONTENT_REVIEWED_AT, BUILTIN_REVIEW_AFTER, BUILTIN_SOURCE_CHECKED_AT,
+    BUILTIN_TECHNOLOGIES, builtin_skill_pack,
 };
 
 pub const SKILL_PACK_REVIEW_DAYS: i64 = 90;
@@ -52,7 +53,9 @@ impl SkillPackState {
 pub struct SkillPackSummary {
     pub version: String,
     pub content_sha256: String,
-    pub last_verified_at: String,
+    pub source_checked_at: String,
+    pub content_reviewed_at: String,
+    pub review_basis: SkillReviewBasis,
     pub review_after: String,
 }
 
@@ -77,7 +80,9 @@ fn summary(pack: &SkillPack) -> SkillPackSummary {
     SkillPackSummary {
         version: pack.version.clone(),
         content_sha256: pack_content_sha256(pack),
-        last_verified_at: pack.last_verified_at.clone(),
+        source_checked_at: pack.source_checked_at.clone(),
+        content_reviewed_at: pack.content_reviewed_at.clone(),
+        review_basis: pack.review_basis,
         review_after: pack.review_after.clone(),
     }
 }
@@ -135,8 +140,8 @@ pub fn classify_technology(
     } else if let Some(builtin) = builtin.as_ref() {
         let newer_than_persisted = persisted_pack.is_some_and(|persisted| {
             match (
-                timestamp(&builtin.last_verified_at),
-                timestamp(&persisted.last_verified_at),
+                timestamp(&builtin.content_reviewed_at),
+                timestamp(&persisted.content_reviewed_at),
             ) {
                 (Some(builtin_verified), Some(persisted_verified)) => {
                     builtin_verified > persisted_verified
@@ -315,9 +320,9 @@ mod tests {
         ));
     }
 
-    fn persisted(technology: &str, last_verified_at: &str, review_after: &str) -> SkillPack {
+    fn persisted(technology: &str, content_reviewed_at: &str, review_after: &str) -> SkillPack {
         let mut pack = builtin_skill_pack(technology).unwrap();
-        pack.last_verified_at = last_verified_at.into();
+        pack.content_reviewed_at = content_reviewed_at.into();
         pack.review_after = review_after.into();
         pack.best_practices
             .push("persisted revision content marker".into());
@@ -338,7 +343,7 @@ mod tests {
             &[{
                 let mut pack = builtin.clone();
                 pack.technology = "legacy-tool".into();
-                pack.last_verified_at = "2026-01-01T00:00:00Z".into();
+                pack.content_reviewed_at = "2026-01-01T00:00:00Z".into();
                 pack.review_after = "2026-02-01T00:00:00Z".into();
                 pack
             }],
@@ -553,12 +558,39 @@ tauri = "2"
     }
 
     #[test]
-    fn catalog_review_manifest_backs_every_pack_freshness_date() {
+    fn source_availability_alone_never_makes_a_pack_fresh() {
+        let pack = builtin_skill_pack("angular").unwrap();
+        assert_eq!(pack.review_basis, SkillReviewBasis::SourceAvailabilityOnly);
+        assert!(pack.validate().is_ok());
+        assert!(!pack.is_content_reviewed());
+        assert!(pack.is_stale("2026-11-09T00:00:00Z"));
+        let mut mislabeled = pack.clone();
+        mislabeled.review_after = "2027-02-07T00:00:00Z".into();
+        assert!(
+            mislabeled.validate().is_err(),
+            "source-only packs must not carry a content review window"
+        );
+        let stack = StackProfile {
+            frameworks: vec!["angular".into()],
+            ..StackProfile::default()
+        };
+        assert!(matches!(
+            build_skill_plan(&stack, &[], "2026-11-09T00:00:00Z"),
+            Err(SkillPlanError::Stale(_))
+        ));
+    }
+
+    #[test]
+    fn catalog_review_manifest_separates_source_checks_from_content_reviews() {
         let raw = include_str!("../../../docs/evidence/skill-pack-catalog-2026-11-09/review.json");
         let manifest: serde_json::Value = serde_json::from_str(raw).unwrap();
         assert_eq!(
-            manifest["reviewedAt"].as_str(),
-            Some(BUILTIN_LAST_VERIFIED_AT)
+            manifest["sourceCheckedAt"].as_str(),
+            Some(BUILTIN_SOURCE_CHECKED_AT)
+        );
+        assert_eq!(
+            manifest["contentReviewedAt"].as_str(),
+            Some(BUILTIN_CONTENT_REVIEWED_AT)
         );
         assert_eq!(
             manifest["reviewWindowDays"].as_i64(),
@@ -575,9 +607,9 @@ tauri = "2"
             let pack = builtin_skill_pack(technology)
                 .unwrap_or_else(|| panic!("review evidence has unknown pack {technology}"));
             assert_eq!(
-                entry["reviewedAt"].as_str(),
-                Some(pack.last_verified_at.as_str()),
-                "review date for {technology} must match its pack"
+                entry["sourceCheckedAt"].as_str(),
+                Some(pack.source_checked_at.as_str()),
+                "source check date for {technology} must match its pack"
             );
             let mut expected = pack.source_urls.clone();
             expected.sort();
@@ -595,6 +627,37 @@ tauri = "2"
                     "source {} for {technology} was not reachable",
                     source["url"]
                 );
+            }
+            match entry["contentReview"].as_object() {
+                Some(review) => {
+                    assert_eq!(pack.review_basis, SkillReviewBasis::ContentReviewed);
+                    assert_eq!(
+                        review["reviewedAt"].as_str(),
+                        Some(pack.content_reviewed_at.as_str())
+                    );
+                    assert_eq!(
+                        review["reviewAfter"].as_str(),
+                        Some(pack.review_after.as_str())
+                    );
+                    assert_eq!(review["scope"].as_str(), Some(pack.review_scope.as_str()));
+                    let sections = review["sections"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|section| section.as_str().unwrap().to_string())
+                        .collect::<Vec<_>>();
+                    assert_eq!(sections, pack.reviewed_sections);
+                }
+                None => {
+                    assert_eq!(
+                        pack.review_basis,
+                        SkillReviewBasis::SourceAvailabilityOnly,
+                        "source-only evidence for {technology} must not claim content review"
+                    );
+                    assert!(pack.content_reviewed_at.is_empty());
+                    assert!(pack.review_after.is_empty());
+                    assert!(!pack.is_content_reviewed());
+                }
             }
         }
     }

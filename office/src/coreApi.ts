@@ -2077,10 +2077,14 @@ export type SkillPackState =
   | "STALE"
   | "MISSING";
 
+export type SkillReviewBasis = "SOURCE_AVAILABILITY_ONLY" | "CONTENT_REVIEWED";
+
 export interface SkillPackSummary {
   version: string;
   contentSha256: string;
-  lastVerifiedAt: string;
+  sourceCheckedAt: string;
+  contentReviewedAt: string;
+  reviewBasis: SkillReviewBasis;
   reviewAfter: string;
 }
 

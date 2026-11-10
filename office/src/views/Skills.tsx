@@ -279,25 +279,34 @@ export function Skills() {
                 <dd>{refresh.blocked}</dd>
               </div>
               <div>
-                <dt>{t("skills.refresh.projects")}</dt>
+                <dt>{t("skills.refresh.nextWindow")}</dt>
                 <dd>
-                  {t("skills.refresh.projectsValue", {
+                  {t("skills.refresh.nextWindowValue", {
                     checked: String(refresh.projectsChecked),
                     total: String(refresh.projectTotal),
                   })}
                 </dd>
               </div>
               <div>
-                <dt>{t("skills.refresh.projectsSkipped")}</dt>
+                <dt>{t("skills.refresh.nextWindowDeferred")}</dt>
                 <dd>{refresh.projectsSkipped}</dd>
               </div>
             </dl>
             {refresh.projectsSkipped > 0 && (
               <p className="muted">
-                {t("skills.refresh.projectNote", {
+                {t("skills.refresh.nextWindowNote", {
                   checked: String(refresh.projectsChecked),
                   total: String(refresh.projectTotal),
                   skipped: String(refresh.projectsSkipped),
+                })}
+              </p>
+            )}
+            {refresh.lastOutcome && (
+              <p className="muted">
+                {t("skills.refresh.lastPassProjects", {
+                  checked: String(refresh.lastOutcome.projectsChecked),
+                  total: String(refresh.lastOutcome.projectTotal),
+                  skipped: String(refresh.lastOutcome.projectsSkipped),
                 })}
               </p>
             )}
@@ -324,7 +333,7 @@ export function Skills() {
                       </div>
                       <div className="skills-badges">
                         <Badge tone={packTone(pack.state)}>{pack.state}</Badge>
-                        {review && (
+                        {review?.reviewAfter && (
                           <span className="muted">
                             {t("skills.refresh.reviewAfter", {
                               date: formatDate(review.reviewAfter),

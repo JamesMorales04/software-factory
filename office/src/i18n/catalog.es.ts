@@ -3719,11 +3719,13 @@ export const es: Catalog = {
   "skills.refresh.notScheduled": "no programada",
   "skills.refresh.due": "Pendientes o actualizables",
   "skills.refresh.blocked": "Bloqueantes",
-  "skills.refresh.projects": "Proyectos escaneados",
-  "skills.refresh.projectsValue": "{checked} de {total}",
-  "skills.refresh.projectsSkipped": "Proyectos diferidos",
-  "skills.refresh.projectNote":
-    "Esta pasada escaneó {checked} de {total} proyectos; {skipped} se difieren a la siguiente pasada rotativa.",
+  "skills.refresh.nextWindow": "Próxima ventana de escaneo",
+  "skills.refresh.nextWindowValue": "{checked} de {total}",
+  "skills.refresh.nextWindowDeferred": "Proyectos fuera de la próxima ventana",
+  "skills.refresh.nextWindowNote":
+    "La próxima pasada escaneará {checked} de {total} proyectos; {skipped} quedarán diferidos.",
+  "skills.refresh.lastPassProjects":
+    "La última pasada completada escaneó {checked} de {total} proyectos; {skipped} diferidos.",
   "skills.refresh.reviewAfter": "revisar después de {date}",
   "skills.refresh.allFresh": "Los {count} paquetes comprobados están vigentes.",
   "skills.refresh.lastOutcome":
