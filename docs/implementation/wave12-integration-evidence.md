@@ -179,7 +179,9 @@ clean
 ```
 
 The 4 ignored library tests are the opt-in real-rootless-Podman execution
-tests. They are reported as NOT_TESTED, not as passes.
+tests. They are reported as NOT_TESTED, not as passes. The post-integration P1
+repairs below add one library test and one Worker test; the current counts are
+830 library tests and 19 Worker tests.
 
 ### Office
 
@@ -238,7 +240,9 @@ cargo run --manifest-path native/Cargo.toml \
 architecture governance: PASS
 ```
 
-## 6. Post-integration review repair
+## 6. Post-integration review repairs
+
+### 6.1 Provider failure candidate salvage
 
 Independent Codex GPT-6 Luna review of `452bb40` found a P1 regression: the WP4
 merge had restored `finalize_written_provider_work`, which created a candidate
@@ -283,6 +287,59 @@ clean
 ```
 
 The repair commit is `fix(worker): reject candidates after provider failure`.
+No paid inference was used.
+
+### 6.2 FIXTURE execution with a dependency plan
+
+The re-review of `b6a5643` found a second P1: Core authorizes FIXTURE mode and
+validates only that a required dependency plan exists; the Worker fixture path
+executed a deterministic write and returned a candidate without dependency
+acquisition or applicable checks. A valid brokered plan therefore did not stop
+fixture candidate submission.
+
+FIXTURE cannot satisfy brokered acquisition or the provider check pipeline, so
+the repair is an explicit fail-closed blocker rather than a partial execution
+path:
+
+- Core `authorize_campaign_in_tx` rejects FIXTURE authorization when the frozen
+  ActionSpec has `dependencies_required` or any dependency plan, after the
+  existing missing-plan validation and before any authorization row is written.
+- The Worker claim boundary rejects a FIXTURE assignment with a dependency plan
+  before heartbeat/execution.
+- `execute_assignment` independently rejects the same condition before workspace
+  allocation, so a legacy or bypassed assignment cannot submit a candidate.
+- The successful TRUSTED_LOCAL_PROVIDER path is unchanged and still acquires
+  dependencies before offline checks/finalization.
+- Tests:
+  - `db::authorization::tests::fixture_authorization_refuses_a_valid_frozen_dependency_plan`
+    proves Core refuses a valid brokered plan under FIXTURE.
+  - `worker::tests::fixture_execution_with_a_dependency_plan_submits_no_candidate`
+    proves the Worker returns an explicit blocker before contacting the
+    Supervisor or returning a candidate.
+
+Repair validation:
+
+```text
+cargo fmt --all -- --check
+clean
+
+cargo test -p factory-native --bin factory-worker
+19 passed; 0 failed
+
+cargo test -p factory-native --test provider_chaos
+16 passed; 0 failed
+
+cargo test -p factory-native --test dependency_broker_http   --test dependency_broker_podman --test dependency_acquire_live
+8 passed; the opt-in real-Podman/live-registry bodies were skipped
+
+cargo test -p factory-native --lib
+830 passed; 0 failed; 4 ignored
+
+cargo clippy -p factory-native --all-targets --all-features -- -D warnings
+clean
+```
+
+Repair commit: `fix(worker): block fixture candidates with dependency plans`.
 No paid inference was used.
 
 ## 7. Documentation integration

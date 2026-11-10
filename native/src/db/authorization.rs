@@ -545,6 +545,11 @@ pub(super) async fn authorize_campaign_in_tx(
     let action_spec: ActionSpec = serde_json::from_str(&spec_json)
         .map_err(|_| Error::Invalid("stored ActionSpec encoding"))?;
     super::validate_dependency_requirement(&action_spec)?;
+    if fixture && (action_spec.dependencies_required || action_spec.dependency_plan.is_some()) {
+        return Err(Error::Forbidden(
+            "FIXTURE execution cannot satisfy a frozen dependency plan; no candidate is authorized. Use TRUSTED_LOCAL_PROVIDER or remove the dependency plan".into(),
+        ));
+    }
     if action_spec.allowed_paths.is_empty() {
         return Err(Error::Forbidden(
             "campaign action has no frozen allowed-path scope".into(),
@@ -1064,6 +1069,19 @@ mod tests {
         }
     }
 
+    fn fixture_authorization() -> NewCampaignAuthorization {
+        let mut authorization = authorization();
+        authorization.authorization_id = "auth-fixture".into();
+        authorization.execution_mode = "FIXTURE".into();
+        authorization.provider.clear();
+        authorization.model.clear();
+        authorization.provider_mode.clear();
+        authorization.delegation_id.clear();
+        authorization.allowed_tools.clear();
+        authorization.monetary_envelope_id = NO_BILLABLE_ENVELOPE.into();
+        authorization
+    }
+
     fn subscription_policy() -> ExecutionPolicyV3 {
         let binding = crate::execution_policy::SubscriptionBinding {
             route: crate::execution_policy::SubscriptionRoute::OpenCodeGo,
@@ -1131,6 +1149,62 @@ mod tests {
             .await
             .expect_err("authorization must refuse a missing dependency plan");
         assert!(error.to_string().contains("dependency"), "error: {error}");
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn fixture_authorization_refuses_a_valid_frozen_dependency_plan() {
+        let (path, db, _grant) = fixture().await;
+        let (action_id, spec_json): (String, String) =
+            sqlx::query_as::query_as("SELECT action_id,spec_json FROM action_specs LIMIT 1")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        let mut spec: ActionSpec = serde_json::from_str(&spec_json).unwrap();
+        let planning = crate::planning::DependencyPlan {
+            strategy: crate::planning::DependencyStrategy::BrokeredFetch,
+            items: Vec::new(),
+            cache_ref: "vendor".into(),
+            sbom_ref: "artifacts/sbom.json".into(),
+            owner_approval: None,
+        };
+        let plan = crate::dependencies::from_frozen_planning(
+            &planning,
+            crate::dependencies::DependencyKind::Rust,
+            Some(&"a".repeat(64)),
+            "vendor",
+            "artifacts/sbom.json",
+        )
+        .unwrap()
+        .expect("brokered plan");
+        spec.dependencies_required = true;
+        spec.dependency_plan = Some(plan);
+        let spec_json = serde_json::to_string(&spec).unwrap();
+        let spec_sha256 = crate::device_session::sha256_hex(&spec_json);
+        sqlx::query::query(
+            "UPDATE action_specs SET spec_json=?1,spec_sha256=?2 WHERE action_id=?3",
+        )
+        .bind(&spec_json)
+        .bind(&spec_sha256)
+        .bind(&action_id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let campaign = db
+            .create_campaign(&action_id, "fixture-dependency-campaign")
+            .await
+            .unwrap();
+        let error = db
+            .authorize_campaign(&campaign.id, &fixture_authorization())
+            .await
+            .expect_err("FIXTURE must not authorize a dependency plan it cannot satisfy");
+        assert!(
+            error
+                .to_string()
+                .contains("FIXTURE execution cannot satisfy"),
+            "error: {error}"
+        );
         db.close().await;
         let _ = std::fs::remove_file(path);
     }

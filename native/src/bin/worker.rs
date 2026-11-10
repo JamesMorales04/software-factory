@@ -225,6 +225,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
             .into());
         }
+        if assignment.execution_mode == "FIXTURE"
+            && let Some(reason) = fixture_dependency_blocker(&assignment.action_spec)
+        {
+            return Err(reason.into());
+        }
         let heartbeat_client = client.clone();
         let heartbeat_url = core.join("worker/heartbeat")?;
         let heartbeat_token = session_token.clone();
@@ -695,6 +700,16 @@ struct ProviderContext<'a> {
 struct DependencyAcquisitionState {
     attempted: bool,
     receipt: Option<factory_native::dependency_service::DependencyAcquireReceipt>,
+}
+
+/// Fixture execution writes a deterministic file, executes it once and returns
+/// a candidate without running the provider dependency/check pipeline. A frozen
+/// dependency plan therefore cannot be satisfied in this mode; fail closed
+/// before workspace allocation or candidate submission.
+fn fixture_dependency_blocker(spec: &ActionSpec) -> Option<&'static str> {
+    (spec.dependencies_required || spec.dependency_plan.is_some()).then_some(
+        "FIXTURE execution cannot satisfy a frozen dependency plan; no candidate was created. Use TRUSTED_LOCAL_PROVIDER or remove the dependency plan",
+    )
 }
 
 fn dependency_acquisition_request(
@@ -4565,6 +4580,11 @@ async fn execute_assignment(
     if assignment.kind == "INTEGRATION" {
         return integrate_assignment(assignment, supervisor).await;
     }
+    if assignment.execution_mode == "FIXTURE"
+        && let Some(reason) = fixture_dependency_blocker(&assignment.action_spec)
+    {
+        return Err(reason.into());
+    }
     let map = env::var("FACTORY_FIXTURE_MAP")
         .ok()
         .and_then(|value| serde_json::from_str::<serde_json::Value>(&value).ok());
@@ -5527,6 +5547,43 @@ mod tests {
         provider_server.abort();
         backend_server.abort();
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn fixture_execution_with_a_dependency_plan_submits_no_candidate() {
+        let client = reqwest::Client::new();
+        let core = reqwest::Url::parse("http://127.0.0.1:9").unwrap();
+        let supervisor = Supervisor {
+            client: client.clone(),
+            base: reqwest::Url::parse("http://127.0.0.1:9").unwrap(),
+            token: "supervisor-token".into(),
+            image: "test/image:1".into(),
+            timeout_secs: 30,
+        };
+        let mut assignment = assignment_for_progress();
+        assignment.execution_mode = "FIXTURE".into();
+        assignment.action_spec.dependencies_required = true;
+        assignment.action_spec.dependency_plan = Some(dependency_plan());
+        let error = super::execute_assignment(
+            &client,
+            &core,
+            "session-token",
+            "worker",
+            &assignment,
+            &supervisor,
+        )
+        .await
+        .expect_err("FIXTURE must not submit a candidate for a dependency plan");
+        assert!(
+            error
+                .to_string()
+                .contains("FIXTURE execution cannot satisfy"),
+            "error: {error}"
+        );
+
+        assignment.action_spec.dependencies_required = false;
+        assignment.action_spec.dependency_plan = None;
+        assert!(super::fixture_dependency_blocker(&assignment.action_spec).is_none());
     }
 
     fn dependency_plan() -> factory_native::dependencies::DependencyPlan {
