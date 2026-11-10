@@ -15,12 +15,15 @@ and the deterministic Quality Gate.
 **Gate:** `ACCEPTED` at `2026-11-10T16:51:03Z` (11:51:03 America/Bogota,
 UTC−5).
 
-The exact Factory runtime image digest/commit was not recorded by the run. The
-documentation baseline for this record is `543bb50`; no code, Compose,
-migration, test or Gate-policy change is included in this docs delivery. The
-live run used the operator's running Compose stack and the merged fixes listed
-in [§9](#9-live-fixes-recorded). No paid inference was used to produce this
-document.
+The final banner verification ran against code candidate `7960123`
+(`merge: hide stale repair authorization on accepted gate`), parent `543bb50`;
+`fc2b957` is included. The original Campaign ran before the banner fix, and its
+exact Factory runtime image digest/commit was not recorded. The docs merge is a
+later commit on `docs/live-vlog-evidence`, not a code candidate. No code,
+Compose, migration, test or Gate-policy change is included in this docs
+delivery. The live run used the operator's running Compose stack and the merged
+fixes listed in [§9](#9-live-fixes-recorded). No paid inference was used to
+produce this document.
 
 ## 1. Non-claims
 
@@ -44,7 +47,8 @@ certification.
 
 | Item | Recorded value |
 |---|---|
-| Product baseline for this document | `543bb50` (`docs/live-vlog-evidence`) |
+| Product/code baseline for this document | `7960123` (`merge: hide stale repair authorization on accepted gate`), parent `543bb50`, includes `fc2b957` |
+| Docs merge | later commit on `docs/live-vlog-evidence` (not a code candidate) |
 | Runtime | Rootless Podman Compose (`podman compose`) |
 | Core / Office | `http://127.0.0.1:8893`, Core health `{"healthy":true,"version":"0.1.0"}` |
 | Execution mode | `TRUSTED_LOCAL_PROVIDER` (not isolated) |
@@ -219,9 +223,15 @@ one `h1`. Raw records:
 
 Screenshots and logs are **local artifacts, not committed**:
 
-- `evidence/campaign-gate-accepted.png` — Campaign detail at 1440, showing
-  `Accepted`, candidate `be5eb14f`, the two Gate reasons, the five-finding
-  observation note and no operator attention signal.
+- `evidence/campaign-gate-accepted.png` — the 11:51 pre-fix Campaign detail at
+  1440. It shows `Accepted`, candidate `be5eb14f`, the two Gate reasons, the
+  five-finding observation note and the old `Repair authorization: denied`
+  banner. It is retained as historical pre-fix evidence.
+- `evidence/campaign-gate-accepted-final.png` — the 12:47 final 1440 px
+  Campaign detail against code candidate `7960123`. It shows `Accepted`,
+  candidate `be5eb14f` and the two Gate reasons with **no repair-authorization
+  banner** (`has repair banner: false`). SHA-256:
+  `aa0dbb72de0eb18ebbff42edd519cc2fa509db2828b8f8ad7b65914b46d5ea55`.
 - `evidence/findings-resolved.png` — Director showing the four distinct finding
   IDs resolved, five reviewer receipts and seven evidence items.
 - `evidence/project-detail-accepted.png` — Project detail showing the accepted
@@ -231,6 +241,11 @@ Screenshots and logs are **local artifacts, not committed**:
 - `evidence/issues-board.png` and `evidence/a11y-issues-*.png` — Issues board.
 - `evidence/a11y-{campaign,director,request,issues}-{desktop,tablet,mobile}.png`
   — the twelve responsive captures.
+
+The final 1440 px banner check at 12:47 America/Bogota confirmed that the
+Accepted Gate no longer renders the repair-authorization banner
+(`has repair banner: false`) while still showing `Accepted`, candidate
+`be5eb14f` and both Gate reasons.
 
 This is implementer visual review only. Full WCAG 2.2 AA, keyboard focus order,
 contrast, screen-reader traversal, the Spanish locale and 320 px layouts were
@@ -301,7 +316,8 @@ issue-to-Campaign delivery loop.
 ## 9. Live fixes recorded
 
 The following repairs were found during the live test sequence and are merged
-into the documentation baseline, except where marked pending:
+into code candidate `7960123`; the docs merge is a separate commit on top of
+that candidate.
 
 | Area | Fix commits | State |
 |---|---|---|
@@ -316,16 +332,20 @@ into the documentation baseline, except where marked pending:
 | Worker stagnation salvage | `8d11a05`, `3e8fc87` | merged |
 | Gate info observations and re-evaluation | `59e7b3f`, `44455cb` | merged |
 | Project summary uses Gate-effective status | `934eabf` | merged |
-| Hide repair authorization when Gate is not repairable | `fc2b957` | **pending merge** (`fix/gate-repair-banner`) |
+| Hide repair authorization when Gate is not repairable | `fc2b957` | merged in `7960123` |
 
-`fc2b957` is not in `543bb50`; it is recorded as pending, not delivered. The
-accepted-Gate screenshot still shows the old `Repair authorization: denied`
-banner that this pending fix hides.
+`fc2b957` is included in code candidate `7960123` (parent `543bb50`). The final
+1440 px browser check at 12:47 America/Bogota confirmed the Accepted Gate no
+longer renders the repair-authorization banner (`has repair banner: false`)
+while still showing `Accepted`, candidate `be5eb14f` and both Gate reasons. The
+earlier 11:51 screenshot still shows the old banner and is retained as pre-fix
+evidence.
 
 ## 10. Evidence reconciliation
 
-The handoff narrative contained four claims that the durable record does not
-support. They are corrected here rather than repeated:
+The handoff narrative contained three claims that the durable record does not
+support, plus one status that changed after the first draft. They are corrected
+here rather than repeated:
 
 1. **Planner validation repair.** Request `037165ad` compiled its WorkGraph in
    one Planner call (`14:58:09–14:58:45Z`) and auto-approved revision 1. No
@@ -347,8 +367,10 @@ support. They are corrected here rather than repeated:
 3. **The candidate has 11 tests.** `ff1c0c8` has five `#[test]` functions in
    `tests/cli.rs`; `cargo test --locked` passes 5/5 with zero unit tests. The
    eleven-test count is not reproducible and is not used.
-4. **`fc2b957` is merged.** It is pending on `fix/gate-repair-banner`, outside
-   the `543bb50` baseline.
+4. **Banner fix status.** The first draft placed the banner fix outside the
+   delivered baseline. It is now merged in code candidate `7960123` (parent
+   `543bb50`), and the final 12:47 browser check confirmed the banner is no
+   longer rendered. The other measurements above are unchanged.
 
 The Gate's append-only `gate_decisions` row still says `REPAIR_REQUIRED`. That
 is the initial immutable decision; the latest `gate_decision_revisions` row and
@@ -361,7 +383,7 @@ agree with the accepted outcome.
 |---|---|---|
 | Independent verifier/reviewer acceptance of the Factory | `NOT_TESTED` | This is implementer/orchestrator evidence |
 | `TRUSTED_LOCAL` isolation/certification | `NOT_APPLICABLE` | Not isolated; ADR-0035 scope |
-| Factory runtime image digest/commit | `NOT_RECORDED` | Only the docs baseline `543bb50` is recorded |
+| Factory runtime image digest/commit | `NOT_RECORDED` | The final banner check used code candidate `7960123`; the original Campaign runtime digest was not recorded |
 | Node/browser check for the target project | `NOT_TESTED` | The project has Rust checks only; the Rust check image does not provide a Node/browser toolchain, so no Node/Playwright project check was run |
 | Full WCAG 2.2 AA, keyboard, contrast, screen reader | `NOT_TESTED` | Only the four-surface a11y assertions above |
 | Spanish locale and 320 px | `NOT_TESTED` | English at 1440/768/390 only |
@@ -373,7 +395,7 @@ agree with the accepted outcome.
 | Candidate push, PR or merge | `NOT_DONE` | No branch, PR or commit on GitHub |
 | Plan Compile before Lead assessment | `NOT_TESTED` | Compile was run after assessment; no pre-assessment path was tested |
 | Stagnation salvage attribution for `be5eb14f` | `NOT_PROVEN` | See [§10](#10-evidence-reconciliation) |
-| `fc2b957` accepted-Gate banner fix | `PENDING` | Branch `fix/gate-repair-banner` |
+| `fc2b957` accepted-Gate banner fix | `DELIVERED` | Merged in `7960123`; final 12:47 1440 px browser check reported `has repair banner: false` |
 | Old requests/campaigns remain | `OBSERVED` | Old Campaigns and a pending model-call decision remain visible |
 
 The target project candidate is real and was accepted by the deterministic

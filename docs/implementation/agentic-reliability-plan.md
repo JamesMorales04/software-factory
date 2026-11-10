@@ -583,7 +583,10 @@ intake path against `JamesMorales04/vlog-cli-factory-live-test`:
 - candidate `be5eb14f-1742-4c86-922e-11c9dda5bb3c` at
   `ff1c0c8ced8a67d38cf286b342fd14432c7b6002`, tree
   `c4afcab70427889402081f584700dfa1b6c41367`;
-- Gate `ACCEPTED` at `2026-11-10T16:51:03Z`.
+- Gate `ACCEPTED` at `2026-11-10T16:51:03Z`;
+- final banner check against code candidate `7960123`
+  (`merge: hide stale repair authorization on accepted gate`), parent
+  `543bb50`, with `fc2b957` included.
 
 The full record, including the exact receipts and browser artifacts, is
 [`docs/evidence/live-vlog-acceptance-2026-11-10.md`](../evidence/live-vlog-acceptance-2026-11-10.md).
@@ -604,7 +607,7 @@ It is implementer/orchestrator evidence, not independent acceptance.
 | Stagnant Implementer with checked workspace | `8d11a05`, `3e8fc87` |
 | Informational findings blocked Gate re-evaluation | `59e7b3f`, `44455cb` |
 | Project summary used raw Campaign status | `934eabf` |
-| Repair authorization shown on a non-repairable Gate | `fc2b957` (**pending merge**, `fix/gate-repair-banner`) |
+| Repair authorization shown on a non-repairable Gate | `fc2b957` (merged in `7960123`) |
 
 ### Accepted candidate evidence
 
@@ -623,6 +626,10 @@ It is implementer/orchestrator evidence, not independent acceptance.
 - Chromium checks covered Campaign detail, Director, the Request workspace and
   Issues at 1440/768/390: no document/body overflow, no unnamed controls, no
   images without alt text and one `h1` per surface.
+- The final 12:47 America/Bogota 1440 px browser check against `7960123`
+  confirmed the Accepted Gate no longer renders the repair-authorization banner
+  (`has repair banner: false`) while retaining the Accepted state, candidate
+  and reasons.
 
 ### Evidence limits
 
@@ -637,9 +644,10 @@ It is implementer/orchestrator evidence, not independent acceptance.
 - Request `037165ad` compiled its WorkGraph in one Planner call and
   auto-approved revision 1; no Planner validation repair is recorded for this
   request. The Planner repairs above come from the broader live sequence.
-- The exact Factory runtime image digest/commit was not recorded. The run is
-  bound to the target candidate and to the durable Core records above, not to a
-  frozen Factory runtime image.
+- The final banner check used code candidate `7960123`; the original Campaign
+  ran before the banner fix and its exact Factory runtime image digest/commit
+  was not recorded. The run is bound to the target candidate and to the durable
+  Core records above, not to a frozen Factory runtime image.
 - Independent acceptance, `TRUSTED_LOCAL` isolation/certification, push/PR/
   merge and automatic issue-to-Campaign synchronization remain outstanding.
 
