@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "implementationCommit": "8357e38ccd897b146bd442a247c054e80b8a01aa",
+  "implementationCommit": "e771dcbe92295333a7c7e2b626792c760f46845f",
   "migrations": [
     "0067_skill_refresh_cursor.sql",
     "0068_skill_pack_content_review.sql"
@@ -861,5 +861,6 @@
       ],
       "contentReview": null
     }
-  }
+  },
+  "legacyUpgradeRule": "source-only persisted row upgrades to a content-reviewed builtin only when builtin is fresh, content differs, and builtin.content_reviewed_at >= persisted.source_checked_at"
 }

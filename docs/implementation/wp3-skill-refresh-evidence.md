@@ -5,7 +5,7 @@ completion claim. No paid model inference was run. The stale/missing skill gate
 was not weakened.
 
 - Branch: `factory/quality-wp3-skill-refresh`
-- Implementation commit: `8357e38ccd897b146bd442a247c054e80b8a01aa`
+- Implementation commit: `e771dcbe92295333a7c7e2b626792c760f46845f`
 - Baseline: `bcb8b5b`
 - Design authority:
   [ADR-0039](../architecture/decisions/ADR-0039-quality-first-planning-and-stack-selection.md)
@@ -45,6 +45,23 @@ The third review at `0082b70` found three remaining issues, repaired here:
    builtin has source-availability evidence only and content review is
    required. The Office panel shows that reason plus an explicit source-only
    badge, with a component test.
+
+The fourth review at `42edb20` found that legacy source-only rows could remain
+blocked indefinitely even when a reviewed builtin existed. The safe upgrade rule
+is now:
+
+- the persisted revision must be source-only (`CONTENT_REVIEWED` is never
+  inferred from the legacy availability date);
+- the builtin must be content-reviewed, valid and fresh;
+- the content hash must differ;
+- the builtin `content_reviewed_at` must not predate the legacy
+  `source_checked_at`.
+
+When all four hold, the pack is `REFRESHABLE` and the scheduler appends the
+reviewed builtin as a new immutable revision. The legacy row remains source-only
+for provenance. If the builtin content is unchanged or its review predates the
+legacy source check, the row stays `DUE`/blocking. A decode-to-refresh
+regression test covers this path.
 
 ### Content-review basis
 
@@ -204,10 +221,10 @@ cargo test -p factory-native --lib planning::skills
 9 passed; 0 failed
 
 cargo test -p factory-native --lib planning::skill_refresh
-6 passed; 0 failed
+7 passed; 0 failed
 
 cargo test -p factory-native --lib
-744 passed; 0 failed; 2 ignored
+745 passed; 0 failed; 2 ignored
 
 cargo test -p factory-native --test migration_skill_refresh
 1 passed; 0 failed
@@ -250,7 +267,8 @@ source-only packs never being fresh, immutable refresh revision, idempotent
 scheduler pass and events, scheduler shutdown, missing-technology fail-closed
 behavior, Python/pip planning, detected-stack catalog coverage, catalog
 source/content-review manifest integrity, Docker source correctness, durable
-project rotation with skipped counts, legacy skill-pack JSON decoding, migration
+project rotation with skipped counts, legacy skill-pack JSON decoding and safe
+source-only upgrade, migration
 `0067` cursor durability and `0068` historical-row preservation, endpoint
 authentication/bounds and the Office
 loading/error/action/truncation/deferred/next-window/source-only states.
@@ -272,8 +290,10 @@ loading/error/action/truncation/deferred/next-window/source-only states.
   source-availability-only and block planning until content-reviewed. This is
   intentional fail-closed behavior.
 - **KNOWN LIMITATION:** legacy persisted rows are decoded as source-only and
-  block until an explicitly content-reviewed revision is persisted; migration
-  `0068` does not invent a content review from the old availability date.
+  migration `0068` does not invent a content review from the old availability
+  date. They upgrade only when a reviewed builtin with different content and a
+  review date not earlier than the legacy source check exists; otherwise they
+  remain blocking.
 - **KNOWN LIMITATION:** for the 15 reviewed packs, the review scope is the
   named official section headings recorded in the manifest, not a verbatim
   reproduction of the documentation.
