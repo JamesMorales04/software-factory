@@ -116,7 +116,10 @@ paths and capabilities exactly, and use your own judgment for intent, complexity
 assumptions, uncertainty and the effort estimate. Classify a question or a read-only assessment as \
 informational or audit; never propose executable WorkUnits for those intents. For informational or \
 audit without an explicit estimate request, effortEstimate.status must be not_requested with empty \
-unit, bounds, assumptions and unknownReason. {checks_instruction} A change request must carry \
+unit, bounds, assumptions and unknownReason. Every intent must include a non-empty \
+suggestedNextAction of at most {note_chars} characters: for a change intent, state a concrete bounded \
+next step; for informational or audit without change, use exactly {no_action:?}. \
+{checks_instruction} A change request must carry \
 a real estimated or unknown effort estimate. For status=estimated, unit must be \"person-hours\", \
 0 <= minPersonHours <= maxPersonHours, maxPersonHours >= 1, assumptions must be non-empty, and \
 unknownReason must be empty. Objective: {objective}. Project: {project_id}. Action: \
@@ -148,6 +151,8 @@ must be unique.\n\nJSON Schema:\n{schema}\n\nValid example shape:\n{example}",
         timeout_secs = timeout_secs,
         schema = schema,
         example = example,
+        note_chars = crate::lead::MAX_NOTE_CHARS,
+        no_action = crate::lead::SUGGESTED_NEXT_ACTION_NO_ACTION,
     ))
 }
 
