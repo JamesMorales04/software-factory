@@ -110,12 +110,12 @@ explicit Retry reads the real projection.
 | WP10-UI-007 | `/director` | Exact revision/hash guard | a stale plan hash is refused by Core and the review stays pending | `WP10-UI-007-stale-error-1440.png` | PASS |
 | WP10-UI-008 | `/director` | Director English/Spanish responsive layout | all review controls remain reachable without document overflow at 1440/834/390/320 | `WP10-UI-008-es-390.png` | PASS |
 | WP10-UI-009 | `/director` | Keyboard and naming semantics | interactive controls have accessible names and the document language follows the switch | Browser assertion; `manifest.json` | PASS |
-| WP10-UI-010 | `/director` | Reviewer independence required roles and assigned principals | five roles and five distinct assigned principals | `WP10-UI-001-ready-1440.png` | PASS |
-| WP10-UI-011 | `/director` | Per-role reviewer receipts | two PASS, one CHANGES_REQUESTED and one missing receipt are visible with evidence | `WP10-UI-001-ready-1440.png` | PASS |
+| WP10-UI-010 | `/director` | Reviewer independence required roles and assigned principals | five roles and five distinct assigned principals | Browser assertion; `manifest.json` | PASS |
+| WP10-UI-011 | `/director` | Per-role reviewer receipts | two PASS, one CHANGES_REQUESTED and one missing receipt are visible with evidence | Browser assertion; `manifest.json` | PASS |
 | WP10-UI-014 | `/director` | Frozen reviewer assignment mismatch | the alert is shown when required roles have no exact principal assignment | `WP10-UI-014-mismatch-1440.png` | PASS |
 | WP10-UI-015 | `/director` | Resolve a reviewer finding with evidence | the OPEN finding becomes RESOLVED and the Core disposition is projected | `WP10-UI-015-resolved-1440.png` | PASS |
-| WP10-UI-017 | `/director` | Refute requires an owner decision | the Refute control stays disabled until a decision reference is entered | `WP10-UI-019-refuted-1440.png` | PASS |
-| WP10-UI-018 | `/director` | Invalid owner decision reference | Core rejects the refutation and the Office shows the error | `WP10-UI-019-refuted-1440.png` | PASS |
+| WP10-UI-017 | `/director` | Refute requires an owner decision | the Refute control stays disabled until a decision reference is entered | Browser assertion; `manifest.json` | PASS |
+| WP10-UI-018 | `/director` | Invalid owner decision reference | Core rejects the refutation and the Office shows the error | Browser assertion; `manifest.json` | PASS |
 | WP10-UI-019 | `/director` | Refute with the approved owner decision | the OPEN finding becomes REFUTED with the authenticated owner principal | `WP10-UI-019-refuted-1440.png` | PASS |
 | WP10-UI-020 | `/requests/:requestId` | Workflow trace loading state | the loading label appears while the Core read is pending | Browser assertion; `manifest.json` | PASS |
 | WP10-UI-021 | `/requests/:requestId` | No-run empty state | the trace explains that no durable run exists | Browser assertion; `manifest.json` | PASS |
@@ -136,7 +136,7 @@ explicit Retry reads the real projection.
 | WP10-UI-036 | `/skills` | Skills error and retry | a failed read shows the error state and Retry recovers from real Core | `WP10-UI-036-error-retry-1440.png` | PASS |
 | WP10-UI-037 | `/skills` | No registered skills empty state | the registry explains that no skill has been recorded | Browser assertion; `manifest.json` | PASS |
 | WP10-UI-038 | `/skills` | Skills English/Spanish responsive layout | the refresh panel and pack list have no document overflow at all widths | `WP10-UI-038-es-390.png` | PASS |
-| WP10-UI-039 | `/director` | Keyboard focus order and visible focus on plan review controls | Tab moves from the rationale to each review button with a visible focus style | `WP10-UI-001-ready-1440.png` | PASS |
+| WP10-UI-039 | `/director` | Keyboard focus order and visible focus on plan review controls | Tab moves from the rationale to each review button with a visible focus style | Browser assertion; `manifest.json` | PASS |
 | WP10-UI-040 | Core/Office boundary | Browser console, page and network cleanliness | no page errors and no unexpected 4xx/5xx responses | Browser assertion; `manifest.json` | PASS |
 | WP10-UI-041 | EN + ES Office routes | No literal translation placeholders | visible EN and ES surfaces do not render unresolved {placeholder} tokens | Browser assertion; `manifest.json` | PASS |
 | WP10-UI-042 | Core/Office boundary | Unauthorized Core read | an operator projection without the device session is rejected with 401 | Browser assertion; `manifest.json` | PASS |
