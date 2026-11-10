@@ -167,6 +167,22 @@ impl Database {
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin().await?;
         let candidate = validate_receipt_binding(&mut transaction, candidate_id, input).await?;
+        if role == QualityRole::Reviewer {
+            let requirement =
+                reviewer_requirement_for_candidate(&mut transaction, candidate_id).await?;
+            if !requirement.roles.is_empty() {
+                let Some(reviewer_role) = input.reviewer_role else {
+                    return Err(Error::Forbidden(
+                        "reviewer role is required by the frozen reviewer plan".into(),
+                    ));
+                };
+                if !requirement.roles.contains(&reviewer_role) {
+                    return Err(Error::Forbidden(
+                        "reviewer role is not required by the frozen reviewer plan".into(),
+                    ));
+                }
+            }
+        }
         if let Some(receipt) = replayed_receipt(&mut transaction, candidate_id, role, input).await?
         {
             let gate = load_gate(&mut transaction, candidate_id).await?;
@@ -668,6 +684,20 @@ impl Database {
             reviewer_receipt_id: row.try_get("reviewer_receipt_id")?,
             created_at: row.try_get("created_at")?,
         }))
+    }
+
+    /// Required reviewer roles frozen for this candidate. Empty for a legacy
+    /// candidate with no participant-plan role requirement.
+    pub async fn candidate_reviewer_roles(
+        &self,
+        candidate_id: &str,
+    ) -> Result<Vec<crate::planning::ReviewerRole>, Error> {
+        let mut connection = self.pool.acquire().await?;
+        Ok(
+            reviewer_requirement_for_candidate(&mut connection, candidate_id)
+                .await?
+                .roles,
+        )
     }
 
     pub async fn quality_receipts(
@@ -1505,6 +1535,7 @@ async fn decide_gate(
     let mut principals = std::collections::BTreeSet::new();
     let mut covered_roles = std::collections::BTreeSet::new();
     let mut assignment_mismatch = false;
+    let mut unrequired_role = false;
     for receipt in &reviewer_records {
         // The same principal never counts twice, even if historical or
         // malformed rows exist.
@@ -1513,6 +1544,9 @@ async fn decide_gate(
             continue;
         };
         if !requirement.roles.contains(&role) {
+            // A historical or foreign receipt for a role outside the frozen
+            // plan is not ignored: it makes the Gate fail closed.
+            unrequired_role = true;
             continue;
         }
         if let Some(expected) = requirement.assignments.get(&role)
@@ -1554,6 +1588,11 @@ async fn decide_gate(
                 "reviewer plan does not bind every required role to an authenticated principal"
                     .into(),
             ],
+        };
+    } else if !reviewer_records.is_empty() && unrequired_role {
+        decision = crate::quality::GateDecision {
+            outcome: GateOutcome::Blocked,
+            reasons: vec!["reviewer receipt role is not required by the frozen plan".into()],
         };
     } else if !reviewer_records.is_empty() && assignment_mismatch {
         decision = crate::quality::GateDecision {

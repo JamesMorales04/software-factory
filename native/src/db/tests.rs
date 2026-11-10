@@ -1220,6 +1220,34 @@ fn quality_reviewer_receipt(
     receipt
 }
 
+async fn insert_reviewer_receipt_direct(
+    fixture: &CandidateFixture,
+    id: &str,
+    principal: &str,
+    role: Option<crate::planning::ReviewerRole>,
+) {
+    sqlx::query::query(
+        "INSERT INTO quality_receipts
+           (receipt_id,candidate_id,role,principal_id,reviewer_role,action_spec_sha256,
+            commit_sha,tree_sha,result,evidence,findings_json,mechanism,model_provider,
+            model_name,model_reservation_id,model_request_sha256,input_tokens,output_tokens,
+            total_tokens,cost_micros,usage_known,received_at)
+         VALUES (?1,?2,'reviewer',?3,?4,?5,?6,?7,'PASS','EXECUTED','[]','DETERMINISTIC',
+                 '','','','',0,0,0,0,0,?8)",
+    )
+    .bind(id)
+    .bind(&fixture.candidate_id)
+    .bind(principal)
+    .bind(role.map(|role| role.as_str()).unwrap_or(""))
+    .bind(&fixture.spec_sha256)
+    .bind(&fixture.commit_sha)
+    .bind(&fixture.tree_sha)
+    .bind(Utc::now().to_rfc3339())
+    .execute(&fixture.db.pool)
+    .await
+    .unwrap();
+}
+
 async fn set_reviewer_requirement(
     db: &Database,
     candidate_id: &str,
@@ -1602,6 +1630,125 @@ async fn gate_rejects_an_assignment_set_with_an_unexpected_role() {
 }
 
 #[tokio::test]
+async fn reviewer_receipt_rejects_a_role_outside_the_frozen_plan() {
+    use crate::planning::ReviewerRole;
+    let fixture = candidate_fixture().await;
+    set_reviewer_requirement(
+        &fixture.db,
+        &fixture.candidate_id,
+        2,
+        &[ReviewerRole::Functional, ReviewerRole::CodeQuality],
+        &[
+            (ReviewerRole::Functional, "reviewer-a"),
+            (ReviewerRole::CodeQuality, "reviewer-b"),
+        ],
+    )
+    .await;
+    fixture
+        .db
+        .record_quality_receipt(
+            &fixture.candidate_id,
+            QualityRole::Verifier,
+            &quality_receipt(&fixture, "verifier-extra-role", "verifier-1"),
+        )
+        .await
+        .unwrap();
+    let extra = quality_reviewer_receipt(
+        &fixture,
+        "reviewer-extra-role",
+        "reviewer-security",
+        ReviewerRole::Security,
+    );
+    assert!(matches!(
+        fixture
+            .db
+            .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &extra)
+            .await,
+        Err(Error::Forbidden(_))
+    ));
+    let receipts = fixture
+        .db
+        .quality_receipts(&fixture.candidate_id)
+        .await
+        .unwrap();
+    assert!(
+        receipts
+            .iter()
+            .all(|receipt| receipt.role != QualityRole::Reviewer)
+    );
+    fixture.db.close().await;
+    let _ = std::fs::remove_file(fixture.root.join("factory.sqlite"));
+}
+
+#[tokio::test]
+async fn gate_blocks_an_extra_role_receipt_even_when_required_roles_pass() {
+    use crate::planning::ReviewerRole;
+    let fixture = candidate_fixture().await;
+    set_reviewer_requirement(
+        &fixture.db,
+        &fixture.candidate_id,
+        2,
+        &[ReviewerRole::Functional, ReviewerRole::CodeQuality],
+        &[
+            (ReviewerRole::Functional, "reviewer-a"),
+            (ReviewerRole::CodeQuality, "reviewer-b"),
+        ],
+    )
+    .await;
+    fixture
+        .db
+        .record_quality_receipt(
+            &fixture.candidate_id,
+            QualityRole::Verifier,
+            &quality_receipt(&fixture, "verifier-extra-gate", "verifier-1"),
+        )
+        .await
+        .unwrap();
+    let functional = quality_reviewer_receipt(
+        &fixture,
+        "reviewer-extra-gate-functional",
+        "reviewer-a",
+        ReviewerRole::Functional,
+    );
+    fixture
+        .db
+        .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &functional)
+        .await
+        .unwrap();
+    // Simulate a historical/foreign row that bypassed ingestion validation.
+    insert_reviewer_receipt_direct(
+        &fixture,
+        "reviewer-extra-gate-security",
+        "reviewer-security",
+        Some(ReviewerRole::Security),
+    )
+    .await;
+    let required = quality_reviewer_receipt(
+        &fixture,
+        "reviewer-extra-gate-code-quality",
+        "reviewer-b",
+        ReviewerRole::CodeQuality,
+    );
+    let ingested = fixture
+        .db
+        .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &required)
+        .await
+        .unwrap();
+    let gate = ingested
+        .gate
+        .expect("an extra-role receipt must decide the Gate");
+    assert_ne!(gate.outcome, GateOutcome::Accepted);
+    assert_eq!(gate.outcome, GateOutcome::Blocked);
+    assert!(
+        gate.reasons
+            .iter()
+            .any(|reason| reason.contains("not required by the frozen plan"))
+    );
+    fixture.db.close().await;
+    let _ = std::fs::remove_file(fixture.root.join("factory.sqlite"));
+}
+
+#[tokio::test]
 async fn gate_rejects_a_second_receipt_from_the_same_principal() {
     use crate::planning::ReviewerRole;
     let fixture = candidate_fixture().await;
@@ -1677,25 +1824,31 @@ async fn gate_waits_for_role_coverage_even_when_the_count_is_met() {
         )
         .await
         .unwrap();
-    // Two distinct principals satisfy the count, but the second receipt claims
-    // Security, which is not one of this plan's required roles. Code Quality is
-    // still uncovered, so the Gate must wait.
-    for (id, principal, role) in [
-        (
-            "reviewer-role-gap-a",
-            "reviewer-a",
-            ReviewerRole::Functional,
-        ),
-        ("reviewer-role-gap-b", "reviewer-b", ReviewerRole::Security),
-    ] {
-        let receipt = quality_reviewer_receipt(&fixture, id, principal, role);
-        let ingested = fixture
+    // Two distinct principals satisfy the count, but the second is a legacy
+    // receipt with no reviewer role. Code Quality is still uncovered, so the
+    // Gate must wait. The direct insert simulates a historical row that
+    // predates role ingestion validation.
+    let functional = quality_reviewer_receipt(
+        &fixture,
+        "reviewer-role-gap-a",
+        "reviewer-a",
+        ReviewerRole::Functional,
+    );
+    let ingested = fixture
+        .db
+        .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &functional)
+        .await
+        .unwrap();
+    assert!(ingested.gate.is_none());
+    insert_reviewer_receipt_direct(&fixture, "reviewer-role-gap-b", "reviewer-b", None).await;
+    assert!(
+        fixture
             .db
-            .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &receipt)
+            .gate_for_candidate(&fixture.candidate_id)
             .await
-            .unwrap();
-        assert!(ingested.gate.is_none());
-    }
+            .unwrap()
+            .is_none()
+    );
     let pending = fixture
         .db
         .pending_quality_candidates_for_reviewer(

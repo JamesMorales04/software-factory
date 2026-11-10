@@ -8790,6 +8790,26 @@ async fn quality_receipt(State(app): State<Arc<App>>, headers: HeaderMap, body: 
             .into_response();
     }
     let role = identity.role;
+    if role == QualityRole::Reviewer {
+        let required = match app.db.candidate_reviewer_roles(&input.candidate_id).await {
+            Ok(required) => required,
+            Err(error) => return api_error(error),
+        };
+        if !required.is_empty()
+            && !input
+                .reviewer_role
+                .is_some_and(|reviewer_role| required.contains(&reviewer_role))
+        {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({
+                    "error": "receipt reviewer role is not required by the frozen reviewer plan",
+                    "code": "QUALITY_ROLE_MISMATCH",
+                })),
+            )
+                .into_response();
+        }
+    }
     let receipt = QualityReceiptInput {
         receipt_id: input.receipt_id,
         principal_id: input.principal_id,
