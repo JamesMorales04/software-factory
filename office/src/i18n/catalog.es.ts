@@ -3726,6 +3726,7 @@ export const es: Catalog = {
     "La próxima pasada escaneará {checked} de {total} proyectos; {skipped} quedarán diferidos.",
   "skills.refresh.lastPassProjects":
     "La última pasada completada escaneó {checked} de {total} proyectos; {skipped} diferidos.",
+  "skills.refresh.sourceOnly": "Solo fuente; se requiere revisión de contenido",
   "skills.refresh.reviewAfter": "revisar después de {date}",
   "skills.refresh.allFresh": "Los {count} paquetes comprobados están vigentes.",
   "skills.refresh.lastOutcome":

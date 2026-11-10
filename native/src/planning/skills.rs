@@ -95,6 +95,16 @@ fn builtin_is_usable(pack: &SkillPack, now: &str) -> bool {
     pack.validate().is_ok() && !pack.is_stale(now)
 }
 
+fn builtin_block_reason(pack: &SkillPack) -> &'static str {
+    if pack.review_basis == SkillReviewBasis::SourceAvailabilityOnly {
+        "the builtin pack has source availability evidence only; content review is required"
+    } else if pack.validate().is_err() {
+        "the builtin pack is invalid"
+    } else {
+        "the builtin pack is past review_after"
+    }
+}
+
 /// Classify one required technology from the latest persisted revision and the
 /// curated builtin catalog. Callers must pass persisted packs in append order so
 /// the last matching revision is the newest immutable record.
@@ -128,9 +138,9 @@ pub fn classify_technology(
                 SkillPackState::Fresh,
                 "no persisted revision exists and the builtin pack is current".to_string(),
             ),
-            Some(_) => (
+            Some(pack) => (
                 SkillPackState::Stale,
-                "the builtin pack is past review_after or invalid".to_string(),
+                builtin_block_reason(pack).to_string(),
             ),
             None => (
                 SkillPackState::Missing,
@@ -167,7 +177,7 @@ pub fn classify_technology(
         } else {
             (
                 SkillPackState::Stale,
-                "the builtin pack is past review_after or invalid".to_string(),
+                builtin_block_reason(builtin).to_string(),
             )
         }
     } else {
@@ -564,6 +574,12 @@ tauri = "2"
         assert!(pack.validate().is_ok());
         assert!(!pack.is_content_reviewed());
         assert!(pack.is_stale("2026-11-09T00:00:00Z"));
+        let status = classify_technology("angular", &[], "2026-11-09T00:00:00Z");
+        assert_eq!(status.state, SkillPackState::Stale);
+        assert_eq!(
+            status.reason,
+            "the builtin pack has source availability evidence only; content review is required"
+        );
         let mut mislabeled = pack.clone();
         mislabeled.review_after = "2027-02-07T00:00:00Z".into();
         assert!(

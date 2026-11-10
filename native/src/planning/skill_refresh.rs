@@ -459,7 +459,7 @@ async fn load_targets(db: &Database, offset: usize) -> Result<TargetSnapshot, Er
     let mut technologies = BTreeSet::new();
     for record in &records {
         technologies.insert(record.technology.to_ascii_lowercase());
-        match serde_json::from_str::<crate::planning::SkillPack>(&record.content_json) {
+        match crate::planning::SkillPack::from_persisted_json(&record.content_json) {
             Ok(pack) => persisted.push(pack),
             Err(_) => tracing::warn!(
                 technology = %bounded(&record.technology, 200),

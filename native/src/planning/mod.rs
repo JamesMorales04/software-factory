@@ -527,7 +527,74 @@ pub struct SkillPack {
     pub content_sha256: String,
 }
 
+/// Pre-review-separation persisted shape. It is decoded only to preserve
+/// historical rows as source-only knowledge; the legacy review window is never
+/// promoted to a content review.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacySkillPack {
+    technology: String,
+    version: String,
+    #[serde(default)]
+    source_urls: Vec<String>,
+    last_verified_at: String,
+    #[allow(dead_code)]
+    review_after: String,
+    #[serde(default)]
+    best_practices: Vec<String>,
+    #[serde(default)]
+    anti_patterns: Vec<String>,
+    #[serde(default)]
+    commands: Vec<String>,
+    #[serde(default)]
+    security_notes: Vec<String>,
+    #[serde(default)]
+    deprecations: Vec<String>,
+    license: String,
+    #[serde(default)]
+    provenance: String,
+    #[serde(default)]
+    content_sha256: String,
+}
+
 impl SkillPack {
+    /// Decode a current skill pack or a legacy pre-review-separation row.
+    ///
+    /// A legacy `lastVerifiedAt` was a source-availability check, not a content
+    /// review. The converted pack therefore has `content_reviewed_at` empty,
+    /// `review_after` empty and `review_basis = SOURCE_AVAILABILITY_ONLY`, so it
+    /// remains blocking until explicitly reviewed.
+    pub fn from_persisted_json(raw: &str) -> Result<Self, String> {
+        if let Ok(pack) = serde_json::from_str::<Self>(raw) {
+            return Ok(pack);
+        }
+        let legacy = serde_json::from_str::<LegacySkillPack>(raw).map_err(|_| {
+            "stored skill pack is not a valid current or legacy artifact".to_string()
+        })?;
+        let pack = Self {
+            technology: legacy.technology,
+            version: legacy.version,
+            source_urls: legacy.source_urls,
+            source_checked_at: legacy.last_verified_at,
+            content_reviewed_at: String::new(),
+            review_basis: SkillReviewBasis::SourceAvailabilityOnly,
+            review_after: String::new(),
+            review_scope: String::new(),
+            reviewed_sections: Vec::new(),
+            best_practices: legacy.best_practices,
+            anti_patterns: legacy.anti_patterns,
+            commands: legacy.commands,
+            security_notes: legacy.security_notes,
+            deprecations: legacy.deprecations,
+            license: legacy.license,
+            provenance: legacy.provenance,
+            content_sha256: legacy.content_sha256,
+        };
+        pack.validate()
+            .map_err(|error| format!("legacy skill pack: {error}"))?;
+        Ok(pack)
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         bounded_text("skill technology", &self.technology, 200)?;
         bounded_text("skill version", &self.version, 100)?;
@@ -1080,5 +1147,34 @@ mod tests {
         };
         assert!(pack.validate().is_ok());
         assert!(pack.is_stale("2026-12-02T00:00:00Z"));
+
+        let legacy_json = r#"{
+            "technology":"rust",
+            "version":"1.90",
+            "sourceUrls":["https://doc.rust-lang.org/"],
+            "lastVerifiedAt":"2026-01-01T00:00:00Z",
+            "reviewAfter":"2026-04-01T00:00:00Z",
+            "bestPractices":["use cargo test"],
+            "antiPatterns":[],
+            "commands":[],
+            "securityNotes":[],
+            "deprecations":[],
+            "license":"CC-BY-4.0",
+            "provenance":"official",
+            "contentSha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }"#;
+        let legacy = SkillPack::from_persisted_json(legacy_json).unwrap();
+        assert_eq!(legacy.source_checked_at, "2026-01-01T00:00:00Z");
+        assert_eq!(legacy.content_reviewed_at, "");
+        assert_eq!(legacy.review_after, "");
+        assert_eq!(
+            legacy.review_basis,
+            SkillReviewBasis::SourceAvailabilityOnly
+        );
+        assert!(legacy.validate().is_ok());
+        assert!(
+            legacy.is_stale("2026-11-09T00:00:00Z"),
+            "a legacy availability date must not become content freshness"
+        );
     }
 }

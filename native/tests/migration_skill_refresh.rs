@@ -1,4 +1,4 @@
-//! Upgrade evidence for migrations 0065 and 0066.
+//! Upgrade evidence for migrations 0067 and 0068.
 //!
 //! A populated pre-change database is upgraded through the embedded migrator.
 //! The durable project cursor must survive reopen, and historical skill-pack
@@ -44,14 +44,30 @@ async fn pre_change_database(root: &Path) -> std::path::PathBuf {
         .run(&pool)
         .await
         .unwrap();
+    let legacy_json = r#"{
+        "technology":"rust",
+        "version":"1.90",
+        "sourceUrls":["https://doc.rust-lang.org/"],
+        "lastVerifiedAt":"2026-01-01T00:00:00Z",
+        "reviewAfter":"2026-04-01T00:00:00Z",
+        "bestPractices":["use cargo test"],
+        "antiPatterns":[],
+        "commands":[],
+        "securityNotes":[],
+        "deprecations":[],
+        "license":"CC-BY-4.0",
+        "provenance":"official",
+        "contentSha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }"#;
     sqlx::query::query(
         "INSERT INTO skill_packs
          (id,technology,version,content_json,content_sha256,source_urls_json,
           last_verified_at,review_after,license,provenance,created_at)
-         VALUES ('historical','rust','1.90','{}',?1,'[]',
+         VALUES ('historical','rust','1.90',?1,?2,'[]',
                  '2026-01-01T00:00:00Z','2026-04-01T00:00:00Z','MIT','historical',
                  '2026-01-01T00:00:00Z')",
     )
+    .bind(legacy_json)
     .bind("a".repeat(64))
     .execute(&pool)
     .await
@@ -61,7 +77,7 @@ async fn pre_change_database(root: &Path) -> std::path::PathBuf {
 }
 
 #[tokio::test]
-async fn migration_0065_cursor_and_0066_review_split_preserve_history() {
+async fn migration_0067_cursor_and_0068_review_split_preserve_history() {
     let root = std::env::temp_dir().join(format!(
         "factory-migration-skill-refresh-{}-{}",
         std::process::id(),
@@ -83,6 +99,16 @@ async fn migration_0065_cursor_and_0066_review_split_preserve_history() {
     assert_eq!(packs[0].id, "historical");
     assert_eq!(packs[0].source_checked_at, "2026-01-01T00:00:00Z");
     assert_eq!(packs[0].content_reviewed_at, "");
+    let legacy =
+        factory_native::planning::SkillPack::from_persisted_json(&packs[0].content_json).unwrap();
+    assert_eq!(legacy.source_checked_at, "2026-01-01T00:00:00Z");
+    assert_eq!(legacy.content_reviewed_at, "");
+    assert_eq!(legacy.review_after, "");
+    assert_eq!(
+        legacy.review_basis,
+        factory_native::planning::SkillReviewBasis::SourceAvailabilityOnly
+    );
+    assert!(legacy.is_stale("2026-11-09T00:00:00Z"));
     db.close().await;
 
     let reopened = Database::open(&database).await.unwrap();
@@ -99,7 +125,7 @@ async fn migration_0065_cursor_and_0066_review_split_preserve_history() {
         )
         .await
         .unwrap();
-    for version in [65, 66] {
+    for version in [67, 68] {
         let (count,): (i64,) = sqlx::query_as::query_as(
             "SELECT COUNT(*) FROM _sqlx_migrations WHERE version=?1 AND success=1",
         )

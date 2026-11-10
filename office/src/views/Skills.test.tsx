@@ -281,6 +281,42 @@ describe("Skills", () => {
     expect(await screen.findByText("The skill action failed.")).toBeDefined();
   });
 
+  it("explains that source-only packs require content review", async () => {
+    mocks.getSkillRefreshStatus.mockResolvedValue(
+      refreshStatus({
+        blocked: 1,
+        packs: [
+          {
+            technology: "angular",
+            state: "STALE",
+            blocking: true,
+            persisted: null,
+            builtin: {
+              version: "current",
+              contentSha256: "c".repeat(64),
+              sourceCheckedAt: "2026-11-09T00:00:00Z",
+              contentReviewedAt: "",
+              reviewBasis: "SOURCE_AVAILABILITY_ONLY",
+              reviewAfter: "",
+            },
+            reason:
+              "the builtin pack has source availability evidence only; content review is required",
+          },
+        ],
+      }),
+    );
+    renderSkills();
+    expect(await screen.findByText("angular")).toBeDefined();
+    expect(
+      screen.getByText(
+        "the builtin pack has source availability evidence only; content review is required",
+      ),
+    ).toBeDefined();
+    expect(
+      screen.getByText("Source only; content review required"),
+    ).toBeDefined();
+  });
+
   it("shows truncated technologies and deferred projects", async () => {
     mocks.getSkillRefreshStatus.mockResolvedValue(
       refreshStatus({

@@ -10751,13 +10751,12 @@ async fn persist_planning_plan(
     let persisted = app.db.skill_packs().await.map_err(api_error)?;
     let mut persisted_packs = Vec::with_capacity(persisted.len());
     for record in &persisted {
-        let pack =
-            serde_json::from_str::<factory_native::planning::SkillPack>(&record.content_json)
-                .map_err(|_| {
-                    api_error(Error::Invalid(
-                        "stored skill pack is not a valid planning artifact",
-                    ))
-                })?;
+        let pack = factory_native::planning::SkillPack::from_persisted_json(&record.content_json)
+            .map_err(|_| {
+            api_error(Error::Invalid(
+                "stored skill pack is not a valid planning artifact",
+            ))
+        })?;
         persisted_packs.push(pack);
     }
     let now = chrono::Utc::now().to_rfc3339();

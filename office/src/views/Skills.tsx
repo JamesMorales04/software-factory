@@ -333,6 +333,11 @@ export function Skills() {
                       </div>
                       <div className="skills-badges">
                         <Badge tone={packTone(pack.state)}>{pack.state}</Badge>
+                        {review?.reviewBasis === "SOURCE_AVAILABILITY_ONLY" && (
+                          <Badge tone="attention">
+                            {t("skills.refresh.sourceOnly")}
+                          </Badge>
+                        )}
                         {review?.reviewAfter && (
                           <span className="muted">
                             {t("skills.refresh.reviewAfter", {

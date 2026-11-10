@@ -3589,6 +3589,7 @@ export const en = {
     "The next pass will scan {checked} of {total} projects; {skipped} will be deferred.",
   "skills.refresh.lastPassProjects":
     "Last completed pass scanned {checked} of {total} projects; {skipped} deferred.",
+  "skills.refresh.sourceOnly": "Source only; content review required",
   "skills.refresh.reviewAfter": "review after {date}",
   "skills.refresh.allFresh": "All {count} checked packs are fresh.",
   "skills.refresh.lastOutcome":
