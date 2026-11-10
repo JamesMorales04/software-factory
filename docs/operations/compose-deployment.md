@@ -87,12 +87,18 @@ other destination. Cargo's `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY` and
 `CARGO_HTTP_PROXY` are fixed to the proxy, and the proxy allows only the
 configured crates.io/GitHub hosts (`FACTORY_RUNTIME_DEPENDENCY_EGRESS_ALLOW`).
 Direct egress and non-allowlisted CONNECT destinations are refused; broker
-startup fails closed if the network or proxy cannot be established.
+startup fails closed if the network or proxy cannot be established. An existing
+`factory-deps-egress` network is accepted only when it is still marked
+`internal` and carries the `io.software-factory.managed=true` label; a
+non-internal or unmanaged network is refused.
 
-The Worker carries a frozen dependency plan in its `ActionSpec` and acquisition
-runs after provider writes and before offline checks/finalization. A failed
-acquisition, a missing required vendor cache or invalid evidence blocks the
-candidate and is persisted as a terminal blocker reason. The check container
+The planning route attaches a frozen dependency plan to the ActionSpec before
+plan review and Campaign authorization; the spec is immutable after Campaign
+start. Core and the Worker refuse dependency-requiring work when the plan is
+missing. The Worker acquires after provider writes and before offline
+checks/finalization. A failed acquisition, a missing plan or invalid evidence
+blocks the candidate and is persisted as a terminal blocker reason.
+Vendor-cache plans are enforced by the offline checks. The check container
 remains `--network=none` and `--offline`.
 
 ## First-run enrollment

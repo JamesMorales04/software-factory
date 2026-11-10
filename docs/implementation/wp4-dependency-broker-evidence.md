@@ -6,10 +6,12 @@ acceptance, certification, or a merged/delivered claim.
 
 **Implementation commits:**
 `e9dc41bf12888cff69cd7316d5e0a8a3ec29c46e` (initial broker wiring),
-`8882b8ea3af3476d72df7df9c7ca5702f26ef9df` (lockfile source validation), and
+`8882b8ea3af3476d72df7df9c7ca5702f26ef9df` (lockfile source validation),
 `b43dab41b1109a4019ccd6881a262d54a4182405` (worker dispatch, egress proxy,
-workspace synchronization, image pinning). The final evidence-doc commit is the
-branch HEAD after this file.
+workspace synchronization, image pinning), and
+`21b84f57b9ae4b48caf4aab9aaaf239e2c8400bd` (internal-network enforcement and
+pre-authorization dependency-plan attachment). The final evidence-doc commit is
+the branch HEAD after this file.
 
 Branch: `factory/quality-wp4-dependency-broker`, baseline `bcb8b5b`.
 
@@ -36,6 +38,7 @@ without weakening the offline check container:
  deploy/Containerfile
  deploy/runtime-entrypoint.sh
  docs/operations/compose-deployment.md
+ migrations/0065_pre_authorization_dependency_plan.sql (new)
  native/Cargo.toml
  native/src/bin/core.rs
  native/src/bin/dependency_acquire.rs          (new)
@@ -117,6 +120,21 @@ Podman network `factory-deps-egress` (default `10.90.0.0/24`, gateway
 `10.90.0.1`). Internal networks have no default route or external NAT, so
 direct egress is unavailable.
 
+When the network already exists, the broker inspects the full JSON definition
+and requires all of the following before accepting it:
+
+- `internal: true` — a matching gateway/subnet on a non-internal network is
+  rejected, so an existing network cannot silently enable direct egress;
+- the `io.software-factory.managed=true` label — an unmanaged network is
+  rejected;
+- the exact configured gateway and subnet.
+
+Failure of any check aborts broker startup. A regression test covers an
+existing non-internal network with the expected gateway/subnet, a missing
+managed label, and a mismatched gateway. Operators upgrading from an earlier
+local network without the label must remove and recreate it; the broker refuses
+to adopt an unmanaged network.
+
 The runtime broker runs the deny-by-default HTTPS CONNECT proxy in-process on
 the network gateway (`10.90.0.1:18080` by default). The proxy:
 
@@ -174,20 +192,36 @@ Evidence content:
 
 ## Worker dispatch and blockers
 
-- `ActionSpec` now carries an optional frozen
-  `crate::dependencies::DependencyPlan`; `ActionSpecInput` and the operator
-  `NewAction` API accept it, validate it and bind it into the stored spec hash.
-  The Worker assignment therefore carries the plan without a separate channel.
-- The Worker derives a typed acquisition request from the plan's
-  `BrokeredFetch` contract and calls the Supervisor route with a Core-signed
-  `dependencies` operation grant. The request digest binds every field.
+- `ActionSpec` carries an optional frozen
+  `crate::dependencies::DependencyPlan` and a `dependencies_required` flag;
+  `ActionSpecInput` and the operator `NewAction` API accept a plan, validate it
+  and bind it into the stored spec hash.
+- The planning route converts the frozen planning dependency decision into an
+  execution plan and attaches it to the ActionSpec before plan review and
+  Campaign authorization. Migration `0065` permits that one pre-authorization
+  ActionSpec update only while no Campaign exists; the spec is immutable after
+  Campaign start and the migration keeps that invariant in the database.
+  - Existing Rust repository with a lockfile and no committed `vendor/`:
+    `BrokeredFetch`, with the exact base-commit `Cargo.lock` SHA-256 obtained
+    from `git show <base>:Cargo.lock`.
+  - Existing Rust repository with a committed `vendor/`: `VendorCache`.
+  - Rust repository with neither: `VendorCache` (a committed cache is
+    required); offline checks remain the enforcement point.
+  - Non-Rust/not-required: no plan.
+  - If planning cannot attach the plan, the route refuses with
+    `DEPENDENCY_PLAN_INVALID`/`DEPENDENCY_PLAN_REQUIRED`.
+- Core refuses authorization when `dependencies_required` is true and the plan
+  is absent (`DEPENDENCY_PLAN_REQUIRED` in `load_intake_approval_context`) and
+  refuses assignment dispatch with the same invariant in `load_assignment`.
+- The Worker independently refuses an assignment that requires dependencies but
+  has no plan before any HTTP call, then derives a typed acquisition request
+  from the plan's `BrokeredFetch` contract and calls the Supervisor route with a
+  Core-signed `dependencies` operation grant. The request digest binds every
+  field.
 - Acquisition runs lazily after provider writes and before the first offline
   check and before finalization, in the OpenCode tool loop, the Codex tool
   loop, the patch flow and the error-after-writes finalization path.
-- `VendorCache`-only plans require the vendor directory to already exist; a
-  missing cache blocks the candidate. `Both` uses brokered acquisition.
-- A failed acquisition, a missing cache, an invalid receipt or an evidence
-  mismatch returns
+- A failed acquisition, an invalid receipt or an evidence mismatch returns
   `dependency acquisition blocked the candidate: ...` and never reaches
   finalize. The Worker terminal report carries a bounded `reason`; Core
   persists it in the run status event, the Lead failure reason and the
@@ -195,6 +229,12 @@ Evidence content:
   event.
 - The apply-only provider path (`allowed_tools` empty) refuses a brokered plan
   because it cannot acquire before its combined apply/finalize.
+- Tests: a fixture assignment with `dependencies_required = true` and no plan
+  is blocked before any HTTP call; a no-dependency assignment proceeds to
+  finalize without calling `/dependencies`; the planner conversion emits
+  VendorCache/BrokeredFetch plans and rejects brokered plans without a frozen
+  lockfile digest; the DB setter attaches the plan before a Campaign and
+  rejects it after.
 
 ## Workspace synchronization
 
@@ -210,18 +250,19 @@ serialization.
 ## Verification run
 
 All commands were run from `native/` unless noted, on
-`b43dab41b1109a4019ccd6881a262d54a4182405`.
+`21b84f57b9ae4b48caf4aab9aaaf239e2c8400bd`.
 
 ```text
 cargo fmt --all -- --check
 clean
 
 cargo test -p factory-native --lib
-751 passed; 0 failed; 2 ignored
+753 passed; 0 failed; 2 ignored
 
 cargo test -p factory-native --lib dependency_
-23 passed; 0 failed (includes egress proxy, image pinning, per-workspace
-concurrency and atomic acquisition tests)
+24 passed; 0 failed (includes egress proxy, image pinning, per-workspace
+concurrency, internal-network enforcement, plan conversion, pre-authorization
+attachment and missing-plan blockers)
 
 cargo test -p factory-native --test dependency_broker_http
 6 passed; 0 failed
@@ -246,13 +287,14 @@ allowed, pinned-image mismatch blocked before execution, acquisition receipt
 and promoted evidence verified, container/volume/network cleanup verified
 
 cargo test -p factory-native --bin factory-worker
-16 passed; includes the dependency fixture test proving acquisition runs
-before finalize and a failed acquisition blocks finalize
+17 passed; includes acquisition-before-finalize, failed-acquisition blocking,
+missing-plan blocking and no-dependency-proceeds tests
 
 cargo test -p factory-native --bin factory-supervisor \
   --bin factory-verifier --bin factory-runtime-broker \
   --bin factory-dependency-acquire
-8 + 7 + 7 + 3 passed; 0 failed
+8 + 7 + 8 + 3 passed; 0 failed (runtime broker includes the existing
+non-internal/unmanaged network regression test)
 
 cargo clippy -p factory-native --all-targets --all-features -- -D warnings
 clean
@@ -289,10 +331,10 @@ advisory evidence and cleanup.
 
 Remaining integration work for the integration owner:
 
-1. The planning route currently stores planning artifacts but does not yet
-   convert the planning dependency plan into an execution `DependencyPlan` on
-   the action. The operator/action API now accepts it; the planning owner must
-   attach it at action creation (or add a reviewed pre-authorization mutation).
+1. Exercise the real intake planning route end-to-end (assessment -> planning ->
+   plan review -> authorization) with a dependency-bearing repository and a
+   real Worker; the unit/DB tests prove conversion and attachment, not the full
+   browser/Compose journey.
 2. Candidate scope must explicitly allow `vendor/` and
    `vendor/.factory-supply-chain/` or treat them as generated artifacts.
    `discard_outside_scope` is not applied to acquisition output.
@@ -300,6 +342,9 @@ Remaining integration work for the integration owner:
    acquisition strategy, evidence, blocker and receipt. Office parity impact
    for this slice is `none` because the change is an internal execution
    boundary, but the plan-review surface is still required by WP10.
+4. Migration `0065` is a shared migration-owner file. It permits the single
+   pre-Campaign ActionSpec dependency-plan update; review it in the next
+   migration wave.
 
 ## Network and credential boundary
 
@@ -323,14 +368,18 @@ Remaining integration work for the integration owner:
   Worker-to-Core-to-nested-broker acquisition. The actual `dependency` image
   built successfully; the acquirer, proxy and network boundary were exercised
   with real host rootless Podman.
-- `NOT_TESTED`: the planning route automatically populating
-  `ActionSpec.dependency_plan`. The planner must attach it at action creation
-  so the frozen spec hash and Attempt grant bind it.
+- `NOT_TESTED`: the full browser/Compose intake planning and plan-review
+  journey. The planner conversion, pre-authorization DB attachment, Core
+  blocker and Worker blocker are covered by focused tests.
 - `NOT_IMPLEMENTED`: pinned advisory database, `cargo audit`/`cargo deny`
   verdicts and license-policy enforcement.
-- `LIMITATION`: the `VendorCache` preflight inspects the provider-visible
-  directory; the Supervisor workspace remains the authority and offline check
-  failures are the final blocker if those directories differ.
+- `LIMITATION`: a greenfield Rust project with neither a committed `Cargo.lock`
+  nor a `vendor/` tree is planned as `VendorCache`; its offline checks will fail
+  until a cache is committed or the owner selects a brokered strategy. This is
+  fail-closed, not a silent skip.
+- `LIMITATION`: an existing `factory-deps-egress` network without the
+  `io.software-factory.managed=true` label is refused; operators must remove
+  and recreate it.
 - `NOT_TESTED`: Windows/Podman Machine, SELinux/AppArmor hosts, registry digest
   pinning (the imported image config ID is pinned per broker process; Compose
   still uses a local `:dev` tag for the bundle).
