@@ -138,38 +138,52 @@ enum MutationError {
 }
 
 /// Active execution identity, registered under the volume lock for the short
-/// validation window and removed by its owner guard after cleanup. Volume
+/// validation window and removed only after confirmed container cleanup. The
+/// registry reserves both the volume and the container name atomically. Volume
 /// delete/reset/import/export checks this registry instead of holding a lock
 /// across the execution lifetime.
 struct ActiveExecutions {
-    entries: std::sync::Mutex<HashMap<String, String>>,
+    entries: std::sync::Mutex<ActiveEntries>,
+}
+
+#[derive(Default)]
+struct ActiveEntries {
+    volumes: HashMap<String, String>,
+    containers: std::collections::HashSet<String>,
 }
 
 impl ActiveExecutions {
     fn new() -> Self {
         Self {
-            entries: std::sync::Mutex::new(HashMap::new()),
+            entries: std::sync::Mutex::new(ActiveEntries::default()),
         }
     }
 
     fn register(&self, volume: &str, container: &str) -> bool {
         let mut entries = self.entries.lock().unwrap();
-        if entries.len() >= MAX_ACTIVE_EXECUTIONS || entries.contains_key(volume) {
+        if entries.volumes.len() >= MAX_ACTIVE_EXECUTIONS
+            || entries.volumes.contains_key(volume)
+            || entries.containers.contains(container)
+        {
             return false;
         }
-        entries.insert(volume.to_owned(), container.to_owned());
+        entries
+            .volumes
+            .insert(volume.to_owned(), container.to_owned());
+        entries.containers.insert(container.to_owned());
         true
     }
 
     fn remove(&self, volume: &str, container: &str) {
         let mut entries = self.entries.lock().unwrap();
-        if entries.get(volume).map(String::as_str) == Some(container) {
-            entries.remove(volume);
+        if entries.volumes.get(volume).map(String::as_str) == Some(container) {
+            entries.volumes.remove(volume);
+            entries.containers.remove(container);
         }
     }
 
     fn is_active(&self, volume: &str) -> bool {
-        self.entries.lock().unwrap().contains_key(volume)
+        self.entries.lock().unwrap().volumes.contains_key(volume)
     }
 }
 
@@ -615,6 +629,26 @@ impl App {
         container: &str,
         owner: ResourceOwner,
     ) -> Result<(), MutationError> {
+        self.remove_container_matching_locked(container, owner, None)
+            .await
+    }
+
+    async fn remove_execution_container_locked(
+        &self,
+        container: &str,
+        owner: ResourceOwner,
+        volume: &str,
+    ) -> Result<(), MutationError> {
+        self.remove_container_matching_locked(container, owner, Some(volume))
+            .await
+    }
+
+    async fn remove_container_matching_locked(
+        &self,
+        container: &str,
+        owner: ResourceOwner,
+        expected_workspace: Option<&str>,
+    ) -> Result<(), MutationError> {
         let Some(labels) = self
             .container_labels(container)
             .await
@@ -625,6 +659,13 @@ impl App {
         if !resource_owner_matches(&labels, owner) {
             return Err(MutationError::Conflict(
                 "container is not owned by the authenticated service",
+            ));
+        }
+        if let Some(workspace) = expected_workspace
+            && labels.get(WORKSPACE_LABEL).map(String::as_str) != Some(workspace)
+        {
+            return Err(MutationError::Conflict(
+                "container does not belong to the execution workspace",
             ));
         }
         let output = self
@@ -657,11 +698,31 @@ impl App {
         self.remove_container_locked(container, owner).await
     }
 
+    async fn remove_execution_container_for(
+        &self,
+        container: &str,
+        owner: ResourceOwner,
+        volume: &str,
+    ) -> Result<(), MutationError> {
+        let lock = self.resource_lock(container);
+        let _guard = lock.lock().await;
+        self.remove_execution_container_locked(container, owner, volume)
+            .await
+    }
+
     /// Remove the execution container and confirm it is absent before its
     /// volume active marker may be released. Any uncertainty keeps the volume
     /// blocked.
-    async fn confirm_execution_cleanup(&self, container: &str, owner: ResourceOwner) -> bool {
-        if let Err(error) = self.remove_container_for(container, owner).await {
+    async fn confirm_execution_cleanup(
+        &self,
+        container: &str,
+        owner: ResourceOwner,
+        volume: &str,
+    ) -> bool {
+        if let Err(error) = self
+            .remove_execution_container_for(container, owner, volume)
+            .await
+        {
             tracing::warn!(%container, %error, "execution cleanup removal failed; volume remains blocked");
             return false;
         }
@@ -746,6 +807,20 @@ impl App {
             }
         };
         Ok(Some(labels))
+    }
+
+    async fn container_present(&self, container: &str) -> Result<bool, String> {
+        let output = self
+            .podman_output(["container", "exists", container])
+            .await?;
+        match output.status.code() {
+            Some(0) => Ok(true),
+            Some(1) => Ok(false),
+            _ => Err(format!(
+                "container existence check failed: {}",
+                stderr(&output)
+            )),
+        }
     }
 
     async fn run_bounded<I, S>(
@@ -1293,7 +1368,18 @@ async fn run_container(
         return mutation_error(error);
     }
     if !app.active.register(&input.volume, &input.container) {
-        return conflict("volume already has an active execution");
+        return conflict("volume or container name is already active");
+    }
+    match app.container_present(&input.container).await {
+        Ok(true) => {
+            app.active.remove(&input.volume, &input.container);
+            return conflict("container name is already present");
+        }
+        Ok(false) => {}
+        Err(error) => {
+            app.active.remove(&input.volume, &input.container);
+            return operation_error(error);
+        }
     }
     drop(volume_guard);
     drop(lock);
@@ -1303,7 +1389,7 @@ async fn run_container(
         tracing::info!(container=%task_input.container, volume=%task_input.volume, "child execution started");
         let result = run_child(&task_app, &task_input, owner).await;
         let confirmed = task_app
-            .confirm_execution_cleanup(&task_input.container, owner)
+            .confirm_execution_cleanup(&task_input.container, owner, &task_input.volume)
             .await;
         if confirmed {
             task_app
@@ -1356,7 +1442,7 @@ async fn run_container(
             let volume = input.volume.clone();
             tokio::spawn(async move {
                 if cleanup_app
-                    .confirm_execution_cleanup(&container, owner)
+                    .confirm_execution_cleanup(&container, owner, &volume)
                     .await
                 {
                     cleanup_app.active.remove(&volume, &container);
@@ -1439,13 +1525,17 @@ async fn run_child(
         }
         Err(_) => {
             let _ = child.kill().await;
-            let _ = app.remove_container_for(&input.container, owner).await;
+            let _ = app
+                .remove_execution_container_for(&input.container, owner, &input.volume)
+                .await;
             stdout_task.abort();
             stderr_task.abort();
             return Err("child container execution timed out".into());
         }
     };
-    let _ = app.remove_container_for(&input.container, owner).await;
+    let _ = app
+        .remove_execution_container_for(&input.container, owner, &input.volume)
+        .await;
     let (stdout, stdout_truncated) = stdout_task
         .await
         .map_err(|error| format!("child stdout reader: {error}"))?
@@ -2471,7 +2561,7 @@ if [ "$1" = "inspect" ]; then
   echo inspect-start >> "$log"
   sleep 0.4
   echo inspect-end >> "$log"
-  printf '%s\n' '[{{"Config":{{"Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor"}}}}}}]'
+  printf '%s\n' '[{{"Config":{{"Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor","io.software-factory.workspace":"{volume}"}}}}}}]'
   exit 0
 fi
 if [ "$1" = "rm" ]; then
@@ -2540,7 +2630,7 @@ if [ "$1" = "run" ]; then
   exit 0
 fi
 if [ "$1" = "inspect" ]; then
-  printf '%s\n' '[{{"Config":{{"Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor"}}}}}}]'
+  printf '%s\n' '[{{"Config":{{"Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor","io.software-factory.workspace":"{volume}"}}}}}}]'
   exit 0
 fi
 if [ "$1" = "rm" ]; then
@@ -2589,7 +2679,7 @@ if [ "$1" = "run" ]; then
   exit 0
 fi
 if [ "$1" = "inspect" ]; then
-  printf '%s\n' '[{{"Config":{{"Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor"}}}}}}]'
+  printf '%s\n' '[{{"Config":{{"Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor","io.software-factory.workspace":"{volume}"}}}}}}]'
   exit 0
 fi
 if [ "$1" = "rm" ]; then
@@ -2678,7 +2768,7 @@ if [ "$1" = "run" ]; then
 fi
 if [ "$1" = "inspect" ]; then
   if [ ! -f "$state" ]; then exit 1; fi
-  printf '%s\n' '[{{"Config":{{"Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor"}}}}}}]'
+  printf '%s\n' '[{{"Config":{{"Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor","io.software-factory.workspace":"{volume}"}}}}}}]'
   exit 0
 fi
 if [ "$1" = "rm" ]; then
@@ -2781,7 +2871,7 @@ if [ "$1" = "run" ]; then
 fi
 if [ "$1" = "inspect" ]; then
   if [ ! -f "$state" ]; then exit 1; fi
-  printf '%s\n' '[{{"Config":{{"Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor"}}}}}}]'
+  printf '%s\n' '[{{"Config":{{"Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor","io.software-factory.workspace":"{volume}"}}}}}}]'
   exit 0
 fi
 if [ "$1" = "rm" ]; then
@@ -2821,6 +2911,193 @@ exit 1
         .await;
         assert_eq!(removed.status(), StatusCode::NO_CONTENT);
         let _ = std::fs::remove_file(&cleanup);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn duplicate_active_container_name_is_rejected_without_removal() {
+        let volume_a = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let volume_b = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let container = format!("factory-exec-{}", uuid::Uuid::new_v4());
+        let state = std::env::temp_dir().join(format!(
+            "factory-duplicate-active-state-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let runlog = std::env::temp_dir().join(format!(
+            "factory-duplicate-active-run-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let cleanup = std::env::temp_dir().join(format!(
+            "factory-duplicate-active-cleanup-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let script = format!(
+            r#"#!/bin/sh
+state="{state}"
+runlog="{runlog}"
+cleanup="{cleanup}"
+if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then
+  printf '[{{"Name":"%s","Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor"}}}}]\n' "$5"
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "rm" ]; then
+  exit 0
+fi
+if [ "$1" = "run" ]; then
+  workspace=""
+  for arg in "$@"; do
+    case "$arg" in
+      --label=io.software-factory.workspace=*) workspace="${{arg##*workspace=}}" ;;
+    esac
+  done
+  echo run-start >> "$runlog"
+  echo "$workspace" > "$state"
+  sleep 1.0
+  exit 0
+fi
+if [ "$1" = "inspect" ]; then
+  if [ ! -f "$state" ]; then exit 1; fi
+  workspace="$(cat "$state")"
+  printf '[{{"Config":{{"Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor","io.software-factory.workspace":"%s"}}}}}}]' "$workspace"
+  exit 0
+fi
+if [ "$1" = "rm" ]; then
+  rm -f "$state"
+  touch "$cleanup"
+  exit 0
+fi
+if [ "$1" = "container" ] && [ "$2" = "exists" ]; then
+  if [ -f "$state" ]; then exit 0; else exit 1; fi
+fi
+exit 1
+"#,
+            state = state.display(),
+            runlog = runlog.display(),
+            cleanup = cleanup.display()
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app(podman);
+        let first = tokio::spawn(run_container(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Supervisor),
+            Json(RunContainer {
+                volume: volume_a.clone(),
+                container: container.clone(),
+                image: "test/image:1".into(),
+                argv: vec!["/bin/true".into()],
+                timeout_secs: 10,
+            }),
+        ));
+        for _ in 0..100 {
+            if std::fs::read_to_string(&runlog)
+                .map(|log| log.lines().count() == 1)
+                .unwrap_or(false)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let duplicate = run_container(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Supervisor),
+            Json(RunContainer {
+                volume: volume_b,
+                container: container.clone(),
+                image: "test/image:1".into(),
+                argv: vec!["/bin/true".into()],
+                timeout_secs: 10,
+            }),
+        )
+        .await;
+        let duplicate_status = duplicate.status();
+        let duplicate_body = response_body(duplicate).await;
+        assert_eq!(
+            duplicate_status,
+            StatusCode::CONFLICT,
+            "duplicate body: {duplicate_body}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&runlog).unwrap().lines().count(),
+            1,
+            "duplicate execution started its own container"
+        );
+        assert_eq!(std::fs::read_to_string(&state).unwrap().trim(), volume_a);
+        assert!(!cleanup.exists());
+        assert_eq!(first.await.unwrap().status(), StatusCode::OK);
+        let removed = remove_volume(
+            State(app),
+            test_headers(ResourceOwner::Supervisor),
+            AxumPath(volume_a),
+        )
+        .await;
+        assert_eq!(removed.status(), StatusCode::NO_CONTENT);
+        let _ = std::fs::remove_file(&runlog);
+        let _ = std::fs::remove_file(&cleanup);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn duplicate_present_container_with_foreign_workspace_is_not_removed() {
+        let volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let foreign_volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let container = format!("factory-exec-{}", uuid::Uuid::new_v4());
+        let run_marker = std::env::temp_dir().join(format!(
+            "factory-duplicate-present-run-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let rm_marker = std::env::temp_dir().join(format!(
+            "factory-duplicate-present-rm-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let script = format!(
+            r#"#!/bin/sh
+if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then
+  printf '%s\n' '[{{"Name":"{volume}","Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor"}}}}]'
+  exit 0
+fi
+if [ "$1" = "run" ]; then
+  touch "{run_marker}"
+  exit 0
+fi
+if [ "$1" = "inspect" ]; then
+  printf '%s\n' '[{{"Config":{{"Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"supervisor","io.software-factory.workspace":"{foreign_volume}"}}}}}}]'
+  exit 0
+fi
+if [ "$1" = "rm" ]; then
+  touch "{rm_marker}"
+  exit 0
+fi
+if [ "$1" = "container" ] && [ "$2" = "exists" ]; then
+  exit 0
+fi
+exit 1
+"#,
+            run_marker = run_marker.display(),
+            rm_marker = rm_marker.display()
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app(podman);
+        let response = run_container(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Supervisor),
+            Json(RunContainer {
+                volume: volume.clone(),
+                container: container.clone(),
+                image: "test/image:1".into(),
+                argv: vec!["/bin/true".into()],
+                timeout_secs: 10,
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(!run_marker.exists());
+        assert!(!rm_marker.exists());
+
+        // Defense in depth: even if the preflight is bypassed, execution cleanup
+        // refuses a container whose workspace label is not this volume.
+        assert!(
+            !app.confirm_execution_cleanup(&container, ResourceOwner::Supervisor, &volume)
+                .await
+        );
+        assert!(!rm_marker.exists());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
