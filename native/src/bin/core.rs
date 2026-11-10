@@ -10972,6 +10972,12 @@ async fn plan_agentic_request(
             "informational requests do not compile a Planner WorkGraph",
         );
     }
+    if context.assurance() >= factory_native::agentic::Assurance::Critical {
+        return agentic_conflict(
+            "REVIEWER_DIVERSITY_REQUIRED",
+            "critical assurance requires two independent reviewer provider/model pairs; this deployment has one reviewer identity and fails closed",
+        );
+    }
     if app.db.agentic_spec(&record.id).await.is_ok() {
         return agentic_conflict(
             "PLAN_ALREADY_SPECIFIED",
@@ -11720,6 +11726,12 @@ async fn deterministic_participant_plan(
         .execution_profile_revision(&record.profile_id, &record.profile_revision_id)
         .await
         .ok()?;
+    if context.assurance() >= factory_native::agentic::Assurance::Critical {
+        // Defense in depth: the plan route already fails closed, and this path
+        // must never fabricate a multi-reviewer plan that the deployment cannot
+        // staff.
+        return None;
+    }
     let content = profile.content.v2()?;
     let mut plan = factory_native::agentic::participant_plan_for_graph(
         context.triage.route,
