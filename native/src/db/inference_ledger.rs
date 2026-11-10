@@ -19,6 +19,7 @@ use uuid::Uuid;
 use crate::execution_policy::{
     EnvelopeState, InferenceLedgerError, InferenceReservation, InferenceRole, InferenceSettlement,
     ReservationState, ReserveInferenceInput, SpendingStatus, UsdMicros,
+    check_model_call_cost_ceiling,
 };
 use crate::inference_ledger::{
     CampaignEnvelopeBindingInput, CampaignInferenceRequirement, EnvelopeSnapshot,
@@ -782,6 +783,11 @@ pub(crate) async fn reserve_inference_in_tx(
     now_ms: i64,
 ) -> Result<InferenceReservationRecord, Error> {
     validate_reserve_input(input).map_err(ledger_error)?;
+    // A frozen quote can predate the current technical ceiling (or come from
+    // corrupt legacy provider settings). Refuse before reading or writing any
+    // durable row so an oversized bound can never enter the ledger.
+    check_model_call_cost_ceiling(input.upper_bound_micros.get())
+        .map_err(|error| Error::Invalid(error.message()))?;
     let envelope = load_envelope(connection, &input.envelope_id)
         .await?
         .ok_or(Error::NotFound)?;
@@ -4146,6 +4152,47 @@ mod tests {
             .await,
             Err(Error::Unavailable(_))
         ));
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn quote_above_the_technical_ceiling_is_refused_without_a_reservation() {
+        let path = temp_path("factory-ledger-quote-ceiling");
+        let db = Database::open(&path).await.unwrap();
+        seed_project(&db, "project").await;
+        let (envelope_id, _) = create_envelope(&db, "request-ceiling", 10_000_000_000_000).await;
+        // A legacy or corrupt provider setting can freeze a bound above the
+        // shared technical ceiling. It must be refused before a ledger row is
+        // written, not merely when the envelope runs out of money.
+        let quote = test_quote(
+            &db,
+            crate::execution_policy::SAFE_MAX_MODEL_CALL_COST_MICROS + 2,
+        )
+        .await;
+        let input = reserve_input(
+            &quote,
+            &envelope_id,
+            "operation-ceiling",
+            "idempotency-ceiling",
+            &"a".repeat(64),
+            quote.upper_bound_micros.get(),
+            InferenceRole::Lead,
+            future_ms(60_000),
+        );
+        assert!(matches!(
+            db.reserve_inference(&input).await,
+            Err(Error::Invalid(_))
+        ));
+        let (reservations,): (i64,) =
+            sqlx::query_as::query_as("SELECT COUNT(*) FROM inference_reservations")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            reservations, 0,
+            "an oversized frozen quote must not create a ledger reservation"
+        );
         db.close().await;
         let _ = std::fs::remove_file(path);
     }

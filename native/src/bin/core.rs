@@ -7421,32 +7421,37 @@ async fn build_overview(app: &App) -> Result<serde_json::Value, Error> {
         .iter()
         .filter(|session| !session.usage_known)
         .count();
-    let unmeasured_bound_cost: u64 = sessions
-        .iter()
-        .filter(|session| !session.usage_known)
-        .map(|session| session.cost_micros)
-        .sum::<u64>()
-        .saturating_add(unresolved_model_bound);
-    let measured_session_cost: u64 = sessions
-        .iter()
-        .filter(|session| session.usage_known)
-        .map(|session| session.cost_micros)
-        .sum();
-    let measured_session_tokens: u64 = sessions
-        .iter()
-        .filter(|session| session.usage_known)
-        .map(|session| session.total_tokens)
-        .sum();
-    let measured_model_cost: u64 = model_calls
-        .iter()
-        .filter(|call| call.usage_known)
-        .map(|call| call.cost_micros)
-        .sum();
-    let measured_model_tokens: u64 = model_calls
-        .iter()
-        .filter(|call| call.usage_known)
-        .map(|call| call.total_tokens)
-        .sum();
+    let unmeasured_bound_cost = factory_native::execution_policy::total_model_call_units(
+        sessions
+            .iter()
+            .filter(|session| !session.usage_known)
+            .map(|session| session.cost_micros)
+            .chain(std::iter::once(unresolved_model_bound)),
+    );
+    let measured_session_cost = factory_native::execution_policy::total_model_call_units(
+        sessions
+            .iter()
+            .filter(|session| session.usage_known)
+            .map(|session| session.cost_micros),
+    );
+    let measured_session_tokens = factory_native::execution_policy::total_model_call_units(
+        sessions
+            .iter()
+            .filter(|session| session.usage_known)
+            .map(|session| session.total_tokens),
+    );
+    let measured_model_cost = factory_native::execution_policy::total_model_call_units(
+        model_calls
+            .iter()
+            .filter(|call| call.usage_known)
+            .map(|call| call.cost_micros),
+    );
+    let measured_model_tokens = factory_native::execution_policy::total_model_call_units(
+        model_calls
+            .iter()
+            .filter(|call| call.usage_known)
+            .map(|call| call.total_tokens),
+    );
     let recent_events: Vec<_> = events.iter().rev().take(12).cloned().collect();
     let recent_decisions: Vec<_> = decisions.iter().take(5).cloned().collect();
 

@@ -252,9 +252,11 @@ Every long-lived task has:
   ample headroom for the number of rows a sum may include. Do not persist
   `i64::MAX`-scale sentinels: a handful of such rows overflows SQLite `SUM()`.
   Aggregate legacy ledgers with per-row checked `u128` arithmetic, and treat a
-  total beyond `u64` as exhausted rather than wrapping. A technical ceiling is
-  not a productivity or spending cap; a lower policy budget remains
-  authoritative and is never raised by the ceiling.
+  total beyond `u64` as exhausted rather than wrapping. Consume the rows as a
+  stream (`fetch`/`try_next`) so authorization and health queries stay bounded
+  regardless of ledger history; do not collect a whole scope merely to sum it.
+  A technical ceiling is not a productivity or spending cap; a lower policy
+  budget remains authoritative and is never raised by the ceiling.
 - Test fresh migrations, repeated startup, legacy adoption, rollback under injected failure, referential integrity, concurrent claims, fencing, restart recovery and non-blocking async behavior.
 
 ### 11.4 Error classification
