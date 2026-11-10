@@ -5,9 +5,9 @@ acceptance, certification or an isolation claim. Core remains authoritative.
 
 - Branch: `factory/quality-wp7-openspec-compose`
 - Baseline: `bcb8b5b`
-- Implementation commit: `06d54e2` (includes `85c2bae` and `0377ced`; this docs
-  commit records that exact code candidate; the code is unchanged by the docs
-  commit).
+- Implementation commit: `73bfb76` (includes `85c2bae`, `0377ced`, `06d54e2`;
+  this docs commit records that exact code candidate; the code is unchanged by
+  the docs commit).
 - Scope: an operator-authenticated Core read projection, a profile-gated
   Compose validation job using the pinned OpenSpec 1.16.1 image, a bounded
   container-side validation script, deterministic contract tests and static
@@ -215,6 +215,11 @@ from this source.
   by the paid model planning pipeline. The endpoint and read model are covered
   by Rust contracts, and the real Compose run used the Core-rendered fixture via
   a temporary Core HTTP fixture.
+- `NOT_TESTED`: project working-tree file drift (an edited
+  `openspec/changes/<id>` copy on disk) is not read by Core. Drift detection
+  covers the stored artifact JSON versus the durable projection/manifest hashes
+  and the archive binding; repository-file drift remains a future projection
+  check.
 - `NOT_TESTED`: the Docker Compose provider path and Windows. The run above used
   rootless Podman with `podman-compose` 1.6.0.
 - `NOT_TESTED`: base-image digest pinning. The image is tag-pinned.
