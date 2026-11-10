@@ -18,18 +18,23 @@ use std::{
 };
 
 use axum::{
-    Router,
+    Json, Router,
     extract::State,
-    http::{HeaderMap, HeaderValue, header::CONTENT_TYPE},
+    http::{HeaderMap, HeaderValue, StatusCode, header::CONTENT_TYPE},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
 };
 use bytes::Bytes;
 use factory_native::{
-    provider_patch::{ProviderAction, extract_action_text},
+    db::ProviderTerminal,
+    provider_lifecycle::{
+        post_provider_terminal, recover_unresolved_provider_sessions, release_provider_turn,
+        settle_provider_turn,
+    },
+    provider_patch::{ProviderAction, ProviderUsage, extract_action_text},
     provider_reliability::{
         MAX_STRUCTURED_REPAIRS, SseReconnectPolicy, StructuredOutputError, StructuredOutputRepair,
-        TurnReservation, decode_structured_output,
+        TerminalCompletion, TurnReservation, candidate_allowed, decode_structured_output,
     },
     provider_session::{
         PermissionDecision, ProviderEvent, ProviderKind, ProviderSession, SessionError,
@@ -336,6 +341,59 @@ async fn duplicate_event_ids_do_not_repeat_effects() {
 }
 
 #[tokio::test]
+async fn nonconsecutive_duplicate_event_ids_are_not_reapplied() {
+    let (connector, _) = ScriptedConnector::new(vec![vec![
+        chunk(frame("e1", "message.updated", SESSION)),
+        chunk(frame("e2", "message.part.updated", SESSION)),
+        chunk(frame("e1", "message.updated", SESSION)),
+        chunk(frame("e3", "session.idle", SESSION)),
+    ]]);
+    let mut waiter = ReconnectWaiter::new(connector, policy(2));
+    let mut observations = Observations::default();
+    waiter
+        .wait(&VirtualClock::default(), |event| {
+            classify(event, &mut observations)
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        observations.effects, 2,
+        "e1, e2, e1 must apply e1 only once"
+    );
+    assert_eq!(observations.candidates, 1);
+}
+
+#[tokio::test]
+async fn reconnect_exhaustion_after_checks_pass_yields_no_candidate() {
+    let (connector, _) = ScriptedConnector::new(vec![
+        vec![
+            chunk(frame("e1", "message.part.updated", SESSION)),
+            Err(StreamTransportError::new("cut after complete checks")),
+        ],
+        vec![
+            chunk(frame("e1", "message.part.updated", SESSION)),
+            Err(StreamTransportError::new("cut after complete checks")),
+        ],
+    ]);
+    let mut waiter = ReconnectWaiter::new(connector, policy(1));
+    let mut observations = Observations::default();
+    let error = waiter
+        .wait(&VirtualClock::default(), |event| {
+            classify(event, &mut observations)
+        })
+        .await
+        .expect_err("reconnect exhaustion is not terminal completion");
+    assert_eq!(
+        error,
+        ProviderStreamError::ReconnectExhausted { attempts: 1 }
+    );
+    // The Worker may have applied writes and passed every frozen check before
+    // the stream cut, but a missing terminal still forbids a candidate.
+    assert!(!candidate_allowed(TerminalCompletion::Missing, true, true));
+    assert_eq!(observations.candidates, 0);
+}
+
+#[tokio::test]
 async fn missing_terminal_event_returns_no_candidate() {
     let (connector, cursors) = ScriptedConnector::new(vec![
         vec![
@@ -517,6 +575,189 @@ fn provider_session_reconnect_and_cleanup_are_exactly_once() {
         session.decide_permission("call", PermissionDecision::Allow),
         Err(SessionError::NoPermission)
     );
+}
+
+#[derive(Clone, Default)]
+struct CoreFixture {
+    calls: Arc<Mutex<Vec<(String, serde_json::Value)>>>,
+}
+
+impl CoreFixture {
+    fn record(&self, route: &str, body: serde_json::Value) {
+        self.calls.lock().unwrap().push((route.to_string(), body));
+    }
+}
+
+async fn fixture_settle(
+    State(state): State<CoreFixture>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    state.record("settle", body);
+    Json(json!({"usage": {"reservation_id": "reservation-http"}})).into_response()
+}
+
+async fn fixture_release(
+    State(state): State<CoreFixture>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    state.record("release", body);
+    StatusCode::NO_CONTENT.into_response()
+}
+
+async fn fixture_terminal(
+    State(state): State<CoreFixture>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    state.record("terminal", body);
+    Json(json!({"state": "FAILED"})).into_response()
+}
+
+async fn fixture_unresolved(State(state): State<CoreFixture>) -> Response {
+    state.record("unresolved", json!({"worker_id": "worker"}));
+    Json(json!([{
+        "session_record_id": "session-record",
+        "generation": 7,
+        "provider_session_id": "ses_orphan",
+        "provider_directory": "/sessions/01234567-89ab-cdef-0123-456789abcdef"
+    }]))
+    .into_response()
+}
+
+async fn fixture_cleanup(
+    State(state): State<CoreFixture>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    state.record("cleanup", body);
+    Json(json!({"state": "CLEANED"})).into_response()
+}
+
+#[tokio::test]
+async fn production_worker_http_lifecycle_settles_releases_and_reconciles_cleanup() {
+    let state = CoreFixture::default();
+    let app = Router::new()
+        .route("/worker/provider_turn_settle", post(fixture_settle))
+        .route("/worker/provider_turn_release", post(fixture_release))
+        .route("/worker/provider_terminal", post(fixture_terminal))
+        .route("/worker/provider_unresolved", get(fixture_unresolved))
+        .route("/worker/provider_cleanup", post(fixture_cleanup))
+        .with_state(state.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let core = reqwest::Url::parse(&format!("http://{address}")).unwrap();
+    let client = reqwest::Client::new();
+    let token = "worker-session-token-0123456789abcdef";
+
+    let usage = ProviderUsage {
+        input_tokens: 10,
+        output_tokens: 20,
+        total_tokens: 30,
+        cost_micros: 40,
+        known: true,
+    };
+    settle_provider_turn(&client, &core, token, "worker", "reservation-http", &usage)
+        .await
+        .unwrap();
+    release_provider_turn(
+        &client,
+        &core,
+        token,
+        "reservation-http",
+        "session-record",
+        "worker",
+        7,
+    )
+    .await
+    .unwrap();
+    let terminal = ProviderTerminal {
+        session_record_id: "session-record".into(),
+        worker_id: "worker".into(),
+        generation: 7,
+        state: "FAILED".into(),
+        provider_session_id: "ses_1".into(),
+        turn_id: "turn-1".into(),
+        input_tokens: 10,
+        output_tokens: 20,
+        total_tokens: 30,
+        cost_micros: 40,
+        usage_known: true,
+        cleanup_receipt: "container_removed_verified_absent".into(),
+        error: "fixture terminal".into(),
+    };
+    post_provider_terminal(&client, &core, token, &terminal)
+        .await
+        .unwrap();
+    recover_unresolved_provider_sessions(&client, &core, token, "worker", |session| {
+        assert_eq!(session.session_record_id, "session-record");
+        assert_eq!(session.generation, 7);
+        async { Ok("container_removed_verified_absent".to_string()) }
+    })
+    .await
+    .unwrap();
+
+    let calls = state.calls.lock().unwrap().clone();
+    let routes = calls
+        .iter()
+        .map(|(route, _)| route.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        routes,
+        ["settle", "release", "terminal", "unresolved", "cleanup"]
+    );
+    assert_eq!(calls[0].1["usage"]["reservation_id"], "reservation-http");
+    assert_eq!(calls[0].1["usage"]["worker_id"], "worker");
+    assert_eq!(calls[0].1["usage"]["input_tokens"], 10);
+    assert_eq!(calls[0].1["usage"]["usage_known"], true);
+    assert_eq!(calls[1].1["reservation_id"], "reservation-http");
+    assert_eq!(calls[1].1["session_record_id"], "session-record");
+    assert_eq!(calls[1].1["generation"], 7);
+    assert_eq!(
+        calls[2].1["cleanup_receipt"],
+        "container_removed_verified_absent"
+    );
+    assert_eq!(calls[4].1["session_record_id"], "session-record");
+    assert_eq!(calls[4].1["generation"], 7);
+    assert_eq!(
+        calls[4].1["cleanup_receipt"],
+        "container_removed_verified_absent"
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn failed_cleanup_receipt_never_claims_an_orphan_is_cleaned() {
+    let state = CoreFixture::default();
+    let app = Router::new()
+        .route("/worker/provider_unresolved", get(fixture_unresolved))
+        .route("/worker/provider_cleanup", post(fixture_cleanup))
+        .with_state(state.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let core = reqwest::Url::parse(&format!("http://{address}")).unwrap();
+    let error = recover_unresolved_provider_sessions(
+        &reqwest::Client::new(),
+        &core,
+        "worker-session-token-0123456789abcdef",
+        "worker",
+        |_| async { Err("provider container survived reconciliation".to_string()) },
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("container survived"));
+    let routes = state
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(route, _)| route.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(routes, ["unresolved"]);
+    server.abort();
 }
 
 #[tokio::test]

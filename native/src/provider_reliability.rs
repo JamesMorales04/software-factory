@@ -5,12 +5,17 @@
 //! once, and limit schema-repair loops. A model response is still decoded by
 //! the typed decoder; this module never accepts malformed output.
 
+use std::collections::VecDeque;
 use std::time::Duration;
 
 pub const MAX_SSE_RECONNECT_ATTEMPTS: u32 = 8;
 pub const DEFAULT_RECONNECT_BASE_MS: u64 = 250;
 pub const DEFAULT_RECONNECT_MAX_MS: u64 = 30_000;
 pub const MAX_STRUCTURED_REPAIRS: u8 = 2;
+/// Bounded replay window. Event ids older than this many unique events may be
+/// accepted again; the window bounds memory while catching normal SSE replay
+/// duplication across reconnects.
+pub const MAX_TRACKED_EVENT_IDS: usize = 4_096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SseReconnectPolicy {
@@ -64,6 +69,7 @@ impl SseReconnectPolicy {
 pub struct SseCursor {
     pub last_event_id: Option<String>,
     pub reconnects: u32,
+    seen_event_ids: VecDeque<String>,
 }
 
 impl SseCursor {
@@ -71,6 +77,7 @@ impl SseCursor {
         Self {
             last_event_id: None,
             reconnects: 0,
+            seen_event_ids: VecDeque::new(),
         }
     }
 
@@ -81,8 +88,12 @@ impl SseCursor {
         if event_id.trim().is_empty() || event_id.len() > 512 {
             return Err("SSE event id is empty or unbounded".into());
         }
-        if self.last_event_id.as_deref() == Some(event_id) {
+        if self.seen_event_ids.iter().any(|seen| seen == event_id) {
             return Ok(false);
+        }
+        self.seen_event_ids.push_back(event_id.to_string());
+        while self.seen_event_ids.len() > MAX_TRACKED_EVENT_IDS {
+            self.seen_event_ids.pop_front();
         }
         self.last_event_id = Some(event_id.to_string());
         Ok(true)
@@ -146,6 +157,30 @@ impl TurnReservation {
     pub fn is_terminal(&self) -> bool {
         self.settled || self.released
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalCompletion {
+    /// Provider terminal evidence reconciled to a completed assistant message.
+    Completed,
+    /// Explicit provider failure, cancellation or protocol error.
+    Failed,
+    /// Stream cut/reconnect exhaustion or an unreconciled turn.
+    Missing,
+}
+
+/// Candidate gate for provider-produced work.
+///
+/// A candidate requires an independently reconciled completed terminal, at
+/// least one applied write and every frozen check passed. A reconnect, an HTTP
+/// 200, a stream opening or a turn error after earlier checks passed is not
+/// completion evidence.
+pub fn candidate_allowed(
+    terminal: TerminalCompletion,
+    wrote: bool,
+    all_checks_passed: bool,
+) -> bool {
+    terminal == TerminalCompletion::Completed && wrote && all_checks_passed
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -266,11 +301,16 @@ mod tests {
     }
 
     #[test]
-    fn cursor_deduplicates_event_ids() {
+    fn cursor_deduplicates_nonconsecutive_event_ids_within_a_bounded_window() {
         let mut cursor = SseCursor::new();
         assert!(cursor.observe(Some("event-1")).unwrap());
-        assert!(!cursor.observe(Some("event-1")).unwrap());
         assert!(cursor.observe(Some("event-2")).unwrap());
+        assert!(
+            !cursor.observe(Some("event-1")).unwrap(),
+            "a nonconsecutive replay must be suppressed"
+        );
+        assert!(cursor.observe(Some("event-3")).unwrap());
+        assert_eq!(cursor.last_event_id.as_deref(), Some("event-3"));
         assert!(cursor.observe(Some("")).is_err());
     }
 
@@ -331,6 +371,19 @@ mod tests {
     }
 
     #[test]
+    fn cursor_window_is_bounded() {
+        let mut cursor = SseCursor::new();
+        for index in 0..MAX_TRACKED_EVENT_IDS + 8 {
+            cursor.observe(Some(&format!("event-{index}"))).unwrap();
+        }
+        assert_eq!(cursor.seen_event_ids.len(), MAX_TRACKED_EVENT_IDS);
+        assert_eq!(
+            cursor.last_event_id,
+            Some(format!("event-{}", MAX_TRACKED_EVENT_IDS + 7))
+        );
+    }
+
+    #[test]
     fn reconnect_budget_resets_without_losing_the_replay_cursor() {
         let policy = SseReconnectPolicy::default();
         let mut cursor = SseCursor::new();
@@ -343,5 +396,22 @@ mod tests {
         assert_eq!(cursor.reconnects, 0);
         assert_eq!(cursor.last_event_id.as_deref(), Some("event-7"));
         cursor.reconnect(&policy).unwrap();
+    }
+
+    #[test]
+    fn candidate_requires_completed_terminal_and_checks() {
+        assert!(candidate_allowed(TerminalCompletion::Completed, true, true));
+        assert!(!candidate_allowed(TerminalCompletion::Missing, true, true));
+        assert!(!candidate_allowed(TerminalCompletion::Failed, true, true));
+        assert!(!candidate_allowed(
+            TerminalCompletion::Completed,
+            false,
+            true
+        ));
+        assert!(!candidate_allowed(
+            TerminalCompletion::Completed,
+            true,
+            false
+        ));
     }
 }

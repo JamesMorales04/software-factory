@@ -41,6 +41,7 @@ pub mod protocol;
 pub mod provider_adapter;
 pub mod provider_catalog;
 pub mod provider_egress;
+pub mod provider_lifecycle;
 pub mod provider_patch;
 pub mod provider_reliability;
 pub mod provider_sandbox;
