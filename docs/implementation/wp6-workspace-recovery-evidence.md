@@ -15,6 +15,7 @@ end-to-end coverage.
 - Fourth review-repair implementation: `d6c53cb`
 - Fifth review-repair implementation: `cfaf20f`
 - Sixth review-repair implementation: `891f23e`
+- Seventh review-repair implementation: `c5c673c`
 - Worktree: `/home/james/Escritorio/Development/sf-quality-wave12/wp6`
 
 ## Scope
@@ -92,6 +93,14 @@ valid issues. All were repaired:
     kept, the volume stays blocked and the request returns `502`. Tests cover
     cancellation during execution followed by a volume mutation, and normal
     completion releasing the marker.
+12. **Duplicate container-name protection.** The seventh review found that a
+    failed duplicate name could make cleanup remove another same-owner
+    execution's container. The registry now reserves the container name
+    atomically with the volume, rejects names that are already active, and
+    rejects names already present in Podman without removal. Execution cleanup
+    verifies the container workspace label against the expected volume before
+    removing it. Tests cover duplicate name while active, duplicate name with a
+    foreign workspace, and the cleanup label check.
 
 ## Per-owner credential model
 
@@ -168,10 +177,12 @@ Authorization rules:
    and intentionally serialize. Execution takes the volume lock only to verify
    ownership and register an active-execution entry, then releases it for the
    run; volume delete/reset/import/export returns `409` while that registry entry
-   exists. The execution lifecycle runs as a detached task that survives client
-   cancellation; it removes the container and verifies `container exists` is
-   absent before removing the marker. An unconfirmed cleanup keeps the marker and
-   returns `502`, so the volume stays blocked. Cleanup takes the container lock after the volume lock is released, so
+   exists. The registry also reserves the container name; a duplicate active name
+   or a name already present in Podman is rejected without removal. The execution
+   lifecycle runs as a detached task that survives client cancellation; cleanup
+   removes the container only when its owner and workspace labels match, verifies
+   `container exists` is absent, and only then removes the marker. An unconfirmed
+   cleanup keeps the marker and returns `502`, so the volume stays blocked. Cleanup takes the container lock after the volume lock is released, so
    volume -> container ordering is preserved and an overflowed volume/container
    pair cannot self-deadlock. Concurrent create for different owners cannot
    return success for a volume owned by the other caller; concurrent
@@ -200,7 +211,7 @@ cargo test -p factory-native --lib
 747 passed; 0 failed; 4 ignored
 
 cargo test -p factory-native --bin factory-runtime-broker
-25 passed; 0 failed
+27 passed; 0 failed
 
 cargo clippy -p factory-native --all-targets --all-features -- -D warnings
 clean
@@ -257,6 +268,12 @@ Concurrency tests (stateful fake Podman with a shared log):
   detached task removes the container and confirms absence, then `204`.
 - `normal_execution_releases_the_volume_marker_after_cleanup` — normal completion
   removes the marker only after cleanup and permits volume deletion.
+- `duplicate_active_container_name_is_rejected_without_removal` — a second
+  execution on another volume using an active container name gets `409`; no
+  second run starts and the first container state remains.
+- `duplicate_present_container_with_foreign_workspace_is_not_removed` — a
+  pre-existing container name is rejected without `rm`; direct cleanup also
+  refuses the foreign workspace label.
 - `long_execution_does_not_block_an_unrelated_resource` — a create for another
   volume within exact-table capacity completes while an 800 ms execution is
   active.
@@ -316,6 +333,8 @@ exit 0; 411 lines rendered
 | Volume mutation during active execution | `active_execution_blocks_volume_mutation_without_holding_the_lock` | Delete/reset `409`; run continues |
 | Client cancellation during execution | `cancelled_execution_keeps_volume_blocked_until_cleanup_is_confirmed` | Volume stays `409` until detached cleanup confirms absence, then `204` |
 | Normal execution completion | `normal_execution_releases_the_volume_marker_after_cleanup` | Marker released after confirmed cleanup; delete `204` |
+| Duplicate active container name | `duplicate_active_container_name_is_rejected_without_removal` | Second run `409`; first container/volume state preserved |
+| Duplicate present name / foreign workspace | `duplicate_present_container_with_foreign_workspace_is_not_removed` | Name rejected without `rm`; cleanup label check refuses foreign workspace |
 | Long execution vs unrelated resource | `long_execution_does_not_block_an_unrelated_resource` | Unrelated create within exact-table capacity completes while the execution is active; overflow names intentionally serialize |
 | Inventory/inspect output overflow | `read_capped_stops_at_the_limit`, `inspect_output_is_bounded_before_parsing` | Stops at bound; process/response rejected |
 | Inventory unavailable or unsupported | `reconcile_handles_unsupported_and_failed_inventory` | No deletion; status/error reported |
@@ -344,8 +363,11 @@ exit 0; 411 lines rendered
   blocks volume delete/reset/import/export through the active-execution registry.
   The execution lifecycle is detached from the request; cleanup removes the
   container, confirms `container exists` is absent, and only then releases the
-  marker. Unconfirmed cleanup keeps the volume blocked. Cleanup takes only the
-  container lock, so an overflowed volume/container pair cannot self-deadlock.
+  marker. Container names are reserved atomically with the volume, pre-existing
+  names are rejected without removal, and cleanup requires both owner and
+  workspace labels to match. Unconfirmed cleanup keeps the volume blocked.
+  Cleanup takes only the container lock, so an overflowed volume/container pair
+  cannot self-deadlock.
 - Legacy managed resources without an owner label are never deleted. They require
   explicit manual cleanup; this is intentional (`never remove unlabelled`).
 - Provider containers are owned by Worker recovery, not by Supervisor
