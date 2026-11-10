@@ -5,6 +5,7 @@ use sqlx_sqlite::SqliteConnection;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
+use super::lifecycle::CAMPAIGN_EFFECTIVE_STATUS_SQL;
 use crate::project_import::ProjectDiscovery;
 
 /// Explicit source metadata captured when a Project is registered. The source
@@ -25,8 +26,22 @@ pub struct ProjectCampaignSummary {
     pub id: String,
     pub action_id: String,
     pub objective: String,
+    /// Raw durable Campaign state, retained for history.
     pub status: String,
+    /// Operator-facing state: terminal Campaign status, active Run state or the
+    /// latest immutable Gate outcome.
+    pub effective_status: String,
     pub created_at: String,
+}
+
+impl ProjectCampaignSummary {
+    /// Terminal Campaign and Gate states are not active work.
+    pub fn is_active(&self) -> bool {
+        !matches!(
+            self.effective_status.as_str(),
+            "CANCELLED" | "FAILED" | "COMPLETED" | "ACCEPTED" | "REJECTED"
+        )
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -535,23 +550,29 @@ impl Database {
         &self,
         project_id: &str,
     ) -> Result<Vec<ProjectCampaignSummary>, Error> {
-        let rows: Vec<(String, String, String, String, String)> = sqlx::query_as::query_as(
-            "SELECT c.id,c.action_id,a.objective,c.status,c.created_at
+        let sql = format!(
+            "SELECT c.id,c.action_id,a.objective,c.status,c.created_at,
+                    {CAMPAIGN_EFFECTIVE_STATUS_SQL}
              FROM campaigns c JOIN actions a ON a.id=c.action_id
-             WHERE a.project_id=?1 ORDER BY c.created_at DESC, c.id",
-        )
-        .bind(project_id)
-        .fetch_all(&self.pool)
-        .await?;
+             WHERE a.project_id=?1 ORDER BY c.created_at DESC, c.id"
+        );
+        let rows: Vec<(String, String, String, String, String, String)> =
+            sqlx::query_as::query_as(&sql)
+                .bind(project_id)
+                .fetch_all(&self.pool)
+                .await?;
         Ok(rows
             .into_iter()
             .map(
-                |(id, action_id, objective, status, created_at)| ProjectCampaignSummary {
-                    id,
-                    action_id,
-                    objective,
-                    status,
-                    created_at,
+                |(id, action_id, objective, status, created_at, effective_status)| {
+                    ProjectCampaignSummary {
+                        id,
+                        action_id,
+                        objective,
+                        status,
+                        effective_status,
+                        created_at,
+                    }
                 },
             )
             .collect())
