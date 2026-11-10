@@ -1801,7 +1801,7 @@ async fn gate_rejects_a_second_receipt_from_the_same_principal() {
 }
 
 #[tokio::test]
-async fn gate_waits_for_role_coverage_even_when_the_count_is_met() {
+async fn gate_blocks_a_roleless_legacy_receipt_when_required_roles_exist() {
     use crate::planning::ReviewerRole;
     let fixture = candidate_fixture().await;
     set_reviewer_requirement(
@@ -1824,10 +1824,10 @@ async fn gate_waits_for_role_coverage_even_when_the_count_is_met() {
         )
         .await
         .unwrap();
-    // Two distinct principals satisfy the count, but the second is a legacy
-    // receipt with no reviewer role. Code Quality is still uncovered, so the
-    // Gate must wait. The direct insert simulates a historical row that
-    // predates role ingestion validation.
+    // The first receipt waits for the second required role. The direct insert
+    // simulates a historical roleless receipt that predates role ingestion
+    // validation; once the required roles also pass, that legacy row must block
+    // the Gate rather than remain in an accepted set.
     let functional = quality_reviewer_receipt(
         &fixture,
         "reviewer-role-gap-a",
@@ -1869,7 +1869,15 @@ async fn gate_waits_for_role_coverage_even_when_the_count_is_met() {
         .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &final_receipt)
         .await
         .unwrap();
-    assert_eq!(ingested.gate.unwrap().outcome, GateOutcome::Accepted);
+    let gate = ingested
+        .gate
+        .expect("a roleless receipt must decide the Gate");
+    assert_eq!(gate.outcome, GateOutcome::Blocked);
+    assert!(
+        gate.reasons
+            .iter()
+            .any(|reason| reason.contains("has no role while the frozen plan requires"))
+    );
     fixture.db.close().await;
     let _ = std::fs::remove_file(fixture.root.join("factory.sqlite"));
 }

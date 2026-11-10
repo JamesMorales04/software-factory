@@ -1536,11 +1536,17 @@ async fn decide_gate(
     let mut covered_roles = std::collections::BTreeSet::new();
     let mut assignment_mismatch = false;
     let mut unrequired_role = false;
+    let mut roleless_receipt = false;
     for receipt in &reviewer_records {
         // The same principal never counts twice, even if historical or
         // malformed rows exist.
         principals.insert(receipt.principal_id.as_str());
         let Some(role) = receipt.reviewer_role else {
+            // A legacy receipt with no role cannot be silently included once
+            // the frozen plan requires role coverage.
+            if !requirement.roles.is_empty() {
+                roleless_receipt = true;
+            }
             continue;
         };
         if !requirement.roles.contains(&role) {
@@ -1593,6 +1599,13 @@ async fn decide_gate(
         decision = crate::quality::GateDecision {
             outcome: GateOutcome::Blocked,
             reasons: vec!["reviewer receipt role is not required by the frozen plan".into()],
+        };
+    } else if !reviewer_records.is_empty() && roleless_receipt {
+        decision = crate::quality::GateDecision {
+            outcome: GateOutcome::Blocked,
+            reasons: vec![
+                "reviewer receipt has no role while the frozen plan requires role coverage".into(),
+            ],
         };
     } else if !reviewer_records.is_empty() && assignment_mismatch {
         decision = crate::quality::GateDecision {

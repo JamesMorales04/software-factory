@@ -27,7 +27,7 @@ what remains unverified. It is not acceptance evidence and does not claim
 | WP6 | Existing implementation verified | Content-addressed workspace snapshots, generated-target exclusion, symlink/unsafe-archive rejection, cleanup paths | Startup orphan-volume reconciliation and a dedicated chaos run |
 | WP7 | Implemented | Canonical `## ADDED Requirements` / `### Requirement:` / `#### Scenario:` and numeric task IDs; pinned OpenSpec CLI `1.16.1` validator and container image | Compose validation job against a Core-rendered change |
 | WP8 | Implemented | Deterministic Finding Router, durable OPEN dispositions, Gate blocks missing/OPEN findings even on reviewer PASS, authenticated resolve/refute, durable owner-decision validation, immutable closed dispositions | Browser acceptance of finding actions |
-| WP9 | Implemented for this slice | Role definitions, bounded role prompts, identity-based independence validation, six-service Compose reviewer fleet with per-identity tokens/principals/roles, authenticated role binding, participant-plan role preservation, exact frozen role-to-principal assignment set, fail-closed Gate when assignments are missing/unexpected or a receipt claims an unrequired role, and per-role receipt status in Director | Real two-reviewer Campaign/E2E with the fixture provider; independent acceptance |
+| WP9 | Implemented for this slice | Role definitions, bounded role prompts, identity-based independence validation, six-service Compose reviewer fleet with per-identity tokens/principals/roles, authenticated role binding, participant-plan role preservation, exact frozen role-to-principal assignment set, fail-closed Gate when assignments are missing/unexpected or a receipt is roleless/unrequired, and per-role receipt status in Director | Real two-reviewer Campaign/E2E with the fixture provider; independent acceptance |
 | WP10 | Implemented for this slice | Director plan-review panel, lane/artifact/stack/architecture/docs/skills/DoD/OpenSpec summaries, approve/request-changes/reject, finding list and disposition form | Real Core/Compose browser acceptance and visual review |
 | WP11 | Implemented at the projection boundary | Deterministic replay trace, redaction, comparison, event/payload bounds | Core/Office trace view wiring |
 | WP12 | Partial | Golden planning-pipeline integration test, existing Rust/Office suites, workflow and provider unit tests | Chaos/fault-injection matrix and per-option browser matrix for the new surfaces |
@@ -89,9 +89,9 @@ claim that a live multi-reviewer Campaign has run.
   configuration and rejects a receipt whose principal or role does not match;
   a caller cannot choose its principal. Required role coverage and one receipt
   per role are enforced by the Gate. A required role set without an exact frozen
-  principal assignment, with an unexpected assignment role, or with a receipt
-  for a role outside the frozen plan, blocks acceptance instead of being counted
-  by role name alone. Provider/model equality is not a rejection criterion.
+  principal assignment, with an unexpected assignment role, or with a roleless
+  or extra-role receipt, blocks acceptance instead of being counted by role name
+  alone. Provider/model equality is not a rejection criterion.
 - The Compose topology provisions six reviewer services with separate tokens,
   principals, roles and state volumes. The plan fails closed with
   `REVIEWER_INDEPENDENCE_REQUIRED` when the configured identities cannot staff
