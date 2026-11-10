@@ -10,7 +10,7 @@ certification remain pending. No paid model inference was used.
 - Baseline: `bcb8b5b` (`factory/agentic-flow-20261108`)
 - Integration branch: `factory/quality-wave12-integration`
 - Worktree: `/home/james/Escritorio/Development/sf-quality-wave12/integration`
-- Date: 2026-11-09 local / 2026-11-10 UTC
+- Date: 2026-11-10
 
 ## 1. Merged work packages
 
@@ -35,8 +35,8 @@ after those integration repairs, with WP10's review repairs merged as
 
 ## 1.1 Final integrated acceptance
 
-The final integrated code candidate was `03287aa684f2e8419d6b729f7ff8d61fd7796819`
-(clean tree `6ac7e20e241f92a7e4872543edce6adc74558ead`). Docs/evidence commits
+The final integrated code candidate was `97690f48fe267366b605068c04ee6046679bc051`
+(clean tree `664472dd4a08577352d5269246b210bc2cdd11aa`). Docs/evidence commits
 after that candidate do not change runtime code.
 
 `scripts/quality-wave12-acceptance.sh --require-clean`:

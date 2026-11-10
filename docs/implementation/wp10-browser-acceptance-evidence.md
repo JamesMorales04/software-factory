@@ -11,7 +11,7 @@ pending. No paid model inference was used.
 - Integration merge: `f26db7a`
 - Base/integrated commit: `452bb40`
 - Original code candidate: `71b63fd4640a4ca34e28441e4c79b0bd9759adc4`
-- Final integration rerun candidate: `03287aa684f2e8419d6b729f7ff8d61fd7796819`
+- Final integration rerun candidate: `97690f48fe267366b605068c04ee6046679bc051`
   (39/39 checks, regenerated manifest and screenshots)
 - Evidence run date: 2026-11-10 UTC
 - Evidence directory:
@@ -22,7 +22,7 @@ pending. No paid model inference was used.
 The manifest records the exact code candidate SHA, browser version, node
 version, seeded request IDs, all 39 matrix rows, every screenshot and every
 expected/unexpected HTTP status. The commit containing this document records
-the evidence snapshot; the code candidate is `71b63fd`.
+the evidence snapshot; the final manifest candidate is `97690f4`.
 
 ## 1. Scope and claim boundary
 
@@ -288,7 +288,7 @@ node office/e2e-browser/wave12-acceptance.mjs
 The script starts its own isolated Core and Vite processes, seeds the fixture
 after device enrollment, drives Chromium, captures screenshots and writes the
 manifest. It does not touch the installed Compose stack. It was run after the
-code candidate commit so the manifest is candidate-bound to `71b63fd`.
+code candidate commit so the manifest is candidate-bound to `97690f4`.
 
 ## 7. Evidence inventory
 

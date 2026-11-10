@@ -13,8 +13,8 @@ instead of being counted as passes.
 - Original branch candidate: `ec4519ec293f0fd8d49f94ee6a2ff52e9143210d`
   (tree `25d72c49e61ff9b5cfced8012a666ade924c1d50`, clean)
 - Final integration rerun candidate:
-  `03287aa684f2e8419d6b729f7ff8d61fd7796819` (tree
-  `6ac7e20e241f92a7e4872543edce6adc74558ead`, clean; 20/20 steps PASS)
+  `97690f48fe267366b605068c04ee6046679bc051` (tree
+  `664472dd4a08577352d5269246b210bc2cdd11aa`, clean; 20/20 steps PASS)
 - Acceptance script: [`scripts/quality-wave12-acceptance.sh`](../../scripts/quality-wave12-acceptance.sh)
 - Candidate-bound evidence: [`docs/evidence/quality-wave12-chaos-2026-11-10/manifest.json`](../evidence/quality-wave12-chaos-2026-11-10/manifest.json)
 - Related evidence: [WP5 provider chaos](wp5-provider-chaos-evidence.md),
@@ -54,20 +54,20 @@ that the temp root is not a Git worktree.
 
 ## Candidate result
 
-The recorded run used candidate `ec4519e`, a clean worktree and
+The final integrated run used candidate `97690f4`, a clean worktree and
 `--require-clean`:
 
 | Check | Exact result |
 |---|---|
-| Acceptance script | 20/20 steps PASS, 0 FAIL, 0 skipped steps; 236 s |
+| Acceptance script | 20/20 steps PASS, 0 FAIL, 0 skipped steps; 228 s |
 | Control-flow self-test | PASS (PASS/PARTIAL/FAIL results; missing/stale/fresh `--no-install` dependencies) |
-| Library suite | 830 passed, 0 failed, 4 ignored |
-| Binary suites | 125 passed, 0 failed (Core 38, runtime broker 29, worker 17, supervisor 9, verifier 7, architecture 8, repo hygiene 7, reviewer 4, dependency acquire 3, provider smoke 3) |
+| Library suite | 831 passed, 0 failed, 4 ignored |
+| Binary suites | 128 passed, 0 failed (Core 39, runtime broker 29, worker 19, supervisor 9, verifier 7, architecture 8, repo hygiene 7, reviewer 4, dependency acquire 3, provider smoke 3) |
 | Targeted integration | 29 passed, 0 failed (planning 1, provider chaos 16, dependency HTTP 6, OpenSpec 5, migration 1) |
 | Focused filters | workflow 16, quality 12, trace 17, review_roles 9, gate_ 18 — all passed |
 | Provider chaos repeats | 3/3 runs, 16 passed each, 0 failed |
 | Clippy | clean with `-D warnings` |
-| Office | 46 files / 317 tests passed; typecheck clean; lint clean (163 files) |
+| Office | 46 files / 317 tests passed; typecheck clean; lint clean (164 files) |
 | Compose config | base 14 services; `openspec-validation` 15 services; both exit 0 |
 | Compose policy | PASS both profiles; 36 negative tests, 8 skipped base / 5 skipped profile |
 

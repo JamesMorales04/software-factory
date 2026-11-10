@@ -4,10 +4,10 @@
   "status": "IMPLEMENTER_EVIDENCE_NOT_ACCEPTANCE",
   "workPackage": "WP12",
   "title": "Deterministic chaos/fault-injection matrix and repeat-run acceptance",
-  "branch": "factory/quality-wp12-chaos-matrix",
+  "branch": "factory/quality-wave12-integration",
   "baseCommit": "452bb40fba2d74ef4cbfbb108191900d4159d9dd",
-  "candidateCommit": "ec4519ec293f0fd8d49f94ee6a2ff52e9143210d",
-  "candidateTree": "25d72c49e61ff9b5cfced8012a666ade924c1d50",
+  "candidateCommit": "97690f48fe267366b605068c04ee6046679bc051",
+  "candidateTree": "664472dd4a08577352d5269246b210bc2cdd11aa",
   "candidateClean": true,
   "acceptanceScript": "scripts/quality-wave12-acceptance.sh",
   "matrix": "docs/implementation/wp12-chaos-matrix.md",
@@ -16,9 +16,9 @@
     "repeatRuns": "docs/evidence/quality-wave12-chaos-2026-11-10/repeat-runs.log"
   },
   "command": "scripts/quality-wave12-acceptance.sh --require-clean",
-  "startedAt": "2026-11-09T23:42:19-05:00",
-  "finishedAt": "2026-11-09T23:46:15-05:00",
-  "durationSeconds": 236,
+  "startedAt": "2026-11-10T00:48:23-05:00",
+  "finishedAt": "2026-11-10T00:52:11-05:00",
+  "durationSeconds": 228,
   "exitStatus": 0,
   "paidInference": false,
   "installedStackTouched": false,
@@ -78,9 +78,9 @@
       "id": "lib",
       "command": "cargo test -p factory-native --locked --lib",
       "result": "PASS",
-      "durationSeconds": 156,
+      "durationSeconds": 152,
       "tests": {
-        "passed": 830,
+        "passed": 831,
         "failed": 0,
         "ignored": 4
       }
@@ -89,15 +89,15 @@
       "id": "bins",
       "command": "cargo test -p factory-native --locked --bins",
       "result": "PASS",
-      "durationSeconds": 21,
+      "durationSeconds": 20,
       "tests": {
-        "passed": 125,
+        "passed": 128,
         "failed": 0,
         "ignored": 0
       },
       "nonZeroBinaries": {
         "factory-architecture-check": 8,
-        "factory-core": 38,
+        "factory-core": 39,
         "factory-dependency-acquire": 3,
         "factory-provider-smoke": 3,
         "factory-repo-hygiene": 7,
@@ -105,7 +105,7 @@
         "factory-runtime-broker": 29,
         "factory-supervisor": 9,
         "factory-verifier": 7,
-        "factory-worker": 17
+        "factory-worker": 19
       }
     },
     {
@@ -141,7 +141,7 @@
       "id": "filter_quality",
       "command": "cargo test -p factory-native --locked --lib quality",
       "result": "PASS",
-      "durationSeconds": 0,
+      "durationSeconds": 1,
       "tests": {
         "passed": 12,
         "failed": 0,
@@ -152,7 +152,7 @@
       "id": "filter_trace",
       "command": "cargo test -p factory-native --locked --lib trace",
       "result": "PASS",
-      "durationSeconds": 1,
+      "durationSeconds": 0,
       "tests": {
         "passed": 17,
         "failed": 0,
@@ -163,7 +163,7 @@
       "id": "filter_review_roles",
       "command": "cargo test -p factory-native --locked --lib review_roles",
       "result": "PASS",
-      "durationSeconds": 0,
+      "durationSeconds": 1,
       "tests": {
         "passed": 9,
         "failed": 0,
@@ -174,7 +174,7 @@
       "id": "filter_gate",
       "command": "cargo test -p factory-native --locked --lib gate_",
       "result": "PASS",
-      "durationSeconds": 8,
+      "durationSeconds": 7,
       "tests": {
         "passed": 18,
         "failed": 0,
@@ -219,13 +219,13 @@
       "command": "cd office && npm ci --no-audit --no-fund --prefer-offline",
       "result": "PASS",
       "durationSeconds": 0,
-      "note": "Dependencies already matched package-lock.json in the recorded run; the immediately preceding pre-check installed 214 packages."
+      "note": "Dependencies already matched package-lock.json in the final run; no download was needed."
     },
     {
       "id": "office_test",
       "command": "cd office && npm test -- --run",
       "result": "PASS",
-      "durationSeconds": 11,
+      "durationSeconds": 10,
       "testFiles": 46,
       "tests": {
         "passed": 317,
@@ -236,14 +236,14 @@
       "id": "office_typecheck",
       "command": "cd office && npm run typecheck",
       "result": "PASS",
-      "durationSeconds": 9
+      "durationSeconds": 8
     },
     {
       "id": "office_lint",
       "command": "cd office && npm run lint",
       "result": "PASS",
       "durationSeconds": 0,
-      "filesChecked": 163
+      "filesChecked": 164
     },
     {
       "id": "compose_config_base",
@@ -267,7 +267,7 @@
       "id": "compose_policy_base",
       "command": "docker-compose -f target/quality-wave12/compose-base.yaml config --format json > target/quality-wave12/compose-base.json && python3 .github/scripts/check-compose-policy.py target/quality-wave12/compose-base.json && COMPOSE_CONFIG_JSON=target/quality-wave12/compose-base.json python3 .github/scripts/test_check_compose_policy.py",
       "result": "PASS",
-      "durationSeconds": 6,
+      "durationSeconds": 7,
       "policy": "PASS",
       "policyTests": {
         "run": 36,
@@ -279,7 +279,7 @@
       "id": "compose_policy_profile",
       "command": "docker-compose --profile openspec-validation -f target/quality-wave12/compose-openspec.yaml config --format json > target/quality-wave12/compose-openspec.json && python3 .github/scripts/check-compose-policy.py target/quality-wave12/compose-openspec.json && COMPOSE_CONFIG_JSON=target/quality-wave12/compose-openspec.json python3 .github/scripts/test_check_compose_policy.py",
       "result": "PASS",
-      "durationSeconds": 11,
+      "durationSeconds": 8,
       "policy": "PASS",
       "policyTests": {
         "run": 36,
@@ -475,8 +475,8 @@
       "reason": "The committed Core renderer/read-model fixture and pinned-validation runner contract passed; a projection produced by the paid model planning pipeline was not run. WP7 retains the separate real pinned-image fixture run."
     },
     {
-      "id": "office.real_browser_per_option_acceptance",
-      "reason": "WP10 owns the Office views and browser harnesses. This run executed the component/unit suite, typecheck and lint only."
+      "id": "office.real_compose_browser_acceptance",
+      "reason": "WP10 separately ran the implementer Chromium per-option matrix (39/39) against an isolated real Core; docs/evidence/wave12-office-acceptance-2026-11-10/manifest.json. This deterministic acceptance script does not start Compose or prove Compose browser acceptance."
     },
     {
       "id": "platform.windows_and_docker_provider",
@@ -498,10 +498,10 @@
     }
   ],
   "warnings": [
-    "The recorded run reused Office dependencies installed by the immediately preceding pre-check; the install step verified the package-lock hash instead of downloading again. The earlier install reported one blocked esbuild@0.28.2 postinstall script; the Office test, typecheck and lint commands passed with the installed package.",
+    "Office dependencies already matched package-lock.json, so the install step verified the lock hash without downloading. The Office test, typecheck and lint commands passed with the installed packages.",
     "The Compose policy JSON input was normalized with docker-compose because the local podman-compose 1.6.0 does not implement config --format json. This is a parser-only step; it does not touch a Docker daemon or the installed stack.",
     "The four ignored library tests are reported as SKIPPED, not as passes.",
     "The compose_config_base and compose_config_profile step logs are empty because config output was redirected to the YAML artifacts; both commands exited 0 and the rendered service counts are recorded above."
   ],
-  "claimBoundary": "Deterministic implementer evidence for candidate ec4519e. It is not independent acceptance, a Quality Gate decision, deployment, certification, live-provider evidence or a TRUSTED_LOCAL isolation claim."
+  "claimBoundary": "Deterministic implementer evidence for candidate 97690f48fe267366b605068c04ee6046679bc051. It is not independent acceptance, a Quality Gate decision, deployment, certification, live-provider evidence or a TRUSTED_LOCAL isolation claim."
 }
