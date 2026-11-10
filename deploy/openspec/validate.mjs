@@ -23,7 +23,7 @@ import path from "node:path";
 
 const RESULT_SCHEMA_VERSION = 1;
 const PINNED_OPENSPEC_VERSION = "1.16.1";
-const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
+const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const MAX_FILE_BYTES = 512 * 1024;
 const MAX_TOTAL_BYTES = 2 * 1024 * 1024;
 const MAX_FILES = 64;
