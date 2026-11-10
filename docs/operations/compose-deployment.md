@@ -313,6 +313,18 @@ dedicated engine storage. A restart preserves the Project, Campaign, candidate
 and gate; services wait for init material and the runtime bundle marker before
 starting, then converge through health checks.
 
+Upgrading from a pre-owner-label installation can leave managed
+`factory-ws-*` volumes with an exact workspace label but no owner label. The
+Supervisor's `create_volume` call adopts only that exact workspace identity:
+while holding the per-volume lock, the broker re-reads `managed=true`, the exact
+workspace label, the absence/emptiness of the owner label and the
+active-execution registry, removes the legacy volume through the checked path
+and recreates it with the authenticated owner label. Volumes with a different
+workspace, an existing owner, a missing managed label or no labels remain `409`
+conflicts and are preserved. Legacy execution containers are adopted only
+during explicit Supervisor cleanup when a managed container has the matching
+workspace volume label and no owner label; reconciliation never sweeps them.
+
 ## Deterministic acceptance and browser smoke
 
 The deterministic container journey uses the fixture provider only and never

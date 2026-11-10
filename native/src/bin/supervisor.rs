@@ -199,7 +199,10 @@ impl VolumeBackend for LocalVolumeBackend {
         if let Some(existing) = self.meta.lock().unwrap().get(name).cloned() {
             let same_owner = existing.owner.as_deref() == Some(ResourceOwner::Supervisor.as_str());
             let same_workspace = existing.workspace.as_deref() == Some(workspace_id);
-            if !same_owner || !same_workspace {
+            let legacy = !workspace_id.is_empty()
+                && same_workspace
+                && existing.owner.as_deref().is_none_or(str::is_empty);
+            if !(legacy || (same_owner && same_workspace)) {
                 return Err(ExecutionError::Conflict);
             }
         }

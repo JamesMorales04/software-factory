@@ -42,8 +42,8 @@ use tokio::{
 use factory_native::runtime_broker::{
     MAX_RESOURCE_INVENTORY_BYTES, ManagedResources, ResourceOwner, is_valid_container_name,
     is_valid_exec_container_name, is_valid_provider_container_name, is_valid_volume_name,
-    parse_container_inventory, parse_container_labels, parse_volume_inventory, parse_volume_labels,
-    resource_owner_matches, volume_identity_matches,
+    legacy_workspace_identity_matches, parse_container_inventory, parse_container_labels,
+    parse_volume_inventory, parse_volume_labels, resource_owner_matches, volume_identity_matches,
 };
 
 const MAX_JSON_BYTES: usize = 2 * 1024 * 1024;
@@ -755,6 +755,38 @@ impl App {
                 "volume is not owned by the authenticated service",
             ));
         }
+        self.remove_volume_checked_locked(volume).await
+    }
+
+    /// One-time migration for a managed workspace volume created before owner
+    /// labels existed. The caller holds the volume lock and has already checked
+    /// that the volume is not active. Labels are re-read immediately before
+    /// removal so an owner, workspace or managed-label change is still a
+    /// conflict.
+    async fn remove_legacy_volume_locked(
+        &self,
+        volume: &str,
+        workspace_id: &str,
+    ) -> Result<(), MutationError> {
+        if self.active.is_active(volume) {
+            return Err(MutationError::Conflict("volume has an active execution"));
+        }
+        let Some(labels) = self
+            .volume_labels(volume)
+            .await
+            .map_err(MutationError::Failed)?
+        else {
+            return Ok(());
+        };
+        if !legacy_workspace_identity_matches(&labels, workspace_id) {
+            return Err(MutationError::Conflict(
+                "volume exists with a different owner or workspace",
+            ));
+        }
+        self.remove_volume_checked_locked(volume).await
+    }
+
+    async fn remove_volume_checked_locked(&self, volume: &str) -> Result<(), MutationError> {
         let output = self
             .podman_output(["volume", "rm", "--force", volume])
             .await
@@ -807,7 +839,15 @@ impl App {
         else {
             return Ok(());
         };
-        if !resource_owner_matches(&labels, owner) {
+        let legacy_adoption = owner == ResourceOwner::Supervisor
+            && is_valid_exec_container_name(container)
+            && expected_workspace
+                .map(str::to_owned)
+                .or_else(|| labels.get(WORKSPACE_LABEL).cloned())
+                .filter(|workspace| is_valid_volume_name(workspace))
+                .as_deref()
+                .is_some_and(|workspace| legacy_workspace_identity_matches(&labels, workspace));
+        if !resource_owner_matches(&labels, owner) && !legacy_adoption {
             return Err(MutationError::Conflict(
                 "container is not owned by the authenticated service",
             ));
@@ -818,6 +858,14 @@ impl App {
             return Err(MutationError::Conflict(
                 "container does not belong to the execution workspace",
             ));
+        }
+        if legacy_adoption && !resource_owner_matches(&labels, owner) {
+            tracing::info!(
+                %container,
+                workspace = labels.get(WORKSPACE_LABEL).map(String::as_str).unwrap_or_default(),
+                owner = owner.as_str(),
+                "adopted legacy execution container"
+            );
         }
         let output = self
             .podman_output(["rm", "--force", "--time=0", container])
@@ -1723,11 +1771,28 @@ async fn create_volume(
     }
     match app.volume_labels(&input.volume).await {
         Ok(Some(labels)) => {
-            if !volume_identity_matches(&labels, owner, &input.workspace_id) {
+            if volume_identity_matches(&labels, owner, &input.workspace_id) {
+                if let Err(error) = app.remove_volume_locked(&input.volume, owner).await {
+                    return mutation_error(error);
+                }
+            } else if legacy_workspace_identity_matches(&labels, &input.workspace_id) {
+                // A pre-owner managed volume for this exact workspace is safe
+                // to reset. The checked removal re-validates the labels and
+                // active registry under the same volume lock.
+                if let Err(error) = app
+                    .remove_legacy_volume_locked(&input.volume, &input.workspace_id)
+                    .await
+                {
+                    return mutation_error(error);
+                }
+                tracing::info!(
+                    volume = %input.volume,
+                    workspace = %input.workspace_id,
+                    owner = owner.as_str(),
+                    "adopted legacy workspace volume"
+                );
+            } else {
                 return conflict("volume exists with a different owner or workspace");
-            }
-            if let Err(error) = app.remove_volume_locked(&input.volume, owner).await {
-                return mutation_error(error);
             }
         }
         Ok(None) => {}
@@ -3003,6 +3068,197 @@ exit 1
     }
 
     #[tokio::test]
+    async fn create_volume_adopts_a_matching_legacy_workspace_volume() {
+        let volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let rm_marker =
+            std::env::temp_dir().join(format!("factory-fake-legacy-rm-{}", uuid::Uuid::new_v4()));
+        let create_marker = std::env::temp_dir().join(format!(
+            "factory-fake-legacy-create-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let args_file =
+            std::env::temp_dir().join(format!("factory-fake-legacy-args-{}", uuid::Uuid::new_v4()));
+        let script = format!(
+            r#"#!/bin/sh
+if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then
+  printf '%s\n' '[{{"Name":"{volume}","Labels":{{"io.software-factory.managed":"true","io.software-factory.workspace":"workspace-a"}}}}]'
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "rm" ]; then
+  touch "{rm_marker}"
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "create" ]; then
+  printf '%s\n' "$@" > "{args_file}"
+  touch "{create_marker}"
+  exit 0
+fi
+exit 1
+"#,
+            rm_marker = rm_marker.display(),
+            create_marker = create_marker.display(),
+            args_file = args_file.display()
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app(podman);
+        let response = create_volume(
+            State(app),
+            test_headers(ResourceOwner::Supervisor),
+            Json(NewVolume {
+                volume,
+                workspace_id: "workspace-a".into(),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        assert!(rm_marker.exists());
+        assert!(create_marker.exists());
+        let args = std::fs::read_to_string(&args_file).unwrap();
+        assert!(args.contains("io.software-factory.workspace=workspace-a"));
+        assert!(args.contains("io.software-factory.owner=supervisor"));
+        assert!(args.contains("io.software-factory.managed=true"));
+        let _ = std::fs::remove_file(&rm_marker);
+        let _ = std::fs::remove_file(&create_marker);
+        let _ = std::fs::remove_file(&args_file);
+    }
+
+    #[tokio::test]
+    async fn create_volume_preserves_a_legacy_volume_for_another_workspace() {
+        let volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let rm_marker = std::env::temp_dir().join(format!(
+            "factory-fake-legacy-mismatch-rm-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let create_marker = std::env::temp_dir().join(format!(
+            "factory-fake-legacy-mismatch-create-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let script = format!(
+            r#"#!/bin/sh
+if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then
+  printf '%s\n' '[{{"Name":"{volume}","Labels":{{"io.software-factory.managed":"true","io.software-factory.workspace":"workspace-b"}}}}]'
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "rm" ]; then
+  touch "{rm_marker}"
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "create" ]; then
+  touch "{create_marker}"
+  exit 0
+fi
+exit 1
+"#,
+            rm_marker = rm_marker.display(),
+            create_marker = create_marker.display()
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app(podman);
+        let response = create_volume(
+            State(app),
+            test_headers(ResourceOwner::Supervisor),
+            Json(NewVolume {
+                volume,
+                workspace_id: "workspace-a".into(),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(!rm_marker.exists());
+        assert!(!create_marker.exists());
+    }
+
+    #[tokio::test]
+    async fn create_volume_rejects_an_active_legacy_volume() {
+        let volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let container = format!("factory-exec-{}", uuid::Uuid::new_v4());
+        let rm_marker = std::env::temp_dir().join(format!(
+            "factory-fake-legacy-active-rm-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let create_marker = std::env::temp_dir().join(format!(
+            "factory-fake-legacy-active-create-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let script = format!(
+            r#"#!/bin/sh
+if [ "$1" = "volume" ] && [ "$2" = "rm" ]; then
+  touch "{rm_marker}"
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "create" ]; then
+  touch "{create_marker}"
+  exit 0
+fi
+exit 1
+"#,
+            rm_marker = rm_marker.display(),
+            create_marker = create_marker.display()
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app(podman);
+        assert!(app.active.register(&volume, &container));
+        let response = create_volume(
+            State(app),
+            test_headers(ResourceOwner::Supervisor),
+            Json(NewVolume {
+                volume,
+                workspace_id: "workspace-a".into(),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(!rm_marker.exists());
+        assert!(!create_marker.exists());
+    }
+
+    #[tokio::test]
+    async fn create_volume_preserves_an_unlabelled_volume() {
+        let volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let rm_marker = std::env::temp_dir().join(format!(
+            "factory-fake-unlabelled-rm-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let create_marker = std::env::temp_dir().join(format!(
+            "factory-fake-unlabelled-create-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let script = format!(
+            r#"#!/bin/sh
+if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then
+  printf '%s\n' '[{{"Name":"{volume}","Labels":{{}}}}]'
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "rm" ]; then
+  touch "{rm_marker}"
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "create" ]; then
+  touch "{create_marker}"
+  exit 0
+fi
+exit 1
+"#,
+            rm_marker = rm_marker.display(),
+            create_marker = create_marker.display()
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app(podman);
+        let response = create_volume(
+            State(app),
+            test_headers(ResourceOwner::Supervisor),
+            Json(NewVolume {
+                volume,
+                workspace_id: "workspace-a".into(),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(!rm_marker.exists());
+        assert!(!create_marker.exists());
+    }
+
+    #[tokio::test]
     async fn remove_container_requires_the_expected_owner_label() {
         let container = format!("factory-exec-{}", uuid::Uuid::new_v4());
         let marker = std::env::temp_dir().join(format!(
@@ -3051,6 +3307,75 @@ exit 1
         .await;
         assert_eq!(accepted.status(), StatusCode::NO_CONTENT);
         assert!(marker.exists());
+    }
+
+    #[tokio::test]
+    async fn execution_cleanup_adopts_a_matching_legacy_container() {
+        let volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let container = format!("factory-exec-{}", uuid::Uuid::new_v4());
+        let rm_marker = std::env::temp_dir().join(format!(
+            "factory-fake-legacy-container-rm-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let script = format!(
+            r#"#!/bin/sh
+if [ "$1" = "inspect" ]; then
+  printf '%s\n' '[{{"Config":{{"Labels":{{"io.software-factory.managed":"true","io.software-factory.workspace":"{volume}"}}}}}}]'
+  exit 0
+fi
+if [ "$1" = "rm" ]; then
+  touch "{rm_marker}"
+  exit 0
+fi
+if [ "$1" = "container" ] && [ "$2" = "exists" ]; then
+  exit 1
+fi
+exit 1
+"#,
+            rm_marker = rm_marker.display()
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app(podman);
+        assert!(
+            app.confirm_execution_cleanup(&container, ResourceOwner::Supervisor, &volume)
+                .await
+        );
+        assert!(rm_marker.exists());
+    }
+
+    #[tokio::test]
+    async fn execution_cleanup_preserves_a_legacy_container_for_another_workspace() {
+        let volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let other_volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let container = format!("factory-exec-{}", uuid::Uuid::new_v4());
+        let rm_marker = std::env::temp_dir().join(format!(
+            "factory-fake-legacy-container-mismatch-rm-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let script = format!(
+            r#"#!/bin/sh
+if [ "$1" = "inspect" ]; then
+  printf '%s\n' '[{{"Config":{{"Labels":{{"io.software-factory.managed":"true","io.software-factory.workspace":"{other_volume}"}}}}}}]'
+  exit 0
+fi
+if [ "$1" = "rm" ]; then
+  touch "{rm_marker}"
+  exit 0
+fi
+if [ "$1" = "container" ] && [ "$2" = "exists" ]; then
+  exit 0
+fi
+exit 1
+"#,
+            rm_marker = rm_marker.display()
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app(podman);
+        assert!(
+            !app.confirm_execution_cleanup(&container, ResourceOwner::Supervisor, &volume)
+                .await
+        );
+        assert!(!rm_marker.exists());
     }
 
     #[tokio::test]
