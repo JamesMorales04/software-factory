@@ -7,7 +7,7 @@ Browser/Compose acceptance is `NOT_TESTED`.
 - Work package: WP11 — observability, trace, replay and the Core/Office trace view
 - Branch: `factory/quality-wp11-trace-view`
 - Baseline: `bcb8b5ba32090a19552637493ef53164928f230b`
-- Code candidate: `5cace73ecba5dfe14bddda3ceeaf1d1a723fafa7`
+- Code candidate: `fede41814fa44af8936cd2319094f5318686d6d6`
 - Date: 2026-11-09 (local) / 2026-11-10 UTC
 
 ## 1. Delivered behavior
@@ -113,9 +113,9 @@ below the plan. It calls only the authenticated Core trace read.
 | `npm ci` (Office) | PASS — 214 packages installed |
 | `npm run typecheck` | PASS |
 | `npm run lint` (`biome check src e2e-browser`) | PASS — 163 files |
-| `npm test -- --run` | PASS — 46 files, 305 tests |
-| `npx vitest run src/views/RequestTrace.test.tsx` | PASS — 8 tests |
-| `npx vitest run src/views/RequestTrace.test.tsx src/views/RequestWorkspace.test.tsx` | PASS — 23 tests |
+| `npm test -- --run` | PASS — 46 files, 306 tests |
+| `npx vitest run src/views/RequestTrace.test.tsx` | PASS — 9 tests |
+| `npx vitest run src/views/RequestTrace.test.tsx src/views/RequestWorkspace.test.tsx` | PASS — 24 tests |
 
 The two ignored library tests require rootless Podman with a cached
 `alpine:3.20` image and were not part of this WP.
@@ -174,6 +174,7 @@ event truncation, step truncation and payload redaction.
 | WP11-UI-11 | same | Negative redaction | Raw prompt/token/allowlisted free-form state, key-embedded secrets and token-shaped event step IDs never render | populated test negative assertions | PASS |
 | WP11-UI-16 | same | Rejected replay outcome | Terminal durable run with no `ReplayTrace` shows `Unknown — replay rejected`, not `In progress` | rejected-outcome test | PASS |
 | WP11-UI-17 | same | Step truncation | Newest bounded step page, limit label, callout and `STEP_TRUNCATED` alert | bounded-step test | PASS |
+| WP11-UI-18 | same | Prototype-key safety | Unknown `constructor` payload key renders as a bounded placeholder without crashing | constructor-key test | PASS |
 | WP11-UI-12 | same | Background refresh failure | Stale/offline callout with last-loaded time and retry | implementation present; timed background failure | NOT_TESTED |
 | WP11-UI-13 | same | Keyboard / screen reader | Headings, summary disclosures, labels, no hidden-only data | component semantics reviewed | NOT_TESTED (browser) |
 | WP11-UI-14 | same | Desktop/tablet/narrow visual | No overflow; one-column facts/payload at ≤640 px | CSS reviewed | NOT_TESTED (browser) |
@@ -193,7 +194,9 @@ event truncation, step truncation and payload redaction.
   `MALFORMED_EVENT` instead of rendered.
 - The Office independently refuses secret/prompt-shaped payload keys, invalid
   allowlisted string values, non-canonical payload key names and non-canonical
-  identifier text as a display safety net.
+  identifier text as a display safety net. The canonical payload-key lookup is a
+  `Map`, so an untrusted key such as `constructor` cannot resolve an inherited
+  property.
 - Non-JSON event detail is hashed, never returned verbatim.
 - Step `detail` is deliberately not serialized; only hashes, statuses, kinds and
   timestamps are exposed.
@@ -226,6 +229,12 @@ valid findings were repaired in the `8b1d2f9` code candidate.
 | P1: raw property names could carry sensitive text | `canonical_payload_key` exposes only canonical safe/secret key names; every other property becomes `redacted_<12 hex>`. The Office repeats the canonical-key guard and never renders an unknown raw key. | `replay::tests::sensitive_or_unrecognized_property_names_are_not_exposed`, endpoint key-name case, component DOM negative test |
 | P1: permissive identifier character class accepted token-shaped step IDs | Replay request IDs must be canonical UUIDs, workflow IDs `workflow-<uuid>`, and step IDs `step-<uuid>`. The Office uses the same exact step-ID shape. | endpoint token-shaped `stepId` case, component token-shaped step-ID negative test |
 | P2: malformed classification incomplete | JSON-looking parse failure is flagged across event kinds; transition rows require JSON states or the documented legacy `status=...` text. Non-JSON garbage on a transition row is flagged. | loader test with 6 inserted rows and exactly 5 `MALFORMED_EVENT` alerts |
+
+### Third re-review repair (`fede418`)
+
+| Finding | Resolution | Evidence |
+|---|---|---|
+| P2: payload-key guard could read an inherited `constructor` property | `CANONICAL_PAYLOAD_KEYS` is now a `Map`; `displayPayloadKey` uses `Map.get` and can only return a canonical string, a server-generated `redacted_<hash>` label or the bounded `[redacted]` placeholder. The Office never indexes a normal object with an untrusted key. | `RequestTrace.test.tsx` unknown `constructor` payload-key test |
 
 ## 8. Limitations and remaining integration work
 
