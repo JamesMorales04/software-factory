@@ -7,7 +7,7 @@ Browser/Compose acceptance is `NOT_TESTED`.
 - Work package: WP11 — observability, trace, replay and the Core/Office trace view
 - Branch: `factory/quality-wp11-trace-view`
 - Baseline: `bcb8b5ba32090a19552637493ef53164928f230b`
-- Code candidate: `8b1d2f9b058bc4b256530e2743325cd64541dfe6`
+- Code candidate: `5cace73ecba5dfe14bddda3ceeaf1d1a723fafa7`
 - Date: 2026-11-09 (local) / 2026-11-10 UTC
 
 ## 1. Delivered behavior
@@ -33,8 +33,13 @@ bounded read of the latest durable workflow run for an intake request.
   `STATE_DIVERGENCE`, `NO_EVENTS`, `MALFORMED_EVENT`.
 - Allowlisted payload keys retain strings only when the value passes the key's
   operational grammar: workflow/step/outcome enum codes, lowercase SHA-256,
-  operational identifiers, or numbers/booleans. Free-form strings are hashed.
-  The same strict operational identifier grammar applies to event and step IDs.
+  canonical UUID/`workflow-<uuid>`/`step-<uuid>` identifiers, or
+  numbers/booleans. Free-form strings are hashed. Property names outside the
+  canonical payload key set are replaced by a bounded `redacted_<hash>` label,
+  so sensitive text cannot ride in a key.
+- Replay event request, run and step IDs must match the canonical UUID,
+  `workflow-<uuid>` and `step-<uuid>` formats. A token-shaped step ID is dropped
+  and reported as `MALFORMED_EVENT`.
 - JSON-looking transition detail that cannot parse, and transition rows missing
   or carrying an invalid `from`/`to`, are reported as `MALFORMED_EVENT`. Legacy
   plain `status=...` run status rows remain ordinary non-transition events.
@@ -79,7 +84,7 @@ below the plan. It calls only the authenticated Core trace read.
 | `native/src/db/events.rs` | Durable event loader, `ReplayEvent` mapping and DB-level tests |
 | `native/src/db/workflow.rs` | Transactional run/step/checkpoint event writes and bounded step history |
 | `native/src/replay.rs` | Validated allowlisted-string redaction and strict replay identifiers |
-| `native/src/workflow.rs` | Operational identifier validation |
+| `native/src/workflow.rs` | Canonical UUID, `workflow-<uuid>` and `step-<uuid>` validation |
 | `native/src/db/mod.rs` | Registers the events module and step/checkpoint event kinds |
 | `native/src/lib.rs` | Exposes the trace module |
 | `native/src/bin/core.rs` | Authenticated bounded trace route, handler and endpoint test |
@@ -98,12 +103,12 @@ below the plan. It calls only the authenticated Core trace read.
 | Command | Result |
 |---|---|
 | `cargo fmt --all -- --check` | PASS (no output) |
-| `cargo test -p factory-native --lib replay:: -- --nocapture` | PASS — 19 passed |
+| `cargo test -p factory-native --lib replay:: -- --nocapture` | PASS — 20 passed |
 | `cargo test -p factory-native --lib trace:: -- --nocapture` | PASS — 8 passed |
 | `cargo test -p factory-native --lib db::events:: -- --nocapture` | PASS — 4 passed |
 | `cargo test -p factory-native --lib db::workflow::tests::bounded_step -- --nocapture` | PASS — 1 passed |
 | `cargo test -p factory-native --bin factory-core request_trace -- --nocapture` | PASS — 1 passed |
-| `cargo test -p factory-native --lib` | PASS — 745 passed, 0 failed, 2 ignored |
+| `cargo test -p factory-native --lib` | PASS — 746 passed, 0 failed, 2 ignored |
 | `cargo clippy -p factory-native --all-targets --all-features -- -D warnings` | PASS |
 | `npm ci` (Office) | PASS — 214 packages installed |
 | `npm run typecheck` | PASS |
@@ -129,10 +134,12 @@ verifies:
 3. A transition detail containing `token=super-secret-token-value` and a step
    finish detail containing `raw prompt body` never appear in the serialized
    response.
-4. A directly inserted event whose allowlisted `state`, `status` and `stepId`
-   values are `raw prompt or token` never returns that text: the payload values
-   are SHA-256 hashes, the invalid top-level step ID is dropped, and a
-   `MALFORMED_EVENT` alert is recorded.
+4. A directly inserted event whose allowlisted `state` and `status` values are
+   `raw prompt or token`, whose `stepId` is a token-shaped
+   `sk-proj-…` value, and whose property name contains `sk-proj-sensitive`
+   never returns that text: payload values and the property name are SHA-256
+   hashes, the invalid top-level step ID is dropped, and a `MALFORMED_EVENT`
+   alert is recorded.
 5. `limit=1` returns exactly one newest event with `truncated=true` and
    `eventLimit=1`.
 6. A reviewer token gets `401`; a missing request gets `404`.
@@ -164,7 +171,7 @@ event truncation, step truncation and payload redaction.
 | WP11-UI-08 | same | Event log | Sequence-ordered event rows, redacted payload values, hash | populated test + endpoint redaction test | PASS |
 | WP11-UI-09 | same | Long list / event truncation | 150-event list renders; bounded/truncated callout | long-list test | PASS |
 | WP11-UI-10 | same | Spanish | Trace heading, event log and alert labels localized | ES test | PASS |
-| WP11-UI-11 | same | Negative redaction | Raw prompt/token/allowlisted free-form state and invalid event step ID never render | populated test negative assertions | PASS |
+| WP11-UI-11 | same | Negative redaction | Raw prompt/token/allowlisted free-form state, key-embedded secrets and token-shaped event step IDs never render | populated test negative assertions | PASS |
 | WP11-UI-16 | same | Rejected replay outcome | Terminal durable run with no `ReplayTrace` shows `Unknown — replay rejected`, not `In progress` | rejected-outcome test | PASS |
 | WP11-UI-17 | same | Step truncation | Newest bounded step page, limit label, callout and `STEP_TRUNCATED` alert | bounded-step test | PASS |
 | WP11-UI-12 | same | Background refresh failure | Stale/offline callout with last-loaded time and retry | implementation present; timed background failure | NOT_TESTED |
@@ -178,11 +185,15 @@ event truncation, step truncation and payload redaction.
 - Response payloads are produced by `replay::redact_payload`; secret/prompt-shaped
   keys are hashed and unknown keys are `[REDACTED]`. Allowlisted keys retain
   strings only when the value passes the enum/hash/identifier grammar; a raw
-  prompt or token under `state`, `status` or `stepId` is hashed.
-- Event request/run/step IDs use a strict operational identifier grammar; an
-  invalid ID is dropped and reported as `MALFORMED_EVENT` instead of rendered.
+  prompt or token under `state`, `status` or `stepId` is hashed. Property names
+  outside the canonical set are replaced by `redacted_<hash>`, so a secret in a
+  key is never returned.
+- Event request/run/step IDs must match canonical UUID, `workflow-<uuid>` or
+  `step-<uuid>` formats; an invalid ID is dropped and reported as
+  `MALFORMED_EVENT` instead of rendered.
 - The Office independently refuses secret/prompt-shaped payload keys, invalid
-  allowlisted string values and invalid identifier text as a display safety net.
+  allowlisted string values, non-canonical payload key names and non-canonical
+  identifier text as a display safety net.
 - Non-JSON event detail is hashed, never returned verbatim.
 - Step `detail` is deliberately not serialized; only hashes, statuses, kinds and
   timestamps are exposed.
@@ -204,9 +215,17 @@ valid findings were repaired in the `8b1d2f9` code candidate.
 | Finding | Resolution | Evidence |
 |---|---|---|
 | P1: allowlisted keys retained free-form strings | `is_safe_payload_string` validates state/status/outcome enums, hashes, operational identifiers or numbers/booleans; invalid strings are SHA-256 hashed. The Office repeats the validation as a display guard. Raw event step IDs use the same strict identifier grammar. | `replay::tests::allowlisted_keys_do_not_retain_free_form_strings`, endpoint raw safe-key case, component negative test |
-| P2: malformed transition rows treated as ordinary events | JSON-looking unparsable detail and transition rows with missing/invalid `from`/`to` now set `malformed`, producing `MALFORMED_EVENT`. Legacy plain `status=...` rows remain non-transition events. | `db::events::tests::malformed_transition_rows_are_flagged` (3 cases) |
+| P2: malformed transition rows treated as ordinary events | JSON-looking unparsable detail is malformed for every event kind; transition rows with missing/invalid `from`/`to` or non-`status=...` non-JSON text are malformed. Only the documented legacy `status=...` shape remains exempt. | `db::events::tests::malformed_transition_rows_are_flagged` (6 rows, 5 alerts) |
 | P2: rejected replay shown as `In progress` | The Office derives the outcome from `replayError` first and renders `Unknown — replay rejected` when no `ReplayTrace` exists. | rejected-outcome component test |
 | P2: unbounded step history | `workflow_steps_bounded` returns the newest 500 rows in creation order and reports truncation. The response carries `stepLimit`/`stepsTruncated`, adds `STEP_TRUNCATED`, and the Office shows a bounded-step callout and alert. | bounded-step DB test, `STEP_TRUNCATED` trace test, bounded-step component test |
+
+### Second re-review repairs (`5cace73`)
+
+| Finding | Resolution | Evidence |
+|---|---|---|
+| P1: raw property names could carry sensitive text | `canonical_payload_key` exposes only canonical safe/secret key names; every other property becomes `redacted_<12 hex>`. The Office repeats the canonical-key guard and never renders an unknown raw key. | `replay::tests::sensitive_or_unrecognized_property_names_are_not_exposed`, endpoint key-name case, component DOM negative test |
+| P1: permissive identifier character class accepted token-shaped step IDs | Replay request IDs must be canonical UUIDs, workflow IDs `workflow-<uuid>`, and step IDs `step-<uuid>`. The Office uses the same exact step-ID shape. | endpoint token-shaped `stepId` case, component token-shaped step-ID negative test |
+| P2: malformed classification incomplete | JSON-looking parse failure is flagged across event kinds; transition rows require JSON states or the documented legacy `status=...` text. Non-JSON garbage on a transition row is flagged. | loader test with 6 inserted rows and exactly 5 `MALFORMED_EVENT` alerts |
 
 ## 8. Limitations and remaining integration work
 
