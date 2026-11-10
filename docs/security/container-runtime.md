@@ -156,6 +156,11 @@ why the engine is trusted infrastructure and why SEC-01 remains blocked.
   owner label before removal. Volume creation resets only a managed volume whose
   owner and workspace identity match; a foreign or unlabelled pre-existing
   volume is preserved and the request fails closed.
+- Broker create/reset/delete/import/export/execute operations use exact
+  per-resource-name async locks, not shared shards. Execution holds only its
+  volume lock; cleanup acquires the container lock in the fixed
+  volume -> container order. Unrelated resources are not serialized by a long
+  execution.
 - Provider session cleanup returned `container_removed_verified_absent` in the
   fixture journey.
 
