@@ -58,7 +58,7 @@ RUN nix profile install --profile /home/factory/.nix-profile \
       github:NixOS/nixpkgs/${NIXPKGS_REV}#util-linux \
       github:NixOS/nixpkgs/${NIXPKGS_REV}#procps \
       github:NixOS/nixpkgs/${NIXPKGS_REV}#which \
-      github:NixOS/nixpkgs/${NIXPKGS_REV}#tar \
+      github:NixOS/nixpkgs/${NIXPKGS_REV}#gnutar \
       github:NixOS/nixpkgs/${NIXPKGS_REV}#gzip \
       github:NixOS/nixpkgs/${NIXPKGS_REV}#xz \
       github:NixOS/nixpkgs/${NIXPKGS_REV}#zstd \
