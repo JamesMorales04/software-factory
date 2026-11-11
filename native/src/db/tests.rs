@@ -3736,6 +3736,105 @@ async fn model_call_budget_unknown_usage_and_ambiguity_fail_closed() {
 }
 
 #[tokio::test]
+async fn ambiguous_model_call_release_requires_reason_and_records_audit_after_operator_resolution()
+{
+    let (path, db) = temp_db("factory-model-call-resolution").await;
+    let scope = "evaluation-release";
+    db.admit_test_subscription_dispatch(scope).await.unwrap();
+    let policy = model_call_policy(1_000, 500, 10_000);
+    let input = model_call_input(&"f".repeat(64), scope, 120, 300, 200, policy);
+    let ModelCallDecision::Reserved(grant) = db.authorize_model_call(&input).await.unwrap() else {
+        panic!("expected a reservation");
+    };
+    sqlx::query::query(
+        "UPDATE model_call_reservations SET expires_at_ms=0 WHERE reservation_id=?1",
+    )
+    .bind(&grant.reservation_id)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let unresolved = db.unresolved_model_calls().await.unwrap();
+    assert_eq!(
+        unresolved
+            .iter()
+            .find(|record| record.reservation_id == grant.reservation_id)
+            .map(|record| record.state.as_str()),
+        Some("AMBIGUOUS")
+    );
+    let (count, bound) = db.unresolved_model_call_budget().await.unwrap();
+    assert_eq!(count, 1);
+    assert_eq!(bound, grant.max_cost_micros);
+
+    for (actor, reason) in [("", "operator reason"), ("operator", "  ")] {
+        assert!(matches!(
+            db.resolve_ambiguous_model_call(&grant.reservation_id, actor, reason)
+                .await,
+            Err(Error::Invalid("model call resolution identity"))
+        ));
+        let unresolved = db.unresolved_model_calls().await.unwrap();
+        assert_eq!(
+            unresolved
+                .iter()
+                .find(|record| record.reservation_id == grant.reservation_id)
+                .map(|record| record.state.as_str()),
+            Some("AMBIGUOUS"),
+            "an invalid resolution must not release the ambiguous reservation"
+        );
+        assert_eq!(db.unresolved_model_call_budget().await.unwrap(), (1, bound));
+        assert!(
+            !db.events()
+                .await
+                .unwrap()
+                .iter()
+                .any(|event| event.kind == "model.call_resolved"),
+            "an invalid resolution must not emit a resolution audit event"
+        );
+    }
+
+    db.resolve_ambiguous_model_call(
+        &grant.reservation_id,
+        "owner",
+        "provider aborted before usage was reported",
+    )
+    .await
+    .unwrap();
+    let records = db.model_calls_for_scope(scope).await.unwrap();
+    let record = records
+        .iter()
+        .find(|record| record.reservation_id == grant.reservation_id)
+        .expect("resolved model call");
+    assert_eq!(record.state, "RELEASED");
+    assert!(record.error.contains("owner"));
+    assert!(record.error.contains("provider aborted"));
+    assert_eq!(db.unresolved_model_call_budget().await.unwrap(), (0, 0));
+    let events = db.events().await.unwrap();
+    let audit = events
+        .iter()
+        .find(|event| {
+            event.kind == "model.call_resolved"
+                && event.subject_id == scope
+                && event.detail.contains(&grant.reservation_id)
+        })
+        .expect("model call resolution audit event");
+    assert!(audit.detail.contains("actor=owner"));
+    assert!(
+        audit
+            .detail
+            .contains("provider aborted before usage was reported")
+    );
+    assert!(matches!(
+        db.resolve_ambiguous_model_call(&grant.reservation_id, "owner", "again")
+            .await,
+        Err(Error::Conflict("model call is not ambiguous"))
+    ));
+    let ModelCallDecision::Reserved(_) = db.authorize_model_call(&input).await.unwrap() else {
+        panic!("an explicitly released call should be retryable");
+    };
+    db.close().await;
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
 async fn model_call_scope_and_global_budgets_are_enforced() {
     let (path, db) = temp_db("factory-model-call-budget").await;
     for scope in [

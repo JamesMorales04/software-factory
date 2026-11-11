@@ -1,0 +1,573 @@
+#!/usr/bin/env python3
+"""Backup, reset and restore the disposable Factory test database.
+
+This helper is only called by ``scripts/reset-test-data.sh``. It is a
+development/operator tool, not part of the installed Factory runtime, the Core
+HTTP API or any automatic cleanup path.
+
+The reset deletes transactional rows while preserving the Project, execution
+profile, provider, GitHub, charter, policy and owner-enrolment configuration
+that make a test installation usable. Schema drift fails closed: every table
+must be classified explicitly below, so a new migration cannot be silently
+deleted or silently preserved.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import shutil
+import sqlite3
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+
+# Tables whose rows describe durable operator configuration or the authenticated
+# owner's setup. They are never deleted by a test-data reset.
+PRESERVED_TABLES = frozenset(
+    {
+        "_sqlx_migrations",
+        "access_security_epoch",
+        "agentic_owner_charters",
+        "device_pairing_audit",
+        "device_pairing_challenges",
+        "device_session_audit",
+        "device_sessions",
+        "execution_policy_grants",
+        "execution_profile_audit",
+        "execution_profile_defaults",
+        "execution_profile_revisions",
+        "execution_profiles",
+        "factory_settings",
+        "github_connection_audit",
+        "github_connections",
+        "inference_ledger_policy",
+        "issue_intake_policy_heads",
+        "issue_intake_policy_revisions",
+        "owner_bootstrap_claim",
+        "project_configs",
+        "project_discoveries",
+        "project_github_bindings",
+        "projects",
+        "provider_settings",
+        "provider_settings_audit",
+        "skill_packs",
+        "skill_refresh_state",
+        "standing_delegations",
+    }
+)
+
+# Every other current table is transactional, diagnostic or request-scoped.
+# Keep this list explicit even though it is large: the union check below makes
+# an unclassified future table a hard failure instead of an accidental delete.
+TRANSACTIONAL_TABLES = frozenset(
+    {
+        "action_drafts",
+        "action_specs",
+        "actions",
+        "agentic_assessments",
+        "agentic_knowledge_packs",
+        "agentic_operations",
+        "agentic_owner_decisions",
+        "agentic_participant_plans",
+        "agentic_skill_adoptions",
+        "agentic_skill_uses",
+        "agentic_skills",
+        "agentic_spec_issues",
+        "agentic_spec_publications",
+        "agentic_specs",
+        "agentic_work_graphs",
+        "architecture_plans",
+        "attempt_specs",
+        "attempts",
+        "autonomy_repairs",
+        "campaign_authorizations",
+        "campaign_execution_bindings",
+        "campaign_execution_profile_bindings",
+        "campaign_progress_state",
+        "campaign_review_requirements",
+        "campaigns",
+        "candidates",
+        "definition_of_done",
+        "delegation_usage",
+        "dependency_plans",
+        "documentation_plans",
+        "events",
+        "execution_check_receipts",
+        "execution_policies",
+        "external_effects",
+        "finding_dispositions",
+        "frozen_lead_plans",
+        "gate_decision_reviewers",
+        "gate_decision_revisions",
+        "gate_decisions",
+        "github_issue_page_etags",
+        "github_issues",
+        "github_sync_state",
+        "idempotency",
+        "idempotency_keys",
+        "inference_authorizations",
+        "inference_campaign_binding_quarantine",
+        "inference_campaign_bindings",
+        "inference_campaign_modes",
+        "inference_envelopes",
+        "inference_ledger_events",
+        "inference_pricing_quotes",
+        "inference_reservations",
+        "intake_messages",
+        "intake_requests",
+        "issue_intake_audit",
+        "issue_intake_batch_items",
+        "issue_intake_batches",
+        "issue_intake_queue",
+        "lead_assessments",
+        "lead_execution_context",
+        "lead_integrations",
+        "lead_proposals",
+        "lead_requests",
+        "lead_start_evidence",
+        "lead_tasks",
+        "lead_withdrawals",
+        "model_call_reservations",
+        "observability_cursor",
+        "openspec_projections",
+        "outbox",
+        "plan_reviews",
+        "planning_artifacts",
+        "progress_checkpoints",
+        "progress_decisions",
+        "progress_evidence",
+        "progress_holds",
+        "progress_retired_work_items",
+        "provider_sessions",
+        "provider_tool_events",
+        "provider_turn_egress_requests",
+        "provider_turn_ledger_requests",
+        "provider_turn_reservations",
+        "quality_receipts",
+        "repair_requests",
+        "reviewer_plans",
+        "runs",
+        "skill_plans",
+        "stack_decisions",
+        "subscription_funding_policies",
+        "subscription_scope_admissions",
+        "worker_leases",
+        "worker_receipts",
+        "worker_sessions",
+        "workflow_checkpoints",
+        "workflow_runs",
+        "workflow_steps",
+    }
+)
+
+COUNT_TABLES = (
+    "projects",
+    "project_configs",
+    "execution_profiles",
+    "execution_profile_revisions",
+    "execution_profile_defaults",
+    "provider_settings",
+    "github_connections",
+    "project_github_bindings",
+    "agentic_owner_charters",
+    "standing_delegations",
+    "factory_settings",
+    "actions",
+    "agentic_owner_decisions",
+    "campaigns",
+    "intake_requests",
+    "lead_requests",
+    "runs",
+    "attempts",
+    "candidates",
+    "quality_receipts",
+    "model_call_reservations",
+    "inference_envelopes",
+    "inference_reservations",
+    "provider_sessions",
+    "provider_turn_reservations",
+    "events",
+)
+
+
+class ResetError(RuntimeError):
+    pass
+
+
+def quote_ident(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def utc_now() -> str:
+    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def connect(path: Path) -> sqlite3.Connection:
+    connection = sqlite3.connect(f"file:{path}?mode=rw", uri=True, timeout=30)
+    connection.isolation_level = None
+    connection.execute("PRAGMA busy_timeout=30000")
+    connection.execute("PRAGMA foreign_keys=ON")
+    return connection
+
+
+def schema_tables(connection: sqlite3.Connection) -> set[str]:
+    rows = connection.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+    ).fetchall()
+    return {row[0] for row in rows}
+
+
+def validate_schema(connection: sqlite3.Connection) -> None:
+    tables = schema_tables(connection)
+    known = PRESERVED_TABLES | TRANSACTIONAL_TABLES
+    unknown = sorted(tables - known)
+    # `_sqlx_migrations` exists in a Core-owned database but not in a schema
+    # assembled directly from the migration files by the shell test.
+    required = known - {"_sqlx_migrations"}
+    missing = sorted(required - tables)
+    if unknown:
+        raise ResetError(
+            "unclassified database table(s): "
+            + ", ".join(unknown)
+            + ". Update scripts/reset-test-data.py before resetting."
+        )
+    if missing:
+        raise ResetError(
+            "expected table(s) are missing: "
+            + ", ".join(missing)
+            + ". The database schema is older or incomplete; refusing."
+        )
+
+
+def count_rows(connection: sqlite3.Connection) -> dict[str, int]:
+    return {
+        table: connection.execute(f"SELECT COUNT(*) FROM {quote_ident(table)}").fetchone()[0]
+        for table in COUNT_TABLES
+    }
+
+
+def delete_order(connection: sqlite3.Connection) -> list[str]:
+    """Return child-before-parent order for every transactional table."""
+    parents: dict[str, set[str]] = {table: set() for table in TRANSACTIONAL_TABLES}
+    for table in TRANSACTIONAL_TABLES:
+        for row in connection.execute(f"PRAGMA foreign_key_list({quote_ident(table)})"):
+            parent = row[2]
+            if parent in TRANSACTIONAL_TABLES and parent != table:
+                parents[table].add(parent)
+    referenced_by: dict[str, set[str]] = {table: set() for table in TRANSACTIONAL_TABLES}
+    for child, table_parents in parents.items():
+        for parent in table_parents:
+            referenced_by[parent].add(child)
+    remaining = set(TRANSACTIONAL_TABLES)
+    ordered: list[str] = []
+    while remaining:
+        leaves = sorted(table for table in remaining if not (referenced_by[table] & remaining))
+        if not leaves:
+            # The current schema has no delete cycle. Keep a deterministic tail
+            # and rely on deferred FK checks instead of silently dropping the
+            # remaining tables.
+            ordered.extend(sorted(remaining))
+            break
+        ordered.extend(leaves)
+        remaining.difference_update(leaves)
+    return ordered
+
+
+def sha256_file(path: Path) -> tuple[str, int]:
+    digest = hashlib.sha256()
+    size = 0
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+            size += len(chunk)
+    return digest.hexdigest(), size
+
+
+def copy_and_hash(source: Path, destination: Path) -> dict[str, object]:
+    shutil.copy2(source, destination, follow_symlinks=False)
+    os.chmod(destination, 0o600)
+    digest, size = sha256_file(destination)
+    return {"sha256": digest, "bytes": size}
+
+
+def write_json(path: Path, payload: dict[str, object]) -> None:
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    os.chmod(temporary, 0o600)
+    temporary.replace(path)
+
+
+def ensure_empty_directory(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    if any(path.iterdir()):
+        raise ResetError(f"evidence directory must be empty: {path}")
+
+
+def backup_database(
+    database: Path,
+    evidence: Path,
+    project: str,
+    mode: str,
+    before: dict[str, int],
+) -> Path:
+    ensure_empty_directory(evidence)
+    files: dict[str, dict[str, object]] = {}
+    for suffix in ("", "-wal"):
+        source = Path(str(database) + suffix)
+        if not source.exists():
+            continue
+        name = "factory.sqlite" + suffix
+        files[name] = copy_and_hash(source, evidence / name)
+    if "factory.sqlite" not in files:
+        raise ResetError(f"database file is missing: {database}")
+    manifest = {
+        "kind": "factory-test-data-reset",
+        "version": 1,
+        "created_at": utc_now(),
+        "project": project,
+        "source_database": str(database),
+        "mode": mode,
+        "files": files,
+        "counts_before": before,
+        "restore": (
+            "Stop the Compose project, verify SHA256SUMS, then run "
+            "scripts/reset-test-data.sh --restore-from this-directory. "
+            "Raw SQL deletion is not a Factory product feature."
+        ),
+    }
+    write_json(evidence / "manifest.json", manifest)
+    sums = "".join(f"{entry['sha256']}  {name}\n" for name, entry in sorted(files.items()))
+    sums_path = evidence / "SHA256SUMS"
+    sums_path.write_text(sums)
+    os.chmod(sums_path, 0o600)
+    return evidence
+
+
+def verify_backup(backup: Path) -> dict[str, dict[str, object]]:
+    manifest_path = backup / "manifest.json"
+    sums_path = backup / "SHA256SUMS"
+    if not manifest_path.is_file() or not sums_path.is_file():
+        raise ResetError(f"backup is missing manifest.json or SHA256SUMS: {backup}")
+    entries: dict[str, dict[str, object]] = {}
+    for line in sums_path.read_text().splitlines():
+        if not line.strip():
+            continue
+        parts = line.split()
+        if len(parts) != 2 or len(parts[0]) != 64:
+            raise ResetError(f"invalid SHA256SUMS line: {line!r}")
+        digest, name = parts
+        path = backup / name
+        if not path.is_file():
+            raise ResetError(f"backup file is missing: {path}")
+        actual, size = sha256_file(path)
+        if actual != digest:
+            raise ResetError(f"backup checksum mismatch: {name}")
+        entries[name] = {"sha256": actual, "bytes": size}
+    if "factory.sqlite" not in entries:
+        raise ResetError("backup does not contain factory.sqlite")
+    manifest = json.loads(manifest_path.read_text())
+    if not isinstance(manifest, dict) or manifest.get("kind") != "factory-test-data-reset":
+        raise ResetError("backup manifest is not a Factory test-data backup")
+    return entries
+
+
+def drop_delete_triggers(connection: sqlite3.Connection) -> list[tuple[str, str]]:
+    rows = connection.execute(
+        "SELECT name,sql FROM sqlite_master "
+        "WHERE type='trigger' AND (upper(sql) LIKE '%BEFORE DELETE%' "
+        "OR upper(sql) LIKE '%INSTEAD OF DELETE%') ORDER BY name"
+    ).fetchall()
+    triggers: list[tuple[str, str]] = []
+    for name, sql in rows:
+        if not sql:
+            raise ResetError(f"trigger has no definition: {name}")
+        connection.execute(f"DROP TRIGGER {quote_ident(name)}")
+        triggers.append((name, sql))
+    return triggers
+
+
+def restore_delete_triggers(
+    connection: sqlite3.Connection, triggers: list[tuple[str, str]]
+) -> None:
+    for name, sql in triggers:
+        connection.execute(sql)
+        present = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='trigger' AND name=?", (name,)
+        ).fetchone()
+        if present is None:
+            raise ResetError(f"failed to restore trigger: {name}")
+
+
+def trigger_names(connection: sqlite3.Connection) -> set[str]:
+    return {
+        row[0]
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='trigger'"
+        ).fetchall()
+    }
+
+
+def apply_reset(connection: sqlite3.Connection, dry_run: bool) -> dict[str, int]:
+    order = delete_order(connection)
+    before_triggers = trigger_names(connection)
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        connection.execute("PRAGMA defer_foreign_keys=ON")
+        triggers = drop_delete_triggers(connection)
+        for table in order:
+            connection.execute(f"DELETE FROM {quote_ident(table)}")
+        violations = connection.execute("PRAGMA foreign_key_check").fetchall()
+        if violations:
+            raise ResetError(f"foreign key violations after reset: {violations[:5]}")
+        after = count_rows(connection)
+        if dry_run:
+            connection.execute("ROLLBACK")
+            if trigger_names(connection) != before_triggers:
+                raise ResetError("dry-run did not restore the delete triggers")
+        else:
+            restore_delete_triggers(connection, triggers)
+            connection.execute("COMMIT")
+            integrity = connection.execute("PRAGMA integrity_check").fetchone()
+            if not integrity or integrity[0] != "ok":
+                raise ResetError(f"integrity check failed: {integrity}")
+    except Exception:
+        if connection.in_transaction:
+            connection.execute("ROLLBACK")
+        raise
+    return after
+
+
+def restore_database(
+    database: Path,
+    backup: Path,
+    evidence: Path | None,
+    project: str,
+) -> None:
+    entries = verify_backup(backup)
+    database.parent.mkdir(parents=True, exist_ok=True)
+    if evidence is not None:
+        ensure_empty_directory(evidence)
+        if database.exists():
+            backup_database(database, evidence, project, "pre-restore", {})
+    for suffix in ("-wal", "-shm"):
+        stale = Path(str(database) + suffix)
+        if stale.exists():
+            stale.unlink()
+    for name in entries:
+        if name == "factory.sqlite":
+            destination = database
+        elif name.startswith("factory.sqlite-"):
+            suffix = name[len("factory.sqlite") :]
+            destination = Path(str(database) + suffix)
+        else:
+            raise ResetError(f"unexpected backup file: {name}")
+        temporary = destination.with_name(destination.name + ".restore-tmp")
+        shutil.copy2(backup / name, temporary, follow_symlinks=False)
+        os.chmod(temporary, 0o600)
+        temporary.replace(destination)
+    connection = connect(database)
+    try:
+        integrity = connection.execute("PRAGMA integrity_check").fetchone()
+        if not integrity or integrity[0] != "ok":
+            raise ResetError(f"restored database integrity check failed: {integrity}")
+        violations = connection.execute("PRAGMA foreign_key_check").fetchall()
+        if violations:
+            raise ResetError(f"restored database has foreign key violations: {violations[:5]}")
+    finally:
+        connection.close()
+
+
+def chown_paths(database: Path, owner: tuple[int, int] | None) -> None:
+    if owner is None:
+        return
+    if os.geteuid() != 0:
+        raise ResetError("--chown requires a root helper container")
+    uid, gid = owner
+    for suffix in ("", "-wal", "-shm"):
+        path = Path(str(database) + suffix)
+        if path.exists():
+            os.chown(path, uid, gid)
+
+
+def parse_owner(value: str) -> tuple[int, int]:
+    try:
+        uid, gid = value.split(":", 1)
+        return int(uid), int(gid)
+    except (ValueError, AttributeError) as error:
+        raise argparse.ArgumentTypeError("expected UID:GID") from error
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--database", required=True, type=Path)
+    parser.add_argument("--evidence-dir", type=Path)
+    parser.add_argument("--project", required=True)
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--restore-from", type=Path)
+    parser.add_argument("--chown", type=parse_owner)
+    args = parser.parse_args(argv)
+
+    if args.dry_run and args.restore_from:
+        raise ResetError("--dry-run and --restore-from are mutually exclusive")
+    if not args.restore_from and not args.database.is_file():
+        raise ResetError(f"database file does not exist: {args.database}")
+
+    if args.restore_from:
+        restore_database(args.database, args.restore_from, args.evidence_dir, args.project)
+        chown_paths(args.database, args.chown)
+        print(f"restored: {args.database} from {args.restore_from}")
+        print("integrity: ok")
+        return 0
+
+    if args.evidence_dir is None:
+        raise ResetError("--evidence-dir is required for a reset")
+
+    connection = connect(args.database)
+    try:
+        validate_schema(connection)
+        before = count_rows(connection)
+        backup_database(
+            args.database,
+            args.evidence_dir,
+            args.project,
+            "dry-run" if args.dry_run else "reset",
+            before,
+        )
+        after = apply_reset(connection, args.dry_run)
+    finally:
+        connection.close()
+    chown_paths(args.database, args.chown)
+
+    report = {
+        "result": "DRY_RUN" if args.dry_run else "RESET",
+        "database_modified": not args.dry_run,
+        "project": args.project,
+        "created_at": utc_now(),
+        "before": before,
+        "after": after,
+        "preserved_tables": sorted(PRESERVED_TABLES),
+        "transactional_tables": sorted(TRANSACTIONAL_TABLES),
+    }
+    write_json(args.evidence_dir / "reset-report.json", report)
+
+    print(f"backup: {args.evidence_dir}")
+    print(f"database: {args.database}")
+    print(f"mode: {'DRY_RUN' if args.dry_run else 'RESET'}")
+    for table in COUNT_TABLES:
+        print(f"count {table}: {before[table]} -> {after[table]}")
+    if args.dry_run:
+        print("database unchanged: dry-run rolled back")
+    else:
+        print("database reset: committed and integrity checked")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main(sys.argv[1:]))
+    except ResetError as error:
+        print(f"reset-test-data: {error}", file=sys.stderr)
+        raise SystemExit(1) from error
