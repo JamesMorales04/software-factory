@@ -5,57 +5,65 @@ Core interface `e9be02c`. The exact SHA is the commit containing this record.
 **Security:** `TRUSTED_LOCAL`. Not isolation certification. No paid inference
 was used.
 
-This record separates what actually ran from what did not. The positive environment build used the final
-`deploy/environment-builder/Containerfile` image
-(`localhost/software-factory-environment-builder:dev`,
-`sha256:c1f26ceccd45451ce6085fc7df9811bfdaef3e002300b14a71c5f93594815824`).
-It is a real rootless Podman image run with a verified image identity, not a
-mock.
+This record separates what actually ran from what did not. The positive
+environment build used the final `deploy/environment-builder/Containerfile`
+image under the unique WP1-B tag
+`localhost/software-factory-environment-builder:wp1b-eb2ebb1-r2`
+(`sha256:081a092764f484ef3ee0fcb2e8de39b4dbdc8ee626f92bb8751d1fdb88180109`,
+image ID `sha256:708a09d5…`). It is a real rootless Podman image run with a
+verified image identity, not a mock. The shared `:dev` tag belongs to the
+WP1-C Compose bundle and was not overwritten by this evidence run.
 
 ## 1. Deterministic tests and static checks
 
 | Check | Result |
 |---|---|
-| `python3 -m py_compile deploy/environment-builder/entrypoint.py deploy/environment-builder/environment_builder/*.py scripts/environment-builder-fixture.py` | PASS |
+| `python3 -m py_compile deploy/environment-builder/entrypoint.py deploy/environment-builder/environment_builder/*.py scripts/environment-builder-fixture.py scripts/environment-builder-path-policy.py scripts/environment-builder-disk-policy.py` | PASS |
 | `bash -n scripts/environment-builder.sh` | PASS |
-| `python3 -m unittest discover -s deploy/environment-builder/tests -v` | PASS — 20 tests |
+| `python3 -m unittest discover -s deploy/environment-builder/tests -v` | PASS — 28 tests |
 | `git diff --check` | PASS |
 
 Covered: secret-shaped file rejection, `builtins.exec`, unpinned fetch,
 pinned fetch acceptance, unknown/denied license, unfree without/with exact
 override, network policy, sandbox policy, resource bounds, argv checks, receipt
 binding, failed receipt blockers, exact cgroup CPU/memory/PID bounds, fetch
-network/proxy/allowlist enforcement, deterministic CycloneDX SBOM, transitive
-`NOASSERTION`, SBOM-to-frozen-spec binding, and the Core-shaped license
-inventory.
+network/proxy/allowlist enforcement, protected cache/workspace descendants,
+symlink/`..` escapes, disk-overflow success-artifact purge, deterministic
+CycloneDX SBOM, transitive `NOASSERTION`, SBOM-to-frozen-spec binding, and the
+Core-shaped license inventory.
 
 ## 2. Positive Node+Playwright and Rust acceptance
 
-Spec hash: `0630003b7be75e3b54ce9cbf0d3099f284abd093b874c80588bb5c3db236bdff`.
-Builder image: `localhost/software-factory-environment-builder:dev@sha256:3407adf8c56cf090fe18fc3801388a603adfdaa45d347e841063f886cfc6d1da`.
-Store path: `/nix/store/wyrgjl56z5nyq18clgnj1fkqr6vlvbzj-devenv-shell-env`.
-Closure entries: 483.
+Spec hash: `e059527402146c560851ad350708b7aa9a8e63835c26b7affdef89efc6e6fb9e`.
+Builder image: `localhost/software-factory-environment-builder:wp1b-eb2ebb1-r2@sha256:081a092764f484ef3ee0fcb2e8de39b4dbdc8ee626f92bb8751d1fdb88180109`.
+This is the WP1-B builder-image evidence tag, not the shared `:dev` tag used by
+the WP1-C Compose bundle. The final Compose integration must rebuild this same
+`deploy/environment-builder/Containerfile` under its own digest and validate
+that separately.
+Store path: `/nix/store/c2nf1xssr9jvifvw55v4dpf1hnp1qk5g-devenv-shell-env`.
+Closure entries: 481.
 
 | Operation | Result |
 |---|---|
 | Final image build | `PASS`; 6.44 GB; Nix 2.28.3, devenv 1.11.2, Node 22.20.0, Chromium 143.0.7499.169 |
 | Descriptor / self-test | `PASS`; `READY`; exact image digest |
-| Offline build receipt | `SUCCEEDED`; `outputSha256=43cf7804da91ec0c09360d11b0af40bc730c734520e7c46c7e24259f1704ebb1`; 4 749 ms |
-| Warm repeat build | `SUCCEEDED`; same spec and same `outputSha256`; 4 733 ms |
-| Node + Playwright check (`npm test`, real Chromium) | `PASSED`; exit 0; 6 425 ms |
-| Rust check (`cargo test --offline`) | `PASSED`; exit 0; 5 697 ms |
+| Offline build receipt | `SUCCEEDED`; `outputSha256=b0d8a767b2f415b5642531703d2db366338443a05b256bdec6c5ae5d3afe55dd`; 6 932 ms |
+| Warm repeat build | `SUCCEEDED`; same spec and same `outputSha256`; 6 143 ms |
+| Node + Playwright check (`npm test`, real Chromium) | `PASSED`; exit 0; 10 036 ms |
+| Rust check (`cargo test --offline`) | `PASSED`; exit 0; 7 647 ms |
 | Sandbox attestation | complete: non-root, no secrets, no host network/socket/mount, Nix sandbox, pure, bounded resources |
 | Frozen SBOM hash | `5f2a9b5b3ec0d7dbfea7c890af8fbb0f1ef267b3f26bf6b0c0a195fb3521539e` |
-| CycloneDX document hash | `33f74497c4edc09d6a6c4132b6922a6c02693268352760cfe2e328787e7b8eb5` |
+| CycloneDX document hash | `f1e014e2c5a82d88de687a5f8dafae4169b00ff306dce4633d918635047da2ba` |
 | SBOM matches frozen spec | `true` |
 
 The Node check log contains a real Playwright run: `1 passed` for
 `tests/smoke.spec.mjs` with Chromium. The Rust check compiled and ran the
 `wp0_rust_spike` unit test.
 
-The environment was fetched through the approved internal broker network
-(`factory-egress-internal`) and a deny-by-default HTTP CONNECT proxy that
-allowed only the frozen plan destinations (`cache.nixos.org`,
+The exact included fetch artifact is `fetch-result.json` for spec
+`e0595274…` with `fetch-request.json` (fetch duration 126 761 ms); it used the approved internal broker
+network (`factory-egress-internal`) and a deny-by-default HTTP CONNECT proxy
+that allowed only the frozen plan destinations (`cache.nixos.org`,
 `devenv.cachix.org`, GitHub, npm, crates.io/rust static hosts). The build and
 check phases ran with `--network none`.
 
@@ -66,12 +74,18 @@ verification stayed enabled with the pinned `cache.nixos.org` and
 `devenv.cachix.org` keys; there is no global `require-sigs=false` and no
 unsigned local closure import.
 
-Writable host paths are confined to the cache root: the run directory and the
-Nix store cache must resolve inside it, and the read-only workspace is rejected
-if it is `/`, `$HOME`, the repository root, the container engine store or
-another protected host path. Disk is a post-hoc `du` bound against the frozen
-`diskMiB`; `disk.exact=false` and the enforcement is recorded in
-`disk-usage.json`. It is not claimed as an exact quota.
+Writable host paths are confined to an explicit cache base: the cache, run
+directory and Nix store cache must resolve under it; `$HOME/.ssh`,
+`$HOME/.gnupg`, `$HOME/.config`, container engine paths, `.git` segments,
+`..`/symlink escapes and repository-root descendants are rejected. The
+read-only workspace rejects the same protected descendants.
+The builder runs with a read-only root filesystem and bounded tmpfs for
+`/tmp`, `/run`, `/home/factory/.cache` and `/home/factory/.local`; `/cache`
+and `/nix` are the only writable mounts. Disk is a post-hoc `du` bound against
+the frozen `diskMiB`; `disk.exact=false` and the enforcement is recorded in
+`disk-usage.json`. On overflow all success artifacts and PASSED check results
+are removed from both run and output directories and only `disk-failure.json`
+plus `disk-usage.json` remain. It is not claimed as an exact quota.
 
 ## 3. Typed failure evidence
 
@@ -124,8 +138,8 @@ invoke the same image through the runtime broker, not the wrapper.
 
 `summary.json` records the observed commands and statuses in machine-readable
 form. The directory also contains the exact `spec-plan-request.json` and
-`run-request.json`, the CycloneDX `sbom.cdx.json`, closure manifest, license
-inventory, final and warm-repeat receipts/evidence, `disk-usage.json`, raw
+`run-request.json`, `fetch-request.json`/`fetch-result.json`, the CycloneDX
+`sbom.cdx.json`, closure manifest, license inventory, final and warm-repeat receipts/evidence, `disk-usage.json`, raw
 Node/Rust `check.log` files and the in-tree `egress-proxy.py` used for the run
 (`sha256 66d31ec13fdf23ae35ba3eb75b31f1986104d47c037a1c1405f68329027d353d`).
 `descriptor.json`, `self-test.json`, `image-inspect.json` and

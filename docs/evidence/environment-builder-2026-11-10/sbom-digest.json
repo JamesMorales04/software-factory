@@ -1,5 +1,5 @@
 {
-  "cycloneDxDocumentSha256": "33f74497c4edc09d6a6c4132b6922a6c02693268352760cfe2e328787e7b8eb5",
+  "cycloneDxDocumentSha256": "f1e014e2c5a82d88de687a5f8dafae4169b00ff306dce4633d918635047da2ba",
   "frozenSbomSha256": "5f2a9b5b3ec0d7dbfea7c890af8fbb0f1ef267b3f26bf6b0c0a195fb3521539e",
   "licenseInventoryEntriesSha256": "5f2a9b5b3ec0d7dbfea7c890af8fbb0f1ef267b3f26bf6b0c0a195fb3521539e",
   "matchesFrozenSpec": true,

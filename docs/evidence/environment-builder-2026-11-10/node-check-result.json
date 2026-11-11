@@ -1,11 +1,11 @@
 {
   "checkId": "node-playwright",
-  "createdAt": "2026-11-11T06:22:44Z",
-  "durationMs": 6425,
+  "createdAt": "2026-11-11T07:01:48Z",
+  "durationMs": 10036,
   "exitCode": 0,
   "expectExit": 0,
-  "outputSha256": "43cf7804da91ec0c09360d11b0af40bc730c734520e7c46c7e24259f1704ebb1",
+  "outputSha256": "b0d8a767b2f415b5642531703d2db366338443a05b256bdec6c5ae5d3afe55dd",
   "schemaVersion": 1,
-  "specSha256": "0630003b7be75e3b54ce9cbf0d3099f284abd093b874c80588bb5c3db236bdff",
+  "specSha256": "e059527402146c560851ad350708b7aa9a8e63835c26b7affdef89efc6e6fb9e",
   "status": "PASSED"
 }

@@ -1,95 +1,100 @@
 {
-  "schemaVersion": 1,
-  "candidateBranch": "feat/environment-builder",
   "baseline": "05c78b2",
+  "candidateBranch": "feat/environment-builder",
   "coreInterfaceCommit": "e9be02c",
-  "security": "TRUSTED_LOCAL",
-  "paidInference": false,
   "deterministic": {
-    "pyCompile": "PASS",
     "bashSyntax": "PASS",
     "gitDiffCheck": "PASS",
+    "pyCompile": "PASS",
     "unitTests": {
-      "status": "PASS",
-      "count": 20,
-      "command": "python3 -m unittest discover -s deploy/environment-builder/tests -v"
+      "command": "python3 -m unittest discover -s deploy/environment-builder/tests -v",
+      "count": 28,
+      "status": "PASS"
     }
   },
   "finalImage": {
     "containerfile": "deploy/environment-builder/Containerfile",
-    "image": "localhost/software-factory-environment-builder:dev",
-    "imageDigest": "sha256:3407adf8c56cf090fe18fc3801388a603adfdaa45d347e841063f886cfc6d1da",
-    "size": "6.44 GB",
     "descriptor": {
-      "status": "PASS",
       "builderStatus": "READY",
-      "platform": "x86_64-linux"
+      "platform": "x86_64-linux",
+      "status": "PASS"
     },
+    "image": "localhost/software-factory-environment-builder:wp1b-eb2ebb1-r2",
+    "imageDigest": "sha256:081a092764f484ef3ee0fcb2e8de39b4dbdc8ee626f92bb8751d1fdb88180109",
+    "imageId": "sha256:708a09d5328bf6aa47fe780745cbc80b229d575c8db5e5de28246821fc270961",
     "selfTest": {
-      "status": "PASS",
-      "nixVersion": "2.28.3",
+      "chromiumVersion": "143.0.7499.169",
       "devenvVersion": "1.11.2",
+      "nixVersion": "2.28.3",
       "nodeVersion": "22.20.0",
-      "chromiumVersion": "143.0.7499.169"
-    }
+      "status": "PASS"
+    },
+    "size": "6.44 GB",
+    "tagPolicy": "unique WP1-B evidence tag; the shared :dev tag belongs to the WP1-C Compose bundle"
   },
+  "notTested": [
+    "deploy/factory-browser/Containerfile build and its Chromium launch",
+    "registry publication and registry-manifest digest pinning",
+    "Compose/runtime-broker invocation of the builder image",
+    "final Compose bundle rebuild of the same Containerfile under its own digest",
+    "check under the product Core authorization/Gate path",
+    "independent verification or acceptance",
+    "exact disk quota enforcement (post-hoc du bound only; disk.exact=false)"
+  ],
+  "paidInference": false,
   "positiveAcceptance": {
-    "builderImage": "localhost/software-factory-environment-builder:dev",
-    "builderImageDigest": "sha256:3407adf8c56cf090fe18fc3801388a603adfdaa45d347e841063f886cfc6d1da",
-    "specSha256": "0630003b7be75e3b54ce9cbf0d3099f284abd093b874c80588bb5c3db236bdff",
-    "storePath": "/nix/store/wyrgjl56z5nyq18clgnj1fkqr6vlvbzj-devenv-shell-env",
-    "closureEntries": 483,
     "build": {
-      "status": "SUCCEEDED",
-      "outputSha256": "43cf7804da91ec0c09360d11b0af40bc730c734520e7c46c7e24259f1704ebb1",
-      "durationMs": 4749
+      "durationMs": 6932,
+      "outputSha256": "b0d8a767b2f415b5642531703d2db366338443a05b256bdec6c5ae5d3afe55dd",
+      "status": "SUCCEEDED"
     },
-    "warmRepeat": {
-      "status": "SUCCEEDED",
-      "outputSha256": "43cf7804da91ec0c09360d11b0af40bc730c734520e7c46c7e24259f1704ebb1",
-      "durationMs": 4733
-    },
-    "nodePlaywrightCheck": {
-      "status": "PASSED",
-      "exitCode": 0,
-      "durationMs": 6425,
-      "detail": "real Chromium launch; tests/smoke.spec.mjs passed"
-    },
-    "rustCheck": {
-      "status": "PASSED",
-      "exitCode": 0,
-      "durationMs": 5697,
-      "detail": "cargo test --offline; wp0_rust_spike unit test passed"
-    },
-    "sandboxAttestation": {
-      "nonRoot": true,
-      "noSecrets": true,
-      "noHostNetwork": true,
-      "noHostSocket": true,
-      "noHostMount": true,
-      "sandbox": true,
-      "impure": false,
-      "boundedResources": true
-    },
+    "builderImage": "localhost/software-factory-environment-builder:wp1b-eb2ebb1-r2",
+    "builderImageDigest": "sha256:081a092764f484ef3ee0fcb2e8de39b4dbdc8ee626f92bb8751d1fdb88180109",
+    "closureEntries": 481,
     "disk": {
-      "planDiskMiB": 10240,
-      "observedKiB": 10001324,
-      "observedMiB": 9766.918,
-      "exceeded": false,
       "enforcement": "POST_HOC_DU",
-      "exact": false
-    },
-    "sbom": {
-      "frozenSbomSha256": "5f2a9b5b3ec0d7dbfea7c890af8fbb0f1ef267b3f26bf6b0c0a195fb3521539e",
-      "cycloneDxDocumentSha256": "33f74497c4edc09d6a6c4132b6922a6c02693268352760cfe2e328787e7b8eb5",
-      "matchesFrozenSpec": true
+      "exact": false,
+      "exceeded": false,
+      "observedKiB": 9978048,
+      "observedMiB": 9744.188,
+      "planDiskMiB": 10240
     },
     "fetch": {
+      "buildNetwork": "none",
+      "fetchDurationMs": 126761,
+      "fetchResultSpecSha256": "e059527402146c560851ad350708b7aa9a8e63835c26b7affdef89efc6e6fb9e",
+      "fetchSpecSha256": "e059527402146c560851ad350708b7aa9a8e63835c26b7affdef89efc6e6fb9e",
       "network": "factory-egress-internal",
       "networkInternalVerified": true,
       "proxyEnforced": true,
-      "buildNetwork": "none",
       "proxySha256": "66d31ec13fdf23ae35ba3eb75b31f1986104d47c037a1c1405f68329027d353d"
+    },
+    "nodePlaywrightCheck": {
+      "detail": "real Chromium launch; tests/smoke.spec.mjs passed",
+      "durationMs": 10036,
+      "exitCode": 0,
+      "status": "PASSED"
+    },
+    "rustCheck": {
+      "detail": "cargo test --offline; wp0_rust_spike unit test passed",
+      "durationMs": 7647,
+      "exitCode": 0,
+      "status": "PASSED"
+    },
+    "sandboxAttestation": {
+      "boundedResources": true,
+      "impure": false,
+      "noHostMount": true,
+      "noHostNetwork": true,
+      "noHostSocket": true,
+      "noSecrets": true,
+      "nonRoot": true,
+      "sandbox": true
+    },
+    "sbom": {
+      "cycloneDxDocumentSha256": "f1e014e2c5a82d88de687a5f8dafae4169b00ff306dce4633d918635047da2ba",
+      "frozenSbomSha256": "5f2a9b5b3ec0d7dbfea7c890af8fbb0f1ef267b3f26bf6b0c0a195fb3521539e",
+      "matchesFrozenSpec": true
     },
     "signatureVerification": {
       "enabled": true,
@@ -98,8 +103,17 @@
         "cache.nixos.org-1",
         "devenv.cachix.org-1"
       ]
+    },
+    "specSha256": "e059527402146c560851ad350708b7aa9a8e63835c26b7affdef89efc6e6fb9e",
+    "storePath": "/nix/store/c2nf1xssr9jvifvw55v4dpf1hnp1qk5g-devenv-shell-env",
+    "warmRepeat": {
+      "durationMs": 6143,
+      "outputSha256": "b0d8a767b2f415b5642531703d2db366338443a05b256bdec6c5ae5d3afe55dd",
+      "status": "SUCCEEDED"
     }
   },
+  "schemaVersion": 1,
+  "security": "TRUSTED_LOCAL",
   "typedFailures": [
     {
       "case": "missing image or digest",
@@ -156,18 +170,10 @@
       "status": "PASS"
     }
   ],
-  "notTested": [
-    "deploy/factory-browser/Containerfile build and its Chromium launch",
-    "registry publication and registry-manifest digest pinning",
-    "Compose/runtime-broker invocation of the builder image",
-    "check under the product Core authorization/Gate path",
-    "independent verification or acceptance",
-    "exact disk quota enforcement (post-hoc du bound only; disk.exact=false)"
-  ],
   "versionCoordination": {
-    "builderNixVersion": "2.28.3",
+    "action": "Core must set FACTORY_ENVIRONMENT_DEVENV_VERSION=1.11.2 or the image must be rebuilt for 1.10.0; the builder fails ENVIRONMENT_HASH_MISMATCH on mismatch",
     "builderDevenvVersion": "1.11.2",
-    "coreDefaultDevenvVersionAtE9be02c": "1.10.0",
-    "action": "Core must set FACTORY_ENVIRONMENT_DEVENV_VERSION=1.11.2 or the image must be rebuilt for 1.10.0; the builder fails ENVIRONMENT_HASH_MISMATCH on mismatch"
+    "builderNixVersion": "2.28.3",
+    "coreDefaultDevenvVersionAtE9be02c": "1.10.0"
   }
 }

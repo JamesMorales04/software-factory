@@ -1,10 +1,10 @@
 {
-  "closureEntries": 483,
-  "closureManifestSha256": "f668fc80669b9f5d9e2f66c7e6a0c29094fde4c0f09e50800a79660b319d52e2",
-  "durationMs": 108469,
-  "outputSha256": "a5ee339e406684b65f70cc4f0f0839079bf8b0b555d601605f72a392da510002",
+  "closureEntries": 481,
+  "closureManifestSha256": "194a9ca32c4006d453e46828512f87678f9310d2750a4903335a5367592cbf69",
+  "durationMs": 126761,
+  "outputSha256": "b0d8a767b2f415b5642531703d2db366338443a05b256bdec6c5ae5d3afe55dd",
   "schemaVersion": 1,
-  "specSha256": "ef295d883ccbb6d407de89bee4c8cf5d266e7d363fb3d4f2d16b526685f4be85",
+  "specSha256": "e059527402146c560851ad350708b7aa9a8e63835c26b7affdef89efc6e6fb9e",
   "status": "FETCHED",
-  "storePath": "/nix/store/wyrgjl56z5nyq18clgnj1fkqr6vlvbzj-devenv-shell-env"
+  "storePath": "/nix/store/c2nf1xssr9jvifvw55v4dpf1hnp1qk5g-devenv-shell-env"
 }

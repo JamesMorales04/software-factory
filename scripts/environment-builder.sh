@@ -25,6 +25,7 @@ IMAGE="${FACTORY_ENVIRONMENT_BUILDER_IMAGE:-localhost/software-factory-environme
 DIGEST="${FACTORY_ENVIRONMENT_BUILDER_DIGEST:-}"
 PLATFORM="${FACTORY_ENVIRONMENT_BUILDER_PLATFORM:-x86_64-linux}"
 POLICY_REVISION="${FACTORY_ENVIRONMENT_BUILDER_POLICY_REVISION:-nix-devenv-environment-v1}"
+CACHE_BASE="${FACTORY_ENVIRONMENT_BUILDER_CACHE_BASE:-${XDG_CACHE_HOME:-$HOME/.cache}/software-factory}"
 CACHE="${FACTORY_ENVIRONMENT_BUILDER_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/software-factory/environment-builder}"
 CACHE="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$CACHE")"
 NIX_STORE_CACHE="${FACTORY_ENVIRONMENT_BUILDER_NIX_STORE:-$CACHE/nix-store}"
@@ -49,53 +50,35 @@ canonical() {
   python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1"
 }
 
-require_within_cache() {
-  local label="$1" path="$2"
-  local real
-  real="$(canonical "$path")"
-  case "$real" in
-    "${CACHE}"/*) printf '%s\n' "$real" ;;
-    *) typed_failure ENVIRONMENT_RESOURCE_LIMIT \
-         "${label} must stay inside the builder cache root ${CACHE}" ;;
-  esac
-}
-
-validate_cache_root() {
-  local cache="$1"
-  python3 - "$cache" "$HOME" "$ROOT" <<'PYCACHE'
-import os, sys
-cache, home, root = sys.argv[1:4]
-real = os.path.realpath(cache)
-forbidden = {"/", "/root", os.path.realpath(home), os.path.realpath(root)}
-if real in forbidden:
-    raise SystemExit(f"cache root {real} is a protected host path")
-print(real)
-PYCACHE
-}
-
-validate_workspace() {
-  local workspace="$1"
-  python3 - "$workspace" "$HOME" "$ROOT" <<'PYWORKSPACE'
-import os, sys
-workspace, home, root = sys.argv[1:4]
-real = os.path.realpath(workspace)
-forbidden = {
-    "/", "/root", "/home", "/etc", "/proc", "/sys", "/dev", "/run", "/var/run",
-    os.path.realpath(home), os.path.realpath(root),
-}
-if real in forbidden:
-    raise SystemExit(f"workspace {real} is a protected host path and must not be mounted")
-if not os.path.isdir(real):
-    raise SystemExit(f"workspace {real} is not a directory")
-if "/.local/share/containers" in real or "podman.sock" in real:
-    raise SystemExit("workspace must not expose the container engine")
-print(real)
-PYWORKSPACE
+path_policy() {
+  python3 "$ROOT/scripts/environment-builder-path-policy.py" "$@" --home "$HOME" --root "$ROOT"
 }
 
 disk_usage_kib() {
   local run_dir="$1" store_dir="$2"
   du -sk "$run_dir" "$store_dir" 2>/dev/null | awk '{sum += $1} END {print sum + 0}'
+}
+
+disk_policy() {
+  python3 "$ROOT/scripts/environment-builder-disk-policy.py" "$@"
+}
+
+purge_success_artifacts() {
+  disk_policy purge --run-dir "$1" --output "$2"
+}
+
+write_disk_failure() {
+  disk_policy failure --run-dir "$1" --output "$2" --phase "$3"
+}
+
+copy_disk_evidence() {
+  local run_dir="$1" output="$2" name
+  mkdir -p "$output"
+  for name in disk-usage.json disk-failure.json build.log check.log; do
+    if [[ -f "$run_dir/$name" ]]; then
+      cp -f "$run_dir/$name" "$output/$name"
+    fi
+  done
 }
 
 check_disk_budget() {
@@ -306,12 +289,16 @@ run_container() {
     --cap-add SYS_CHROOT
     --security-opt unmask=ALL
     --security-opt no-new-privileges
+    --read-only
+    --tmpfs /tmp:rw,noexec,nosuid,size=1g
+    --tmpfs /run:rw,noexec,nosuid,size=64m
+    --tmpfs /home/factory/.cache:rw,noexec,nosuid,size=256m
+    --tmpfs /home/factory/.local:rw,noexec,nosuid,size=128m
     --user 10001:10001
     --userns=keep-id:uid=10001,gid=10001
     --cpus "$cpu"
     --memory "${memory}m"
     --pids-limit "$pids"
-    --tmpfs /tmp:rw,noexec,nosuid,size=1g
     --mount "type=bind,src=${workspace},dst=/inputs/workspace,ro=true"
     --mount "type=bind,src=${run_dir},dst=/cache,rw=true"
     --mount "type=bind,src=${NIX_STORE_CACHE},dst=/nix,rw=true"
@@ -337,7 +324,7 @@ copy_outputs() {
   mkdir -p "$output"
   local name
   for name in result.json builder-evidence.json build.log check.log check-result.json \
-              fetch-result.json sbom.cdx.json license-inventory.json closure.json sbom-digest.json disk-usage.json; do
+              fetch-result.json fetch-request.json sbom.cdx.json license-inventory.json closure.json sbom-digest.json disk-usage.json disk-failure.json; do
     if [[ -f "$run_dir/$name" ]]; then
       cp -f "$run_dir/$name" "$output/$name"
     fi
@@ -381,21 +368,26 @@ case "$cmd" in
     [[ -n "$request" && -f "$request" ]] || typed_failure ENVIRONMENT_SPEC_INVALID "a request JSON file is required"
     [[ -n "$workspace" && -d "$workspace" ]] || typed_failure ENVIRONMENT_PLAN_INVALID "a project workspace is required"
     [[ -n "$output" ]] || typed_failure ENVIRONMENT_SPEC_INVALID "--output is required"
-    workspace="$(validate_workspace "$workspace")" || typed_failure ENVIRONMENT_PLAN_INVALID "workspace is not an allowed project path"
+    if ! workspace="$(path_policy workspace --path "$workspace")"; then
+      typed_failure ENVIRONMENT_PLAN_INVALID "workspace is not an allowed project path"
+    fi
+    if ! CACHE_BASE="$(path_policy cache-base --path "$CACHE_BASE")"; then
+      typed_failure ENVIRONMENT_RESOURCE_LIMIT "builder cache base is a protected host path"
+    fi
+    if ! CACHE="$(path_policy cache --path "$CACHE" --base "$CACHE_BASE")"; then
+      typed_failure ENVIRONMENT_RESOURCE_LIMIT "builder cache must stay under the allowed cache base"
+    fi
     validate_fetch_network "$FETCH_NETWORK"
     validate_fetch_proxy "$FETCH_NETWORK" "$FETCH_PROXY"
     verify_image
-    if ! CACHE="$(validate_cache_root "$CACHE")"; then
-      typed_failure ENVIRONMENT_RESOURCE_LIMIT "builder cache root is a protected host path"
-    fi
     mkdir -p "$CACHE"
     chmod 700 "$CACHE" 2>/dev/null || true
-    if ! NIX_STORE_CACHE="$(require_within_cache "nix store cache" "$NIX_STORE_CACHE")"; then
+    if ! NIX_STORE_CACHE="$(path_policy child --path "$NIX_STORE_CACHE" --base "$CACHE")"; then
       typed_failure ENVIRONMENT_RESOURCE_LIMIT "nix store cache must stay inside the builder cache root ${CACHE}"
     fi
     ensure_nix_store
     if [[ -n "$run_dir_override" ]]; then
-      if ! run_dir="$(require_within_cache "run directory" "$run_dir_override")"; then
+      if ! run_dir="$(path_policy child --path "$run_dir_override" --base "$CACHE")"; then
         typed_failure ENVIRONMENT_RESOURCE_LIMIT "run directory must stay inside the builder cache root ${CACHE}"
       fi
       mkdir -p "$run_dir"
@@ -406,7 +398,9 @@ case "$cmd" in
     read -r cpu memory pids timeout_secs disk_mib < <(prepare "$request" "$workspace" "$run_dir" "$check_doc" "$FETCH_NETWORK" "$FETCH_PROXY")
 
     if ! check_disk_budget "$run_dir" "$NIX_STORE_CACHE" "$disk_mib" "pre-${cmd}"; then
-      copy_outputs "$run_dir" "$output" 2>/dev/null || true
+      purge_success_artifacts "$run_dir" "$output"
+      write_disk_failure "$run_dir" "$output" "pre-${cmd}"
+      copy_disk_evidence "$run_dir" "$output"
       typed_failure ENVIRONMENT_RESOURCE_LIMIT "builder cache/store already exceeds the frozen disk bound"
     fi
     if [[ "$cmd" == "build" && "$fetch_first" == "1" ]]; then
@@ -418,6 +412,7 @@ case "$cmd" in
         copy_outputs "$run_dir" "$output"
         typed_failure ENVIRONMENT_BUILD_FAILED "the broker fetch phase produced no fetch result"
       fi
+      cp -f "$run_dir/request.json" "$run_dir/fetch-request.json"
     fi
 
     network="none"
@@ -446,8 +441,9 @@ PYREQUEST
       typed_failure ENVIRONMENT_BUILD_FAILED "the builder container failed; see build.log/result.json"
     fi
     if ! check_disk_budget "$run_dir" "$NIX_STORE_CACHE" "$disk_mib" "post-${cmd}"; then
-      rm -f "$run_dir/result.json"
-      copy_outputs "$run_dir" "$output"
+      purge_success_artifacts "$run_dir" "$output"
+      write_disk_failure "$run_dir" "$output" "post-${cmd}"
+      copy_disk_evidence "$run_dir" "$output"
       typed_failure ENVIRONMENT_RESOURCE_LIMIT "observed builder disk usage exceeds the frozen disk bound"
     fi
     copy_outputs "$run_dir" "$output"

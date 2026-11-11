@@ -2,11 +2,11 @@
   "enforcement": "POST_HOC_DU",
   "exact": false,
   "exceeded": false,
-  "observedKiB": 10001324,
-  "observedMiB": 9766.918,
+  "observedKiB": 9978048,
+  "observedMiB": 9744.188,
   "phase": "post-build",
   "planDiskMiB": 10240,
-  "runDir": "/home/james/.cache/sf-quality-wave12/environment-builder/cache/runs/232f9099ac53484497b819a1358a1c39",
+  "runDir": "/home/james/.cache/sf-quality-wave12/environment-builder/cache/runs/wp1b2-38116e941ee9453ebb24ec1156ce5be5",
   "schemaVersion": 1,
   "storeCache": "/home/james/.cache/sf-quality-wave12/environment-builder/cache/nix-store-final"
 }
