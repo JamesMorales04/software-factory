@@ -2757,6 +2757,9 @@ async fn run_provider_tool_loop(
                 if call_id.trim().is_empty() || !call_ids.insert(call_id.clone()) {
                     return Err("provider tool call id is empty or duplicated".into());
                 }
+                // A leading `./` denotes the same project-relative file. The
+                // scope check still rejects `..`, absolute paths and `.git`.
+                let path = path.strip_prefix("./").unwrap_or(path.as_str()).to_owned();
                 post_tool_event(context, &call_id, &tool, "REQUEST", "tool requested").await?;
                 let state = provider_state(context).await?;
                 if state == "CANCEL_REQUESTED" {
@@ -3201,6 +3204,7 @@ async fn execute_codex_tool(
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned();
+    let path = path.strip_prefix("./").unwrap_or(path.as_str()).to_owned();
     let content = arguments
         .get("content")
         .and_then(Value::as_str)
