@@ -131,22 +131,26 @@ fetch/resolve.
 ## 7. Tests performed
 
 - `cargo fmt --all -- --check`
-- `cargo clippy -p factory-native --lib --bins -- -D warnings`
-- `cargo test -p factory-native --lib` — 872 passed, 4 ignored.
-- `cargo test -p factory-native --bin factory-core` — 60 passed.
+- `cargo clippy -p factory-native --all-targets --all-features -- -D warnings`
+- `cargo test -p factory-native --lib` — 942 passed, 4 ignored.
+- `cargo test -p factory-native --bin factory-core` — 65 passed.
 - `cargo test -p factory-native --bin factory-worker` — 29 passed.
 - `cargo test -p factory-native --bin factory-verifier` — 9 passed.
-- `cargo test -p factory-native --bin factory-runtime-broker` — 48 passed,
-  including owner separation, exact digest/allowlist, resource/network policy,
-  narrow container args, fake builder success, resolve, timeout/cleanup and
-  concurrent owner isolation.
-- `python3 -m unittest discover -s deploy/environment-builder/tests` — 22 passed.
+- `cargo test -p factory-native --bin factory-runtime-broker` — 53 passed,
+  including owner separation, exact bundle digest/allowlist, tampered bundle,
+  symlink/oversize workspace rejection, cache eviction, resource/network policy,
+  narrow container args, fake builder success, resolve, timeout/cleanup,
+  dropped-request cleanup and concurrent owner isolation.
+- `python3 -m unittest discover -s deploy/environment-builder/tests` — 34 passed.
+- Office `npm ci`, typecheck, lint and tests — 50 files / 353 tests passed.
 - `podman compose -f compose.yaml config --quiet` — exit 0.
 - `factory-architecture-check --root .` — PASS.
-- Isolated Compose observation (`podman compose -p wp1c-e2e`): bundle tar digest
-  `sha256:58befb…`, runtime broker health `environmentBuilder.status=READY`,
-  imported builder image ID `sha256:9f8e05…`, Core health `READY` with the same
-  image/digest. The live `software-factory` project was not modified. See the
+- Isolated Compose observation (`podman compose -p wp1c-e2e2`, source commit
+  `4bc082f`): bundle tar digest `sha256:efc5bc…`, runtime broker health
+  `environmentBuilder.status=READY`, imported builder image ID
+  `sha256:152191…`, Core health `READY` with the same image/digest and
+  `defaultNixpkgs=github:NixOS/nixpkgs/ac62194c…`. The live
+  `software-factory` project was not modified. See the
   [evidence record](../evidence/environment-runtime-broker-2026-11-11/README.md).
 
 **NOT_TESTED / remaining gap:** a real end-to-end `resolve`/`build` through the

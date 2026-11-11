@@ -1,1 +1,14 @@
-{"environmentBuilder":{"digest":"sha256:58befb8c9c5477e44527d6e42a589bf93f8819ebfe512887982b236422f4fc29","image":"localhost/software-factory-environment-builder:dev","platform":"x86_64-linux","policyRevision":"nix-devenv-environment-v1","status":"READY"},"healthy":true,"version":"0.1.0"}
+{
+  "candidateSourceCommit": "4bc082f98e6898643e0379e4086107c962a55db1",
+  "composeProject": "wp1c-e2e2",
+  "environmentBuilder": {
+    "defaultNixpkgs": "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d",
+    "digest": "sha256:efc5bcd81e797f319a6473417257987050a1908140e605982131488e0ceae4bd",
+    "image": "localhost/software-factory-environment-builder:dev",
+    "platform": "x86_64-linux",
+    "policyRevision": "nix-devenv-environment-v1",
+    "status": "READY"
+  },
+  "healthy": true,
+  "version": "0.1.0"
+}
