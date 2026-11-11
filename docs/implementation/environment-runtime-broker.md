@@ -54,7 +54,8 @@ authoritative mount record: exactly the three expected named volumes with their
 names, targets and read/write modes, and the runtime host files of that exact
 container id. Only then does it replace the builder's in-container
 `noHostMount` observation with the broker attestation; the container is
-removed after inspection.
+removed after inspection. An abrupt broker stop is reconciled at startup by
+removing leftover containers labelled as environment-owned.
 
 ### Frozen check execution (WP1-D)
 

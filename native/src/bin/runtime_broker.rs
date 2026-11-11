@@ -665,6 +665,14 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             app.environment_cache_quarantine.deny_all();
         }
     }
+    match app.sweep_environment_containers().await {
+        Ok(removed) => {
+            tracing::info!(removed, "environment container epoch sweep finished");
+        }
+        Err(error) => {
+            tracing::error!(%error, "environment container epoch sweep failed");
+        }
+    }
     app.prepare_environment_builder().await;
 
     let dependency_setup = setup_dependency_acquisition(&app).await;
@@ -1236,6 +1244,50 @@ impl App {
         if failures > 0 {
             return Err(format!(
                 "environment cache epoch sweep could not remove {failures} volume(s)"
+            ));
+        }
+        Ok(removed)
+    }
+
+    /// Remove environment containers left behind by an abrupt broker stop.
+    /// Containers are normally removed by the operation cleanup guard; this
+    /// startup reconciliation closes the hard-kill gap. A failure is logged
+    /// but does not deny future runs because every new container name is a
+    /// fresh UUID and the leftover cannot be reused.
+    async fn sweep_environment_containers(&self) -> Result<usize, String> {
+        let bytes = self
+            .run_bounded(
+                [
+                    "ps",
+                    "-a",
+                    "--filter",
+                    "label=io.software-factory.owner=environment",
+                    "--format",
+                    "{{.Names}}",
+                ],
+                "environment container epoch sweep",
+                MAX_RESOURCE_INVENTORY_BYTES,
+            )
+            .await?;
+        let mut removed = 0usize;
+        let mut failures = 0usize;
+        for name in String::from_utf8_lossy(&bytes)
+            .lines()
+            .map(str::trim)
+            .filter(|name| name.starts_with("factory-env-"))
+        {
+            let output = self
+                .podman_output(["rm", "--force", "--time=0", name])
+                .await;
+            if output.is_ok_and(|output| output.status.success()) {
+                removed = removed.saturating_add(1);
+            } else {
+                failures = failures.saturating_add(1);
+            }
+        }
+        if failures > 0 {
+            return Err(format!(
+                "environment container epoch sweep could not remove {failures} container(s)"
             ));
         }
         Ok(removed)
@@ -5473,9 +5525,9 @@ async fn run_environment_container(
             ));
         }
     };
-    let _ = app
-        .podman_output(["rm", "--force", "--time=0", container])
-        .await;
+    // The caller owns the container lifetime. The build path keeps it alive
+    // for the broker's authoritative Podman mount inspection; every path is
+    // removed by the operation cleanup guard (or the startup epoch sweep).
     let (stdout, stdout_truncated) = stdout_task
         .await
         .map_err(|error| {
@@ -8069,7 +8121,8 @@ exit 1
         let resolution_path = directory.join("resolution.json");
         let check_path = directory.join("check-result.json");
         let log_path = directory.join("podman.log");
-        let state_path = directory.join("container-state.txt");
+        let state_dir = directory.join("container-state");
+        std::fs::create_dir_all(&state_dir).unwrap();
         let inspect_template = directory.join("inspect-template.json");
         std::fs::write(
             &inspect_template,
@@ -8122,8 +8175,8 @@ case "$1" in
     ;;
   rm) exit 0 ;;
   inspect)
-    ws=$(sed -n '1p' "{}")
-    cache=$(sed -n '2p' "{}")
+    ws=$(sed -n '1p' "{}/state-$4")
+    cache=$(sed -n '2p' "{}/state-$4")
     sed -e "s/__WS__/$ws/g" -e "s/__CACHE__/$cache/g" -e "s/__ID__/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/g" "{}"
     exit 0
     ;;
@@ -8139,13 +8192,15 @@ case "$1" in
   run)
     ws=
     cache=
+    name=
     for arg in "$@"; do
       case "$arg" in
         --volume=*:/inputs/workspace:ro) ws="${{arg#--volume=}}"; ws="${{ws%%:*}}" ;;
         --volume=*:/cache:rw) cache="${{arg#--volume=}}"; cache="${{cache%%:*}}" ;;
+        --name=*) name="${{arg#--name=}}" ;;
       esac
     done
-    if [ -n "$cache" ]; then printf '%s\n%s\n' "$ws" "$cache" > "{}"; fi
+    if [ -n "$cache" ] && [ -n "$name" ]; then printf '%s\n%s\n' "$ws" "$cache" > "{}/state-$name"; fi
     case " $* " in
       *"/cache/result.json"*) cat "{}"; exit 0 ;;
       *"/cache/resolution.json"*) cat "{}"; exit 0 ;;
@@ -8161,10 +8216,10 @@ exit 0
             TEST_BUILDER_IMAGE_ID,
             TEST_BUILDER_DIGEST,
             TEST_BUILDER_IMAGE_ID,
-            state_path.display(),
-            state_path.display(),
+            state_dir.display(),
+            state_dir.display(),
             inspect_template.display(),
-            state_path.display(),
+            state_dir.display(),
             result_path.display(),
             resolution_path.display(),
             check_path.display()
@@ -9124,6 +9179,32 @@ exit 0
             log.contains("volume rm --force factory-env-cache-"),
             "{log}"
         );
+    }
+
+    #[tokio::test]
+    async fn startup_epoch_sweep_removes_leftover_environment_containers() {
+        let directory = std::env::temp_dir().join(format!(
+            "factory-env-container-sweep-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let log_path = directory.join("podman.log");
+        let script = format!(
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> "{}"
+case "$1" in
+  ps) printf '%s\n' 'factory-env-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'; exit 0 ;;
+  rm) exit 0 ;;
+esac
+exit 0
+"#,
+            log_path.display()
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app(podman);
+        assert_eq!(app.sweep_environment_containers().await.unwrap(), 1);
+        let log = std::fs::read_to_string(log_path).unwrap();
+        assert!(log.contains("rm --force --time=0 factory-env-"), "{log}");
     }
 
     #[tokio::test]
