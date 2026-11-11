@@ -1,6 +1,6 @@
 {
  "schema_version": 1,
- "updated_at": "2026-11-10T19:30:00Z",
+ "updated_at": "2026-11-11T00:23:19Z",
  "route_base_note": "Current Office uses hash routes. The design-foundation slice moves to a stable /office browser base while preserving these logical routes.",
  "capabilities": {
   "CAP-011": {
@@ -779,6 +779,7 @@
     "GET /agentic/portfolio",
     "GET /agentic/requests/{id}",
     "POST /agentic/requests/{id}/assess",
+    "POST /intake/requests/{id}/assess",
     "GET /agentic/scheduler",
     "POST /agentic/requests/{id}/priority"
    ],
@@ -786,6 +787,7 @@
     "load the owner portfolio and inspect an operation",
     "inspect route, assurance, StackProfile and the deterministic ParticipantPlan",
     "run a bounded semantic triage with real provider inference and inspect the measured usage",
+    "run the required Lead assessment before compiling a Planner WorkGraph",
     "inspect the Operation Manager, resource-derived scheduler capacity and per-attempt worktree policy",
     "update queue priority from the Director page",
     "retry a failed portfolio or detail load"
@@ -797,6 +799,8 @@
     "offline",
     "deterministic-only",
     "semantic-recorded",
+    "assessment-required",
+    "assessment-complete",
     "no-admission",
     "no-operation-record",
     "scheduler-unavailable",
@@ -812,7 +816,7 @@
     "docs/evidence/operation-scheduler-2026-11-08/manifest.json",
     "office/e2e-browser/rust-journey.mjs"
    ],
-   "notes": "Director and Operation Manager projection with a durable operation record, priority queue and resource-derived start capacity. Two-operation worktree isolation, Planner/Spec Manager integration, GitHub projection, Explorer/Librarian/skills and dynamic fleets are staged. The Director page never grants authority or accepts work."
+   "notes": "Director and Operation Manager projection with a durable operation record, priority queue and resource-derived start capacity. The projection exposes assessmentReady, leadPlanReady and actionSpecReady; Compile plan stays disabled until the Lead assessment, frozen Lead plan and executable ActionSpec exist, and the Director offers the same Core-backed intake assessment action instead of a decorative control. Core gates every Compile/repair path, including requests with a stored PLAN, and rejects a missing prerequisite with 409 ASSESSMENT_REQUIRED before any Planner model call, repair or WorkGraph write; informational requests with a stored PLAN still return PLANNER_NOT_APPLICABLE. DEPENDENCY_PLAN_REQUIRED remains an internal failure. Two-operation worktree isolation, Planner/Spec Manager integration, GitHub projection, Explorer/Librarian/skills and dynamic fleets are staged. The Director page never grants authority or accepts work."
   },
   "CAP-064": {
    "name": "Bounded repair orchestration",

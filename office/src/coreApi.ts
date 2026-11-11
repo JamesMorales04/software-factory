@@ -2111,6 +2111,9 @@ export interface AgenticRequestDetail {
     campaignId: string | null;
     failureReason: string | null;
   };
+  assessmentReady: boolean;
+  leadPlanReady: boolean;
+  actionSpecReady: boolean;
   triage: AgenticTriage;
   planningLane: PlanningLane;
   planning: {

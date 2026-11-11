@@ -903,14 +903,13 @@ capabilities:
     - docs/evidence/office-agent-office-slice4-2026-10-27.json
     live_agent:
     - docs/evidence/managed-live-uat-certification-manifest.json
-    - docs/evidence/live-vlog-acceptance-2026-11-10.md
     uat: []
     deployment: []
     isolation: []
   limitations:
   - Office recovery and cleanup projections remain incomplete.
   - Campaign and Lead labels can remain AUTHORIZED/RUNNING after an ACCEPTED Run; the gate and Run states are authoritative.
-  - The 2026-11-10 vlog run exercised the read-only Issues board in real Chromium at 1440/768/390, including five target issues under Needs Attention with automatic intake off and the `No issue synchronization recorded` state. Issue-to-Campaign execution and completed sync remain NOT_TESTED. WP2 now implements frozen issue links, Core-derived delivery state, idempotent issue comment/close receipts and an operator retry. The delivery hooks are available in `native/src/issues/` for WP3, but WP2 does not call them from PR-open or merge handlers; no real authorized GitHub write journey, WP3 auto-merge integration or independent acceptance has been run.
+  - The 2026-11-10 vlog run exercised the read-only Issues board in real Chromium at 1440/768/390, including five target issues under Needs Attention with automatic intake off and the `No issue synchronization recorded` state; it is recorded in docs/evidence/live-vlog-acceptance-2026-11-10.md as implementer/orchestrator evidence, not independent certification. Issue-to-Campaign execution, completed sync and issue write/comment paths remain NOT_TESTED. WP2 now implements frozen issue links, Core-derived delivery state, idempotent issue comment/close receipts and an operator retry. The delivery hooks are available in `native/src/issues/` for WP3, but WP2 does not call them from PR-open or merge handlers; no real authorized GitHub write journey, WP3 auto-merge integration or independent acceptance has been run.
   - Agent Office is read-only; it does not expose stop, model switching, budget changes or tool invocation.
   - Provider-session liveness is represented by recorded lease state only; external provider state is not independently verified.
   - Agent Office V3 covers deterministic layouts and unique avatar appearances through the current 200-participant projection. Renderer fixture captures are not live Core or inspector acceptance; the original vector scene remains less painterly and spatially rich than the approved reference. Product Owner visual approval and authenticated Agent Office browser acceptance remain pending.
@@ -2417,13 +2416,13 @@ capabilities:
     deterministic:
     - docs/evidence/office-operational-workspace-2026-10-27.json
     - docs/evidence/office-autonomy-ux-2026-11-08/manifest.json
-    live_agent:
-    - docs/evidence/live-vlog-acceptance-2026-11-10.md
+    live_agent: []
     uat: []
     deployment: []
     isolation: []
   limitations:
   - Requests and Inbox poll Core; they do not claim SSE, replay or live streaming.
+  - The 2026-11-10 vlog run did not exercise Requests or the Decision Inbox; docs/evidence/live-vlog-acceptance-2026-11-10.md is implementer/orchestrator evidence, not independent live-agent certification.
   - Campaign authorization and Quality Gate repair remain on the Campaign workspace.
   - The Inbox exposes model-call resolution and navigation only; unresolved provider sessions are awareness-only because no operator termination API exists.
   - Removed pages redirect to the closest current workspace; unknown routes return Home.
@@ -2485,8 +2484,7 @@ capabilities:
     - docs/evidence/office-campaign-workspace-2026-10-27.json
     - docs/evidence/office-agent-office-slice4-2026-10-27.json
     - docs/evidence/office-campaign-diff-pr-2026-10-28.json
-    live_agent:
-    - docs/evidence/live-vlog-acceptance-2026-11-10.md
+    live_agent: []
     uat: []
     deployment: []
     isolation: []
@@ -2495,7 +2493,7 @@ capabilities:
   - Candidate diff projection is bounded and omits binary, oversized, symlink/gitlink, non-UTF-8 and budget-exhausted patches; it never executes the candidate.
   - GitHub pull request operations require a Project repository binding and an already pushed head branch; Core does not create or push branches.
   - Real GitHub API permissions, branch protection and a live merge are NOT_TESTED; the fake-upstream tests do not certify live behavior.
-  - The 2026-11-10 vlog run accepted one single-unit candidate; multi-unit Campaigns, issue-to-Campaign linking and push/PR/merge remain NOT_TESTED.
+  - The 2026-11-10 vlog run accepted one single-unit candidate and is recorded in docs/evidence/live-vlog-acceptance-2026-11-10.md as implementer/orchestrator evidence, not independent certification; multi-unit Campaigns, issue-to-Campaign linking and push/PR/merge remain NOT_TESTED.
   - Campaign authorization and Gate repair remain on their existing module controls.
   - Campaign and Request panels consume Core's camelCase V2 authorization record; V1 caps are historical only. Fixture Chromium screenshots cover the repaired usage/request panels; real Core/Compose browser acceptance remains implementer-only.
   - Malformed graph data is surfaced as an inconsistency and never repaired in the browser.
@@ -2935,7 +2933,7 @@ capabilities:
     source: [native/src/db/agentic_operations.rs, native/src/bin/core.rs, office/src/views/Director.tsx]
     test: [native/src/db/intake.rs, office/src/views/Director.test.tsx]
   acceptance:
-    deterministic: The Director is scoped to one owner and a portfolio of Projects; each operation has one Operation Manager; the existing Integrator is not treated as a semantic supervisor; concurrent operations use separate worktrees and a priority queue; no fixed product cap replaces CPU, memory, disk, provider and worktree backpressure.
+    deterministic: The Director is scoped to one owner and a portfolio of Projects; each operation has one Operation Manager; the existing Integrator is not treated as a semantic supervisor; concurrent operations use separate worktrees and a priority queue; no fixed product cap replaces CPU, memory, disk, provider and worktree backpressure. Compile plan is gated on the recorded Lead assessment, frozen Lead plan and executable ActionSpec on every path, including requests with a stored PLAN; a missing prerequisite returns 409 ASSESSMENT_REQUIRED before any Planner model call, repair or WorkGraph write, informational requests still return PLANNER_NOT_APPLICABLE, and the Office exposes the same Core-backed assessment action with all three readiness facts.
     real: Two simultaneous browser requests are coordinated by the Director, run in separate worktrees and expose their own Operation Managers and evidence.
   evidence:
     deterministic:
@@ -2983,8 +2981,7 @@ capabilities:
   evidence:
     deterministic:
     - docs/evidence/spec-board-2026-11-09/deterministic.json
-    live_agent:
-    - docs/evidence/live-vlog-acceptance-2026-11-10.md
+    live_agent: []
     uat: []
     deployment: []
     isolation: []
@@ -2997,7 +2994,7 @@ capabilities:
   - A real-model browser self-test planned and froze revisions 1 and 2, and the full E2E campaign consumed the frozen plan, but independent live certification is pending.
   - Wave 12 integration evidence and exact command results are recorded in docs/implementation/wave12-integration-evidence.md; it is implementer evidence, not acceptance.
   - WP12 records a reproducible deterministic chaos/cross-workstream matrix and repeat-run acceptance script in docs/implementation/wp12-chaos-matrix.md and scripts/quality-wave12-acceptance.sh. The final integrated run passed 20/20. It is implementer evidence only; live provider, real-Podman dependency, real Compose Campaign/browser and independent acceptance paths remain NOT_TESTED.
-  - The 2026-11-10 vlog evidence is implementer/orchestrator evidence; independent acceptance remains pending.
+  - The 2026-11-10 vlog evidence in docs/evidence/live-vlog-acceptance-2026-11-10.md is implementer/orchestrator evidence; independent acceptance remains pending.
   blockers:
   - Per-WorkUnit execution state for multi-unit plans remains pending; the 2026-11-10 single-unit live run completed the planned-specified-frozen-approved-executed journey.
 
@@ -3117,15 +3114,14 @@ capabilities:
   evidence:
     deterministic:
     - docs/evidence/dynamic-fleets-2026-11-09/deterministic.json
-    live_agent:
-    - docs/evidence/live-vlog-acceptance-2026-11-10.md
+    live_agent: []
     uat: []
     deployment: []
     isolation: []
   limitations:
   - Provider/model diversity is neither required nor sufficient for independence; two reviewers with the same model are independent when their authenticated principals and processes differ.
   - The Compose topology provisions six reviewer services with separate tokens, principals, roles and state volumes; Core derives the principal/role from trusted identity configuration and rejects a caller-selected mismatch. See docs/implementation/wp9-reviewer-independence-evidence.md.
-  - The 2026-11-10 vlog Campaign exercised five required reviewer roles with five distinct principals and five `PASS`/`EXECUTED` receipts at assurance `NONE`; role coverage, same-model acceptance, duplicate-principal rejection and single-receipt deferral remain deterministically tested. The vlog evidence is implementer/orchestrator evidence; independent acceptance remains pending.
+  - The 2026-11-10 vlog Campaign exercised five required reviewer roles with five distinct principals and five `PASS`/`EXECUTED` receipts at assurance `NONE`; role coverage, same-model acceptance, duplicate-principal rejection and single-receipt deferral remain deterministically tested. The vlog evidence in docs/evidence/live-vlog-acceptance-2026-11-10.md is implementer/orchestrator evidence; independent acceptance remains pending.
   blockers:
   - Real multi-unit Campaign and per-unit execution state remain pending; the 2026-11-10 single-unit Campaign aggregated five independent reviewer PASS receipts.
 
