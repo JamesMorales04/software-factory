@@ -531,6 +531,25 @@ class AttestationTests(unittest.TestCase):
             _mounts_authorized([self.mount("/etc/hosts", "/etc/hosts", "ext4")])
         )
 
+    def test_container_runtime_file_source_traversal_is_rejected(self) -> None:
+        traversal = (
+            "/var/lib/containers/storage/overlay-containers/"
+            "../../../../../root/userdata/hosts"
+        )
+        self.assertFalse(
+            _mounts_authorized([self.mount(traversal, "/etc/hosts")])
+        )
+        self.assertFalse(
+            _mounts_authorized(
+                [
+                    self.mount(
+                        "/var/lib/containers/storage/overlay-containers/abc/../userdata/hosts",
+                        "/etc/hosts",
+                    )
+                ]
+            )
+        )
+
     def test_missing_or_incomplete_mountinfo_is_not_attested(self) -> None:
         self.assertFalse(_mount_attestation([], False))
         self.assertFalse(_mount_attestation([], True))

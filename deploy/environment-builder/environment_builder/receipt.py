@@ -82,12 +82,27 @@ def _authorized_volume_source(source: str) -> bool:
     return bool(name) and name not in (".", "..") and "\\" not in name and "\0" not in name
 
 
+def _container_runtime_file_source(source: str, expected: str) -> bool:
+    """Require the exact normalized container-runtime host-file structure."""
+    parts = Path(source).parts
+    if any(part in (".", "..") for part in parts):
+        return False
+    prefix = Path(CONTAINER_RUNTIME_FILE_PREFIX).parts
+    if parts[: len(prefix)] != prefix:
+        return False
+    remainder = parts[len(prefix) :]
+    return (
+        len(remainder) == 3
+        and bool(remainder[0])
+        and remainder[1] == "userdata"
+        and remainder[2] == expected
+    )
+
+
 def _safe_system_mount(target: str, source: str, fstype: str) -> bool:
     expected_runtime_file = CONTAINER_RUNTIME_FILES.get(target)
     if expected_runtime_file is not None:
-        return source.startswith(CONTAINER_RUNTIME_FILE_PREFIX) and source.endswith(
-            f"/userdata/{expected_runtime_file}"
-        )
+        return _container_runtime_file_source(source, expected_runtime_file)
     if target == "/":
         return fstype in {"overlay", "rootfs", "squashfs"} and (
             source in {"overlay", "rootfs", "/dev/root"} or source.startswith("/dev/")

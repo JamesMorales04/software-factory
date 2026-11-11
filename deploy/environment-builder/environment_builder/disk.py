@@ -19,8 +19,11 @@ from typing import Iterable
 
 from .errors import fail
 
-DEFAULT_SAMPLE_INTERVAL_SECONDS = 3.0
-DU_TIMEOUT_SECONDS = 20.0
+DEFAULT_SAMPLE_INTERVAL_SECONDS = 10.0
+DU_TIMEOUT_SECONDS = 120.0
+DISK_MONITOR_FAILURE_THRESHOLD = 3
+DISK_CHECK_MAX_ATTEMPTS = 3
+DEFAULT_CHECK_RETRY_BACKOFF_SECONDS = 2.0
 MAX_DU_OUTPUT_BYTES = 64 * 1024
 MAX_DU_STDERR_BYTES = 16 * 1024
 DU_CHUNK_BYTES = 16 * 1024
@@ -188,7 +191,7 @@ class DiskMonitor:
     ) -> None:
         self.budget = budget
         self.process = process
-        self.interval = max(0.5, interval)
+        self.interval = max(0.05, interval)
         self.exceeded = False
         self.incomplete = False
         self.observed_bytes = 0
@@ -200,11 +203,18 @@ class DiskMonitor:
         self._thread.start()
 
     def _run(self) -> None:
+        failures = 0
         while not self._stop.wait(self.interval):
             used, complete = self.budget.usage()
+            if complete and used <= self.budget.limit_bytes:
+                failures = 0
+                self.observed_bytes = used
+                self.complete = True
+                continue
+            failures += 1
             self.observed_bytes = used
             self.complete = complete
-            if complete and used <= self.budget.limit_bytes:
+            if failures < DISK_MONITOR_FAILURE_THRESHOLD:
                 continue
             self.exceeded = True
             self.incomplete = not complete
@@ -217,7 +227,7 @@ class DiskMonitor:
 
     def stop(self) -> None:
         self._stop.set()
-        self._thread.join(self.interval + DU_TIMEOUT_SECONDS + 2.0)
+        self._thread.join(self.interval + self.budget.timeout + 2.0)
 
 
 class DiskBudget:
@@ -230,30 +240,39 @@ class DiskBudget:
         *,
         timeout: float = DU_TIMEOUT_SECONDS,
         interval: float = DEFAULT_SAMPLE_INTERVAL_SECONDS,
+        retry_backoff: float = DEFAULT_CHECK_RETRY_BACKOFF_SECONDS,
     ) -> None:
         self.limit_mib = max(0, int(limit_mib))
         self.limit_bytes = self.limit_mib * 1024 * 1024
         self.paths = tuple(Path(path) for path in paths)
         self.timeout = timeout
         self.interval = interval
+        self.retry_backoff = max(0.0, retry_backoff)
 
     def usage(self) -> tuple[int, bool]:
         return directory_usage_bytes(self.paths, timeout=self.timeout)
 
     def check(self) -> None:
-        used, complete = self.usage()
-        if not complete:
-            fail(
-                "ENVIRONMENT_RESOURCE_LIMIT",
-                "the builder could not complete the du disk scan; the frozen "
-                "disk bound cannot be verified (exact=false)",
-            )
-        if used > self.limit_bytes:
-            fail(
-                "ENVIRONMENT_RESOURCE_LIMIT",
-                f"observed builder disk usage {used} bytes exceeds the frozen "
-                f"{self.limit_mib} MiB bound; exact=false",
-            )
+        last_used = 0
+        for attempt in range(DISK_CHECK_MAX_ATTEMPTS):
+            used, complete = self.usage()
+            last_used = used
+            if complete:
+                if used > self.limit_bytes:
+                    fail(
+                        "ENVIRONMENT_RESOURCE_LIMIT",
+                        f"observed builder disk usage {used} bytes exceeds the frozen "
+                        f"{self.limit_mib} MiB bound; exact=false",
+                    )
+                return
+            if attempt + 1 < DISK_CHECK_MAX_ATTEMPTS and self.retry_backoff > 0:
+                time.sleep(self.retry_backoff)
+        fail(
+            "ENVIRONMENT_RESOURCE_LIMIT",
+            "the builder could not complete the du disk scan after "
+            f"{DISK_CHECK_MAX_ATTEMPTS} attempts (last observed {last_used} bytes); "
+            "the frozen disk bound cannot be verified (exact=false)",
+        )
 
     def monitor(self, process: object) -> DiskMonitor:
         return DiskMonitor(self, process, interval=self.interval)
