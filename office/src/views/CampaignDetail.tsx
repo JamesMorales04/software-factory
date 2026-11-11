@@ -43,6 +43,7 @@ import {
 import { formatCostMicros, formatTimestamp, shortId } from "../format";
 import { useI18n } from "../i18n";
 import { projectDisplayName } from "../workspace";
+import { EnvironmentPanel } from "./EnvironmentPanel";
 
 interface LoadedCampaign {
   detail: CampaignDetailData;
@@ -782,6 +783,10 @@ export function CampaignDetail() {
                   </div>
                 )}
               </Panel>
+              <EnvironmentPanel
+                environment={detail.environment ?? null}
+                requestId={detail.environment?.plan?.requestId}
+              />
             </TabPanel>
           )}
 

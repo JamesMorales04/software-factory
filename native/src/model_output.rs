@@ -9,6 +9,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::lead::{AssessmentInput, Intent, LeadAssessment, bound_suggested_next_action};
+use crate::planning::environment::EnvironmentLeadReviewModel;
 use crate::semantic_review::{SemanticReview, SemanticReviewError, SemanticReviewInput};
 
 #[derive(Debug, thiserror::Error)]
@@ -35,6 +36,33 @@ pub fn lead_assessment_schema_sha256() -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+pub fn environment_lead_review_schema() -> Value {
+    serde_json::to_value(schema_for!(EnvironmentLeadReviewModel))
+        .expect("generated environment Lead review schema is serializable")
+}
+
+pub fn environment_lead_review_schema_sha256() -> String {
+    let bytes = serde_json::to_vec(&environment_lead_review_schema())
+        .expect("generated environment Lead review schema is serializable");
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+pub fn decode_environment_lead_review(
+    raw: &[u8],
+) -> Result<EnvironmentLeadReviewModel, ModelOutputError> {
+    let value: Value = serde_json::from_slice(raw)?;
+    let schema = environment_lead_review_schema();
+    let validator = jsonschema::validator_for(&schema)
+        .map_err(|error| ModelOutputError::Schema(error.to_string()))?;
+    validator
+        .validate(&value)
+        .map_err(|error| ModelOutputError::Schema(error.to_string()))?;
+    serde_json::from_value(value).map_err(ModelOutputError::Json)
 }
 
 pub fn agentic_triage_schema() -> Value {

@@ -128,6 +128,25 @@ pub struct ActionSpec {
     /// this is true but `dependency_plan` is absent.
     #[serde(default)]
     pub dependencies_required: bool,
+    /// Exact Core-frozen environment plan/spec binding. Legacy actions may have
+    /// none; Core refuses a check at the environment runner boundary rather
+    /// than substituting a language image.
+    #[serde(default)]
+    pub environment_plan_id: Option<String>,
+    #[serde(default)]
+    pub environment_plan_sha256: Option<String>,
+    #[serde(default)]
+    pub environment_spec_id: Option<String>,
+    #[serde(default)]
+    pub environment_spec_sha256: Option<String>,
+    #[serde(default)]
+    pub environment_builder_image: Option<String>,
+    #[serde(default)]
+    pub environment_builder_image_digest: Option<String>,
+    /// True when this Action must carry a frozen EnvironmentSpec before a
+    /// Campaign may be authorized.
+    #[serde(default)]
+    pub environment_required: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -145,6 +164,78 @@ pub fn validate_dependency_requirement(spec: &ActionSpec) -> Result<(), Error> {
         return Err(Error::Forbidden(
             "frozen work requires dependency acquisition but has no dependency plan".into(),
         ));
+    }
+    Ok(())
+}
+
+/// Deterministic environment-requirement check shared by authorization and
+/// check dispatch. A request that Core compiled with an environment cannot be
+/// authorized or executed without the exact frozen plan/spec, and every check
+/// must carry the same binding. There is no language-image fallback.
+pub fn validate_environment_requirement(spec: &ActionSpec) -> Result<(), Error> {
+    let plan_id = spec
+        .environment_plan_id
+        .as_deref()
+        .ok_or_else(|| Error::IntakeConflict {
+            code: "ENVIRONMENT_PLAN_REQUIRED",
+            message: "every executable ActionSpec requires an exact environment plan binding"
+                .into(),
+        })?;
+    let plan_sha =
+        spec.environment_plan_sha256
+            .as_deref()
+            .ok_or_else(|| Error::IntakeConflict {
+                code: "ENVIRONMENT_PLAN_REQUIRED",
+                message: "the ActionSpec has no exact environment plan hash".into(),
+            })?;
+    let spec_id = spec
+        .environment_spec_id
+        .as_deref()
+        .ok_or_else(|| Error::IntakeConflict {
+            code: "ENVIRONMENT_PLAN_REQUIRED",
+            message: "the ActionSpec has no frozen environment spec id".into(),
+        })?;
+    let spec_sha =
+        spec.environment_spec_sha256
+            .as_deref()
+            .ok_or_else(|| Error::IntakeConflict {
+                code: "ENVIRONMENT_PLAN_REQUIRED",
+                message: "the ActionSpec has no frozen environment spec hash".into(),
+            })?;
+    if !spec.environment_required
+        || spec
+            .environment_builder_image
+            .as_deref()
+            .is_none_or(str::is_empty)
+        || spec
+            .environment_builder_image_digest
+            .as_deref()
+            .is_none_or(|digest| !digest.starts_with("sha256:"))
+    {
+        return Err(Error::IntakeConflict {
+            code: "ENVIRONMENT_PLAN_REQUIRED",
+            message: "the ActionSpec does not carry a frozen environment and digest-pinned builder identity"
+                .into(),
+        });
+    }
+    if plan_id.len() > 64 || spec_id.len() > 64 || plan_sha.len() != 64 || spec_sha.len() != 64 {
+        return Err(Error::IntakeConflict {
+            code: "ENVIRONMENT_PLAN_REQUIRED",
+            message: "the ActionSpec environment binding is not a valid plan/spec identity".into(),
+        });
+    }
+    for check in &spec.checks {
+        if check.environment_plan_id.as_deref() != Some(plan_id)
+            || check.environment_spec_sha256.as_deref() != Some(spec_sha)
+        {
+            return Err(Error::IntakeConflict {
+                code: "ENVIRONMENT_PLAN_REQUIRED",
+                message: format!(
+                    "check {} does not carry the ActionSpec's exact environment plan/spec binding",
+                    check.id
+                ),
+            });
+        }
     }
     Ok(())
 }
@@ -222,6 +313,14 @@ pub struct WorkerAssignment {
     /// records at claim time; they cannot widen tools or authority.
     #[serde(default)]
     pub skills: Vec<AssignmentSkill>,
+    /// Exact frozen environment bound to the Campaign. `None` means a legacy
+    /// unbound Campaign; the Worker refuses environment-aware checks rather
+    /// than substituting a language image.
+    #[serde(default)]
+    pub environment: Option<crate::db::CampaignEnvironmentBinding>,
+    /// Exact plan/spec/receipt used to select each check's builder image.
+    #[serde(default)]
+    pub environment_execution: Option<crate::planning::environment::EnvironmentExecutionBinding>,
 }
 
 #[derive(Clone, Debug)]
@@ -398,6 +497,10 @@ pub struct CandidateInspection {
     pub base_commit: String,
     pub integration: bool,
     pub lineage: Vec<String>,
+    /// Exact frozen environment bound to the Campaign. The verifier selects
+    /// every check's builder image from this record.
+    #[serde(default)]
+    pub environment_execution: Option<crate::planning::environment::EnvironmentExecutionBinding>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -1093,6 +1196,12 @@ pub use participants::{
 mod execution_receipts;
 mod project_configs;
 pub use execution_receipts::{ExecutionCheckInput, ExecutionCheckReceiptRecord};
+mod environment;
+pub use environment::{CampaignEnvironmentBinding, StoredEnvironmentPlan, StoredEnvironmentSpec};
+#[cfg(any(test, feature = "test-support"))]
+pub use environment::{
+    TestEnvironmentBinding, apply_test_environment_binding, test_environment_binding,
+};
 mod provider_sessions;
 mod provider_settings;
 mod subscription_admissions;

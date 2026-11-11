@@ -20,6 +20,7 @@ import {
 } from "../coreApi";
 import { shortId } from "../format";
 import { useI18n } from "../i18n";
+import { EnvironmentPanel } from "./EnvironmentPanel";
 import { RequestAssessment } from "./RequestAssessment";
 import { RequestPlan } from "./RequestPlan";
 import {
@@ -799,6 +800,10 @@ export function RequestWorkspace() {
 
           <RequestAssessment assessment={data.assessment} />
           <RequestPlan proposal={data.proposal} plan={data.plan} />
+          <EnvironmentPanel
+            environment={data.environment ?? null}
+            requestId={data.id}
+          />
           <RequestTrace requestId={data.id} />
 
           {(data.campaignId || data.campaign) && (

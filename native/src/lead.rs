@@ -161,6 +161,14 @@ pub struct SpecCheck {
     pub expect_exit: i32,
     #[serde(default = "default_check_timeout")]
     pub timeout_secs: u32,
+    /// Exact `EnvironmentPlan` this check may execute in. `None` is a legacy
+    /// unbound check and is refused by the environment-aware runner; it never
+    /// falls back to a global language image.
+    #[serde(default)]
+    pub environment_plan_id: Option<String>,
+    /// Exact frozen `EnvironmentSpec` hash this check may execute in.
+    #[serde(default)]
+    pub environment_spec_sha256: Option<String>,
 }
 
 fn default_check_timeout() -> u32 {
@@ -2189,6 +2197,8 @@ mod tests {
                 command: vec!["cargo".into(), "fmt".into(), "--check".into()],
                 expect_exit: 0,
                 timeout_secs: 60,
+                environment_plan_id: None,
+                environment_spec_sha256: None,
             },
             SpecCheck {
                 id: "build".into(),
@@ -2197,6 +2207,8 @@ mod tests {
                 command: vec!["cargo".into(), "build".into()],
                 expect_exit: 0,
                 timeout_secs: 120,
+                environment_plan_id: None,
+                environment_spec_sha256: None,
             },
             SpecCheck {
                 id: "test".into(),
@@ -2205,6 +2217,8 @@ mod tests {
                 command: vec!["cargo".into(), "test".into()],
                 expect_exit: 0,
                 timeout_secs: 120,
+                environment_plan_id: None,
+                environment_spec_sha256: None,
             },
             SpecCheck {
                 id: "functional".into(),
@@ -2213,6 +2227,8 @@ mod tests {
                 command: vec!["cargo".into(), "run".into()],
                 expect_exit: 0,
                 timeout_secs: 120,
+                environment_plan_id: None,
+                environment_spec_sha256: None,
             },
         ];
         let negative = vec![SpecCheck {
@@ -2222,6 +2238,8 @@ mod tests {
             command: vec!["cargo".into(), "run".into(), "--invalid".into()],
             expect_exit: 1,
             timeout_secs: 60,
+            environment_plan_id: None,
+            environment_spec_sha256: None,
         }];
         (acceptance, negative)
     }
@@ -2745,6 +2763,14 @@ mod tests {
             checks: checks().0.into_iter().chain(checks().1).collect(),
             dependency_plan: None,
             dependencies_required: false,
+            environment_plan_id: None,
+            environment_plan_sha256: None,
+            environment_spec_sha256: None,
+            environment_builder_image: None,
+            environment_builder_image_digest: None,
+            environment_required: false,
+
+            environment_spec_id: None,
         };
         let (assessment, proposal) = fixture_lead_assessment(
             "request-1",

@@ -14,6 +14,7 @@ use crate::lead::SpecCheck;
 pub mod architecture;
 pub mod docs;
 pub mod dod;
+pub mod environment;
 pub mod findings;
 pub mod prompts;
 pub mod route;

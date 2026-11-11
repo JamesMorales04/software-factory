@@ -524,6 +524,39 @@ async fn p5_group_readable_database_is_rejected_without_changing_data_or_mode() 
 
 #[cfg(unix)]
 #[tokio::test]
+async fn executable_action_specs_require_an_environment_binding() {
+    let (path, db) = temp_db("environment-required").await;
+    insert_project(&db, "project", "/fixture", &"a".repeat(40)).await;
+    let action = db
+        .create_action_with_spec(
+            "project",
+            "Require an environment.",
+            "opencode",
+            "deepseek-v4.1-flash",
+            "environment-required-action",
+            ActionSpecInput {
+                allowed_paths: &["src".to_string()],
+                checks: &[],
+                dependency_plan: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(validate_environment_requirement(&action.spec).is_ok());
+    db.clear_test_action_environment(&action.id).await.unwrap();
+    let action = db.action(&action.id).await.unwrap();
+    assert!(matches!(
+        validate_environment_requirement(&action.spec),
+        Err(Error::IntakeConflict {
+            code: "ENVIRONMENT_PLAN_REQUIRED",
+            ..
+        })
+    ));
+    db.close().await;
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
 async fn database_symlink_path_is_rejected() {
     let directory = std::env::temp_dir().join(format!("factory-db-link-{}", Uuid::new_v4()));
     std::fs::create_dir(&directory).unwrap();

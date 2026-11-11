@@ -308,6 +308,7 @@ milestones:
   - Typed triage and StackProfile
   - Director, Operation Manager and portfolio concurrency
   - Planner, Spec Manager and frozen specs projected to issues and kanban
+  - Agnostic environment compiler; conventions discovery, licensed Nix/devenv plan, Lead-model review, frozen EnvironmentSpec, Campaign/check binding, migration 0076 and Office environment panel
   - Explorer, Librarian, Context7 and temporary skills
   - Dynamic participant composition and cheap operations interpreter
   - Bounded repair from the exact candidate
@@ -335,8 +336,9 @@ milestones:
   - agent and skill sprawl without minimum-sufficient composition
   - issue/kanban drift from Core truth
   - repair scope creep or candidate identity loss
+  - a generated environment drifting from its frozen lock, licence inventory or builder digest
   deterministic_acceptance:
-  - Triage floors, participant composition, owner charter, repair authorization, context handoff, spec issue projection and reviewer aggregation pass deterministic positive and negative tests.
+  - Triage floors, participant composition, owner charter, repair authorization, context handoff, spec issue projection, environment compiler (conventions, licence gate, Lead model decision, builder resolution, plan/spec/check binding) and reviewer aggregation pass deterministic positive and negative tests.
   real_acceptance:
   - A real-model browser campaign exercises a large spec, repair, concurrency and owner decision through Office without API or shell shortcuts.
   owner_decisions:
@@ -2979,7 +2981,7 @@ capabilities:
 - id: CAP-060
   name: Planner and Spec Manager
   category: Planning
-  purpose: Route work through a quality-first planning lane, persist stack/architecture/docs/skills/DoD artifacts, compile a dependency-aware WorkGraph, require plan review and author frozen formal specs with acceptance traceability
+  purpose: Route work through a quality-first planning lane, compile and freeze an agnostic Nix/devenv environment plan before execution, persist stack/architecture/docs/skills/DoD artifacts, compile a dependency-aware WorkGraph, require plan review and author frozen formal specs with acceptance traceability
   product_objective: Executable formal specifications
   decision_status: proposed
   implementation_status: in_progress
@@ -3000,10 +3002,10 @@ capabilities:
     - docs/architecture/decisions/ADR-0037-agent-topology-context-and-composition.md
     contract:
     - docs/contracts/agentic-flow.md
-    source: [native/src/agentic.rs, native/src/db/agentic_plans.rs, native/src/db/planning.rs, native/src/planning/mod.rs, native/src/planning/skill_refresh.rs, native/src/dependencies.rs, native/src/dependency_broker.rs, native/src/dependency_service.rs, native/src/dependency_egress.rs, native/src/openspec.rs, native/src/openspec_cli.rs, native/src/bin/core.rs, native/src/bin/worker.rs, native/src/bin/supervisor.rs, native/src/bin/runtime_broker.rs, deploy/openspec/validate.mjs, deploy/openspec/Dockerfile, office/src/views/Director.tsx]
-    test: [native/src/agentic.rs, native/src/db/intake.rs, native/src/db/planning.rs, native/src/db/quality.rs, native/src/db/tests.rs, native/tests/planning_pipeline.rs, native/tests/openspec_compose_validation.rs, native/tests/dependency_broker_http.rs, native/tests/dependency_broker_podman.rs, deploy/openspec/validate.test.mjs, office/src/views/Director.test.tsx]
+    source: [native/src/agentic.rs, native/src/db/agentic_plans.rs, native/src/db/planning.rs, native/src/planning/mod.rs, native/src/planning/environment.rs, native/src/db/environment.rs, migrations/0076_environment_specs.sql, native/src/planning/skill_refresh.rs, native/src/dependencies.rs, native/src/dependency_broker.rs, native/src/dependency_service.rs, native/src/dependency_egress.rs, native/src/openspec.rs, native/src/openspec_cli.rs, native/src/bin/core.rs, native/src/bin/worker.rs, native/src/bin/verifier.rs, native/src/bin/supervisor.rs, native/src/bin/runtime_broker.rs, deploy/openspec/validate.mjs, deploy/openspec/Dockerfile, office/src/views/Director.tsx, office/src/views/RequestWorkspace.tsx, office/src/views/CampaignDetail.tsx, office/src/views/EnvironmentPanel.tsx]
+    test: [native/src/agentic.rs, native/src/planning/environment.rs, native/src/db/environment.rs, native/src/db/intake.rs, native/src/db/planning.rs, native/src/db/quality.rs, native/src/db/tests.rs, native/tests/planning_pipeline.rs, native/tests/openspec_compose_validation.rs, native/tests/dependency_broker_http.rs, native/tests/dependency_broker_podman.rs, deploy/openspec/validate.test.mjs, office/src/views/Director.test.tsx, office/src/views/EnvironmentPanel.test.tsx]
   acceptance:
-    deterministic: Core derives a planning lane floor, persists exact stack/architecture/documentation/skill/DoD artifacts, and requires a plan review for every lane with policy-bounded auto-approval; the Planner proposes a WorkGraph that Core validates for cycles, paths, dependencies, competence and budget; a dependency-requiring plan is frozen onto the ActionSpec before Campaign authorization and can only be acquired after provider writes and before offline checks; the Spec Manager authors observable acceptance and negative cases only for FORMAL_SPEC; deterministic compilation freezes exact requirement, assertion and check identities; every reviewer finding is a durable disposition and an OPEN finding blocks the Gate; post-freeze changes require a new revision.
+    deterministic: Core derives a planning lane floor, compiles a typed EnvironmentPlan from the exact base-commit conventions, validates pins/licences/sandbox/resource/network policy, records a Lead-model planning decision bound to the exact plan/risk hash, and freezes an immutable EnvironmentSpec before Campaign authorization; a generated environment is lock-resolved by the EnvironmentBuilder port and a missing builder or failed resolution blocks with typed errors; the ActionSpec, checks, Campaign binding and Worker assignment carry the exact plan/spec/builder identity; persists exact stack/architecture/documentation/skill/DoD artifacts and requires a plan review for every lane with policy-bounded auto-approval; the Planner proposes a WorkGraph that Core validates for cycles, paths, dependencies, competence and budget; a dependency-requiring plan is frozen onto the ActionSpec before Campaign authorization and can only be acquired after provider writes and before offline checks; the Spec Manager authors observable acceptance and negative cases only for FORMAL_SPEC; deterministic compilation freezes exact requirement, assertion and check identities; every reviewer finding is a durable disposition and an OPEN finding blocks the Gate; post-freeze changes require a new revision.
     real: A multi-unit browser operation is planned, specified, frozen and executed without the model changing a frozen requirement.
   evidence:
     deterministic:
@@ -3022,6 +3024,8 @@ capabilities:
   - Wave 12 integration evidence and exact command results are recorded in docs/implementation/wave12-integration-evidence.md; it is implementer evidence, not acceptance.
   - WP12 records a reproducible deterministic chaos/cross-workstream matrix and repeat-run acceptance script in docs/implementation/wp12-chaos-matrix.md and scripts/quality-wave12-acceptance.sh. The final integrated run passed 20/20. It is implementer evidence only; live provider, real-Podman dependency, real Compose Campaign/browser and independent acceptance paths remain NOT_TESTED.
   - The 2026-11-10 vlog evidence in docs/evidence/live-vlog-acceptance-2026-11-10.md is implementer/orchestrator evidence; independent acceptance remains pending.
+  - The agnostic environment compiler is implemented at the Core/domain/persistence/Office layer with deterministic conventions, plan/spec/licence and Lead-model-review tests. The real Nix/devenv builder image, lock resolution and Node/Playwright check execution are WP1-B and remain NOT_TESTED; no real Nix build or independent browser acceptance is claimed. The environment builder is injected through a typed port; the default Core builder is UNAVAILABLE and fails closed.
+  - A real authenticated Owner unfree-licence override API is deferred. The compiler rejects `allowUnfree`, unknown/denied licences and unfree packages without an exact owner override record; there is no unauthenticated database or HTTP path that can create an override. The reserved owner action must be added before any unfree package can be admitted.
   blockers:
   - Per-WorkUnit execution state for multi-unit plans remains pending; the 2026-11-10 single-unit live run completed the planned-specified-frozen-approved-executed journey.
 

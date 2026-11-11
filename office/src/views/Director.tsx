@@ -24,6 +24,7 @@ import {
 } from "../coreApi";
 import { shortId } from "../format";
 import { useI18n } from "../i18n";
+import { EnvironmentPanel } from "./EnvironmentPanel";
 import { KnowledgePanel } from "./KnowledgePanel";
 import "./director.css";
 import "./specs.css";
@@ -1279,6 +1280,11 @@ export function Director() {
                     </>
                   )}
                 </Panel>
+
+                <EnvironmentPanel
+                  environment={detail.environment ?? null}
+                  requestId={activeId}
+                />
 
                 <Panel>
                   <div className="section-heading">
