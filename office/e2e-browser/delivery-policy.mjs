@@ -3,7 +3,7 @@
 // Project and Campaign; it never invents Core state or reads a token file.
 // This is implementer self-test evidence, never independent acceptance.
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { chromium } from "playwright-core";
@@ -24,14 +24,12 @@ if (!projectId || !campaignId) {
 function findChromium() {
   const root = join(homedir(), ".cache/ms-playwright");
   if (!existsSync(root)) return undefined;
-  const candidates = [
-    "chrome-linux/chrome",
-    "chrome-linux64/chrome",
-    "chrome-linux/headless_shell",
-  ];
-  for (const name of candidates) {
-    const path = join(root, name);
-    if (existsSync(path)) return path;
+  for (const entry of readdirSync(root)) {
+    if (!entry.startsWith("chromium-")) continue;
+    for (const name of ["chrome-linux/chrome", "chrome-linux64/chrome"]) {
+      const path = join(root, entry, name);
+      if (existsSync(path)) return path;
+    }
   }
   return undefined;
 }
