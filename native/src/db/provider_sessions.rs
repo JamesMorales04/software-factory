@@ -3139,6 +3139,8 @@ mod tests {
                 check: Some(ExecutionCheckInput {
                     command: vec!["cargo".into(), "test".into()],
                     candidate_sha256: "c".repeat(64),
+                    candidate_commit_sha: None,
+                    candidate_tree_sha: None,
                     exit_code: Some(0),
                 }),
             })
@@ -3177,6 +3179,8 @@ mod tests {
                 check: Some(ExecutionCheckInput {
                     command: vec!["false".into()],
                     candidate_sha256: "c".repeat(64),
+                    candidate_commit_sha: None,
+                    candidate_tree_sha: None,
                     exit_code: Some(0),
                 }),
             })
@@ -3199,6 +3203,8 @@ mod tests {
                 check: Some(ExecutionCheckInput {
                     command: vec!["cargo".into(), "test".into()],
                     candidate_sha256: "not-a-digest".into(),
+                    candidate_commit_sha: None,
+                    candidate_tree_sha: None,
                     exit_code: Some(0),
                 }),
             })
@@ -3249,6 +3255,8 @@ mod tests {
                         check: Some(ExecutionCheckInput {
                             command: vec!["false".into()],
                             candidate_sha256: "c".repeat(64),
+                            candidate_commit_sha: None,
+                            candidate_tree_sha: None,
                             exit_code: Some(0),
                         }),
                     })
@@ -3269,6 +3277,8 @@ mod tests {
                         check: Some(ExecutionCheckInput {
                             command: vec!["cargo".into(), "test".into()],
                             candidate_sha256: "c".repeat(64),
+                            candidate_commit_sha: None,
+                            candidate_tree_sha: None,
                             exit_code: Some(0),
                         }),
                     })
