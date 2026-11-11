@@ -64,8 +64,16 @@ def _mountinfo() -> tuple[list[dict[str, str]], bool]:
         if len(fields) < 5 or len(post) < 2:
             complete = False
             continue
+        try:
+            mount_id = int(fields[0])
+            parent_id = int(fields[1])
+        except ValueError:
+            complete = False
+            continue
         entries.append(
             {
+                "mount_id": mount_id,
+                "parent_id": parent_id,
                 "root": fields[3],
                 "mount_point": fields[4],
                 "source": post[1],
@@ -85,35 +93,71 @@ def _podman_volume_source(source: str) -> bool:
     return bool(name) and name not in (".", "..") and "\\" not in name and "\0" not in name
 
 
-def _nested_volume_root(root: str) -> bool:
-    """Match ``.../storage/volumes/<name>/_data`` from a nested VFS engine."""
+def _engine_storage_prefix(root: str) -> str | None:
+    """Return the nested engine's ``.../storage/`` prefix, if present.
+
+    The canonical Compose runtime mounts the nested engine's storage from an
+    outer named volume: ``.../containers/storage/volumes/<engine>/_data/
+    storage/``. Every nested volume, container rootfs and runtime file must
+    live under that exact prefix. Requiring it prevents a host directory that
+    merely ends in ``storage/volumes/<name>/_data`` from being attested.
+    """
     parts = Path(root).parts
+    for index in range(len(parts) - 5):
+        if (
+            parts[index] == "containers"
+            and parts[index + 1] == "storage"
+            and parts[index + 2] == "volumes"
+            and bool(parts[index + 3])
+            and parts[index + 3] not in (".", "..")
+            and parts[index + 4] == "_data"
+            and parts[index + 5] == "storage"
+            and index + 6 < len(parts)
+        ):
+            return str(Path(*parts[: index + 6])) + "/"
+    return None
+
+
+def _nested_volume_root(root: str, engine_root: str | None) -> bool:
+    """Match ``<engine>/storage/volumes/<name>/_data`` exactly."""
+    if not engine_root or not root.startswith(engine_root):
+        return False
+    remainder = root[len(engine_root) :].strip("/").split("/")
     return (
-        len(parts) >= 4
-        and parts[-4] == "storage"
-        and parts[-3] == "volumes"
-        and bool(parts[-2])
-        and parts[-2] not in (".", "..")
-        and parts[-1] == "_data"
+        len(remainder) == 3
+        and remainder[0] == "volumes"
+        and bool(remainder[1])
+        and remainder[1] not in (".", "..")
+        and remainder[2] == "_data"
     )
 
 
-def _authorized_volume_source(source: str, root: str, fstype: str) -> bool:
+def _authorized_volume_source(
+    source: str,
+    root: str,
+    fstype: str,
+    engine_root: str | None,
+    parent_id: int | None,
+    root_mount_id: int | None,
+) -> bool:
     """True only for a runtime-managed named-volume mount.
 
     A host bind path at ``/cache``, ``/nix`` or ``/inputs/workspace`` is not
     attested as a no-host-mount builder. The brokered product path always uses
     named volumes; the host wrapper is a development harness. The nested VFS
     engine presents a named volume as a directory root on its backing block
-    device, so the mountinfo ``root`` and a real-filesystem source are the
-    runtime-managed identity.
+    device, so the mountinfo ``root``, its parent root mount and a
+    real-filesystem source are the runtime-managed identity.
     """
     if _podman_volume_source(source):
         return True
     return (
         source.startswith("/dev/")
         and fstype in NESTED_VOLUME_FILESYSTEMS
-        and _nested_volume_root(root)
+        and parent_id is not None
+        and root_mount_id is not None
+        and parent_id == root_mount_id
+        and _nested_volume_root(root, engine_root)
     )
 
 
@@ -135,43 +179,74 @@ def _overlay_container_runtime_file_source(source: str, expected: str) -> bool:
 
 
 def _nested_container_runtime_file_root(root: str, expected: str) -> bool:
-    """Match ``.../storage/vfs-containers/<id>/userdata/<file>``."""
+    """Match the exact ``/containers/storage/vfs-containers/<id>/userdata`` file."""
     parts = Path(root).parts
     return (
-        len(parts) >= 5
-        and parts[-5] == "storage"
-        and parts[-4] == "vfs-containers"
-        and bool(parts[-3])
-        and parts[-3] not in (".", "..")
-        and parts[-2] == "userdata"
-        and parts[-1] == expected
+        len(parts) == 7
+        and parts[0] == "/"
+        and parts[1] == "containers"
+        and parts[2] == "storage"
+        and parts[3] == "vfs-containers"
+        and bool(parts[4])
+        and parts[4] not in (".", "..")
+        and parts[5] == "userdata"
+        and parts[6] == expected
     )
 
 
 def _container_runtime_file_source(
-    source: str, root: str, fstype: str, expected: str
+    source: str,
+    root: str,
+    fstype: str,
+    expected: str,
+    parent_id: int | None,
+    root_mount_id: int | None,
 ) -> bool:
     if _overlay_container_runtime_file_source(source, expected):
         return True
     return (
         source == "tmpfs"
         and fstype == "tmpfs"
+        and parent_id is not None
+        and root_mount_id is not None
+        and parent_id == root_mount_id
         and _nested_container_runtime_file_root(root, expected)
     )
 
 
-def _nested_container_root(root: str) -> bool:
-    parts = Path(root).parts
-    return any(
-        parts[index] == "storage" and parts[index + 1] in {"vfs", "overlay"}
-        for index in range(len(parts) - 1)
+def _nested_container_root(root: str, engine_root: str | None) -> bool:
+    if not engine_root or not root.startswith(engine_root):
+        return False
+    remainder = root[len(engine_root) :].strip("/").split("/")
+    return (
+        len(remainder) == 3
+        and remainder[0] == "vfs"
+        and remainder[1] == "dir"
+        and bool(remainder[2])
+        and remainder[2] not in (".", "..")
+    ) or (
+        len(remainder) == 3
+        and remainder[0] == "overlay"
+        and bool(remainder[1])
+        and remainder[1] not in (".", "..")
+        and remainder[2] == "merged"
     )
 
 
-def _safe_system_mount(target: str, source: str, fstype: str, root: str) -> bool:
+def _safe_system_mount(
+    target: str,
+    source: str,
+    fstype: str,
+    root: str,
+    engine_root: str | None,
+    parent_id: int | None,
+    root_mount_id: int | None,
+) -> bool:
     expected_runtime_file = CONTAINER_RUNTIME_FILES.get(target)
     if expected_runtime_file is not None:
-        return _container_runtime_file_source(source, root, fstype, expected_runtime_file)
+        return _container_runtime_file_source(
+            source, root, fstype, expected_runtime_file, parent_id, root_mount_id
+        )
     if target == "/":
         if fstype in {"overlay", "rootfs", "squashfs"} and (
             source in {"overlay", "rootfs", "/dev/root"} or source.startswith("/dev/")
@@ -180,7 +255,7 @@ def _safe_system_mount(target: str, source: str, fstype: str, root: str) -> bool
         return (
             source.startswith("/dev/")
             and fstype in NESTED_VOLUME_FILESYSTEMS
-            and _nested_container_root(root)
+            and _nested_container_root(root, engine_root)
         )
     if target == "/proc" or target.startswith("/proc/"):
         return source == "proc" and fstype == "proc"
@@ -202,17 +277,17 @@ def _safe_system_mount(target: str, source: str, fstype: str, root: str) -> bool
     if target == "/run" or target.startswith("/run/"):
         return source == "tmpfs" and fstype == "tmpfs"
     if target == "/tmp" or target.startswith("/tmp/"):
-        return _authorized_volume_source(source, root, fstype) or (
-            source == "tmpfs" and fstype == "tmpfs"
-        )
+        return _authorized_volume_source(
+            source, root, fstype, engine_root, parent_id, root_mount_id
+        ) or (source == "tmpfs" and fstype == "tmpfs")
     if target == "/var/tmp" or target.startswith("/var/tmp/"):
         return source == "tmpfs" and fstype == "tmpfs"
     if target == "/home/factory" or target.startswith("/home/factory/"):
         return source == "tmpfs" and fstype == "tmpfs"
     if target == "/output" or target.startswith("/output/"):
-        return _authorized_volume_source(source, root, fstype) or (
-            source == "tmpfs" and fstype == "tmpfs"
-        )
+        return _authorized_volume_source(
+            source, root, fstype, engine_root, parent_id, root_mount_id
+        ) or (source == "tmpfs" and fstype == "tmpfs")
     return False
 
 
@@ -221,25 +296,43 @@ def _mount_attestation(mounts: list[dict[str, str]], complete: bool) -> bool:
 
 
 def _mounts_authorized(mounts: list[dict[str, str]]) -> bool:
+    root_mount = next(
+        (mount for mount in mounts if mount.get("mount_point") == "/"), None
+    )
+    root_mount_id = root_mount.get("mount_id") if root_mount else None
+    engine_root = (
+        _engine_storage_prefix(root_mount.get("root", "")) if root_mount else None
+    )
     for mount in mounts:
         source = mount["source"]
         target = mount["mount_point"]
         fstype = mount.get("fstype", "")
         root = mount.get("root", "")
+        parent_id = mount.get("parent_id")
         # Validate the source before accepting any target, including "/" and
         # system mounts. A forbidden host path at /cache, /nix,
         # /inputs/workspace, / or /proc must never set noHostMount=true.
         if target in AUTHORIZED_PROJECT_OR_CACHE_MOUNTS or target.startswith(
             "/inputs/workspace/"
         ):
-            if not _authorized_volume_source(source, root, fstype):
+            if not _authorized_volume_source(
+                source, root, fstype, engine_root, parent_id, root_mount_id
+            ):
                 return False
             continue
         if target == "/" or any(
             target == prefix or target.startswith(prefix + "/")
             for prefix in ALLOWED_MOUNT_PREFIXES
         ):
-            if not _safe_system_mount(target, source, fstype, root):
+            if not _safe_system_mount(
+                target,
+                source,
+                fstype,
+                root,
+                engine_root,
+                parent_id,
+                root_mount_id,
+            ):
                 return False
             continue
         return False

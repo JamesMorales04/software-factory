@@ -479,14 +479,28 @@ class AttestationTests(unittest.TestCase):
 
     @staticmethod
     def mount(
-        source: str, target: str, fstype: str = "ext4", root: str = ""
-    ) -> dict[str, str]:
+        source: str,
+        target: str,
+        fstype: str = "ext4",
+        root: str = "",
+        mount_id: int = 100,
+        parent_id: int = 1,
+    ) -> dict[str, int | str]:
         return {
+            "mount_id": mount_id,
+            "parent_id": parent_id,
             "root": root,
             "source": source,
             "mount_point": target,
             "fstype": fstype,
         }
+
+    @staticmethod
+    def nested_engine_root() -> str:
+        return (
+            "/@home/dev/.local/share/containers/storage/volumes/engine/_data"
+            "/storage/"
+        )
 
     def test_expected_volume_source_is_authorized_at_each_target(self) -> None:
         for target in ("/inputs/workspace", "/cache", "/nix"):
@@ -557,26 +571,97 @@ class AttestationTests(unittest.TestCase):
             )
         )
 
-    def test_nested_vfs_named_volume_root_is_authorized(self) -> None:
-        root = (
-            "/@home/dev/.local/share/containers/storage/volumes/engine/_data"
-            "/storage/volumes/factory-env-test/_data"
+    def nested_mounts(self, *extra: dict[str, int | str]) -> list[dict[str, int | str]]:
+        engine = self.nested_engine_root()
+        root = self.mount(
+            "/dev/nvme0n1p2", "/", "btrfs", f"{engine}vfs/dir/abc123",
+            mount_id=2145, parent_id=2100,
         )
+        return [root, *extra]
+
+    def test_nested_vfs_named_volume_root_is_authorized(self) -> None:
+        engine = self.nested_engine_root()
+        root = f"{engine}volumes/factory-env-test/_data"
         for target in ("/inputs/workspace", "/cache", "/nix"):
             self.assertTrue(
                 _mounts_authorized(
-                    [self.mount("/dev/nvme0n1p2", target, "btrfs", root)]
+                    self.nested_mounts(
+                        self.mount(
+                            "/dev/nvme0n1p2", target, "btrfs", root,
+                            mount_id=2002, parent_id=2145,
+                        )
+                    )
                 ),
                 target,
             )
         self.assertFalse(
             _mounts_authorized(
-                [self.mount("/dev/nvme0n1p2", "/cache", "btrfs", "/tmp/not-a-volume")]
+                self.nested_mounts(
+                    self.mount(
+                        "/dev/nvme0n1p2", "/cache", "btrfs",
+                        f"{engine}volumes/../root/_data",
+                        mount_id=2002, parent_id=2145,
+                    )
+                )
             )
         )
         self.assertFalse(
             _mounts_authorized(
-                [self.mount("/tmp/factory-cache", "/cache", "btrfs", root)]
+                self.nested_mounts(
+                    self.mount(
+                        "/dev/nvme0n1p2", "/cache", "btrfs", root,
+                        mount_id=2002, parent_id=9999,
+                    )
+                )
+            )
+        )
+        self.assertFalse(
+            _mounts_authorized(
+                self.nested_mounts(
+                    self.mount(
+                        "/tmp/factory-cache", "/cache", "btrfs", root,
+                        mount_id=2002, parent_id=2145,
+                    )
+                )
+            )
+        )
+
+    def test_shaped_host_binds_are_rejected(self) -> None:
+        # A host directory that merely looks like a nested volume root is not
+        # tied to the observed engine storage prefix and parent root mount.
+        shaped_volume = "/host/export/storage/volumes/attacker/_data"
+        self.assertFalse(
+            _mounts_authorized(
+                [self.mount("/dev/hostdisk", "/cache", "btrfs", shaped_volume)]
+            )
+        )
+        shaped_root = "/host/export/storage/vfs/unrelated"
+        self.assertFalse(
+            _mounts_authorized(
+                [self.mount("/dev/hostdisk", "/", "btrfs", shaped_root)]
+            )
+        )
+        # A valid root mount does not authorize a volume outside its storage
+        # prefix or a runtime file with an extra host prefix.
+        self.assertFalse(
+            _mounts_authorized(
+                self.nested_mounts(
+                    self.mount(
+                        "/dev/hostdisk", "/cache", "btrfs", shaped_volume,
+                        mount_id=2002, parent_id=2145,
+                    )
+                )
+            )
+        )
+        self.assertFalse(
+            _mounts_authorized(
+                self.nested_mounts(
+                    self.mount(
+                        "tmpfs", "/etc/hosts", "tmpfs",
+                        "/host/containers/storage/vfs-containers/abc/userdata/hosts",
+                        mount_id=2084, parent_id=2145,
+                    )
+                )
             )
         )
 
@@ -588,42 +673,57 @@ class AttestationTests(unittest.TestCase):
         ):
             root = f"/containers/storage/vfs-containers/abc123/userdata/{name}"
             self.assertTrue(
-                _mounts_authorized([self.mount("tmpfs", target, "tmpfs", root)]),
-                target,
-            )
-            self.assertFalse(
                 _mounts_authorized(
-                    [
+                    self.nested_mounts(
                         self.mount(
-                            "tmpfs",
-                            target,
-                            "tmpfs",
-                            "/containers/storage/vfs-containers/abc123/userdata/config.json",
+                            "tmpfs", target, "tmpfs", root,
+                            mount_id=2084, parent_id=2145,
                         )
-                    ]
+                    )
                 ),
                 target,
             )
             self.assertFalse(
-                _mounts_authorized([self.mount("/tmp/hosts", target, "tmpfs", root)]),
+                _mounts_authorized(
+                    self.nested_mounts(
+                        self.mount(
+                            "tmpfs", target, "tmpfs",
+                            "/containers/storage/vfs-containers/abc123/userdata/config.json",
+                            mount_id=2084, parent_id=2145,
+                        )
+                    )
+                ),
+                target,
+            )
+            self.assertFalse(
+                _mounts_authorized(
+                    self.nested_mounts(
+                        self.mount(
+                            "/tmp/hosts", target, "tmpfs", root,
+                            mount_id=2084, parent_id=2145,
+                        )
+                    )
+                ),
                 target,
             )
 
     def test_nested_vfs_root_filesystem_is_authorized(self) -> None:
-        root = (
-            "/@home/dev/.local/share/containers/storage/volumes/engine/_data"
-            "/storage/vfs/dir/abc123"
-        )
+        engine = self.nested_engine_root()
+        root = f"{engine}vfs/dir/abc123"
         self.assertTrue(
             _mounts_authorized(
-                [self.mount("/dev/nvme0n1p2", "/", "btrfs", root)]
+                self.nested_mounts()
             )
         )
         self.assertFalse(
-            _mounts_authorized([self.mount("/tmp/root", "/", "btrfs", root)])
+            _mounts_authorized(
+                [self.mount("/tmp/root", "/", "btrfs", root)]
+            )
         )
         self.assertFalse(
-            _mounts_authorized([self.mount("/dev/nvme0n1p2", "/", "btrfs", "/")])
+            _mounts_authorized(
+                [self.mount("/dev/nvme0n1p2", "/", "btrfs", "/")]
+            )
         )
 
     def test_missing_or_incomplete_mountinfo_is_not_attested(self) -> None:
