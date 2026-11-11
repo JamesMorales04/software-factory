@@ -399,34 +399,88 @@ def copy_and_hash(source: Path, destination: Path) -> dict[str, object]:
     return {"sha256": digest, "bytes": size}
 
 
-def secure_restore_copy(source: Path, destination: Path) -> None:
-    """Replace one restore destination through a non-following temporary file."""
-    validate_regular_file(source, "backup file", required=True)
-    temporary = destination.with_name(destination.name + ".restore-tmp")
-    if temporary.is_symlink():
-        raise ResetError(f"restore temporary path may not be a symlink: {temporary}")
-    if temporary.exists():
-        if not stat.S_ISREG(temporary.lstat().st_mode):
-            raise ResetError(
-                f"restore temporary path must be a regular file: {temporary}"
-            )
-        os.unlink(temporary)
-    try:
-        copy_regular_file(source, temporary, "backup file", "restore temporary file")
-        os.replace(temporary, destination)
-    except Exception:
+def restore_destination(database: Path, name: str) -> Path:
+    if name == "factory.sqlite":
+        return database
+    if name == "factory.sqlite-wal":
+        return Path(str(database) + "-wal")
+    if name == "factory.sqlite-shm":
+        return Path(str(database) + "-shm")
+    raise ResetError(f"unexpected backup file: {name}")
+
+
+def restore_temp_path(destination: Path) -> Path:
+    return destination.with_name(destination.name + ".restore-tmp")
+
+
+def safe_unlink(path: Path) -> None:
+    """Remove one path without following a symlink."""
+    if path.is_symlink():
+        os.unlink(path)
+        return
+    if not path.exists():
+        return
+    if not stat.S_ISREG(path.lstat().st_mode):
+        raise ResetError(f"refusing to remove a non-regular path: {path}")
+    os.unlink(path)
+
+
+def preflight_restore_temps(temp_paths: list[Path]) -> None:
+    """Reject or safely clear every destination temp path before mutation."""
+    for temporary in temp_paths:
+        if temporary.is_symlink():
+            raise ResetError(f"restore temporary path may not be a symlink: {temporary}")
+        if temporary.exists():
+            if not stat.S_ISREG(temporary.lstat().st_mode):
+                raise ResetError(
+                    f"restore temporary path must be a regular file: {temporary}"
+                )
+            os.unlink(temporary)
+
+
+def cleanup_restore_temps(temp_paths: list[Path]) -> None:
+    for temporary in temp_paths:
         if temporary.is_symlink() or temporary.exists():
             try:
                 os.unlink(temporary)
             except OSError:
                 pass
-        raise
-    if destination.is_symlink() or not stat.S_ISREG(destination.lstat().st_mode):
-        try:
-            os.unlink(destination)
-        except OSError:
-            pass
-        raise ResetError(f"restore destination is not a regular file: {destination}")
+
+
+def rollback_restore(database: Path, evidence: Path, had_database: bool) -> None:
+    """Restore the pre-restore backup after a failed restore mutation."""
+    if not had_database:
+        for suffix in ("", "-wal", "-shm"):
+            safe_unlink(Path(str(database) + suffix))
+        return
+    entries = verify_backup(evidence)
+    staging = Path(tempfile.mkdtemp(prefix=".factory-rollback-", dir=database.parent))
+    try:
+        staged: list[tuple[Path, Path]] = []
+        destinations: set[Path] = set()
+        for name in entries:
+            source = safe_backup_path(evidence, name)
+            destination = restore_destination(database, name)
+            temporary = staging / name
+            copy_regular_file(source, temporary, "pre-restore backup", "rollback file")
+            staged.append((temporary, destination))
+            destinations.add(destination)
+        for suffix in ("-wal", "-shm"):
+            stale = Path(str(database) + suffix)
+            if stale not in destinations:
+                safe_unlink(stale)
+        for temporary, destination in staged:
+            os.replace(temporary, destination)
+            if destination.is_symlink() or not stat.S_ISREG(destination.lstat().st_mode):
+                raise ResetError(f"rollback destination is not a regular file: {destination}")
+        for name, destination in (
+            (name, restore_destination(database, name)) for name in entries
+        ):
+            digest, _size = sha256_file(destination)
+            if digest != entries[name]["sha256"]:
+                raise ResetError(f"rollback checksum mismatch: {name}")
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
 
 
 def write_json(path: Path, payload: dict[str, object]) -> None:
@@ -654,32 +708,74 @@ def restore_database(
     validate_database_inputs(database, required=False)
     database.parent.mkdir(parents=True, exist_ok=True)
     ensure_empty_directory(evidence)
-    if database.exists():
+    had_database = database.exists()
+    if had_database:
         backup_database(database, evidence, project, "pre-restore", {})
-    for suffix in ("-wal", "-shm"):
-        stale = Path(str(database) + suffix)
-        if stale.exists():
-            stale.unlink()
-    for name in entries:
-        if name == "factory.sqlite":
-            destination = database
-        elif name == "factory.sqlite-wal":
-            destination = Path(str(database) + "-wal")
-        elif name == "factory.sqlite-shm":
-            destination = Path(str(database) + "-shm")
-        else:
-            raise ResetError(f"unexpected backup file: {name}")
-        secure_restore_copy(safe_backup_path(backup, name), destination)
-    connection = connect(database)
+        # The rollback source must be verified before any destination mutation.
+        verify_backup(evidence)
+
+    mappings = [
+        (safe_backup_path(backup, name), restore_destination(database, name))
+        for name in entries
+    ]
+    temp_paths = [restore_temp_path(destination) for _, destination in mappings]
+    # All temp paths are checked before a sidecar is deleted or a file replaced.
+    preflight_restore_temps(temp_paths)
     try:
-        integrity = connection.execute("PRAGMA integrity_check").fetchone()
-        if not integrity or integrity[0] != "ok":
-            raise ResetError(f"restored database integrity check failed: {integrity}")
-        violations = connection.execute("PRAGMA foreign_key_check").fetchall()
-        if violations:
-            raise ResetError(f"restored database has foreign key violations: {violations[:5]}")
+        for (source, _destination), temporary in zip(mappings, temp_paths):
+            copy_regular_file(source, temporary, "backup file", "restore temporary file")
+    except Exception:
+        cleanup_restore_temps(temp_paths)
+        raise
+
+    destinations = {destination for _, destination in mappings}
+    stale_paths = [
+        Path(str(database) + suffix)
+        for suffix in ("-wal", "-shm")
+        if Path(str(database) + suffix) not in destinations
+    ]
+    mutated = False
+    try:
+        for stale in stale_paths:
+            safe_unlink(stale)
+            mutated = True
+        for (_source, destination), temporary in zip(mappings, temp_paths):
+            os.replace(temporary, destination)
+            mutated = True
+            if destination.is_symlink() or not stat.S_ISREG(destination.lstat().st_mode):
+                raise ResetError(f"restore destination is not a regular file: {destination}")
+            if (
+                os.environ.get(
+                    "FACTORY_TEST_DATA_RESET_FAIL_RESTORE_AFTER_REPLACE"
+                )
+                == "1"
+            ):
+                raise ResetError("injected restore failure after replacement")
+        connection = connect(database)
+        try:
+            integrity = connection.execute("PRAGMA integrity_check").fetchone()
+            if not integrity or integrity[0] != "ok":
+                raise ResetError(f"restored database integrity check failed: {integrity}")
+            violations = connection.execute("PRAGMA foreign_key_check").fetchall()
+            if violations:
+                raise ResetError(
+                    f"restored database has foreign key violations: {violations[:5]}"
+                )
+        finally:
+            connection.close()
+    except Exception as error:
+        if mutated:
+            try:
+                rollback_restore(database, evidence, had_database)
+            except Exception as rollback_error:
+                raise ResetError(
+                    f"restore failed and rollback failed: {error}; {rollback_error}; "
+                    f"pre-restore evidence: {evidence}"
+                ) from error
+            raise ResetError(f"restore failed; original database restored: {error}") from error
+        raise
     finally:
-        connection.close()
+        cleanup_restore_temps(temp_paths)
 
 
 def chown_paths(database: Path, owner: tuple[int, int] | None) -> None:
@@ -692,6 +788,13 @@ def chown_paths(database: Path, owner: tuple[int, int] | None) -> None:
         path = Path(str(database) + suffix)
         if path.exists():
             os.chown(path, uid, gid)
+
+
+def best_effort_chown(database: Path, owner: tuple[int, int] | None) -> None:
+    try:
+        chown_paths(database, owner)
+    except Exception:
+        pass
 
 
 def parse_owner(value: str) -> tuple[int, int]:
@@ -724,7 +827,13 @@ def main(argv: list[str]) -> int:
         validate_database_inputs(args.database, required=True)
 
     if args.restore_from:
-        restore_database(args.database, args.restore_from, args.evidence_dir, args.project)
+        try:
+            restore_database(
+                args.database, args.restore_from, args.evidence_dir, args.project
+            )
+        except Exception:
+            best_effort_chown(args.database, args.chown)
+            raise
         chown_paths(args.database, args.chown)
         print(f"restored: {args.database} from {args.restore_from}")
         print("integrity: ok")
@@ -769,6 +878,7 @@ def main(argv: list[str]) -> int:
                 },
             )
         except Exception as recovery_error:
+            best_effort_chown(args.database, args.chown)
             write_json(
                 args.evidence_dir / "recovery-report.json",
                 {

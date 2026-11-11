@@ -323,6 +323,79 @@ assert_count "$STALE_TEMP_TARGET" campaigns 1
 [[ ! -e "$STALE_TEMP_TARGET.restore-tmp" ]] ||
   fail "stale restore temp file was not cleaned up"
 
+# A WAL-bearing backup must preflight the WAL temp path before replacing main.
+WAL_BACKUP="$TMP/wal-backup"
+cp -a "$RUN_EVIDENCE" "$WAL_BACKUP"
+printf 'wal payload\n' >"$WAL_BACKUP/factory.sqlite-wal"
+python3 - "$WAL_BACKUP" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+backup = pathlib.Path(sys.argv[1])
+wal = (backup / "factory.sqlite-wal").read_bytes()
+manifest_path = backup / "manifest.json"
+manifest = json.loads(manifest_path.read_text())
+manifest["files"]["factory.sqlite-wal"] = {
+    "sha256": hashlib.sha256(wal).hexdigest(),
+    "bytes": len(wal),
+}
+manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+PY
+wal_digest="$(sha256sum "$WAL_BACKUP/factory.sqlite-wal" | awk '{print $1}')"
+printf '%s  factory.sqlite-wal\n' "$wal_digest" >>"$WAL_BACKUP/SHA256SUMS"
+
+WAL_TARGET="$TMP/wal-target.sqlite"
+cp "$MASTER" "$WAL_TARGET"
+printf 'original wal\n' >"$WAL_TARGET-wal"
+printf 'original shm\n' >"$WAL_TARGET-shm"
+WAL_DB_BEFORE="$(sha256sum "$WAL_TARGET" | awk '{print $1}')"
+WAL_SIDECAR_BEFORE="$(sha256sum "$WAL_TARGET-wal" | awk '{print $1}')"
+WAL_SHM_BEFORE="$(sha256sum "$WAL_TARGET-shm" | awk '{print $1}')"
+WAL_VICTIM="$TMP/wal-temp-victim"
+printf 'sentinel\n' >"$WAL_VICTIM"
+ln -s "$WAL_VICTIM" "$WAL_TARGET-wal.restore-tmp"
+assert_helper_failure "restore temporary path may not be a symlink" \
+  env FACTORY_TEST_DATA_RESET=1 python3 "$HELPER" \
+  --database "$WAL_TARGET" \
+  --evidence-dir "$TMP/wal-evidence" \
+  --project wp6-test --confirmed-project wp6-test \
+  --restore-from "$WAL_BACKUP"
+[[ "$(sha256sum "$WAL_TARGET" | awk '{print $1}')" == "$WAL_DB_BEFORE" ]] ||
+  fail "WAL temp preflight failure changed the main database"
+[[ "$(sha256sum "$WAL_TARGET-wal" | awk '{print $1}')" == "$WAL_SIDECAR_BEFORE" ]] ||
+  fail "WAL temp preflight failure changed the WAL sidecar"
+[[ "$(sha256sum "$WAL_TARGET-shm" | awk '{print $1}')" == "$WAL_SHM_BEFORE" ]] ||
+  fail "WAL temp preflight failure changed the SHM sidecar"
+[[ "$(cat "$WAL_VICTIM")" == "sentinel" ]] ||
+  fail "WAL restore temp symlink overwrote its target"
+[[ -L "$WAL_TARGET-wal.restore-tmp" ]] ||
+  fail "WAL restore temp symlink was not preserved for evidence"
+assert_checksums "$TMP/wal-evidence"
+[[ -f "$TMP/wal-evidence/factory.sqlite-wal" ]] ||
+  fail "pre-restore backup did not include the original WAL"
+
+# A failure after replacing main must roll back the original DB and WAL.
+ROLLBACK_TARGET="$TMP/rollback-target.sqlite"
+cp "$MASTER" "$ROLLBACK_TARGET"
+printf 'rollback wal\n' >"$ROLLBACK_TARGET-wal"
+ROLLBACK_DB_BEFORE="$(sha256sum "$ROLLBACK_TARGET" | awk '{print $1}')"
+ROLLBACK_WAL_BEFORE="$(sha256sum "$ROLLBACK_TARGET-wal" | awk '{print $1}')"
+assert_helper_failure "original database restored" \
+  env FACTORY_TEST_DATA_RESET=1 \
+  FACTORY_TEST_DATA_RESET_FAIL_RESTORE_AFTER_REPLACE=1 \
+  python3 "$HELPER" \
+  --database "$ROLLBACK_TARGET" \
+  --evidence-dir "$TMP/rollback-evidence" \
+  --project wp6-test --confirmed-project wp6-test \
+  --restore-from "$RUN_EVIDENCE"
+[[ "$(sha256sum "$ROLLBACK_TARGET" | awk '{print $1}')" == "$ROLLBACK_DB_BEFORE" ]] ||
+  fail "restore rollback did not restore the original database bytes"
+[[ "$(sha256sum "$ROLLBACK_TARGET-wal" | awk '{print $1}')" == "$ROLLBACK_WAL_BEFORE" ]] ||
+  fail "restore rollback did not restore the original WAL bytes"
+assert_checksums "$TMP/rollback-evidence"
+
 # --- post-commit integrity failure auto-restores ---------------------------
 INTEGRITY="$TMP/integrity.sqlite"
 cp "$MASTER" "$INTEGRITY"
