@@ -112,7 +112,7 @@ explicit, frozen planning artifact.
 | DEL-04 | Gate `ACCEPTED` is already checked before the existing merge, but there is no separate delivery decision. | `native/src/bin/core.rs:5304-5312` | The handler can drift into treating Gate as delivery authority. | **BIND**: separate `DeliveryDecision`; Gate remains necessary, not sufficient. | WP-D1 |
 | ISS-01 | GitHub issue integration is read-only; intake creates a proposal with `autonomous_start=false`; no PR comment/close. | `docs/implementation/github-issues-integration-2026-10-28.md`; `docs/implementation/issue-intake-policy-2026-10-28.md`; `native/src/issue_intake.rs:820-860` | No issue-linked delivery lifecycle or closure evidence. | **ADD** immutable links, states, comment/close receipts (ADR-0042). | WP-I1 |
 
-### 3.5 Build and development assumptions
+### 3.5 Build, development and Factory test-tooling assumptions
 
 | ID | Current assumption | Evidence | Impact | Disposition | Owner |
 | --- | --- | --- | --- | --- | --- |
@@ -120,6 +120,7 @@ explicit, frozen planning artifact.
 | DEV-02 | The supervisor runtime installs `python3`; this is a runtime-language dependency that a project check could accidentally rely on. | `deploy/Containerfile:95-103` | A project check may silently use Python from the Factory runtime instead of its frozen environment. | **REPLACE** project checks with the environment builder/verifier; retain only Factory-internal tooling. | WP-E2 |
 | DEV-03 | Compose's OpenSpec image is Node-based. | `compose.yaml:542` | It is a Factory tooling image, not a user project runtime. | **RETAIN (Factory-only)**; do not infer Node for user projects. | WP-E2 |
 | DEV-04 | Provider image contains OpenCode/Codex and Node. | `deploy/Containerfile:213-241` | Provider runtime requirement; not a project environment. | **RETAIN (Factory-only)**; keep separate from execution. | WP-E2 |
+| DEV-05 | The Factory browser runner uses a pinned Node runtime (`FACTORY_NODE_BINARY`) and the Node/`playwright-core` `browser-check-runner.mjs`; the docs pin Node 22.23.2 and describe the harness as the deterministic/independent browser-check surface. | `native/src/browser.rs:780-868`; `docs/engineering/browser-automation.md:12-22`; `docs/engineering/factory-browser-cli.md`; `office/e2e-browser/browser-check-runner.mjs` | **RETAIN (Factory test infrastructure)**; it is not a project environment default. A project that uses Node for its own browser tests still gets Node from its `EnvironmentSpec`. | WP-E2 (WP-T1 evidence) |
 
 ### 3.6 Additional active-path findings
 
@@ -172,9 +173,11 @@ delivery binding with WP-E2's environment hash.
    and WP-E4, project execution must select the frozen `EnvironmentSpec`, not an
    image by language, a `generic-toolchain` constant or the Factory repository's
    own pins.
-2. **The Factory's own Rust/Node build remains Rust/Node.** `deploy/Containerfile`,
-   `.devcontainer`, `rust-toolchain.toml` and `mise.toml` are Factory development
-   facts. They must be labelled as such and never copied into a user project.
+2. **The Factory's own Rust/Node build and browser runner remain Factory
+   tooling.** `deploy/Containerfile`, `.devcontainer`, `rust-toolchain.toml`,
+   `mise.toml` and the Node/Playwright browser runner are Factory development
+   and test facts. They must be labelled as such and never copied into a user
+   project's environment.
 3. **A check is not portable until it has an environment.** `SpecCheck` alone is
    insufficient; the frozen environment hash must be part of the action spec,
    check evidence, candidate and delivery.
