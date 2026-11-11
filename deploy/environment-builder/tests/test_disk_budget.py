@@ -17,7 +17,12 @@ from unittest import mock
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
-from environment_builder.disk import DiskBudget, directory_usage_bytes  # noqa: E402
+from environment_builder.disk import (  # noqa: E402
+    MAX_DU_STDERR_BYTES,
+    DiskBudget,
+    _parse_du,
+    directory_usage_bytes,
+)
 from environment_builder.errors import BuilderError  # noqa: E402
 from environment_builder.nix import (  # noqa: E402
     MAX_CHECK_STREAM_BYTES,
@@ -30,15 +35,10 @@ RESOURCES = {"cpu": 2, "memoryMiB": 4096, "diskMiB": 1, "pids": 512, "timeoutSec
 
 
 class DiskBudgetTests(unittest.TestCase):
-    @staticmethod
-    def fake_du(stdout: str, returncode: int = 0) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(["du"], returncode, stdout=stdout, stderr="")
-
     def test_bounded_usage_and_over_budget_rejection(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            payload = root / "payload.bin"
-            payload.write_bytes(b"x" * (2 * 1024 * 1024))
+            (root / "payload.bin").write_bytes(b"x" * (2 * 1024 * 1024))
             used, complete = directory_usage_bytes([root])
             self.assertGreaterEqual(used, 2 * 1024 * 1024)
             self.assertTrue(complete)
@@ -50,57 +50,70 @@ class DiskBudgetTests(unittest.TestCase):
             self.assertFalse(record["exact"])
             self.assertTrue(record["exceeded"])
 
-    def test_du_over_budget_error_and_invalid_output(self) -> None:
+    def test_du_requires_total_and_every_expected_path(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            budget = DiskBudget(1, [root])
-            with mock.patch(
-                "environment_builder.disk.subprocess.run",
-                return_value=self.fake_du("2048\t/cache\n2048\ttotal\n"),
-            ):
-                used, complete = budget.usage()
+            root = str(Path(temporary))
+            used, complete = _parse_du(
+                f"2048\t{root}\n2048\ttotal\n", [root]
+            )
             self.assertEqual(used, 2 * 1024 * 1024)
             self.assertTrue(complete)
+            self.assertFalse(_parse_du("1\t/cache\n", ["/cache", "/nix", "/workspace"])[1])
+            self.assertFalse(
+                _parse_du(
+                    "1\t/cache\n1\t/nix\n1\t/workspace\n",
+                    ["/cache", "/nix", "/workspace"],
+                )[1]
+            )
+            self.assertFalse(
+                _parse_du(
+                    f"1\t{root}\n1\t/other\n1\ttotal\n", [root]
+                )[1]
+            )
+            self.assertFalse(_parse_du("not-a-size\n", [root])[1])
+            self.assertFalse(_parse_du("", [root])[1])
+
+    def test_noisy_du_stderr_is_bounded(self) -> None:
+        class FakeDu:
+            returncode = 0
+            pid = 4244
+
+            def __init__(self, stdout: bytes, stderr: bytes) -> None:
+                self.stdout = io.BytesIO(stdout)
+                self.stderr = io.BytesIO(stderr)
+
+            def wait(self, timeout: float | None = None) -> int:
+                return 0
+
+            def poll(self) -> int:
+                return 0
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = str(Path(temporary))
+            process = FakeDu(
+                f"1\t{root}\n1\ttotal\n".encode(),
+                b"e" * (MAX_DU_STDERR_BYTES * 8),
+            )
             with mock.patch(
-                "environment_builder.disk.subprocess.run",
-                return_value=self.fake_du("1\t/cache\n", returncode=1),
+                "environment_builder.disk.subprocess.Popen",
+                return_value=process,
             ):
-                used, complete = budget.usage()
-            self.assertFalse(complete)
-            self.assertEqual(used, 0)
-            with mock.patch(
-                "environment_builder.disk.subprocess.run",
-                return_value=self.fake_du("not-a-size\n"),
-            ):
-                used, complete = budget.usage()
-            self.assertFalse(complete)
-            self.assertEqual(used, 0)
-            with mock.patch(
-                "environment_builder.disk.subprocess.run",
-                return_value=self.fake_du(""),
-            ):
-                used, complete = budget.usage()
-            self.assertFalse(complete)
-            self.assertEqual(used, 0)
+                used, complete = directory_usage_bytes([root])
+            self.assertEqual(used, 1024)
+            self.assertTrue(complete)
+            self.assertTrue(process.stdout.closed)
+            self.assertTrue(process.stderr.closed)
 
     def test_unreadable_scan_is_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            (root / "payload.bin").write_bytes(b"x" * 4096)
-            budget = DiskBudget(10240, [root])
-            with mock.patch(
-                "environment_builder.disk.subprocess.run",
-                return_value=self.fake_du("1\t/cache\n", returncode=1),
-            ):
-                used, complete = directory_usage_bytes([root])
+            missing = root / "missing"
+            budget = DiskBudget(10240, [missing])
+            used, complete = directory_usage_bytes([missing])
             self.assertFalse(complete)
             self.assertEqual(used, 0)
-            with mock.patch(
-                "environment_builder.disk.subprocess.run",
-                return_value=self.fake_du("1\t/cache\n", returncode=1),
-            ):
-                with self.assertRaises(BuilderError) as raised:
-                    budget.check()
+            with self.assertRaises(BuilderError) as raised:
+                budget.check()
             self.assertEqual(raised.exception.code, "ENVIRONMENT_RESOURCE_LIMIT")
             self.assertIn("could not complete", raised.exception.message)
 
@@ -113,7 +126,7 @@ class DiskBudgetTests(unittest.TestCase):
             (blocked / "payload.bin").write_bytes(b"x" * 4096)
             os.chmod(blocked, 0)
             try:
-                used, complete = directory_usage_bytes([root])
+                used, complete = directory_usage_bytes([blocked])
             finally:
                 os.chmod(blocked, 0o700)
         self.assertFalse(complete)

@@ -29,7 +29,11 @@ ALLOWED_MOUNT_PREFIXES = (
 AUTHORIZED_PROJECT_OR_CACHE_MOUNTS = ("/inputs/workspace", "/cache", "/nix")
 PODMAN_VOLUME_ROOT = "/var/lib/containers/storage/volumes/"
 CONTAINER_RUNTIME_FILE_PREFIX = "/var/lib/containers/storage/overlay-containers/"
-CONTAINER_RUNTIME_FILES = ("/etc/hosts", "/etc/hostname", "/etc/resolv.conf")
+CONTAINER_RUNTIME_FILES = {
+    "/etc/hosts": "hosts",
+    "/etc/hostname": "hostname",
+    "/etc/resolv.conf": "resolv.conf",
+}
 
 
 def _mountinfo() -> tuple[list[dict[str, str]], bool]:
@@ -79,8 +83,11 @@ def _authorized_volume_source(source: str) -> bool:
 
 
 def _safe_system_mount(target: str, source: str, fstype: str) -> bool:
-    if target in CONTAINER_RUNTIME_FILES:
-        return source.startswith(CONTAINER_RUNTIME_FILE_PREFIX)
+    expected_runtime_file = CONTAINER_RUNTIME_FILES.get(target)
+    if expected_runtime_file is not None:
+        return source.startswith(CONTAINER_RUNTIME_FILE_PREFIX) and source.endswith(
+            f"/userdata/{expected_runtime_file}"
+        )
     if target == "/":
         return fstype in {"overlay", "rootfs", "squashfs"} and (
             source in {"overlay", "rootfs", "/dev/root"} or source.startswith("/dev/")

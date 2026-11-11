@@ -130,9 +130,11 @@ Disk is enforced against the frozen `diskMiB` in two layers. The Python builder
 reads the frozen `diskMiB`, samples `/cache`, `/nix` and the workspace with
 `du -skc` during build/resolve/check subprocesses (default 3 s interval), and
 kills the child with `ENVIRONMENT_RESOURCE_LIMIT` when the complete observed
-usage exceeds the bound. A `du` error, timeout, excessive/malformed output or
-missing path is an incomplete scan and also fails closed: the builder cannot
-prove the bound and never treats a lower bound as success. The host/CI wrapper
+usage exceeds the bound. A `du` error, timeout, excessive stdout, missing
+aggregate `total` or expected path row, malformed output or missing path is an
+incomplete scan and also fails closed: the builder cannot prove the bound and
+never treats a lower bound as success. `du` stderr is drained through a bounded
+buffer while exit status remains authoritative. The host/CI wrapper
 also checks before and after the run and removes success artifacts. An
 over-budget run fails `ENVIRONMENT_RESOURCE_LIMIT`, writes a typed
 `disk-failure.json` plus `disk-usage.json`, and the broker removes the per-spec
@@ -155,8 +157,10 @@ GitHub credential. Mount attestation validates the source for every accepted
 target, including `/` and system mounts: `/cache`, `/nix` and
 `/inputs/workspace` must be Podman-managed named-volume sources, while `/`,
 `/proc`, `/sys`, cgroup, devpts, mqueue, tmpfs and container-runtime host-file
-mounts must use known-safe pseudo/rootfs sources. A forbidden host path at any
-allowed target cannot produce `noHostMount=true`.
+mounts must use known-safe pseudo/rootfs sources. The runtime host-file source
+must match the target (`userdata/hosts`, `userdata/hostname`,
+`userdata/resolv.conf`), not merely live under `overlay-containers/`. A
+forbidden host path at any allowed target cannot produce `noHostMount=true`.
 
 ## 4. Typed failures
 
@@ -219,7 +223,7 @@ environment-check remains **NOT_TESTED** and is not claimed.
 exact cgroup limits, fetch-policy enforcement, protected path descendants,
 rootful-Podman rejection, wrapper nonzero-exit cleanup, runtime disk-budget
 enforcement, root/system mount-source attestation, bounded noisy-output capture
-and disk-overflow artifact purging (52 tests). The
+and disk-overflow artifact purging (54 tests). The
 final `deploy/environment-builder/Containerfile` image was built and exercised
 under the unique WP1-B evidence tag
 `localhost/software-factory-environment-builder:wp1b-340fa54-r3`
