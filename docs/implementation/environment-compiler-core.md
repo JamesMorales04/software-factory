@@ -159,11 +159,13 @@ acceptance.
   `npm test -- --run` — 47 files / 331 tests passed.
 - `podman compose config --quiet` — exit 0.
 - `docs/product/office-parity.json` parses as valid JSON and includes the
-  environment states and endpoints. `docs/product/capabilities.yaml` parses as
-  YAML and CAP-060 now references the environment module, migration, tests and
-  limitations. `factory-architecture-check` reaches registry validation; it
-  still reports pre-existing evidence/status mismatches for CAP-011, CAP-049,
-  CAP-050, CAP-060 and CAP-063 that are unrelated to this candidate.
+  environment states and endpoints. `docs/product/capabilities.yaml` and the
+  generated roadmap include the environment module, migration 0076, panel and
+  truthful limitations.
+- `factory-architecture-check --root .` — PASS (registry and roadmap current).
+- `factory-repo-hygiene --mode audit --root .` — two pre-existing Go-toolchain
+  findings in `planning/dod.rs` and `planning/skills/catalog.rs`; this candidate
+  does not add a repository-hygiene finding.
 
 **Not tested / not claimed:** a real Nix/devenv build, a real builder image, the
 Node/Playwright runtime, live Podman check execution, real Chromium acceptance

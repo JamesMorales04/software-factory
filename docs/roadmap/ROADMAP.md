@@ -489,7 +489,7 @@ Decision: `proposed`
 - Typed triage and StackProfile
 - Director, Operation Manager and portfolio concurrency
 - Planner, Spec Manager and frozen specs projected to issues and kanban
-- Agnostic environment compiler: conventions discovery, licensed Nix/devenv plan, Lead-model review, frozen EnvironmentSpec, Campaign/check binding and Office environment panel
+- Agnostic environment compiler; conventions discovery, licensed Nix/devenv plan, Lead-model review, frozen EnvironmentSpec, Campaign/check binding, migration 0076 and Office environment panel
 - Explorer, Librarian, Context7 and temporary skills
 - Dynamic participant composition and cheap operations interpreter
 - Bounded repair from the exact candidate

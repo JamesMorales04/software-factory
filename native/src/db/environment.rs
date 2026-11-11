@@ -49,6 +49,16 @@ type ReviewRow = (
     String,
     String,
 );
+type ModelCallProvenanceRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+);
 type CampaignRow = (
     String,
     String,
@@ -486,16 +496,7 @@ impl Database {
         review
             .validate_for(&plan, Utc::now())
             .map_err(|error| Error::Validation(error.message))?;
-        let call: Option<(
-            String,
-            String,
-            String,
-            String,
-            String,
-            String,
-            String,
-            String,
-        )> = sqlx::query_as::query_as(
+        let call: Option<ModelCallProvenanceRow> = sqlx::query_as::query_as(
             "SELECT role,provider,model,request_sha256,purpose,state,project_id,objective_id
                  FROM model_call_reservations WHERE reservation_id=?1",
         )
