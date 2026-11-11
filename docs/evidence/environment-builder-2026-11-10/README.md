@@ -20,7 +20,7 @@ WP1-C Compose bundle and was not overwritten by this evidence run.
 |---|---|
 | `python3 -m py_compile deploy/environment-builder/entrypoint.py deploy/environment-builder/environment_builder/*.py scripts/environment-builder-fixture.py scripts/environment-builder-path-policy.py scripts/environment-builder-disk-policy.py` | PASS |
 | `bash -n scripts/environment-builder.sh` | PASS |
-| `python3 -m unittest discover -s deploy/environment-builder/tests -v` | PASS — 31 tests |
+| `python3 -m unittest discover -s deploy/environment-builder/tests -v` | PASS — 32 tests |
 | `git diff --check` | PASS |
 
 Covered: secret-shaped file rejection, `builtins.exec`, unpinned fetch,
@@ -29,7 +29,8 @@ override, network policy, sandbox policy, resource bounds, argv checks, receipt
 binding, failed receipt blockers, exact cgroup CPU/memory/PID bounds, fetch
 network/proxy/allowlist enforcement, protected cache/workspace descendants,
 symlink/`..` escapes, rootful-Podman rejection, disk-overflow success-artifact
-purge, wrapper nonzero-exit cleanup, deterministic CycloneDX SBOM, transitive
+purge, wrapper nonzero-exit cleanup, over-budget nonzero-exit resource-limit
+selection, deterministic CycloneDX SBOM, transitive
 `NOASSERTION`, SBOM-to-frozen-spec binding, and the Core-shaped license
 inventory.
 

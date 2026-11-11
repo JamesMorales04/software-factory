@@ -88,7 +88,12 @@ write_run_failure() {
 
 fail_after_run() {
   local run_dir="$1" output="$2" disk_mib="$3" phase="$4" code="$5" message="$6"
-  check_disk_budget "$run_dir" "$NIX_STORE_CACHE" "$disk_mib" "$phase" || true
+  local disk_status=0
+  check_disk_budget "$run_dir" "$NIX_STORE_CACHE" "$disk_mib" "$phase" || disk_status=$?
+  if [[ "$disk_status" -ne 0 ]]; then
+    code="ENVIRONMENT_RESOURCE_LIMIT"
+    message="observed builder disk usage exceeds the frozen disk bound"
+  fi
   purge_success_artifacts "$run_dir" "$output"
   if [[ "$code" == "ENVIRONMENT_RESOURCE_LIMIT" ]]; then
     write_disk_failure "$run_dir" "$output" "$phase"

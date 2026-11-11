@@ -190,7 +190,7 @@ this slice.
 `deploy/environment-builder/tests/` covers deterministic policy, receipt, SBOM,
 exact cgroup limits, fetch-policy enforcement, protected path descendants,
 rootful-Podman rejection, wrapper nonzero-exit cleanup and disk-overflow
-artifact purging (31 tests). The
+artifact purging (32 tests). The
 final `deploy/environment-builder/Containerfile` image was built and exercised
 under the unique WP1-B evidence tag
 `localhost/software-factory-environment-builder:wp1b-340fa54-r3`

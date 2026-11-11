@@ -8,7 +8,7 @@
     "pyCompile": "PASS",
     "unitTests": {
       "command": "python3 -m unittest discover -s deploy/environment-builder/tests -v",
-      "count": 31,
+      "count": 32,
       "status": "PASS"
     }
   },
