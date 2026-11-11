@@ -174,14 +174,16 @@ Decision: `proposed`
 
 - CAP-024 — GitHub PR delivery (proposed, in_progress)
 - CAP-025 — CI and review reconciliation (proposed, in_progress)
-- CAP-026 — Conditional R0 merge (proposed, not_implemented)
+- CAP-026 — Risk-tiered delivery and auto-merge (proposed, in_progress)
+- CAP-067 — Delivery policy editor and incident control (proposed, in_progress)
 
 ### Deliverables
 
 - PR creation
 - CI and review observation
 - exact-SHA delivery receipts
-- conditional R0 eligibility
+- conditional R0/R1 eligibility
+- append-only delivery policy, exact-candidate attempts, incidents and manual revert
 
 ### Exclusions
 

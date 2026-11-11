@@ -1,6 +1,6 @@
 {
  "schema_version": 1,
- "updated_at": "2026-11-11T00:23:19Z",
+ "updated_at": "2026-11-11T03:00:00Z",
  "route_base_note": "Current Office uses hash routes. The design-foundation slice moves to a stable /office browser base while preserving these logical routes.",
  "capabilities": {
   "CAP-011": {
@@ -1138,6 +1138,95 @@
     "docs/evidence/owner-charter-2026-11-09/manifest.json"
    ],
    "notes": "Policy autonomy is never offered. Reserved matters remain owner decisions; the recommendation is advisory and the owner resolution is durable. Delivery autonomy is present as a separate flag but delivery effects are not implemented."
+  },
+  "CAP-026": {
+   "name": "Risk-tiered delivery and auto-merge",
+   "user_facing": true,
+   "job": "Configure an append-only Project delivery policy, inspect risk/eligibility, open the exact-candidate PR and deliver or manually approve a merge while seeing checks, protection, blockers, merge SHA, issue receipts and incident/revert state.",
+   "routes": [
+    "/campaigns/:campaignId",
+    "/projects/:projectId"
+   ],
+   "core_api": [
+    "GET /projects/{id}/delivery-policy",
+    "PUT /projects/{id}/delivery-policy",
+    "GET /campaigns/{id}/candidates/{candidate_id}/delivery",
+    "POST /campaigns/{id}/candidates/{candidate_id}/delivery",
+    "POST /delivery/incidents/{id}/revert"
+   ],
+   "user_actions": [
+    "enable or disable risk-tiered delivery and the R1 opt-in",
+    "set required checks, the post-merge check, timeout, expiry and kill switch",
+    "open or reuse the exact-candidate pull request",
+    "deliver an eligible R0/R1 candidate automatically or confirm an R2/R3/manual merge",
+    "inspect blockers, checks, protection, merge SHA and issue receipts",
+    "record a manual revert after a post-merge incident"
+   ],
+   "states": [
+    "loading",
+    "empty",
+    "error",
+    "offline-live-read",
+    "policy-required",
+    "policy-disabled",
+    "risk-tiered",
+    "r0-auto",
+    "r1-opt-in",
+    "manual-only",
+    "pr-open",
+    "pr-closed",
+    "blocked",
+    "merged",
+    "incident-open",
+    "needs-attention",
+    "reverted",
+    "responsive"
+   ],
+   "acceptance": [
+    "office/src/components/office/CampaignDelivery.test.tsx",
+    "office/src/components/office/DeliveryPolicyEditor.test.tsx"
+   ],
+   "notes": "Core remains the only delivery authority. Gate ACCEPTED is necessary but never sufficient. R0 auto-merge requires an enabled RISK_TIERED policy; R1 adds explicit opt-in, a current Owner Charter delivery grant and a post-merge check; R2/R3/unknown are manual. A failed post-merge check opens an incident, freezes auto-merge and requires a manual revert. Real Chromium acceptance remains pending."
+  },
+  "CAP-067": {
+   "name": "Delivery policy editor and incident control",
+   "user_facing": true,
+   "job": "Append a Project delivery policy revision and operate the delivery panel with truthful policy, risk, PR, checks, blockers, merge, issue and incident state.",
+   "routes": [
+    "/projects/:projectId",
+    "/campaigns/:campaignId"
+   ],
+   "core_api": [
+    "GET /projects/{id}/delivery-policy",
+    "PUT /projects/{id}/delivery-policy",
+    "GET /campaigns/{id}/candidates/{candidate_id}/delivery",
+    "POST /campaigns/{id}/candidates/{candidate_id}/delivery",
+    "POST /delivery/incidents/{id}/revert"
+   ],
+   "user_actions": [
+    "open the Project delivery policy editor",
+    "toggle risk-tiered delivery, R1 opt-in and the kill switch",
+    "set required checks, post-merge check, timeout and expiry",
+    "refresh delivery state and inspect blockers",
+    "record a manual revert after an incident"
+   ],
+   "states": [
+    "loading",
+    "empty",
+    "error",
+    "unbound",
+    "policy-required",
+    "policy-disabled",
+    "risk-tiered",
+    "incident-open",
+    "reverted",
+    "responsive"
+   ],
+   "acceptance": [
+    "office/src/components/office/CampaignDelivery.test.tsx",
+    "office/src/components/office/DeliveryPolicyEditor.test.tsx"
+   ],
+   "notes": "Office never receives the GitHub token and cannot merge without a fresh Core eligibility read. R2/R3/unknown remain manual. No decorative action is offered; every control invokes an authenticated Core operation."
   }
  },
  "deferred": [

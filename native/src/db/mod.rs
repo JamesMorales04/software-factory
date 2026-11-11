@@ -1018,6 +1018,11 @@ pub use model_calls::{
     ModelCallDecision, ModelCallGrant, ModelCallPolicy, ModelCallRecord, ModelCallResult,
     ModelCallRole, ModelCallUsage, NewModelCallAuthorization,
 };
+mod delivery;
+pub use delivery::{
+    DeliveryAttemptUpdate, NewDeliveryAttempt, NewDeliveryAttemptEvent, NewDeliveryDecision,
+    NewDeliveryIncident,
+};
 mod lifecycle;
 pub mod participants;
 pub use participants::{

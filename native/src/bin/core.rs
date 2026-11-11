@@ -3635,6 +3635,18 @@ fn github_integration_routes() -> Router<Arc<App>> {
             post(retry_issue_delivery),
         )
         .route(
+            "/projects/{id}/delivery-policy",
+            get(get_delivery_policy).put(put_delivery_policy),
+        )
+        .route(
+            "/campaigns/{id}/candidates/{candidate_id}/delivery",
+            get(candidate_delivery).post(deliver_candidate),
+        )
+        .route(
+            "/delivery/incidents/{id}/revert",
+            post(record_delivery_manual_revert),
+        )
+        .route(
             "/campaigns/{id}/candidates/{candidate_id}/pull-request",
             get(candidate_pull_request).post(open_candidate_pull_request),
         )
@@ -4695,6 +4707,293 @@ async fn get_project_github(
         Err(error) => return api_error(error),
     };
     Json(json!({"binding": binding, "sync_state": sync_state})).into_response()
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeliveryPolicyBody {
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    r1_enabled: bool,
+    #[serde(default = "default_delivery_merge_method")]
+    merge_method: String,
+    #[serde(default)]
+    required_checks: Vec<String>,
+    #[serde(default)]
+    post_merge_check_id: String,
+    #[serde(default = "default_delivery_post_merge_timeout")]
+    post_merge_timeout_secs: u64,
+    #[serde(default)]
+    kill_switch: bool,
+    #[serde(default)]
+    expires_at: Option<String>,
+    #[serde(default)]
+    manual_base_branches: Vec<String>,
+}
+
+fn default_delivery_merge_method() -> String {
+    "squash".into()
+}
+
+fn default_delivery_post_merge_timeout() -> u64 {
+    900
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CandidateDeliveryInput {
+    operation: String,
+    #[serde(default)]
+    manual_confirmed: bool,
+    #[serde(default)]
+    base_branch: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeliveryRevertInput {
+    revert_pr_number: u64,
+    revert_merge_sha: String,
+    rationale: String,
+}
+
+async fn get_delivery_policy(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.project_exists(&id).await {
+        Ok(true) => {}
+        Ok(false) => return api_error(Error::NotFound),
+        Err(error) => return api_error(error),
+    }
+    let policy = match app.db.delivery_policy(&id).await {
+        Ok(policy) => policy,
+        Err(error) => return api_error(error),
+    };
+    let revisions = match app.db.delivery_policies(&id).await {
+        Ok(revisions) => revisions,
+        Err(error) => return api_error(error),
+    };
+    let binding = match app.db.project_github_binding(&id).await {
+        Ok(binding) => Some(binding),
+        Err(Error::NotFound) => None,
+        Err(error) => return api_error(error),
+    };
+    Json(json!({
+        "policy": policy,
+        "revisions": revisions,
+        "binding": binding,
+        "default_branch": binding.as_ref().map(|binding| binding.default_branch.clone()),
+        "merge_method": "squash",
+        "source": "Project delivery policy revisions are append-only Core records",
+    }))
+    .into_response()
+}
+
+async fn put_delivery_policy(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<DeliveryPolicyBody>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let binding = match app.db.project_github_binding(&id).await {
+        Ok(binding) => binding,
+        Err(Error::NotFound) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": "Project is not bound to a GitHub repository",
+                    "kind": "NOT_BOUND",
+                })),
+            )
+                .into_response();
+        }
+        Err(error) => return api_error(error),
+    };
+    let manual_base_branches = if body.manual_base_branches.is_empty() {
+        vec![binding.default_branch.clone()]
+    } else {
+        body.manual_base_branches.clone()
+    };
+    let input = factory_native::delivery::DeliveryPolicyInput {
+        enabled: body.enabled,
+        r1_enabled: body.r1_enabled,
+        auto_merge_base_branch: binding.default_branch.clone(),
+        manual_base_branches,
+        required_checks: body.required_checks,
+        merge_method: body.merge_method,
+        post_merge_check_id: body.post_merge_check_id,
+        post_merge_timeout_secs: body.post_merge_timeout_secs,
+        kill_switch: body.kill_switch,
+        expires_at: body.expires_at,
+    };
+    match app
+        .db
+        .append_delivery_policy(&id, &binding.default_branch, &input, "office-operator")
+        .await
+    {
+        Ok((policy, created)) => Json(json!({
+            "policy": policy,
+            "created": created,
+            "binding": binding,
+            "source": "delivery policy revision appended by an authenticated Core operation",
+        }))
+        .into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn candidate_delivery(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath((campaign_id, candidate_id)): AxumPath<(String, String)>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let credential = load_github_credential(&app).await.ok();
+    match factory_native::delivery::load_delivery_status(
+        &app.db,
+        Some(&app.github),
+        credential.as_ref(),
+        &campaign_id,
+        &candidate_id,
+    )
+    .await
+    {
+        Ok(status) => Json(status).into_response(),
+        Err(error) => delivery_error_response(error),
+    }
+}
+
+async fn deliver_candidate(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath((campaign_id, candidate_id)): AxumPath<(String, String)>,
+    Json(body): Json<CandidateDeliveryInput>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let operation = match body.operation.as_str() {
+        "OPEN_PR" | "OPEN_PULL_REQUEST" => {
+            factory_native::delivery::DeliveryOperation::OpenPullRequest
+        }
+        "MERGE" | "DELIVER" => factory_native::delivery::DeliveryOperation::Merge,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "delivery operation must be OPEN_PR or MERGE",
+                    "kind": "INVALID_REQUEST",
+                })),
+            )
+                .into_response();
+        }
+    };
+    let credential = match load_github_credential(&app).await {
+        Ok(credential) => credential,
+        Err(response) => return response,
+    };
+    let hook = match factory_native::delivery::LiveIssueDeliveryHook::new(
+        &app.db,
+        &app.github,
+        &credential,
+    )
+    .await
+    {
+        Ok(hook) => hook,
+        Err(error) => {
+            return delivery_error_response(factory_native::delivery::DeliveryError::from(error));
+        }
+    };
+    let service =
+        factory_native::delivery::DeliveryService::new(&app.db, &app.github, &credential, &hook);
+    let request = factory_native::delivery::DeliveryRequest {
+        campaign_id: &campaign_id,
+        candidate_id: &candidate_id,
+        base_branch: body.base_branch.as_deref(),
+        operation,
+        manual_confirmed: body.manual_confirmed,
+        actor: "office-operator",
+    };
+    if operation == factory_native::delivery::DeliveryOperation::OpenPullRequest {
+        return match service.open_pull_request(&request).await {
+            Ok(opened) => Json(json!({
+                "campaign_id": campaign_id,
+                "candidate_id": candidate_id,
+                "operation": "OPEN_PR",
+                "pull_request": opened.pull_request,
+                "created": opened.created,
+                "issue_delivery": opened.issue_outcome,
+                "source": "Core pushed the exact candidate, verified the PR head/base and reused an idempotent PR when present",
+            }))
+            .into_response(),
+            Err(error) => delivery_error_response(error),
+        };
+    }
+    match service.deliver(&request).await {
+        Ok(run) => Json(run).into_response(),
+        Err(error) => delivery_error_response(error),
+    }
+}
+
+async fn record_delivery_manual_revert(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<DeliveryRevertInput>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app
+        .db
+        .record_delivery_revert(
+            &id,
+            body.revert_pr_number,
+            &body.revert_merge_sha,
+            "operator-token",
+            &body.rationale,
+        )
+        .await
+    {
+        Ok(record) => Json(json!({
+            "revert": record,
+            "source": "manual revert evidence recorded by an authenticated Core operation; Factory did not revert automatically",
+        }))
+        .into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+fn delivery_error_response(error: factory_native::delivery::DeliveryError) -> Response {
+    let status = match error.code() {
+        "DELIVERY_PERMISSION_REQUIRED" => StatusCode::FORBIDDEN,
+        "NOT_FOUND" => StatusCode::NOT_FOUND,
+        "INVALID_BRANCH" | "INVALID_REMOTE" => StatusCode::BAD_REQUEST,
+        "GITHUB_UNAVAILABLE" | "DATABASE" => StatusCode::BAD_GATEWAY,
+        _ => StatusCode::CONFLICT,
+    };
+    let mut body = json!({
+        "error": error.detail(),
+        "kind": error.kind(),
+        "code": error.code(),
+        "retryable": error.retryable(),
+        "blockers": error.blockers(),
+    });
+    if let Some(attempt_id) = error.attempt_id() {
+        body["attempt_id"] = json!(attempt_id);
+    }
+    (status, Json(body)).into_response()
 }
 
 #[derive(Deserialize)]
@@ -27103,6 +27402,52 @@ mod tests {
             let (status, body) = merge_gate_denial(None).expect("missing gate must be denied");
             assert_eq!(status, StatusCode::CONFLICT);
             assert_eq!(body["kind"], "GATE_NOT_ACCEPTED");
+        }
+    }
+
+    #[tokio::test]
+    async fn delivery_routes_require_the_operator_credential() {
+        use tower::ServiceExt;
+        let path = std::env::temp_dir().join(format!(
+            "factory-core-delivery-routes-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let router = build_router(test_app(&path).await);
+        let routes = [
+            ("GET", "/projects/missing/delivery-policy", "{}".to_string()),
+            (
+                "PUT",
+                "/projects/missing/delivery-policy",
+                r#"{"enabled":true,"r1_enabled":false,"merge_method":"squash","required_checks":["ci"],"post_merge_check_id":"post-merge","post_merge_timeout_secs":900}"#.to_string(),
+            ),
+            (
+                "GET",
+                "/campaigns/missing/candidates/missing/delivery",
+                "{}".to_string(),
+            ),
+            (
+                "POST",
+                "/campaigns/missing/candidates/missing/delivery",
+                r#"{"operation":"MERGE","manual_confirmed":false}"#.to_string(),
+            ),
+            (
+                "POST",
+                "/delivery/incidents/missing/revert",
+                r#"{"revert_pr_number":1,"revert_merge_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","rationale":"test"}"#.to_string(),
+            ),
+        ];
+        for (method, uri, body) in routes {
+            let request = axum::http::Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(body))
+                .unwrap();
+            assert_eq!(
+                router.clone().oneshot(request).await.unwrap().status(),
+                StatusCode::UNAUTHORIZED,
+                "{method} {uri} must require the operator credential"
+            );
         }
     }
 }

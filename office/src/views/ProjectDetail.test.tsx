@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   getProjectDiscovery: vi.fn(),
   scanProjectDiscovery: vi.fn(),
   updateProjectConfig: vi.fn(),
+  getProjectDeliveryPolicy: vi.fn(),
 }));
 
 vi.mock("../coreApi", () => ({
@@ -190,6 +191,14 @@ describe("ProjectDetail", () => {
     mocks.getProjectDiscovery.mockReset().mockResolvedValue(noDiscovery);
     mocks.scanProjectDiscovery.mockReset();
     mocks.updateProjectConfig.mockReset();
+    mocks.getProjectDeliveryPolicy.mockReset().mockResolvedValue({
+      policy: null,
+      revisions: [],
+      binding: summary.github.binding,
+      default_branch: "main",
+      merge_method: "squash",
+      source: "test",
+    });
   });
 
   it("renders the Core-backed project summary and technical details", async () => {
