@@ -7,6 +7,7 @@ a green unit test.
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import sys
@@ -471,11 +472,17 @@ class SbomTests(unittest.TestCase):
 class CheckExecutionTests(unittest.TestCase):
     class _Process:
         returncode = 101
-        stdout = object()
-        stderr = object()
+        pid = 4242
 
-        def communicate(self, timeout: int | None = None) -> tuple[str, str]:
-            return ("compile failed\n", "compiler error\n")
+        def __init__(self) -> None:
+            self.stdout = io.BytesIO(b"compile failed\n")
+            self.stderr = io.BytesIO(b"compiler error\n")
+
+        def wait(self, timeout: int | None = None) -> int:
+            return self.returncode
+
+        def poll(self) -> int:
+            return self.returncode
 
     def test_failed_check_preserves_exit_code_and_streams(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

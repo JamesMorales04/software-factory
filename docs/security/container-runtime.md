@@ -113,7 +113,11 @@ why the engine is trusted infrastructure and why SEC-01 remains blocked.
   in the child, but this remains a defense-in-depth gap.
 - Provider and execution containers have a 64 MiB per-file `fsize` limit and a
   broker-side provider lifetime reaper, but total volume quota is not enforced.
-  A malicious workload can still consume engine disk up to host capacity.
+  A malicious workload can still consume engine disk up to host capacity. The
+  environment builder enforces the frozen `diskMiB` with a bounded runtime
+  sampler over `/cache`, `/nix` and the workspace plus a post-hoc `du` bound; it
+  is `disk.exact=false`, not an exact filesystem quota, and an incomplete
+  bounded sample is a lower bound rather than an attestation.
 - `FAILED` provider sessions with an unconfirmed cleanup receipt are now
   rejected by Core, leaving them unresolved for recovery. The broker reaper
   removes provider containers after their configured lifetime; a broker crash

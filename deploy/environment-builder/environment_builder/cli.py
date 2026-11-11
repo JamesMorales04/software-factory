@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from . import BUILDER_POLICY_REVISION, DEFAULT_PLATFORM, SCHEMA_VERSION
+from .disk import DiskBudget, builder_disk_budget
 from .errors import BuilderError, fail
 from .nix import (
     BuildLog,
@@ -154,6 +155,7 @@ def _write_failure(
     started: float,
     log_ref: str,
     resources: dict[str, int] | None = None,
+    disk_budget: DiskBudget | None = None,
 ) -> None:
     empty_spec = spec or {
         "specSha256": "",
@@ -183,6 +185,16 @@ def _write_failure(
             "createdAt": now_rfc3339(),
         },
     )
+    if disk_budget and error.code == "ENVIRONMENT_RESOURCE_LIMIT":
+        used, complete = disk_budget.usage()
+        write_json(
+            run_dir / "disk-failure.json",
+            {
+                **disk_budget.failure_record("build", used, complete),
+                "error": error.blocker(),
+                "createdAt": now_rfc3339(),
+            },
+        )
 
 
 def build(args: argparse.Namespace) -> int:
@@ -193,6 +205,7 @@ def build(args: argparse.Namespace) -> int:
     log_ref = str((run_dir / "build.log").relative_to(run_dir))
     spec: dict[str, Any] | None = None
     resources: dict[str, int] | None = None
+    disk_budget: DiskBudget | None = None
     try:
         spec, plan, files, resources, actual_nix, digest, frozen_sbom_sha256 = _validate_request(
             request, source_workspace
@@ -202,8 +215,11 @@ def build(args: argparse.Namespace) -> int:
             fail("ENVIRONMENT_SPEC_INVALID", "phase must be fetch or build")
         validate_fetch_policy(request, plan, phase)
         build_workspace = run_dir / "workspace"
+        disk_budget = builder_disk_budget(resources, run_dir, build_workspace)
+        disk_budget.check()
         prepare_workspace(source_workspace, build_workspace, reuse=phase == "build")
         write_environment_files(build_workspace, files)
+        disk_budget.check()
         proxy = request.get("fetchProxy")
         if proxy is not None:
             if not isinstance(proxy, str) or not proxy.startswith(("http://", "https://")) or "@" in proxy:
@@ -223,7 +239,9 @@ def build(args: argparse.Namespace) -> int:
                 timeout=resources["timeoutSecs"],
                 log=log,
                 proxy=proxy if phase == "fetch" else None,
+                disk_budget=disk_budget,
             )
+            disk_budget.check()
             manifest = closure_manifest(root)
             output_sha = environment_digest(
                 spec["specSha256"], spec["platform"], root, manifest, frozen_sbom_sha256
@@ -271,6 +289,7 @@ def build(args: argparse.Namespace) -> int:
         inventory = license_inventory_copy(plan)
         write_json(run_dir / "license-inventory.json", inventory)
         write_json(run_dir / "closure.json", {"entries": manifest, "count": len(manifest)})
+        disk_budget.check()
         attestation = observe_attestation(
             resources=resources,
             sandbox_observed=True,
@@ -310,7 +329,15 @@ def build(args: argparse.Namespace) -> int:
         print(json.dumps(receipt, sort_keys=True))
         return 0 if receipt["status"] == "SUCCEEDED" else 2
     except BuilderError as error:
-        _write_failure(run_dir, spec, error, started=started, log_ref="build.log", resources=resources)
+        _write_failure(
+            run_dir,
+            spec,
+            error,
+            started=started,
+            log_ref="build.log",
+            resources=resources,
+            disk_budget=disk_budget,
+        )
         print(json.dumps({"status": "FAILED", "blocker": error.blocker()}, sort_keys=True))
         return error.exit_code
 
@@ -346,6 +373,7 @@ def resolve(args: argparse.Namespace) -> int:
     source_workspace = _workspace(request, args.workspace)
     run_dir = _run_dir(request, args.output)
     log = BuildLog(run_dir / "resolve.log")
+    disk_budget: DiskBudget | None = None
     try:
         actual_nix, actual_devenv = _actual_versions()
         desc = descriptor()
@@ -360,8 +388,11 @@ def resolve(args: argparse.Namespace) -> int:
         network = request.get("fetchNetwork", "none")
         proxy = request.get("fetchProxy")
         build_workspace = run_dir / "workspace"
+        disk_budget = builder_disk_budget(resources, run_dir, build_workspace)
+        disk_budget.check()
         prepare_workspace(source_workspace, build_workspace, reuse=True)
         write_environment_files(build_workspace, files)
+        disk_budget.check()
         environment = child_environment(
             build_workspace,
             run_dir,
@@ -388,6 +419,7 @@ def resolve(args: argparse.Namespace) -> int:
                 log=log,
                 failure_code="ENVIRONMENT_PIN_MISSING",
                 offline=network == "none",
+                disk_budget=disk_budget,
             )
         if not existing["devenv.lock"] and (
             (build_workspace / "devenv.nix").is_file()
@@ -401,6 +433,7 @@ def resolve(args: argparse.Namespace) -> int:
                 log=log,
                 failure_code="ENVIRONMENT_PIN_MISSING",
                 offline=network == "none",
+                disk_budget=disk_budget,
             )
         resolution_files = []
         for name in ("flake.lock", "devenv.lock"):
@@ -412,6 +445,7 @@ def resolve(args: argparse.Namespace) -> int:
                 "ENVIRONMENT_PIN_MISSING",
                 "the environment builder resolved no flake.lock or devenv.lock",
             )
+        disk_budget.check()
         resolution = {
             "schemaVersion": SCHEMA_VERSION,
             "planSha256": plan["planSha256"],
@@ -423,6 +457,16 @@ def resolve(args: argparse.Namespace) -> int:
         print(json.dumps(resolution, sort_keys=True))
         return 0
     except BuilderError as error:
+        if disk_budget and error.code == "ENVIRONMENT_RESOURCE_LIMIT":
+            used, complete = disk_budget.usage()
+            write_json(
+                run_dir / "disk-failure.json",
+                {
+                    **disk_budget.failure_record("resolve", used, complete),
+                    "error": error.blocker(),
+                    "createdAt": now_rfc3339(),
+                },
+            )
         print(json.dumps({"status": "FAILED", "blocker": error.blocker()}, sort_keys=True))
         return error.exit_code
     finally:
@@ -470,6 +514,7 @@ def check(args: argparse.Namespace) -> int:
     run_dir = _run_dir(request, args.output)
     if not (run_dir / "check.json").exists():
         (run_dir / "check.json").parent.mkdir(parents=True, exist_ok=True)
+    disk_budget: DiskBudget | None = None
     try:
         spec, plan, files, resources, _actual_nix, _digest, frozen_sbom_sha256 = _validate_request(
             request, source_workspace
@@ -489,8 +534,11 @@ def check(args: argparse.Namespace) -> int:
         # shared per-spec cache. Use a distinct path and recreate it on every
         # check; only the Nix store and other cache state are preserved.
         check_workspace = run_dir / "check-workspace"
+        disk_budget = builder_disk_budget(resources, run_dir, check_workspace)
+        disk_budget.check()
         prepare_workspace(source_workspace, check_workspace, reuse=False)
         write_environment_files(check_workspace, files)
+        disk_budget.check()
         log = BuildLog(run_dir / "check.log")
         try:
             root = realize_environment(
@@ -501,7 +549,9 @@ def check(args: argparse.Namespace) -> int:
                 timeout=resources["timeoutSecs"],
                 log=log,
                 proxy=None,
+                disk_budget=disk_budget,
             )
+            disk_budget.check()
             manifest = closure_manifest(root)
             output_sha = environment_digest(
                 spec["specSha256"], spec["platform"], root, manifest, frozen_sbom_sha256
@@ -523,7 +573,9 @@ def check(args: argparse.Namespace) -> int:
                 resources=resources,
                 log=log,
                 expect_exit=check_spec["expectExit"],
+                disk_budget=disk_budget,
             )
+            disk_budget.check()
         finally:
             log.close()
         passed = code == check_spec["expectExit"]
@@ -558,6 +610,16 @@ def check(args: argparse.Namespace) -> int:
                 "createdAt": now_rfc3339(),
             },
         )
+        if disk_budget and error.code == "ENVIRONMENT_RESOURCE_LIMIT":
+            used, complete = disk_budget.usage()
+            write_json(
+                run_dir / "disk-failure.json",
+                {
+                    **disk_budget.failure_record("check", used, complete),
+                    "error": error.blocker(),
+                    "createdAt": now_rfc3339(),
+                },
+            )
         print(json.dumps({"status": "FAILED", "blocker": error.blocker()}, sort_keys=True))
         return error.exit_code
 

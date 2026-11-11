@@ -126,12 +126,17 @@ verification stays enabled with the pinned `cache.nixos.org` and
 `devenv.cachix.org` keys; the builder does not set global
 `require-sigs=false` and does not import unsigned local closures.
 
-Disk is checked before and after the run against the frozen `diskMiB`; an
-over-budget run fails `ENVIRONMENT_RESOURCE_LIMIT`, removes every success
-artifact and PASSED check result from both run and output directories, and
-writes only a typed `disk-failure.json` plus `disk-usage.json`. This is a
-post-hoc `du` bound (`disk.exact=false`), not an exact filesystem quota; the
-evidence records the observed usage and does not claim exact disk attestation.
+Disk is enforced against the frozen `diskMiB` in two layers. The Python builder
+reads the frozen `diskMiB`, samples `/cache`, `/nix` and the workspace with a
+bounded background sampler during build/resolve/check subprocesses, and kills
+the child with `ENVIRONMENT_RESOURCE_LIMIT` when observed usage exceeds the
+bound. The host/CI wrapper also checks before and after the run and removes
+success artifacts. An over-budget run fails `ENVIRONMENT_RESOURCE_LIMIT`,
+writes a typed `disk-failure.json` plus `disk-usage.json`, and the broker
+removes the per-spec cache volume so it cannot be reused. This is a bounded
+runtime sample plus a post-hoc `du` bound (`disk.exact=false`), not an exact
+filesystem quota; the evidence records the observed usage and never claims
+exact disk attestation.
 
 The builder root filesystem is read-only; only `/cache` and `/nix` are
 writable mounts, with bounded tmpfs for `/tmp`, `/run` and the writable home
@@ -177,7 +182,10 @@ different license inventory cannot silently run. A check is refused without a
 plan/spec/receipt binding; there is no implicit Rust or generic verifier image.
 Every check prepares a fresh `check-workspace` from the broker-supplied
 candidate workspace and never reuses the build-phase `workspace` directory in
-the per-spec cache; only the Nix store and other cache state persist.
+the per-spec cache; only the Nix store and other cache state persist. Check
+stdout/stderr are streamed concurrently into fixed-size buffers (256 KiB per
+stream) while the rest is drained and discarded, so noisy output cannot grow
+process memory without bound; truncation is recorded in the typed result.
 
 The sandbox attestation compares the observed cgroup memory/PID limits and
 `cpu.max` quota/period directly against the frozen plan: there is no multiplier
@@ -202,8 +210,9 @@ environment-check remains **NOT_TESTED** and is not claimed.
 
 `deploy/environment-builder/tests/` covers deterministic policy, receipt, SBOM,
 exact cgroup limits, fetch-policy enforcement, protected path descendants,
-rootful-Podman rejection, wrapper nonzero-exit cleanup and disk-overflow
-artifact purging (36 tests). The
+rootful-Podman rejection, wrapper nonzero-exit cleanup, runtime disk-budget
+enforcement, bounded noisy-output capture and disk-overflow
+artifact purging (40 tests). The
 final `deploy/environment-builder/Containerfile` image was built and exercised
 under the unique WP1-B evidence tag
 `localhost/software-factory-environment-builder:wp1b-340fa54-r3`

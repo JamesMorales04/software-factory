@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .errors import BuilderError, fail
+from .disk import DiskBudget
 from .policy import EnvironmentFile, environment_without_secrets
 from .util import (
     canonical_json,
@@ -31,6 +32,9 @@ from .util import (
 
 MAX_LOG_BYTES = 1024 * 1024
 MAX_TAIL_BYTES = 64 * 1024
+MAX_TOOL_OUTPUT_BYTES = 64 * 1024
+MAX_CLOSURE_OUTPUT_BYTES = 16 * 1024 * 1024
+STREAM_CHUNK_BYTES = 64 * 1024
 NIX_VERSION = re.compile(r"nix \(Nix\) ([0-9]+\.[0-9]+\.[0-9]+)")
 DEVENV_VERSION = re.compile(r"devenv ([0-9]+\.[0-9]+\.[0-9]+)")
 OFFLINE_MARKERS = (
@@ -49,21 +53,131 @@ SANDBOX_MARKERS = (
 )
 
 
-def _tool_version(argv: list[str], pattern: re.Pattern[str], label: str) -> str:
+def _read_capped(stream: Any, limit: int) -> tuple[bytes, bool]:
+    """Drain a binary stream while retaining at most ``limit`` bytes."""
+    captured = bytearray()
+    truncated = False
+    while True:
+        try:
+            chunk = stream.read(STREAM_CHUNK_BYTES)
+        except (OSError, ValueError):
+            break
+        if not chunk:
+            break
+        remaining = limit - len(captured)
+        if remaining > 0:
+            take = chunk[:remaining]
+            captured.extend(take)
+            if len(chunk) > len(take):
+                truncated = True
+        else:
+            truncated = True
+    return bytes(captured), truncated
+
+
+def _drain_to_log(stream: Any, log: "BuildLog") -> None:
+    """Stream a binary child stream into the bounded, redacted log."""
+    while True:
+        try:
+            chunk = stream.read(STREAM_CHUNK_BYTES)
+        except (OSError, ValueError):
+            return
+        if not chunk:
+            return
+        log.write(chunk.decode("utf-8", errors="replace"))
+
+
+def _terminate_process(process: subprocess.Popen[Any]) -> None:
     try:
-        completed = subprocess.run(
+        os.killpg(process.pid, signal.SIGTERM)
+        process.wait(timeout=10)
+        return
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except OSError:
+        pass
+    try:
+        process.wait(timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def _run_bounded_capture(
+    argv: list[str],
+    *,
+    timeout: int,
+    env: dict[str, str],
+    failure_code: str,
+    stdout_limit: int,
+    stderr_limit: int,
+) -> tuple[int, bytes, bytes, bool, bool]:
+    """Run one process while bounding both captured streams."""
+    import threading
+
+    try:
+        process = subprocess.Popen(
             argv,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=60,
-            env=environment_without_secrets(dict(os.environ)),
+            env=environment_without_secrets(env),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=False,
+            start_new_session=True,
         )
-    except (OSError, subprocess.SubprocessError) as error:
-        fail("ENVIRONMENT_BUILDER_UNAVAILABLE", f"{label} is unavailable: {error}")
-    output = f"{completed.stdout}\n{completed.stderr}"
+    except OSError as error:
+        fail(failure_code, f"cannot start {argv[0]}: {error}")
+    assert process.stdout is not None
+    assert process.stderr is not None
+    results: dict[str, tuple[bytes, bool]] = {}
+
+    def reader(name: str, stream: Any, limit: int) -> None:
+        results[name] = _read_capped(stream, limit)
+
+    stdout_thread = threading.Thread(
+        target=reader, args=("stdout", process.stdout, stdout_limit), daemon=True
+    )
+    stderr_thread = threading.Thread(
+        target=reader, args=("stderr", process.stderr, stderr_limit), daemon=True
+    )
+    stdout_thread.start()
+    stderr_thread.start()
+    timed_out = False
+    try:
+        process.wait(timeout=max(1, timeout))
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        _terminate_process(process)
+    stdout_thread.join(10)
+    stderr_thread.join(10)
+    if timed_out:
+        fail(failure_code, "environment command exceeded its wall-clock bound")
+    stdout, stdout_truncated = results.get("stdout", (b"", False))
+    stderr, stderr_truncated = results.get("stderr", (b"", False))
+    return (
+        process.returncode if process.returncode is not None else -1,
+        stdout,
+        stderr,
+        stdout_truncated,
+        stderr_truncated,
+    )
+
+
+def _tool_version(argv: list[str], pattern: re.Pattern[str], label: str) -> str:
+    returncode, stdout, stderr, stdout_truncated, _stderr_truncated = _run_bounded_capture(
+        argv,
+        timeout=60,
+        env=dict(os.environ),
+        failure_code="ENVIRONMENT_BUILDER_UNAVAILABLE",
+        stdout_limit=MAX_TOOL_OUTPUT_BYTES,
+        stderr_limit=MAX_TOOL_OUTPUT_BYTES,
+    )
+    if stdout_truncated:
+        fail("ENVIRONMENT_BUILDER_UNAVAILABLE", f"{label} output exceeds its bound")
+    output = f"{stdout.decode('utf-8', errors='replace')}\n{stderr.decode('utf-8', errors='replace')}"
     match = pattern.search(output)
-    if completed.returncode != 0 or match is None:
+    if returncode != 0 or match is None:
         fail("ENVIRONMENT_BUILDER_UNAVAILABLE", f"{label} did not report a pinned version")
     return match.group(1)
 
@@ -127,8 +241,11 @@ def run_logged(
     failure_code: str = "ENVIRONMENT_BUILD_FAILED",
     offline: bool = False,
     allow_exit: Iterable[int] | None = None,
+    disk_budget: DiskBudget | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run an argv vector with a wall-clock bound and a bounded log."""
+    import threading
+
     environment = environment_without_secrets(env)
     started = time.monotonic()
     log.write(f"$ {' '.join(argv)}\n")
@@ -137,29 +254,47 @@ def run_logged(
             argv,
             cwd=str(cwd),
             env=environment,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            text=True,
-            errors="replace",
-            bufsize=1,
+            text=False,
             start_new_session=True,
         )
     except OSError as error:
         fail(failure_code, f"cannot start {argv[0]}: {error}")
     assert process.stdout is not None
+    reader_error: list[BaseException] = []
+
+    def drain() -> None:
+        try:
+            _drain_to_log(process.stdout, log)
+        except BaseException as error:  # pragma: no cover - defensive thread guard
+            reader_error.append(error)
+
+    reader = threading.Thread(target=drain, daemon=True)
+    reader.start()
+    monitor = disk_budget.monitor(process) if disk_budget else None
+    if monitor:
+        monitor.start()
+    timed_out = False
     try:
-        for line in process.stdout:
-            log.write(line)
         process.wait(timeout=max(1, timeout - int(time.monotonic() - started)))
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-            process.wait(timeout=10)
-        except (OSError, subprocess.TimeoutExpired):
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except OSError:
-                pass
+        timed_out = True
+        _terminate_process(process)
+    finally:
+        if monitor:
+            monitor.stop()
+        reader.join(10)
+    if monitor and monitor.exceeded:
+        fail(
+            "ENVIRONMENT_RESOURCE_LIMIT",
+            f"observed builder disk usage {monitor.observed_bytes} bytes exceeds the frozen "
+            f"{disk_budget.limit_mib if disk_budget else 0} MiB bound; exact=false",
+        )
+    if reader_error:
+        fail(failure_code, f"cannot read environment command output: {reader_error[0]}")
+    if timed_out:
         fail(
             "ENVIRONMENT_BUILD_TIMEOUT",
             f"environment command exceeded its {timeout}s wall-clock bound",
@@ -249,21 +384,23 @@ def child_environment(
 
 
 def closure_manifest(root: str) -> list[dict[str, Any]]:
-    completed = subprocess.run(
+    returncode, stdout, stderr, stdout_truncated, _stderr_truncated = _run_bounded_capture(
         ["nix", "path-info", "--json", "--recursive", "--offline", root],
-        check=False,
-        capture_output=True,
-        text=True,
         timeout=300,
-        env=environment_without_secrets(dict(os.environ)),
+        env=dict(os.environ),
+        failure_code="ENVIRONMENT_BUILD_FAILED",
+        stdout_limit=MAX_CLOSURE_OUTPUT_BYTES,
+        stderr_limit=MAX_TOOL_OUTPUT_BYTES,
     )
-    if completed.returncode != 0:
+    if stdout_truncated:
+        fail("ENVIRONMENT_BUILD_FAILED", "environment closure manifest exceeds its bound")
+    if returncode != 0:
         fail(
             "ENVIRONMENT_BUILD_FAILED",
-            f"cannot read the environment closure: {tail(completed.stderr, 2_000)}",
+            f"cannot read the environment closure: {tail(stderr.decode('utf-8', errors='replace'), 2_000)}",
         )
     try:
-        raw = json.loads(completed.stdout)
+        raw = json.loads(stdout.decode("utf-8", errors="replace"))
     except json.JSONDecodeError:
         fail("ENVIRONMENT_BUILD_FAILED", "nix path-info returned invalid JSON")
     manifest: list[dict[str, Any]] = []
@@ -328,6 +465,7 @@ def realize_environment(
     timeout: int,
     log: BuildLog,
     proxy: str | None,
+    disk_budget: DiskBudget | None = None,
 ) -> str:
     """Build/evaluate the exact environment and return its store path."""
     env = child_environment(
@@ -352,6 +490,7 @@ def realize_environment(
         log=log,
         failure_code="ENVIRONMENT_BUILD_FAILED",
         offline=offline,
+        disk_budget=disk_budget,
     )
     for candidate in (
         workspace / ".devenv" / "gc" / "shell",
@@ -383,12 +522,17 @@ def run_check(
     resources: dict[str, int],
     log: BuildLog,
     expect_exit: int = 0,
+    disk_budget: DiskBudget | None = None,
 ) -> tuple[int, str, str, bool, bool]:
     """Run one frozen check and retain bounded stdout/stderr separately.
 
     The broker/Worker check receipt must preserve the exact exit code and
-    truncation state. Output is also written to the redacted build log.
+    truncation state. Output is streamed with a bounded retention per stream;
+    the rest is drained and discarded, so a noisy check cannot allocate
+    unbounded memory.
     """
+    import threading
+
     env = child_environment(workspace, cache, offline=True, resources=resources)
     command_argv = list(argv)
     if cwd.resolve() != workspace.resolve():
@@ -401,40 +545,61 @@ def run_check(
             command,
             cwd=str(workspace),
             env=environment_without_secrets(env),
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
-            errors="replace",
+            text=False,
             start_new_session=True,
         )
     except OSError as error:
         fail("ENVIRONMENT_BUILD_FAILED", f"cannot start {command[0]}: {error}")
     assert process.stdout is not None
     assert process.stderr is not None
+    results: dict[str, tuple[bytes, bool]] = {}
+
+    def reader(name: str, stream: Any) -> None:
+        results[name] = _read_capped(stream, MAX_CHECK_STREAM_BYTES)
+
+    stdout_thread = threading.Thread(
+        target=reader, args=("stdout", process.stdout), daemon=True
+    )
+    stderr_thread = threading.Thread(
+        target=reader, args=("stderr", process.stderr), daemon=True
+    )
+    stdout_thread.start()
+    stderr_thread.start()
+    monitor = disk_budget.monitor(process) if disk_budget else None
+    if monitor:
+        monitor.start()
+    timed_out = False
     try:
-        stdout, stderr = process.communicate(
-            timeout=max(1, timeout - int(time.monotonic() - started))
-        )
+        process.wait(timeout=max(1, timeout - int(time.monotonic() - started)))
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-            process.communicate(timeout=10)
-        except (OSError, subprocess.TimeoutExpired):
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except OSError:
-                pass
+        timed_out = True
+        _terminate_process(process)
+    finally:
+        if monitor:
+            monitor.stop()
+        stdout_thread.join(10)
+        stderr_thread.join(10)
+    if monitor and monitor.exceeded:
+        fail(
+            "ENVIRONMENT_RESOURCE_LIMIT",
+            f"observed builder disk usage {monitor.observed_bytes} bytes exceeds the frozen "
+            f"{disk_budget.limit_mib if disk_budget else 0} MiB bound; exact=false",
+        )
+    if timed_out:
         fail(
             "ENVIRONMENT_BUILD_TIMEOUT",
             f"environment check exceeded its {timeout}s wall-clock bound",
         )
+    stdout_bytes, stdout_truncated = results.get("stdout", (b"", False))
+    stderr_bytes, stderr_truncated = results.get("stderr", (b"", False))
+    stdout = stdout_bytes.decode("utf-8", errors="replace")
+    stderr = stderr_bytes.decode("utf-8", errors="replace")
     log.write(stdout)
     if stderr:
         log.write(stderr)
-    stdout_truncated = len(stdout) > MAX_CHECK_STREAM_BYTES
-    stderr_truncated = len(stderr) > MAX_CHECK_STREAM_BYTES
-    stdout = stdout[:MAX_CHECK_STREAM_BYTES]
-    stderr = stderr[:MAX_CHECK_STREAM_BYTES]
     if process.returncode != 0 and process.returncode != expect_exit:
         diagnostic = log.diagnostic
         if any(marker in diagnostic.lower() for marker in OFFLINE_MARKERS):

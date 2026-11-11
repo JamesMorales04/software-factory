@@ -3262,16 +3262,43 @@ async fn execute_environment_check(
     container: String,
     deadline: Instant,
 ) -> Result<factory_native::runtime_broker::EnvironmentCheckResult, EnvironmentBrokerFailure> {
-    let started = Instant::now();
     let cache_volume = environment_check_cache_volume(&input.spec.spec_sha256);
+    let outcome = execute_environment_check_inner(
+        Arc::clone(&app),
+        input,
+        image_id,
+        container,
+        deadline,
+        &cache_volume,
+    )
+    .await;
+    if outcome
+        .as_ref()
+        .err()
+        .is_some_and(|failure| failure.code == "ENVIRONMENT_RESOURCE_LIMIT")
+    {
+        purge_environment_cache(&app, &cache_volume).await;
+    }
+    outcome
+}
+
+async fn execute_environment_check_inner(
+    app: Arc<App>,
+    input: EnvironmentCheckRequest,
+    image_id: String,
+    container: String,
+    deadline: Instant,
+    cache_volume: &str,
+) -> Result<factory_native::runtime_broker::EnvironmentCheckResult, EnvironmentBrokerFailure> {
+    let started = Instant::now();
     // The per-spec cache holds the builder's prepared workspace and check
     // result. Serialize checks for the same spec so one check cannot overwrite
     // another's workspace or result while it runs.
-    let cache_lock = app.resource_lock(&cache_volume);
+    let cache_lock = app.resource_lock(cache_volume);
     let _cache_guard = cache_lock.lock().await;
     ensure_environment_store(&app, &image_id).await?;
-    bound_environment_caches(&app, &cache_volume).await?;
-    create_environment_volume(&app, &cache_volume, &input.spec.spec_sha256, true).await?;
+    bound_environment_caches(&app, cache_volume).await?;
+    create_environment_volume(&app, cache_volume, &input.spec.spec_sha256, true).await?;
     let request = builder_check_request_json(&input)?;
     let request_bytes = serde_json::to_vec(&request).map_err(|_| {
         EnvironmentBrokerFailure::new(
@@ -3286,7 +3313,7 @@ async fn execute_environment_check(
         ],
         &["./"],
     )?;
-    import_environment_volume(&app, &cache_volume, cache_tar).await?;
+    import_environment_volume(&app, cache_volume, cache_tar).await?;
     let output = run_environment_container(
         &app,
         &image_id,
@@ -3296,7 +3323,7 @@ async fn execute_environment_check(
         &input.plan,
         deadline,
         &input.workspace_volume,
-        &cache_volume,
+        cache_volume,
         "check",
         "request.json",
         true,
@@ -3305,7 +3332,7 @@ async fn execute_environment_check(
     let result: BuilderCheckResult = match read_environment_json(
         &app,
         &image_id,
-        &cache_volume,
+        cache_volume,
         "check-result.json",
         "ENVIRONMENT_BUILD_FAILED",
     )
@@ -3417,6 +3444,30 @@ async fn cleanup_environment_check_container(app: &Arc<App>, container: &str) ->
         Err(error) => {
             tracing::warn!(%container, %error, "environment check cleanup could not be confirmed");
             false
+        }
+    }
+}
+
+/// Remove a per-spec cache whose operation exceeded the frozen disk bound. An
+/// over-budget cache must never be reused by a later check/build, even if the
+/// original container is gone. Removal is best-effort but logged and verified.
+async fn purge_environment_cache(app: &Arc<App>, volume: &str) {
+    if !volume.starts_with("factory-env-cache-") {
+        tracing::error!(%volume, "refusing to purge an unexpected cache volume name");
+        return;
+    }
+    let lock = app.resource_lock(volume);
+    let _guard = lock.lock().await;
+    let _ = app.podman_output(["volume", "rm", "--force", volume]).await;
+    match app.podman_output(["volume", "exists", volume]).await {
+        Ok(output) if output.status.code() == Some(1) => {
+            tracing::warn!(%volume, "purged over-budget environment cache");
+        }
+        Ok(_) => {
+            tracing::error!(%volume, "over-budget environment cache is still present");
+        }
+        Err(error) => {
+            tracing::error!(%volume, %error, "over-budget environment cache cleanup could not be confirmed");
         }
     }
 }
@@ -4154,7 +4205,16 @@ async fn execute_environment_operation(
         deadline,
     )
     .await;
+    let resource_limit = result
+        .as_ref()
+        .err()
+        .is_some_and(|failure| failure.code == "ENVIRONMENT_RESOURCE_LIMIT");
+    let cache_volume = resources.cache_volume.clone();
+    let cache_persistent = resources.cache_persistent;
     let cleanup_confirmed = resources.cleanup().await;
+    if resource_limit && cache_persistent {
+        purge_environment_cache(&app, &cache_volume).await;
+    }
     let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     match result {
         Ok((phase, resolution, receipt, logs, logs_truncated)) => {
@@ -7467,7 +7527,12 @@ exit 1
         })
     }
 
-    async fn environment_test_app() -> (Arc<App>, PathBuf, tokio::sync::MutexGuard<'static, ()>) {
+    async fn environment_test_app() -> (
+        Arc<App>,
+        PathBuf,
+        PathBuf,
+        tokio::sync::MutexGuard<'static, ()>,
+    ) {
         let directory =
             std::env::temp_dir().join(format!("factory-env-broker-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&directory).unwrap();
@@ -7547,7 +7612,7 @@ exit 0
             "x86_64-linux".into(),
             "nix-devenv-environment-v1".into(),
         ));
-        (app, log_path, guard)
+        (app, log_path, result_path, guard)
     }
 
     async fn environment_response_body(response: Response) -> Value {
@@ -7668,7 +7733,7 @@ exit 0
 
     #[tokio::test]
     async fn environment_owner_is_distinct_and_generic_routes_are_refused() {
-        let (app, _log, _serial) = environment_test_app().await;
+        let (app, _log, _result, _serial) = environment_test_app().await;
         let request = environment_request(EnvironmentBrokerOperation::Build);
         let supervisor = build_environment(
             State(Arc::clone(&app)),
@@ -7700,7 +7765,7 @@ exit 0
 
     #[tokio::test]
     async fn environment_builder_allowlist_and_digest_are_exact() {
-        let (app, _log, _serial) = environment_test_app().await;
+        let (app, _log, _result, _serial) = environment_test_app().await;
         let mut request = environment_request(EnvironmentBrokerOperation::Build);
         request.image = "localhost/other-builder:dev".into();
         let response = build_environment(
@@ -7728,7 +7793,7 @@ exit 0
 
     #[tokio::test]
     async fn environment_resource_and_network_policy_fail_closed() {
-        let (app, _log, _serial) = environment_test_app().await;
+        let (app, _log, _result, _serial) = environment_test_app().await;
         let mut request = environment_request(EnvironmentBrokerOperation::Build);
         request.plan.resources.cpu = 0;
         let response = build_environment(
@@ -7786,7 +7851,7 @@ exit 0
 
     #[tokio::test]
     async fn environment_build_returns_typed_receipt_and_uses_narrow_container_args() {
-        let (app, log, _serial) = environment_test_app().await;
+        let (app, log, _result, _serial) = environment_test_app().await;
         let request = environment_request(EnvironmentBrokerOperation::Build);
         let response = build_environment(
             State(Arc::clone(&app)),
@@ -7820,7 +7885,7 @@ exit 0
 
     #[tokio::test]
     async fn environment_resolve_returns_plan_bound_lock_files() {
-        let (app, _log, _serial) = environment_test_app().await;
+        let (app, _log, _result, _serial) = environment_test_app().await;
         let request = environment_request(EnvironmentBrokerOperation::Resolve);
         let response = resolve_environment(
             State(Arc::clone(&app)),
@@ -8247,6 +8312,66 @@ exit 0
     }
 
     #[tokio::test]
+    async fn environment_check_resource_limit_purges_the_per_spec_cache() {
+        let result = json!({
+            "schemaVersion": 1,
+            "status": "FAILED",
+            "error": {
+                "code": "ENVIRONMENT_RESOURCE_LIMIT",
+                "message": "the environment check exceeded the frozen disk bound"
+            },
+            "durationMs": 3,
+            "createdAt": "2026-11-11T00:00:00Z"
+        });
+        let (app, workspace, log, _serial) =
+            environment_check_test_app(ResourceOwner::Supervisor, 0, result).await;
+        let response = check_environment(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Supervisor),
+            Json(environment_check_request(&workspace)),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            environment_response_body(response).await["code"],
+            "ENVIRONMENT_RESOURCE_LIMIT"
+        );
+        let log = std::fs::read_to_string(log).unwrap();
+        assert!(
+            log.contains("volume rm --force factory-env-cache-"),
+            "{log}"
+        );
+    }
+
+    #[tokio::test]
+    async fn environment_build_resource_limit_purges_the_per_spec_cache() {
+        let (app, log, result_path, _serial) = environment_test_app().await;
+        let mut receipt = environment_receipt();
+        receipt["status"] = json!("FAILED");
+        receipt["blockers"] = json!([{
+            "code": "ENVIRONMENT_RESOURCE_LIMIT",
+            "message": "the environment build exceeded the frozen disk bound"
+        }]);
+        std::fs::write(&result_path, serde_json::to_vec(&receipt).unwrap()).unwrap();
+        let response = build_environment(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Environment),
+            Json(environment_request(EnvironmentBrokerOperation::Build)),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            environment_response_body(response).await["code"],
+            "ENVIRONMENT_RESOURCE_LIMIT"
+        );
+        let log = std::fs::read_to_string(log).unwrap();
+        assert!(
+            log.contains("volume rm --force factory-env-cache-"),
+            "{log}"
+        );
+    }
+
+    #[tokio::test]
     async fn environment_check_timeout_kills_and_removes_the_container() {
         let directory = std::env::temp_dir().join(format!(
             "factory-env-check-timeout-{}",
@@ -8298,7 +8423,7 @@ exit 0
 
     #[tokio::test]
     async fn concurrent_environment_builds_use_distinct_volumes() {
-        let (app, log, _serial) = environment_test_app().await;
+        let (app, log, _result, _serial) = environment_test_app().await;
         let first = environment_request(EnvironmentBrokerOperation::Build);
         let second = environment_request(EnvironmentBrokerOperation::Build);
         let (left, right) = tokio::join!(
