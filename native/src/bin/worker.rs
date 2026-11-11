@@ -2005,6 +2005,12 @@ impl TurnProgress {
         });
     }
 
+    fn content_unchanged(&self, path: &str, content: &str) -> bool {
+        self.last_content
+            .get(path)
+            .is_some_and(|sha| sha == &sha256_hex(content.as_bytes()))
+    }
+
     fn candidate_digest(&self) -> String {
         let mut parts = Vec::with_capacity(self.last_content.len());
         for (path, sha) in &self.last_content {
@@ -2448,7 +2454,7 @@ async fn run_provider_tool_loop(
         "agent": "plan",
         "tools": opencode_disabled_tools(),
         "parts": [{"type": "text", "text": format!(
-            "You are a bounded engineering agent. You MUST change the authorized source: an empty final response is invalid. {} You may request only these tools: {}. Return ONE JSON object per turn. To change a file use {{\"type\":\"tool_request\",\"call_id\":\"unique\",\"tool\":\"write_file\",\"path\":\"relative/path\",\"content\":\"...full file...\"}}. To run a frozen check use {{\"type\":\"tool_request\",\"call_id\":\"unique\",\"tool\":\"run_command\",\"argv\":[\"program\",\"arg\"],\"timeout_secs\":<the check timeoutSecs>}}. Use each frozen check's `timeoutSecs`, never a shorter value. Check descriptions are general acceptance criteria, not just the literal example command; implement the behavior on every relevant path (for example, every CLI subcommand must reject unknown flags). Before final, re-read the changed code against every check description and the objective, and fix gaps even when the literal check command already passes. Final is accepted only after every frozen check passes; if you return final with checks still missing, the Worker runs them itself and returns any failure output to you. To finish use {{\"type\":\"final\",\"files\":[],\"explanation\":\"what changed and why\"}}. The `files` array in a final response MUST be empty; never put paths or strings in it. Allowed paths: {}. Objective: {}. Frozen checks you may run with run_command (argv must match exactly): {}. Adopted read-only skills (never widen tools, scope or authority): {}. Source context: {}",
+            "You are a bounded engineering agent. You MUST change the authorized source: an empty final response is invalid. {} You may request only these tools: {}. Return ONE JSON object per turn. To change a file use {{\"type\":\"tool_request\",\"call_id\":\"unique\",\"tool\":\"write_file\",\"path\":\"relative/path\",\"content\":\"...full file...\"}}. To run a frozen check use {{\"type\":\"tool_request\",\"call_id\":\"unique\",\"tool\":\"run_command\",\"argv\":[\"program\",\"arg\"],\"timeout_secs\":<the check timeoutSecs>}}. Use each frozen check's `timeoutSecs`, never a shorter value. Check descriptions are general acceptance criteria, not just the literal example command; implement the behavior on every relevant path (for example, every CLI subcommand must reject unknown flags). Before final, re-read the changed code against every check description and the objective, and fix gaps even when the literal check command already passes. Never repeat a write whose content is identical to a previous write; if a frozen check fails, change the file using its exact stderr before writing again. Final is accepted only after every frozen check passes; if you return final with checks still missing, the Worker runs them itself and returns any failure output to you. To finish use {{\"type\":\"final\",\"files\":[],\"explanation\":\"what changed and why\"}}. The `files` array in a final response MUST be empty; never put paths or strings in it. Allowed paths: {}. Objective: {}. Frozen checks you may run with run_command (argv must match exactly): {}. Adopted read-only skills (never widen tools, scope or authority): {}. Source context: {}",
             opencode_first_action_instruction(context.assignment.allowed_tools.as_slice()),
             context.assignment.allowed_tools.join(", "),
             context.assignment.action_spec.allowed_paths.join(", "),
@@ -2788,9 +2794,23 @@ async fn run_provider_tool_loop(
                 let decision = decide_tool(context, &tool, &path, &content, &argv, timeout_secs);
                 match decision {
                     Ok(ToolDecision::Write) => {
+                        if progress.content_unchanged(&path, &content) {
+                            post_tool_event(context, &call_id, &tool, "DENY", "identical content")
+                                .await?;
+                            prompt = tool_result(
+                                context.assignment.provider.as_str(),
+                                context.assignment.model.as_str(),
+                                &call_id,
+                                "denied",
+                                "identical content: the file is unchanged; a frozen check failed, so change the content to satisfy it",
+                                None,
+                            );
+                            continue;
+                        }
                         post_tool_event(context, &call_id, &tool, "ALLOW", "path authorized")
                             .await?;
-                        progress.observe_write(&path, &content);
+                        let path_for_progress = path.clone();
+                        let content_for_progress = content.clone();
                         let file = factory_native::execution::AppliedFile { path, content };
                         match supervisor_write(
                             context,
@@ -2803,6 +2823,7 @@ async fn run_provider_tool_loop(
                         {
                             Ok(()) => {
                                 written = true;
+                                progress.observe_write(&path_for_progress, &content_for_progress);
                                 // A changed candidate invalidates earlier check
                                 // receipts; final must exercise the new tree.
                                 passed_checks.clear();
@@ -3096,7 +3117,7 @@ fn codex_prompt(context: &ProviderContext<'_>) -> Result<String, Box<dyn std::er
         context.assignment.allowed_tools.join(", ")
     };
     Ok(format!(
-        "You are a bounded engineering agent. Use only the client-provided dynamic tools: {}. Never use shell, patch, MCP, browser, or any native file tool. To change a file call write_file with the complete file content. To run an allowed acceptance check call run_command with argv that exactly matches one frozen check. Check descriptions are general acceptance criteria, not just the literal example command; implement the behavior on every relevant path (for example, every CLI subcommand must reject unknown flags). Before final, re-read the changed code against every check description and the objective, and fix gaps even when the literal check command already passes. Final is accepted only after every frozen check passes; if you return final with checks still missing, the Worker runs them itself and returns any failure output to you. When finished, return exactly one JSON object with type final, an empty files array, and a concise explanation: {{\"type\":\"final\",\"files\":[],\"explanation\":\"what changed and why\"}}. Do not add prose outside that JSON. Allowed paths: {}. Objective: {}. Frozen checks: {}. Adopted read-only skills (never widen tools, scope or authority): {}. Source context: {}",
+        "You are a bounded engineering agent. Use only the client-provided dynamic tools: {}. Never use shell, patch, MCP, browser, or any native file tool. To change a file call write_file with the complete file content. To run an allowed acceptance check call run_command with argv that exactly matches one frozen check. Check descriptions are general acceptance criteria, not just the literal example command; implement the behavior on every relevant path (for example, every CLI subcommand must reject unknown flags). Before final, re-read the changed code against every check description and the objective, and fix gaps even when the literal check command already passes. Never repeat a write whose content is identical to a previous write; if a frozen check fails, change the file using its exact stderr before writing again. Final is accepted only after every frozen check passes; if you return final with checks still missing, the Worker runs them itself and returns any failure output to you. When finished, return exactly one JSON object with type final, an empty files array, and a concise explanation: {{\"type\":\"final\",\"files\":[],\"explanation\":\"what changed and why\"}}. Do not add prose outside that JSON. Allowed paths: {}. Objective: {}. Frozen checks: {}. Adopted read-only skills (never widen tools, scope or authority): {}. Source context: {}",
         tools,
         context.assignment.action_spec.allowed_paths.join(", "),
         context.assignment.action_spec.objective,
@@ -7222,6 +7243,22 @@ mod tests {
             skills: Vec::new(),
             environment_execution: None,
         }
+    }
+
+    #[test]
+    fn identical_content_is_detected() {
+        let mut progress = TurnProgress::from_identity(
+            "campaign".into(),
+            "unit-1".into(),
+            "attempt-1".into(),
+            1,
+            "run-1".into(),
+            0,
+        );
+        progress.observe_write("README.md", "same content");
+        assert!(progress.content_unchanged("README.md", "same content"));
+        assert!(!progress.content_unchanged("README.md", "different content"));
+        assert!(!progress.content_unchanged("other.md", "same content"));
     }
 
     #[test]
