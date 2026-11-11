@@ -23059,53 +23059,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "test-support")]
-    async fn clear_core_test_action_environment(
-        path: &std::path::Path,
-        action_id: &str,
-    ) -> Result<(), std::io::Error> {
-        use sqlx::connection::Connection as SqlxConnection;
-        use sqlx_sqlite::{SqliteConnectOptions, SqliteConnection};
-        let options = SqliteConnectOptions::new().filename(path);
-        let mut connection = SqliteConnection::connect_with(&options)
-            .await
-            .map_err(std::io::Error::other)?;
-        let row: Option<(String,)> =
-            sqlx::query_as::query_as("SELECT spec_json FROM action_specs WHERE action_id=?1")
-                .bind(action_id)
-                .fetch_optional(&mut connection)
-                .await
-                .map_err(std::io::Error::other)?;
-        let Some((spec_json,)) = row else {
-            return Ok(());
-        };
-        let mut spec: factory_native::db::ActionSpec =
-            serde_json::from_str(&spec_json).map_err(std::io::Error::other)?;
-        spec.environment_plan_id = None;
-        spec.environment_plan_sha256 = None;
-        spec.environment_spec_id = None;
-        spec.environment_spec_sha256 = None;
-        spec.environment_builder_image = None;
-        spec.environment_builder_image_digest = None;
-        spec.environment_required = false;
-        for check in &mut spec.checks {
-            check.environment_plan_id = None;
-            check.environment_spec_sha256 = None;
-        }
-        let spec_json = serde_json::to_string(&spec).map_err(std::io::Error::other)?;
-        let spec_sha256 = factory_native::planning::environment::sha256_hex(spec_json.as_bytes());
-        sqlx::query::query(
-            "UPDATE action_specs SET spec_json=?1,spec_sha256=?2 WHERE action_id=?3",
-        )
-        .bind(&spec_json)
-        .bind(&spec_sha256)
-        .bind(action_id)
-        .execute(&mut connection)
-        .await
-        .map_err(std::io::Error::other)?;
-        Ok(())
-    }
-
     #[allow(clippy::too_many_arguments)]
     async fn seed_core_test_environment(
         db: &Database,
