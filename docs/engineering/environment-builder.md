@@ -152,10 +152,12 @@ SYS_CHROOT` (Nix sandbox and chroot), `--security-opt unmask=ALL` (Nix's
 `/proc` remount test), `no-new-privileges`, bounded
 `--cpus/--memory/--pids-limit` and a wall-clock timeout exactly equal to the
 frozen plan. There is no host socket, HOME, Podman socket, provider secret or
-GitHub credential. Mount attestation validates the source before the target:
-`/cache`, `/nix` and `/inputs/workspace` must be Podman-managed named-volume
-sources, so a forbidden host path at an allowed target cannot produce
-`noHostMount=true`.
+GitHub credential. Mount attestation validates the source for every accepted
+target, including `/` and system mounts: `/cache`, `/nix` and
+`/inputs/workspace` must be Podman-managed named-volume sources, while `/`,
+`/proc`, `/sys`, cgroup, devpts, mqueue, tmpfs and container-runtime host-file
+mounts must use known-safe pseudo/rootfs sources. A forbidden host path at any
+allowed target cannot produce `noHostMount=true`.
 
 ## 4. Typed failures
 
@@ -217,8 +219,8 @@ environment-check remains **NOT_TESTED** and is not claimed.
 `deploy/environment-builder/tests/` covers deterministic policy, receipt, SBOM,
 exact cgroup limits, fetch-policy enforcement, protected path descendants,
 rootful-Podman rejection, wrapper nonzero-exit cleanup, runtime disk-budget
-enforcement, mount-source attestation, bounded noisy-output capture and
-disk-overflow artifact purging (46 tests). The
+enforcement, root/system mount-source attestation, bounded noisy-output capture
+and disk-overflow artifact purging (49 tests). The
 final `deploy/environment-builder/Containerfile` image was built and exercised
 under the unique WP1-B evidence tag
 `localhost/software-factory-environment-builder:wp1b-340fa54-r3`

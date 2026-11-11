@@ -477,8 +477,8 @@ class AttestationTests(unittest.TestCase):
     VOLUME = "/var/lib/containers/storage/volumes/factory-env-test/_data"
 
     @staticmethod
-    def mount(source: str, target: str) -> dict[str, str]:
-        return {"source": source, "mount_point": target, "fstype": "ext4"}
+    def mount(source: str, target: str, fstype: str = "ext4") -> dict[str, str]:
+        return {"source": source, "mount_point": target, "fstype": fstype}
 
     def test_expected_volume_source_is_authorized_at_each_target(self) -> None:
         for target in ("/inputs/workspace", "/cache", "/nix"):
@@ -486,15 +486,54 @@ class AttestationTests(unittest.TestCase):
                 _mounts_authorized([self.mount(self.VOLUME, target)]), target
             )
 
+    def test_safe_root_and_system_sources_are_authorized(self) -> None:
+        mounts = [
+            self.mount("overlay", "/", "overlay"),
+            self.mount("proc", "/proc", "proc"),
+            self.mount("sysfs", "/sys", "sysfs"),
+            self.mount("cgroup2", "/sys/fs/cgroup", "cgroup2"),
+            self.mount("devtmpfs", "/dev", "devtmpfs"),
+            self.mount("devpts", "/dev/pts", "devpts"),
+            self.mount("shm", "/dev/shm", "tmpfs"),
+            self.mount("mqueue", "/dev/mqueue", "mqueue"),
+            self.mount("tmpfs", "/run", "tmpfs"),
+            self.mount("tmpfs", "/tmp", "tmpfs"),
+            self.mount("tmpfs", "/home/factory", "tmpfs"),
+            self.mount(
+                "/var/lib/containers/storage/overlay-containers/abc/userdata/hosts",
+                "/etc/hosts",
+                "ext4",
+            ),
+        ]
+        self.assertTrue(_mounts_authorized(mounts))
+
     def test_forbidden_root_source_at_each_allowed_target_is_rejected(self) -> None:
         for target in ("/inputs/workspace", "/cache", "/nix"):
             self.assertFalse(_mounts_authorized([self.mount("/root", target)]), target)
+
+    def test_forbidden_root_source_at_root_and_system_targets_is_rejected(self) -> None:
+        for target, fstype in (
+            ("/", "ext4"),
+            ("/proc", "proc"),
+            ("/sys", "sysfs"),
+            ("/dev", "devtmpfs"),
+            ("/run", "tmpfs"),
+            ("/tmp", "tmpfs"),
+            ("/home/factory", "tmpfs"),
+        ):
+            self.assertFalse(
+                _mounts_authorized([self.mount("/root", target, fstype)]), target
+            )
 
     def test_host_bind_at_an_allowed_target_is_rejected(self) -> None:
         for target in ("/inputs/workspace", "/cache", "/nix"):
             self.assertFalse(
                 _mounts_authorized([self.mount("/tmp/factory-cache", target)]), target
             )
+        self.assertFalse(_mounts_authorized([self.mount("/tmp/factory", "/", "ext4")]))
+        self.assertFalse(
+            _mounts_authorized([self.mount("/tmp/factory", "/proc", "proc")])
+        )
 
     def test_path_traversal_volume_source_is_rejected(self) -> None:
         self.assertFalse(
@@ -507,6 +546,10 @@ class AttestationTests(unittest.TestCase):
                 ]
             )
         )
+
+    def test_named_volume_at_root_or_system_target_is_rejected(self) -> None:
+        self.assertFalse(_mounts_authorized([self.mount(self.VOLUME, "/")]))
+        self.assertFalse(_mounts_authorized([self.mount(self.VOLUME, "/proc", "proc")]))
 
 
 class CheckExecutionTests(unittest.TestCase):

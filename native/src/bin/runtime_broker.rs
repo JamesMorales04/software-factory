@@ -18,7 +18,10 @@ use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
     process::Stdio,
-    sync::{Arc, RwLock},
+    sync::{
+        Arc, RwLock,
+        atomic::{AtomicBool, Ordering as AtomicOrdering},
+    },
     time::{Duration, Instant},
 };
 
@@ -388,7 +391,111 @@ impl EnvironmentBuilderRuntime {
     }
 }
 
-#[derive(Clone)]
+/// Durable broker-side blocklist for per-spec caches whose resource-limit
+/// purge could not be confirmed. The ledger is the source of truth; an
+/// in-memory set makes the block effective immediately. If the ledger cannot
+/// be read or written, all cache reuse is denied until the broker restarts.
+struct EnvironmentCacheQuarantine {
+    path: PathBuf,
+    blocked: std::sync::Mutex<BTreeSet<String>>,
+    ledger_failed: AtomicBool,
+}
+
+impl EnvironmentCacheQuarantine {
+    fn load(path: PathBuf) -> Self {
+        let mut ledger_failed = false;
+        let blocked = match std::fs::read(&path) {
+            Ok(bytes) => match serde_json::from_slice::<Vec<String>>(&bytes) {
+                Ok(entries) => entries
+                    .into_iter()
+                    .filter(|name| name.starts_with("factory-env-cache-"))
+                    .collect(),
+                Err(error) => {
+                    tracing::error!(%error, "environment cache quarantine ledger is invalid");
+                    ledger_failed = true;
+                    BTreeSet::new()
+                }
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => BTreeSet::new(),
+            Err(error) => {
+                tracing::error!(%error, "environment cache quarantine ledger is unreadable");
+                ledger_failed = true;
+                BTreeSet::new()
+            }
+        };
+        Self {
+            path,
+            blocked: std::sync::Mutex::new(blocked),
+            ledger_failed: AtomicBool::new(ledger_failed),
+        }
+    }
+
+    fn is_blocked(&self, cache: &str) -> bool {
+        self.ledger_failed.load(AtomicOrdering::SeqCst)
+            || self
+                .blocked
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .contains(cache)
+    }
+
+    fn reuse_denied(&self) -> bool {
+        self.ledger_failed.load(AtomicOrdering::SeqCst)
+    }
+
+    fn block(&self, cache: &str) -> Result<(), String> {
+        let mut blocked = self
+            .blocked
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        blocked.insert(cache.to_owned());
+        self.persist_locked(&blocked).map_err(|error| {
+            self.ledger_failed.store(true, AtomicOrdering::SeqCst);
+            format!("quarantine ledger write failed: {error}")
+        })
+    }
+
+    fn clear(&self, cache: &str) {
+        let mut blocked = self
+            .blocked
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if blocked.remove(cache)
+            && let Err(error) = self.persist_locked(&blocked)
+        {
+            self.ledger_failed.store(true, AtomicOrdering::SeqCst);
+            tracing::error!(%cache, %error, "quarantine ledger clear failed; denying cache reuse");
+        }
+    }
+
+    fn persist_locked(&self, blocked: &BTreeSet<String>) -> Result<(), String> {
+        let parent = self
+            .path
+            .parent()
+            .ok_or_else(|| "quarantine ledger path has no parent".to_owned())?;
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("quarantine ledger directory: {error}"))?;
+        let temporary = self.path.with_extension("tmp");
+        let bytes = serde_json::to_vec(blocked)
+            .map_err(|error| format!("quarantine ledger encoding: {error}"))?;
+        std::fs::write(&temporary, bytes)
+            .map_err(|error| format!("quarantine ledger write: {error}"))?;
+        std::fs::rename(&temporary, &self.path)
+            .map_err(|error| format!("quarantine ledger rename: {error}"))?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn entries(&self) -> Vec<String> {
+        self.blocked
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .cloned()
+            .collect()
+    }
+}
+
 struct App {
     tokens: Arc<OwnerTokens>,
     resource_locks: Arc<ResourceLocks>,
@@ -404,6 +511,7 @@ struct App {
     environment_builder: Arc<RwLock<EnvironmentBuilderRuntime>>,
     environment_egress_slots: Arc<tokio::sync::Mutex<BTreeSet<u8>>>,
     environment_store_init: Arc<tokio::sync::Mutex<()>>,
+    environment_cache_quarantine: Arc<EnvironmentCacheQuarantine>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -469,6 +577,14 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let import_images =
         parse_import_images(env::var("FACTORY_RUNTIME_IMPORT_IMAGES").unwrap_or_default())?;
     let environment_builder = load_environment_builder_runtime();
+    let quarantine_path = PathBuf::from(
+        env::var("FACTORY_RUNTIME_ENVIRONMENT_CACHE_QUARANTINE_FILE")
+            .unwrap_or_else(|_| "/var/lib/containers/environment-cache-quarantine.json".into()),
+    );
+    if !quarantine_path.is_absolute() {
+        return Err("environment cache quarantine ledger path must be absolute".into());
+    }
+    let environment_cache_quarantine = Arc::new(EnvironmentCacheQuarantine::load(quarantine_path));
     let bind = env::var("FACTORY_BIND").unwrap_or_else(|_| "0.0.0.0:8770".into());
     let addr: std::net::SocketAddr = bind.parse()?;
     let container_mode = env::var("FACTORY_CONTAINER_MODE").as_deref() == Ok("1");
@@ -494,6 +610,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             "dependency acquisition setup has not completed",
         ))),
         environment_builder: Arc::new(RwLock::new(environment_builder)),
+        environment_cache_quarantine,
         environment_egress_slots: Arc::new(tokio::sync::Mutex::new(BTreeSet::new())),
         environment_store_init: Arc::new(tokio::sync::Mutex::new(())),
     });
@@ -3471,8 +3588,9 @@ async fn cleanup_environment_check_container(app: &Arc<App>, container: &str) ->
 
 /// Remove a per-spec cache whose operation exceeded the frozen disk bound. An
 /// over-budget cache must never be reused by a later check/build, even if the
-/// original container is gone. If removal cannot be confirmed, create a durable
-/// quarantine volume that the cache creation path checks before reuse.
+/// original container is gone. If removal cannot be confirmed, record a
+/// durable ledger block and an immediate in-memory block; if the ledger cannot
+/// be written, all cache reuse is denied until restart.
 async fn purge_environment_cache(app: &Arc<App>, volume: &str) -> Result<(), String> {
     if !volume.starts_with("factory-env-cache-") {
         return Err("refusing to purge an unexpected cache volume name".into());
@@ -3487,54 +3605,22 @@ async fn purge_environment_cache(app: &Arc<App>, volume: &str) -> Result<(), Str
         }
         Ok(_) => {
             tracing::error!(%volume, "over-budget environment cache is still present");
-            quarantine_environment_cache(app, volume).await?;
+            app.environment_cache_quarantine
+                .block(volume)
+                .map_err(|error| format!("cache quarantine failed: {error}"))?;
             Err("the over-budget environment cache could not be removed and is quarantined".into())
         }
         Err(error) => {
             tracing::error!(%volume, %error, "over-budget environment cache cleanup could not be confirmed");
-            quarantine_environment_cache(app, volume).await?;
+            app.environment_cache_quarantine
+                .block(volume)
+                .map_err(|error| format!("cache quarantine failed: {error}"))?;
             Err(
                 "the over-budget environment cache cleanup is unconfirmed and is quarantined"
                     .into(),
             )
         }
     }
-}
-
-async fn quarantine_environment_cache(app: &Arc<App>, cache: &str) -> Result<(), String> {
-    let quarantine = environment_cache_is_quarantined(cache);
-    let owner = format!("{OWNER_LABEL}=environment");
-    let workspace = format!("{WORKSPACE_LABEL}=quarantine");
-    let output = app
-        .podman_output([
-            "volume",
-            "create",
-            "--ignore",
-            "--label",
-            MANAGED_LABEL,
-            "--label",
-            owner.as_str(),
-            "--label",
-            workspace.as_str(),
-            quarantine.as_str(),
-        ])
-        .await
-        .map_err(|error| format!("quarantine volume creation failed: {error}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "quarantine volume creation failed: {}",
-            stderr(&output)
-        ));
-    }
-    let exists = app
-        .podman_output(["volume", "exists", quarantine.as_str()])
-        .await
-        .map_err(|error| format!("quarantine volume verification failed: {error}"))?;
-    if !exists.status.success() {
-        return Err("quarantine volume is not present after creation".into());
-    }
-    tracing::error!(%cache, %quarantine, "environment cache quarantined");
-    Ok(())
 }
 
 fn environment_cache_is_quarantined(volume: &str) -> String {
@@ -4828,16 +4914,26 @@ async fn create_environment_volume(
     reuse: bool,
 ) -> Result<(), EnvironmentBrokerFailure> {
     if reuse {
-        let quarantine = environment_cache_is_quarantined(volume);
+        if app.environment_cache_quarantine.reuse_denied() {
+            return Err(EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_BUILDER_UNAVAILABLE",
+                "the environment cache quarantine ledger is unavailable; all cache reuse is denied until restart",
+            ));
+        }
+        let mut blocked = app.environment_cache_quarantine.is_blocked(volume);
+        let legacy_marker = environment_cache_is_quarantined(volume);
         match app
-            .podman_output(["volume", "exists", quarantine.as_str()])
+            .podman_output(["volume", "exists", legacy_marker.as_str()])
             .await
         {
             Ok(output) if output.status.success() => {
-                return Err(EnvironmentBrokerFailure::new(
-                    "ENVIRONMENT_BUILDER_UNAVAILABLE",
-                    "the environment cache is quarantined after an unconfirmed resource-limit purge",
-                ));
+                blocked = true;
+                if let Err(error) = app.environment_cache_quarantine.block(volume) {
+                    tracing::error!(%volume, %error, "legacy quarantine ledger write failed");
+                }
+                let _ = app
+                    .podman_output(["volume", "rm", "--force", legacy_marker.as_str()])
+                    .await;
             }
             Ok(_) => {}
             Err(error) => {
@@ -4846,6 +4942,33 @@ async fn create_environment_volume(
                     format!("the environment cache quarantine state is unreadable: {error}"),
                 ));
             }
+        }
+        if blocked {
+            match app.podman_output(["volume", "exists", volume]).await {
+                Ok(output) if output.status.code() == Some(1) => {
+                    // The over-budget cache is gone; clear the stale ledger
+                    // entry so a fresh cache can be created for this spec.
+                    app.environment_cache_quarantine.clear(volume);
+                }
+                Ok(_) => {
+                    return Err(EnvironmentBrokerFailure::new(
+                        "ENVIRONMENT_BUILDER_UNAVAILABLE",
+                        "the environment cache is quarantined after an unconfirmed resource-limit purge",
+                    ));
+                }
+                Err(error) => {
+                    return Err(EnvironmentBrokerFailure::new(
+                        "ENVIRONMENT_BUILDER_UNAVAILABLE",
+                        format!("the environment cache quarantine state is unreadable: {error}"),
+                    ));
+                }
+            }
+        }
+        if app.environment_cache_quarantine.reuse_denied() {
+            return Err(EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_BUILDER_UNAVAILABLE",
+                "the environment cache quarantine ledger is unavailable; all cache reuse is denied until restart",
+            ));
         }
         match app.volume_labels(volume).await {
             Ok(Some(labels)) => {
@@ -5705,6 +5828,12 @@ mod tests {
             ))),
             environment_egress_slots: Arc::new(tokio::sync::Mutex::new(BTreeSet::new())),
             environment_store_init: Arc::new(tokio::sync::Mutex::new(())),
+            environment_cache_quarantine: Arc::new(EnvironmentCacheQuarantine::load(
+                std::env::temp_dir().join(format!(
+                    "factory-env-quarantine-ledger-{}.json",
+                    uuid::Uuid::new_v4()
+                )),
+            )),
             dependency_acquisition: Arc::new(RwLock::new(DependencyAcquisitionState::disabled(
                 DEPENDENCY_RUNTIME_UNAVAILABLE,
                 "test configuration",
@@ -8534,8 +8663,12 @@ case "$1" in
   volume)
     case "$2" in
       rm) exit 1 ;;
-      exists) exit 0 ;;
-      create) exit 0 ;;
+      exists)
+        case "$3" in
+          *-quarantine) exit 1 ;;
+          *) exit 0 ;;
+        esac
+        ;;
       inspect) printf '%s\n' '[{{"Name":"cache","Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"environment","io.software-factory.workspace":"spec"}}}}]' ;;
     esac
     ;;
@@ -8551,14 +8684,127 @@ exit 0
             .await
             .expect_err("failed removal must be quarantined and returned");
         assert!(error.contains("quarantined"), "{error}");
+        assert!(app.environment_cache_quarantine.is_blocked(&cache));
+        let ledger = std::fs::read_to_string(&app.environment_cache_quarantine.path).unwrap();
+        assert!(ledger.contains(&cache), "{ledger}");
         let refusal = create_environment_volume(&app, &cache, "spec", true)
             .await
             .expect_err("a quarantined cache must not be reused");
         assert_eq!(refusal.code, "ENVIRONMENT_BUILDER_UNAVAILABLE");
         let log = std::fs::read_to_string(log_path).unwrap();
         assert!(log.contains("volume rm --force"), "{log}");
-        assert!(log.contains("volume create --ignore"), "{log}");
-        assert!(log.contains("-quarantine"), "{log}");
+        assert!(!log.contains("volume create"), "{log}");
+    }
+
+    #[tokio::test]
+    async fn failed_quarantine_ledger_denies_all_cache_reuse() {
+        let directory = std::env::temp_dir().join(format!(
+            "factory-env-quarantine-ledger-failure-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let log_path = directory.join("podman.log");
+        let script = format!(
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> "{}"
+case "$1" in
+  volume)
+    case "$2" in
+      rm) exit 1 ;;
+      exists)
+        case "$3" in
+          *-quarantine) exit 1 ;;
+          *) exit 0 ;;
+        esac
+        ;;
+    esac
+    ;;
+esac
+exit 0
+"#,
+            log_path.display()
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let mut app = Arc::try_unwrap(test_app(podman)).ok().unwrap();
+        let blocker = directory.join("not-a-directory");
+        std::fs::write(&blocker, b"blocker").unwrap();
+        app.environment_cache_quarantine = Arc::new(EnvironmentCacheQuarantine::load(
+            blocker.join("ledger.json"),
+        ));
+        let app = Arc::new(app);
+        let cache = format!("factory-env-cache-{}", "b".repeat(32));
+        let error = purge_environment_cache(&app, &cache)
+            .await
+            .expect_err("failed removal and ledger write must fail closed");
+        assert!(error.contains("quarantine failed"), "{error}");
+        assert!(app.environment_cache_quarantine.reuse_denied());
+        let refusal = create_environment_volume(&app, &cache, "spec", true)
+            .await
+            .expect_err("all cache reuse must be denied");
+        assert_eq!(refusal.code, "ENVIRONMENT_BUILDER_UNAVAILABLE");
+    }
+
+    #[tokio::test]
+    async fn quarantine_blocks_do_not_create_marker_volumes() {
+        let directory = std::env::temp_dir().join(format!(
+            "factory-env-quarantine-markers-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let log_path = directory.join("podman.log");
+        let script = format!(
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> "{}"
+case "$1" in
+  volume)
+    case "$2" in
+      rm) exit 1 ;;
+      exists)
+        case "$3" in
+          *-quarantine) exit 1 ;;
+          *) exit 0 ;;
+        esac
+        ;;
+    esac
+    ;;
+esac
+exit 0
+"#,
+            log_path.display()
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app(podman);
+        for index in 0..3u8 {
+            let cache = format!("factory-env-cache-{:032x}", index);
+            assert!(purge_environment_cache(&app, &cache).await.is_err());
+        }
+        let entries = app.environment_cache_quarantine.entries();
+        assert_eq!(entries.len(), 3, "{entries:?}");
+        let ledger = std::fs::read_to_string(&app.environment_cache_quarantine.path).unwrap();
+        let parsed: Vec<String> = serde_json::from_str(&ledger).unwrap();
+        assert_eq!(parsed, entries);
+        let log = std::fs::read_to_string(log_path).unwrap();
+        assert!(!log.contains("volume create"), "{log}");
+    }
+
+    #[test]
+    fn quarantine_ledger_is_loaded_and_unknown_entries_are_ignored() {
+        let directory = std::env::temp_dir().join(format!(
+            "factory-env-quarantine-load-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("ledger.json");
+        let cache = format!("factory-env-cache-{}", "c".repeat(32));
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&vec![cache.clone(), "unrelated".to_owned()]).unwrap(),
+        )
+        .unwrap();
+        let ledger = EnvironmentCacheQuarantine::load(path);
+        assert!(ledger.is_blocked(&cache));
+        assert!(!ledger.is_blocked("unrelated"));
+        assert!(!ledger.reuse_denied());
     }
 
     #[tokio::test]

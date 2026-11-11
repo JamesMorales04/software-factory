@@ -28,6 +28,43 @@ ALLOWED_MOUNT_PREFIXES = (
 )
 AUTHORIZED_PROJECT_OR_CACHE_MOUNTS = ("/inputs/workspace", "/cache", "/nix")
 PODMAN_VOLUME_ROOT = "/var/lib/containers/storage/volumes/"
+CONTAINER_RUNTIME_FILE_PREFIX = "/var/lib/containers/storage/overlay-containers/"
+CONTAINER_RUNTIME_FILES = ("/etc/hosts", "/etc/hostname", "/etc/resolv.conf")
+SAFE_PSEUDO_FSTYPES = frozenset(
+    {
+        "cgroup",
+        "cgroup2",
+        "devpts",
+        "devtmpfs",
+        "mqueue",
+        "overlay",
+        "proc",
+        "ramfs",
+        "rootfs",
+        "shm",
+        "squashfs",
+        "sysfs",
+        "tmpfs",
+    }
+)
+SAFE_PSEUDO_SOURCES = frozenset(
+    {
+        "cgroup",
+        "cgroup2",
+        "devpts",
+        "devtmpfs",
+        "mqueue",
+        "none",
+        "overlay",
+        "proc",
+        "ramfs",
+        "rootfs",
+        "shm",
+        "sysfs",
+        "tmpfs",
+        "udev",
+    }
+)
 
 
 def _mountinfo() -> list[dict[str, str]]:
@@ -69,25 +106,36 @@ def _authorized_volume_source(source: str) -> bool:
     return bool(name) and name not in (".", "..") and "\\" not in name and "\0" not in name
 
 
+def _safe_system_mount(target: str, source: str, fstype: str) -> bool:
+    if target in CONTAINER_RUNTIME_FILES:
+        return source.startswith(CONTAINER_RUNTIME_FILE_PREFIX)
+    if target == "/":
+        return fstype in {"overlay", "rootfs", "squashfs"} and (
+            source in {"overlay", "rootfs", "/dev/root"} or source.startswith("/dev/")
+        )
+    return fstype in SAFE_PSEUDO_FSTYPES and source in SAFE_PSEUDO_SOURCES
+
+
 def _mounts_authorized(mounts: list[dict[str, str]]) -> bool:
     for mount in mounts:
         source = mount["source"]
         target = mount["mount_point"]
-        # Validate the source before accepting an allowed target. A forbidden
-        # host path mounted at /cache, /nix or /inputs/workspace must never
-        # produce noHostMount=true.
+        fstype = mount.get("fstype", "")
+        # Validate the source before accepting any target, including "/" and
+        # system mounts. A forbidden host path at /cache, /nix,
+        # /inputs/workspace, / or /proc must never set noHostMount=true.
         if target in AUTHORIZED_PROJECT_OR_CACHE_MOUNTS or target.startswith(
             "/inputs/workspace/"
         ):
             if not _authorized_volume_source(source):
                 return False
             continue
-        if target == "/":
-            continue
-        if any(
+        if target == "/" or any(
             target == prefix or target.startswith(prefix + "/")
             for prefix in ALLOWED_MOUNT_PREFIXES
         ):
+            if not _safe_system_mount(target, source, fstype):
+                return False
             continue
         return False
     return True

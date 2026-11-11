@@ -138,8 +138,12 @@ reports success. The per-spec cache is the only persistent broker resource and
 is owner-labelled, never a host path. If the builder reports
 `ENVIRONMENT_RESOURCE_LIMIT`, the broker removes that per-spec cache volume
 after container cleanup so an over-budget cache cannot be reused. If removal
-cannot be confirmed, the broker creates a durable quarantine volume and every
-later build/check for that cache fails closed until an operator clears it. Disk
+cannot be confirmed, the broker records the cache in a durable quarantine
+ledger and an immediate in-memory block; every later build/check for that cache
+fails closed until it is cleared. If the ledger cannot be read or written, all
+environment cache reuse is denied until the broker restarts. Blocked entries
+are bounded by the actual cache set and stale entries are cleared only when the
+cache volume is absent. Disk
 enforcement is a bounded runtime sample plus `disk.exact=false`; it is not an
 exact filesystem quota, and an unreadable or incomplete scan fails closed
 rather than claiming the bound is satisfied.
@@ -202,7 +206,7 @@ fetch/resolve.
   exit-code mapping, timeout refusal and exact request binding.
 - `cargo test -p factory-native --bin factory-verifier` — 11 passed, including
   the broker builder-check path, refusal, cleanup and missing binding.
-- `cargo test -p factory-native --bin factory-runtime-broker` — 63 passed,
+- `cargo test -p factory-native --bin factory-runtime-broker` — 66 passed,
   including environment-check owner separation, workspace ownership, exact
   builder identity, plan/spec/receipt mismatch, argv/timeout bounds,
   success/failure exit mapping, fabricated-PASS refusal, resource-limit cache
@@ -211,11 +215,11 @@ fetch/resolve.
 - `cargo test -p factory-native --bin factory-supervisor` — 11 passed, including
   grant/image/workspace refusal and successful typed proxy.
 - `python3 -W error::ResourceWarning -m unittest discover -s deploy/environment-builder/tests`
-  — 46 passed, including failed-check exit-code/stdout/stderr preservation,
+  — 49 passed, including failed-check exit-code/stdout/stderr preservation,
   proof that a check uses the candidate workspace rather than the build cache,
   over-budget build/check termination, unreadable-scan fail-closed behavior,
-  mount-source attestation, bounded noisy-output capture, pipe cleanup and disk
-  failure evidence.
+  mount-source attestation for root/system targets, bounded noisy-output
+  capture, pipe cleanup and disk failure evidence.
 - `podman compose -f compose.yaml config --quiet` — exit 0.
 - `factory-architecture-check --root .` — PASS.
 - Isolated Compose observation (`podman compose -p wp1c-e2e2`, source commit
