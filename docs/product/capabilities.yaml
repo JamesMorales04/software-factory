@@ -873,10 +873,14 @@ capabilities:
     - office/src/components/office/ParticipantInspector.tsx
     - office/src/views/Issues.tsx
     - office/src/views/issues.css
+    - office/src/components/office/LinkedIssues.tsx
     - native/src/db/participants.rs
     - native/src/db/github.rs
+    - native/src/db/issue_links.rs
     - native/src/github.rs
     - native/src/github_sync.rs
+    - native/src/issues/mod.rs
+    - native/src/issues/delivery.rs
     test:
     - office/src/views/Campaigns.tsx
     - office/src/views/AgentOffice.test.tsx
@@ -884,10 +888,12 @@ capabilities:
     - office/src/components/office/officeAvatarAppearance.test.ts
     - office/src/components/office/officeSceneLayout.test.ts
     - office/src/views/Issues.board.test.tsx
+    - office/src/components/office/LinkedIssues.test.tsx
     - native/src/db/participants.rs
     - native/src/github.rs
     - native/src/github_sync.rs
     - native/src/bin/core.rs
+    - native/src/issues/delivery_tests.rs
   acceptance:
     deterministic: The Office typechecks, lints, passes component tests and builds; participant and tool-event routes require operator authentication, validate filters, bound pagination and redact provider detail.
     real: An authenticated Chromium journey opens Agent Office, inspects recorded participants and follows links to Campaign, WorkGraph, execution and quality evidence without invented activity.
@@ -904,11 +910,11 @@ capabilities:
   limitations:
   - Office recovery and cleanup projections remain incomplete.
   - Campaign and Lead labels can remain AUTHORIZED/RUNNING after an ACCEPTED Run; the gate and Run states are authoritative.
-  - The 2026-11-10 vlog run exercised the read-only Issues board in real Chromium at 1440/768/390, including five target issues under Needs Attention with automatic intake off and the `No issue synchronization recorded` state. Issue-to-Campaign execution, completed sync and issue write/comment paths remain NOT_TESTED.
+  - The 2026-11-10 vlog run exercised the read-only Issues board in real Chromium at 1440/768/390, including five target issues under Needs Attention with automatic intake off and the `No issue synchronization recorded` state. Issue-to-Campaign execution and completed sync remain NOT_TESTED. WP2 now implements frozen issue links, Core-derived delivery state, idempotent issue comment/close receipts and an operator retry; no real authorized GitHub write journey, WP3 auto-merge integration or independent acceptance has been run.
   - Agent Office is read-only; it does not expose stop, model switching, budget changes or tool invocation.
   - Provider-session liveness is represented by recorded lease state only; external provider state is not independently verified.
   - Agent Office V3 covers deterministic layouts and unique avatar appearances through the current 200-participant projection. Renderer fixture captures are not live Core or inspector acceptance; the original vector scene remains less painterly and spatially rich than the approved reference. Product Owner visual approval and authenticated Agent Office browser acceptance remain pending.
-  - GitHub issue synchronization is read-only and bounded; governed intake/board ordering, issue writing, comments, Action/Campaign relationships and a real authorized GitHub call remain not tested. The Issues view is wired at /issues; real browser acceptance is pending.
+  - GitHub issue synchronization is read-only and bounded; issue comment/close effects are now Core-only and ledgered, but a real authorized GitHub write, board ordering, WP3 auto-merge integration and browser acceptance remain not tested. The Issues view is wired at /issues; real browser acceptance is pending.
   blockers: []
 - id: CAP-012
   name: Durable events and telemetry

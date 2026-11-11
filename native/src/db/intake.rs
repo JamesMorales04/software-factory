@@ -164,6 +164,7 @@ impl Database {
     /// Create one intake request, its draft Action, Lead request, execution
     /// context and idempotency record in a single transaction. No Campaign is
     /// created and no autonomy is enabled.
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_intake_request(
         &self,
         project_id: &str,
@@ -172,6 +173,7 @@ impl Database {
         mode: IntakeMode,
         idempotency_key: &str,
         principal_id: &str,
+        selected_issues: &[crate::issues::NewIssueSelection],
     ) -> Result<(IntakeRequestRecord, bool), Error> {
         validate_intake_submission(
             project_id,
@@ -197,6 +199,20 @@ impl Database {
         )
         .await?
         {
+            if !Database::intake_request_issue_links_match_in_tx(
+                &mut transaction,
+                &id,
+                selected_issues,
+            )
+            .await?
+            {
+                return Err(Error::IntakeConflict {
+                    code: "ISSUE_SELECTION_CHANGED",
+                    message:
+                        "the idempotency key was already used with a different issue selection"
+                            .into(),
+                });
+            }
             let existing = load_intake_request(&mut transaction, &id).await?;
             transaction.commit().await?;
             return Ok((existing, false));
@@ -238,6 +254,12 @@ impl Database {
                 });
             }
         }
+        let issue_links = Database::resolve_selected_issue_links_in_tx(
+            &mut transaction,
+            project_id,
+            selected_issues,
+        )
+        .await?;
         let record = create_intake_request_in_tx(
             &mut transaction,
             project_id,
@@ -248,6 +270,7 @@ impl Database {
             &config,
             &grant,
             prepared,
+            &issue_links,
         )
         .await?;
         transaction.commit().await?;
@@ -870,6 +893,7 @@ pub(super) async fn create_intake_request_in_tx(
     config: &crate::lead::ProjectConfig,
     grant: &StandingDelegationV2,
     prepared: PreparedIntakeRequest,
+    issue_links: &[crate::issues::NewIssueLinkSpec],
 ) -> Result<IntakeRequestRecord, Error> {
     let draft = NewDraftLeadRequest {
         project_id,
@@ -927,6 +951,7 @@ pub(super) async fn create_intake_request_in_tx(
     .bind(&record.created_at)
     .execute(&mut *transaction)
     .await?;
+    Database::insert_issue_links_in_tx(transaction, project_id, &record.id, issue_links).await?;
     sqlx::query::query(
         "INSERT INTO agentic_operations
          (id,request_id,project_id,director_id,operation_manager_id,priority,status,
@@ -2075,6 +2100,7 @@ mod tests {
             IntakeMode::ReviewPlan,
             key,
             "operator-token",
+            &[],
         )
         .await
         .unwrap()
@@ -2226,6 +2252,7 @@ mod tests {
                 IntakeMode::ReviewPlan,
                 "request-no-policy",
                 "operator-token",
+                &[],
             )
             .await
             .unwrap_err();
@@ -2254,6 +2281,7 @@ mod tests {
                 IntakeMode::ReviewPlan,
                 "request-key",
                 "operator-token",
+                &[],
             )
             .await
             .unwrap();
@@ -2292,6 +2320,7 @@ mod tests {
                 IntakeMode::ReviewPlan,
                 "request-key",
                 "operator-token",
+                &[],
             )
             .await
             .unwrap();
@@ -2344,6 +2373,7 @@ mod tests {
                 IntakeMode::Autonomous,
                 "autopilot-request",
                 "operator-token",
+                &[],
             )
             .await
             .unwrap();
@@ -2861,6 +2891,7 @@ mod tests {
                 IntakeMode::Autonomous,
                 "autonomous-unfinished",
                 "operator-token",
+                &[],
             )
             .await
             .unwrap();
@@ -2873,6 +2904,7 @@ mod tests {
                 IntakeMode::ReviewPlan,
                 "review-unfinished",
                 "operator-token",
+                &[],
             )
             .await
             .unwrap();
@@ -3005,6 +3037,7 @@ mod tests {
                 IntakeMode::ReviewPlan,
                 "after-revoke",
                 "operator-token",
+                &[],
             )
             .await
             .unwrap_err();
@@ -3060,6 +3093,7 @@ mod tests {
                 IntakeMode::ReviewPlan,
                 "stale-profile",
                 "operator-token",
+                &[],
             )
             .await
             .unwrap_err();
@@ -3482,6 +3516,231 @@ mod tests {
         assert!(matches!(error, Error::Forbidden(_)));
         let reloaded = db.lead_request(&request.lead_request_id).await.unwrap();
         assert_eq!(reloaded.state, LeadRequestState::Planned);
+        let _ = std::fs::remove_file(path);
+    }
+
+    async fn seed_issue(
+        db: &Database,
+        number: i64,
+        github_id: i64,
+        state: &str,
+        is_pull_request: bool,
+    ) {
+        let now = Utc::now().to_rfc3339();
+        sqlx::query::query(
+            "INSERT INTO github_issues
+             (project_id,repo_full_name,number,github_id,title,body,body_truncated,state,
+              state_reason,labels_json,author,author_id,author_association,html_url,comments,
+              created_at,updated_at,closed_at,synced_at,sync_mark,content_hash,
+              repository_github_id,is_pull_request)
+             VALUES ('project','acme/widgets',?1,?2,?3,'body',0,?4,NULL,'[]','octo',1,
+                     'MEMBER','https://github.com/acme/widgets/issues/'||?1,0,?5,?5,NULL,?5,'sync',
+                     'hash',42,?6)",
+        )
+        .bind(number)
+        .bind(github_id)
+        .bind(format!("Issue {number}"))
+        .bind(state)
+        .bind(&now)
+        .bind(i64::from(is_pull_request))
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn issue_selection_is_frozen_and_rejects_unsupported_foreign_duplicate_and_closed() {
+        let (path, db, profile, config) = fixture().await;
+        let _policy = create_policy(&db, &profile, &config).await;
+        db.bind_project_github(
+            "project",
+            NewProjectGitHubBinding {
+                owner: "acme",
+                repo: "widgets",
+                default_branch: "main",
+                repository_github_id: Some(42),
+            },
+            "tester",
+        )
+        .await
+        .unwrap();
+        seed_issue(&db, 7, 70, "open", false).await;
+        seed_issue(&db, 8, 80, "closed", false).await;
+        seed_issue(&db, 9, 90, "open", true).await;
+
+        let issue = |number, role| crate::issues::NewIssueSelection {
+            owner: "acme".into(),
+            repo: "widgets".into(),
+            number,
+            role,
+        };
+        let primary = issue(7, crate::issues::IssueRole::Primary);
+
+        let (request, created) = db
+            .create_intake_request(
+                "project",
+                "Deliver selected issue 7",
+                Some(&profile.id),
+                IntakeMode::ReviewPlan,
+                "issue-selection-request",
+                "operator-token",
+                std::slice::from_ref(&primary),
+            )
+            .await
+            .unwrap();
+        assert!(created);
+        let links = db.issue_links_for_request(&request.id).await.unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].issue_number, 7);
+        assert_eq!(links[0].repository_full_name, "acme/widgets");
+        assert_eq!(links[0].role, crate::issues::IssueRole::Primary);
+        assert_eq!(links[0].state, crate::issues::IssueLinkState::Ready);
+        assert_eq!(links[0].github_issue_id, Some(70));
+
+        let replay = db
+            .create_intake_request(
+                "project",
+                "Deliver selected issue 7",
+                Some(&profile.id),
+                IntakeMode::ReviewPlan,
+                "issue-selection-request",
+                "operator-token",
+                std::slice::from_ref(&primary),
+            )
+            .await
+            .unwrap();
+        assert!(!replay.1);
+        assert_eq!(replay.0.id, request.id);
+
+        let changed = db
+            .create_intake_request(
+                "project",
+                "Deliver selected issue 7",
+                Some(&profile.id),
+                IntakeMode::ReviewPlan,
+                "issue-selection-request",
+                "operator-token",
+                &[],
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            changed,
+            Error::IntakeConflict {
+                code: "ISSUE_SELECTION_CHANGED",
+                ..
+            }
+        ));
+
+        for (selection, code) in [
+            (vec![primary.clone(), primary.clone()], "ISSUE_DUPLICATE"),
+            (
+                vec![crate::issues::NewIssueSelection {
+                    owner: "other".into(),
+                    repo: "widgets".into(),
+                    number: 7,
+                    role: crate::issues::IssueRole::Primary,
+                }],
+                "ISSUE_REPOSITORY_FOREIGN",
+            ),
+            (
+                vec![issue(8, crate::issues::IssueRole::Primary)],
+                "ISSUE_CLOSED",
+            ),
+            (
+                vec![issue(99, crate::issues::IssueRole::Primary)],
+                "ISSUE_UNSUPPORTED",
+            ),
+            (
+                vec![issue(9, crate::issues::IssueRole::Primary)],
+                "ISSUE_UNSUPPORTED",
+            ),
+        ] {
+            let error = db
+                .create_intake_request(
+                    "project",
+                    "Reject an invalid issue selection",
+                    Some(&profile.id),
+                    IntakeMode::ReviewPlan,
+                    &format!("issue-selection-{code}"),
+                    "operator-token",
+                    &selection,
+                )
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(error, Error::IntakeConflict { code: actual, .. } if actual == code),
+                "expected {code}, got {error:?}"
+            );
+        }
+
+        // The link follows the request into its Campaign without becoming DONE.
+        sqlx::query::query(
+            "INSERT INTO campaigns VALUES ('campaign-links',?1,'BLOCKED_AUTHORIZATION',?2)",
+        )
+        .bind(&request.action_id)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query("UPDATE intake_requests SET campaign_id='campaign-links' WHERE id=?1")
+            .bind(&request.id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        sqlx::query::query(
+            "UPDATE lead_requests SET campaign_id='campaign-links',state='RUNNING' WHERE id=?1",
+        )
+        .bind(&request.lead_request_id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let campaign_links = db.issue_links_for_campaign("campaign-links").await.unwrap();
+        assert_eq!(campaign_links.len(), 1);
+        assert_eq!(
+            campaign_links[0].state,
+            crate::issues::IssueLinkState::Queued
+        );
+        sqlx::query::query("UPDATE campaigns SET status='AUTHORIZED' WHERE id='campaign-links'")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let running = db.issue_links_for_campaign("campaign-links").await.unwrap();
+        assert_eq!(running[0].state, crate::issues::IssueLinkState::InProgress);
+
+        let marker = "<!-- factory:issue-link:test:OPENED:1 -->";
+        let body = format!("{marker}\n\ncomment");
+        let event = NewIssueDeliveryEvent {
+            issue_link_id: &links[0].id,
+            campaign_id: Some("campaign-links"),
+            candidate_id: Some("candidate-links"),
+            action: crate::issues::IssueDeliveryAction::Comment,
+            event_key: "comment:opened:candidate:1",
+            marker: Some(marker),
+            body: Some(&body),
+            label_name: None,
+        };
+        let (first, created) = db.record_issue_delivery_event(event.clone()).await.unwrap();
+        assert!(created);
+        let (replayed, created) = db.record_issue_delivery_event(event).await.unwrap();
+        assert!(!created);
+        assert_eq!(replayed.id, first.id);
+        let conflicting = db
+            .record_issue_delivery_event(NewIssueDeliveryEvent {
+                issue_link_id: &links[0].id,
+                campaign_id: Some("campaign-links"),
+                candidate_id: Some("candidate-links"),
+                action: crate::issues::IssueDeliveryAction::Comment,
+                event_key: "comment:opened:candidate:1",
+                marker: Some(marker),
+                body: Some(&format!("{marker}\n\ndifferent body")),
+                label_name: None,
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(conflicting, Error::Conflict(_)));
+
+        db.close().await;
         let _ = std::fs::remove_file(path);
     }
 

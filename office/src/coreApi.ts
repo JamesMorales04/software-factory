@@ -816,6 +816,116 @@ export interface CandidatePullRequestOpenResult {
   source: string;
 }
 
+export type IssueRole = "PRIMARY" | "RELATED";
+export type IssueLinkState =
+  | "READY"
+  | "QUEUED"
+  | "IN_PROGRESS"
+  | "NEEDS_ATTENTION"
+  | "IN_REVIEW"
+  | "DONE";
+export type IssueDeliveryState =
+  | "NONE"
+  | "PENDING"
+  | "COMMENTED"
+  | "CLOSED"
+  | "PARTIAL"
+  | "FAILED"
+  | "BLOCKED";
+export type IssueDeliveryAction = "COMMENT" | "LABEL" | "CLOSE" | "FAILURE";
+export type IssueLinkResolution = "UNRESOLVED" | "RESOLVED" | "PARTIAL";
+export type IssueDeliveryEventStatus =
+  | "PENDING"
+  | "APPLIED"
+  | "FAILED"
+  | "BLOCKED";
+
+export interface IssueDeliveryFailure {
+  kind: string;
+  detail: string;
+  retryable: boolean;
+}
+
+export interface IssueDeliveryEvent {
+  id: string;
+  issueLinkId: string;
+  campaignId: string | null;
+  candidateId: string | null;
+  action: IssueDeliveryAction;
+  eventKey: string;
+  marker: string | null;
+  body: string | null;
+  labelName: string | null;
+  status: IssueDeliveryEventStatus;
+  attempts: number;
+  externalId: string | null;
+  errorKind: string | null;
+  errorDetail: string | null;
+  lastAttemptAt: string | null;
+  appliedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface IssueLink {
+  id: string;
+  projectId: string;
+  requestId: string;
+  campaignId: string | null;
+  candidateId: string | null;
+  repositoryOwner: string;
+  repositoryName: string;
+  repositoryFullName: string;
+  issueNumber: number;
+  githubIssueId: number | null;
+  issueTitle: string;
+  role: IssueRole;
+  state: IssueLinkState;
+  deliveryState: IssueDeliveryState;
+  resolution: IssueLinkResolution;
+  workUnitId: string | null;
+  pullRequestNumber: number | null;
+  pullRequestUrl: string | null;
+  mergeSha: string | null;
+  mergedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  latestError: IssueDeliveryFailure | null;
+}
+
+export interface IssueLinkProjection extends IssueLink {
+  events: IssueDeliveryEvent[];
+}
+
+export interface IssueLinkSummary {
+  id: string;
+  requestId: string;
+  campaignId: string | null;
+  candidateId: string | null;
+  role: IssueRole;
+  state: IssueLinkState;
+  deliveryState: IssueDeliveryState;
+  resolution: IssueLinkResolution;
+  pullRequestNumber: number | null;
+  pullRequestUrl: string | null;
+  mergeSha: string | null;
+  mergedAt: string | null;
+  latestErrorKind: string | null;
+  latestErrorDetail: string | null;
+  latestErrorEventId: string | null;
+}
+
+export interface IssueDeliveryOutcome {
+  campaignId: string;
+  candidateId: string;
+  attempted: number;
+  applied: number;
+  partial: number;
+  failed: number;
+  failures: IssueDeliveryFailure[];
+  links: IssueLinkProjection[];
+}
+
 export interface CampaignDetail {
   campaign: Campaign;
   authorization: CampaignAuthorization | null;
@@ -824,6 +934,7 @@ export interface CampaignDetail {
   attempts: Attempt[];
   candidates: Candidate[];
   events: FactoryEvent[];
+  linked_issues?: IssueLinkProjection[] | null;
 }
 
 export interface ExecutionPolicyV2 {
@@ -1481,6 +1592,7 @@ export interface IntakeRequestProjection extends IntakeRequestSummary {
   planning?: PlanningReadinessView;
   campaign: CampaignDetail | null;
   messages: IntakeMessage[];
+  linked_issues?: IssueLinkProjection[] | null;
 }
 
 export interface NewIntakeRequest {
@@ -1489,6 +1601,12 @@ export interface NewIntakeRequest {
   execution_profile_id?: string;
   mode: IntakeMode;
   idempotency_key: string;
+  issue_keys?: {
+    owner: string;
+    repo: string;
+    number: number;
+    role?: "PRIMARY" | "RELATED";
+  }[];
 }
 
 export interface ApproveIntakeRequest {
@@ -3169,6 +3287,7 @@ export interface GitHubIssueSummary {
   closed_at: string | null;
   synced_at: string;
   content_hash: string;
+  issueLink?: IssueLinkSummary | null;
 }
 
 export interface GitHubIssueDetail extends GitHubIssueSummary {
@@ -3963,6 +4082,14 @@ export const coreApi = {
   getCandidateDiff: (campaignId: string, candidateId: string) =>
     request<CandidateDiffSummary>(
       `/campaigns/${encodeURIComponent(campaignId)}/candidates/${encodeURIComponent(candidateId)}/diff`,
+    ),
+  retryIssueDelivery: (linkId: string, eventId: string) =>
+    request<{
+      event: IssueDeliveryEvent | null;
+      delivery: IssueDeliveryOutcome;
+    }>(
+      `/issue-links/${encodeURIComponent(linkId)}/delivery/${encodeURIComponent(eventId)}/retry`,
+      { method: "POST" },
     ),
   getProjectGitHub: (projectId: string) =>
     request<CandidatePullRequestBindingResult>(

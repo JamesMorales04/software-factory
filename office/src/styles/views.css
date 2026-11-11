@@ -776,3 +776,74 @@
     grid-column: 1;
   }
 }
+
+.linked-issue-list {
+  list-style: none;
+  margin: var(--space-4) 0 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-4);
+}
+
+.linked-issue {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+  background: var(--surface-raised);
+}
+
+.linked-issue-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: var(--space-3);
+  align-items: flex-start;
+}
+
+.linked-issue-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  margin: var(--space-3) 0 0;
+}
+
+.linked-issue-facts div {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.linked-issue-facts dt {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+.linked-issue-facts dd {
+  margin: 0;
+}
+
+.linked-issue-receipts {
+  margin-top: var(--space-3);
+}
+
+.linked-issue-receipts ul {
+  list-style: none;
+  padding: 0;
+  margin: var(--space-2) 0 0;
+  display: grid;
+  gap: var(--space-2);
+}
+
+.linked-issue-receipts li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-2);
+}
+
+.linked-issue-error {
+  color: var(--danger);
+  flex-basis: 100%;
+  font-size: var(--text-sm);
+}

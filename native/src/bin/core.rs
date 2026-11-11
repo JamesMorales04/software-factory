@@ -400,6 +400,45 @@ struct NewIntakeRequest {
     /// reserved before the first billable Lead assessment.
     #[serde(default)]
     authorized_micros: Option<u64>,
+    /// Optional exact GitHub issue selection. Links are frozen with the
+    /// request; omitted or empty means the request has no issue mapping.
+    #[serde(default)]
+    issue_keys: Vec<IssueKeyRequest>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IssueKeyRequest {
+    owner: String,
+    repo: String,
+    number: u64,
+    #[serde(default)]
+    role: Option<String>,
+}
+
+impl NewIntakeRequest {
+    fn issue_selection(&self) -> Result<Vec<factory_native::issues::NewIssueSelection>, Error> {
+        self.issue_keys
+            .iter()
+            .map(|key| {
+                let role = match key.role.as_deref().unwrap_or("PRIMARY") {
+                    "PRIMARY" => factory_native::issues::IssueRole::Primary,
+                    "RELATED" => factory_native::issues::IssueRole::Related,
+                    _ => {
+                        return Err(Error::Validation(
+                            "issue role must be PRIMARY or RELATED".into(),
+                        ));
+                    }
+                };
+                Ok(factory_native::issues::NewIssueSelection {
+                    owner: key.owner.trim().to_owned(),
+                    repo: key.repo.trim().to_owned(),
+                    number: key.number,
+                    role,
+                })
+            })
+            .collect()
+    }
 }
 
 #[cfg(feature = "test-support")]
@@ -3592,6 +3631,10 @@ fn github_integration_routes() -> Router<Arc<App>> {
         .route("/projects/{id}/issues", get(project_issues))
         .route("/projects/{id}/issues/{number}", get(project_issue))
         .route(
+            "/issue-links/{link_id}/delivery/{event_id}/retry",
+            post(retry_issue_delivery),
+        )
+        .route(
             "/campaigns/{id}/candidates/{candidate_id}/pull-request",
             get(candidate_pull_request).post(open_candidate_pull_request),
         )
@@ -3712,6 +3755,133 @@ async fn github_connection_state(app: &App) -> Result<serde_json::Value, Respons
         "connection": github_connection_view(record.as_ref()),
         "audit": audit,
     }))
+}
+
+async fn issue_pr_opened_receipt(
+    app: &App,
+    credential: &factory_native::github_sync::GitHubCredential,
+    campaign_id: &str,
+    candidate_id: &str,
+    pull_request: &factory_native::github::GitHubPullRequest,
+) -> serde_json::Value {
+    match factory_native::issues::IssueDeliveryService::new(&app.db, &app.github, credential).await
+    {
+        Ok(service) => match service
+            .on_pr_opened(campaign_id, candidate_id, pull_request)
+            .await
+        {
+            Ok(outcome) => json!({"status": "RECORDED", "outcome": outcome}),
+            Err(error) => issue_delivery_failure_value(&error),
+        },
+        Err(error) => issue_delivery_failure_value(&error),
+    }
+}
+
+async fn issue_merge_receipt(
+    app: &App,
+    credential: &factory_native::github_sync::GitHubCredential,
+    campaign_id: &str,
+    candidate_id: &str,
+    merge_sha: &str,
+) -> serde_json::Value {
+    match factory_native::issues::IssueDeliveryService::new(&app.db, &app.github, credential).await
+    {
+        Ok(service) => match service
+            .on_merge_succeeded(campaign_id, candidate_id, merge_sha)
+            .await
+        {
+            Ok(outcome) => json!({"status": "RECORDED", "outcome": outcome}),
+            Err(error) => issue_delivery_failure_value(&error),
+        },
+        Err(error) => issue_delivery_failure_value(&error),
+    }
+}
+
+fn issue_delivery_failure_value(
+    error: &factory_native::issues::IssueDeliveryError,
+) -> serde_json::Value {
+    tracing::warn!(
+        kind = error.kind(),
+        retryable = error.retryable(),
+        "issue delivery did not complete"
+    );
+    json!({
+        "status": if error.retryable() { "FAILED" } else { "BLOCKED" },
+        "kind": error.kind(),
+        "error": error.detail(),
+        "retryable": error.retryable(),
+    })
+}
+
+fn issue_delivery_error_response(error: factory_native::issues::IssueDeliveryError) -> Response {
+    use factory_native::issues::IssueDeliveryError;
+    match error {
+        IssueDeliveryError::Database(error) => api_error(error),
+        IssueDeliveryError::NotFound => StatusCode::NOT_FOUND.into_response(),
+        IssueDeliveryError::Conflict(message) => (
+            StatusCode::CONFLICT,
+            Json(json!({"error": message, "kind": "DELIVERY_CONFLICT"})),
+        )
+            .into_response(),
+        error => {
+            let status = match error.kind() {
+                "GITHUB_UNAUTHORIZED" => StatusCode::UNAUTHORIZED,
+                "GITHUB_FORBIDDEN" | "GITHUB_WRITE_PERMISSION_REQUIRED" => StatusCode::FORBIDDEN,
+                "GITHUB_NOT_FOUND" => StatusCode::NOT_FOUND,
+                "GITHUB_RATE_LIMITED" => StatusCode::TOO_MANY_REQUESTS,
+                "GITHUB_REJECTED" | "GITHUB_BLOCKED" => StatusCode::CONFLICT,
+                _ => StatusCode::BAD_GATEWAY,
+            };
+            (
+                status,
+                Json(json!({
+                    "error": error.detail(),
+                    "kind": error.kind(),
+                    "retryable": error.retryable(),
+                })),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn retry_issue_delivery(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath((link_id, event_id)): AxumPath<(String, String)>,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let event = match app.db.issue_delivery_event(&event_id).await {
+        Ok(event) => event,
+        Err(error) => return api_error(error),
+    };
+    if event.issue_link_id != link_id {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let credential = match load_github_credential(&app).await {
+        Ok(credential) => credential,
+        Err(response) => return response,
+    };
+    let (principal_id, _) =
+        authenticated_operator(session.as_ref().map(|Extension(device)| device));
+    let service =
+        match factory_native::issues::IssueDeliveryService::new(&app.db, &app.github, &credential)
+            .await
+        {
+            Ok(service) => service,
+            Err(error) => return issue_delivery_error_response(error),
+        };
+    match service.retry_event(&event_id, &principal_id).await {
+        Ok(outcome) => Json(json!({
+            "event": app.db.issue_delivery_event(&event_id).await.ok(),
+            "delivery": outcome,
+        }))
+        .into_response(),
+        Err(error) => issue_delivery_error_response(error),
+    }
 }
 
 fn github_upstream_error(error: factory_native::github::GitHubError) -> Response {
@@ -5110,6 +5280,14 @@ async fn open_candidate_pull_request(
         Ok(gate) => gate,
         Err(response) => return response,
     };
+    let issue_delivery = issue_pr_opened_receipt(
+        &app,
+        &credential,
+        &context.campaign.id,
+        &context.candidate.id,
+        &pull_request,
+    )
+    .await;
     Json(json!({
         "campaign_id": context.campaign.id,
         "candidate_id": context.candidate.id,
@@ -5121,6 +5299,7 @@ async fn open_candidate_pull_request(
         "head_sha": branch.commit_sha,
         "base": base,
         "opened_at": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "issue_delivery": issue_delivery,
         "source": "pull request opened through the encrypted Core GitHub connection after exact branch identity verification",
     }))
     .into_response()
@@ -5389,6 +5568,14 @@ async fn merge_candidate_pull_request(
         }
         Err(error) => return github_upstream_error(error),
     };
+    let issue_delivery = issue_merge_receipt(
+        &app,
+        &credential,
+        &context.campaign.id,
+        &context.candidate.id,
+        &outcome.merge_commit_sha,
+    )
+    .await;
     Json(json!({
         "campaign_id": context.campaign.id,
         "candidate_id": context.candidate.id,
@@ -5399,6 +5586,7 @@ async fn merge_candidate_pull_request(
         "merge_commit_sha": outcome.merge_commit_sha,
         "message": outcome.message,
         "merged_at": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "issue_delivery": issue_delivery,
         "source": "merge performed through the encrypted Core GitHub connection only after a fresh pull request and check read with the exact expected head pinned",
     }))
     .into_response()
@@ -7629,6 +7817,7 @@ async fn campaign_detail_projection(app: &App, id: &str) -> Result<serde_json::V
         .into_iter()
         .filter(|event| related_subjects.contains(&event.subject_id))
         .collect::<Vec<_>>();
+    let linked_issues = app.db.issue_link_projections_for_campaign(id).await?;
     let inference = match app.db.inference_envelope_for_campaign(id).await? {
         Some(envelope) => {
             let status = app
@@ -7651,7 +7840,8 @@ async fn campaign_detail_projection(app: &App, id: &str) -> Result<serde_json::V
         "runs": runs,
         "attempts": attempts,
         "candidates": candidates,
-        "events": events
+        "events": events,
+        "linked_issues": linked_issues
     }))
 }
 
@@ -8085,6 +8275,7 @@ async fn repair_campaign(
             factory_native::intake::IntakeMode::Autonomous,
             &request_key,
             &principal_id,
+            &[],
         )
         .await
     {
@@ -9782,6 +9973,10 @@ async fn intake_request_value(
         "updatedAt": record.updated_at,
     });
     if detail {
+        let linked_issues = app
+            .db
+            .issue_link_projections_for_request(&record.id)
+            .await?;
         let assessment = match app.db.lead_assessment(&lead.id).await {
             Ok(record) => Some(
                 serde_json::from_str::<serde_json::Value>(&record.assessment_json)
@@ -9808,6 +10003,8 @@ async fn intake_request_value(
             None => None,
         };
         let messages = app.db.intake_messages(&record.id).await?;
+        value["linked_issues"] = serde_json::to_value(linked_issues)
+            .map_err(|_| Error::Invalid("linked issue encoding"))?;
         let planning_artifacts = app.db.planning_artifacts(&record.id).await?;
         let plan_review = match app.db.latest_plan_review(&record.id).await {
             Ok(review) => Some(review),
@@ -15930,6 +16127,10 @@ async fn create_intake_request(
     }
     let (principal_id, _) =
         authenticated_operator(session.as_ref().map(|Extension(device)| device));
+    let selected_issues = match input.issue_selection() {
+        Ok(selection) => selection,
+        Err(error) => return api_error(error),
+    };
     match app
         .db
         .create_intake_request(
@@ -15939,6 +16140,7 @@ async fn create_intake_request(
             input.mode,
             &input.idempotency_key,
             &principal_id,
+            &selected_issues,
         )
         .await
     {
@@ -25160,6 +25362,7 @@ mod tests {
                     factory_native::intake::IntakeMode::Autonomous,
                     "request-api-autopilot-readiness",
                     "operator-token",
+                    &[],
                 )
                 .await
                 .unwrap();
@@ -25948,6 +26151,7 @@ mod tests {
                     factory_native::intake::IntakeMode::Autonomous,
                     "request-api-autopilot-side-effects",
                     "operator-token",
+                    &[],
                 )
                 .await
                 .unwrap();
@@ -26667,6 +26871,197 @@ mod tests {
                     .len(),
                 1
             );
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
+        async fn issue_keys_freeze_links_and_retry_route_is_operator_only() {
+            use factory_native::github::{GitHubIssue, GitHubLabel};
+
+            let fixture = setup().await;
+            let (status, policy) = enable_policy(&fixture).await;
+            assert_eq!(status, StatusCode::CREATED, "{policy}");
+
+            let mut body = json!({
+                "project_id": fixture.project_id,
+                "objective": "Deliver issue 5.",
+                "execution_profile_id": fixture.profile.id,
+                "mode": "REVIEW_PLAN",
+                "idempotency_key": "issue-links-api-foreign",
+                "issue_keys": [{"owner": "other", "repo": "widgets", "number": 5}],
+            });
+            let (status, error) = send(
+                &fixture.router,
+                "POST",
+                "/intake/requests",
+                Some(body.clone()),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{error}");
+            assert_eq!(error["code"], "ISSUE_REPOSITORY_NOT_BOUND");
+
+            fixture
+                .app
+                .db
+                .bind_project_github(
+                    &fixture.project_id,
+                    factory_native::db::NewProjectGitHubBinding {
+                        owner: "acme",
+                        repo: "widgets",
+                        default_branch: "main",
+                        repository_github_id: Some(42),
+                    },
+                    "test-operator",
+                )
+                .await
+                .unwrap();
+            fixture
+                .app
+                .db
+                .save_github_connection(
+                    &factory_native::provider_secrets::EncryptedCredential {
+                        ciphertext: "ciphertext".into(),
+                        nonce: "nonce".into(),
+                        fingerprint: "fingerprint".into(),
+                    },
+                    "octo",
+                    &[],
+                    false,
+                    "test-operator",
+                )
+                .await
+                .unwrap();
+            let issue = GitHubIssue {
+                number: 5,
+                github_id: 55,
+                title: "Bounded issue".into(),
+                body: "Do a bounded task.".into(),
+                body_truncated: false,
+                state: "open".into(),
+                state_reason: None,
+                labels: vec![GitHubLabel {
+                    name: "factory:r0".into(),
+                    color: None,
+                }],
+                author: Some("octo".into()),
+                author_id: Some(7),
+                author_association: Some("MEMBER".into()),
+                html_url: "https://github.com/acme/widgets/issues/5".into(),
+                comments: 0,
+                created_at: "2026-10-01T00:00:00Z".into(),
+                updated_at: "2026-10-02T00:00:00Z".into(),
+                closed_at: None,
+            };
+            fixture
+                .app
+                .db
+                .record_github_sync_result(factory_native::db::GitHubSyncResultWrite {
+                    project_id: &fixture.project_id,
+                    repo_full_name: "acme/widgets",
+                    issues: std::slice::from_ref(&issue),
+                    page_etags: &[],
+                    etag: None,
+                    truncated: false,
+                    connection_revision: 1,
+                })
+                .await
+                .unwrap();
+
+            body["idempotency_key"] = json!("issue-links-api-duplicate");
+            body["issue_keys"] = json!([
+                {"owner": "acme", "repo": "widgets", "number": 5},
+                {"owner": "acme", "repo": "widgets", "number": 5}
+            ]);
+            let (status, error) = send(
+                &fixture.router,
+                "POST",
+                "/intake/requests",
+                Some(body.clone()),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{error}");
+            assert_eq!(error["code"], "ISSUE_DUPLICATE");
+
+            body["idempotency_key"] = json!("issue-links-api-valid");
+            body["issue_keys"] = json!([{"owner": "acme", "repo": "widgets", "number": 5}]);
+            let (status, created) = send(
+                &fixture.router,
+                "POST",
+                "/intake/requests",
+                Some(body.clone()),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{created}");
+            assert_eq!(created["linked_issues"][0]["issueNumber"], 5);
+            assert_eq!(created["linked_issues"][0]["role"], "PRIMARY");
+            assert_eq!(created["linked_issues"][0]["state"], "READY");
+            let request_id = created["id"].as_str().unwrap().to_owned();
+            let (status, detail) = send(
+                &fixture.router,
+                "GET",
+                &format!("/intake/requests/{request_id}"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(
+                detail["linked_issues"][0]["repositoryFullName"],
+                "acme/widgets"
+            );
+
+            let mut closed_issue = issue.clone();
+            closed_issue.state = "closed".into();
+            closed_issue.state_reason = Some("completed".into());
+            closed_issue.closed_at = Some("2026-10-03T00:00:00Z".into());
+            closed_issue.updated_at = "2026-10-03T00:00:00Z".into();
+            fixture
+                .app
+                .db
+                .record_github_sync_result(factory_native::db::GitHubSyncResultWrite {
+                    project_id: &fixture.project_id,
+                    repo_full_name: "acme/widgets",
+                    issues: std::slice::from_ref(&closed_issue),
+                    page_etags: &[],
+                    etag: None,
+                    truncated: false,
+                    connection_revision: 1,
+                })
+                .await
+                .unwrap();
+            body["idempotency_key"] = json!("issue-links-api-closed");
+            let (status, error) =
+                send(&fixture.router, "POST", "/intake/requests", Some(body)).await;
+            assert_eq!(status, StatusCode::CONFLICT, "{error}");
+            assert_eq!(error["code"], "ISSUE_CLOSED");
+
+            let retry_uri = "/issue-links/link-1/delivery/event-1/retry";
+            let response = fixture
+                .router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri(retry_uri)
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            let (status, _) = send(&fixture.router, "POST", retry_uri, None).await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
+
+            let links = fixture
+                .app
+                .db
+                .issue_links_for_request(&request_id)
+                .await
+                .unwrap();
+            assert_eq!(links.len(), 1);
+            assert_eq!(links[0].github_issue_id, Some(55));
+
             fixture.app.db.close().await;
             let _ = std::fs::remove_file(fixture.path);
             let _ = std::fs::remove_dir_all(fixture.repository);

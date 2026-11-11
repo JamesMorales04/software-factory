@@ -1159,6 +1159,7 @@ export const en = {
   "issues.board.ready": "Ready",
   "issues.board.queued": "Queued",
   "issues.board.working": "In progress",
+  "issues.board.review": "In review",
   "issues.board.attention": "Needs attention",
   "issues.board.done": "Done",
   "issues.board.empty": "Nothing here.",
@@ -3827,6 +3828,32 @@ export const en = {
   "home.thread.state.ASSESSED":
     "The assessment is complete; no execution plan is required.",
   "charter.decisions.choose": "Select an owner option",
+  "issues.delivery.state": "Delivery: {state}",
+  "issues.delivery.pullRequest": "PR #{number}",
+  "issues.delivery.merge": "Merge {sha}",
+  "issues.delivery.retry": "Retry issue effect",
+  "issues.delivery.retrying": "Retrying…",
+  "issues.delivery.retried": "Core retried the issue effect for #{number}.",
+  "issues.delivery.retryError": "The issue effect could not be retried.",
+  "linkedIssues.title": "Linked issues",
+  "linkedIssues.description":
+    "Frozen at request creation. State and delivery receipts come from Core; a merge is the only fact that can complete an issue.",
+  "linkedIssues.empty":
+    "This request did not select a GitHub issue, so there is no delivery mapping.",
+  "linkedIssues.count": "{count} linked issue(s)",
+  "linkedIssues.rolePrimary": "Primary",
+  "linkedIssues.roleRelated": "Related",
+  "linkedIssues.delivery": "Delivery",
+  "linkedIssues.workUnit": "Work unit",
+  "linkedIssues.pullRequest": "Pull request",
+  "linkedIssues.merge": "Merge",
+  "linkedIssues.receipts": "Delivery receipts ({count})",
+  "linkedIssues.noReceipts": "No GitHub issue effect has been recorded.",
+  "linkedIssues.event": "Event",
+  "linkedIssues.attempts": "attempts {count}",
+  "linkedIssues.retry": "Retry",
+  "linkedIssues.retrying": "Retrying…",
+  "linkedIssues.retryError": "Core could not retry this issue delivery event.",
 } as const;
 
 export type MessageKey = keyof typeof en;
