@@ -80,7 +80,7 @@ const OWNER_TOKEN_FILES: [(ResourceOwner, &str); 4] = [
     ),
 ];
 const ENVIRONMENT_MAX_LOG_BYTES: usize = 1024 * 1024;
-const ENVIRONMENT_EGRESS_PORT: u16 = 18080;
+const ENVIRONMENT_EGRESS_PORT: u16 = 18081;
 const ENVIRONMENT_EGRESS_SLOTS: u8 = 64;
 const ENVIRONMENT_NETWORK_PREFIX: &str = "factory-env-egress-";
 const ENVIRONMENT_BUILDER_LABEL: &str = "io.software-factory.environment-builder.source-digest";
@@ -4314,21 +4314,33 @@ async fn run_environment_container(
             )
         })?;
     if !status.success() {
-        let code = failure_code_from_builder_output(&stdout)
-            .or_else(|| failure_code_from_builder_output(&stderr))
-            .unwrap_or_else(|| "ENVIRONMENT_BUILD_FAILED".to_owned());
-        let message = String::from_utf8_lossy(&stderr)
-            .chars()
-            .take(1_000)
-            .collect::<String>();
-        return Err(EnvironmentBrokerFailure::new(
-            &code,
-            if message.trim().is_empty() {
-                format!("the environment {phase} phase failed")
-            } else {
-                message
-            },
-        ));
+        let parsed = failure_from_builder_output(&stdout)
+            .or_else(|| failure_from_builder_output(&stderr));
+        let (code, mut message) = match parsed {
+            Some(value) => value,
+            None => (
+                "ENVIRONMENT_BUILD_FAILED".to_owned(),
+                format!(
+                    "the environment {phase} phase failed; stdout: {}; stderr: {}",
+                    String::from_utf8_lossy(&stdout),
+                    String::from_utf8_lossy(&stderr)
+                ),
+            ),
+        };
+        for log_name in ["build.log", "resolve.log", "check.log"] {
+            if let Ok(log) =
+                read_environment_output(app, image_id, cache_volume, log_name, 64 * 1024).await
+            {
+                let log = String::from_utf8_lossy(&log);
+                if !log.trim().is_empty() {
+                    message.push_str("\n");
+                    message.push_str(&log);
+                    break;
+                }
+            }
+        }
+        let message: String = message.chars().take(8_000).collect();
+        return Err(EnvironmentBrokerFailure::new(&code, message));
     }
     Ok(ChildOutput {
         exit_code: status.code(),
@@ -4339,13 +4351,15 @@ async fn run_environment_container(
     })
 }
 
-fn failure_code_from_builder_output(bytes: &[u8]) -> Option<String> {
+fn failure_from_builder_output(bytes: &[u8]) -> Option<(String, String)> {
     let value: Value = serde_json::from_slice(bytes).ok()?;
-    value
-        .get("blocker")
-        .and_then(|blocker| blocker.get("code"))
+    let blocker = value.get("blocker")?;
+    let code = blocker.get("code").and_then(Value::as_str)?;
+    let message = blocker
+        .get("message")
         .and_then(Value::as_str)
-        .map(str::to_owned)
+        .unwrap_or("the environment builder failed");
+    Some((code.to_owned(), message.to_owned()))
 }
 
 async fn run_environment_cat(
