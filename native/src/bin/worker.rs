@@ -2863,20 +2863,66 @@ async fn run_provider_tool_loop(
                                 )
                             })?;
                         let target = check_execution_target(context, check)?;
-                        let image = target.as_ref().map(|target| {
-                            format!("{}@{}", target.builder_image, target.builder_image_digest)
-                        });
-                        match supervisor_run(
-                            context,
-                            &handle.workspace_id,
-                            &handle.capability,
-                            image.as_deref(),
-                            &argv,
-                            timeout_secs,
-                        )
-                        .await
-                        {
-                            Ok(result) => {
+                        // A frozen check must run through the environment
+                        // check endpoint, never the generic supervisor image
+                        // path: the builder image is not a generic runtime
+                        // image and the supervisor refuses it.
+                        let result = if let Some(target) = target {
+                            let execution = context
+                                .assignment
+                                .environment_execution
+                                .as_ref()
+                                .ok_or_else(|| {
+                                    format!(
+                                        "ENVIRONMENT_PLAN_REQUIRED: check {check_id} requires the Campaign environment binding"
+                                    )
+                                })?;
+                            let environment_check =
+                                factory_native::runtime_broker::EnvironmentCheckSpec {
+                                    check_id: target.check_id.clone(),
+                                    argv: target.argv.clone(),
+                                    cwd: target.cwd.clone(),
+                                    timeout_secs: target.timeout_secs,
+                                    expect_exit: target.expect_exit,
+                                };
+                            match supervisor_environment_check(
+                                context,
+                                &handle.workspace_id,
+                                &handle.capability,
+                                execution,
+                                &environment_check,
+                            )
+                            .await
+                            {
+                                Ok(result) => Ok((
+                                    result.exit_code,
+                                    result.stdout,
+                                    result.stderr,
+                                    result.stdout_truncated || result.stderr_truncated,
+                                )),
+                                Err(error) => Err(error),
+                            }
+                        } else {
+                            supervisor_run(
+                                context,
+                                &handle.workspace_id,
+                                &handle.capability,
+                                None,
+                                &argv,
+                                timeout_secs,
+                            )
+                            .await
+                            .map(|result| {
+                                (
+                                    result.exit_code,
+                                    result.stdout,
+                                    result.stderr,
+                                    result.stdout_truncated || result.stderr_truncated,
+                                )
+                            })
+                        };
+                        match result {
+                            Ok((exit_code, stdout, stderr, output_truncated)) => {
                                 // post_check_result posts the required
                                 // run_command RESULT event together with its
                                 // execution-check receipt.
@@ -2885,7 +2931,7 @@ async fn run_provider_tool_loop(
                                     &call_id,
                                     &argv,
                                     &progress.candidate_digest(),
-                                    result.exit_code,
+                                    exit_code,
                                     None,
                                 )
                                 .await?;
@@ -2899,16 +2945,16 @@ async fn run_provider_tool_loop(
                                     "failed"
                                 };
                                 let diagnostic = bounded_tool_text(&format!(
-                                    "exit={:?}\nstdout:\n{}\nstderr:\n{}",
-                                    result.exit_code, result.stdout, result.stderr
+                                    "exit={exit_code:?}\nstdout:\n{stdout}\nstderr:\n{stderr}"
                                 ));
+                                let _ = output_truncated;
                                 prompt = tool_result(
                                     context.assignment.provider.as_str(),
                                     context.assignment.model.as_str(),
                                     &call_id,
                                     status,
                                     &diagnostic,
-                                    result.exit_code,
+                                    exit_code,
                                 );
                             }
                             Err(error) => {
