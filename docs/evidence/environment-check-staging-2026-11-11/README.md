@@ -91,13 +91,19 @@ contain no `.git`, matching the archive contract.
   1,400 characters. The Worker tool result, the automatic-final summary and the
   Verifier failure surface it even when the command writes nothing.
 - Source bodies and full stderr are never copied into the diagnostic.
-- Environment checks now run under the Supervisor operation fence. The manager
-  registers an active check by workspace/volume; `cancel_active` calls the
-  broker's `POST /v1/environments/check/cancel`, which resolves the broker-owned
-  `factory-env-*` check container, removes it, confirms absence, and clears the
-  active registration. A second concurrent check is refused, and the handler
-  returns `ENVIRONMENT_CHECK_CANCELLED` when the grant is revoked. The bounded
-  timeout and no-host/security rules are unchanged.
+- Environment checks now run under the Supervisor operation fence. Every check
+  carries a unique Supervisor-created token; the manager registers an active
+  check by workspace with that volume and token. `cancel_active` calls the
+  broker's `POST /v1/environments/check/cancel`, which records a bounded,
+  expiring cancellation tombstone for the token before consulting the active
+  registry. A check still in broker validation therefore cannot start after
+  cancellation, even when it has not registered a container yet. The check
+  handler observes the tombstone under the volume lock before registering, and
+  container creation holds the same lock across the tombstone/active check and
+  `podman run` spawn. If a container is active, the broker removes it, confirms
+  absence, and clears the active registration. A second concurrent check is
+  refused, and the handler returns `ENVIRONMENT_CHECK_CANCELLED` when the grant
+  is revoked. The bounded timeout and no-host/security rules are unchanged.
 
 ## 5. Deterministic evidence
 
@@ -109,7 +115,10 @@ contain no `.git`, matching the archive contract.
   `environment_check_fence_cancels_an_active_check_on_revocation`.
 - `cargo test -p factory-native --bin factory-runtime-broker environment_check`
   — 9 passed, including `environment_check_cancel_targets_only_an_active_owned_check`;
-  `check_diagnostic_is_description_first_and_bounded` — 1 passed.
+  `cancellation_tombstone_prevents_a_delayed_check_from_starting` — 1 passed,
+  with broker validation delayed 3 s (beyond the old 2 s retry window) and no
+  container `run` invocation. `check_diagnostic_is_description_first_and_bounded`
+  — 1 passed.
 - `FACTORY_REAL_PODMAN_TESTS=1 cargo test -p factory-native --test
   real_podman_environment_check_staging -- --nocapture` — 1 passed. A real
   rootless Podman volume is staged, `old.txt` is deleted from the worktree and

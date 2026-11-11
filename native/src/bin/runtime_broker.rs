@@ -50,10 +50,10 @@ use factory_native::runtime_broker::{
     EnvironmentCheckRequest, EnvironmentCheckStatus, MAX_ENVIRONMENT_REQUEST_BYTES,
     MAX_ENVIRONMENT_WORKSPACE_BYTES, MAX_ENVIRONMENT_WORKSPACE_FILE_BYTES,
     MAX_ENVIRONMENT_WORKSPACE_FILES, MAX_RESOURCE_INVENTORY_BYTES, ManagedResources, ResourceOwner,
-    is_valid_container_name, is_valid_exec_container_name, is_valid_provider_container_name,
-    is_valid_volume_name, legacy_workspace_identity_matches, parse_container_inventory,
-    parse_container_labels, parse_volume_inventory, parse_volume_labels, resource_owner_matches,
-    volume_identity_matches,
+    is_valid_check_token, is_valid_container_name, is_valid_exec_container_name,
+    is_valid_provider_container_name, is_valid_volume_name, legacy_workspace_identity_matches,
+    parse_container_inventory, parse_container_labels, parse_volume_inventory, parse_volume_labels,
+    resource_owner_matches, volume_identity_matches,
 };
 
 const MAX_JSON_BYTES: usize = 2 * 1024 * 1024;
@@ -226,6 +226,55 @@ impl ActiveExecutions {
 
     fn container_for(&self, volume: &str) -> Option<String> {
         self.entries.lock().unwrap().volumes.get(volume).cloned()
+    }
+}
+
+const CHECK_CANCELLATION_TTL: std::time::Duration = std::time::Duration::from_secs(600);
+const MAX_CHECK_CANCELLATIONS: usize = 100_000;
+
+/// Cancellation tombstones for environment check tokens. A revocation can
+/// arrive before the broker has validated and registered the check; recording
+/// the token here lets the check handler refuse to start even though no
+/// container exists yet.
+struct CheckCancellations {
+    entries: std::sync::Mutex<std::collections::HashMap<String, (String, std::time::Instant)>>,
+}
+
+impl CheckCancellations {
+    fn new() -> Self {
+        Self {
+            entries: std::sync::Mutex::new(std::collections::HashMap::new()),
+        }
+    }
+
+    /// Record a cancellation. Returns false only when the bounded table is
+    /// full of live tokens; the caller must then fail closed rather than
+    /// pretending the check was cancelled.
+    fn cancel(&self, check_token: &str, workspace_volume: &str) -> bool {
+        let now = std::time::Instant::now();
+        let mut entries = self.entries.lock().unwrap();
+        entries.retain(|_, (_, expiry)| *expiry > now);
+        if !entries.contains_key(check_token) && entries.len() >= MAX_CHECK_CANCELLATIONS {
+            return false;
+        }
+        entries.insert(
+            check_token.to_owned(),
+            (workspace_volume.to_owned(), now + CHECK_CANCELLATION_TTL),
+        );
+        true
+    }
+
+    fn is_cancelled(&self, check_token: &str, workspace_volume: &str) -> bool {
+        let now = std::time::Instant::now();
+        let mut entries = self.entries.lock().unwrap();
+        match entries.get(check_token) {
+            Some((volume, expiry)) if *expiry > now => volume == workspace_volume,
+            Some(_) => {
+                entries.remove(check_token);
+                false
+            }
+            None => false,
+        }
     }
 }
 
@@ -543,6 +592,7 @@ struct App {
     resource_locks: Arc<ResourceLocks>,
     lock_limit: usize,
     active: Arc<ActiveExecutions>,
+    check_cancellations: Arc<CheckCancellations>,
     podman: PathBuf,
     images: Arc<BTreeSet<String>>,
     provider_images: Arc<BTreeSet<String>>,
@@ -641,6 +691,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         resource_locks: Arc::new(ResourceLocks::new()),
         lock_limit: RESOURCE_LOCK_ENTRIES,
         active: Arc::new(ActiveExecutions::new()),
+        check_cancellations: Arc::new(CheckCancellations::new()),
         podman,
         images: Arc::new(images),
         provider_images: Arc::new(provider_images),
@@ -3352,6 +3403,19 @@ async fn check_environment(
     if let Err(error) = app.require_volume_owner(&volume, owner).await {
         return mutation_error(error);
     }
+    if app
+        .check_cancellations
+        .is_cancelled(&input.check_token, &volume)
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "code": "ENVIRONMENT_CHECK_CANCELLED",
+                "error": "environment check was cancelled before registration"
+            })),
+        )
+            .into_response();
+    }
     if !app.active.register(&volume, &container) {
         return conflict("workspace volume or check container is already active");
     }
@@ -3432,6 +3496,7 @@ async fn check_environment(
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct EnvironmentCheckCancelRequest {
     workspace_volume: String,
+    check_token: String,
 }
 
 /// Cancel the builder check currently using one caller-owned workspace volume.
@@ -3456,16 +3521,37 @@ async fn cancel_environment_check(
     if !is_valid_volume_name(&input.workspace_volume) {
         return bad_request("invalid environment check workspace volume");
     }
+    if !is_valid_check_token(&input.check_token) {
+        return bad_request("invalid environment check token");
+    }
     let lock = app.resource_lock(&input.workspace_volume);
     let _guard = lock.lock().await;
-    if let Err(error) = app
+    match app
         .require_volume_owner(&input.workspace_volume, owner)
         .await
     {
-        return mutation_error(error);
+        Ok(()) => {}
+        // Staging removes and recreates the volume, so a cancellation that
+        // races that window cannot inspect ownership yet. The token is
+        // unguessable and the check handler will observe the tombstone; record
+        // it instead of letting the check start.
+        Err(MutationError::Failed(_)) => {}
+        Err(error) => return mutation_error(error),
+    }
+    // Persist the cancellation before consulting the active registry. The
+    // check handler observes this tombstone under the same volume lock before
+    // registering or spawning, so a request still in validation cannot start
+    // after the cancel response.
+    if !app
+        .check_cancellations
+        .cancel(&input.check_token, &input.workspace_volume)
+    {
+        return operation_error(
+            "environment check cancellation table is full; refusing to claim cancellation",
+        );
     }
     let Some(container) = app.active.container_for(&input.workspace_volume) else {
-        return Json(json!({"cancelled": false})).into_response();
+        return Json(json!({"cancelled": true})).into_response();
     };
     // Check containers are `factory-env-<uuid>` and are the only active
     // environment-owned containers on a workspace volume. Generic exec and
@@ -3663,6 +3749,15 @@ async fn execute_environment_check_inner(
     // another's workspace or result while it runs.
     let cache_lock = app.resource_lock(cache_volume);
     let _cache_guard = cache_lock.lock().await;
+    if app
+        .check_cancellations
+        .is_cancelled(&input.check_token, &input.workspace_volume)
+    {
+        return Err(EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_CHECK_CANCELLED",
+            "the environment check was cancelled before setup",
+        ));
+    }
     ensure_environment_store(&app, &image_id).await?;
     bound_environment_caches(&app, cache_volume).await?;
     create_environment_volume(&app, cache_volume, &input.spec.spec_sha256, true).await?;
@@ -3694,6 +3789,7 @@ async fn execute_environment_check_inner(
         "check",
         "request.json",
         true,
+        Some(&input.check_token),
     )
     .await?;
     let result: BuilderCheckResult = match read_environment_json(
@@ -4767,6 +4863,7 @@ async fn execute_environment_inner(
                 "resolve",
                 "request-resolve.json",
                 false,
+                None,
             )
             .await;
             if let Some(mut egress) = egress.take() {
@@ -4817,6 +4914,7 @@ async fn execute_environment_inner(
                     "fetch",
                     "request-fetch.json",
                     false,
+                    None,
                 )
                 .await;
                 if let Some(mut egress) = egress.take() {
@@ -4851,6 +4949,7 @@ async fn execute_environment_inner(
                     "fetch",
                     "request-fetch.json",
                     false,
+                    None,
                 )
                 .await;
                 if let Some(mut egress) = egress.take() {
@@ -4883,6 +4982,7 @@ async fn execute_environment_inner(
                 "build",
                 "request-build.json",
                 false,
+                None,
             )
             .await?;
             append_logs(
@@ -5486,6 +5586,7 @@ async fn verify_environment_container_mounts(
 // The broker-owned container spec is intentionally explicit; every call site
 // is audited and no caller supplies arbitrary Podman flags.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 async fn run_environment_container(
     app: &Arc<App>,
     image_id: &str,
@@ -5499,6 +5600,7 @@ async fn run_environment_container(
     phase: &str,
     request_file: &str,
     allow_failure_exit: bool,
+    check_token: Option<&str>,
 ) -> Result<ChildOutput, EnvironmentBrokerFailure> {
     let remaining = deadline
         .checked_duration_since(Instant::now())
@@ -5572,12 +5674,34 @@ async fn run_environment_container(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // The cancel endpoint uses the same volume lock. Hold it across the
+    // tombstone check and container creation so cancellation cannot observe
+    // "no container" while the check is about to spawn.
+    let start_lock = app.resource_lock(workspace_volume);
+    let start_guard = match check_token {
+        Some(token) => {
+            let guard = start_lock.lock().await;
+            if app
+                .check_cancellations
+                .is_cancelled(token, workspace_volume)
+                || !app.active.is_active(workspace_volume)
+            {
+                return Err(EnvironmentBrokerFailure::new(
+                    "ENVIRONMENT_CHECK_CANCELLED",
+                    "the environment check was cancelled before container creation",
+                ));
+            }
+            Some(guard)
+        }
+        None => None,
+    };
     let mut child = command.spawn().map_err(|error| {
         EnvironmentBrokerFailure::new(
             "ENVIRONMENT_BUILD_FAILED",
             format!("environment builder could not start: {error}"),
         )
     })?;
+    drop(start_guard);
     let Some(stdout) = child.stdout.take() else {
         return Err(EnvironmentBrokerFailure::new(
             "ENVIRONMENT_BUILD_FAILED",
@@ -6212,6 +6336,7 @@ mod tests {
             resource_locks: Arc::new(ResourceLocks::new()),
             lock_limit,
             active: Arc::new(ActiveExecutions::new()),
+            check_cancellations: Arc::new(CheckCancellations::new()),
             podman,
             images: Arc::new(BTreeSet::from(["test/image:1".to_owned()])),
             provider_images: Arc::new(BTreeSet::new()),
@@ -8183,6 +8308,7 @@ exit 1
                 expect_exit: 0,
             },
             workspace_volume: workspace_volume.into(),
+            check_token: uuid::Uuid::new_v4().to_string(),
         }
     }
 
@@ -8348,20 +8474,37 @@ exit 0
         PathBuf,
         tokio::sync::MutexGuard<'static, ()>,
     ) {
+        environment_check_test_app_with_delay(owner, builder_exit, result, 0).await
+    }
+
+    async fn environment_check_test_app_with_delay(
+        owner: ResourceOwner,
+        builder_exit: i32,
+        result: Value,
+        delay_ms: u64,
+    ) -> (
+        Arc<App>,
+        String,
+        PathBuf,
+        tokio::sync::MutexGuard<'static, ()>,
+    ) {
         let directory =
             std::env::temp_dir().join(format!("factory-env-check-broker-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&directory).unwrap();
         let check_path = directory.join("check-result.json");
         let log_path = directory.join("podman.log");
+        let validation_marker = directory.join("validation-started");
         std::fs::write(&check_path, serde_json::to_vec(&result).unwrap()).unwrap();
         let workspace = format!("factory-ws-{}", uuid::Uuid::new_v4());
         let (_, spec, _) = valid_environment_execution();
+        let delay_secs = delay_ms.div_ceil(1_000);
         let script = format!(
             r#"#!/bin/sh
 printf '%s\n' "$*" >> "{}"
 case "$1" in
   image)
     if [ "$2" = "inspect" ]; then
+      if [ "{delay_ms}" -gt 0 ]; then : > "{}"; sleep {delay_secs}; fi
       case "$4" in
         *source-digest*) printf '%s\t%s\t%s\n' "{}" "{}" "nix-devenv-environment-v1" ;;
         *) printf '%s\n' "{}" ;;
@@ -8400,6 +8543,7 @@ esac
 exit 0
 "#,
             log_path.display(),
+            validation_marker.display(),
             TEST_BUILDER_IMAGE_ID,
             TEST_BUILDER_DIGEST,
             TEST_BUILDER_IMAGE_ID,
@@ -8689,6 +8833,7 @@ exit 0
             "build",
             "request-build.json",
             false,
+            None,
         )
         .await;
         assert!(result.is_err());
@@ -9042,6 +9187,7 @@ exit 0
         )
         .await;
         let container = format!("factory-env-{}", uuid::Uuid::new_v4().simple());
+        let check_token = uuid::Uuid::new_v4().to_string();
         assert!(app.active.register(&workspace, &container));
 
         let cancelled = cancel_environment_check(
@@ -9049,6 +9195,7 @@ exit 0
             test_headers(ResourceOwner::Supervisor),
             Json(EnvironmentCheckCancelRequest {
                 workspace_volume: workspace.clone(),
+                check_token: check_token.clone(),
             }),
         )
         .await;
@@ -9063,16 +9210,81 @@ exit 0
             "{log}"
         );
 
+        // A fresh token records a tombstone even though no container is
+        // active; a later request carrying that token must still refuse.
         let empty = cancel_environment_check(
             State(Arc::clone(&app)),
             test_headers(ResourceOwner::Supervisor),
             Json(EnvironmentCheckCancelRequest {
                 workspace_volume: workspace.clone(),
+                check_token: uuid::Uuid::new_v4().to_string(),
             }),
         )
         .await;
         assert_eq!(empty.status(), StatusCode::OK);
-        assert_eq!(environment_response_body(empty).await["cancelled"], false);
+        assert_eq!(environment_response_body(empty).await["cancelled"], true);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancellation_tombstone_prevents_a_delayed_check_from_starting() {
+        let (_, spec, _) = valid_environment_execution();
+        let (app, workspace, log, _serial) = environment_check_test_app_with_delay(
+            ResourceOwner::Supervisor,
+            0,
+            check_result_body(&spec.spec_sha256, "PASSED", 0, 0, "ok\n", ""),
+            3_000,
+        )
+        .await;
+        let request = environment_check_request(&workspace);
+        let check_token = request.check_token.clone();
+        let marker = log.parent().unwrap().join("validation-started");
+        let task_app = Arc::clone(&app);
+        let pending = tokio::spawn(async move {
+            check_environment(
+                State(task_app),
+                test_headers(ResourceOwner::Supervisor),
+                Json(request),
+            )
+            .await
+        });
+        let mut started = false;
+        for _ in 0..100 {
+            if marker.exists() {
+                started = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(started, "the delayed validation must start");
+
+        // The check is still inside broker validation and has not registered
+        // an active container yet. The tombstone must still cancel it.
+        let cancelled = cancel_environment_check(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Supervisor),
+            Json(EnvironmentCheckCancelRequest {
+                workspace_volume: workspace.clone(),
+                check_token,
+            }),
+        )
+        .await;
+        assert_eq!(cancelled.status(), StatusCode::OK);
+        let body = environment_response_body(cancelled).await;
+        assert_eq!(body["cancelled"], true);
+
+        let response = tokio::time::timeout(Duration::from_secs(10), pending)
+            .await
+            .expect("the delayed check must finish after cancellation")
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = environment_response_body(response).await;
+        assert_eq!(body["code"], "ENVIRONMENT_CHECK_CANCELLED");
+        assert!(!app.active.is_active(&workspace));
+        let invocations = std::fs::read_to_string(&log).unwrap();
+        assert!(
+            !invocations.lines().any(|line| line.starts_with("run ")),
+            "the revoked check must never create or run a container: {invocations}"
+        );
     }
 
     #[tokio::test]
@@ -9519,6 +9731,7 @@ exit 0
             "check",
             "request.json",
             true,
+            None,
         )
         .await;
         assert!(result.is_err());

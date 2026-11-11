@@ -146,15 +146,22 @@ automatic-final summary and Verifier failure all surface it. Source bodies and
 full logs are never copied into the diagnostic.
 
 The environment-check handler now also runs the same operation fence as the
-generic run path. The manager keeps a check handle keyed by workspace and
-volume, so revocation/cancellation reaches `POST /v1/environments/check/cancel`.
-The broker resolves its own `factory-env-*` check container for that exact
-volume, removes it, confirms absence, clears the active registration, and
-returns `cancelled`; the caller never guesses a container name. The Supervisor
-refuses a second concurrent check, rechecks the cancellation marker immediately
-before the broker call, and returns `ENVIRONMENT_CHECK_CANCELLED` instead of
-reporting a revoked check. The frozen check timeout, `--network=none`, read-only
-root and mount/capability rules are unchanged.
+generic run path. Every check carries a unique Supervisor-created token. The
+manager keeps a check handle keyed by workspace with the exact volume and token,
+so revocation/cancellation reaches `POST /v1/environments/check/cancel`. The
+broker records a bounded, expiring cancellation **tombstone** for that token
+before it consults the active registry; this makes cancellation effective even
+while a check request is still in validation and has not registered yet. The
+check handler checks the tombstone under the volume lock before registering, and
+container creation holds the same volume lock across the tombstone/active check
+and `podman run` spawn. The cancel endpoint also resolves any already-active
+`factory-env-*` container for that volume, removes it, confirms absence, clears
+the active registration, and returns `cancelled`; the caller never guesses a
+container name. The Supervisor refuses a second concurrent check, rechecks the
+cancellation marker immediately before the broker call, and returns
+`ENVIRONMENT_CHECK_CANCELLED` instead of reporting a revoked check. The frozen
+check timeout, `--network=none`, read-only root and mount/capability rules are
+unchanged.
 
 ## 2. Image identity and allowlist
 
@@ -272,13 +279,14 @@ fetch/resolve.
 - `cargo test -p factory-native --bin factory-verifier` — 11 passed, including
   the broker builder-check path, description binding, refusal, cleanup and
   missing binding.
-- `cargo test -p factory-native --bin factory-runtime-broker` — 73 passed,
+- `cargo test -p factory-native --bin factory-runtime-broker` — 74 passed,
   including environment-check owner separation, workspace ownership, exact
   builder identity, description binding, plan/spec/receipt mismatch,
   argv/timeout bounds, success/failure exit mapping, bounded diagnostics,
-  active-check cancellation/cleanup, fabricated-PASS refusal, resource-limit
-  cache purge/quarantine, bundle digest/cache bounds, narrow container
-  arguments and timeout cleanup.
+  active-check cancellation/cleanup, cancellation tombstones that block a
+  check delayed in validation beyond the old retry window, fabricated-PASS
+  refusal, resource-limit cache purge/quarantine, bundle digest/cache bounds,
+  narrow container arguments and timeout cleanup.
 - `cargo test -p factory-native --bin factory-supervisor` — 13 passed, including
   grant/image/workspace refusal, successful typed proxy, a real Git worktree
   check that fails with npm exit 254 when the workspace volume is empty and

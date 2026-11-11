@@ -272,6 +272,7 @@ pub trait VolumeBackend: Send + Sync {
     fn cancel_environment_check(
         &self,
         _volume: &str,
+        _check_token: &str,
     ) -> impl std::future::Future<Output = Result<bool, ExecutionError>> + Send {
         async { Ok(false) }
     }
@@ -584,10 +585,14 @@ impl VolumeBackend for BrokerVolumes {
             .map_err(ExecutionError::from)
     }
 
-    async fn cancel_environment_check(&self, volume: &str) -> Result<bool, ExecutionError> {
+    async fn cancel_environment_check(
+        &self,
+        volume: &str,
+        check_token: &str,
+    ) -> Result<bool, ExecutionError> {
         validate_volume_name(volume)?;
         self.client
-            .cancel_environment_check(volume)
+            .cancel_environment_check(volume, check_token)
             .await
             .map_err(ExecutionError::from)
     }
@@ -975,7 +980,7 @@ pub struct WorkspaceManager<B: VolumeBackend> {
     /// Workspace volume for an in-flight Supervisor-proxied environment check.
     /// The broker owns the check container, so cancellation is addressed by the
     /// volume rather than a guessed container name.
-    active_checks: Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
+    active_checks: Arc<std::sync::Mutex<std::collections::HashMap<String, (String, String)>>>,
     cancelled: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
 }
 
@@ -1134,12 +1139,21 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
         &self,
         workspace_id: &str,
         volume: &str,
+        check_token: &str,
     ) -> Result<(), ExecutionError> {
         validate_workspace_id(workspace_id)?;
         validate_volume_name(volume)?;
+        if !crate::runtime_broker::is_valid_check_token(check_token) {
+            return Err(ExecutionError::Invalid(
+                "environment check token is invalid".into(),
+            ));
+        }
         let mut checks = self.active_checks.lock().unwrap();
         if checks
-            .insert(workspace_id.to_owned(), volume.to_owned())
+            .insert(
+                workspace_id.to_owned(),
+                (volume.to_owned(), check_token.to_owned()),
+            )
             .is_some()
         {
             return Err(ExecutionError::Conflict);
@@ -1755,8 +1769,11 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
             .unwrap()
             .get(workspace_id)
             .cloned();
-        if let Some(volume) = check {
-            return self.backend.cancel_environment_check(&volume).await;
+        if let Some((volume, check_token)) = check {
+            return self
+                .backend
+                .cancel_environment_check(&volume, &check_token)
+                .await;
         }
         let container = self.active.lock().unwrap().get(workspace_id).cloned();
         if let Some(container) = container {

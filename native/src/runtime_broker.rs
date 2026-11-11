@@ -588,6 +588,10 @@ pub struct EnvironmentCheckRequest {
     pub receipt: EnvironmentBuildReceipt,
     pub check: EnvironmentCheckSpec,
     pub workspace_volume: String,
+    /// Unique per-check cancellation token created by the Supervisor. It lets
+    /// a revocation cancel a request that has not reached broker registration
+    /// yet, without guessing a container name.
+    pub check_token: String,
 }
 
 impl EnvironmentCheckRequest {
@@ -609,8 +613,18 @@ impl EnvironmentCheckRequest {
         if !is_valid_volume_name(&self.workspace_volume) {
             return Err("environment check workspace volume is invalid".into());
         }
+        if !is_valid_check_token(&self.check_token) {
+            return Err("environment check token is invalid".into());
+        }
         self.check.validate_shape()
     }
+}
+
+pub fn is_valid_check_token(value: &str) -> bool {
+    (16..=128).contains(&value.len())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
 }
 
 /// The Supervisor-owned proxy request. It carries no workspace volume: the
@@ -1213,10 +1227,12 @@ impl RuntimeBrokerClient {
 
     /// Cancel an in-flight frozen check for one workspace volume. The broker
     /// owns the check container name; the caller never supplies or guesses it.
-    /// `Ok(false)` means no check was active for that volume.
+    /// A positive result records a cancellation tombstone for the exact check
+    /// token, so a request still in validation cannot start afterwards.
     pub async fn cancel_environment_check(
         &self,
         workspace_volume: &str,
+        check_token: &str,
     ) -> Result<bool, BrokerError> {
         if !matches!(
             self.owner,
@@ -1232,11 +1248,19 @@ impl RuntimeBrokerClient {
                 "environment check workspace volume is invalid".into(),
             ));
         }
+        if !is_valid_check_token(check_token) {
+            return Err(BrokerError::Invalid(
+                "environment check token is invalid".into(),
+            ));
+        }
         let response = self
             .client
             .post(self.join(ENVIRONMENT_CHECK_CANCEL_ROUTE)?)
             .bearer_auth(&self.token)
-            .json(&serde_json::json!({"workspaceVolume": workspace_volume}))
+            .json(&serde_json::json!({
+                "workspaceVolume": workspace_volume,
+                "checkToken": check_token
+            }))
             .timeout(Duration::from_secs(30))
             .send()
             .await?;

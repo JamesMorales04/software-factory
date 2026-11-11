@@ -149,12 +149,16 @@ impl VolumeBackend for SupervisorBackend {
         }
     }
 
-    async fn cancel_environment_check(&self, volume: &str) -> Result<bool, ExecutionError> {
+    async fn cancel_environment_check(
+        &self,
+        volume: &str,
+        check_token: &str,
+    ) -> Result<bool, ExecutionError> {
         match self {
-            Self::Podman(backend) => backend.cancel_environment_check(volume).await,
-            Self::Broker(backend) => backend.cancel_environment_check(volume).await,
+            Self::Podman(backend) => backend.cancel_environment_check(volume, check_token).await,
+            Self::Broker(backend) => backend.cancel_environment_check(volume, check_token).await,
             #[cfg(debug_assertions)]
-            Self::Local(backend) => backend.cancel_environment_check(volume).await,
+            Self::Local(backend) => backend.cancel_environment_check(volume, check_token).await,
         }
     }
     async fn list_managed(&self) -> Result<Option<ManagedResources>, ExecutionError> {
@@ -792,9 +796,10 @@ async fn environment_check<B: factory_native::execution::VolumeBackend + 'static
         Ok(volume) => volume,
         Err(error) => return execution_error(error),
     };
-    if let Err(error) = app
-        .manager
-        .begin_environment_check(&workspace_id, &workspace_volume)
+    let check_token = uuid::Uuid::new_v4().to_string();
+    if let Err(error) =
+        app.manager
+            .begin_environment_check(&workspace_id, &workspace_volume, &check_token)
     {
         return execution_error(error);
     }
@@ -859,6 +864,7 @@ async fn environment_check<B: factory_native::execution::VolumeBackend + 'static
             receipt: input.receipt,
             check: input.check,
             workspace_volume,
+            check_token: check_token.clone(),
         };
         match broker
             .environment_check(&request, Duration::from_secs(timeout_secs + 180))
@@ -1530,8 +1536,15 @@ mod tests {
         async fn remove_container(&self, _name: &str) -> Result<(), ExecutionError> {
             Ok(())
         }
-        async fn cancel_environment_check(&self, volume: &str) -> Result<bool, ExecutionError> {
-            self.cancel_calls.lock().unwrap().push(volume.to_owned());
+        async fn cancel_environment_check(
+            &self,
+            volume: &str,
+            check_token: &str,
+        ) -> Result<bool, ExecutionError> {
+            self.cancel_calls
+                .lock()
+                .unwrap()
+                .push(format!("{volume}:{check_token}"));
             if let Some(tx) = self.cancel_tx.lock().unwrap().take() {
                 let _ = tx.send(());
             }
@@ -2706,10 +2719,13 @@ mod tests {
         assert_eq!(response.status(), StatusCode::CONFLICT);
         let result = body_json(response).await;
         assert_eq!(result["code"], "ENVIRONMENT_CHECK_CANCELLED");
-        assert_eq!(
-            fixture.cancel_calls.lock().unwrap().as_slice(),
-            [volume],
-            "cancellation must target the broker-owned check by workspace volume"
+        let cancel_calls = fixture.cancel_calls.lock().unwrap();
+        assert_eq!(cancel_calls.len(), 1);
+        let (cancelled_volume, cancelled_token) = cancel_calls[0].split_once(':').unwrap();
+        assert_eq!(cancelled_volume, volume);
+        assert!(
+            uuid::Uuid::parse_str(cancelled_token).is_ok(),
+            "the per-check cancellation token must be carried to the broker"
         );
         server.abort();
     }

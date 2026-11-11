@@ -526,6 +526,7 @@ async fn run_sandboxed_checks(
                 receipt: execution.receipt.clone(),
                 check: check_spec,
                 workspace_volume: volume.clone(),
+                check_token: Uuid::new_v4().to_string(),
             };
             let output = backend.environment_check(&request).await.map_err(|error| {
                 VerificationError::Infrastructure(format!(
