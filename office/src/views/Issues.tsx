@@ -66,6 +66,25 @@ function errorText(cause: unknown, fallback: string): string {
   return cause instanceof CoreApiError ? cause.message : fallback;
 }
 
+function deliveryFailureDetail(cause: unknown): string | null {
+  if (!(cause instanceof CoreApiError)) return null;
+  const body =
+    typeof cause.body === "object" && cause.body !== null
+      ? (cause.body as { failures?: unknown })
+      : null;
+  if (!Array.isArray(body?.failures)) return null;
+  const details = body.failures
+    .map((failure) => {
+      if (typeof failure !== "object" || failure === null) return null;
+      const value = failure as { kind?: unknown; detail?: unknown };
+      return typeof value.detail === "string"
+        ? `${typeof value.kind === "string" ? `${value.kind}: ` : ""}${value.detail}`
+        : null;
+    })
+    .filter((detail): detail is string => detail !== null);
+  return details.length > 0 ? details.join("; ") : null;
+}
+
 function cardState(
   board: BoardProject,
   issue: GitHubIssueSummary,
@@ -474,7 +493,12 @@ export function Issues() {
       setNotice(t("issues.delivery.retried", { number: card.issue.number }));
       await load();
     } catch (cause) {
-      setError(errorText(cause, t("issues.delivery.retryError")));
+      const detail = deliveryFailureDetail(cause);
+      const message = detail
+        ? `${t("issues.delivery.retryError")} ${detail}`
+        : errorText(cause, t("issues.delivery.retryError"));
+      await load();
+      setError(message);
     } finally {
       setBusy(null);
     }

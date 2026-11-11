@@ -2,12 +2,13 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type {
-  GitHubConnectionState,
-  GitHubIssueList,
-  IssueIntakeState,
-  Project,
-  ProjectConfig,
+import {
+  CoreApiError,
+  type GitHubConnectionState,
+  type GitHubIssueList,
+  type IssueIntakeState,
+  type Project,
+  type ProjectConfig,
 } from "../coreApi";
 import { I18nProvider } from "../i18n";
 import { Issues } from "./Issues";
@@ -33,7 +34,15 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../coreApi", () => ({
   coreApi: mocks,
-  CoreApiError: class CoreApiError extends Error {},
+  CoreApiError: class CoreApiError extends Error {
+    constructor(
+      readonly status: number,
+      message: string,
+      readonly body?: unknown,
+    ) {
+      super(message);
+    }
+  },
   newIdempotencyKey: () => "idempotency-key",
 }));
 
@@ -367,6 +376,65 @@ describe("Issues board", () => {
         "event-close-8",
       ),
     );
+  });
+
+  it("shows a typed retry failure without claiming success", async () => {
+    const user = userEvent.setup();
+    mocks.listProjectIssues.mockResolvedValue({
+      ...issueList,
+      items: [
+        {
+          ...issue,
+          issueLink: {
+            id: "link-7",
+            requestId: "request-7",
+            campaignId: "campaign-7",
+            candidateId: "candidate-7",
+            role: "PRIMARY",
+            state: "DONE",
+            deliveryState: "FAILED",
+            resolution: "RESOLVED",
+            pullRequestNumber: 42,
+            pullRequestUrl: "https://github.com/acme/widgets/pull/42",
+            mergeSha: "e".repeat(40),
+            mergedAt: "2026-11-08T01:00:00Z",
+            latestErrorKind: "GITHUB_UPSTREAM",
+            latestErrorDetail: "GitHub is unreachable",
+            latestErrorEventId: "event-close-7",
+          },
+        },
+      ],
+      total: 1,
+    });
+    mocks.retryIssueDelivery.mockRejectedValue(
+      new CoreApiError(
+        502,
+        "issue delivery retry did not complete every issue effect",
+        {
+          kind: "DELIVERY_RETRY_FAILED",
+          failures: [
+            {
+              kind: "GITHUB_UPSTREAM",
+              detail: "GitHub is unreachable",
+              retryable: true,
+            },
+          ],
+        },
+      ),
+    );
+    renderIssues();
+    await user.click(
+      await screen.findByRole("button", { name: /Fix the widget/ }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Retry issue effect" }),
+    );
+    expect(
+      await screen.findByText(
+        "The issue effect could not be retried. GITHUB_UPSTREAM: GitHub is unreachable",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText(/Core retried the issue effect/)).toBeNull();
   });
 
   it("distinguishes a failed Project read from an empty board", async () => {

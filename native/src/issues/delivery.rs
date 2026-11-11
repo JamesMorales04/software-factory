@@ -649,6 +649,12 @@ impl<'a> IssueDeliveryService<'a> {
         {
             return Ok(existing.id.to_string());
         }
+        if comments.truncated {
+            return Err(IssueDeliveryError::blocked(
+                "ISSUE_COMMENT_WINDOW_TRUNCATED",
+                "the bounded GitHub comment window is full and the deterministic marker was not observed; resolve manually before retrying",
+            ));
+        }
         let comment = self
             .github
             .create_issue_comment(

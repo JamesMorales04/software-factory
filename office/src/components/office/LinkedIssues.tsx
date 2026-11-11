@@ -58,6 +58,25 @@ function canRetry(event: IssueDeliveryEvent): boolean {
   return event.status === "FAILED" || event.status === "BLOCKED";
 }
 
+function retryFailureDetail(cause: unknown): string | null {
+  if (!(cause instanceof CoreApiError)) return null;
+  const body =
+    typeof cause.body === "object" && cause.body !== null
+      ? (cause.body as { failures?: unknown })
+      : null;
+  if (!Array.isArray(body?.failures)) return null;
+  const details = body.failures
+    .map((failure) => {
+      if (typeof failure !== "object" || failure === null) return null;
+      const value = failure as { kind?: unknown; detail?: unknown };
+      return typeof value.detail === "string"
+        ? `${typeof value.kind === "string" ? `${value.kind}: ` : ""}${value.detail}`
+        : null;
+    })
+    .filter((detail): detail is string => detail !== null);
+  return details.length > 0 ? details.join("; ") : null;
+}
+
 export function LinkedIssues({
   links,
   onRetried,
@@ -78,10 +97,13 @@ export function LinkedIssues({
       await coreApi.retryIssueDelivery(link.id, event.id);
       onRetried?.();
     } catch (cause) {
+      const detail = retryFailureDetail(cause);
       setError(
-        cause instanceof CoreApiError
-          ? cause.message
-          : t("linkedIssues.retryError"),
+        detail
+          ? `${t("linkedIssues.retryError")} ${detail}`
+          : cause instanceof CoreApiError
+            ? cause.message
+            : t("linkedIssues.retryError"),
       );
     } finally {
       setBusy(null);

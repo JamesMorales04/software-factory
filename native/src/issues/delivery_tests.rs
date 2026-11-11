@@ -345,6 +345,7 @@ struct FakeState {
     comment_create_calls: u32,
     successful_comments: u32,
     fail_next_comment_after_store: bool,
+    truncated_comments: bool,
     fail_close: bool,
     close_patch_calls: u32,
     successful_closes: u32,
@@ -416,6 +417,22 @@ async fn comments_handler(
     Path((_owner, _repo, number)): Path<(String, String, u64)>,
 ) -> Response {
     let state = fake.state.lock().unwrap();
+    if state.truncated_comments {
+        return Json(
+            (1..=100)
+                .map(|id| {
+                    serde_json::json!({
+                        "id": id,
+                        "body": format!("unrelated comment {id}"),
+                        "user": {"login": "octo"},
+                        "html_url": format!("https://github.com/acme/widgets/issues/{number}#issuecomment-{id}"),
+                        "created_at": "2026-01-02T00:00:00Z"
+                    })
+                })
+                .collect::<Vec<_>>(),
+        )
+        .into_response();
+    }
     let comments = state
         .comments
         .iter()
@@ -599,6 +616,10 @@ async fn comments_once_and_closes_only_after_merge() {
         assert_eq!(state.successful_comments, 1);
         assert_eq!(state.comments.len(), 1);
     }
+    assert!(
+        !*fake.state.lock().unwrap().issue_closed.get(&7).unwrap(),
+        "opening a pull request must not close the issue"
+    );
     let link = link_for_request(&fixture.db, &request_id, 7).await;
     assert_eq!(link.state, IssueLinkState::InReview);
     assert_eq!(link.delivery_state, IssueDeliveryState::Commented);
@@ -626,6 +647,48 @@ async fn comments_once_and_closes_only_after_merge() {
     assert_eq!(link.merge_sha.as_deref(), Some("e".repeat(40).as_str()));
     assert!(*fake.state.lock().unwrap().issue_closed.get(&7).unwrap());
     assert_eq!(fake.state.lock().unwrap().successful_closes, 1);
+
+    // A later blocking candidate in the same Campaign must not rewrite the
+    // board state of the already-merged exact candidate.
+    let later = "2099-01-01T00:00:00Z";
+    sqlx::query::query("INSERT INTO runs VALUES ('run-later',?1,'RUNNING',?2)")
+        .bind(&campaign.campaign_id)
+        .bind(later)
+        .execute(fixture.db.test_pool())
+        .await
+        .unwrap();
+    sqlx::query::query(
+        "INSERT INTO attempts(id,run_id,status,created_at) VALUES ('attempt-later','run-later','RUNNING',?1)",
+    )
+    .bind(later)
+    .execute(fixture.db.test_pool())
+    .await
+    .unwrap();
+    sqlx::query::query(
+        "INSERT INTO candidates
+         (id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at)
+         VALUES ('candidate-later','attempt-later',?1,?2,?3,'worker',?4)",
+    )
+    .bind("9".repeat(64))
+    .bind("8".repeat(40))
+    .bind("7".repeat(40))
+    .bind(later)
+    .execute(fixture.db.test_pool())
+    .await
+    .unwrap();
+    sqlx::query::query(
+        "INSERT INTO gate_decisions VALUES ('candidate-later','BLOCKED','[\"later\"]',?1)",
+    )
+    .bind(later)
+    .execute(fixture.db.test_pool())
+    .await
+    .unwrap();
+    let link = link_for_request(&fixture.db, &request_id, 7).await;
+    assert_eq!(
+        link.state,
+        IssueLinkState::Done,
+        "a later blocking candidate must not change the exact merged issue link"
+    );
 
     service
         .on_merge_succeeded(
@@ -872,6 +935,56 @@ async fn unauthorized_token_is_typed_and_writes_nothing() {
         assert_eq!(state.successful_comments, 0);
         assert_eq!(state.successful_closes, 0);
     }
+
+    fixture.db.close().await;
+    let _ = std::fs::remove_file(fixture.path);
+}
+
+#[tokio::test]
+async fn truncated_comment_window_blocks_without_posting() {
+    let fixture = fixture().await;
+    let request_id =
+        create_request(&fixture, "delivery-truncated", &[(7, IssueRole::Primary)]).await;
+    let campaign = seed_campaign(&fixture.db, &request_id, "truncated").await;
+    let (url, fake) = start_fake(true).await;
+    fake.state.lock().unwrap().truncated_comments = true;
+    let github = GitHubClient::with_base_url(&url, true).unwrap();
+    let credential = credential();
+    let service = IssueDeliveryService::new(&fixture.db, &github, &credential)
+        .await
+        .unwrap();
+
+    let outcome = service
+        .on_pr_opened(
+            &campaign.campaign_id,
+            &campaign.candidate_id,
+            &pull_request(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(outcome.failed, 1);
+    assert_eq!(outcome.applied, 0);
+    {
+        let state = fake.state.lock().unwrap();
+        assert_eq!(
+            state.comment_create_calls, 0,
+            "Core must not post when the marker may be outside the bounded window"
+        );
+    }
+    let link = link_for_request(&fixture.db, &request_id, 7).await;
+    assert_eq!(
+        link.latest_error.as_ref().unwrap().kind,
+        "ISSUE_COMMENT_WINDOW_TRUNCATED"
+    );
+    let comment = fixture
+        .db
+        .issue_delivery_events_for_link(&link.id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|event| event.action == IssueDeliveryAction::Comment)
+        .unwrap();
+    assert_eq!(comment.status, IssueDeliveryEventStatus::Blocked);
 
     fixture.db.close().await;
     let _ = std::fs::remove_file(fixture.path);

@@ -973,23 +973,27 @@ async fn load_link_facts(
         }
         None => None,
     };
-    let gate_outcome = match campaign_id.as_deref() {
-        Some(campaign_id) => {
+    // Gate facts belong to the exact candidate recorded on the link. A later
+    // candidate in the same Campaign must never rewrite an earlier issue's
+    // board state.
+    let gate_outcome = match (campaign_id.as_deref(), link.candidate_id.as_deref()) {
+        (Some(campaign_id), Some(candidate_id)) => {
             let gate: Option<(Option<String>,)> = sqlx::query_as::query_as(
                 "SELECT gdc.outcome
                  FROM candidates cd
                  JOIN attempts a ON a.id=cd.attempt_id
                  JOIN runs r ON r.id=a.run_id
                  LEFT JOIN gate_decisions_current gdc ON gdc.candidate_id=cd.id
-                 WHERE r.campaign_id=?1
-                 ORDER BY cd.created_at DESC,cd.id DESC LIMIT 1",
+                 WHERE r.campaign_id=?1 AND cd.id=?2
+                 LIMIT 1",
             )
             .bind(campaign_id)
+            .bind(candidate_id)
             .fetch_optional(&mut *connection)
             .await?;
             gate.and_then(|(outcome,)| outcome)
         }
-        None => None,
+        _ => None,
     };
     Ok(LinkFacts {
         lead_state: Some(lead_state),

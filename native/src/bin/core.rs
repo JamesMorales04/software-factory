@@ -3757,62 +3757,6 @@ async fn github_connection_state(app: &App) -> Result<serde_json::Value, Respons
     }))
 }
 
-async fn issue_pr_opened_receipt(
-    app: &App,
-    credential: &factory_native::github_sync::GitHubCredential,
-    campaign_id: &str,
-    candidate_id: &str,
-    pull_request: &factory_native::github::GitHubPullRequest,
-) -> serde_json::Value {
-    match factory_native::issues::IssueDeliveryService::new(&app.db, &app.github, credential).await
-    {
-        Ok(service) => match service
-            .on_pr_opened(campaign_id, candidate_id, pull_request)
-            .await
-        {
-            Ok(outcome) => json!({"status": "RECORDED", "outcome": outcome}),
-            Err(error) => issue_delivery_failure_value(&error),
-        },
-        Err(error) => issue_delivery_failure_value(&error),
-    }
-}
-
-async fn issue_merge_receipt(
-    app: &App,
-    credential: &factory_native::github_sync::GitHubCredential,
-    campaign_id: &str,
-    candidate_id: &str,
-    merge_sha: &str,
-) -> serde_json::Value {
-    match factory_native::issues::IssueDeliveryService::new(&app.db, &app.github, credential).await
-    {
-        Ok(service) => match service
-            .on_merge_succeeded(campaign_id, candidate_id, merge_sha)
-            .await
-        {
-            Ok(outcome) => json!({"status": "RECORDED", "outcome": outcome}),
-            Err(error) => issue_delivery_failure_value(&error),
-        },
-        Err(error) => issue_delivery_failure_value(&error),
-    }
-}
-
-fn issue_delivery_failure_value(
-    error: &factory_native::issues::IssueDeliveryError,
-) -> serde_json::Value {
-    tracing::warn!(
-        kind = error.kind(),
-        retryable = error.retryable(),
-        "issue delivery did not complete"
-    );
-    json!({
-        "status": if error.retryable() { "FAILED" } else { "BLOCKED" },
-        "kind": error.kind(),
-        "error": error.detail(),
-        "retryable": error.retryable(),
-    })
-}
-
 fn issue_delivery_error_response(error: factory_native::issues::IssueDeliveryError) -> Response {
     use factory_native::issues::IssueDeliveryError;
     match error {
@@ -3875,13 +3819,45 @@ async fn retry_issue_delivery(
             Err(error) => return issue_delivery_error_response(error),
         };
     match service.retry_event(&event_id, &principal_id).await {
-        Ok(outcome) => Json(json!({
-            "event": app.db.issue_delivery_event(&event_id).await.ok(),
-            "delivery": outcome,
-        }))
-        .into_response(),
+        Ok(outcome) => {
+            let event = app.db.issue_delivery_event(&event_id).await.ok();
+            let (status, body) = issue_delivery_retry_result(event, outcome);
+            (status, Json(body)).into_response()
+        }
         Err(error) => issue_delivery_error_response(error),
     }
+}
+
+fn issue_delivery_retry_result(
+    event: Option<factory_native::issues::IssueDeliveryEventRecord>,
+    outcome: factory_native::issues::IssueDeliveryOutcome,
+) -> (StatusCode, serde_json::Value) {
+    if outcome.failed > 0 || !outcome.failures.is_empty() {
+        let retryable = outcome.failures.iter().any(|failure| failure.retryable);
+        let (status, kind) = if retryable {
+            (StatusCode::BAD_GATEWAY, "DELIVERY_RETRY_FAILED")
+        } else {
+            (StatusCode::CONFLICT, "DELIVERY_RETRY_BLOCKED")
+        };
+        return (
+            status,
+            json!({
+                "error": "issue delivery retry did not complete every issue effect",
+                "kind": kind,
+                "retryable": retryable,
+                "failures": outcome.failures,
+                "event": event,
+                "delivery": outcome,
+            }),
+        );
+    }
+    (
+        StatusCode::OK,
+        json!({
+            "event": event,
+            "delivery": outcome,
+        }),
+    )
 }
 
 fn github_upstream_error(error: factory_native::github::GitHubError) -> Response {
@@ -5280,14 +5256,6 @@ async fn open_candidate_pull_request(
         Ok(gate) => gate,
         Err(response) => return response,
     };
-    let issue_delivery = issue_pr_opened_receipt(
-        &app,
-        &credential,
-        &context.campaign.id,
-        &context.candidate.id,
-        &pull_request,
-    )
-    .await;
     Json(json!({
         "campaign_id": context.campaign.id,
         "candidate_id": context.candidate.id,
@@ -5299,7 +5267,6 @@ async fn open_candidate_pull_request(
         "head_sha": branch.commit_sha,
         "base": base,
         "opened_at": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        "issue_delivery": issue_delivery,
         "source": "pull request opened through the encrypted Core GitHub connection after exact branch identity verification",
     }))
     .into_response()
@@ -5568,14 +5535,6 @@ async fn merge_candidate_pull_request(
         }
         Err(error) => return github_upstream_error(error),
     };
-    let issue_delivery = issue_merge_receipt(
-        &app,
-        &credential,
-        &context.campaign.id,
-        &context.candidate.id,
-        &outcome.merge_commit_sha,
-    )
-    .await;
     Json(json!({
         "campaign_id": context.campaign.id,
         "candidate_id": context.candidate.id,
@@ -5586,7 +5545,6 @@ async fn merge_candidate_pull_request(
         "merge_commit_sha": outcome.merge_commit_sha,
         "message": outcome.message,
         "merged_at": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        "issue_delivery": issue_delivery,
         "source": "merge performed through the encrypted Core GitHub connection only after a fresh pull request and check read with the exact expected head pinned",
     }))
     .into_response()
@@ -26583,6 +26541,49 @@ mod tests {
                 WORKSPACE_OPERATION_GRANT_MILLIS >= maximum_execution_ms + 60_000,
                 "a valid command must never outlive its operation grant"
             );
+        }
+
+        #[test]
+        fn issue_delivery_retry_is_not_success_when_failures_remain() {
+            use factory_native::issues::{IssueDeliveryFailure, IssueDeliveryOutcome};
+
+            let outcome = |retryable| IssueDeliveryOutcome {
+                campaign_id: "campaign-1".into(),
+                candidate_id: "candidate-1".into(),
+                attempted: 1,
+                applied: 0,
+                partial: 0,
+                failed: 1,
+                failures: vec![IssueDeliveryFailure {
+                    kind: "GITHUB_UPSTREAM".into(),
+                    detail: "GitHub is unreachable".into(),
+                    retryable,
+                }],
+                links: Vec::new(),
+            };
+            let (status, body) = issue_delivery_retry_result(None, outcome(true));
+            assert_eq!(status, StatusCode::BAD_GATEWAY);
+            assert_eq!(body["kind"], "DELIVERY_RETRY_FAILED");
+            assert_eq!(body["retryable"], true);
+            assert_eq!(body["failures"][0]["kind"], "GITHUB_UPSTREAM");
+
+            let (status, body) = issue_delivery_retry_result(None, outcome(false));
+            assert_eq!(status, StatusCode::CONFLICT);
+            assert_eq!(body["kind"], "DELIVERY_RETRY_BLOCKED");
+
+            let clean = IssueDeliveryOutcome {
+                campaign_id: "campaign-1".into(),
+                candidate_id: "candidate-1".into(),
+                attempted: 1,
+                applied: 1,
+                partial: 0,
+                failed: 0,
+                failures: Vec::new(),
+                links: Vec::new(),
+            };
+            let (status, body) = issue_delivery_retry_result(None, clean);
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body["delivery"]["applied"], 1);
         }
 
         #[test]
