@@ -13662,33 +13662,28 @@ fn openspec_change_for_plan(
                 .collect(),
         })
         .collect::<Vec<_>>();
-    // Every requirement must be covered by at least one task. A specification
-    // may contain more requirements than the WorkGraph has units; map tasks
-    // cyclically over the requirements and extend the task list when needed.
-    // The extra tasks reuse the last unit's scope so they cannot widen the
-    // authorized paths, and their titles bind the uncovered requirement.
+    // Tasks are the WorkGraph units. Each task carries exactly the
+    // requirements that explicitly declare that unit; the authoring boundary
+    // has already rejected an empty or unknown unit id and any uncovered unit.
     if graph.units.is_empty() {
         return Err("the WorkGraph has no units for OpenSpec tasks".into());
     }
-    let task_count = graph.units.len().max(requirements.len()).max(1);
-    let requirement_count = requirements.len().max(1);
-    let tasks = (0..task_count)
-        .map(|index| {
-            let unit = &graph.units[index.min(graph.units.len().saturating_sub(1))];
-            let requirement = requirements
-                .get(index % requirement_count)
-                .map(|requirement| requirement.id.as_str())
-                .unwrap_or("REQ-001");
+    let tasks = graph
+        .units
+        .iter()
+        .enumerate()
+        .map(|(index, unit)| {
             let mut acceptance = unit.acceptance.clone();
-            acceptance.push(format!("Requirement: {requirement}"));
-            let title = if index < graph.units.len() {
-                unit.title.clone()
-            } else {
-                format!("{} ({requirement})", unit.title)
-            };
+            for requirement in spec
+                .requirements
+                .iter()
+                .filter(|requirement| requirement.work_unit_id == unit.id)
+            {
+                acceptance.push(format!("Requirement: {}", requirement.id));
+            }
             OpenSpecTask {
                 id: format!("T{}", index + 1),
-                title,
+                title: unit.title.clone(),
                 paths: unit.paths.clone(),
                 acceptance,
                 evidence: evidence.to_vec(),
@@ -15301,7 +15296,7 @@ async fn author_agentic_spec(
     let schema = factory_native::model_output::spec_draft_schema();
     let schema_sha256 = factory_native::model_output::spec_draft_schema_sha256();
     let system_prompt = format!(
-        "You are the bounded Software Factory Spec Manager. Return ONLY one JSON object that validates against the JSON Schema below. Do not add prose, markdown, comments or unknown fields. You are read-only: you cannot use tools, write files, grant authority, approve work or change a frozen specification. Author observable formal requirements for a FORMAL_SPEC request. Every requirement must state an observable behavior and carry at least one acceptance case and at least one negative case. Acceptance and negative cases must be concrete and testable, not implementation instructions. Do not invent scope outside the objective and WorkGraph. Requirements are numbered deterministically by Core after you return; assertion and check identities are also compiled by Core.
+        "You are the bounded Software Factory Spec Manager. Return ONLY one JSON object that validates against the JSON Schema below. Do not add prose, markdown, comments or unknown fields. You are read-only: you cannot use tools, write files, grant authority, approve work or change a frozen specification. Author observable formal requirements for a FORMAL_SPEC request. Every requirement must state an observable behavior and carry at least one acceptance case and at least one negative case. Acceptance and negative cases must be concrete and testable, not implementation instructions. Do not invent scope outside the objective and WorkGraph. Every requirement MUST set workUnitId to the exact id of the WorkGraph unit that implements it; cover every WorkGraph unit with at least one requirement and never invent a unit id. Requirements are numbered deterministically by Core after you return; assertion and check identities are also compiled by Core.
 
 JSON Schema:
 {schema}"
@@ -15363,12 +15358,56 @@ JSON Schema:
                 .into_response();
         }
     };
-    if let Err(error) = factory_native::agentic::compile_spec(&draft, revision) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": error, "code": "AGENTIC_SPEC_INVALID"})),
-        )
-            .into_response();
+    let frozen = match factory_native::agentic::compile_spec(&draft, revision) {
+        Ok(frozen) => frozen,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": error, "code": "AGENTIC_SPEC_INVALID"})),
+            )
+                .into_response();
+        }
+    };
+    let unit_ids = graph
+        .units
+        .iter()
+        .map(|unit| unit.id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    for requirement in &frozen.requirements {
+        if requirement.work_unit_id.is_empty()
+            || !unit_ids.contains(requirement.work_unit_id.as_str())
+        {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": format!(
+                        "requirement {} must bind an exact WorkGraph unit id",
+                        requirement.id
+                    ),
+                    "code": "AGENTIC_SPEC_INVALID",
+                })),
+            )
+                .into_response();
+        }
+    }
+    for unit in &graph.units {
+        if !frozen
+            .requirements
+            .iter()
+            .any(|requirement| requirement.work_unit_id == unit.id)
+        {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": format!(
+                        "WorkGraph unit {} is not covered by any requirement",
+                        unit.id
+                    ),
+                    "code": "AGENTIC_SPEC_INVALID",
+                })),
+            )
+                .into_response();
+        }
     }
     let draft_json = match serde_json::to_string(&draft) {
         Ok(json) => json,
@@ -24668,6 +24707,7 @@ mod tests {
                 summary: "The endpoint is bounded.".into(),
                 requirements: vec![factory_native::agentic::SpecRequirementDraft {
                     statement: "The system SHALL return a bounded response.".into(),
+                    work_unit_id: "unit-1".into(),
                     acceptance: vec!["A valid request returns a bounded response.".into()],
                     negative: vec!["An invalid request returns a typed error.".into()],
                 }],

@@ -358,6 +358,7 @@ mod tests {
                 summary: "Bounded validator".into(),
                 requirements: vec![SpecRequirementDraft {
                     statement: "Invalid input is rejected.".into(),
+                    work_unit_id: "api".into(),
                     acceptance: vec!["invalid input returns an error".into()],
                     negative: vec!["valid input is accepted".into()],
                 }],

@@ -2571,6 +2571,11 @@ mod tests {
             summary: "Bounded validator".into(),
             requirements: vec![crate::agentic::SpecRequirementDraft {
                 statement: "Invalid input is rejected.".into(),
+                work_unit_id: graph
+                    .units
+                    .first()
+                    .map(|unit| unit.id.clone())
+                    .unwrap_or_default(),
                 acceptance: vec!["invalid input returns an error".into()],
                 negative: vec!["valid input is accepted".into()],
             }],

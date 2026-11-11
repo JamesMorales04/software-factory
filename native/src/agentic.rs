@@ -1297,6 +1297,11 @@ pub struct SpecDraftModel {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct SpecRequirementDraft {
     pub statement: String,
+    /// Exact WorkGraph unit that implements this requirement. Core validates
+    /// the id and the OpenSpec tasks are derived from this explicit mapping,
+    /// never from list position.
+    #[serde(default)]
+    pub work_unit_id: String,
     #[serde(default)]
     pub acceptance: Vec<String>,
     #[serde(default)]
@@ -1319,6 +1324,10 @@ pub struct FrozenSpec {
 pub struct FrozenRequirement {
     pub id: String,
     pub statement: String,
+    /// Exact WorkGraph unit that implements this requirement. Empty only for
+    /// legacy stored specs; new specs require a validated unit id.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub work_unit_id: String,
     pub assertions: Vec<FrozenAssertion>,
 }
 
@@ -1404,6 +1413,7 @@ pub fn compile_spec(draft: &SpecDraftModel, revision: u32) -> Result<FrozenSpec,
         requirements.push(FrozenRequirement {
             id: format!("REQ-{number:03}"),
             statement: requirement.statement.clone(),
+            work_unit_id: requirement.work_unit_id.clone(),
             assertions,
         });
     }
@@ -1663,6 +1673,7 @@ mod tests {
             summary: "Bounded calendar validation".into(),
             requirements: vec![SpecRequirementDraft {
                 statement: "Invalid dates are rejected.".into(),
+                work_unit_id: "a".into(),
                 acceptance: vec!["2025-13-01 is rejected".into()],
                 negative: vec!["2024-02-29 is accepted".into()],
             }],

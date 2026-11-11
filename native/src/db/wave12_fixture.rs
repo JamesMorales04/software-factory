@@ -559,6 +559,11 @@ impl Database {
             summary: words(objective, 400),
             requirements: vec![SpecRequirementDraft {
                 statement: "The Office shows the exact plan revision and review controls.".into(),
+                work_unit_id: graph
+                    .units
+                    .first()
+                    .map(|unit| unit.id.clone())
+                    .unwrap_or_default(),
                 acceptance: vec!["The plan review panel renders the revision.".into()],
                 negative: vec!["A stale plan hash is rejected.".into()],
             }],

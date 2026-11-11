@@ -133,6 +133,7 @@ fn formal_planning_pipeline_is_deterministic_and_traceable() {
         summary: "Expose a governed calendar export.".into(),
         requirements: vec![SpecRequirementDraft {
             statement: "The system SHALL return a calendar export.".into(),
+            work_unit_id: "export".into(),
             acceptance: vec!["A valid request returns a calendar document.".into()],
             negative: vec!["An invalid request returns a typed error.".into()],
         }],
