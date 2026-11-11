@@ -7,8 +7,11 @@ a green unit test.
 
 from __future__ import annotations
 
+import json
+import os
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -17,6 +20,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
 from environment_builder import BUILDER_POLICY_REVISION, LICENSE_POLICY_REVISION  # noqa: E402
+import environment_builder.cli as cli  # noqa: E402
 from environment_builder.cli import _resolution_file  # noqa: E402
 from environment_builder.errors import BuilderError  # noqa: E402
 from environment_builder.policy import (  # noqa: E402
@@ -515,6 +519,126 @@ class CheckExecutionTests(unittest.TestCase):
         self.assertEqual(stderr, "compiler error\n")
         self.assertFalse(stdout_truncated)
         self.assertFalse(stderr_truncated)
+
+    def test_check_uses_the_candidate_workspace_not_the_build_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            candidate = root / "candidate"
+            candidate.mkdir()
+            (candidate / "changed.txt").write_text("candidate\n", encoding="utf-8")
+            run = root / "run"
+            build_workspace = run / "workspace"
+            (build_workspace / ".devenv").mkdir(parents=True)
+            (build_workspace / "stale.txt").write_text("build\n", encoding="utf-8")
+            output = root / "output"
+            output.mkdir()
+            digest = "sha256:" + "1" * 64
+            spec = {
+                "specSha256": SHA,
+                "platform": "x86_64-linux",
+                "builderImage": "localhost/builder:dev",
+                "builderImageDigest": digest,
+                "sbomSha256": SHA,
+            }
+            plan = {"network": {"fetchAllowlist": []}, "files": []}
+            receipt = {
+                "status": "SUCCEEDED",
+                "specSha256": SHA,
+                "platform": "x86_64-linux",
+                "builderImage": "localhost/builder:dev",
+                "builderImageDigest": digest,
+                "sandboxAttestation": {
+                    "nonRoot": True,
+                    "noSecrets": True,
+                    "noHostNetwork": True,
+                    "noHostSocket": True,
+                    "noHostMount": True,
+                    "sandbox": True,
+                    "impure": False,
+                    "boundedResources": True,
+                },
+                "outputSha256": "5" * 64,
+            }
+            resources = {
+                "cpu": 2,
+                "memoryMiB": 4096,
+                "diskMiB": 10240,
+                "pids": 512,
+                "timeoutSecs": 1800,
+            }
+            check = {
+                "checkId": "candidate-visible",
+                "argv": ["true"],
+                "cwd": ".",
+                "timeoutSecs": 30,
+                "expectExit": 0,
+            }
+            request = {
+                "spec": spec,
+                "plan": plan,
+                "receipt": receipt,
+                "check": check,
+                "runDir": str(output),
+            }
+            seen: dict[str, Path] = {}
+
+            def fake_realize(workspace: Path, *_args: object, **_kwargs: object) -> str:
+                seen["realize"] = workspace
+                return "/nix/store/frozen-environment"
+
+            def fake_run_check(
+                workspace: Path,
+                _cache: Path,
+                _cwd: Path,
+                _argv: list[str],
+                **_kwargs: object,
+            ) -> tuple[int, str, str, bool, bool]:
+                seen["workspace"] = workspace
+                self.assertEqual(
+                    (workspace / "changed.txt").read_text(encoding="utf-8"),
+                    "candidate\n",
+                )
+                self.assertFalse((workspace / "stale.txt").exists())
+                return 0, "ok\n", "", False, False
+
+            args = types.SimpleNamespace(
+                request=str(root / "request.json"),
+                workspace=str(candidate),
+                output=str(output),
+                check_id=None,
+            )
+            with (
+                mock.patch.object(cli, "_load_request", return_value=request),
+                mock.patch.object(
+                    cli,
+                    "_validate_request",
+                    return_value=(spec, plan, [], resources, "2.28.3", "digest", SHA),
+                ),
+                mock.patch.object(
+                    cli,
+                    "realize_environment",
+                    side_effect=fake_realize,
+                ),
+                mock.patch.object(cli, "closure_manifest", return_value=[]),
+                mock.patch.object(
+                    cli,
+                    "environment_digest",
+                    return_value=receipt["outputSha256"],
+                ),
+                mock.patch.object(cli, "run_check", side_effect=fake_run_check),
+                mock.patch.dict(
+                    os.environ, {"FACTORY_ENVIRONMENT_BUILDER_SHARED_STORE": "1"}
+                ),
+            ):
+                self.assertEqual(cli.check(args), 0)
+
+            self.assertEqual(seen["workspace"], output / "check-workspace")
+            self.assertEqual(seen["realize"], output / "check-workspace")
+            self.assertTrue((build_workspace / "stale.txt").exists())
+            result = json.loads(
+                (output / "check-result.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(result["status"], "PASSED")
 
 
 if __name__ == "__main__":

@@ -175,6 +175,9 @@ closure digest and refuses execution if it differs from
 `receipt.outputSha256`. The output digest includes the frozen SBOM hash, so a
 different license inventory cannot silently run. A check is refused without a
 plan/spec/receipt binding; there is no implicit Rust or generic verifier image.
+Every check prepares a fresh `check-workspace` from the broker-supplied
+candidate workspace and never reuses the build-phase `workspace` directory in
+the per-spec cache; only the Nix store and other cache state persist.
 
 The sandbox attestation compares the observed cgroup memory/PID limits and
 `cpu.max` quota/period directly against the frozen plan: there is no multiplier
@@ -200,7 +203,7 @@ environment-check remains **NOT_TESTED** and is not claimed.
 `deploy/environment-builder/tests/` covers deterministic policy, receipt, SBOM,
 exact cgroup limits, fetch-policy enforcement, protected path descendants,
 rootful-Podman rejection, wrapper nonzero-exit cleanup and disk-overflow
-artifact purging (35 tests). The
+artifact purging (36 tests). The
 final `deploy/environment-builder/Containerfile` image was built and exercised
 under the unique WP1-B evidence tag
 `localhost/software-factory-environment-builder:wp1b-340fa54-r3`

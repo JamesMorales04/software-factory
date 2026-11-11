@@ -72,9 +72,11 @@ exact frozen plan CPU/memory/PIDs and the frozen check timeout. No host path,
 socket, secret, arbitrary image or client argv reaches Podman. The broker reads
 the typed `check-result.json`, returns the exit code, expected exit, pass/fail,
 bounded stdout/stderr and truncation, and confirms container cleanup while
-retaining the bounded per-spec cache. A timeout, cleanup failure, malformed
-result, hash mismatch or builder refusal is a typed `ENVIRONMENT_*` error; the
-broker never fabricates `PASSED`.
+retaining the bounded per-spec cache. The builder prepares a fresh
+`check-workspace` from the candidate volume on every check; the build-phase
+`workspace` directory in the shared cache is never reused as candidate source.
+A timeout, cleanup failure, malformed result, hash mismatch or builder refusal
+is a typed `ENVIRONMENT_*` error; the broker never fabricates `PASSED`.
 
 Worker and Verifier integration:
 
@@ -200,8 +202,9 @@ fetch/resolve.
   arguments and timeout cleanup.
 - `cargo test -p factory-native --bin factory-supervisor` — 11 passed, including
   grant/image/workspace refusal and successful typed proxy.
-- `python3 -m unittest discover -s deploy/environment-builder/tests` — 35
-  passed, including failed-check exit-code/stdout/stderr preservation.
+- `python3 -m unittest discover -s deploy/environment-builder/tests` — 36
+  passed, including failed-check exit-code/stdout/stderr preservation and
+  proof that a check uses the candidate workspace rather than the build cache.
 - `podman compose -f compose.yaml config --quiet` — exit 0.
 - `factory-architecture-check --root .` — PASS.
 - Isolated Compose observation (`podman compose -p wp1c-e2e`): bundle tar digest

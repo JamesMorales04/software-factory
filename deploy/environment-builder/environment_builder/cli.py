@@ -484,13 +484,17 @@ def check(args: argparse.Namespace) -> int:
                 "ENVIRONMENT_BUILDER_UNAVAILABLE",
                 "the builder requires a persistent verified Nix store cache; unsigned local closure import is not supported",
             )
-        build_workspace = run_dir / "workspace"
-        prepare_workspace(source_workspace, build_workspace, reuse=build_workspace.is_dir())
-        write_environment_files(build_workspace, files)
+        # A check must always see the candidate workspace supplied by the
+        # broker, never the workspace left behind by the build phase in the
+        # shared per-spec cache. Use a distinct path and recreate it on every
+        # check; only the Nix store and other cache state are preserved.
+        check_workspace = run_dir / "check-workspace"
+        prepare_workspace(source_workspace, check_workspace, reuse=False)
+        write_environment_files(check_workspace, files)
         log = BuildLog(run_dir / "check.log")
         try:
             root = realize_environment(
-                build_workspace,
+                check_workspace,
                 run_dir,
                 offline=True,
                 resources=resources,
@@ -507,11 +511,11 @@ def check(args: argparse.Namespace) -> int:
                     "ENVIRONMENT_HASH_MISMATCH",
                     "the restored environment does not match the frozen build receipt",
                 )
-            cwd = build_workspace if check_spec["cwd"] == "." else build_workspace / check_spec["cwd"]
+            cwd = check_workspace if check_spec["cwd"] == "." else check_workspace / check_spec["cwd"]
             if not cwd.is_dir():
                 fail("ENVIRONMENT_PLAN_INVALID", f"check working directory {check_spec['cwd']} is missing")
             code, stdout, stderr, stdout_truncated, stderr_truncated = run_check(
-                build_workspace,
+                check_workspace,
                 run_dir,
                 cwd,
                 check_spec["argv"],
