@@ -3774,6 +3774,9 @@ fn issue_delivery_error_response(error: factory_native::issues::IssueDeliveryErr
                 "GITHUB_NOT_FOUND" => StatusCode::NOT_FOUND,
                 "GITHUB_RATE_LIMITED" => StatusCode::TOO_MANY_REQUESTS,
                 "GITHUB_REJECTED" | "GITHUB_BLOCKED" => StatusCode::CONFLICT,
+                "ISSUE_DELIVERY_IN_PROGRESS" | "ISSUE_DELIVERY_ATTEMPTS_EXHAUSTED" => {
+                    StatusCode::CONFLICT
+                }
                 _ => StatusCode::BAD_GATEWAY,
             };
             (

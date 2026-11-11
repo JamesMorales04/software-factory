@@ -1013,7 +1013,10 @@ pub use issue_intake::{
     NewIssueIntakePolicy, NewIssueIntakePolicyV2,
 };
 mod issue_links;
-pub use issue_links::{IssueDeliveryEventCompletion, NewIssueDeliveryEvent};
+pub use issue_links::{
+    ClaimedIssueDeliveryAttempt, IssueDeliveryClaimOutcome, IssueDeliveryEventCompletion,
+    NewIssueDeliveryEvent,
+};
 pub use model_calls::{
     ModelCallDecision, ModelCallGrant, ModelCallPolicy, ModelCallRecord, ModelCallResult,
     ModelCallRole, ModelCallUsage, NewModelCallAuthorization,

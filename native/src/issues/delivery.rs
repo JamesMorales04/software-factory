@@ -7,7 +7,10 @@
 
 use std::time::Duration;
 
-use crate::db::{Database, Error as DbError, IssueDeliveryEventCompletion, NewIssueDeliveryEvent};
+use crate::db::{
+    Database, Error as DbError, IssueDeliveryClaimOutcome, IssueDeliveryEventCompletion,
+    NewIssueDeliveryEvent,
+};
 use crate::github::{GitHubClient, GitHubError, GitHubIssue, GitHubPullRequest};
 use crate::github_sync::GitHubCredential;
 use crate::issues::{
@@ -19,6 +22,7 @@ use crate::issues::{
 
 const MAX_DELIVERY_ATTEMPTS: u32 = 3;
 const RETRY_BACKOFF: Duration = Duration::from_millis(40);
+const ISSUE_DELIVERY_CLAIM_SECONDS: i64 = 60;
 
 #[derive(Debug, thiserror::Error)]
 pub enum IssueDeliveryError {
@@ -34,6 +38,10 @@ pub enum IssueDeliveryError {
     },
     #[error("issue delivery conflict: {0}")]
     Conflict(&'static str),
+    #[error("issue delivery is already in progress")]
+    InProgress { retry_at: Option<String> },
+    #[error("issue delivery attempt limit is exhausted")]
+    Exhausted,
     #[error("issue delivery record was not found")]
     NotFound,
 }
@@ -45,6 +53,8 @@ impl IssueDeliveryError {
             Self::WritePermissionRequired(_) => "GITHUB_WRITE_PERMISSION_REQUIRED",
             Self::Upstream { kind, .. } => kind,
             Self::Conflict(_) => "DELIVERY_CONFLICT",
+            Self::InProgress { .. } => "ISSUE_DELIVERY_IN_PROGRESS",
+            Self::Exhausted => "ISSUE_DELIVERY_ATTEMPTS_EXHAUSTED",
             Self::NotFound => "NOT_FOUND",
         }
     }
@@ -53,12 +63,25 @@ impl IssueDeliveryError {
         match self {
             Self::Upstream { retryable, .. } => *retryable,
             Self::Database(_) => true,
-            Self::WritePermissionRequired(_) | Self::Conflict(_) | Self::NotFound => false,
+            Self::WritePermissionRequired(_)
+            | Self::Conflict(_)
+            | Self::InProgress { .. }
+            | Self::Exhausted
+            | Self::NotFound => false,
         }
     }
 
     pub fn detail(&self) -> String {
-        self.to_string()
+        match self {
+            Self::InProgress {
+                retry_at: Some(retry_at),
+            } => format!("issue delivery is already in progress; retry after {retry_at}"),
+            _ => self.to_string(),
+        }
+    }
+
+    pub fn is_in_progress(&self) -> bool {
+        matches!(self, Self::InProgress { .. })
     }
 
     pub fn failure(&self) -> IssueDeliveryFailure {
@@ -245,6 +268,7 @@ impl<'a> IssueDeliveryService<'a> {
                         )
                         .await?;
                 }
+                Err(error) if error.is_in_progress() => {}
                 Err(error) => {
                     self.set_delivery_failure(&link, campaign_id, candidate_id, &error)
                         .await?;
@@ -342,6 +366,7 @@ impl<'a> IssueDeliveryService<'a> {
                                 )
                                 .await?;
                         }
+                        Err(error) if error.is_in_progress() => {}
                         Err(error) => {
                             self.db
                                 .set_issue_link_delivery_state(
@@ -387,6 +412,7 @@ impl<'a> IssueDeliveryService<'a> {
                                 )
                                 .await?;
                         }
+                        Err(error) if error.is_in_progress() => {}
                         Err(error) => {
                             self.db
                                 .set_issue_link_delivery_state(
@@ -466,6 +492,7 @@ impl<'a> IssueDeliveryService<'a> {
                     .set_issue_link_delivery_state(&link.id, state, delivery_state)
                     .await?;
             }
+            Err(error) if error.is_in_progress() => return Err(error),
             Err(error) => {
                 self.db
                     .set_issue_link_delivery_state(
@@ -565,7 +592,21 @@ impl<'a> IssueDeliveryService<'a> {
         let mut last_error =
             IssueDeliveryError::transient("GITHUB_DELIVERY_UNKNOWN", "issue delivery did not run");
         for _ in 0..MAX_DELIVERY_ATTEMPTS {
-            let attempt = self.db.start_issue_delivery_attempt(&event.id).await?;
+            let claim = match self
+                .db
+                .claim_issue_delivery_attempt(&event.id, ISSUE_DELIVERY_CLAIM_SECONDS)
+                .await?
+            {
+                IssueDeliveryClaimOutcome::Acquired(claim) => claim,
+                IssueDeliveryClaimOutcome::AlreadyApplied(event) => return Ok(event),
+                IssueDeliveryClaimOutcome::InProgress { retry_at } => {
+                    return Err(IssueDeliveryError::InProgress { retry_at });
+                }
+                IssueDeliveryClaimOutcome::Exhausted => {
+                    return Err(IssueDeliveryError::Exhausted);
+                }
+            };
+            let attempt_number = claim.event.attempts;
             let result = match event.action {
                 IssueDeliveryAction::Comment => self.comment_once(link, event).await,
                 IssueDeliveryAction::Label => self.label_once(link, event).await,
@@ -580,6 +621,7 @@ impl<'a> IssueDeliveryService<'a> {
                         .db
                         .complete_issue_delivery_event(
                             &event.id,
+                            &claim.claim_token,
                             IssueDeliveryEventCompletion {
                                 status: IssueDeliveryEventStatus::Applied,
                                 external_id: Some(&external_id),
@@ -588,13 +630,16 @@ impl<'a> IssueDeliveryService<'a> {
                             },
                         )
                         .await
-                        .map_err(Into::into);
+                        .map_err(map_delivery_completion_error);
                 }
                 Err(error) => {
-                    let retry = error.retryable() && attempt.attempts < MAX_DELIVERY_ATTEMPTS;
+                    let retry = error.retryable() && attempt_number < MAX_DELIVERY_ATTEMPTS;
                     last_error = error;
                     if retry {
-                        tokio::time::sleep(RETRY_BACKOFF * attempt.attempts).await;
+                        self.db
+                            .release_issue_delivery_claim(&event.id, &claim.claim_token)
+                            .await?;
+                        tokio::time::sleep(RETRY_BACKOFF * attempt_number).await;
                         continue;
                     }
                     let status = if last_error.retryable() {
@@ -605,6 +650,7 @@ impl<'a> IssueDeliveryService<'a> {
                     self.db
                         .complete_issue_delivery_event(
                             &event.id,
+                            &claim.claim_token,
                             IssueDeliveryEventCompletion {
                                 status,
                                 external_id: None,
@@ -612,7 +658,8 @@ impl<'a> IssueDeliveryService<'a> {
                                 error_detail: Some(&last_error.detail()),
                             },
                         )
-                        .await?;
+                        .await
+                        .map_err(map_delivery_completion_error)?;
                     return Err(last_error);
                 }
             }
@@ -761,21 +808,28 @@ impl<'a> IssueDeliveryService<'a> {
                     label_name: None,
                 })
                 .await?;
-            self.db
-                .complete_issue_delivery_event(
-                    &event.id,
-                    IssueDeliveryEventCompletion {
-                        status: if error.retryable() {
-                            IssueDeliveryEventStatus::Failed
-                        } else {
-                            IssueDeliveryEventStatus::Blocked
+            if let IssueDeliveryClaimOutcome::Acquired(claim) = self
+                .db
+                .claim_issue_delivery_attempt(&event.id, ISSUE_DELIVERY_CLAIM_SECONDS)
+                .await?
+            {
+                self.db
+                    .complete_issue_delivery_event(
+                        &event.id,
+                        &claim.claim_token,
+                        IssueDeliveryEventCompletion {
+                            status: if error.retryable() {
+                                IssueDeliveryEventStatus::Failed
+                            } else {
+                                IssueDeliveryEventStatus::Blocked
+                            },
+                            external_id: None,
+                            error_kind: Some(error.kind()),
+                            error_detail: Some(&error.detail()),
                         },
-                        external_id: None,
-                        error_kind: Some(error.kind()),
-                        error_detail: Some(&error.detail()),
-                    },
-                )
-                .await?;
+                    )
+                    .await?;
+            }
             self.db
                 .set_issue_link_delivery_state(
                     &link.id,
@@ -885,6 +939,13 @@ fn outcome_from_links(
         failed,
         failures,
         links,
+    }
+}
+
+fn map_delivery_completion_error(error: DbError) -> IssueDeliveryError {
+    match error {
+        DbError::Conflict(_) => IssueDeliveryError::InProgress { retry_at: None },
+        other => other.into(),
     }
 }
 
