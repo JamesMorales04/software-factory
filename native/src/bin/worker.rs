@@ -3255,8 +3255,16 @@ async fn execute_codex_tool(
     let decision = decide_tool(context, tool, &path, &content, &argv, timeout_secs);
     match decision {
         Ok(ToolDecision::Write) => {
+            if progress.content_unchanged(&path, &content) {
+                post_tool_event(context, call_id, tool, "DENY", "identical content").await?;
+                return Ok((
+                    false,
+                    "identical content: the file is unchanged; a frozen check failed, so change the content to satisfy it".into(),
+                ));
+            }
             post_tool_event(context, call_id, tool, "ALLOW", "path authorized").await?;
-            progress.observe_write(&path, &content);
+            let path_for_progress = path.clone();
+            let content_for_progress = content.clone();
             let file = factory_native::execution::AppliedFile { path, content };
             match supervisor_write(
                 context,
@@ -3269,6 +3277,7 @@ async fn execute_codex_tool(
             {
                 Ok(()) => {
                     tool_state.written = true;
+                    progress.observe_write(&path_for_progress, &content_for_progress);
                     // A changed candidate invalidates earlier check receipts.
                     tool_state.passed_checks.clear();
                     post_tool_event(context, call_id, tool, "RESULT", "write applied").await?;
