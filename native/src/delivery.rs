@@ -30,7 +30,7 @@ use crate::github::{
 use crate::github_sync::GitHubCredential;
 use crate::issues::{IssueDeliveryError, IssueDeliveryOutcome};
 use crate::planning::ReviewerRole;
-use crate::quality::{GateOutcome, ReceiptResult};
+use crate::quality::{CandidateFinalSource, GateOutcome, ReceiptResult};
 use crate::workspace::verify_candidate_commit;
 
 pub const FRESHNESS_WINDOW_SECS: i64 = 120;
@@ -306,13 +306,15 @@ impl DeliveryPolicyInput {
                 return Err("required check names must be 1-256 single-line characters".into());
             }
         }
-        if self.r1_enabled
-            && (self.post_merge_check_id.trim().is_empty()
-                || self.post_merge_check_id.len() > MAX_CHECK_NAME_CHARS
-                || self.post_merge_check_id.contains('\n')
-                || self.post_merge_check_id.contains('\r'))
+        if self.post_merge_check_id.trim().is_empty()
+            || self.post_merge_check_id.len() > MAX_CHECK_NAME_CHARS
+            || self.post_merge_check_id.contains('\n')
+            || self.post_merge_check_id.contains('\r')
         {
-            return Err("R1 auto-merge requires a bounded post-merge check id".into());
+            return Err(
+                "delivery requires a bounded post-merge check id; every R1 merge must run it"
+                    .into(),
+            );
         }
         if !(1..=MAX_POST_MERGE_TIMEOUT_SECS).contains(&self.post_merge_timeout_secs) {
             return Err(format!(
@@ -518,6 +520,7 @@ pub struct CandidateDeliveryFacts {
     pub base_commit: String,
     pub risk_class: DeliveryRisk,
     pub latest: bool,
+    pub salvage_requires_human_review: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -659,6 +662,21 @@ pub fn evaluate_delivery(input: &DeliveryEvaluationInput<'_>) -> DeliveryDecisio
         return denied(
             "CANDIDATE_SUPERSEDED",
             "the candidate is not the latest eligible candidate for its Attempt",
+        );
+    }
+    if input.candidate.salvage_requires_human_review {
+        return denied(
+            "SALVAGE_HUMAN_REVIEW_REQUIRED",
+            "R1/R2/R3 stagnation salvage requires authenticated human review of the final-source and salvage evidence and is never auto-merged",
+        );
+    }
+
+    if input.candidate.risk_class == DeliveryRisk::R1
+        && policy.post_merge_check_id.trim().is_empty()
+    {
+        return denied(
+            "POST_MERGE_CHECK_MISSING",
+            "every R1 merge requires a configured post-merge check",
         );
     }
 
@@ -1003,6 +1021,9 @@ pub struct DeliveryStatus {
     pub candidate_sha: String,
     pub project_id: String,
     pub risk_class: DeliveryRisk,
+    pub final_source: CandidateFinalSource,
+    pub salvage_requires_human_review: bool,
+    pub salvage_evidence: Option<CandidateSalvageEvidenceRecord>,
     pub gate_outcome: Option<GateOutcome>,
     pub gate_revision: Option<String>,
     pub policy: Option<DeliveryPolicy>,
@@ -1129,6 +1150,34 @@ pub struct DeliveryProjection {
     pub incidents: Vec<DeliveryIncidentRecord>,
     pub reverts: Vec<DeliveryRevertRecord>,
     pub issue_receipts: Vec<DeliveryIssueReceiptRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CandidateSalvageEvidenceRecord {
+    pub candidate_id: String,
+    pub commit_sha: String,
+    pub attempt_id: String,
+    pub work_item_id: String,
+    pub frozen_checks: u64,
+    pub passed_checks: u64,
+    pub written: bool,
+    pub decision: String,
+    pub changed_paths: Vec<String>,
+    pub check_receipt_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CandidateSalvageRecord {
+    pub final_source: CandidateFinalSource,
+    pub evidence: Option<CandidateSalvageEvidenceRecord>,
+}
+
+impl CandidateSalvageRecord {
+    pub fn requires_human_review(&self) -> bool {
+        self.final_source == CandidateFinalSource::StagnationSalvage
+    }
 }
 
 #[derive(Debug)]
@@ -1273,6 +1322,7 @@ struct DeliveryContext {
     binding: ProjectGitHubBinding,
     gate: Option<GateDeliveryFacts>,
     risk: DeliveryRisk,
+    salvage: CandidateSalvageRecord,
     candidate_base: String,
     base_branch: String,
     policy: Option<DeliveryPolicy>,
@@ -1718,6 +1768,14 @@ pub async fn load_delivery_status(
         Ok((_, changed_paths)) => revalidate_risk(recorded_risk, &changed_paths),
         Err(_) => DeliveryRisk::Unknown,
     };
+    let salvage = db.candidate_salvage_record(&candidate.id).await.ok();
+    let final_source = salvage
+        .as_ref()
+        .map(|record| record.final_source)
+        .unwrap_or(candidate.final_source);
+    let salvage_requires_human_review =
+        final_source == CandidateFinalSource::StagnationSalvage && risk != DeliveryRisk::R0;
+    let salvage_evidence = salvage.and_then(|record| record.evidence);
     let mut pull_request = None;
     let mut checks = None;
     let mut protection = None;
@@ -1786,6 +1844,9 @@ pub async fn load_delivery_status(
         candidate_sha: candidate.commit_sha,
         project_id: project.id,
         risk_class: risk,
+        final_source,
+        salvage_requires_human_review,
+        salvage_evidence,
         gate_revision: gate.as_ref().map(|record| record.decided_at.clone()),
         gate_outcome: gate.map(|record| record.outcome),
         policy: projection.policy.clone(),
@@ -2195,6 +2256,8 @@ impl<'a, H: DeliveryIssueHook> DeliveryService<'a, H> {
             base_commit: context.candidate_base.clone(),
             risk_class: context.risk,
             latest: true,
+            salvage_requires_human_review: context.salvage.requires_human_review()
+                && context.risk != DeliveryRisk::R0,
         };
         let security_reviewed = self.security_reviewed(&context.candidate.id).await?;
         let charter = self
@@ -2507,7 +2570,7 @@ impl<'a, H: DeliveryIssueHook> DeliveryService<'a, H> {
             )
             .with_attempt(incident.attempt_id));
         }
-        if authorization == DeliveryAuthorization::CharterR1 {
+        if context.risk == DeliveryRisk::R1 {
             match self
                 .await_post_merge_check(&attempt, &context, &policy, &merge_sha)
                 .await
@@ -2641,6 +2704,25 @@ impl<'a, H: DeliveryIssueHook> DeliveryService<'a, H> {
         crate::github::validate_default_branch(&base_branch)
             .map_err(|_| DeliveryError::blocked("BASE_MISMATCH", "base branch is invalid"))?;
         let candidate_base = self.db.candidate_base_commit(&candidate.id).await?;
+        let salvage = self
+            .db
+            .candidate_salvage_record(&candidate.id)
+            .await
+            .map_err(|error| match error {
+                DbError::Invalid(_) => DeliveryError::blocked(
+                    "SALVAGE_EVIDENCE_REQUIRED",
+                    "stagnation salvage evidence is missing or malformed",
+                ),
+                other => other.into(),
+            })?;
+        if salvage.final_source == CandidateFinalSource::StagnationSalvage
+            && salvage.evidence.is_none()
+        {
+            return Err(DeliveryError::blocked(
+                "SALVAGE_EVIDENCE_REQUIRED",
+                "a stagnation salvage candidate has no exact salvage evidence",
+            ));
+        }
         let (verified, changed_paths) =
             verify_candidate(&project, &candidate_base, &candidate).await?;
         if !verified
@@ -2653,6 +2735,18 @@ impl<'a, H: DeliveryIssueHook> DeliveryService<'a, H> {
                 "candidate commit or tree no longer resolves exactly",
             ));
         }
+        if let Some(evidence) = salvage.evidence.as_ref() {
+            let mut recorded = evidence.changed_paths.clone();
+            let mut actual = changed_paths.clone();
+            recorded.sort();
+            actual.sort();
+            if recorded != actual {
+                return Err(DeliveryError::blocked(
+                    "SALVAGE_EVIDENCE_REQUIRED",
+                    "stagnation salvage evidence does not match the exact candidate diff",
+                ));
+            }
+        }
         let authorized = match DeliveryRisk::parse(&action.risk) {
             Some(risk) => risk,
             None => self
@@ -2664,6 +2758,12 @@ impl<'a, H: DeliveryIssueHook> DeliveryService<'a, H> {
                 .unwrap_or(DeliveryRisk::Unknown),
         };
         let risk = revalidate_risk(authorized, &changed_paths);
+        if salvage.requires_human_review() && risk != DeliveryRisk::R0 {
+            return Err(DeliveryError::blocked(
+                "SALVAGE_HUMAN_REVIEW_REQUIRED",
+                "R1/R2/R3 stagnation salvage requires authenticated human review and is never auto-merged",
+            ));
+        }
         let gate_record = self.db.gate_for_candidate(&candidate.id).await?;
         let gate = gate_record.map(|record| GateDeliveryFacts {
             candidate_id: record.candidate_id,
@@ -2681,6 +2781,7 @@ impl<'a, H: DeliveryIssueHook> DeliveryService<'a, H> {
             binding,
             gate,
             risk,
+            salvage,
             candidate_base,
             base_branch,
             policy,
@@ -3278,6 +3379,9 @@ fn delivery_block_kind(code: &str) -> &'static str {
         "DELIVERY_CREDENTIAL_UNAVAILABLE" => "DELIVERY_CREDENTIAL_UNAVAILABLE",
         "IDEMPOTENCY_CONFLICT" => "IDEMPOTENCY_CONFLICT",
         "OWNER_APPROVAL_REQUIRED" => "OWNER_APPROVAL_REQUIRED",
+        "SALVAGE_HUMAN_REVIEW_REQUIRED" => "SALVAGE_HUMAN_REVIEW_REQUIRED",
+        "SALVAGE_EVIDENCE_REQUIRED" => "SALVAGE_EVIDENCE_REQUIRED",
+        "FINAL_SOURCE_REQUIRED" => "FINAL_SOURCE_REQUIRED",
         _ => "DELIVERY_BLOCKED",
     }
 }

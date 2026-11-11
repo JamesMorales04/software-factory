@@ -3965,6 +3965,15 @@ export const en = {
   "deliveryPolicy.expiresAt": "Expiry (RFC3339, optional)",
   "deliveryPolicy.ownerOnly":
     "Only an authenticated owner operation can append a policy revision.",
+  "deliveryPolicy.manualBases": "Manual base branches",
+  "deliveryPolicy.manualBasesHint":
+    "Comma-separated protected branches allowed for manual delivery. The protected default branch is always available.",
+  "delivery.baseBranch": "Base branch",
+  "delivery.salvage": "Salvage final source",
+  "delivery.salvageR0":
+    "R0 stagnation salvage is eligible for the ordinary Gate and R0 policy.",
+  "delivery.salvageReviewRequired":
+    "R1/R2/R3 stagnation salvage requires authenticated human review of the final-source and salvage evidence. It is never auto-merged.",
 } as const;
 
 export type MessageKey = keyof typeof en;

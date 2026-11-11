@@ -17,7 +17,13 @@ function policyError(cause: unknown, fallback: string): string {
   return cause instanceof CoreApiError ? cause.message : fallback;
 }
 
-function formFromPolicy(policy: DeliveryPolicy | null) {
+function formFromPolicy(policy: DeliveryPolicy | null, defaultBranch = "") {
+  const manualBases =
+    policy?.manualBaseBranches && policy.manualBaseBranches.length > 0
+      ? policy.manualBaseBranches
+      : defaultBranch
+        ? [defaultBranch]
+        : [];
   return {
     enabled: policy?.mode === "RISK_TIERED",
     r1Enabled: Boolean(policy?.r1Enabled),
@@ -26,6 +32,7 @@ function formFromPolicy(policy: DeliveryPolicy | null) {
     timeout: String(policy?.postMergeTimeoutSecs ?? 900),
     killSwitch: Boolean(policy?.killSwitch),
     expiresAt: policy?.expiresAt ?? "",
+    manualBases: manualBases.join(", "),
   };
 }
 
@@ -45,7 +52,7 @@ export function DeliveryPolicyEditor({ projectId }: { projectId: string }) {
     try {
       const next = await coreApi.getProjectDeliveryPolicy(projectId);
       setView(next);
-      setForm(formFromPolicy(next.policy));
+      setForm(formFromPolicy(next.policy, next.binding?.default_branch));
     } catch (cause) {
       setError(policyError(cause, t("deliveryPolicy.error")));
     } finally {
@@ -74,7 +81,10 @@ export function DeliveryPolicyEditor({ projectId }: { projectId: string }) {
         post_merge_timeout_secs: Number(form.timeout),
         kill_switch: form.killSwitch,
         expires_at: form.expiresAt.trim() || null,
-        manual_base_branches: result_default_bases(view),
+        manual_base_branches: form.manualBases
+          .split(",")
+          .map((value) => value.trim())
+          .filter(Boolean),
       });
       setView((current) =>
         current
@@ -87,7 +97,7 @@ export function DeliveryPolicyEditor({ projectId }: { projectId: string }) {
             }
           : current,
       );
-      setForm(formFromPolicy(result.policy));
+      setForm(formFromPolicy(result.policy, result.binding.default_branch));
       setNotice(t("deliveryPolicy.saved"));
     } catch (cause) {
       setActionError(policyError(cause, t("deliveryPolicy.error")));
@@ -227,6 +237,17 @@ export function DeliveryPolicyEditor({ projectId }: { projectId: string }) {
             }))
           }
         />
+        <Input
+          label={t("deliveryPolicy.manualBases")}
+          help={t("deliveryPolicy.manualBasesHint")}
+          value={form.manualBases}
+          onChange={(event) =>
+            setForm((current) => ({
+              ...current,
+              manualBases: event.target.value,
+            }))
+          }
+        />
         <Checkbox
           checked={form.killSwitch}
           onChange={(event) =>
@@ -261,15 +282,4 @@ export function DeliveryPolicyEditor({ projectId }: { projectId: string }) {
       </p>
     </Panel>
   );
-}
-
-function result_default_bases(
-  view: ProjectDeliveryPolicyView | null,
-): string[] {
-  if (!view?.binding) return [];
-  const policy = view.policy;
-  if (policy && policy.manualBaseBranches.length > 0) {
-    return policy.manualBaseBranches;
-  }
-  return [view.binding.default_branch];
 }

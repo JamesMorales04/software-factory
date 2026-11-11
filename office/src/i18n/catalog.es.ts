@@ -4113,4 +4113,13 @@ export const es: Catalog = {
   "deliveryPolicy.expiresAt": "Caducidad (RFC3339, opcional)",
   "deliveryPolicy.ownerOnly":
     "Solo una operación autenticada del owner puede añadir una revisión de política.",
+  "deliveryPolicy.manualBases": "Ramas base manuales",
+  "deliveryPolicy.manualBasesHint":
+    "Ramas protegidas separadas por comas permitidas para entrega manual. La rama protegida por defecto siempre está disponible.",
+  "delivery.baseBranch": "Rama base",
+  "delivery.salvage": "Origen final de salvamento",
+  "delivery.salvageR0":
+    "El salvamento por estancamiento R0 es elegible para el Gate y la política R0 ordinarios.",
+  "delivery.salvageReviewRequired":
+    "El salvamento por estancamiento R1/R2/R3 requiere revisión humana autenticada del origen final y la evidencia. Nunca se auto-mergea.",
 };

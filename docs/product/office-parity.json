@@ -1161,7 +1161,8 @@
     "open or reuse the exact-candidate pull request",
     "deliver an eligible R0/R1 candidate automatically or confirm an R2/R3/manual merge",
     "inspect blockers, checks, protection, merge SHA and issue receipts",
-    "record a manual revert after a post-merge incident"
+    "record a manual revert after a post-merge incident",
+    "inspect final_source/salvage state and the R1+ human-review hold"
    ],
    "states": [
     "loading",
@@ -1181,13 +1182,15 @@
     "incident-open",
     "needs-attention",
     "reverted",
-    "responsive"
+    "responsive",
+    "salvage-r0",
+    "salvage-human-review-required"
    ],
    "acceptance": [
     "office/src/components/office/CampaignDelivery.test.tsx",
     "office/src/components/office/DeliveryPolicyEditor.test.tsx"
    ],
-   "notes": "Core remains the only delivery authority. Gate ACCEPTED is necessary but never sufficient. R0 auto-merge requires an enabled RISK_TIERED policy; R1 adds explicit opt-in, a current Owner Charter delivery grant and a post-merge check; R2/R3/unknown are manual. A failed post-merge check opens an incident, freezes auto-merge and requires a manual revert. Real Chromium acceptance remains pending."
+   "notes": "Core remains the only delivery authority. Gate ACCEPTED is necessary but never sufficient. R0 auto-merge requires an enabled RISK_TIERED policy; R1 adds explicit opt-in, a current Owner Charter delivery grant and a post-merge check; R2/R3/unknown are manual. A failed post-merge check opens an incident, freezes auto-merge and requires a manual revert. Real Chromium acceptance remains pending. R1/R2/R3 stagnation salvage is blocked with SALVAGE_HUMAN_REVIEW_REQUIRED; R0 salvage remains on the ordinary R0 path. Every R1 merge, including owner-confirmed manual delivery, runs the post-merge check."
   },
   "CAP-067": {
    "name": "Delivery policy editor and incident control",
@@ -1209,7 +1212,8 @@
     "toggle risk-tiered delivery, R1 opt-in and the kill switch",
     "set required checks, post-merge check, timeout and expiry",
     "refresh delivery state and inspect blockers",
-    "record a manual revert after an incident"
+    "record a manual revert after an incident",
+    "configure and select supported manual delivery base branches"
    ],
    "states": [
     "loading",
@@ -1221,13 +1225,14 @@
     "risk-tiered",
     "incident-open",
     "reverted",
-    "responsive"
+    "responsive",
+    "manual-base-selection"
    ],
    "acceptance": [
     "office/src/components/office/CampaignDelivery.test.tsx",
     "office/src/components/office/DeliveryPolicyEditor.test.tsx"
    ],
-   "notes": "Office never receives the GitHub token and cannot merge without a fresh Core eligibility read. R2/R3/unknown remain manual. No decorative action is offered; every control invokes an authenticated Core operation."
+   "notes": "Office never receives the GitHub token and cannot merge without a fresh Core eligibility read. R2/R3/unknown remain manual. No decorative action is offered; every control invokes an authenticated Core operation. The policy editor displays non-default manual bases and the Campaign panel can select them for manual delivery."
   }
  },
  "deferred": [

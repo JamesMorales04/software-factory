@@ -1515,7 +1515,7 @@ capabilities:
     - office/src/components/office/CampaignDelivery.test.tsx
     - office/src/components/office/DeliveryPolicyEditor.test.tsx
   acceptance:
-    deterministic: R0 auto-merges only under an enabled RISK_TIERED policy; R1 requires opt-in, a matching Owner Charter delivery grant and a post-merge check; R2/R3/unknown stay manual; the exact candidate/head/base, Gate, policy revision, checks and branch protection are re-read immediately before the merge; duplicate attempts replay without a second write; a failed post-merge check opens an incident and never auto-reverts.
+    deterministic: R0 auto-merges only under an enabled RISK_TIERED policy; R1 requires opt-in, a matching Owner Charter delivery grant and a post-merge check; every R1 merge, including an owner-confirmed manual merge, runs the post-merge check; R2/R3/unknown stay manual; the exact candidate/head/base, Gate, policy revision, checks, branch protection and final_source/salvage evidence are re-read immediately before the merge; R1/R2/R3 STAGNATION_SALVAGE requires authenticated human review and is never auto-merged; duplicate attempts replay without a second write; a failed post-merge check opens an incident and never auto-reverts.
     real: Exercise an authorized disposable GitHub repository through policy configuration, exact-candidate push, PR open, protected merge, issue close and a manual revert.
   evidence:
     deterministic:
@@ -1528,6 +1528,7 @@ capabilities:
   - The deterministic fake-GitHub and local bare-remote journey does not certify real GitHub branch protection, permissions or merge behavior.
   - R0 auto-merge defaults to disabled because a Project must append a RISK_TIERED policy and configure required checks.
   - A post-merge failure freezes auto-merge and requires a manual, reviewed revert; Factory does not auto-revert.
+  - No authenticated human-review record exists yet for R1/R2/R3 salvage, so delivery blocks it with SALVAGE_HUMAN_REVIEW_REQUIRED rather than inventing approval.
   - Real authorized GitHub delivery remains NOT_TESTED.
   blockers:
   - Authorized disposable GitHub repository, write credential and protected branch are required for real acceptance.
@@ -3311,7 +3312,7 @@ capabilities:
     - office/src/components/office/DeliveryPolicyEditor.test.tsx
   acceptance:
     deterministic: Office shows the policy revision, risk tier, PR, checks, blockers, auto/manual status, merge SHA, issue receipts and incident/revert state from Core; every control invokes an authenticated Core operation; no token or invented merge state reaches the browser.
-    real: A browser journey appends a policy, opens a PR, delivers an eligible candidate and records a manual revert after a post-merge incident at desktop, tablet and 320 px in EN and ES.
+    real: A browser journey appends a policy with supported manual bases, selects a manual base, opens a PR, delivers an eligible candidate and records a manual revert after a post-merge incident at desktop, tablet and 320 px in EN and ES.
   evidence:
     deterministic:
     - office/src/components/office/CampaignDelivery.test.tsx

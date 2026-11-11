@@ -642,6 +642,82 @@ async fn setup_fixture(risk: &str) -> Fixture {
     }
 }
 
+async fn setup_salvage_fixture(risk: &str, with_evidence: bool) -> Fixture {
+    let mut fixture = setup_fixture(risk).await;
+    let now = Utc::now().to_rfc3339();
+    sqlx::query::query(
+        "INSERT INTO attempts(id,run_id,status,created_at)
+         VALUES ('attempt-salvage','run-1','RUNNING',?1)",
+    )
+    .bind(&now)
+    .execute(fixture.db.test_pool())
+    .await
+    .unwrap();
+    sqlx::query::query(
+        "INSERT INTO candidates
+         (id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at,final_source)
+         VALUES ('candidate-salvage','attempt-salvage',?1,?2,?3,'worker',?4,
+                 'STAGNATION_SALVAGE')",
+    )
+    .bind("a".repeat(64))
+    .bind(&fixture.repo.candidate)
+    .bind(&fixture.repo.tree)
+    .bind(&now)
+    .execute(fixture.db.test_pool())
+    .await
+    .unwrap();
+    sqlx::query::query(
+        "INSERT INTO gate_decisions(candidate_id,outcome,reasons_json,decided_at)
+         VALUES ('candidate-salvage','ACCEPTED','[]',?1)",
+    )
+    .bind(&now)
+    .execute(fixture.db.test_pool())
+    .await
+    .unwrap();
+    if with_evidence {
+        let detail = serde_json::json!({
+            "candidateId": "candidate-salvage",
+            "commitSha": fixture.repo.candidate,
+            "attemptId": "attempt-salvage",
+            "campaignId": "campaign-1",
+            "workItemId": "unit-1",
+            "modelTurns": 2,
+            "finalNudges": 1,
+            "frozenChecks": 1,
+            "passedChecks": 1,
+            "written": true,
+            "decision": "DIAGNOSE",
+            "reason": "DIAGNOSE_WITH_WRITE_AND_ALL_FROZEN_CHECKS_PASS",
+            "policyId": "policy-1",
+            "authorizationId": "authorization-1",
+            "diagnoseCheckpointId": "checkpoint-1",
+            "stagnantCheckpoints": 2,
+            "unsuccessfulReplans": 0,
+            "diff": {
+                "changedFiles": 1,
+                "changedPaths": ["src/lib.rs"],
+                "diffStat": "1 file changed"
+            },
+            "checkReceipts": [{
+                "checkId": "ci",
+                "receiptId": "receipt-1",
+                "resultSha256": "b".repeat(64)
+            }]
+        });
+        sqlx::query::query(
+            "INSERT INTO events(subject_id,kind,detail,recorded_at)
+             VALUES ('candidate-salvage','worker.stagnation_finalized',?1,?2)",
+        )
+        .bind(detail.to_string())
+        .bind(&now)
+        .execute(fixture.db.test_pool())
+        .await
+        .unwrap();
+    }
+    fixture.candidate_id = "candidate-salvage".into();
+    fixture
+}
+
 fn credential() -> GitHubCredential {
     GitHubCredential::new(1, SecretValue::from_string(TOKEN.into())).unwrap()
 }
@@ -792,6 +868,7 @@ fn facts<'a>(
         base_commit: "base".into(),
         risk_class: risk,
         latest: true,
+        salvage_requires_human_review: false,
     }));
     let gate = Box::leak(Box::new(GateDeliveryFacts {
         candidate_id: "candidate".into(),
@@ -1046,9 +1123,10 @@ fn policy_input_requires_squash_and_r1_post_merge_check() {
     };
     assert!(input.validate("main").is_err());
     input.merge_method = "squash".into();
-    input.r1_enabled = true;
     assert!(input.validate("main").is_err());
     input.post_merge_check_id = "post-merge".into();
+    assert!(input.validate("main").is_ok());
+    input.r1_enabled = true;
     assert!(input.validate("main").is_ok());
 }
 
@@ -1214,6 +1292,81 @@ async fn r1_with_opt_in_charter_and_post_merge_check_merges() {
     assert_eq!(post.len(), 1);
     assert_eq!(post[0].status, "PASSED");
     assert_eq!(hook.calls(), vec!["pr_opened", "merge_succeeded"]);
+}
+
+#[tokio::test]
+async fn r1_r2_r3_salvage_never_auto_merges_even_with_owner_confirmation() {
+    for risk in ["R1", "R2", "R3"] {
+        let fixture = setup_salvage_fixture(risk, true).await;
+        let hook = RecordingHook::default();
+        let error = deliver(&fixture, &hook, true).await.unwrap_err();
+        assert_eq!(error.kind(), "SALVAGE_HUMAN_REVIEW_REQUIRED", "risk {risk}");
+        let fake = fixture.fake.lock().unwrap();
+        assert_eq!(fake.merge_calls.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[tokio::test]
+async fn r1_salvage_requires_exact_core_evidence() {
+    let fixture = setup_salvage_fixture("R1", false).await;
+    let hook = RecordingHook::default();
+    let error = deliver(&fixture, &hook, false).await.unwrap_err();
+    assert_eq!(error.kind(), "SALVAGE_EVIDENCE_REQUIRED");
+    let fake = fixture.fake.lock().unwrap();
+    assert_eq!(fake.merge_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn r0_salvage_remains_eligible_for_the_ordinary_r0_policy() {
+    let fixture = setup_salvage_fixture("R0", true).await;
+    let hook = RecordingHook::default();
+    let run = deliver(&fixture, &hook, false).await.unwrap();
+    assert_eq!(run.attempt.state, DeliveryAttemptState::Merged);
+}
+
+#[tokio::test]
+async fn manually_confirmed_r1_runs_the_post_merge_check() {
+    let fixture = setup_fixture("R1").await;
+    let hook = RecordingHook::default();
+    let run = deliver(&fixture, &hook, true).await.unwrap();
+    assert_eq!(run.attempt.state, DeliveryAttemptState::Merged);
+    assert_eq!(
+        run.attempt.authorization,
+        Some(DeliveryAuthorization::OwnerManual)
+    );
+    let post = fixture
+        .db
+        .delivery_projection(&fixture.campaign_id, &fixture.candidate_id)
+        .await
+        .unwrap()
+        .post_merge_checks;
+    assert_eq!(post.len(), 1);
+    assert_eq!(post[0].status, "PASSED");
+}
+
+#[tokio::test]
+async fn manually_confirmed_r1_post_merge_failure_opens_incident() {
+    let fixture = setup_fixture("R1").await;
+    fake_set(&fixture.fake, |state| {
+        state.post_merge_conclusion = "failure".into();
+    });
+    let hook = RecordingHook::default();
+    let error = deliver(&fixture, &hook, true).await.unwrap_err();
+    assert_eq!(error.kind(), "POST_MERGE_CHECK_FAILED");
+    let attempt = fixture
+        .db
+        .latest_delivery_attempt(&fixture.campaign_id, &fixture.candidate_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(attempt.state, DeliveryAttemptState::NeedsAttention);
+    let incident = fixture
+        .db
+        .active_delivery_incident("project")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(incident.kind, "POST_MERGE_CHECK_FAILED");
 }
 
 #[tokio::test]

@@ -133,6 +133,61 @@ describe("DeliveryPolicyEditor", () => {
     expect(screen.getByText(/Current revision 1/)).toBeDefined();
   });
 
+  it("displays and submits non-default manual base branches", async () => {
+    const policy = {
+      schemaVersion: 1,
+      projectId: "project-1",
+      revision: 1,
+      policySha256: "b".repeat(64),
+      mode: "MANUAL" as const,
+      r1Enabled: false,
+      autoMergeBaseBranch: "main",
+      manualBaseBranches: ["main", "release"],
+      requiredChecks: ["ci"],
+      mergeMethod: "squash",
+      postMergeCheckRequired: true,
+      postMergeCheckId: "post-merge",
+      postMergeTimeoutSecs: 900,
+      killSwitch: false,
+      createdBy: "owner",
+      createdAt: "2026-11-02T00:00:00Z",
+      expiresAt: null,
+    };
+    mocks.getProjectDeliveryPolicy.mockResolvedValue({
+      ...view,
+      policy,
+      revisions: [policy],
+    });
+    mocks.updateProjectDeliveryPolicy.mockResolvedValue({
+      policy: {
+        ...policy,
+        revision: 2,
+        manualBaseBranches: ["main", "release", "hotfix"],
+      },
+      created: true,
+      binding: view.binding,
+    });
+    const user = userEvent.setup();
+    renderEditor();
+    const input = (await screen.findByLabelText(
+      "Manual base branches",
+    )) as HTMLInputElement;
+    expect(input.value).toBe("main, release");
+    await user.clear(input);
+    await user.type(input, "main, release, hotfix");
+    await user.click(
+      screen.getByRole("button", { name: "Append policy revision" }),
+    );
+    await waitFor(() =>
+      expect(mocks.updateProjectDeliveryPolicy).toHaveBeenCalledWith(
+        "project-1",
+        expect.objectContaining({
+          manual_base_branches: ["main", "release", "hotfix"],
+        }),
+      ),
+    );
+  });
+
   it("shows the unbound state instead of a decorative editor", async () => {
     mocks.getProjectDeliveryPolicy.mockResolvedValue({
       ...view,

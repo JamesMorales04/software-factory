@@ -9,7 +9,7 @@ import {
 import { formatTimestamp, shortId } from "../../format";
 import { useI18n } from "../../i18n";
 import { Button } from "../ui/Button";
-import { Checkbox, Input, Textarea } from "../ui/Field";
+import { Checkbox, Input, Select, Textarea } from "../ui/Field";
 import { ErrorState, LoadingState, Panel } from "../ui/Surface";
 import { StatusBadge } from "./StatusBadge";
 
@@ -66,6 +66,7 @@ export function CampaignDelivery({
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState<"open" | "merge" | "revert" | null>(null);
   const [manualConfirmed, setManualConfirmed] = useState(false);
+  const [baseBranch, setBaseBranch] = useState("");
   const [revertPr, setRevertPr] = useState("");
   const [revertSha, setRevertSha] = useState("");
   const [revertRationale, setRevertRationale] = useState("");
@@ -74,7 +75,11 @@ export function CampaignDelivery({
     setLoading(true);
     setError(null);
     try {
-      setStatus(await coreApi.getCandidateDelivery(campaignId, candidateId));
+      const next = await coreApi.getCandidateDelivery(campaignId, candidateId);
+      setStatus(next);
+      setBaseBranch(
+        (current) => current || next.binding?.default_branch || "main",
+      );
     } catch (cause) {
       setError(deliveryError(cause, t("delivery.error")));
     } finally {
@@ -94,6 +99,7 @@ export function CampaignDelivery({
       await coreApi.deliverCandidate(campaignId, candidateId, {
         operation: "OPEN_PR",
         manual_confirmed: false,
+        base_branch: selectedBase !== defaultBranch ? selectedBase : undefined,
       });
       setNotice(t("delivery.opened"));
       await load();
@@ -112,6 +118,7 @@ export function CampaignDelivery({
       await coreApi.deliverCandidate(campaignId, candidateId, {
         operation: "MERGE",
         manual_confirmed: manualConfirmed,
+        base_branch: selectedBase !== defaultBranch ? selectedBase : undefined,
       });
       setNotice(t("delivery.mergedNotice"));
       await load();
@@ -191,8 +198,19 @@ export function CampaignDelivery({
     latestAttempt?.state === "NEEDS_ATTENTION";
   const active = Boolean(incident) || Boolean(policy?.killSwitch);
   const canDeliver =
-    gateAccepted && Boolean(policy) && !terminalAttempt && !active;
+    gateAccepted &&
+    Boolean(policy) &&
+    !terminalAttempt &&
+    !active &&
+    !status.salvageRequiresHumanReview;
   const canOpen = Boolean(status.binding) && !terminalAttempt;
+  const defaultBranch = status.binding?.default_branch ?? "main";
+  const selectedBase = baseBranch || defaultBranch;
+  const availableBases = [
+    ...new Set(
+      [defaultBranch, ...(policy?.manualBaseBranches ?? [])].filter(Boolean),
+    ),
+  ];
 
   return (
     <Panel className="delivery-panel" data-testid="delivery-panel">
@@ -394,6 +412,29 @@ export function CampaignDelivery({
         </section>
       </div>
 
+      {status.finalSource === "STAGNATION_SALVAGE" && (
+        <p
+          className={status.salvageRequiresHumanReview ? "warning" : "muted"}
+          role="status"
+        >
+          {status.salvageRequiresHumanReview
+            ? t("delivery.salvageReviewRequired")
+            : t("delivery.salvageR0")}
+        </p>
+      )}
+      {manualControlVisible && availableBases.length > 1 && (
+        <Select
+          label={t("delivery.baseBranch")}
+          value={selectedBase}
+          onChange={(event) => setBaseBranch(event.target.value)}
+        >
+          {availableBases.map((branch) => (
+            <option key={branch} value={branch}>
+              {branch}
+            </option>
+          ))}
+        </Select>
+      )}
       {actionError && (
         <p className="ui-error" role="alert">
           {actionError}

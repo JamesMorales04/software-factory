@@ -8,12 +8,14 @@
 use super::*;
 
 use crate::delivery::{
-    DeliveryAttemptRecord, DeliveryAttemptState, DeliveryAuthorization, DeliveryCheckReceiptRecord,
+    CandidateSalvageEvidenceRecord, CandidateSalvageRecord, DeliveryAttemptRecord,
+    DeliveryAttemptState, DeliveryAuthorization, DeliveryCheckReceiptRecord,
     DeliveryDecisionRecord, DeliveryIncidentRecord, DeliveryIncidentState,
     DeliveryIssueReceiptRecord, DeliveryMode, DeliveryPolicy, DeliveryPolicyInput,
     DeliveryPostMergeCheckRecord, DeliveryProjection, DeliveryRevertRecord, DeliveryRisk,
     policy_sha256,
 };
+use crate::quality::CandidateFinalSource;
 use chrono::Utc;
 use sqlx::row::Row;
 use uuid::Uuid;
@@ -262,6 +264,123 @@ impl Database {
         .fetch_optional(&self.pool)
         .await?;
         row.map(|(base,)| base).ok_or(Error::NotFound)
+    }
+
+    /// Read the exact candidate's final-source provenance and the immutable
+    /// Core-derived stagnation-salvage evidence. R1+ salvage never becomes
+    /// delivery authority; delivery must fail closed on a missing or mismatched
+    /// evidence record.
+    pub async fn candidate_salvage_record(
+        &self,
+        candidate_id: &str,
+    ) -> Result<CandidateSalvageRecord, Error> {
+        let row: Option<(String, String, String)> = sqlx::query_as::query_as(
+            "SELECT final_source,attempt_id,commit_sha FROM candidates WHERE id=?1",
+        )
+        .bind(candidate_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        let (final_source, attempt_id, commit_sha) = row.ok_or(Error::NotFound)?;
+        let final_source = CandidateFinalSource::parse(&final_source)
+            .ok_or(Error::Invalid("candidate final source"))?;
+        if final_source == CandidateFinalSource::ModelFinal {
+            return Ok(CandidateSalvageRecord {
+                final_source,
+                evidence: None,
+            });
+        }
+        let detail: Option<(String,)> = sqlx::query_as::query_as(
+            "SELECT detail FROM events
+             WHERE subject_id=?1 AND kind='worker.stagnation_finalized'
+             ORDER BY sequence DESC LIMIT 1",
+        )
+        .bind(candidate_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        let detail = detail
+            .map(|(detail,)| detail)
+            .ok_or(Error::Invalid("stagnation salvage evidence is missing"))?;
+        let value: serde_json::Value = serde_json::from_str(&detail)
+            .map_err(|_| Error::Invalid("stagnation salvage evidence is malformed"))?;
+        let field = |name: &str| {
+            value
+                .get(name)
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .ok_or(Error::Invalid("stagnation salvage evidence field"))
+        };
+        if field("candidateId")? != candidate_id
+            || field("commitSha")? != commit_sha
+            || field("attemptId")? != attempt_id
+            || field("decision")? != "DIAGNOSE"
+            || value.get("written").and_then(serde_json::Value::as_bool) != Some(true)
+        {
+            return Err(Error::Invalid(
+                "stagnation salvage evidence does not match the exact candidate",
+            ));
+        }
+        let frozen_checks = value
+            .get("frozenChecks")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or(Error::Invalid("stagnation salvage frozen checks"))?;
+        let passed_checks = value
+            .get("passedChecks")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or(Error::Invalid("stagnation salvage passed checks"))?;
+        if frozen_checks == 0 || passed_checks != frozen_checks {
+            return Err(Error::Invalid(
+                "stagnation salvage does not prove every frozen check passed",
+            ));
+        }
+        let changed_paths = value
+            .get("diff")
+            .and_then(|diff| diff.get("changedPaths"))
+            .and_then(serde_json::Value::as_array)
+            .map(|paths| {
+                paths
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .filter(|paths| !paths.is_empty())
+            .ok_or(Error::Invalid("stagnation salvage changed paths"))?;
+        let check_receipt_ids = value
+            .get("checkReceipts")
+            .and_then(serde_json::Value::as_array)
+            .map(|receipts| {
+                receipts
+                    .iter()
+                    .filter_map(|receipt| {
+                        receipt
+                            .get("receiptId")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .filter(|receipts| !receipts.is_empty())
+            .ok_or(Error::Invalid("stagnation salvage check receipts"))?;
+        if check_receipt_ids.len() as u64 != frozen_checks {
+            return Err(Error::Invalid(
+                "stagnation salvage receipts do not match the frozen check count",
+            ));
+        }
+        Ok(CandidateSalvageRecord {
+            final_source,
+            evidence: Some(CandidateSalvageEvidenceRecord {
+                candidate_id: candidate_id.to_owned(),
+                commit_sha,
+                attempt_id,
+                work_item_id: field("workItemId")?,
+                frozen_checks,
+                passed_checks,
+                written: true,
+                decision: "DIAGNOSE".into(),
+                changed_paths,
+                check_receipt_ids,
+            }),
+        })
     }
 
     pub async fn delivery_policy(&self, project_id: &str) -> Result<Option<DeliveryPolicy>, Error> {

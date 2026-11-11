@@ -831,6 +831,19 @@ export type DeliveryAttemptState =
   | "NEEDS_ATTENTION"
   | "REVERTED";
 export type DeliveryAuthorization = "POLICY_R0" | "CHARTER_R1" | "OWNER_MANUAL";
+export interface CandidateSalvageEvidenceRecord {
+  candidateId: string;
+  commitSha: string;
+  attemptId: string;
+  workItemId: string;
+  frozenChecks: number;
+  passedChecks: number;
+  written: boolean;
+  decision: string;
+  changedPaths: string[];
+  checkReceiptIds: string[];
+}
+
 export type DeliveryIncidentState =
   | "OPEN"
   | "ACKNOWLEDGED"
@@ -1004,6 +1017,9 @@ export interface DeliveryStatus {
   candidateSha: string;
   projectId: string;
   riskClass: DeliveryRisk;
+  finalSource: CandidateFinalSource;
+  salvageRequiresHumanReview: boolean;
+  salvageEvidence: CandidateSalvageEvidenceRecord | null;
   gateOutcome: string | null;
   gateRevision: string | null;
   policy: DeliveryPolicy | null;

@@ -116,6 +116,9 @@ function status(overrides: Partial<DeliveryStatus> = {}): DeliveryStatus {
     candidateSha: HEAD,
     projectId: "project-1",
     riskClass: "R0",
+    finalSource: "MODEL_FINAL",
+    salvageRequiresHumanReview: false,
+    salvageEvidence: null,
     gateOutcome: "ACCEPTED",
     gateRevision: "gate-1",
     policy,
@@ -449,6 +452,94 @@ describe("CampaignDelivery", () => {
     expect(
       screen.getByText(/No delivery attempt has been recorded/),
     ).toBeDefined();
+  });
+
+  it("sends a selected supported manual base branch", async () => {
+    const manualPolicy = {
+      ...policy,
+      mode: "MANUAL" as const,
+      r1Enabled: false,
+      manualBaseBranches: ["main", "release"],
+    };
+    mocks.getCandidateDelivery.mockResolvedValue(
+      status({
+        riskClass: "R2",
+        policy: manualPolicy,
+        projection: {
+          ...status().projection,
+          policy: manualPolicy,
+          attempts: [],
+          decisions: [],
+          checkReceipts: [],
+          postMergeChecks: [],
+          incidents: [],
+          reverts: [],
+          issueReceipts: [],
+        },
+      }),
+    );
+    mocks.deliverCandidate.mockResolvedValue({
+      attempt: attempt({ riskClass: "R2", authorization: "OWNER_MANUAL" }),
+      policy: manualPolicy,
+      decision: {},
+      pullRequest: null,
+      checks: null,
+      protection: null,
+      issueOutcome: null,
+      replayed: false,
+    });
+
+    const user = userEvent.setup();
+    renderPanel();
+    await screen.findByText("Delivery");
+    await user.selectOptions(screen.getByLabelText("Base branch"), "release");
+    await user.click(
+      screen.getByRole("checkbox", {
+        name: "I am the owner and approve this exact merge",
+      }),
+    );
+    await user.click(screen.getByRole("button", { name: "Deliver candidate" }));
+    await waitFor(() =>
+      expect(mocks.deliverCandidate).toHaveBeenCalledWith(
+        "campaign-1",
+        "candidate-1",
+        {
+          operation: "MERGE",
+          manual_confirmed: true,
+          base_branch: "release",
+        },
+      ),
+    );
+  });
+
+  it("blocks R1 salvage auto-merge in the browser", async () => {
+    mocks.getCandidateDelivery.mockResolvedValue(
+      status({
+        riskClass: "R1",
+        finalSource: "STAGNATION_SALVAGE",
+        salvageRequiresHumanReview: true,
+        salvageEvidence: {
+          candidateId: "candidate-1",
+          commitSha: HEAD,
+          attemptId: "attempt-1",
+          workItemId: "unit-1",
+          frozenChecks: 1,
+          passedChecks: 1,
+          written: true,
+          decision: "DIAGNOSE",
+          changedPaths: ["src/lib.rs"],
+          checkReceiptIds: ["receipt-1"],
+        },
+      }),
+    );
+    renderPanel();
+    expect(
+      await screen.findByText(/requires authenticated human review/),
+    ).toBeDefined();
+    const deliver = screen.getByRole("button", {
+      name: "Deliver candidate",
+    }) as HTMLButtonElement;
+    expect(deliver.disabled).toBe(true);
   });
 
   it("renders a typed Core error with retry", async () => {
