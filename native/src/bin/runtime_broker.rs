@@ -42,8 +42,9 @@ use tokio::{
 };
 
 use factory_native::runtime_broker::{
-    ENVIRONMENT_BUILD_ROUTE, ENVIRONMENT_RESOLVE_ROUTE, EnvironmentBrokerOperation,
-    EnvironmentBrokerRequest, MAX_ENVIRONMENT_REQUEST_BYTES, MAX_ENVIRONMENT_WORKSPACE_BYTES,
+    ENVIRONMENT_BUILD_ROUTE, ENVIRONMENT_CHECK_ROUTE, ENVIRONMENT_RESOLVE_ROUTE,
+    EnvironmentBrokerOperation, EnvironmentBrokerRequest, EnvironmentCheckRequest,
+    EnvironmentCheckStatus, MAX_ENVIRONMENT_REQUEST_BYTES, MAX_ENVIRONMENT_WORKSPACE_BYTES,
     MAX_ENVIRONMENT_WORKSPACE_FILE_BYTES, MAX_ENVIRONMENT_WORKSPACE_FILES,
     MAX_RESOURCE_INVENTORY_BYTES, ManagedResources, ResourceOwner, is_valid_container_name,
     is_valid_exec_container_name, is_valid_provider_container_name, is_valid_volume_name,
@@ -526,6 +527,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .route(
             &format!("/{ENVIRONMENT_RESOLVE_ROUTE}"),
             post(resolve_environment).layer(DefaultBodyLimit::max(MAX_ENVIRONMENT_REQUEST_BYTES)),
+        )
+        .route(
+            &format!("/{ENVIRONMENT_CHECK_ROUTE}"),
+            post(check_environment).layer(DefaultBodyLimit::max(MAX_ENVIRONMENT_REQUEST_BYTES)),
         );
     if dependency_setup.service.is_none() {
         base_router = base_router.route(
@@ -3005,6 +3010,417 @@ async fn resolve_environment(
     environment_operation(app, headers, input, EnvironmentBrokerOperation::Resolve).await
 }
 
+const ENVIRONMENT_CHECK_SETUP_GRACE_SECS: u64 = 180;
+
+async fn check_environment(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(input): Json<EnvironmentCheckRequest>,
+) -> Response {
+    let Some(owner) = app.owner(&headers) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    if !matches!(
+        owner,
+        ResourceOwner::Environment | ResourceOwner::Supervisor | ResourceOwner::Verifier
+    ) {
+        return forbidden(
+            "environment checks require the environment, supervisor or verifier owner token",
+        );
+    }
+    if let Err(error) = input.validate_shape() {
+        return bad_request(&error);
+    }
+    let image_id = match validate_environment_check_request(&app, &input).await {
+        Ok(image_id) => image_id,
+        Err(failure) => return failure.response(),
+    };
+    let container = format!("factory-env-{}", uuid::Uuid::new_v4().simple());
+    let volume = input.workspace_volume.clone();
+    let lock = app.resource_lock(&volume);
+    let volume_guard = lock.lock().await;
+    if app.active.is_active(&volume) {
+        return conflict("workspace volume has an active execution");
+    }
+    if let Err(error) = app.require_volume_owner(&volume, owner).await {
+        return mutation_error(error);
+    }
+    if !app.active.register(&volume, &container) {
+        return conflict("workspace volume or check container is already active");
+    }
+    match app.container_present(&container).await {
+        Ok(true) => {
+            app.active.remove(&volume, &container);
+            return conflict("check container name is already present");
+        }
+        Ok(false) => {}
+        Err(error) => {
+            app.active.remove(&volume, &container);
+            return operation_error(error);
+        }
+    }
+    drop(volume_guard);
+    drop(lock);
+    let started = Instant::now();
+    let deadline = started
+        + Duration::from_secs(u64::from(input.check.timeout_secs))
+        + Duration::from_secs(ENVIRONMENT_CHECK_SETUP_GRACE_SECS);
+    let task_app = Arc::clone(&app);
+    let task_container = container.clone();
+    let task_volume = volume.clone();
+    let task = tokio::spawn(async move {
+        let result = execute_environment_check(
+            task_app.clone(),
+            input,
+            image_id,
+            task_container.clone(),
+            deadline,
+        )
+        .await;
+        let confirmed = cleanup_environment_check_container(&task_app, &task_container).await;
+        if confirmed {
+            task_app.active.remove(&task_volume, &task_container);
+        } else {
+            tracing::error!(
+                container = %task_container,
+                volume = %task_volume,
+                "environment check cleanup unconfirmed; workspace volume remains blocked"
+            );
+        }
+        (result, confirmed)
+    });
+    match task.await {
+        Ok((result, confirmed)) => {
+            if !confirmed {
+                return operation_error(
+                    "environment check cleanup could not be confirmed; workspace volume remains blocked",
+                );
+            }
+            match result {
+                Ok(mut result) => {
+                    result.cleanup_confirmed = true;
+                    Json(result).into_response()
+                }
+                Err(failure) => failure.response(),
+            }
+        }
+        Err(error) => {
+            tracing::error!(%error, "environment check task failed; scheduling cleanup confirmation");
+            let cleanup_app = Arc::clone(&app);
+            let cleanup_container = container.clone();
+            let cleanup_volume = volume.clone();
+            tokio::spawn(async move {
+                if cleanup_environment_check_container(&cleanup_app, &cleanup_container).await {
+                    cleanup_app
+                        .active
+                        .remove(&cleanup_volume, &cleanup_container);
+                }
+            });
+            operation_error("environment check task failed; cleanup is being confirmed")
+        }
+    }
+}
+
+async fn validate_environment_check_request(
+    app: &Arc<App>,
+    input: &EnvironmentCheckRequest,
+) -> Result<String, EnvironmentBrokerFailure> {
+    if input.plan.schema_version
+        != factory_native::planning::environment::ENVIRONMENT_SCHEMA_VERSION
+    {
+        return Err(EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_PLAN_INVALID",
+            "unsupported environment plan schema version",
+        ));
+    }
+    if input.image.is_empty() || input.digest.is_empty() {
+        return Err(EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_HASH_MISMATCH",
+            "the environment builder image/digest is incomplete",
+        ));
+    }
+    if input.plan.builder.image != input.image
+        || input.plan.builder.digest != input.digest
+        || input.plan.builder.platform != factory_native::planning::environment::DEFAULT_PLATFORM
+        || input.plan.builder.policy_revision
+            != factory_native::planning::environment::ENVIRONMENT_POLICY_REVISION
+        || input.spec.builder_image != input.image
+        || input.spec.builder_image_digest != input.digest
+        || input.spec.platform != input.plan.builder.platform
+    {
+        return Err(EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_HASH_MISMATCH",
+            "the plan, spec or request builder identity does not match",
+        ));
+    }
+    if input.plan.status != factory_native::planning::environment::EnvironmentPlanStatus::Frozen {
+        return Err(EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_NOT_FROZEN",
+            "the environment check plan is not FROZEN",
+        ));
+    }
+    if input.spec.status != factory_native::planning::environment::EnvironmentSpecStatus::Frozen {
+        return Err(EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_NOT_FROZEN",
+            "the environment check spec is not FROZEN",
+        ));
+    }
+    factory_native::planning::environment::EnvironmentExecutionBinding {
+        plan: input.plan.clone(),
+        spec: input.spec.clone(),
+        receipt: input.receipt.clone(),
+    }
+    .validate()
+    .map_err(|error| EnvironmentBrokerFailure::new(error.code_str(), error.message))?;
+    if input.plan.resources.disk_mib == 0
+        || input.plan.resources.disk_mib > MAX_ENVIRONMENT_DISK_MIB
+    {
+        return Err(EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_RESOURCE_LIMIT",
+            "the plan disk bound is outside the broker maximum",
+        ));
+    }
+    if input.plan.network.fetch_allowlist.len() > 32 {
+        return Err(EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_NETWORK_DENIED",
+            "the plan fetch allowlist exceeds its bound",
+        ));
+    }
+    app.resolve_environment_builder_image(&input.image, &input.digest)
+        .await
+}
+
+fn environment_check_cache_volume(spec_sha256: &str) -> String {
+    let cache_key: String = spec_sha256.chars().take(32).collect();
+    format!("factory-env-cache-{cache_key}")
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BuilderCheckResult {
+    schema_version: u32,
+    status: String,
+    #[serde(default)]
+    check_id: String,
+    #[serde(default)]
+    spec_sha256: String,
+    #[serde(default)]
+    exit_code: Option<i32>,
+    #[serde(default)]
+    expect_exit: i32,
+    #[serde(default)]
+    stdout: String,
+    #[serde(default)]
+    stderr: String,
+    #[serde(default)]
+    stdout_truncated: bool,
+    #[serde(default)]
+    stderr_truncated: bool,
+    #[serde(default)]
+    duration_ms: u64,
+    #[serde(default)]
+    error: Option<Value>,
+}
+
+fn builder_check_request_json(
+    input: &EnvironmentCheckRequest,
+) -> Result<Value, EnvironmentBrokerFailure> {
+    let encode = |name: &str, value: Result<Value, serde_json::Error>| {
+        value.map_err(|_| {
+            EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_SPEC_INVALID",
+                format!("cannot encode the environment {name}"),
+            )
+        })
+    };
+    let plan = encode("plan", serde_json::to_value(&input.plan))?;
+    let spec = encode("spec", serde_json::to_value(&input.spec))?;
+    let receipt = encode("receipt", serde_json::to_value(&input.receipt))?;
+    let check = encode("check", serde_json::to_value(&input.check))?;
+    Ok(json!({
+        "schemaVersion": 1,
+        "plan": plan,
+        "spec": spec,
+        "receipt": receipt,
+        "check": check,
+        "workspace": "/inputs/workspace",
+        "runDir": "/cache",
+        "fetchNetwork": "none",
+        "fetchPolicy": {
+            "network": "none",
+            "proxy": null,
+            "allowlist": input.plan.network.fetch_allowlist,
+            "enforcedBy": "offline",
+        },
+    }))
+}
+
+async fn execute_environment_check(
+    app: Arc<App>,
+    input: EnvironmentCheckRequest,
+    image_id: String,
+    container: String,
+    deadline: Instant,
+) -> Result<factory_native::runtime_broker::EnvironmentCheckResult, EnvironmentBrokerFailure> {
+    let started = Instant::now();
+    let cache_volume = environment_check_cache_volume(&input.spec.spec_sha256);
+    // The per-spec cache holds the builder's prepared workspace and check
+    // result. Serialize checks for the same spec so one check cannot overwrite
+    // another's workspace or result while it runs.
+    let cache_lock = app.resource_lock(&cache_volume);
+    let _cache_guard = cache_lock.lock().await;
+    ensure_environment_store(&app, &image_id).await?;
+    bound_environment_caches(&app, &cache_volume).await?;
+    create_environment_volume(&app, &cache_volume, &input.spec.spec_sha256, true).await?;
+    let request = builder_check_request_json(&input)?;
+    let request_bytes = serde_json::to_vec(&request).map_err(|_| {
+        EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_SPEC_INVALID",
+            "cannot encode the environment check request",
+        )
+    })?;
+    let cache_tar = build_tar(
+        &[
+            ("request.json".to_owned(), request_bytes),
+            (".factory-cache".to_owned(), b"factory\n".to_vec()),
+        ],
+        &["./"],
+    )?;
+    import_environment_volume(&app, &cache_volume, cache_tar).await?;
+    let output = run_environment_container(
+        &app,
+        &image_id,
+        &container,
+        "none",
+        None,
+        &input.plan,
+        deadline,
+        &input.workspace_volume,
+        &cache_volume,
+        "check",
+        "request.json",
+        true,
+    )
+    .await?;
+    let result: BuilderCheckResult = match read_environment_json(
+        &app,
+        &image_id,
+        &cache_volume,
+        "check-result.json",
+        "ENVIRONMENT_BUILD_FAILED",
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(failure) => {
+            if let Some((code, message)) = failure_from_builder_output(&output.stdout)
+                .or_else(|| failure_from_builder_output(&output.stderr))
+            {
+                return Err(EnvironmentBrokerFailure::new(&code, message));
+            }
+            return Err(failure);
+        }
+    };
+    if let Some(error) = result.error {
+        let code = error
+            .get("code")
+            .and_then(Value::as_str)
+            .unwrap_or("ENVIRONMENT_BUILD_FAILED");
+        let message = error
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("the environment check failed before execution");
+        return Err(EnvironmentBrokerFailure::new(code, message));
+    }
+    if result.schema_version != 1 {
+        return Err(EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_SPEC_INVALID",
+            "the environment builder returned an unsupported check result",
+        ));
+    }
+    if result.check_id != input.check.check_id {
+        return Err(EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_HASH_MISMATCH",
+            "the environment builder ran a different check id",
+        ));
+    }
+    if result.spec_sha256 != input.spec.spec_sha256 {
+        return Err(EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_HASH_MISMATCH",
+            "the environment builder check bound a different spec",
+        ));
+    }
+    if result.expect_exit != input.check.expect_exit {
+        return Err(EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_HASH_MISMATCH",
+            "the environment builder check bound a different expected exit",
+        ));
+    }
+    let Some(exit_code) = result.exit_code else {
+        return Err(EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_BUILD_FAILED",
+            "the environment builder check produced no exit code",
+        ));
+    };
+    let passed = exit_code == result.expect_exit;
+    let status = match (result.status.as_str(), passed) {
+        ("PASSED", true) => EnvironmentCheckStatus::Passed,
+        ("FAILED", false) => EnvironmentCheckStatus::Failed,
+        _ => {
+            return Err(EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_BUILD_FAILED",
+                "the environment builder check status contradicts its exit code",
+            ));
+        }
+    };
+    let mut logs = Vec::new();
+    let mut logs_truncated = false;
+    append_logs(
+        &mut logs,
+        &mut logs_truncated,
+        result.stdout.as_bytes(),
+        result.stderr.as_bytes(),
+    );
+    let duration_ms = if result.duration_ms > 0 {
+        result.duration_ms
+    } else {
+        u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+    };
+    Ok(factory_native::runtime_broker::EnvironmentCheckResult {
+        check_id: result.check_id,
+        spec_sha256: result.spec_sha256,
+        status,
+        exit_code: Some(exit_code),
+        expect_exit: result.expect_exit,
+        passed,
+        logs: final_logs(logs),
+        logs_truncated,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        stdout_truncated: result.stdout_truncated,
+        stderr_truncated: result.stderr_truncated,
+        cleanup_confirmed: false,
+        duration_ms,
+    })
+}
+
+async fn cleanup_environment_check_container(app: &Arc<App>, container: &str) -> bool {
+    let _ = app
+        .podman_output(["rm", "--force", "--time=0", container])
+        .await;
+    match app.podman_output(["container", "exists", container]).await {
+        Ok(output) if output.status.code() == Some(1) => true,
+        Ok(_) => {
+            tracing::warn!(%container, "environment check container still present after cleanup");
+            false
+        }
+        Err(error) => {
+            tracing::warn!(%container, %error, "environment check cleanup could not be confirmed");
+            false
+        }
+    }
+}
+
 async fn environment_operation(
     app: Arc<App>,
     headers: HeaderMap,
@@ -3881,6 +4297,7 @@ async fn execute_environment_inner(
                 &resources.cache_volume,
                 "resolve",
                 "request-resolve.json",
+                false,
             )
             .await;
             if let Some(mut egress) = egress.take() {
@@ -3930,6 +4347,7 @@ async fn execute_environment_inner(
                     &resources.cache_volume,
                     "fetch",
                     "request-fetch.json",
+                    false,
                 )
                 .await;
                 if let Some(mut egress) = egress.take() {
@@ -3963,6 +4381,7 @@ async fn execute_environment_inner(
                     &resources.cache_volume,
                     "fetch",
                     "request-fetch.json",
+                    false,
                 )
                 .await;
                 if let Some(mut egress) = egress.take() {
@@ -3988,6 +4407,7 @@ async fn execute_environment_inner(
                 &resources.cache_volume,
                 "build",
                 "request-build.json",
+                false,
             )
             .await?;
             append_logs(
@@ -4164,8 +4584,10 @@ async fn ensure_environment_store(
     let volume = ENVIRONMENT_NIX_STORE_VOLUME;
     match app.volume_labels(volume).await {
         Ok(Some(labels)) => {
-            let managed =
-                labels.get("io.software-factory.managed").map(String::as_str) == Some("true");
+            let managed = labels
+                .get("io.software-factory.managed")
+                .map(String::as_str)
+                == Some("true");
             let owner = labels.get(OWNER_LABEL).map(String::as_str) == Some("environment");
             let workspace = labels.get(WORKSPACE_LABEL).map(String::as_str) == Some("nix-store");
             if !(managed && owner && workspace) {
@@ -4398,6 +4820,7 @@ async fn run_environment_container(
     cache_volume: &str,
     phase: &str,
     request_file: &str,
+    allow_failure_exit: bool,
 ) -> Result<ChildOutput, EnvironmentBrokerFailure> {
     let remaining = deadline
         .checked_duration_since(Instant::now())
@@ -4422,6 +4845,8 @@ async fn run_environment_container(
         "--read-only".into(),
         "--tmpfs=/tmp:rw,noexec,nosuid,size=256m".into(),
         "--tmpfs=/run:rw,noexec,nosuid,size=32m".into(),
+        "--tmpfs=/home/factory/.cache:rw,noexec,nosuid,size=256m".into(),
+        "--tmpfs=/home/factory/.local:rw,noexec,nosuid,size=128m".into(),
         "--cap-drop=all".into(),
         "--cap-add=SYS_ADMIN".into(),
         "--cap-add=SYS_CHROOT".into(),
@@ -4434,6 +4859,7 @@ async fn run_environment_container(
         "--workdir=/cache".into(),
         "--env=HOME=/home/factory".into(),
         "--env=TMPDIR=/tmp".into(),
+        "--env=FACTORY_ENVIRONMENT_BUILDER_SHARED_STORE=1".into(),
         format!(
             "--env=FACTORY_ENVIRONMENT_BUILDER_DISK_MIB={}",
             plan.resources.disk_mib
@@ -4546,7 +4972,7 @@ async fn run_environment_container(
                 format!("environment builder stderr reader: {error}"),
             )
         })?;
-    if !status.success() {
+    if !status.success() && !allow_failure_exit {
         let parsed =
             failure_from_builder_output(&stdout).or_else(|| failure_from_builder_output(&stderr));
         let (code, mut message) = match parsed {
@@ -4736,6 +5162,15 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use factory_native::planning::environment::{
+        DEFAULT_PLATFORM, ENVIRONMENT_POLICY_REVISION, EnvironmentBuildReceipt,
+        EnvironmentBuilderDescriptor, EnvironmentBuilderStatus, EnvironmentFile,
+        EnvironmentFileOrigin, EnvironmentNixPolicy, EnvironmentPlan, EnvironmentPlanSource,
+        EnvironmentPlanStatus, EnvironmentSpec, EnvironmentSpecStatus, ExistingEnvironmentKind,
+        LicenseInventory, NetworkPolicy, ProjectConventions, ResourceLimits, SandboxAttestation,
+        SandboxPolicy,
+    };
+    use factory_native::runtime_broker::EnvironmentCheckSpec;
     use tower::ServiceExt;
 
     #[test]
@@ -6851,6 +7286,171 @@ exit 1
         })
     }
 
+    fn valid_environment_execution() -> (EnvironmentPlan, EnvironmentSpec, EnvironmentBuildReceipt)
+    {
+        let base_commit = "b".repeat(40);
+        let project_id = "project-1";
+        let request_id = "request-1";
+        let action_id = "action-1";
+        let plan_id = "plan-1";
+        let mut conventions = ProjectConventions {
+            schema_version: 1,
+            project_id: project_id.into(),
+            base_commit: base_commit.clone(),
+            conventions_sha256: String::new(),
+            scanned_at: "2026-11-10T00:00:00Z".into(),
+            files: Vec::new(),
+            commands: Vec::new(),
+            conflicts: Vec::new(),
+            truncated: false,
+            skipped_entries: 0,
+            provenance: "test".into(),
+            existing_environment: ExistingEnvironmentKind::None,
+        };
+        conventions.conventions_sha256 = conventions.compute_sha256();
+        let conventions_sha256 = conventions.conventions_sha256.clone();
+        let content = "{\n  outputs = { self }: { default = builtins.currentSystem; };\n}\n";
+        let mut inventory = LicenseInventory::default();
+        inventory.refresh_hashes(plan_id);
+        let mut plan = EnvironmentPlan {
+            schema_version: 1,
+            plan_id: plan_id.into(),
+            project_id: project_id.into(),
+            request_id: request_id.into(),
+            action_id: action_id.into(),
+            campaign_id: None,
+            base_commit: base_commit.clone(),
+            conventions_sha256,
+            conventions,
+            risk_class: "R0".into(),
+            status: EnvironmentPlanStatus::Frozen,
+            revision: 1,
+            source: EnvironmentPlanSource::Generated,
+            toolchains: Vec::new(),
+            packages: Vec::new(),
+            services: Vec::new(),
+            commands: BTreeMap::new(),
+            browsers: Vec::new(),
+            files: vec![EnvironmentFile {
+                path: "flake.nix".into(),
+                sha256: crate::bundle_digest_text(content.as_bytes()),
+                origin: EnvironmentFileOrigin::Generated,
+                content: Some(content.into()),
+            }],
+            nix: EnvironmentNixPolicy {
+                nixpkgs: format!("github:NixOS/nixpkgs/{}", "a".repeat(40)),
+                inputs: Vec::new(),
+                allow_unfree: false,
+                sandbox: SandboxPolicy {
+                    sandbox: true,
+                    impure: false,
+                    host_mounts: Vec::new(),
+                    privileged: false,
+                    host_network: false,
+                    host_sockets: Vec::new(),
+                },
+            },
+            resources: ResourceLimits::default(),
+            network: NetworkPolicy::default(),
+            license_inventory: inventory.clone(),
+            license_inventory_sha256: inventory.inventory_sha256.clone(),
+            builder: EnvironmentBuilderDescriptor {
+                image: TEST_BUILDER_IMAGE.into(),
+                digest: TEST_BUILDER_DIGEST.into(),
+                platform: DEFAULT_PLATFORM.into(),
+                policy_revision: ENVIRONMENT_POLICY_REVISION.into(),
+                default_nixpkgs: String::new(),
+                status: EnvironmentBuilderStatus::Ready,
+            },
+            resolution: None,
+            lead_review: None,
+            blockers: Vec::new(),
+            commands_rationale: "test".into(),
+            plan_sha256: String::new(),
+            created_at: "2026-11-10T00:00:00Z".into(),
+        };
+        plan.refresh_hash();
+        plan.validate(chrono::Utc::now()).unwrap();
+        let mut spec = EnvironmentSpec {
+            schema_version: 1,
+            spec_id: "spec-1".into(),
+            spec_sha256: String::new(),
+            project_id: project_id.into(),
+            request_id: request_id.into(),
+            action_id: action_id.into(),
+            campaign_id: None,
+            base_commit,
+            plan_id: plan_id.into(),
+            plan_sha256: plan.plan_sha256.clone(),
+            conventions_sha256: plan.conventions_sha256.clone(),
+            review_id: "review-1".into(),
+            platform: DEFAULT_PLATFORM.into(),
+            nix_version: "2.28.3".into(),
+            devenv_version: "1.11.2".into(),
+            flake_lock_sha256: "e".repeat(64),
+            devenv_lock_sha256: String::new(),
+            license_inventory_sha256: plan.license_inventory_sha256.clone(),
+            sbom_sha256: plan.license_inventory.sbom_sha256.clone(),
+            builder_image: TEST_BUILDER_IMAGE.into(),
+            builder_image_digest: TEST_BUILDER_DIGEST.into(),
+            resource_policy: plan.resources,
+            network_policy: plan.network.clone(),
+            status: EnvironmentSpecStatus::Frozen,
+            frozen_at: "2026-11-10T00:00:00Z".into(),
+        };
+        spec.spec_sha256 = spec.compute_sha256();
+        spec.validate().unwrap();
+        let receipt = EnvironmentBuildReceipt {
+            schema_version: 1,
+            receipt_id: "receipt-1".into(),
+            spec_sha256: spec.spec_sha256.clone(),
+            platform: spec.platform.clone(),
+            builder_image: spec.builder_image.clone(),
+            builder_image_digest: spec.builder_image_digest.clone(),
+            builder_policy_revision: ENVIRONMENT_POLICY_REVISION.into(),
+            status: EnvironmentBuilderStatus::Succeeded,
+            store_path: "/nix/store/fixture".into(),
+            output_sha256: "5".repeat(64),
+            sbom_sha256: spec.sbom_sha256.clone(),
+            log_ref: "build.log".into(),
+            sandbox_attestation: SandboxAttestation {
+                non_root: true,
+                no_secrets: true,
+                no_host_network: true,
+                no_host_socket: true,
+                no_host_mount: true,
+                sandbox: true,
+                impure: false,
+                bounded_resources: true,
+            },
+            blockers: Vec::new(),
+            duration_ms: 1,
+            created_at: "2026-11-10T00:00:00Z".into(),
+        };
+        receipt.validate_for(&spec).unwrap();
+        (plan, spec, receipt)
+    }
+
+    fn environment_check_request(workspace_volume: &str) -> EnvironmentCheckRequest {
+        let (plan, spec, receipt) = valid_environment_execution();
+        EnvironmentCheckRequest {
+            schema_version: 1,
+            image: TEST_BUILDER_IMAGE.into(),
+            digest: TEST_BUILDER_DIGEST.into(),
+            plan,
+            spec,
+            receipt,
+            check: EnvironmentCheckSpec {
+                check_id: "check-1".into(),
+                argv: vec!["/bin/sh".into(), "-c".into(), "printf 'ok\\n'".into()],
+                cwd: ".".into(),
+                timeout_secs: 30,
+                expect_exit: 0,
+            },
+            workspace_volume: workspace_volume.into(),
+        }
+    }
+
     fn environment_resolution() -> Value {
         let content = "{\"nodes\":{\"root\":{}},\"root\":\"root\",\"version\":7}\n";
         json!({
@@ -6955,6 +7555,115 @@ exit 0
             .await
             .unwrap();
         serde_json::from_slice(&bytes).unwrap()
+    }
+
+    async fn environment_check_test_app(
+        owner: ResourceOwner,
+        builder_exit: i32,
+        result: Value,
+    ) -> (
+        Arc<App>,
+        String,
+        PathBuf,
+        tokio::sync::MutexGuard<'static, ()>,
+    ) {
+        let directory =
+            std::env::temp_dir().join(format!("factory-env-check-broker-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let check_path = directory.join("check-result.json");
+        let log_path = directory.join("podman.log");
+        std::fs::write(&check_path, serde_json::to_vec(&result).unwrap()).unwrap();
+        let workspace = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let (_, spec, _) = valid_environment_execution();
+        let script = format!(
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> "{}"
+case "$1" in
+  image)
+    if [ "$2" = "inspect" ]; then
+      case "$4" in
+        *source-digest*) printf '%s\t%s\t%s\n' "{}" "{}" "nix-devenv-environment-v1" ;;
+        *) printf '%s\n' "{}" ;;
+      esac
+      exit 0
+    fi
+    ;;
+  volume)
+    case "$2" in
+      create) exit 0 ;;
+      import) cat >/dev/null; exit 0 ;;
+      rm) exit 0 ;;
+      exists) exit 1 ;;
+      inspect)
+        case "$5" in
+          "{}") printf '%s\n' '[{{"Name":"{}","Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"{}"}}}}]' ;;
+          factory-env-cache-*) printf '%s\n' '[{{"Name":"$5","Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"environment","io.software-factory.workspace":"{}"}}}}]' ;;
+          factory-env-nix-store) printf '%s\n' '[{{"Name":"factory-env-nix-store","Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"environment","io.software-factory.workspace":"nix-store"}}}}]' ;;
+          *) exit 1 ;;
+        esac
+        exit 0
+        ;;
+      ls) exit 0 ;;
+    esac
+    ;;
+  rm) exit 0 ;;
+  container) [ "$2" = "exists" ] && exit 1 ;;
+  run)
+    case " $* " in
+      *"/cache/check-result.json"*) cat "{}"; exit 0 ;;
+      *" check --request "*) exit {} ;;
+    esac
+    exit 0
+    ;;
+esac
+exit 0
+"#,
+            log_path.display(),
+            TEST_BUILDER_IMAGE_ID,
+            TEST_BUILDER_DIGEST,
+            TEST_BUILDER_IMAGE_ID,
+            workspace,
+            workspace,
+            owner.as_str(),
+            spec.spec_sha256,
+            check_path.display(),
+            builder_exit
+        );
+        let (podman, guard) = fake_podman(&script).await;
+        let app = test_app(podman);
+        app.set_environment_builder(EnvironmentBuilderRuntime::ready(
+            TEST_BUILDER_IMAGE.into(),
+            TEST_BUILDER_DIGEST.into(),
+            TEST_BUILDER_IMAGE_ID.into(),
+            "x86_64-linux".into(),
+            "nix-devenv-environment-v1".into(),
+        ));
+        (app, workspace, log_path, guard)
+    }
+
+    fn check_result_body(
+        spec_sha256: &str,
+        status: &str,
+        exit_code: i32,
+        expect_exit: i32,
+        stdout: &str,
+        stderr: &str,
+    ) -> Value {
+        json!({
+            "schemaVersion": 1,
+            "status": status,
+            "checkId": "check-1",
+            "specSha256": spec_sha256,
+            "outputSha256": "5".repeat(64),
+            "exitCode": exit_code,
+            "expectExit": expect_exit,
+            "stdout": stdout,
+            "stderr": stderr,
+            "stdoutTruncated": false,
+            "stderrTruncated": false,
+            "durationMs": 7,
+            "createdAt": "2026-11-11T00:00:00Z"
+        })
     }
 
     #[tokio::test]
@@ -7196,6 +7905,7 @@ exit 0
             "factory-env-cache-timeout",
             "build",
             "request-build.json",
+            false,
         )
         .await;
         assert!(result.is_err());
@@ -7206,6 +7916,382 @@ exit 0
         let log = std::fs::read_to_string(log_path).unwrap();
         assert!(
             log.contains("rm --force --time=0 factory-env-timeout"),
+            "{log}"
+        );
+    }
+
+    #[tokio::test]
+    async fn environment_check_owner_separation_and_request_bounds() {
+        let (app, _workspace, _log, _serial) = environment_check_test_app(
+            ResourceOwner::Supervisor,
+            0,
+            check_result_body(
+                &valid_environment_execution().1.spec_sha256,
+                "PASSED",
+                0,
+                0,
+                "ok\n",
+                "",
+            ),
+        )
+        .await;
+        let request = environment_check_request("not-a-volume");
+        let unauthenticated = check_environment(
+            State(Arc::clone(&app)),
+            HeaderMap::new(),
+            Json(request.clone()),
+        )
+        .await;
+        assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+
+        let provider = check_environment(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Provider),
+            Json(request.clone()),
+        )
+        .await;
+        assert_eq!(provider.status(), StatusCode::FORBIDDEN);
+
+        for owner in [
+            ResourceOwner::Environment,
+            ResourceOwner::Verifier,
+            ResourceOwner::Supervisor,
+        ] {
+            let allowed = check_environment(
+                State(Arc::clone(&app)),
+                test_headers(owner),
+                Json(request.clone()),
+            )
+            .await;
+            assert_eq!(
+                allowed.status(),
+                StatusCode::BAD_REQUEST,
+                "{owner:?} should pass authentication and fail on the invalid volume"
+            );
+        }
+
+        let mut invalid =
+            environment_check_request(&format!("factory-ws-{}", uuid::Uuid::new_v4()));
+        invalid.check.timeout_secs = 1;
+        let response = check_environment(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Supervisor),
+            Json(invalid),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let mut invalid =
+            environment_check_request(&format!("factory-ws-{}", uuid::Uuid::new_v4()));
+        invalid.check.argv.clear();
+        let response = check_environment(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Supervisor),
+            Json(invalid),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let mut invalid =
+            environment_check_request(&format!("factory-ws-{}", uuid::Uuid::new_v4()));
+        invalid.check.expect_exit = 9_999;
+        let response = check_environment(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Supervisor),
+            Json(invalid),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn environment_check_refuses_foreign_or_missing_workspace_volume() {
+        let (app, workspace, _log, serial) = environment_check_test_app(
+            ResourceOwner::Verifier,
+            0,
+            check_result_body(
+                &valid_environment_execution().1.spec_sha256,
+                "PASSED",
+                0,
+                0,
+                "ok\n",
+                "",
+            ),
+        )
+        .await;
+        let response = check_environment(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Supervisor),
+            Json(environment_check_request(&workspace)),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        drop(serial);
+
+        let script = r#"#!/bin/sh
+case "$1" in
+  image)
+    if [ "$2" = "inspect" ]; then
+      printf '%s\n' "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      exit 0
+    fi
+    ;;
+  volume)
+    case "$2" in
+      inspect) exit 1 ;;
+      exists) exit 1 ;;
+    esac
+    ;;
+esac
+exit 0
+"#;
+        let (podman, _serial) = fake_podman(script).await;
+        let missing_app = test_app(podman);
+        missing_app.set_environment_builder(app.environment_builder());
+        let response = check_environment(
+            State(missing_app),
+            test_headers(ResourceOwner::Supervisor),
+            Json(environment_check_request(&format!(
+                "factory-ws-{}",
+                uuid::Uuid::new_v4()
+            ))),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    }
+
+    #[tokio::test]
+    async fn environment_check_rejects_plan_spec_receipt_and_builder_mismatches() {
+        let (app, workspace, _log, _serial) = environment_check_test_app(
+            ResourceOwner::Supervisor,
+            0,
+            check_result_body(
+                &valid_environment_execution().1.spec_sha256,
+                "PASSED",
+                0,
+                0,
+                "ok\n",
+                "",
+            ),
+        )
+        .await;
+        let mut request = environment_check_request(&workspace);
+        request.plan.plan_sha256 = "0".repeat(64);
+        let response = check_environment(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Supervisor),
+            Json(request),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            environment_response_body(response).await["code"],
+            "ENVIRONMENT_HASH_MISMATCH"
+        );
+
+        let mut request = environment_check_request(&workspace);
+        request.spec.spec_sha256 = "0".repeat(64);
+        let response = check_environment(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Supervisor),
+            Json(request),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            environment_response_body(response).await["code"],
+            "ENVIRONMENT_HASH_MISMATCH"
+        );
+
+        let mut request = environment_check_request(&workspace);
+        request.receipt.spec_sha256 = "0".repeat(64);
+        let response = check_environment(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Supervisor),
+            Json(request),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            environment_response_body(response).await["code"],
+            "ENVIRONMENT_HASH_MISMATCH"
+        );
+
+        let mut request = environment_check_request(&workspace);
+        request.image = "localhost/other-builder:dev".into();
+        request.plan.builder.image = request.image.clone();
+        request.spec.builder_image = request.image.clone();
+        request.receipt.builder_image = request.image.clone();
+        let response = check_environment(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Supervisor),
+            Json(request),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            environment_response_body(response).await["code"],
+            "ENVIRONMENT_HASH_MISMATCH"
+        );
+    }
+
+    #[tokio::test]
+    async fn environment_check_success_returns_bounded_result_and_narrow_container_args() {
+        let spec_sha = valid_environment_execution().1.spec_sha256;
+        let (app, workspace, log, _serial) = environment_check_test_app(
+            ResourceOwner::Supervisor,
+            0,
+            check_result_body(&spec_sha, "PASSED", 0, 0, "checked ok\n", "warning\n"),
+        )
+        .await;
+        let response = check_environment(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Supervisor),
+            Json(environment_check_request(&workspace)),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = environment_response_body(response).await;
+        assert_eq!(body["checkId"], "check-1");
+        assert_eq!(body["specSha256"], spec_sha);
+        assert_eq!(body["status"], "PASSED");
+        assert_eq!(body["exitCode"], 0);
+        assert_eq!(body["expectExit"], 0);
+        assert_eq!(body["passed"], true);
+        assert_eq!(body["cleanupConfirmed"], true);
+        assert_eq!(body["durationMs"], 7);
+        assert_eq!(body["stdout"], "checked ok\n");
+        assert_eq!(body["stderr"], "warning\n");
+        assert!(body["logs"].as_str().unwrap().contains("checked ok"));
+        let log = std::fs::read_to_string(log).unwrap();
+        assert!(log.contains("check --request /cache/request.json"), "{log}");
+        assert!(log.contains("--network=none"), "{log}");
+        assert!(log.contains("--read-only"), "{log}");
+        assert!(log.contains("--cap-drop=all"), "{log}");
+        assert!(log.contains("--security-opt=no-new-privileges"), "{log}");
+        assert!(log.contains("--cpus=2"), "{log}");
+        assert!(log.contains("--memory=4096m"), "{log}");
+        assert!(log.contains("--pids-limit=512"), "{log}");
+        assert!(
+            log.contains(&format!("{workspace}:/inputs/workspace:ro")),
+            "{log}"
+        );
+        assert!(log.contains(":/cache:rw"), "{log}");
+        assert!(
+            log.contains("FACTORY_ENVIRONMENT_BUILDER_SHARED_STORE=1"),
+            "{log}"
+        );
+        assert!(!log.contains("--privileged"), "{log}");
+        assert!(!log.contains("--network=host"), "{log}");
+        assert!(!log.contains(":/workspace"), "{log}");
+        assert!(!log.contains("OPENAI_API_KEY"), "{log}");
+        assert!(log.contains("rm --force --time=0 factory-env-"), "{log}");
+        assert!(
+            !log.contains("volume rm --force factory-env-cache-"),
+            "{log}"
+        );
+    }
+
+    #[tokio::test]
+    async fn environment_check_failure_preserves_exit_code() {
+        let (_, spec, _) = valid_environment_execution();
+        let (app, workspace, _log, _serial) = environment_check_test_app(
+            ResourceOwner::Supervisor,
+            1,
+            check_result_body(
+                &spec.spec_sha256,
+                "FAILED",
+                2,
+                0,
+                "compilation failed\n",
+                "error[E0001]\n",
+            ),
+        )
+        .await;
+        let response = check_environment(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Supervisor),
+            Json(environment_check_request(&workspace)),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = environment_response_body(response).await;
+        assert_eq!(body["status"], "FAILED");
+        assert_eq!(body["exitCode"], 2);
+        assert_eq!(body["expectExit"], 0);
+        assert_eq!(body["passed"], false);
+        assert_eq!(body["stdout"], "compilation failed\n");
+        assert_eq!(body["stderr"], "error[E0001]\n");
+    }
+
+    #[tokio::test]
+    async fn environment_check_rejects_a_fabricated_passed_status() {
+        let (_, spec, _) = valid_environment_execution();
+        let (app, workspace, _log, _serial) = environment_check_test_app(
+            ResourceOwner::Supervisor,
+            0,
+            check_result_body(&spec.spec_sha256, "PASSED", 1, 0, "bad\n", ""),
+        )
+        .await;
+        let response = check_environment(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Supervisor),
+            Json(environment_check_request(&workspace)),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            environment_response_body(response).await["code"],
+            "ENVIRONMENT_BUILD_FAILED"
+        );
+    }
+
+    #[tokio::test]
+    async fn environment_check_timeout_kills_and_removes_the_container() {
+        let directory = std::env::temp_dir().join(format!(
+            "factory-env-check-timeout-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let log_path = directory.join("podman.log");
+        let script = format!(
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> "{}"
+case "$1" in
+  run) sleep 5; exit 0 ;;
+  rm) exit 0 ;;
+  container) [ "$2" = "exists" ] && exit 1 ;;
+esac
+exit 0
+"#,
+            log_path.display()
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app(podman);
+        let plan = valid_environment_execution().0;
+        let result = run_environment_container(
+            &app,
+            TEST_BUILDER_IMAGE_ID,
+            "factory-env-check-timeout",
+            "none",
+            None,
+            &plan,
+            Instant::now() + Duration::from_millis(100),
+            "factory-env-ws-timeout",
+            "factory-env-cache-timeout",
+            "check",
+            "request.json",
+            true,
+        )
+        .await;
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().code,
+            "ENVIRONMENT_BUILD_TIMEOUT".to_owned()
+        );
+        let log = std::fs::read_to_string(log_path).unwrap();
+        assert!(
+            log.contains("rm --force --time=0 factory-env-check-timeout"),
             "{log}"
         );
     }

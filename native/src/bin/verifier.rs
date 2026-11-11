@@ -23,7 +23,9 @@ use factory_native::execution::{
     BoundedOutput, BrokerVolumes, RootlessPodmanVolumes, VolumeBackend,
 };
 use factory_native::lead::SpecCheck;
-use factory_native::runtime_broker::ResourceOwner;
+use factory_native::runtime_broker::{
+    EnvironmentCheckRequest, EnvironmentCheckResult, EnvironmentCheckSpec, ResourceOwner,
+};
 use factory_native::workspace::{self, WorkspaceAllocator, WorkspaceError};
 use factory_native::workspace_archive;
 use serde_json::json;
@@ -429,19 +431,13 @@ async fn sandboxed_checks(
     result
 }
 
-struct VerifierCheckTarget {
-    image: String,
-    argv: Vec<String>,
-    timeout_secs: u32,
-}
-
 /// Resolve the exact environment target for one verifier check. Missing,
 /// stale or mismatched plan/spec/receipt identity is a typed infrastructure
 /// refusal; there is no global verifier image fallback.
 fn select_verifier_check(
     check: &SpecCheck,
     execution: &factory_native::planning::environment::EnvironmentExecutionBinding,
-) -> Result<VerifierCheckTarget, VerificationError> {
+) -> Result<EnvironmentCheckSpec, VerificationError> {
     require_complete_environment_binding(check)?;
     let target = factory_native::planning::environment::select_check_execution(
         check,
@@ -458,10 +454,12 @@ fn select_verifier_check(
                 .into(),
         ));
     }
-    Ok(VerifierCheckTarget {
-        image: format!("{}@{}", target.builder_image, target.builder_image_digest),
+    Ok(EnvironmentCheckSpec {
+        check_id: target.check_id,
         argv: target.argv,
+        cwd: target.cwd,
         timeout_secs: target.timeout_secs,
+        expect_exit: target.expect_exit,
     })
 }
 
@@ -493,8 +491,8 @@ fn require_environment_execution(
     })
 }
 
-async fn run_sandboxed_checks<B: VolumeBackend>(
-    backend: &B,
+async fn run_sandboxed_checks(
+    backend: &VerifierBackend,
     worktree: &Path,
     execution: &factory_native::planning::environment::EnvironmentExecutionBinding,
     checks: &[SpecCheck],
@@ -517,23 +515,23 @@ async fn run_sandboxed_checks<B: VolumeBackend>(
                 VerificationError::Infrastructure(format!("verifier volume import failed: {error}"))
             })?;
         for check in checks {
-            let target = select_verifier_check(check, execution)?;
-            let container = format!("factory-exec-{}", Uuid::new_v4());
-            let output: BoundedOutput = backend
-                .run(
-                    &volume,
-                    &container,
-                    &target.image,
-                    &target.argv,
-                    Duration::from_secs(u64::from(target.timeout_secs)),
-                )
-                .await
-                .map_err(|error| {
-                    VerificationError::Infrastructure(format!(
-                        "check {} sandbox failed: {error}",
-                        check.id
-                    ))
-                })?;
+            let check_spec = select_verifier_check(check, execution)?;
+            let request = EnvironmentCheckRequest {
+                schema_version: 1,
+                image: execution.spec.builder_image.clone(),
+                digest: execution.spec.builder_image_digest.clone(),
+                plan: execution.plan.clone(),
+                spec: execution.spec.clone(),
+                receipt: execution.receipt.clone(),
+                check: check_spec,
+                workspace_volume: volume.clone(),
+            };
+            let output = backend.environment_check(&request).await.map_err(|error| {
+                VerificationError::Infrastructure(format!(
+                    "check {} frozen environment failed: {error}",
+                    check.id
+                ))
+            })?;
             let code = output.exit_code.unwrap_or(-1);
             if code != check.expect_exit {
                 return Err(VerificationError::Check(format!(
@@ -541,9 +539,9 @@ async fn run_sandboxed_checks<B: VolumeBackend>(
                     check.id,
                     check.expect_exit,
                     check_diagnostic(
-                        &output.stdout,
+                        output.stdout.as_bytes(),
                         output.stdout_truncated,
-                        &output.stderr,
+                        output.stderr.as_bytes(),
                         output.stderr_truncated
                     )
                 )));
@@ -570,6 +568,37 @@ enum VerifierBackend {
     Broker(BrokerVolumes),
     #[cfg(debug_assertions)]
     Local(LocalVolumeBackend),
+}
+
+impl VerifierBackend {
+    /// Environment-bound checks must run through the runtime broker and the
+    /// frozen builder image. The direct Podman/local development backends have
+    /// no builder-check route and fail closed instead of running the generic
+    /// verifier image.
+    async fn environment_check(
+        &self,
+        request: &EnvironmentCheckRequest,
+    ) -> Result<EnvironmentCheckResult, VerificationError> {
+        match self {
+            Self::Broker(backend) => backend
+                .client()
+                .environment_check(
+                    request,
+                    Duration::from_secs(u64::from(request.check.timeout_secs) + 180),
+                )
+                .await
+                .map_err(|error| VerificationError::Infrastructure(error.to_string())),
+            Self::Podman(_) => Err(VerificationError::Infrastructure(
+                "environment checks require the runtime broker and frozen builder image; the direct verifier backend has no generic fallback"
+                    .into(),
+            )),
+            #[cfg(debug_assertions)]
+            Self::Local(_) => Err(VerificationError::Infrastructure(
+                "environment checks require the runtime broker and frozen builder image; the local verifier backend has no generic fallback"
+                    .into(),
+            )),
+        }
+    }
 }
 
 impl VolumeBackend for VerifierBackend {
@@ -1290,6 +1319,18 @@ fn validated_core_url(raw: &str) -> Result<reqwest::Url, Box<dyn std::error::Err
 mod tests {
     use super::*;
     use factory_native::lead::CheckKind;
+    use factory_native::planning::environment::{
+        DEFAULT_PLATFORM, ENVIRONMENT_POLICY_REVISION, EnvironmentBuildReceipt,
+        EnvironmentBuilderDescriptor, EnvironmentBuilderStatus, EnvironmentExecutionBinding,
+        EnvironmentFile, EnvironmentFileOrigin, EnvironmentNixPolicy, EnvironmentPlan,
+        EnvironmentPlanSource, EnvironmentPlanStatus, EnvironmentSpec, EnvironmentSpecStatus,
+        ExistingEnvironmentKind, LicenseInventory, NetworkPolicy, ProjectConventions,
+        ResourceLimits, SandboxAttestation, SandboxPolicy,
+    };
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
 
     fn check(id: &str, command: Vec<&str>, expect_exit: i32) -> SpecCheck {
         SpecCheck {
@@ -1303,6 +1344,237 @@ mod tests {
             environment_spec_sha256: None,
         }
     }
+
+    fn valid_environment_execution() -> EnvironmentExecutionBinding {
+        let base_commit = "b".repeat(40);
+        let project_id = "project-1";
+        let request_id = "request-1";
+        let action_id = "action-1";
+        let plan_id = "plan-1";
+        let mut conventions = ProjectConventions {
+            schema_version: 1,
+            project_id: project_id.into(),
+            base_commit: base_commit.clone(),
+            conventions_sha256: String::new(),
+            scanned_at: "2026-11-10T00:00:00Z".into(),
+            files: Vec::new(),
+            commands: Vec::new(),
+            conflicts: Vec::new(),
+            truncated: false,
+            skipped_entries: 0,
+            provenance: "test".into(),
+            existing_environment: ExistingEnvironmentKind::None,
+        };
+        conventions.conventions_sha256 = conventions.compute_sha256();
+        let content = "{\n  outputs = { self }: { default = builtins.currentSystem; };\n}\n";
+        let mut inventory = LicenseInventory::default();
+        inventory.refresh_hashes(plan_id);
+        let mut plan = EnvironmentPlan {
+            schema_version: 1,
+            plan_id: plan_id.into(),
+            project_id: project_id.into(),
+            request_id: request_id.into(),
+            action_id: action_id.into(),
+            campaign_id: None,
+            base_commit: base_commit.clone(),
+            conventions_sha256: conventions.conventions_sha256.clone(),
+            conventions,
+            risk_class: "R0".into(),
+            status: EnvironmentPlanStatus::Frozen,
+            revision: 1,
+            source: EnvironmentPlanSource::Generated,
+            toolchains: Vec::new(),
+            packages: Vec::new(),
+            services: Vec::new(),
+            commands: std::collections::BTreeMap::new(),
+            browsers: Vec::new(),
+            files: vec![EnvironmentFile {
+                path: "flake.nix".into(),
+                sha256: factory_native::planning::environment::sha256_hex(content.as_bytes()),
+                origin: EnvironmentFileOrigin::Generated,
+                content: Some(content.into()),
+            }],
+            nix: EnvironmentNixPolicy {
+                nixpkgs: format!("github:NixOS/nixpkgs/{}", "a".repeat(40)),
+                inputs: Vec::new(),
+                allow_unfree: false,
+                sandbox: SandboxPolicy {
+                    sandbox: true,
+                    impure: false,
+                    host_mounts: Vec::new(),
+                    privileged: false,
+                    host_network: false,
+                    host_sockets: Vec::new(),
+                },
+            },
+            resources: ResourceLimits::default(),
+            network: NetworkPolicy::default(),
+            license_inventory: inventory.clone(),
+            license_inventory_sha256: inventory.inventory_sha256.clone(),
+            builder: EnvironmentBuilderDescriptor {
+                image: "localhost/software-factory-environment-builder:dev".into(),
+                digest: format!("sha256:{}", "1".repeat(64)),
+                platform: DEFAULT_PLATFORM.into(),
+                policy_revision: ENVIRONMENT_POLICY_REVISION.into(),
+                default_nixpkgs: String::new(),
+                status: EnvironmentBuilderStatus::Ready,
+            },
+            resolution: None,
+            lead_review: None,
+            blockers: Vec::new(),
+            commands_rationale: "test".into(),
+            plan_sha256: String::new(),
+            created_at: "2026-11-10T00:00:00Z".into(),
+        };
+        plan.refresh_hash();
+        plan.validate(chrono::Utc::now()).unwrap();
+        let mut spec = EnvironmentSpec {
+            schema_version: 1,
+            spec_id: "spec-1".into(),
+            spec_sha256: String::new(),
+            project_id: project_id.into(),
+            request_id: request_id.into(),
+            action_id: action_id.into(),
+            campaign_id: None,
+            base_commit,
+            plan_id: plan_id.into(),
+            plan_sha256: plan.plan_sha256.clone(),
+            conventions_sha256: plan.conventions_sha256.clone(),
+            review_id: "review-1".into(),
+            platform: DEFAULT_PLATFORM.into(),
+            nix_version: "2.28.3".into(),
+            devenv_version: "1.11.2".into(),
+            flake_lock_sha256: "e".repeat(64),
+            devenv_lock_sha256: String::new(),
+            license_inventory_sha256: plan.license_inventory_sha256.clone(),
+            sbom_sha256: plan.license_inventory.sbom_sha256.clone(),
+            builder_image: plan.builder.image.clone(),
+            builder_image_digest: plan.builder.digest.clone(),
+            resource_policy: plan.resources,
+            network_policy: plan.network.clone(),
+            status: EnvironmentSpecStatus::Frozen,
+            frozen_at: "2026-11-10T00:00:00Z".into(),
+        };
+        spec.spec_sha256 = spec.compute_sha256();
+        spec.validate().unwrap();
+        let receipt = EnvironmentBuildReceipt {
+            schema_version: 1,
+            receipt_id: "receipt-1".into(),
+            spec_sha256: spec.spec_sha256.clone(),
+            platform: spec.platform.clone(),
+            builder_image: spec.builder_image.clone(),
+            builder_image_digest: spec.builder_image_digest.clone(),
+            builder_policy_revision: ENVIRONMENT_POLICY_REVISION.into(),
+            status: EnvironmentBuilderStatus::Succeeded,
+            store_path: "/nix/store/fixture".into(),
+            output_sha256: "5".repeat(64),
+            sbom_sha256: spec.sbom_sha256.clone(),
+            log_ref: "build.log".into(),
+            sandbox_attestation: SandboxAttestation {
+                non_root: true,
+                no_secrets: true,
+                no_host_network: true,
+                no_host_socket: true,
+                no_host_mount: true,
+                sandbox: true,
+                impure: false,
+                bounded_resources: true,
+            },
+            blockers: Vec::new(),
+            duration_ms: 1,
+            created_at: "2026-11-10T00:00:00Z".into(),
+        };
+        receipt.validate_for(&spec).unwrap();
+        EnvironmentExecutionBinding {
+            plan,
+            spec,
+            receipt,
+        }
+    }
+
+    fn environment_bound_check(binding: &EnvironmentExecutionBinding) -> SpecCheck {
+        SpecCheck {
+            id: "test".into(),
+            kind: CheckKind::Functional,
+            description: "frozen environment test".into(),
+            command: vec!["cargo".into(), "test".into()],
+            expect_exit: 0,
+            timeout_secs: 30,
+            environment_plan_id: Some(binding.plan.plan_id.clone()),
+            environment_spec_sha256: Some(binding.spec.spec_sha256.clone()),
+        }
+    }
+
+    struct FakeBroker {
+        url: String,
+        requests: Arc<Mutex<Vec<serde_json::Value>>>,
+        deletes: Arc<AtomicUsize>,
+        server: tokio::task::JoinHandle<()>,
+    }
+
+    impl Drop for FakeBroker {
+        fn drop(&mut self) {
+            self.server.abort();
+        }
+    }
+
+    async fn fake_broker(
+        status: axum::http::StatusCode,
+        response: serde_json::Value,
+    ) -> FakeBroker {
+        use axum::routing::{delete, post};
+        #[derive(Clone)]
+        struct State {
+            requests: Arc<Mutex<Vec<serde_json::Value>>>,
+            deletes: Arc<AtomicUsize>,
+            status: axum::http::StatusCode,
+            response: serde_json::Value,
+        }
+        async fn environment_check(
+            axum::extract::State(state): axum::extract::State<State>,
+            axum::Json(body): axum::Json<serde_json::Value>,
+        ) -> axum::response::Response {
+            use axum::response::IntoResponse;
+            state.requests.lock().unwrap().push(body);
+            (state.status, axum::Json(state.response.clone())).into_response()
+        }
+        async fn accepted() -> axum::http::StatusCode {
+            axum::http::StatusCode::NO_CONTENT
+        }
+        async fn removed(
+            axum::extract::State(state): axum::extract::State<State>,
+        ) -> axum::http::StatusCode {
+            state.deletes.fetch_add(1, Ordering::SeqCst);
+            axum::http::StatusCode::NO_CONTENT
+        }
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let deletes = Arc::new(AtomicUsize::new(0));
+        let state = State {
+            requests: Arc::clone(&requests),
+            deletes: Arc::clone(&deletes),
+            status,
+            response,
+        };
+        let router = axum::Router::new()
+            .route("/v1/volumes", post(accepted))
+            .route("/v1/volumes/{volume}/import", post(accepted))
+            .route("/v1/volumes/{volume}", delete(removed))
+            .route("/v1/environments/check", post(environment_check))
+            .with_state(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        FakeBroker {
+            url: format!("http://{address}"),
+            requests,
+            deletes,
+            server,
+        }
+    }
+
+    const TEST_BROKER_TOKEN: &str = "verifier-broker-token-0123456789abcdef012345678";
 
     #[test]
     fn partial_environment_binding_is_refused() {
@@ -1603,5 +1875,110 @@ mod tests {
         verify_git_identity(&root, &base, &commit, &tree).unwrap();
         assert!(verify_git_identity(&root, &commit, &commit, &tree).is_err());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn verifier_uses_the_frozen_builder_check_path() {
+        let binding = valid_environment_execution();
+        let check = environment_bound_check(&binding);
+        let broker = fake_broker(
+            axum::http::StatusCode::OK,
+            serde_json::json!({
+                "checkId": "test",
+                "specSha256": binding.spec.spec_sha256,
+                "status": "PASSED",
+                "exitCode": 0,
+                "expectExit": 0,
+                "passed": true,
+                "logs": "ok\n",
+                "logsTruncated": false,
+                "stdout": "ok\n",
+                "stderr": "",
+                "stdoutTruncated": false,
+                "stderrTruncated": false,
+                "cleanupConfirmed": true,
+                "durationMs": 2
+            }),
+        )
+        .await;
+        let backend = VerifierBackend::Broker(
+            BrokerVolumes::new(
+                &broker.url,
+                TEST_BROKER_TOKEN.into(),
+                ResourceOwner::Verifier,
+            )
+            .unwrap(),
+        );
+        let worktree =
+            std::env::temp_dir().join(format!("factory-verifier-env-{}", Uuid::new_v4()));
+        std::fs::create_dir(&worktree).unwrap();
+        std::fs::write(worktree.join("candidate.txt"), "content\n").unwrap();
+        let result =
+            run_sandboxed_checks(&backend, &worktree, &binding, std::slice::from_ref(&check)).await;
+        assert!(result.is_ok(), "{result:?}");
+        let requests = broker.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        let request = &requests[0];
+        assert_eq!(request["check"]["checkId"], "test");
+        assert_eq!(
+            request["check"]["argv"],
+            serde_json::json!(["cargo", "test"])
+        );
+        assert_eq!(request["check"]["timeoutSecs"], 30);
+        assert_eq!(request["image"], binding.spec.builder_image);
+        assert_eq!(request["digest"], binding.spec.builder_image_digest);
+        assert_eq!(request["spec"]["specSha256"], binding.spec.spec_sha256);
+        assert_eq!(request["plan"]["planSha256"], binding.plan.plan_sha256);
+        assert!(
+            request["workspaceVolume"]
+                .as_str()
+                .is_some_and(|volume| volume.starts_with("factory-ws-"))
+        );
+        drop(requests);
+        assert_eq!(broker.deletes.load(Ordering::SeqCst), 1);
+        let _ = std::fs::remove_dir_all(worktree);
+    }
+
+    #[tokio::test]
+    async fn verifier_fails_closed_on_builder_refusal_and_missing_binding() {
+        let binding = valid_environment_execution();
+        let check = environment_bound_check(&binding);
+        let broker = fake_broker(
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            serde_json::json!({
+                "code": "ENVIRONMENT_BUILDER_UNAVAILABLE",
+                "error": "the environment builder is not ready"
+            }),
+        )
+        .await;
+        let backend = VerifierBackend::Broker(
+            BrokerVolumes::new(
+                &broker.url,
+                TEST_BROKER_TOKEN.into(),
+                ResourceOwner::Verifier,
+            )
+            .unwrap(),
+        );
+        let worktree =
+            std::env::temp_dir().join(format!("factory-verifier-refusal-{}", Uuid::new_v4()));
+        std::fs::create_dir(&worktree).unwrap();
+        std::fs::write(worktree.join("candidate.txt"), "content\n").unwrap();
+        let error = run_sandboxed_checks(&backend, &worktree, &binding, &[check])
+            .await
+            .expect_err("builder refusal must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("ENVIRONMENT_BUILDER_UNAVAILABLE"),
+            "{error}"
+        );
+        assert_eq!(broker.deletes.load(Ordering::SeqCst), 1);
+
+        let mut unbound = environment_bound_check(&binding);
+        unbound.environment_spec_sha256 = None;
+        let error = require_complete_environment_binding(&unbound)
+            .expect_err("partial binding must be refused");
+        assert!(error.to_string().contains("ENVIRONMENT_PLAN_REQUIRED"));
+        let _ = std::fs::remove_dir_all(worktree);
     }
 }

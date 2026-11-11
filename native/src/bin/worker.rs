@@ -4000,6 +4000,12 @@ fn check_execution_target(
     check: &factory_native::lead::SpecCheck,
 ) -> Result<Option<factory_native::planning::environment::CheckExecutionTarget>, String> {
     if check.environment_plan_id.is_none() && check.environment_spec_sha256.is_none() {
+        if context.assignment.action_spec.environment_required {
+            return Err(format!(
+                "ENVIRONMENT_PLAN_REQUIRED: check {} has no environment plan; a production check may not fall back to a generic image",
+                check.id
+            ));
+        }
         return Ok(None);
     }
     let execution = context
@@ -4050,6 +4056,7 @@ fn missing_frozen_checks<'a>(
         .collect()
 }
 
+#[derive(Debug)]
 struct FrozenCheckExecution {
     check_id: String,
     exit_code: Option<i32>,
@@ -4167,30 +4174,80 @@ async fn execute_frozen_checks(
         .await?;
         let timeout_secs = effective_check_timeout(context, check);
         let target = check_execution_target(context, check)?;
-        let image = target
-            .as_ref()
-            .map(|target| format!("{}@{}", target.builder_image, target.builder_image_digest));
-        let result = supervisor_run(
-            context,
-            &handle.workspace_id,
-            &handle.capability,
-            image.as_deref(),
-            &check.command,
-            timeout_secs,
-        )
-        .await
-        .map_err(|error| {
-            format!(
-                "Worker could not execute frozen check {}; no candidate was created: {error}",
-                check.id
+        let (exit_code, stdout, stderr, output_truncated) = if let Some(target) = target {
+            let execution = context
+                .assignment
+                .environment_execution
+                .as_ref()
+                .ok_or_else(|| {
+                    format!(
+                        "ENVIRONMENT_PLAN_REQUIRED: check {} requires the Campaign environment binding",
+                        check.id
+                    )
+                })?;
+            let environment_check = factory_native::runtime_broker::EnvironmentCheckSpec {
+                check_id: target.check_id.clone(),
+                argv: target.argv.clone(),
+                cwd: target.cwd.clone(),
+                timeout_secs: target.timeout_secs,
+                expect_exit: target.expect_exit,
+            };
+            let result = supervisor_environment_check(
+                context,
+                &handle.workspace_id,
+                &handle.capability,
+                execution,
+                &environment_check,
             )
-        })?;
+            .await
+            .map_err(|error| {
+                format!(
+                    "Worker could not execute frozen check {} in the frozen environment; no candidate was created: {error}",
+                    check.id
+                )
+            })?;
+            let exit_code = result.exit_code.ok_or_else(|| {
+                format!(
+                    "Worker environment check {} returned no exit code; no candidate was created",
+                    check.id
+                )
+            })?;
+            (
+                Some(exit_code),
+                result.stdout,
+                result.stderr,
+                result.stdout_truncated || result.stderr_truncated,
+            )
+        } else {
+            let image = None;
+            let result = supervisor_run(
+                context,
+                &handle.workspace_id,
+                &handle.capability,
+                image,
+                &check.command,
+                timeout_secs,
+            )
+            .await
+            .map_err(|error| {
+                format!(
+                    "Worker could not execute frozen check {}; no candidate was created: {error}",
+                    check.id
+                )
+            })?;
+            (
+                result.exit_code,
+                result.stdout,
+                result.stderr,
+                result.stdout_truncated || result.stderr_truncated,
+            )
+        };
         let receipt = post_check_result(
             context,
             &call_id,
             &check.command,
             &progress.candidate_digest(),
-            result.exit_code,
+            exit_code,
             candidate,
         )
         .await?;
@@ -4201,12 +4258,12 @@ async fn execute_frozen_checks(
         }
         executions.push(FrozenCheckExecution {
             check_id: check.id.clone(),
-            exit_code: result.exit_code,
+            exit_code,
             expected_exit: check.expect_exit,
             passed,
-            stdout: result.stdout,
-            stderr: result.stderr,
-            output_truncated: result.stdout_truncated || result.stderr_truncated,
+            stdout,
+            stderr,
+            output_truncated,
         });
     }
     Ok(executions)
@@ -4660,6 +4717,70 @@ async fn supervisor_run(
         return Err(format!("Supervisor run failed: {status}: {body}").into());
     }
     Ok(response.json().await?)
+}
+
+async fn supervisor_environment_check(
+    context: &ProviderContext<'_>,
+    workspace_id: &str,
+    capability: &str,
+    execution: &factory_native::planning::environment::EnvironmentExecutionBinding,
+    check: &factory_native::runtime_broker::EnvironmentCheckSpec,
+) -> Result<factory_native::runtime_broker::EnvironmentCheckResult, Box<dyn std::error::Error>> {
+    let digest = request_digest(&json!({
+        "argv": &check.argv,
+        "timeout_secs": check.timeout_secs
+    }))?;
+    let operation = request_workspace_operation(WorkspaceOperation {
+        client: context.client,
+        core: context.core,
+        session_token: context.session_token,
+        worker_id: context.worker_id,
+        attempt_id: &context.assignment.lease.attempt_id,
+        generation: context.assignment.lease.generation,
+        workspace_id,
+        operation: "run",
+        request_sha256: digest,
+    })
+    .await?;
+    let response = context
+        .supervisor
+        .client
+        .post(
+            context
+                .supervisor
+                .base
+                .join(&format!("v1/workspaces/{workspace_id}/environment-check"))?,
+        )
+        .bearer_auth(capability)
+        .header("x-factory-operation-grant", operation)
+        .json(
+            &factory_native::runtime_broker::EnvironmentCheckExecutionRequest {
+                image: execution.spec.builder_image.clone(),
+                digest: execution.spec.builder_image_digest.clone(),
+                plan: execution.plan.clone(),
+                spec: execution.spec.clone(),
+                receipt: execution.receipt.clone(),
+                check: check.clone(),
+            },
+        )
+        .timeout(Duration::from_secs(u64::from(check.timeout_secs) + 180))
+        .send()
+        .await?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        let body = body.chars().take(1_000).collect::<String>();
+        return Err(format!("Supervisor environment check failed: {status}: {body}").into());
+    }
+    let result: factory_native::runtime_broker::EnvironmentCheckResult = response.json().await?;
+    result
+        .validate_for_check(
+            &check.check_id,
+            &execution.spec.spec_sha256,
+            check.expect_exit,
+        )
+        .map_err(|error| format!("Supervisor environment check result is invalid: {error}"))?;
+    Ok(result)
 }
 
 async fn supervisor_finalize(
@@ -5412,6 +5533,14 @@ mod tests {
     };
     use factory_native::db::ExecutionCheckReceiptRecord;
     use factory_native::lead::{CheckKind, SpecCheck};
+    use factory_native::planning::environment::{
+        DEFAULT_PLATFORM, ENVIRONMENT_POLICY_REVISION, EnvironmentBuildReceipt,
+        EnvironmentBuilderDescriptor, EnvironmentBuilderStatus, EnvironmentExecutionBinding,
+        EnvironmentFile, EnvironmentFileOrigin, EnvironmentNixPolicy, EnvironmentPlan,
+        EnvironmentPlanSource, EnvironmentPlanStatus, EnvironmentSpec, EnvironmentSpecStatus,
+        ExistingEnvironmentKind, LicenseInventory, NetworkPolicy, ProjectConventions,
+        ResourceLimits, SandboxAttestation, SandboxPolicy,
+    };
 
     fn auto_check_policy() -> factory_native::execution_policy::FrozenExecutionPolicy {
         use std::num::NonZeroU32;
@@ -5591,6 +5720,9 @@ mod tests {
         progress_requests: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
         progress_rejections: std::sync::Arc<std::sync::atomic::AtomicUsize>,
         receipts: std::sync::Arc<std::sync::Mutex<Vec<ExecutionCheckReceiptRecord>>>,
+        environment_checks: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+        environment_check_response:
+            std::sync::Arc<std::sync::Mutex<Option<(axum::http::StatusCode, serde_json::Value)>>>,
         sequence: std::sync::Arc<std::sync::atomic::AtomicI64>,
     }
 
@@ -5737,6 +5869,34 @@ mod tests {
         axum::Json(serde_json::json!({"grant": "grant"}))
     }
 
+    async fn auto_check_environment_check(
+        axum::extract::State(state): axum::extract::State<AutoCheckBackendState>,
+        axum::Json(body): axum::Json<serde_json::Value>,
+    ) -> axum::response::Response {
+        use axum::response::IntoResponse;
+        state.environment_checks.lock().unwrap().push(body.clone());
+        if let Some((status, body)) = state.environment_check_response.lock().unwrap().take() {
+            return (status, axum::Json(body)).into_response();
+        }
+        axum::Json(serde_json::json!({
+            "checkId": body["check"]["checkId"],
+            "specSha256": body["spec"]["specSha256"],
+            "status": "PASSED",
+            "exitCode": 0,
+            "expectExit": body["check"]["expectExit"],
+            "passed": true,
+            "logs": "environment check passed\n",
+            "logsTruncated": false,
+            "stdout": "environment check passed\n",
+            "stderr": "",
+            "stdoutTruncated": false,
+            "stderrTruncated": false,
+            "cleanupConfirmed": true,
+            "durationMs": 5
+        }))
+        .into_response()
+    }
+
     async fn auto_check_allocate(
         axum::extract::State(state): axum::extract::State<AutoCheckBackendState>,
     ) -> axum::Json<serde_json::Value> {
@@ -5866,6 +6026,9 @@ mod tests {
         progress_requests: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
         progress_rejections: std::sync::Arc<std::sync::atomic::AtomicUsize>,
         receipts: std::sync::Arc<std::sync::Mutex<Vec<ExecutionCheckReceiptRecord>>>,
+        environment_checks: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+        environment_check_response:
+            std::sync::Arc<std::sync::Mutex<Option<(axum::http::StatusCode, serde_json::Value)>>>,
         provider_server: tokio::task::JoinHandle<()>,
         backend_server: tokio::task::JoinHandle<()>,
         root: std::path::PathBuf,
@@ -5960,6 +6123,8 @@ mod tests {
             let progress_requests = Arc::new(Mutex::new(Vec::new()));
             let progress_rejections = Arc::new(AtomicUsize::new(0));
             let receipts = Arc::new(Mutex::new(Vec::new()));
+            let environment_checks = Arc::new(Mutex::new(Vec::new()));
+            let environment_check_response = Arc::new(Mutex::new(None));
             let backend_state = AutoCheckBackendState {
                 base: base.clone(),
                 root: root.clone(),
@@ -5974,6 +6139,8 @@ mod tests {
                 progress_requests: Arc::clone(&progress_requests),
                 progress_rejections: Arc::clone(&progress_rejections),
                 receipts: Arc::clone(&receipts),
+                environment_checks: Arc::clone(&environment_checks),
+                environment_check_response: Arc::clone(&environment_check_response),
                 sequence: Arc::new(std::sync::atomic::AtomicI64::new(1)),
             };
             let backend_router = axum::Router::new()
@@ -5991,6 +6158,10 @@ mod tests {
                 .route("/v1/workspaces", post(auto_check_allocate))
                 .route("/v1/workspaces/ws/write", post(auto_check_write))
                 .route("/v1/workspaces/ws/run", post(auto_check_run))
+                .route(
+                    "/v1/workspaces/ws/environment-check",
+                    post(auto_check_environment_check),
+                )
                 .route("/v1/workspaces/ws/finalize", post(auto_check_finalize))
                 .route("/v1/workspaces/ws", delete(auto_check_cleanup))
                 .with_state(backend_state);
@@ -6036,23 +6207,16 @@ mod tests {
                 progress_requests,
                 progress_rejections,
                 receipts,
+                environment_checks,
+                environment_check_response,
                 provider_server,
                 backend_server,
                 root,
             }
         }
 
-        async fn run(
-            &self,
-        ) -> Result<factory_native::workspace::CandidateRevision, Box<dyn std::error::Error>>
-        {
-            Ok(self.run_with_provenance().await?.candidate)
-        }
-
-        async fn run_with_provenance(
-            &self,
-        ) -> Result<super::ProviderRun, Box<dyn std::error::Error>> {
-            let context = ProviderContext {
+        fn context<'a>(&'a self) -> ProviderContext<'a> {
+            ProviderContext {
                 client: &self.client,
                 core: &self.core,
                 session_token: "session-token",
@@ -6069,9 +6233,341 @@ mod tests {
                 assignment: &self.assignment,
                 supervisor: &self.supervisor,
                 enforce_check_completion: true,
-            };
-            super::run_provider_tool_loop(&context).await
+            }
         }
+
+        async fn execute_checks(
+            &self,
+            checks: Vec<SpecCheck>,
+        ) -> Result<Vec<super::FrozenCheckExecution>, String> {
+            let context = self.context();
+            let handle = WorkspaceHandle {
+                workspace_id: "ws".into(),
+                attempt_id: "attempt".into(),
+                base_commit: "a".repeat(40),
+                generation: 1,
+                status: WorkspaceStatus::Allocated,
+                candidate: None,
+                capability: "capability".into(),
+                capability_expires_at_ms: 0,
+            };
+            let mut dependencies = super::DependencyAcquisitionState {
+                attempted: false,
+                receipt: None,
+            };
+            let mut progress = super::TurnProgress::from_identity(
+                "campaign".into(),
+                "unit-1".into(),
+                "attempt".into(),
+                1,
+                "run-test".into(),
+                0,
+            );
+            let mut passed = std::collections::BTreeSet::new();
+            let check_refs = checks.iter().collect::<Vec<_>>();
+            super::execute_frozen_checks(
+                &context,
+                &handle,
+                &mut dependencies,
+                &mut progress,
+                &mut passed,
+                check_refs,
+                None,
+            )
+            .await
+            .map_err(|error| error.to_string())
+        }
+
+        async fn run(
+            &self,
+        ) -> Result<factory_native::workspace::CandidateRevision, Box<dyn std::error::Error>>
+        {
+            Ok(self.run_with_provenance().await?.candidate)
+        }
+
+        async fn run_with_provenance(
+            &self,
+        ) -> Result<super::ProviderRun, Box<dyn std::error::Error>> {
+            super::run_provider_tool_loop(&self.context()).await
+        }
+    }
+
+    fn valid_environment_execution() -> EnvironmentExecutionBinding {
+        let base_commit = "b".repeat(40);
+        let project_id = "project-1";
+        let request_id = "request-1";
+        let action_id = "action-1";
+        let plan_id = "plan-1";
+        let mut conventions = ProjectConventions {
+            schema_version: 1,
+            project_id: project_id.into(),
+            base_commit: base_commit.clone(),
+            conventions_sha256: String::new(),
+            scanned_at: "2026-11-10T00:00:00Z".into(),
+            files: Vec::new(),
+            commands: Vec::new(),
+            conflicts: Vec::new(),
+            truncated: false,
+            skipped_entries: 0,
+            provenance: "test".into(),
+            existing_environment: ExistingEnvironmentKind::None,
+        };
+        conventions.conventions_sha256 = conventions.compute_sha256();
+        let content = "{\n  outputs = { self }: { default = builtins.currentSystem; };\n}\n";
+        let mut inventory = LicenseInventory::default();
+        inventory.refresh_hashes(plan_id);
+        let mut plan = EnvironmentPlan {
+            schema_version: 1,
+            plan_id: plan_id.into(),
+            project_id: project_id.into(),
+            request_id: request_id.into(),
+            action_id: action_id.into(),
+            campaign_id: None,
+            base_commit: base_commit.clone(),
+            conventions_sha256: conventions.conventions_sha256.clone(),
+            conventions,
+            risk_class: "R0".into(),
+            status: EnvironmentPlanStatus::Frozen,
+            revision: 1,
+            source: EnvironmentPlanSource::Generated,
+            toolchains: Vec::new(),
+            packages: Vec::new(),
+            services: Vec::new(),
+            commands: std::collections::BTreeMap::new(),
+            browsers: Vec::new(),
+            files: vec![EnvironmentFile {
+                path: "flake.nix".into(),
+                sha256: sha256_hex(content.as_bytes()),
+                origin: EnvironmentFileOrigin::Generated,
+                content: Some(content.into()),
+            }],
+            nix: EnvironmentNixPolicy {
+                nixpkgs: format!("github:NixOS/nixpkgs/{}", "a".repeat(40)),
+                inputs: Vec::new(),
+                allow_unfree: false,
+                sandbox: SandboxPolicy {
+                    sandbox: true,
+                    impure: false,
+                    host_mounts: Vec::new(),
+                    privileged: false,
+                    host_network: false,
+                    host_sockets: Vec::new(),
+                },
+            },
+            resources: ResourceLimits::default(),
+            network: NetworkPolicy::default(),
+            license_inventory: inventory.clone(),
+            license_inventory_sha256: inventory.inventory_sha256.clone(),
+            builder: EnvironmentBuilderDescriptor {
+                image: "localhost/software-factory-environment-builder:dev".into(),
+                digest: format!("sha256:{}", "1".repeat(64)),
+                platform: DEFAULT_PLATFORM.into(),
+                policy_revision: ENVIRONMENT_POLICY_REVISION.into(),
+                default_nixpkgs: String::new(),
+                status: EnvironmentBuilderStatus::Ready,
+            },
+            resolution: None,
+            lead_review: None,
+            blockers: Vec::new(),
+            commands_rationale: "test".into(),
+            plan_sha256: String::new(),
+            created_at: "2026-11-10T00:00:00Z".into(),
+        };
+        plan.refresh_hash();
+        plan.validate(chrono::Utc::now()).unwrap();
+        let mut spec = EnvironmentSpec {
+            schema_version: 1,
+            spec_id: "spec-1".into(),
+            spec_sha256: String::new(),
+            project_id: project_id.into(),
+            request_id: request_id.into(),
+            action_id: action_id.into(),
+            campaign_id: None,
+            base_commit,
+            plan_id: plan_id.into(),
+            plan_sha256: plan.plan_sha256.clone(),
+            conventions_sha256: plan.conventions_sha256.clone(),
+            review_id: "review-1".into(),
+            platform: DEFAULT_PLATFORM.into(),
+            nix_version: "2.28.3".into(),
+            devenv_version: "1.11.2".into(),
+            flake_lock_sha256: "e".repeat(64),
+            devenv_lock_sha256: String::new(),
+            license_inventory_sha256: plan.license_inventory_sha256.clone(),
+            sbom_sha256: plan.license_inventory.sbom_sha256.clone(),
+            builder_image: plan.builder.image.clone(),
+            builder_image_digest: plan.builder.digest.clone(),
+            resource_policy: plan.resources,
+            network_policy: plan.network.clone(),
+            status: EnvironmentSpecStatus::Frozen,
+            frozen_at: "2026-11-10T00:00:00Z".into(),
+        };
+        spec.spec_sha256 = spec.compute_sha256();
+        spec.validate().unwrap();
+        let receipt = EnvironmentBuildReceipt {
+            schema_version: 1,
+            receipt_id: "receipt-1".into(),
+            spec_sha256: spec.spec_sha256.clone(),
+            platform: spec.platform.clone(),
+            builder_image: spec.builder_image.clone(),
+            builder_image_digest: spec.builder_image_digest.clone(),
+            builder_policy_revision: ENVIRONMENT_POLICY_REVISION.into(),
+            status: EnvironmentBuilderStatus::Succeeded,
+            store_path: "/nix/store/fixture".into(),
+            output_sha256: "5".repeat(64),
+            sbom_sha256: spec.sbom_sha256.clone(),
+            log_ref: "build.log".into(),
+            sandbox_attestation: SandboxAttestation {
+                non_root: true,
+                no_secrets: true,
+                no_host_network: true,
+                no_host_socket: true,
+                no_host_mount: true,
+                sandbox: true,
+                impure: false,
+                bounded_resources: true,
+            },
+            blockers: Vec::new(),
+            duration_ms: 1,
+            created_at: "2026-11-10T00:00:00Z".into(),
+        };
+        receipt.validate_for(&spec).unwrap();
+        EnvironmentExecutionBinding {
+            plan,
+            spec,
+            receipt,
+        }
+    }
+
+    fn environment_bound_check(binding: &EnvironmentExecutionBinding) -> SpecCheck {
+        SpecCheck {
+            id: "build".into(),
+            kind: CheckKind::Build,
+            description: "frozen environment build".into(),
+            command: vec!["cargo".into(), "build".into()],
+            expect_exit: 0,
+            timeout_secs: 30,
+            environment_plan_id: Some(binding.plan.plan_id.clone()),
+            environment_spec_sha256: Some(binding.spec.spec_sha256.clone()),
+        }
+    }
+
+    #[tokio::test]
+    async fn worker_uses_the_frozen_builder_check_path_instead_of_generic_run() {
+        let binding = valid_environment_execution();
+        let check = environment_bound_check(&binding);
+        let mut harness = AutoCheckHarness::start(
+            vec![auto_check_write_action(), auto_check_final_action()],
+            Vec::new(),
+            vec![check.clone()],
+        )
+        .await;
+        harness.assignment.environment_execution = Some(binding.clone());
+        harness.assignment.action_spec.environment_required = true;
+        let executions = harness
+            .execute_checks(vec![check.clone()])
+            .await
+            .expect("environment check executed");
+        assert_eq!(executions.len(), 1);
+        assert!(executions[0].passed);
+        assert_eq!(executions[0].stdout, "environment check passed\n");
+        assert!(
+            harness.runs.lock().unwrap().is_empty(),
+            "the generic supervisor run route must not be used for an environment-bound check"
+        );
+        let requests = harness.environment_checks.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        let request = &requests[0];
+        assert_eq!(request["check"]["checkId"], "build");
+        assert_eq!(
+            request["check"]["argv"],
+            serde_json::json!(["cargo", "build"])
+        );
+        assert_eq!(request["check"]["timeoutSecs"], 30);
+        assert_eq!(request["check"]["expectExit"], 0);
+        assert_eq!(request["image"], binding.spec.builder_image);
+        assert_eq!(request["digest"], binding.spec.builder_image_digest);
+        assert_eq!(request["spec"]["specSha256"], binding.spec.spec_sha256);
+        assert_eq!(request["plan"]["planSha256"], binding.plan.plan_sha256);
+        assert!(
+            request.get("workspaceVolume").is_none(),
+            "the Worker must never send a workspace volume"
+        );
+    }
+
+    #[tokio::test]
+    async fn worker_refuses_an_environment_bound_check_without_the_campaign_binding() {
+        let binding = valid_environment_execution();
+        let check = environment_bound_check(&binding);
+        let mut harness = AutoCheckHarness::start(
+            vec![auto_check_write_action(), auto_check_final_action()],
+            Vec::new(),
+            vec![check.clone()],
+        )
+        .await;
+        harness.assignment.action_spec.environment_required = true;
+        let error = harness
+            .execute_checks(vec![check])
+            .await
+            .expect_err("missing environment binding must fail closed");
+        assert!(error.contains("ENVIRONMENT_PLAN_REQUIRED"), "{error}");
+        assert!(harness.environment_checks.lock().unwrap().is_empty());
+        assert!(harness.runs.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn worker_surfaces_environment_check_failure_and_timeout() {
+        let binding = valid_environment_execution();
+        let check = environment_bound_check(&binding);
+        let mut harness = AutoCheckHarness::start(
+            vec![auto_check_write_action(), auto_check_final_action()],
+            Vec::new(),
+            vec![check.clone()],
+        )
+        .await;
+        harness.assignment.environment_execution = Some(binding.clone());
+        harness.assignment.action_spec.environment_required = true;
+        *harness.environment_check_response.lock().unwrap() = Some((
+            axum::http::StatusCode::OK,
+            serde_json::json!({
+                "checkId": "build",
+                "specSha256": binding.spec.spec_sha256,
+                "status": "FAILED",
+                "exitCode": 2,
+                "expectExit": 0,
+                "passed": false,
+                "logs": "compile failed\n",
+                "logsTruncated": false,
+                "stdout": "compile failed\n",
+                "stderr": "error[E0001]\n",
+                "stdoutTruncated": false,
+                "stderrTruncated": false,
+                "cleanupConfirmed": true,
+                "durationMs": 9
+            }),
+        ));
+        let executions = harness
+            .execute_checks(vec![check.clone()])
+            .await
+            .expect("a failed check is a typed result, not an execution error");
+        assert!(!executions[0].passed);
+        assert_eq!(executions[0].exit_code, Some(2));
+        assert_eq!(executions[0].stdout, "compile failed\n");
+        assert_eq!(executions[0].stderr, "error[E0001]\n");
+
+        *harness.environment_check_response.lock().unwrap() = Some((
+            axum::http::StatusCode::GATEWAY_TIMEOUT,
+            serde_json::json!({
+                "code": "ENVIRONMENT_BUILD_TIMEOUT",
+                "error": "the environment check exceeded its wall-clock bound"
+            }),
+        ));
+        let error = harness
+            .execute_checks(vec![check])
+            .await
+            .expect_err("timeout must fail closed");
+        assert!(error.contains("ENVIRONMENT_BUILD_TIMEOUT"), "{error}");
+        assert!(error.contains("504"), "{error}");
     }
 
     #[tokio::test]

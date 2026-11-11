@@ -134,7 +134,9 @@ why the engine is trusted infrastructure and why SEC-01 remains blocked.
   exactly one `ResourceOwner`; the broker derives the owner from the token and
   applies it to create/import/export/execute/delete/reset/status operations. The
   environment owner cannot use the generic workspace/container routes; it can
-  reach only the typed environment resolve/build routes. The reviewer does
+  reach only the typed environment resolve/build/check routes. Supervisor and
+  verifier owners may also call the check route for a workspace volume they
+  own; the provider owner cannot. The reviewer does
   not receive a runtime-broker token. A compromised trusted service can still
   attempt operations within its own owner scope; this is scoped engine authority,
   not kernel or credential isolation.

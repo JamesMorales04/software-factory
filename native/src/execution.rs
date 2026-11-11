@@ -1793,6 +1793,14 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
         self.find_by_id(workspace_id).map(|record| record.handle())
     }
 
+    /// Narrow accessor for the trusted Supervisor only: resolve the exact
+    /// broker-managed volume that belongs to an authorized workspace record.
+    /// The volume name is never accepted from an HTTP client.
+    pub fn workspace_volume(&self, workspace_id: &str) -> Result<String, ExecutionError> {
+        validate_workspace_id(workspace_id)?;
+        self.find_by_id(workspace_id).map(|record| record.volume)
+    }
+
     fn authorize_repository(&self, value: &str) -> Result<PathBuf, ExecutionError> {
         let path = Path::new(value);
         if !path.is_absolute() {

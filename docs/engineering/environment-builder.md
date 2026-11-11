@@ -181,21 +181,26 @@ The sandbox attestation compares the observed cgroup memory/PID limits and
 or tolerance. The wrapper also refuses a request whose plan resources do not
 equal the spec resource policy.
 
-The wrapper host side is a development/CI harness. WP1-C now places the same
-image behind the runtime broker (`/v1/environments/resolve` and
+The wrapper host side is a development/CI harness. WP1-C places the same image
+behind the runtime broker (`/v1/environments/resolve` and
 `/v1/environments/build`) with the broker's exact image/digest allowlist, bounded
-staging, internal fetch egress and no-secret/no-network limits; see the
+staging, internal fetch egress and no-secret/no-network limits. WP1-D adds the
+typed `/v1/environments/check` route and wires Supervisor, Worker and Verifier
+checks to `builder check`; see the
 [environment runtime broker integration](../implementation/environment-runtime-broker.md).
-Core authorization, risk, Gate and candidate acceptance are unchanged by this
-slice. Frozen check execution does not yet call `builder check`; that remains the
-WP1-D gap and is not claimed as wired.
+A failed check now returns its real exit code, stdout, stderr and truncation to
+the broker instead of collapsing into a builder error; the CLI decides PASSED or
+FAILED from the frozen expected exit. The direct Podman verifier backend has no
+builder-check route and refuses environment-bound checks. Core authorization,
+risk, Gate and candidate acceptance are unchanged by this slice. A real Compose
+environment-check remains **NOT_TESTED** and is not claimed.
 
 ## 6. Evidence boundary
 
 `deploy/environment-builder/tests/` covers deterministic policy, receipt, SBOM,
 exact cgroup limits, fetch-policy enforcement, protected path descendants,
 rootful-Podman rejection, wrapper nonzero-exit cleanup and disk-overflow
-artifact purging (32 tests). The
+artifact purging (35 tests). The
 final `deploy/environment-builder/Containerfile` image was built and exercised
 under the unique WP1-B evidence tag
 `localhost/software-factory-environment-builder:wp1b-340fa54-r3`

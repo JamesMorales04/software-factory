@@ -1,9 +1,10 @@
 # Environment runtime broker integration — WP1-C
 
-**Status:** Implemented WP1-C broker/build slice — 2026-11-11. This is not
-acceptance evidence and does not claim a real Nix/devenv build in the installed
-Compose stack. An isolated Compose observation (`wp1c-e2e`) verified the bundle
-digest, nested import, broker `READY` and Core `READY`; see the
+**Status:** Implemented WP1-C broker/build slice and WP1-D frozen check execution
+— 2026-11-11. This is not acceptance evidence and does not claim a real
+Nix/devenv build or check in the installed Compose stack. An isolated Compose
+observation (`wp1c-e2e`) verified the bundle digest, nested import, broker
+`READY` and Core `READY`; see the
 [evidence record](../evidence/environment-runtime-broker-2026-11-11/README.md).
 `TRUSTED_LOCAL`; a container is not isolation certification.
 
@@ -35,11 +36,61 @@ dedicated allowlist, network name, proxy URL or environment variable.
 | --- | --- | --- |
 | `/v1/environments/resolve` | generated `EnvironmentPlan`, exact image/digest, bounded project-file set | `EnvironmentResolution` with `flake.lock`/`devenv.lock`, Nix/devenv versions and `planSha256` |
 | `/v1/environments/build` | frozen `EnvironmentPlan` + `EnvironmentSpec`, exact image/digest, bounded project-file set, optional `FETCH` phase | typed `EnvironmentBuildReceipt` / fetch evidence |
+| `/v1/environments/check` | frozen plan/spec/receipt binding, exact image/digest, one `EnvironmentCheckSpec`, caller-owned workspace volume | typed `EnvironmentCheckResult` |
 
 The build operation runs a fetch container on the broker-owned internal
 environment egress network when the plan allowlist is non-empty, then a
 `--network=none` build container. A fetch failure is a typed error; there is no
 fallback to the host wrapper, host Podman or a language image.
+
+### Frozen check execution (WP1-D)
+
+`/v1/environments/check` is the only path that realizes a frozen environment for
+a Worker or Verifier check. It accepts an authenticated Environment, Supervisor
+or Verifier owner token (never Provider) and exactly:
+
+- the configured builder image and digest;
+- the frozen `EnvironmentPlan`, `EnvironmentSpec` and successful
+  `EnvironmentBuildReceipt`;
+- one bounded `EnvironmentCheckSpec` (`checkId`, `argv`, `cwd`, `timeoutSecs`,
+  `expectExit`);
+- one broker-managed `factory-ws-*` volume owned by the authenticated owner.
+
+The broker validates the plan/spec/receipt identity, builder identity, check
+bounds and volume ownership before creating a container. It mounts the
+candidate workspace read-only at `/inputs/workspace`, the persistent per-spec
+cache read-write at `/cache`, the verified Nix store at `/nix`, and runs the
+builder image as:
+
+```text
+check --request /cache/request.json --workspace /inputs/workspace --output /cache
+```
+
+The container uses `--network=none`, a read-only root, bounded tmpfs, only the
+Nix-required `SYS_ADMIN`/`SYS_CHROOT` capabilities after `cap-drop=all`, the
+exact frozen plan CPU/memory/PIDs and the frozen check timeout. No host path,
+socket, secret, arbitrary image or client argv reaches Podman. The broker reads
+the typed `check-result.json`, returns the exit code, expected exit, pass/fail,
+bounded stdout/stderr and truncation, and confirms container cleanup while
+retaining the bounded per-spec cache. A timeout, cleanup failure, malformed
+result, hash mismatch or builder refusal is a typed `ENVIRONMENT_*` error; the
+broker never fabricates `PASSED`.
+
+Worker and Verifier integration:
+
+- the Worker sends the typed plan/spec/receipt/check through
+  `POST /v1/workspaces/{workspace_id}/environment-check` on the Supervisor. The
+  Supervisor authenticates the workspace capability and a `run` operation grant
+  whose frozen argv/timeout must match, resolves the volume from its durable
+  `WorkspaceManager` record, verifies the configured builder image/digest and
+  calls the broker with its own token. A missing or stale Campaign environment
+  binding fails before execution; there is no generic image fallback.
+- the verifier stages its clean candidate worktree into its own broker volume and
+  calls the broker check route with the verifier token. Its direct Podman/local
+  development backend has no builder-check route and refuses rather than running
+  the generic verifier image.
+- check receipts keep the exact check id, exit code, expected exit, passed
+  state, stdout, stderr and truncation from the builder result.
 
 ## 2. Image identity and allowlist
 
@@ -112,7 +163,10 @@ implements the existing `EnvironmentBuilder` port:
 - runtime broker config for the builder allowlist, bundle, digest file, platform
   and policy revision;
 - Core config for the broker URL, the distinct
-  `runtime-broker-environment.token`, builder image and digest file.
+  `runtime-broker-environment.token`, builder image and digest file;
+- Supervisor config for the exact builder image and read-only digest file. The
+  Supervisor resolves the workspace volume from its own record; the Worker never
+  supplies it.
 
 `compose_init` generates a fourth distinct runtime-broker owner token for the
 environment. The builder bundle is not attached to any credential network; the
@@ -131,16 +185,23 @@ fetch/resolve.
 ## 7. Tests performed
 
 - `cargo fmt --all -- --check`
-- `cargo clippy -p factory-native --lib --bins -- -D warnings`
-- `cargo test -p factory-native --lib` — 872 passed, 4 ignored.
-- `cargo test -p factory-native --bin factory-core` — 60 passed.
-- `cargo test -p factory-native --bin factory-worker` — 29 passed.
-- `cargo test -p factory-native --bin factory-verifier` — 9 passed.
-- `cargo test -p factory-native --bin factory-runtime-broker` — 48 passed,
-  including owner separation, exact digest/allowlist, resource/network policy,
-  narrow container args, fake builder success, resolve, timeout/cleanup and
-  concurrent owner isolation.
-- `python3 -m unittest discover -s deploy/environment-builder/tests` — 22 passed.
+- `cargo clippy -p factory-native --all-targets --all-features -- -D warnings`
+- `cargo test -p factory-native --lib` — 942 passed, 4 ignored.
+- `cargo test -p factory-native --bin factory-core` — 65 passed.
+- `cargo test -p factory-native --bin factory-worker` — 32 passed, including
+  the frozen builder-check path, missing Campaign binding refusal, failure
+  exit-code mapping, timeout refusal and exact request binding.
+- `cargo test -p factory-native --bin factory-verifier` — 11 passed, including
+  the broker builder-check path, refusal, cleanup and missing binding.
+- `cargo test -p factory-native --bin factory-runtime-broker` — 58 passed,
+  including environment-check owner separation, workspace ownership, exact
+  builder identity, plan/spec/receipt mismatch, argv/timeout bounds,
+  success/failure exit mapping, fabricated-PASS refusal, narrow container
+  arguments and timeout cleanup.
+- `cargo test -p factory-native --bin factory-supervisor` — 11 passed, including
+  grant/image/workspace refusal and successful typed proxy.
+- `python3 -m unittest discover -s deploy/environment-builder/tests` — 35
+  passed, including failed-check exit-code/stdout/stderr preservation.
 - `podman compose -f compose.yaml config --quiet` — exit 0.
 - `factory-architecture-check --root .` — PASS.
 - Isolated Compose observation (`podman compose -p wp1c-e2e`): bundle tar digest
@@ -149,10 +210,9 @@ fetch/resolve.
   image/digest. The live `software-factory` project was not modified. See the
   [evidence record](../evidence/environment-runtime-broker-2026-11-11/README.md).
 
-**NOT_TESTED / remaining gap:** a real end-to-end `resolve`/`build` through the
-broker (not the host wrapper) with a real project plan/spec producing an
-`EnvironmentBuildReceipt` with SBOM hash and warm repeat. Frozen Worker/Verifier
-check execution is **not wired** to a typed builder-check route: the existing
-generic `supervisor_run` path remains, so a frozen check still does not realize
-the Nix/devenv environment through `builder check`. That is the WP1-D gap; no
-check-execution claim is made here.
+**NOT_TESTED / remaining gap:** a real end-to-end `check` through the broker
+against a running Compose stack with a real frozen spec/receipt and a real
+Node/Rust workspace has not been run for WP1-D. The check route, Supervisor
+proxy, Worker and Verifier wiring are exercised with deterministic unit/fixture
+tests only; those tests do not claim a real Nix/devenv environment-check result.
+The earlier WP1-C `resolve`/`build` end-to-end gap also remains.

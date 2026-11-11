@@ -442,10 +442,6 @@ def run_check(
                 "ENVIRONMENT_NETWORK_DENIED",
                 "the offline check needs a store path that the broker did not prefetch",
             )
-        fail(
-            "ENVIRONMENT_BUILD_FAILED",
-            f"environment check exited {process.returncode}: {diagnostic}",
-        )
     return process.returncode, stdout, stderr, stdout_truncated, stderr_truncated
 
 

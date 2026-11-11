@@ -8,8 +8,10 @@ a green unit test.
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
@@ -31,7 +33,7 @@ from environment_builder.policy import (  # noqa: E402
     validate_sbom_binding,
     validate_secrets,
 )
-from environment_builder.nix import closure_manifest_sha256  # noqa: E402
+from environment_builder.nix import BuildLog, closure_manifest_sha256, run_check  # noqa: E402
 from environment_builder.receipt import build_receipt, limits_within_plan  # noqa: E402
 from environment_builder.sbom import build_sbom, license_inventory_copy  # noqa: E402
 
@@ -460,6 +462,59 @@ class SbomTests(unittest.TestCase):
                 "sbomSha256",
             },
         )
+
+
+class CheckExecutionTests(unittest.TestCase):
+    class _Process:
+        returncode = 101
+        stdout = object()
+        stderr = object()
+
+        def communicate(self, timeout: int | None = None) -> tuple[str, str]:
+            return ("compile failed\n", "compiler error\n")
+
+    def test_failed_check_preserves_exit_code_and_streams(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workspace = root / "workspace"
+            cache = root / "cache"
+            workspace.mkdir()
+            cache.mkdir()
+            log = BuildLog(cache / "check.log")
+            try:
+                with (
+                    mock.patch(
+                        "environment_builder.nix._environment_command",
+                        return_value=["false"],
+                    ),
+                    mock.patch(
+                        "environment_builder.nix.subprocess.Popen",
+                        return_value=self._Process(),
+                    ),
+                ):
+                    code, stdout, stderr, stdout_truncated, stderr_truncated = run_check(
+                        workspace,
+                        cache,
+                        workspace,
+                        ["false"],
+                        timeout=30,
+                        resources={
+                            "cpu": 2,
+                            "memoryMiB": 4096,
+                            "diskMiB": 10240,
+                            "pids": 512,
+                            "timeoutSecs": 1800,
+                        },
+                        log=log,
+                        expect_exit=0,
+                    )
+            finally:
+                log.close()
+        self.assertEqual(code, 101)
+        self.assertEqual(stdout, "compile failed\n")
+        self.assertEqual(stderr, "compiler error\n")
+        self.assertFalse(stdout_truncated)
+        self.assertFalse(stderr_truncated)
 
 
 if __name__ == "__main__":

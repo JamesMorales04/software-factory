@@ -171,6 +171,13 @@ Compose build/start is slower than later starts. The builder joins no
 credential network; its fetch phase gets a per-operation internal network and
 the plan's allowlist proxy. Build runs with network disabled.
 
+The Supervisor mounts the same bundle read-only only to read the exact builder
+digest. `FACTORY_SUPERVISOR_ENVIRONMENT_BUILDER_IMAGE` and
+`FACTORY_SUPERVISOR_ENVIRONMENT_BUILDER_DIGEST_FILE` pin the image identity it
+will proxy for Worker checks. A missing digest file or mismatch fails the
+`/v1/workspaces/{workspace_id}/environment-check` request closed; the Supervisor
+never accepts an image, plan, argv or workspace volume from the client.
+
 ## OpenSpec validation job (profile-gated)
 
 The pinned OpenSpec CLI is not a host dependency. A one-shot Compose service

@@ -28,7 +28,10 @@ use factory_native::{
         MAX_EXECUTION_RUNTIME, ReconcileReport, RootlessPodmanVolumes, ToolRunRequest,
         VolumeBackend, WorkspaceAllocation, WorkspaceManager, WriteFilesRequest,
     },
-    runtime_broker::{ManagedResources, ResourceOwner},
+    runtime_broker::{
+        BrokerError, EnvironmentCheckExecutionRequest, EnvironmentCheckRequest,
+        MAX_ENVIRONMENT_REQUEST_BYTES, ManagedResources, ResourceOwner, RuntimeBrokerClient,
+    },
     workspace::WorkspaceError,
     workspace_archive::ArchiveError,
 };
@@ -302,6 +305,56 @@ impl VolumeBackend for LocalVolumeBackend {
     }
 }
 
+#[derive(Clone)]
+struct EnvironmentBuilderAllowlist {
+    image: String,
+    digest_file: PathBuf,
+}
+
+impl EnvironmentBuilderAllowlist {
+    fn from_environment() -> Option<Self> {
+        let image = env::var("FACTORY_SUPERVISOR_ENVIRONMENT_BUILDER_IMAGE")
+            .ok()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())?;
+        let digest_file = env::var("FACTORY_SUPERVISOR_ENVIRONMENT_BUILDER_DIGEST_FILE")
+            .ok()
+            .map(PathBuf::from)?;
+        if !digest_file.is_absolute() {
+            return None;
+        }
+        Some(Self { image, digest_file })
+    }
+
+    fn validate(&self, image: &str, digest: &str) -> Result<(), (StatusCode, String, String)> {
+        if image != self.image {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "ENVIRONMENT_HASH_MISMATCH".into(),
+                "the requested image is not the configured environment builder".into(),
+            ));
+        }
+        let configured = std::fs::read_to_string(&self.digest_file)
+            .map_err(|_| {
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "ENVIRONMENT_BUILDER_UNAVAILABLE".into(),
+                    "the environment builder digest is unavailable".into(),
+                )
+            })?
+            .trim()
+            .to_owned();
+        if !configured.eq_ignore_ascii_case(digest) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "ENVIRONMENT_HASH_MISMATCH".into(),
+                "the requested digest is not the configured environment builder".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 struct App<B: factory_native::execution::VolumeBackend> {
     token: String,
     manager: WorkspaceManager<B>,
@@ -313,6 +366,8 @@ struct App<B: factory_native::execution::VolumeBackend> {
     capability_key: Vec<u8>,
     operation_nonces: Mutex<HashMap<String, i64>>,
     core_url: reqwest::Url,
+    environment_broker: Option<RuntimeBrokerClient>,
+    environment_builder: Option<EnvironmentBuilderAllowlist>,
 }
 
 #[tokio::main]
@@ -398,6 +453,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         WorkspaceManager::new(&workspace_root, &state_root, project_roots.clone(), backend)?;
     let report = manager.reconcile().await?;
     log_reconcile(&report);
+    let environment_broker = match (broker_url.as_deref(), broker_token.as_deref()) {
+        (Some(url), Some(token)) => Some(RuntimeBrokerClient::new(
+            url,
+            token.to_owned(),
+            ResourceOwner::Supervisor,
+        )?),
+        _ => None,
+    };
+    let environment_builder = EnvironmentBuilderAllowlist::from_environment();
     let bind = env::var("FACTORY_SUPERVISOR_BIND").unwrap_or_else(|_| DEFAULT_BIND.into());
     let addr = factory_native::service_network::validate_bind(&bind, container_mode)?;
     let app = Arc::new(App {
@@ -411,6 +475,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         capability_key: capability_key.into_bytes(),
         operation_nonces: Mutex::new(HashMap::new()),
         core_url,
+        environment_broker,
+        environment_builder,
     });
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(%addr, "Factory sandbox supervisor listening");
@@ -427,6 +493,10 @@ fn build_router<B: factory_native::execution::VolumeBackend + 'static>(app: Arc<
         .route("/v1/workspaces/{workspace_id}/apply", post(apply_files))
         .route("/v1/workspaces/{workspace_id}/write", post(write_files))
         .route("/v1/workspaces/{workspace_id}/run", post(run_tool))
+        .route(
+            "/v1/workspaces/{workspace_id}/environment-check",
+            post(environment_check).layer(DefaultBodyLimit::max(MAX_ENVIRONMENT_REQUEST_BYTES)),
+        )
         .route(
             "/v1/workspaces/{workspace_id}/dependencies",
             post(acquire_dependencies),
@@ -675,6 +745,102 @@ async fn run_tool<B: factory_native::execution::VolumeBackend + 'static>(
     match result {
         Ok(result) => (StatusCode::OK, Json(result)).into_response(),
         Err(error) => execution_error(error),
+    }
+}
+
+async fn environment_check<B: factory_native::execution::VolumeBackend + 'static>(
+    State(app): State<Arc<App<B>>>,
+    headers: HeaderMap,
+    Path(workspace_id): Path<String>,
+    Json(input): Json<EnvironmentCheckExecutionRequest>,
+) -> Response {
+    let Some(handle) = authorized_workspace(&headers, &app, &workspace_id) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    if let Err(error) = input.check.validate_shape() {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();
+    }
+    let Ok(digest) = factory_native::attempt_grant::request_digest(&json!({
+        "argv": &input.check.argv,
+        "timeout_secs": input.check.timeout_secs
+    })) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let Some(grant) = operation_grant(&headers, &app, &handle, "run", &digest) else {
+        return StatusCode::FORBIDDEN.into_response();
+    };
+    if !grant.checks.iter().any(|check| check == &input.check.argv) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    if Duration::from_secs(u64::from(input.check.timeout_secs)) > app.max_runtime {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"environment check timeout exceeds the supervisor bound"})),
+        )
+            .into_response();
+    }
+    let Some(builder) = &app.environment_builder else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "code": "ENVIRONMENT_BUILDER_UNAVAILABLE",
+                "error": "the supervisor has no configured environment builder"
+            })),
+        )
+            .into_response();
+    };
+    if let Err((status, code, message)) = builder.validate(&input.image, &input.digest) {
+        return (status, Json(json!({"code": code, "error": message}))).into_response();
+    }
+    let Some(broker) = &app.environment_broker else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "code": "ENVIRONMENT_BUILDER_UNAVAILABLE",
+                "error": "the supervisor has no runtime broker for environment checks"
+            })),
+        )
+            .into_response();
+    };
+    let workspace_volume = match app.manager.workspace_volume(&workspace_id) {
+        Ok(volume) => volume,
+        Err(error) => return execution_error(error),
+    };
+    let timeout_secs = u64::from(input.check.timeout_secs);
+    let request = EnvironmentCheckRequest {
+        schema_version: 1,
+        image: input.image,
+        digest: input.digest,
+        plan: input.plan,
+        spec: input.spec,
+        receipt: input.receipt,
+        check: input.check,
+        workspace_volume,
+    };
+    match broker
+        .environment_check(&request, Duration::from_secs(timeout_secs + 180))
+        .await
+    {
+        Ok(result) => (StatusCode::OK, Json(result)).into_response(),
+        Err(error) => broker_error_response(error),
+    }
+}
+
+fn broker_error_response(error: BrokerError) -> Response {
+    match error {
+        BrokerError::RefusedCode {
+            status,
+            code,
+            message,
+        } => {
+            let status = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
+            (status, Json(json!({"code": code, "error": message}))).into_response()
+        }
+        error => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({"error": error.to_string()})),
+        )
+            .into_response(),
     }
 }
 
@@ -1328,6 +1494,8 @@ mod tests {
                 capability_key: TEST_CAPABILITY_KEY.to_vec(),
                 operation_nonces: Mutex::new(HashMap::new()),
                 core_url: reqwest::Url::parse("http://127.0.0.1:1").unwrap(),
+                environment_broker: None,
+                environment_builder: None,
             }),
             root,
             repository,
@@ -1413,11 +1581,17 @@ mod tests {
                 "reset": true
             }))
             .unwrap(),
-            "run" => factory_native::attempt_grant::request_digest(&json!({
-                "argv": &body["argv"],
-                "timeout_secs": body["timeoutSecs"]
-            }))
-            .unwrap(),
+            "run" => {
+                let (argv, timeout) = match body.get("check") {
+                    Some(check) => (&check["argv"], &check["timeoutSecs"]),
+                    None => (&body["argv"], &body["timeoutSecs"]),
+                };
+                factory_native::attempt_grant::request_digest(&json!({
+                    "argv": argv,
+                    "timeout_secs": timeout
+                }))
+                .unwrap()
+            }
             "dependencies" => {
                 let request: factory_native::dependency_service::DependencyAcquireRequest =
                     serde_json::from_value(body.clone()).unwrap();
@@ -1458,6 +1632,194 @@ mod tests {
             .header("x-factory-operation-grant", grant)
             .body(Body::from(body.to_string()))
             .unwrap()
+    }
+
+    const TEST_ENV_BUILDER_IMAGE: &str = "localhost/software-factory-environment-builder:dev";
+    const TEST_ENV_BUILDER_DIGEST: &str =
+        "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+
+    fn environment_check_body() -> serde_json::Value {
+        json!({
+            "image": TEST_ENV_BUILDER_IMAGE,
+            "digest": TEST_ENV_BUILDER_DIGEST,
+            "plan": {
+                "schemaVersion": 1,
+                "planId": "plan-1",
+                "projectId": "project-1",
+                "requestId": "request-1",
+                "actionId": "action-1",
+                "baseCommit": "b".repeat(40),
+                "conventionsSha256": "c".repeat(64),
+                "conventions": {
+                    "schemaVersion": 1,
+                    "projectId": "project-1",
+                    "baseCommit": "b".repeat(40),
+                    "conventionsSha256": "c".repeat(64),
+                    "scannedAt": "2026-11-10T00:00:00Z",
+                    "files": [],
+                    "commands": [],
+                    "conflicts": [],
+                    "truncated": false,
+                    "skippedEntries": 0,
+                    "provenance": "test",
+                    "existingEnvironment": "NONE"
+                },
+                "riskClass": "R0",
+                "status": "FROZEN",
+                "revision": 1,
+                "source": "GENERATED",
+                "files": [],
+                "nix": {
+                    "nixpkgs": "github:NixOS/nixpkgs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "inputs": [],
+                    "allowUnfree": false,
+                    "sandbox": {
+                        "sandbox": true,
+                        "impure": false,
+                        "hostMounts": [],
+                        "privileged": false,
+                        "hostNetwork": false,
+                        "hostSockets": []
+                    }
+                },
+                "resources": {
+                    "cpu": 2,
+                    "memoryMiB": 4096,
+                    "diskMiB": 10240,
+                    "pids": 512,
+                    "timeoutSecs": 1800
+                },
+                "network": {
+                    "build": "NONE",
+                    "fetch": "BROKER",
+                    "fetchAllowlist": []
+                },
+                "builder": {
+                    "image": TEST_ENV_BUILDER_IMAGE,
+                    "digest": TEST_ENV_BUILDER_DIGEST,
+                    "platform": "x86_64-linux",
+                    "policyRevision": "nix-devenv-environment-v1",
+                    "status": "READY"
+                },
+                "planSha256": "4".repeat(64),
+                "createdAt": "2026-11-10T00:00:00Z"
+            },
+            "spec": {
+                "schemaVersion": 1,
+                "specId": "spec-1",
+                "specSha256": "3".repeat(64),
+                "projectId": "project-1",
+                "requestId": "request-1",
+                "actionId": "action-1",
+                "baseCommit": "b".repeat(40),
+                "planId": "plan-1",
+                "planSha256": "4".repeat(64),
+                "conventionsSha256": "c".repeat(64),
+                "reviewId": "review-1",
+                "platform": "x86_64-linux",
+                "nixVersion": "2.28.3",
+                "devenvVersion": "1.11.2",
+                "flakeLockSha256": "e".repeat(64),
+                "devenvLockSha256": "",
+                "licenseInventorySha256": "f".repeat(64),
+                "sbomSha256": "1".repeat(64),
+                "builderImage": TEST_ENV_BUILDER_IMAGE,
+                "builderImageDigest": TEST_ENV_BUILDER_DIGEST,
+                "resourcePolicy": {
+                    "cpu": 2,
+                    "memoryMiB": 4096,
+                    "diskMiB": 10240,
+                    "pids": 512,
+                    "timeoutSecs": 1800
+                },
+                "networkPolicy": {
+                    "build": "NONE",
+                    "fetch": "BROKER",
+                    "fetchAllowlist": []
+                },
+                "status": "FROZEN",
+                "frozenAt": "2026-11-10T00:00:00Z"
+            },
+            "receipt": {
+                "schemaVersion": 1,
+                "receiptId": "receipt-1",
+                "specSha256": "3".repeat(64),
+                "platform": "x86_64-linux",
+                "builderImage": TEST_ENV_BUILDER_IMAGE,
+                "builderImageDigest": TEST_ENV_BUILDER_DIGEST,
+                "builderPolicyRevision": "nix-devenv-environment-v1",
+                "status": "SUCCEEDED",
+                "storePath": "/nix/store/fixture",
+                "outputSha256": "5".repeat(64),
+                "sbomSha256": "1".repeat(64),
+                "logRef": "build.log",
+                "sandboxAttestation": {
+                    "nonRoot": true,
+                    "noSecrets": true,
+                    "noHostNetwork": true,
+                    "noHostSocket": true,
+                    "noHostMount": true,
+                    "sandbox": true,
+                    "impure": false,
+                    "boundedResources": true
+                },
+                "blockers": [],
+                "durationMs": 1,
+                "createdAt": "2026-11-10T00:00:00Z"
+            },
+            "check": {
+                "checkId": "check-1",
+                "argv": ["/bin/sh", "-c", "printf 'http\\n' > result.txt"],
+                "cwd": ".",
+                "timeoutSecs": 30,
+                "expectExit": 0
+            }
+        })
+    }
+
+    async fn fake_environment_broker() -> (
+        String,
+        std::sync::Arc<Mutex<Vec<serde_json::Value>>>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        use axum::routing::post;
+        let captured = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let state = std::sync::Arc::clone(&captured);
+        let router = axum::Router::new()
+            .route(
+                "/v1/environments/check",
+                post(
+                    |axum::extract::State(captured): axum::extract::State<
+                        std::sync::Arc<Mutex<Vec<serde_json::Value>>>,
+                    >,
+                     axum::Json(body): axum::Json<serde_json::Value>| async move {
+                        captured.lock().unwrap().push(body.clone());
+                        axum::Json(json!({
+                            "checkId": body["check"]["checkId"],
+                            "specSha256": body["spec"]["specSha256"],
+                            "status": "PASSED",
+                            "exitCode": 0,
+                            "expectExit": body["check"]["expectExit"],
+                            "passed": true,
+                            "logs": "ok\n",
+                            "logsTruncated": false,
+                            "stdout": "ok\n",
+                            "stderr": "",
+                            "stdoutTruncated": false,
+                            "stderrTruncated": false,
+                            "cleanupConfirmed": true,
+                            "durationMs": 3
+                        }))
+                    },
+                ),
+            )
+            .with_state(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        (format!("http://{address}"), captured, server)
     }
 
     async fn status(router: &Router, request: Request<Body>) -> StatusCode {
@@ -1880,6 +2242,195 @@ mod tests {
             .await,
             StatusCode::FORBIDDEN
         );
+    }
+
+    #[tokio::test]
+    async fn environment_check_proxies_typed_binding_with_the_recorded_volume() {
+        let mut fixture = fixture();
+        let digest_file = fixture.root.join("environment-builder.digest");
+        fs::write(&digest_file, format!("{TEST_ENV_BUILDER_DIGEST}\n")).unwrap();
+        let (broker_url, captured, server) = fake_environment_broker().await;
+        {
+            let app = Arc::get_mut(&mut fixture.app).unwrap();
+            app.environment_broker = Some(
+                RuntimeBrokerClient::new(
+                    &broker_url,
+                    TEST_TOKEN.to_owned(),
+                    ResourceOwner::Supervisor,
+                )
+                .unwrap(),
+            );
+            app.environment_builder = Some(EnvironmentBuilderAllowlist {
+                image: TEST_ENV_BUILDER_IMAGE.into(),
+                digest_file,
+            });
+        }
+        let router = build_router(fixture.app.clone());
+        let allocate = allocation_body("environment-check", &fixture.repository);
+        let handle = body_json(
+            router
+                .clone()
+                .oneshot(json_request("/v1/workspaces", Some(TEST_TOKEN), &allocate))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let workspace_id = handle["workspaceId"].as_str().unwrap().to_owned();
+        let capability = handle["capability"].as_str().unwrap().to_owned();
+        let body = environment_check_body();
+        let grant = operation_grant(&handle, "run", &body);
+        let response = router
+            .oneshot(operation_request(
+                &format!("/v1/workspaces/{workspace_id}/environment-check"),
+                &capability,
+                &grant,
+                &body,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let result = body_json(response).await;
+        assert_eq!(result["checkId"], "check-1");
+        assert_eq!(result["status"], "PASSED");
+        assert_eq!(result["passed"], true);
+        assert_eq!(result["cleanupConfirmed"], true);
+        let requests = captured.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        let forwarded = &requests[0];
+        assert_eq!(forwarded["schemaVersion"], 1);
+        assert_eq!(forwarded["image"], TEST_ENV_BUILDER_IMAGE);
+        assert_eq!(forwarded["digest"], TEST_ENV_BUILDER_DIGEST);
+        assert_eq!(forwarded["check"]["checkId"], "check-1");
+        assert_eq!(
+            forwarded["workspaceVolume"],
+            fixture.app.manager.workspace_volume(&workspace_id).unwrap()
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn environment_check_requires_grant_exact_image_and_configured_builder() {
+        let mut fixture = fixture();
+        let digest_file = fixture.root.join("environment-builder.digest");
+        fs::write(&digest_file, format!("{TEST_ENV_BUILDER_DIGEST}\n")).unwrap();
+        let (broker_url, _captured, server) = fake_environment_broker().await;
+        {
+            let app = Arc::get_mut(&mut fixture.app).unwrap();
+            app.environment_broker = Some(
+                RuntimeBrokerClient::new(
+                    &broker_url,
+                    TEST_TOKEN.to_owned(),
+                    ResourceOwner::Supervisor,
+                )
+                .unwrap(),
+            );
+            app.environment_builder = Some(EnvironmentBuilderAllowlist {
+                image: TEST_ENV_BUILDER_IMAGE.into(),
+                digest_file,
+            });
+        }
+        let router = build_router(fixture.app.clone());
+        let allocate = allocation_body("environment-check-refusal", &fixture.repository);
+        let handle = body_json(
+            router
+                .clone()
+                .oneshot(json_request("/v1/workspaces", Some(TEST_TOKEN), &allocate))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let workspace_id = handle["workspaceId"].as_str().unwrap().to_owned();
+        let capability = handle["capability"].as_str().unwrap().to_owned();
+        let uri = format!("/v1/workspaces/{workspace_id}/environment-check");
+        let body = environment_check_body();
+        let grant = operation_grant(&handle, "run", &body);
+        let unauthenticated = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(&uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+        let ungranted = router
+            .clone()
+            .oneshot(json_request(&uri, Some(&capability), &body))
+            .await
+            .unwrap();
+        assert_eq!(ungranted.status(), StatusCode::FORBIDDEN);
+
+        let mut wrong_argv = body.clone();
+        wrong_argv["check"]["argv"] = json!(["/bin/sh", "-c", "printf 'other\\n'"]);
+        let response = router
+            .clone()
+            .oneshot(operation_request(&uri, &capability, &grant, &wrong_argv))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+        let mut wrong_image = body.clone();
+        wrong_image["image"] = json!("localhost/other-builder:dev");
+        let wrong_grant = operation_grant(&handle, "run", &wrong_image);
+        let response = router
+            .clone()
+            .oneshot(operation_request(
+                &uri,
+                &capability,
+                &wrong_grant,
+                &wrong_image,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body_json(response).await["code"],
+            "ENVIRONMENT_HASH_MISMATCH"
+        );
+        server.abort();
+
+        let mut unconfigured = self::fixture();
+        let (broker_url, _captured, broker_server) = fake_environment_broker().await;
+        {
+            let app = Arc::get_mut(&mut unconfigured.app).unwrap();
+            app.environment_broker = Some(
+                RuntimeBrokerClient::new(
+                    &broker_url,
+                    TEST_TOKEN.to_owned(),
+                    ResourceOwner::Supervisor,
+                )
+                .unwrap(),
+            );
+        }
+        let router = build_router(unconfigured.app.clone());
+        let allocate = allocation_body("environment-check-unconfigured", &unconfigured.repository);
+        let handle = body_json(
+            router
+                .clone()
+                .oneshot(json_request("/v1/workspaces", Some(TEST_TOKEN), &allocate))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let workspace_id = handle["workspaceId"].as_str().unwrap().to_owned();
+        let capability = handle["capability"].as_str().unwrap().to_owned();
+        let body = environment_check_body();
+        let grant = operation_grant(&handle, "run", &body);
+        let response = router
+            .oneshot(operation_request(
+                &format!("/v1/workspaces/{workspace_id}/environment-check"),
+                &capability,
+                &grant,
+                &body,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        broker_server.abort();
     }
 
     #[tokio::test]

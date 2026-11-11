@@ -506,6 +506,202 @@ impl EnvironmentBrokerRequest {
     }
 }
 
+/// One frozen check executed by the environment-builder image. The broker
+/// validates every field against the frozen plan/spec/receipt before any
+/// container runs; the caller never supplies Podman flags or host paths.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct EnvironmentCheckSpec {
+    pub check_id: String,
+    pub argv: Vec<String>,
+    pub cwd: String,
+    pub timeout_secs: u32,
+    pub expect_exit: i32,
+}
+
+pub const MAX_ENVIRONMENT_CHECK_ARGV_ITEMS: usize = 64;
+pub const MAX_ENVIRONMENT_CHECK_ARG_BYTES: usize = 2_000;
+pub const MAX_ENVIRONMENT_CHECK_ARGV_BYTES: usize = 64 * 1024;
+pub const MIN_ENVIRONMENT_CHECK_TIMEOUT_SECS: u32 = 30;
+pub const MAX_ENVIRONMENT_CHECK_TIMEOUT_SECS: u32 = 7_200;
+
+impl EnvironmentCheckSpec {
+    /// Validate the same bounds enforced by the builder CLI. A malformed check
+    /// is refused before the broker creates a container or touches the cache.
+    pub fn validate_shape(&self) -> Result<(), String> {
+        if self.check_id.is_empty()
+            || self.check_id.len() > 200
+            || self.check_id.chars().any(char::is_control)
+        {
+            return Err("environment check id is invalid".into());
+        }
+        if self.argv.is_empty() || self.argv.len() > MAX_ENVIRONMENT_CHECK_ARGV_ITEMS {
+            return Err("environment check argv is outside its bound".into());
+        }
+        if self.argv[0].is_empty() {
+            return Err("environment check executable is empty".into());
+        }
+        let mut total = 0usize;
+        for argument in &self.argv {
+            if argument.len() > MAX_ENVIRONMENT_CHECK_ARG_BYTES || argument.contains('\0') {
+                return Err("environment check argument is invalid".into());
+            }
+            total = total.saturating_add(argument.len());
+        }
+        if total > MAX_ENVIRONMENT_CHECK_ARGV_BYTES {
+            return Err("environment check argv exceeds its byte bound".into());
+        }
+        if self.cwd != "." && !safe_environment_path(&self.cwd) {
+            return Err("environment check working directory is unsafe".into());
+        }
+        if !(MIN_ENVIRONMENT_CHECK_TIMEOUT_SECS..=MAX_ENVIRONMENT_CHECK_TIMEOUT_SECS)
+            .contains(&self.timeout_secs)
+        {
+            return Err("environment check timeout is outside its bound".into());
+        }
+        if !(-255..=255).contains(&self.expect_exit) {
+            return Err("environment check expected exit is invalid".into());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct EnvironmentCheckRequest {
+    pub schema_version: u32,
+    pub image: String,
+    pub digest: String,
+    pub plan: EnvironmentPlan,
+    pub spec: EnvironmentSpec,
+    pub receipt: EnvironmentBuildReceipt,
+    pub check: EnvironmentCheckSpec,
+    pub workspace_volume: String,
+}
+
+impl EnvironmentCheckRequest {
+    pub fn validate_shape(&self) -> Result<(), String> {
+        if self.schema_version != crate::planning::environment::ENVIRONMENT_SCHEMA_VERSION {
+            return Err("unsupported environment check schema version".into());
+        }
+        if self.image.is_empty()
+            || self.image.len() > 512
+            || self.image.contains('@')
+            || self.image.chars().any(char::is_whitespace)
+            || self.image.chars().any(char::is_control)
+        {
+            return Err("environment check builder image is invalid".into());
+        }
+        if !is_environment_digest(&self.digest) {
+            return Err("environment check builder digest is invalid".into());
+        }
+        if !is_valid_volume_name(&self.workspace_volume) {
+            return Err("environment check workspace volume is invalid".into());
+        }
+        self.check.validate_shape()
+    }
+}
+
+/// The Supervisor-owned proxy request. It carries no workspace volume: the
+/// Supervisor resolves the volume from its durable WorkspaceManager record.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct EnvironmentCheckExecutionRequest {
+    pub image: String,
+    pub digest: String,
+    pub plan: EnvironmentPlan,
+    pub spec: EnvironmentSpec,
+    pub receipt: EnvironmentBuildReceipt,
+    pub check: EnvironmentCheckSpec,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum EnvironmentCheckStatus {
+    Passed,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct EnvironmentCheckResult {
+    pub check_id: String,
+    pub spec_sha256: String,
+    pub status: EnvironmentCheckStatus,
+    pub exit_code: Option<i32>,
+    pub expect_exit: i32,
+    pub passed: bool,
+    #[serde(default)]
+    pub logs: String,
+    #[serde(default)]
+    pub logs_truncated: bool,
+    #[serde(default)]
+    pub stdout: String,
+    #[serde(default)]
+    pub stderr: String,
+    #[serde(default)]
+    pub stdout_truncated: bool,
+    #[serde(default)]
+    pub stderr_truncated: bool,
+    pub cleanup_confirmed: bool,
+    pub duration_ms: u64,
+}
+
+impl EnvironmentCheckResult {
+    pub fn validate_for(&self, request: &EnvironmentCheckRequest) -> Result<(), String> {
+        self.validate_for_check(
+            &request.check.check_id,
+            &request.spec.spec_sha256,
+            request.check.expect_exit,
+        )
+    }
+
+    pub fn validate_for_check(
+        &self,
+        check_id: &str,
+        spec_sha256: &str,
+        expect_exit: i32,
+    ) -> Result<(), String> {
+        if self.check_id != check_id
+            || self.spec_sha256 != spec_sha256
+            || self.expect_exit != expect_exit
+        {
+            return Err("environment check result does not bind the request".into());
+        }
+        let Some(exit_code) = self.exit_code else {
+            return Err("environment check result has no exit code".into());
+        };
+        let passed = exit_code == self.expect_exit;
+        if self.passed != passed || (self.status == EnvironmentCheckStatus::Passed) != passed {
+            return Err("environment check result contradicts its exit code".into());
+        }
+        if !self.cleanup_confirmed {
+            return Err("environment check cleanup was not confirmed".into());
+        }
+        Ok(())
+    }
+}
+
+fn is_environment_digest(value: &str) -> bool {
+    value.len() == 71
+        && value.starts_with("sha256:")
+        && value[7..]
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+fn safe_environment_path(path: &str) -> bool {
+    !path.is_empty()
+        && path.len() <= 512
+        && !path.starts_with('/')
+        && !path.contains('\\')
+        && !path.contains('\0')
+        && !path.contains("//")
+        && path
+            .split('/')
+            .all(|component| !component.is_empty() && component != "." && component != "..")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct EnvironmentBrokerResult {
@@ -641,8 +837,10 @@ pub fn environment_workspace_files(
 
 pub const ENVIRONMENT_BUILD_ROUTE: &str = "v1/environments/build";
 pub const ENVIRONMENT_RESOLVE_ROUTE: &str = "v1/environments/resolve";
+pub const ENVIRONMENT_CHECK_ROUTE: &str = "v1/environments/check";
 
 pub const MAX_ENVIRONMENT_REQUEST_BYTES: usize = 16 * 1024 * 1024;
+const MAX_ENVIRONMENT_CHECK_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 impl RuntimeBrokerClient {
     pub fn new(base: &str, token: String, owner: ResourceOwner) -> Result<Self, BrokerError> {
         let base = reqwest::Url::parse(base)
@@ -898,6 +1096,64 @@ impl RuntimeBrokerClient {
                 "environment builder response does not bind the requested operation".into(),
             ));
         }
+        Ok(result)
+    }
+
+    /// Execute exactly one frozen check through the environment-builder image
+    /// behind the broker. The broker validates the exact builder identity,
+    /// plan/spec/receipt binding, check bounds and the caller-owned workspace
+    /// volume, then mounts the candidate workspace read-only and the per-spec
+    /// cache read-write with no network.
+    pub async fn environment_check(
+        &self,
+        input: &EnvironmentCheckRequest,
+        timeout: Duration,
+    ) -> Result<EnvironmentCheckResult, BrokerError> {
+        if !matches!(
+            self.owner,
+            ResourceOwner::Environment | ResourceOwner::Supervisor | ResourceOwner::Verifier
+        ) {
+            return Err(BrokerError::Invalid(
+                "environment checks require an environment, supervisor or verifier owner token"
+                    .into(),
+            ));
+        }
+        input.validate_shape().map_err(BrokerError::Invalid)?;
+        if timeout < Duration::from_secs(u64::from(input.check.timeout_secs)) {
+            return Err(BrokerError::Invalid(
+                "environment check client timeout is shorter than the frozen check timeout".into(),
+            ));
+        }
+        let response = self
+            .client
+            .post(self.join(ENVIRONMENT_CHECK_ROUTE)?)
+            .bearer_auth(&self.token)
+            .json(input)
+            .timeout(timeout)
+            .send()
+            .await?;
+        if !response.status().is_success() {
+            return Err(self.refusal(response).await);
+        }
+        if let Some(length) = response.content_length()
+            && length as usize > MAX_ENVIRONMENT_CHECK_RESPONSE_BYTES
+        {
+            return Err(BrokerError::InvalidResponse(
+                "environment check response exceeds the broker bound".into(),
+            ));
+        }
+        let bytes = response.bytes().await?;
+        if bytes.len() > MAX_ENVIRONMENT_CHECK_RESPONSE_BYTES {
+            return Err(BrokerError::InvalidResponse(
+                "environment check response exceeds the broker bound".into(),
+            ));
+        }
+        let result: EnvironmentCheckResult = serde_json::from_slice(&bytes).map_err(|_| {
+            BrokerError::InvalidResponse("environment check response is invalid".into())
+        })?;
+        result
+            .validate_for(input)
+            .map_err(BrokerError::InvalidResponse)?;
         Ok(result)
     }
 

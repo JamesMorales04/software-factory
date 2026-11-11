@@ -374,6 +374,7 @@ services:
       - factory-projects:/projects
       - factory-supervisor-state:/state
       - factory-config-supervisor:/config:ro
+      - factory-image-bundle:/bundles:ro
     environment:
       <<: *control-env
       FACTORY_SUPERVISOR_BIND: 0.0.0.0:8766
@@ -384,6 +385,8 @@ services:
       FACTORY_SUPERVISOR_STATE_ROOT: /state
       FACTORY_SUPERVISOR_PROJECT_ROOTS: /projects
       FACTORY_SUPERVISOR_IMAGES: docker.io/library/rust:1.90.0-bookworm
+      FACTORY_SUPERVISOR_ENVIRONMENT_BUILDER_IMAGE: localhost/software-factory-environment-builder:dev
+      FACTORY_SUPERVISOR_ENVIRONMENT_BUILDER_DIGEST_FILE: /bundles/environment-builder.digest
       FACTORY_RUNTIME_BROKER_URL: http://runtime:8770
       FACTORY_RUNTIME_BROKER_TOKEN_FILE: /config/runtime-broker-supervisor.token
     networks:
