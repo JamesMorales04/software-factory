@@ -2666,34 +2666,21 @@ async fn run_provider_tool_loop(
                         .await?;
                 }
                 if !files.is_empty() {
-                    if !context
-                        .assignment
-                        .allowed_tools
-                        .contains(&"write_file".into())
-                    {
-                        return Err("provider returned files without write_file permission".into());
-                    }
-                    let applied = files
-                        .into_iter()
-                        .map(|file| {
-                            progress.observe_write(&file.path, &file.content);
-                            factory_native::execution::AppliedFile {
-                                path: file.path,
-                                content: file.content,
-                            }
-                        })
-                        .collect::<Vec<_>>();
-                    supervisor_write(
+                    // Final-file vectors bypass the dynamic-write duplicate
+                    // guard and success-first evidence ordering. The provider
+                    // contract requires write_file tool requests instead.
+                    post_final_nudge(
                         context,
-                        &handle.workspace_id,
-                        &handle.capability,
-                        applied,
-                        !written,
+                        "final-files",
+                        "final responses must use an empty files array",
                     )
                     .await?;
-                    written = true;
-                    // A changed candidate invalidates earlier check receipts.
-                    passed_checks.clear();
+                    progress.observe_final_nudge();
+                    prompt = json!({
+                        "model": {"providerID": context.assignment.provider, "modelID": context.assignment.model},
+                        "parts": [{"type": "text", "text": "Final responses must have an empty files array. Use a write_file tool_request for every file change, then return final with files: []."}]
+                    });
+                    continue;
                 }
                 if context.enforce_check_completion
                     && let Some(failure) = complete_missing_frozen_checks(
@@ -3911,38 +3898,8 @@ async fn run_codex_tool_loop(
                             .await?;
                     }
                     if !files.is_empty() {
-                        if !context
-                            .assignment
-                            .allowed_tools
-                            .iter()
-                            .any(|tool| tool == "write_file")
-                        {
-                            return Err(
-                                "Codex returned files without write_file permission".into()
-                            );
-                        }
-                        let applied = files
-                            .into_iter()
-                            .map(|file| {
-                                progress.observe_write(&file.path, &file.content);
-                                factory_native::execution::AppliedFile {
-                                    path: file.path,
-                                    content: file.content,
-                                }
-                            })
-                            .collect::<Vec<_>>();
-                        supervisor_write(
-                            context,
-                            &handle.workspace_id,
-                            &handle.capability,
-                            applied,
-                            !tool_state.written,
-                        )
-                        .await?;
-                        tool_state.written = true;
-                        // A changed candidate invalidates earlier check
-                        // receipts; final must exercise the new tree.
-                        tool_state.passed_checks.clear();
+                        prompt = "Final responses must have an empty files array. Use write_file tool requests for every file change, then return final with files: [].".into();
+                        continue;
                     }
                     if context.enforce_check_completion
                         && let Some(failure) = complete_missing_frozen_checks(
