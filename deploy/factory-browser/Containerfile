@@ -1,0 +1,79 @@
+# Software Factory generic browser/check runner.
+#
+# This image is intentionally not a project toolchain image. It provides the
+# pinned Factory `factory-browser` executable, Node, playwright-core and
+# Chromium only. A project check that needs its own Node/Playwright packages
+# runs in the frozen EnvironmentPlan environment; it never borrows host Node.
+
+ARG RUST_VERSION=1.90.0
+ARG NIX_IMAGE=docker.io/nixos/nix:2.28.3@sha256:d078d7153763895fce17c5fbbdeb86fcfcac414ca0ba875d413c1df57be19931
+ARG NIXPKGS_REV=ac62194c3917d5f474c1a844b6fd6da2db95077d
+ARG PLAYWRIGHT_VERSION=1.64.1
+
+FROM rust:${RUST_VERSION}-bookworm AS browser-builder
+
+WORKDIR /build
+COPY Cargo.toml Cargo.lock ./
+COPY factory-cli/Cargo.toml factory-cli/Cargo.toml
+COPY factory-cli/src factory-cli/src
+COPY native/Cargo.toml native/Cargo.toml
+COPY native/src native/src
+COPY native/fixtures native/fixtures
+COPY xtask/Cargo.toml xtask/Cargo.toml
+COPY xtask/src xtask/src
+RUN cargo build --locked --release -p factory-native --bin factory-browser
+
+FROM ${NIX_IMAGE}
+
+ARG NIXPKGS_REV
+ARG PLAYWRIGHT_VERSION
+
+LABEL org.opencontainers.image.title="software-factory-factory-browser" \
+      org.opencontainers.image.description="Pinned Factory browser/Playwright check runner with Chromium" \
+      org.opencontainers.image.version="1" \
+      io.software-factory.playwright.version="${PLAYWRIGHT_VERSION}" \
+      io.software-factory.platform="x86_64-linux"
+
+RUN printf 'factory:x:10001:10001:Factory Browser:/home/factory:/bin/sh\n' >> /etc/passwd \
+    && printf 'factory:x:10001:\n' >> /etc/group \
+    && mkdir -p /home/factory /opt/factory-browser \
+    && chown -R 10001:10001 /nix /home/factory /opt/factory-browser
+
+USER 10001:10001
+ENV HOME=/home/factory \
+    NIX_CONFIG="experimental-features = nix-command flakes" \
+    PATH=/home/factory/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+RUN nix profile install --profile /home/factory/.nix-profile \
+      github:NixOS/nixpkgs/${NIXPKGS_REV}#nodejs_22 \
+      github:NixOS/nixpkgs/${NIXPKGS_REV}#python3 \
+      github:NixOS/nixpkgs/${NIXPKGS_REV}#cacert \
+      github:NixOS/nixpkgs/${NIXPKGS_REV}#bash \
+      github:NixOS/nixpkgs/${NIXPKGS_REV}#coreutils \
+      github:NixOS/nixpkgs/${NIXPKGS_REV}#findutils \
+      github:NixOS/nixpkgs/${NIXPKGS_REV}#jq \
+    && node --version
+
+RUN BROWSERS="$(nix build --no-link --print-out-paths --impure --expr \
+      "let pkgs = import (builtins.getFlake \"github:NixOS/nixpkgs/${NIXPKGS_REV}\") {}; in pkgs.playwright-driver.browsers.override { withFirefox = false; withWebkit = false; }")" \
+    && test -n "$BROWSERS" \
+    && ln -s "$BROWSERS" /opt/playwright-browsers \
+    && CHROMIUM="$(find "$BROWSERS" -type f \( -name chrome -o -name headless_shell \) | head -n 1)" \
+    && test -n "$CHROMIUM" \
+    && ln -s "$CHROMIUM" /usr/local/bin/chromium
+
+COPY --chown=10001:10001 office/e2e-browser/package.json office/e2e-browser/package-lock.json /opt/factory-browser/
+RUN cd /opt/factory-browser \
+    && npm ci --no-audit --no-fund \
+    && test -d /opt/factory-browser/node_modules/playwright-core
+
+COPY --from=browser-builder /build/target/release/factory-browser /usr/local/bin/factory-browser
+COPY --chown=10001:10001 office/e2e-browser/browser-check-runner.mjs /opt/factory-browser/browser-check-runner.mjs
+
+ENV FACTORY_PLAYWRIGHT_CORE=/opt/factory-browser/node_modules/playwright-core \
+    PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers \
+    CHROMIUM_EXE=/usr/local/bin/chromium \
+    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+
+ENTRYPOINT ["/usr/local/bin/factory-browser"]
+STOPSIGNAL SIGTERM

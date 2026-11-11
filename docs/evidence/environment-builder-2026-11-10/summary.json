@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 1,
+  "candidateBranch": "feat/environment-builder",
+  "baseline": "05c78b2",
+  "coreInterfaceCommit": "e9be02c",
+  "security": "TRUSTED_LOCAL",
+  "paidInference": false,
+  "deterministic": {
+    "pyCompile": "PASS",
+    "bashSyntax": "PASS",
+    "unitTests": {
+      "status": "PASS",
+      "count": 17,
+      "command": "python3 -m unittest discover -s deploy/environment-builder/tests -v"
+    }
+  },
+  "containerEntrypoint": {
+    "testImageSource": "localhost/factory-builder-test:packages",
+    "testImageRole": "developer harness derived from an existing local image; not the final Containerfile image",
+    "descriptor": {
+      "status": "PASS",
+      "platform": "x86_64-linux",
+      "builderStatus": "READY"
+    },
+    "selfTest": {
+      "status": "PASS",
+      "nixVersion": "2.28.3",
+      "devenvVersion": "1.11.2",
+      "schemaVersion": 1
+    }
+  },
+  "typedFailures": [
+    {
+      "case": "missing image or digest",
+      "code": "ENVIRONMENT_BUILDER_UNAVAILABLE",
+      "exitCode": 2,
+      "status": "PASS"
+    },
+    {
+      "case": "denied license",
+      "code": "ENVIRONMENT_LICENSE_DENIED",
+      "exitCode": 2,
+      "status": "PASS"
+    },
+    {
+      "case": "build network not NONE",
+      "code": "ENVIRONMENT_NETWORK_DENIED",
+      "exitCode": 2,
+      "status": "PASS"
+    },
+    {
+      "case": "CPU bound outside policy",
+      "code": "ENVIRONMENT_RESOURCE_LIMIT",
+      "exitCode": 2,
+      "status": "PASS"
+    },
+    {
+      "case": "offline build with empty closure cache",
+      "code": "ENVIRONMENT_NETWORK_DENIED",
+      "exitCode": 2,
+      "status": "PASS"
+    }
+  ],
+  "realEnvironmentBuild": {
+    "devenvShellObservationSeconds": 155,
+    "receiptEmitted": false,
+    "closureExported": false,
+    "status": "NOT_TESTED"
+  },
+  "notTested": [
+    "cold rootless Podman build of deploy/environment-builder/Containerfile",
+    "Node+Playwright environment build with a successful EnvironmentBuildReceipt",
+    "Rust environment build with a successful EnvironmentBuildReceipt",
+    "warm-cache repeat with stable outputSha256",
+    "Playwright Chromium launch through the builder/factory-browser images",
+    "SBOM digest from a real Nix closure",
+    "real package-set license block",
+    "Compose/runtime-broker integration"
+  ]
+}
