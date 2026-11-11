@@ -38,6 +38,13 @@ dedicated allowlist, network name, proxy URL or environment variable.
 | `/v1/environments/build` | frozen `EnvironmentPlan` + `EnvironmentSpec`, exact image/digest, bounded project-file set, optional `FETCH` phase | typed `EnvironmentBuildReceipt` / fetch evidence |
 | `/v1/environments/check` | frozen plan/spec/receipt binding, exact image/digest, one `EnvironmentCheckSpec`, caller-owned workspace volume | typed `EnvironmentCheckResult` |
 
+Core merges the resolved lock files into the plan and rebinds
+`resolution.planSha256` to the final plan hash before Lead review. The binding
+field is excluded from the plan content hash to avoid a circular hash; the
+resolved file hashes, versions and builder identity remain covered. A plan
+whose resolution binding does not match its final hash is rejected by
+`EnvironmentPlan::validate`.
+
 The build operation runs a fetch container on the broker-owned internal
 environment egress network when the plan allowlist is non-empty, then a
 `--network=none` build container. A fetch failure is a typed error; there is no

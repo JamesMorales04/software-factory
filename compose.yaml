@@ -339,6 +339,9 @@ services:
       FACTORY_ENVIRONMENT_BUILDER_PLATFORM: x86_64-linux
       FACTORY_ENVIRONMENT_NIX_VERSION: 2.28.3
       FACTORY_ENVIRONMENT_DEVENV_VERSION: 1.11.2
+      # devenv's bundled Cachix manager reads public cache metadata from
+      # https://cachix.org/api/v1/cache/<name>; no CACHIX_AUTH_TOKEN is set and
+      # generated files that add Cachix credentials are refused.
       FACTORY_ENVIRONMENT_FETCH_ALLOWLIST: https://cache.nixos.org,https://github.com,https://codeload.github.com,https://api.github.com,https://cachix.org,https://devenv.cachix.org
     networks:
       factory-control:

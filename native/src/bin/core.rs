@@ -11978,6 +11978,12 @@ async fn resolve_generated_environment(
     resolved.builder = descriptor;
     resolved.resolution = Some(resolution);
     resolved.refresh_hash();
+    // The builder resolved the pre-merge plan. Rebind its evidence to the
+    // final plan hash, which now covers the resolved lock files; the binding
+    // field is excluded from the content hash so this is not circular.
+    if let Some(resolution) = &mut resolved.resolution {
+        resolution.plan_sha256 = resolved.plan_sha256.clone();
+    }
     if let Err(error) = resolved.validate(chrono::Utc::now()) {
         return Err(factory_native::planning::environment::EnvironmentBlocker {
             code: error.code,

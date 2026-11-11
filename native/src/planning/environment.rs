@@ -1748,6 +1748,15 @@ impl EnvironmentPlan {
         for override_record in &mut inventory.overrides {
             override_record.plan_sha256.clear();
         }
+        // The resolution is evidence produced by the builder for the plan
+        // before its lock files are merged. Core rebinds `plan_sha256` to the
+        // final plan hash after the merge, so the binding field itself must be
+        // excluded from the content hash to avoid a circular hash. The resolved
+        // files, versions and builder identity remain covered.
+        let mut resolution = self.resolution.clone();
+        if let Some(resolution) = &mut resolution {
+            resolution.plan_sha256.clear();
+        }
         canonical_hash(&PlanContent {
             schema_version: self.schema_version,
             project_id: &self.project_id,
@@ -1769,7 +1778,7 @@ impl EnvironmentPlan {
             resources: self.resources,
             network: &self.network,
             license_inventory: &inventory,
-            resolution: &self.resolution,
+            resolution: &resolution,
         })
     }
 
@@ -1834,6 +1843,9 @@ impl EnvironmentPlan {
         self.validate_services()?;
         self.validate_commands()?;
         self.validate_files()?;
+        if let Some(resolution) = &self.resolution {
+            resolution.validate_for(self)?;
+        }
         if self.nix.allow_unfree {
             return Err(license_blocked(
                 "allowUnfree must remain false; an unfree package requires an exact owner override",
@@ -2860,10 +2872,13 @@ fn generate_environment_files(
     let flake = format!(
         "{{\n  description = \"Factory frozen environment\";\n  inputs.nixpkgs.url = \"{nixpkgs}\";\n  outputs = {{ self, nixpkgs }}:\n    let\n      system = \"{DEFAULT_PLATFORM}\";\n      pkgs = import nixpkgs {{ inherit system; config.allowUnfree = false; }};\n    in {{\n      devShells.${{system}}.default = pkgs.mkShell {{ buildInputs = [ {build_inputs} ]; }};\n    }};\n}}\n"
     );
-    let devenv = format!("{{ pkgs, ... }}: {{\n  packages = [ {build_inputs} ];\n}}\n");
+    // Generated environments are flake-only. A generated devenv.nix without a
+    // matching pinned devenv input (and a devenv.yaml) would resolve a second,
+    // floating nixpkgs graph and leave devenv.lock detached from flake.nix.
+    // Project-committed devenv/flake files remain a supported source when the
+    // repository already carries a coherent environment.
     let mut files = BTreeMap::new();
     files.insert("flake.nix".into(), flake);
-    files.insert("devenv.nix".into(), devenv);
     Ok(files)
 }
 
@@ -4309,6 +4324,63 @@ mod tests {
                 .default_nixpkgs
                 .starts_with("github:NixOS/nixpkgs/")
         );
+    }
+
+    #[test]
+    fn generated_environment_is_flake_only_and_pins_requested_packages() {
+        let (repository, base) = repository(&[("README.md", "# Empty\n")]);
+        let mut values = requirements();
+        values.explicit_constraints.nixpkgs =
+            Some("github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into());
+        values.explicit_constraints.packages = vec![PackageRequirement {
+            name: "nodejs".into(),
+            version: "22".into(),
+            license: "MIT".into(),
+            source: "nixpkgs".into(),
+            attr: "nodejs_22".into(),
+            sha256: "c".repeat(64),
+            unfree: false,
+            attribution: "Node.js is MIT licensed.".into(),
+        }];
+        let plan = compile(&repository, &base, &values);
+        let flake = plan
+            .files
+            .iter()
+            .find(|file| file.path == "flake.nix")
+            .and_then(|file| file.content.as_deref())
+            .expect("generated flake.nix");
+        assert!(flake.contains("pkgs.nodejs_22"));
+        assert!(!plan.files.iter().any(|file| file.path == "devenv.nix"));
+        assert!(!plan.files.iter().any(|file| file.path == "devenv.lock"));
+    }
+
+    #[test]
+    fn resolution_must_bind_the_final_plan_hash() {
+        let (repository, base) = repository(&[("README.md", "# Empty\n")]);
+        let mut values = requirements();
+        values.explicit_constraints.nixpkgs =
+            Some("github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into());
+        let mut plan = compile(&repository, &base, &values);
+        let content = "{\"nodes\":{}}".to_string();
+        plan.resolution = Some(EnvironmentResolution {
+            schema_version: ENVIRONMENT_SCHEMA_VERSION,
+            plan_sha256: plan.plan_sha256.clone(),
+            files: vec![EnvironmentFile {
+                path: "flake.lock".into(),
+                sha256: sha256_hex(content.as_bytes()),
+                origin: EnvironmentFileOrigin::Generated,
+                content: Some(content),
+            }],
+            nix_version: "2.28.3".into(),
+            devenv_version: "1.11.2".into(),
+        });
+        plan.refresh_hash();
+        plan.resolution.as_mut().expect("resolution").plan_sha256 = plan.plan_sha256.clone();
+        plan.validate(now()).unwrap();
+
+        plan.resolution.as_mut().expect("resolution").plan_sha256 = "0".repeat(64);
+        let error = plan.validate(now()).unwrap_err();
+        assert_eq!(error.code, EnvironmentBlockerCode::EnvironmentHashMismatch);
     }
 
     #[test]

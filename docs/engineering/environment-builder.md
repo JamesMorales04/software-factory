@@ -28,7 +28,14 @@ It contains:
 There is no per-language catalog and no language-image selection. A project
 environment is whatever its frozen `devenv.nix`/`flake.nix` and lock files
 declare. The image tools are a warm cache and the path for the builder entrypoint,
-not a default toolchain.
+not a default toolchain. Generated environments are flake-only (`flake.nix` plus
+`flake.lock`); Core does not emit a `devenv.nix` without a matching pinned
+devenv input. A repository that already carries a coherent
+`devenv.nix`/`devenv.yaml`/`devenv.lock` remains a supported project-committed
+environment. After the builder returns a resolution, Core merges the resolved
+lock files and rebinds `resolution.planSha256` to the final plan hash; the
+binding field is excluded from the plan content hash to avoid a circular hash,
+while the resolved file hashes and builder identity remain covered.
 
 `deploy/factory-browser/Containerfile` builds a separate Chromium/Playwright
 runner. It contains the `factory-browser` binary, Node, `playwright-core` and
@@ -164,6 +171,11 @@ must normalize to exactly
 `overlay-containers/<container-id>/userdata/<hosts|hostname|resolv.conf>`;
 `..`/`.` components, other filenames and bare host paths are rejected. A
 forbidden host path at any allowed target cannot produce `noHostMount=true`.
+Generated and project-committed environment files may pin the open-source
+`github:cachix/devenv` and `github:cachix/git-hooks.nix` inputs and may name
+the public `devenv.cachix.org` cache as an optional performance input.
+`cachix login`, `cachix authtoken`, `CACHIX_AUTH_TOKEN` and Devenv Cloud remain
+`ENVIRONMENT_SANDBOX_DENIED`; no Cachix account or paid cache is required.
 
 ## 4. Typed failures
 
