@@ -1715,7 +1715,8 @@ struct PlanContent<'a> {
     project_id: &'a str,
     request_id: &'a str,
     action_id: &'a str,
-    campaign_id: &'a Option<String>,
+    // `campaign_id` is a mutable campaign binding, not plan identity. It is
+    // attached after the plan is frozen and must never change its hash.
     base_commit: &'a str,
     conventions_sha256: &'a str,
     risk_class: &'a str,
@@ -1762,7 +1763,6 @@ impl EnvironmentPlan {
             project_id: &self.project_id,
             request_id: &self.request_id,
             action_id: &self.action_id,
-            campaign_id: &self.campaign_id,
             base_commit: &self.base_commit,
             conventions_sha256: &self.conventions_sha256,
             risk_class: &self.risk_class,
@@ -1821,7 +1821,11 @@ impl EnvironmentPlan {
             ));
         }
         if self.compute_sha256() != self.plan_sha256 {
-            return Err(hash_mismatch("plan content does not match its plan hash"));
+            let computed = self.compute_sha256();
+            return Err(hash_mismatch(format!(
+                "plan content does not match its plan hash (computed {computed}, expected {})",
+                self.plan_sha256
+            )));
         }
         if self.toolchains.len() > MAX_TOOLCHAINS
             || self.packages.len() > MAX_PACKAGES
@@ -3045,7 +3049,8 @@ struct SpecContent<'a> {
     project_id: &'a str,
     request_id: &'a str,
     action_id: &'a str,
-    campaign_id: &'a Option<String>,
+    // The campaign binding is mutable and excluded from spec identity for the
+    // same reason as the plan binding.
     base_commit: &'a str,
     plan_id: &'a str,
     plan_sha256: &'a str,
@@ -3071,7 +3076,6 @@ impl EnvironmentSpec {
             project_id: &self.project_id,
             request_id: &self.request_id,
             action_id: &self.action_id,
-            campaign_id: &self.campaign_id,
             base_commit: &self.base_commit,
             plan_id: &self.plan_id,
             plan_sha256: &self.plan_sha256,
@@ -3105,9 +3109,11 @@ impl EnvironmentSpec {
             return Err(invalid("environment spec hashes must be SHA-256"));
         }
         if self.compute_sha256() != self.spec_sha256 {
-            return Err(hash_mismatch(
-                "environment spec content does not match its hash",
-            ));
+            return Err(hash_mismatch(format!(
+                "environment spec content does not match its hash (computed {}, expected {})",
+                self.compute_sha256(),
+                self.spec_sha256
+            )));
         }
         if self.status != EnvironmentSpecStatus::Frozen {
             return Err(EnvironmentError::new(
@@ -4381,6 +4387,49 @@ mod tests {
         plan.resolution.as_mut().expect("resolution").plan_sha256 = "0".repeat(64);
         let error = plan.validate(now()).unwrap_err();
         assert_eq!(error.code, EnvironmentBlockerCode::EnvironmentHashMismatch);
+    }
+
+    #[test]
+    fn campaign_binding_does_not_change_plan_or_spec_identity() {
+        let (repository, base) = repository(&[("README.md", "# Empty\n")]);
+        let mut values = requirements();
+        values.explicit_constraints.nixpkgs =
+            Some("github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into());
+        let mut plan = compile(&repository, &base, &values);
+        let content = "{\"nodes\":{}}".to_string();
+        plan.resolution = Some(EnvironmentResolution {
+            schema_version: ENVIRONMENT_SCHEMA_VERSION,
+            plan_sha256: plan.plan_sha256.clone(),
+            files: vec![EnvironmentFile {
+                path: "flake.lock".into(),
+                sha256: sha256_hex(content.as_bytes()),
+                origin: EnvironmentFileOrigin::Generated,
+                content: Some(content),
+            }],
+            nix_version: "2.28.3".into(),
+            devenv_version: "1.11.2".into(),
+        });
+        plan.files.push(EnvironmentFile {
+            path: "flake.lock".into(),
+            sha256: sha256_hex("{\"nodes\":{}}".as_bytes()),
+            origin: EnvironmentFileOrigin::Generated,
+            content: Some("{\"nodes\":{}}".into()),
+        });
+        plan.refresh_hash();
+        plan.resolution.as_mut().expect("resolution").plan_sha256 = plan.plan_sha256.clone();
+        let plan_hash = plan.plan_sha256.clone();
+        let review = approve(&mut plan);
+        let mut spec = freeze(&mut plan, &review);
+        let spec_hash = spec.spec_sha256.clone();
+
+        // The campaign is attached after the plan/spec are frozen. The
+        // mutable binding must not change either content hash.
+        plan.campaign_id = Some("campaign-1".into());
+        assert_eq!(plan.compute_sha256(), plan_hash);
+        plan.validate(now()).unwrap();
+        spec.campaign_id = Some("campaign-1".into());
+        assert_eq!(spec.compute_sha256(), spec_hash);
+        spec.validate().unwrap();
     }
 
     #[test]
