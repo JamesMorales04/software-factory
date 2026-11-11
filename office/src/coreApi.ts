@@ -1805,6 +1805,8 @@ export interface IntakeMessage {
   role: string;
   body: string;
   createdAt: string;
+  /** Present when this message started a follow-up request. */
+  followUpRequestId?: string | null;
 }
 
 export interface IntakeRequestSummary {
@@ -1819,6 +1821,8 @@ export interface IntakeRequestSummary {
   delegationId: string;
   leadRequestId: string;
   campaignId: string | null;
+  /** Present when this request was started by an operator follow-up message. */
+  parentRequestId?: string | null;
   authorization: IntakeAuthorizationState;
   campaignStatus?: string | null;
   gateOutcome?: GateOutcome | null;
@@ -2166,6 +2170,8 @@ export interface IntakeRequestProjection extends IntakeRequestSummary {
   environment?: EnvironmentStateView | null;
   campaign: CampaignDetail | null;
   messages: IntakeMessage[];
+  /** The single follow-up request started from this terminal request. */
+  followUpRequest?: IntakeRequestSummary | null;
   linked_issues?: IssueLinkProjection[] | null;
 }
 

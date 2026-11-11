@@ -540,6 +540,7 @@ async fn setup_fixture(risk: &str) -> Fixture {
     .execute(db.test_pool())
     .await
     .unwrap();
+    db.test_ensure_project_config("project").await.unwrap();
     let objective = "Deliver the exact candidate";
     let objective_sha = sha256_hex(objective.as_bytes());
     let spec = serde_json::json!({
@@ -592,6 +593,19 @@ async fn setup_fixture(risk: &str) -> Fixture {
         .execute(db.test_pool())
         .await
         .unwrap();
+    // Pin the exact base the candidate was produced from. Falling back to the
+    // Project base would change after a successful merge advance and break
+    // idempotent delivery replay.
+    sqlx::query::query(
+        "INSERT INTO attempt_specs(attempt_id,action_id,base_commit,spec_json,spec_sha256)
+         VALUES ('attempt-1','action-1',?1,?2,?3)",
+    )
+    .bind(&repo.base)
+    .bind(&spec_json)
+    .bind(&spec_sha)
+    .execute(db.test_pool())
+    .await
+    .unwrap();
     sqlx::query::query(
         "INSERT INTO candidates
          (id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at)
@@ -1178,6 +1192,10 @@ async fn r0_auto_merge_pushes_exact_candidate_and_merges_once() {
         .await
         .unwrap();
     assert!(receipts.is_empty());
+    // The merged main commit becomes the next Project base for follow-ups.
+    let config = fixture.db.project_config("project").await.unwrap();
+    assert_eq!(config.base_commit, fixture.merge_sha);
+    assert_eq!(config.revision, 2);
 }
 
 #[tokio::test]
@@ -1256,6 +1274,10 @@ async fn r1_without_opt_in_is_blocked_before_merge() {
         .unwrap();
     assert_eq!(attempt.state, DeliveryAttemptState::Blocked);
     assert_eq!(attempt.blocker_code.as_deref(), Some("R1_OPT_IN_REQUIRED"));
+    // A blocked delivery never advances the Project base.
+    let config = fixture.db.project_config("project").await.unwrap();
+    assert_eq!(config.base_commit, fixture.repo.base);
+    assert_eq!(config.revision, 1);
 }
 
 #[tokio::test]
@@ -1381,6 +1403,14 @@ async fn concurrent_different_base_delivery_has_one_side_effect_set() {
         "main" | "release"
     ));
     assert_eq!(successes[0].attempt.base_branch, attempts[0].base_branch);
+    // Only the protected default branch may become the next Project base.
+    let config = fixture.db.project_config("project").await.unwrap();
+    if attempts[0].base_branch == "main" {
+        assert_eq!(config.base_commit, fixture.merge_sha);
+    } else {
+        assert_eq!(config.base_commit, fixture.repo.base);
+        assert_eq!(config.revision, 1);
+    }
 }
 
 #[tokio::test]
@@ -1722,6 +1752,10 @@ async fn failed_post_merge_check_opens_incident_and_requires_manual_revert() {
         .unwrap();
     assert_eq!(attempt.state, DeliveryAttemptState::NeedsAttention);
     assert!(attempt.merge_commit_sha.is_some());
+    // A merge whose required post-merge check fails never advances the base.
+    let config = fixture.db.project_config("project").await.unwrap();
+    assert_eq!(config.base_commit, fixture.repo.base);
+    assert_eq!(config.revision, 1);
     let incident = fixture
         .db
         .active_delivery_incident("project")
@@ -1765,6 +1799,8 @@ async fn failed_post_merge_check_opens_incident_and_requires_manual_revert() {
         .await
         .unwrap();
     assert_eq!(attempt.state, DeliveryAttemptState::Reverted);
+    let config = fixture.db.project_config("project").await.unwrap();
+    assert_eq!(config.base_commit, fixture.repo.base);
 }
 
 async fn seed_issue_link(fixture: &Fixture) {

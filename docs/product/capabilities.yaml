@@ -2425,21 +2425,28 @@ capabilities:
   refs:
     adr:
     - docs/architecture/decisions/ADR-0025-container-native-and-office-parity.md
+    - docs/architecture/decisions/ADR-0043-intake-follow-ups-and-merged-base.md
     contract:
     - docs/product/office-design-system.md
     - docs/product/factory-office.md
+    - docs/contracts/intake-follow-up.md
     source:
     - native/src/bin/core.rs
+    - native/src/db/intake.rs
+    - native/src/db/project_configs.rs
+    - native/src/delivery.rs
     - office/src/views/Requests.tsx
+    - office/src/views/RequestWorkspace.tsx
     - office/src/views/DecisionInbox.tsx
     - office/src/views/Campaigns.tsx
     - office/src/coreApi.ts
     test:
     - office/src/views/Home.test.tsx
+    - office/src/views/RequestWorkspace.test.tsx
     - office/src/views/DecisionInbox.test.tsx
     - office/e2e-browser/rust-journey.mjs
   acceptance:
-    deterministic: Requests, Campaigns and decisions require operator authentication, return Core snapshot shapes, filter by Project, render human-readable states, and their views typecheck, lint, pass component tests and build inside the container-native workflow.
+    deterministic: Requests, Campaigns and decisions require operator authentication, return Core snapshot shapes, filter by Project, render human-readable states, and their views typecheck, lint, pass component tests and build inside the container-native workflow. A terminal intake request accepts one follow-up message, creates exactly one child with parent lineage and the same exact profile/policy path, refuses a second fork, and the child has no parent plan, ActionSpec, candidate or Campaign. A verified default-branch merge advances the Project config base as a new revision; blocked, failed, reverted and other-branch deliveries do not.
     real: An authenticated browser journey reaches Requests, Campaigns and Decision Inbox, follows hash and copied path deep links, and renders Core-backed decisions with exact targets; removed routes redirect without dead ends.
   evidence:
     deterministic:
@@ -2455,6 +2462,7 @@ capabilities:
   - Campaign authorization and Quality Gate repair remain on the Campaign workspace.
   - The Inbox exposes model-call resolution and navigation only; unresolved provider sessions are awareness-only because no operator termination API exists.
   - Removed pages redirect to the closest current workspace; unknown routes return Home.
+  - Follow-up creation is limited to one child per COMPLETED or CANCELLED request and keeps the parent exact profile revision and owner-confirmed policy scope. A base-only Core config advance may re-bind that exact policy to the new config; it never widens paths, capabilities, risk, route, autonomy or subscription confirmation. A merged-base advance fences older unstarted requests with PROJECT_CONFIG_CHANGED; it never silently rebases them. Real Chromium/Compose follow-up acceptance remains NOT_TESTED.
   blockers:
   - Independent browser acceptance and Product Owner review remain pending.
 

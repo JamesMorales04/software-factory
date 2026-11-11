@@ -10191,22 +10191,7 @@ async fn get_lead_request(
 fn intake_state_from_lead(
     state: factory_native::lead::LeadRequestProjectionState,
 ) -> factory_native::intake::IntakeState {
-    use factory_native::intake::IntakeState;
-    use factory_native::lead::LeadRequestProjectionState;
-    match state {
-        LeadRequestProjectionState::Submitted => IntakeState::Submitted,
-        LeadRequestProjectionState::Assessing => IntakeState::Assessing,
-        LeadRequestProjectionState::PlanReady => IntakeState::PlanReady,
-        LeadRequestProjectionState::AwaitingApproval => IntakeState::AwaitingApproval,
-        LeadRequestProjectionState::Executing => IntakeState::Executing,
-        LeadRequestProjectionState::Completed => IntakeState::Completed,
-        LeadRequestProjectionState::Blocked => IntakeState::Blocked,
-        LeadRequestProjectionState::Failed => IntakeState::Failed,
-        LeadRequestProjectionState::Assessed => IntakeState::Assessed,
-        LeadRequestProjectionState::Withdrawn | LeadRequestProjectionState::Cancelled => {
-            IntakeState::Cancelled
-        }
-    }
+    factory_native::intake::IntakeState::from_lead_projection(state)
 }
 
 fn intake_state_detail(
@@ -10271,10 +10256,9 @@ fn intake_state_detail(
     }
 }
 
-async fn intake_request_value(
+async fn intake_request_summary_value(
     app: &App,
     record: &factory_native::db::IntakeRequestRecord,
-    detail: bool,
 ) -> Result<serde_json::Value, Error> {
     let lead = app.db.lead_request(&record.lead_request_id).await?;
     let projection = app.db.lead_request_projection(&lead.id).await?;
@@ -10319,11 +10303,35 @@ async fn intake_request_value(
         "delegationId": record.delegation_id,
         "leadRequestId": record.lead_request_id,
         "campaignId": campaign_id,
+        "parentRequestId": record.parent_request_id,
         "authorization": authorization,
         "spending": spending,
         "createdAt": record.created_at,
         "updatedAt": record.updated_at,
     });
+    // The Campaign status and latest Gate outcome are separate authoritative
+    // facts. Both the list and detail projections expose them so Office never
+    // has to infer a Gate badge from unrelated candidate state.
+    if let Some(campaign_status) = campaign_status {
+        value["campaignStatus"] = json!(campaign_status);
+    }
+    if let Some(gate_outcome) = gate_outcome {
+        value["gateOutcome"] = json!(gate_outcome);
+    }
+    Ok(value)
+}
+
+async fn intake_request_value(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+    detail: bool,
+) -> Result<serde_json::Value, Error> {
+    let lead = app.db.lead_request(&record.lead_request_id).await?;
+    let campaign_id = lead
+        .campaign_id
+        .clone()
+        .or_else(|| record.campaign_id.clone());
+    let mut value = intake_request_summary_value(app, record).await?;
     if detail {
         let linked_issues = app
             .db
@@ -10393,18 +10401,13 @@ async fn intake_request_value(
                     "role": message.role,
                     "body": message.body,
                     "createdAt": message.created_at,
+                    "followUpRequestId": message.follow_up_request_id,
                 }))
                 .collect::<Vec<_>>()
         );
-    }
-    // The Campaign status and latest Gate outcome are separate authoritative
-    // facts. Both the list and detail projections expose them so Office never
-    // has to infer a Gate badge from unrelated candidate state.
-    if let Some(campaign_status) = campaign_status {
-        value["campaignStatus"] = json!(campaign_status);
-    }
-    if let Some(gate_outcome) = gate_outcome {
-        value["gateOutcome"] = json!(gate_outcome);
+        if let Some(follow_up) = app.db.intake_follow_up_for_parent(&record.id).await? {
+            value["followUpRequest"] = intake_request_summary_value(app, &follow_up).await?;
+        }
     }
     Ok(value)
 }
@@ -18542,27 +18545,40 @@ async fn message_intake_request(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
     AxumPath(id): AxumPath<String>,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
     Json(input): Json<IntakeMessageRequest>,
 ) -> Response {
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let (message, created) = match app
+    let (principal_id, _) =
+        authenticated_operator(session.as_ref().map(|Extension(device)| device));
+    let outcome = match app
         .db
-        .append_intake_message(&id, &input.body, &input.idempotency_key)
+        .append_intake_message_or_start_follow_up(
+            &id,
+            &input.body,
+            &input.idempotency_key,
+            &principal_id,
+        )
         .await
     {
         Ok(result) => result,
         Err(error) => return api_error(error),
     };
-    let _ = message;
+    if outcome.created
+        && let Some(follow_up) = outcome.follow_up.as_ref()
+        && follow_up.mode == factory_native::intake::IntakeMode::Autonomous
+    {
+        enqueue_autopilot(&app, &follow_up.id).await;
+    }
     let record = match app.db.intake_request(&id).await {
         Ok(record) => record,
         Err(error) => return api_error(error),
     };
     match intake_request_value(&app, &record, true).await {
         Ok(value) => (
-            if created {
+            if outcome.created {
                 StatusCode::CREATED
             } else {
                 StatusCode::OK
@@ -26893,6 +26909,36 @@ mod tests {
             .await;
             assert_eq!(status, StatusCode::CONFLICT);
             assert_eq!(fenced["code"], "INTAKE_WITHDRAWN");
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
+        async fn intake_message_requires_operator_authentication() {
+            let fixture = setup().await;
+            let body = Some(json!({
+                "body": "Continue this thread.",
+                "idempotency_key": "message-auth-1",
+            }));
+            let (status, _) = send_as(
+                &fixture.router,
+                "POST",
+                "/intake/requests/missing/message",
+                "wrong-token",
+                body.clone(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+            let (status, missing) = send(
+                &fixture.router,
+                "POST",
+                "/intake/requests/missing/message",
+                body,
+            )
+            .await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{missing}");
 
             fixture.app.db.close().await;
             let _ = std::fs::remove_file(fixture.path);

@@ -357,6 +357,8 @@ export const en = {
   "request.notice.approved":
     "Core recorded the approval. Execution state is shown from the refreshed projection.",
   "request.notice.message": "Message recorded by Core.",
+  "request.notice.followUpStarted":
+    "Core recorded the message and created one follow-up request.",
   "request.notice.cancelled":
     "Core recorded the request cancellation. This does not cancel an authorized Campaign.",
   "request.next.title": "Next step",
@@ -465,6 +467,18 @@ export const en = {
     "The executable plan is frozen. Core does not accept amendments here; start a new request to change the objective or plan.",
   "request.conversation.terminal":
     "Core reports this request as terminal, so new messages are not offered here.",
+  "request.conversation.followUpDescription":
+    "This thread is complete. Sending a message starts one new follow-up request in the same Project and profile. It receives a fresh assessment, plan, environment/spec freeze and Campaign; it never reuses the parent plan, candidate or Campaign.",
+  "request.conversation.followUpLabel": "Start a follow-up request",
+  "request.conversation.followUpPlaceholder":
+    "Describe the next objective for the follow-up",
+  "request.conversation.startFollowUp": "Start follow-up",
+  "request.conversation.followUpCreated":
+    "Core created the follow-up request with state",
+  "request.conversation.followUpExists":
+    "This thread already has one follow-up request. Continue in the follow-up.",
+  "request.conversation.openFollowUp": "Open follow-up",
+  "request.conversation.followUpFrom": "Follow-up from",
   "request.details.title": "Request details",
   "request.details.request": "Request",
   "request.details.project": "Project",

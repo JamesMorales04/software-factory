@@ -1691,6 +1691,7 @@ impl Database {
             &delegation,
             prepared,
             &issue_links,
+            None,
         )
         .await?;
         link_reconciled_queue(

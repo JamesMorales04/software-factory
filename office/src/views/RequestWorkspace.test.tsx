@@ -601,6 +601,86 @@ describe("RequestWorkspace", () => {
     ).toBe("");
   });
 
+  it("starts one follow-up from a completed request and exposes the created request", async () => {
+    const completed = makeProjection({
+      state: "COMPLETED",
+      stateDetail: "Quality Gate recorded ACCEPTED for the exact candidate.",
+    });
+    const followUp = makeProjection({
+      id: "request-2",
+      state: "SUBMITTED",
+      parentRequestId: "request-1",
+      plan: null,
+      assessment: null,
+      proposal: null,
+      messages: [],
+    });
+    const completedWithFollowUp = makeProjection({
+      state: "COMPLETED",
+      followUpRequest: followUp,
+    });
+    mocks.getIntakeRequest
+      .mockResolvedValueOnce(completed)
+      .mockResolvedValue(completedWithFollowUp);
+    mocks.messageIntakeRequest.mockResolvedValue(completedWithFollowUp);
+    renderRequest();
+    await screen.findByLabelText("Start a follow-up request");
+    await userEvent.type(
+      screen.getByLabelText("Start a follow-up request"),
+      "Add the CSV export follow-up.",
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Start follow-up" }),
+    );
+    await waitFor(() =>
+      expect(mocks.messageIntakeRequest).toHaveBeenCalledWith("request-1", {
+        body: "Add the CSV export follow-up.",
+        idempotency_key: "message-key",
+      }),
+    );
+    expect(
+      await screen.findByText(/Core created the follow-up request with state/),
+    ).toBeDefined();
+    expect(
+      screen.getByRole("link", { name: "Open follow-up" }).getAttribute("href"),
+    ).toBe("/requests/request-2");
+    expect(screen.queryByLabelText("Start a follow-up request")).toBeNull();
+  });
+
+  it("does not offer a follow-up on a withdrawn terminal request", async () => {
+    mocks.getIntakeRequest.mockResolvedValue(
+      makeProjection({
+        state: "CANCELLED",
+        authorization: {
+          required: false,
+          available: false,
+          reason: "INTAKE_WITHDRAWN",
+        },
+      }),
+    );
+    renderRequest();
+    await screen.findByText("Keep the API backward compatible.");
+    expect(screen.queryByLabelText("Start a follow-up request")).toBeNull();
+  });
+
+  it("shows the parent thread on a follow-up request", async () => {
+    mocks.getIntakeRequest.mockResolvedValue(
+      makeProjection({
+        id: "request-2",
+        state: "SUBMITTED",
+        parentRequestId: "request-1",
+        plan: null,
+        assessment: null,
+        proposal: null,
+      }),
+    );
+    const { container } = renderRequest();
+    expect(await screen.findByText(/Follow-up from/)).toBeDefined();
+    const parentLink = container.querySelector('a[href="/requests/request-1"]');
+    expect(parentLink).not.toBeNull();
+    expect(parentLink?.textContent).toContain("request-");
+  });
+
   it("starts a bounded repair from the exact rejected candidate after confirmation", async () => {
     mocks.getIntakeRequest.mockResolvedValue(
       makeProjection({

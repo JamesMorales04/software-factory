@@ -2023,6 +2023,12 @@ impl<'a, H: DeliveryIssueHook> DeliveryService<'a, H> {
         let attempt = reservation.attempt;
         let attempt_id = attempt.attempt_id.clone();
         if attempt.state == DeliveryAttemptState::Merged {
+            if context.base_branch == context.binding.default_branch
+                && let Some(merge_sha) = attempt.merge_commit_sha.as_deref()
+            {
+                self.advance_project_base_after_merge(&context, merge_sha)
+                    .await?;
+            }
             let _receipts = self.db.delivery_issue_receipts(&attempt_id).await?;
             let replay_policy = self
                 .db
@@ -2123,6 +2129,12 @@ impl<'a, H: DeliveryIssueHook> DeliveryService<'a, H> {
             attempt
         };
         if attempt.state == DeliveryAttemptState::Merged {
+            if context.base_branch == context.binding.default_branch
+                && let Some(merge_sha) = attempt.merge_commit_sha.as_deref()
+            {
+                self.advance_project_base_after_merge(&context, merge_sha)
+                    .await?;
+            }
             let _receipts = self.db.delivery_issue_receipts(&attempt_id).await?;
             let replay_policy = self
                 .db
@@ -2322,16 +2334,24 @@ impl<'a, H: DeliveryIssueHook> DeliveryService<'a, H> {
         let (claimed, claimed_attempt) = self.db.claim_delivery_attempt(&attempt_id).await?;
         if !claimed {
             return match claimed_attempt.state {
-                DeliveryAttemptState::Merged => Ok(DeliveryRun {
-                    attempt: claimed_attempt,
-                    policy,
-                    decision: decision_record,
-                    pull_request: Some(pull_request),
-                    checks: Some(checks),
-                    protection: Some(protection),
-                    issue_outcome: None,
-                    replayed: true,
-                }),
+                DeliveryAttemptState::Merged => {
+                    if context.base_branch == context.binding.default_branch
+                        && let Some(merge_sha) = claimed_attempt.merge_commit_sha.as_deref()
+                    {
+                        self.advance_project_base_after_merge(&context, merge_sha)
+                            .await?;
+                    }
+                    Ok(DeliveryRun {
+                        attempt: claimed_attempt,
+                        policy,
+                        decision: decision_record,
+                        pull_request: Some(pull_request),
+                        checks: Some(checks),
+                        protection: Some(protection),
+                        issue_outcome: None,
+                        replayed: true,
+                    })
+                }
                 DeliveryAttemptState::NeedsAttention => Err(DeliveryError::blocked(
                     "DELIVERY_INCIDENT_OPEN",
                     "delivery needs owner attention",
@@ -2370,6 +2390,10 @@ impl<'a, H: DeliveryIssueHook> DeliveryService<'a, H> {
                                 },
                             )
                             .await?;
+                        if context.base_branch == context.binding.default_branch {
+                            self.advance_project_base_after_merge(&context, &merge_sha)
+                                .await?;
+                        }
                         return Ok(DeliveryRun {
                             attempt,
                             policy,
@@ -2598,6 +2622,22 @@ impl<'a, H: DeliveryIssueHook> DeliveryService<'a, H> {
             }
         }
 
+        if context.base_branch == context.binding.default_branch
+            && let Err(error) = self
+                .advance_project_base_after_merge(&context, &merge_sha)
+                .await
+        {
+            let incident = self
+                .open_incident(
+                    &attempt,
+                    &context,
+                    "PROJECT_BASE_UPDATE_FAILED",
+                    error.detail(),
+                )
+                .await?;
+            return Err(error.with_attempt(incident.attempt_id));
+        }
+
         let issue_outcome = match self
             .hook
             .on_merge_succeeded(&context.campaign.id, &context.candidate.id, &merge_sha)
@@ -2625,6 +2665,51 @@ impl<'a, H: DeliveryIssueHook> DeliveryService<'a, H> {
             issue_outcome,
             replayed: false,
         })
+    }
+
+    /// The protected default branch was verified to point at the exact merge
+    /// commit after a successful delivery. Advance the Project config base so a
+    /// follow-up request plans from merged main, never from the old base. A
+    /// concurrent config update is retried with its fresh revision fence; a
+    /// non-default branch or invalid config fails closed.
+    async fn advance_project_base_after_merge(
+        &self,
+        context: &DeliveryContext,
+        merge_sha: &str,
+    ) -> Result<(), DeliveryError> {
+        let mut last_conflict: Option<DeliveryError> = None;
+        for _ in 0..3 {
+            let expected_revision = match self.db.project_config(&context.project.id).await {
+                Ok(config) => config.revision,
+                Err(DbError::NotFound) => 1,
+                Err(error) => return Err(error.into()),
+            };
+            match self
+                .db
+                .advance_project_base_after_merged_delivery(
+                    &context.project.id,
+                    merge_sha,
+                    &context.binding.default_branch,
+                    expected_revision,
+                )
+                .await
+            {
+                Ok(_) => return Ok(()),
+                Err(DbError::Conflict(detail)) => {
+                    last_conflict = Some(DeliveryError::blocked(
+                        "PROJECT_BASE_UPDATE_CONFLICT",
+                        detail,
+                    ));
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Err(last_conflict.unwrap_or_else(|| {
+            DeliveryError::blocked(
+                "PROJECT_BASE_UPDATE_FAILED",
+                "the Project base could not be advanced to the merge commit",
+            )
+        }))
     }
 
     pub async fn record_manual_revert(
