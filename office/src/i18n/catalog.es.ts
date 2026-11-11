@@ -3655,6 +3655,18 @@ export const es: Catalog = {
   "director.plan.success":
     "El WorkGraph del Planner fue validado y registrado.",
   "director.plan.error": "No se pudo compilar el WorkGraph del Planner.",
+  "director.plan.assessmentRequired":
+    "Se requiere la evaluación del Lead antes de que Core pueda compilar un WorkGraph del Planner. Ejecuta la evaluación para que Core registre el plan del Lead congelado y el ActionSpec.",
+  "director.plan.leadPlanRequired":
+    "La evaluación del Lead está registrada, pero su plan congelado no está disponible. Ejecuta la evaluación para que Core congele el plan y el ActionSpec.",
+  "director.plan.actionSpecRequired":
+    "El plan del Lead está congelado, pero falta su ActionSpec ejecutable. Core no compilará un WorkGraph del Planner hasta reparar ese requisito.",
+  "director.plan.runAssessment": "Ejecutar evaluación",
+  "director.plan.assessing": "Evaluando…",
+  "director.plan.assessmentSuccess":
+    "Core registró la evaluación del Lead. Compilar plan estará disponible cuando el plan del Lead esté congelado.",
+  "director.plan.assessmentError":
+    "No se pudo ejecutar la evaluación del Lead. La proyección determinista se mantiene.",
   "director.plan.frozen":
     "Una especificación vincula este plan. Un cambio material requiere una nueva solicitud o revisión de especificación.",
   "director.planning.title": "Revisión del plan",

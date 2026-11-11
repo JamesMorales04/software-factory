@@ -3520,6 +3520,18 @@ export const en = {
   "director.plan.graphSha": "Graph SHA-256",
   "director.plan.success": "The Planner WorkGraph was validated and recorded.",
   "director.plan.error": "The Planner WorkGraph could not be compiled.",
+  "director.plan.assessmentRequired":
+    "Lead assessment is required before Core can compile a Planner WorkGraph. Run the assessment so Core records the frozen Lead plan and ActionSpec.",
+  "director.plan.leadPlanRequired":
+    "The Lead assessment is recorded but its frozen Lead plan is not available. Run the assessment so Core freezes the plan and ActionSpec.",
+  "director.plan.actionSpecRequired":
+    "The Lead plan is frozen but its executable ActionSpec is missing. Core will not compile a Planner WorkGraph until that prerequisite is repaired.",
+  "director.plan.runAssessment": "Run assessment",
+  "director.plan.assessing": "Assessing…",
+  "director.plan.assessmentSuccess":
+    "Core recorded the Lead assessment. Compile plan is now available when the Lead plan is frozen.",
+  "director.plan.assessmentError":
+    "The Lead assessment could not be run. The deterministic projection remains.",
   "director.plan.frozen":
     "A specification binds this plan. A material change requires a new request or spec revision.",
   "director.planning.title": "Plan review",

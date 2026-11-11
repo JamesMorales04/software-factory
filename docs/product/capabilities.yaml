@@ -2929,7 +2929,7 @@ capabilities:
     source: [native/src/db/agentic_operations.rs, native/src/bin/core.rs, office/src/views/Director.tsx]
     test: [native/src/db/intake.rs, office/src/views/Director.test.tsx]
   acceptance:
-    deterministic: The Director is scoped to one owner and a portfolio of Projects; each operation has one Operation Manager; the existing Integrator is not treated as a semantic supervisor; concurrent operations use separate worktrees and a priority queue; no fixed product cap replaces CPU, memory, disk, provider and worktree backpressure.
+    deterministic: The Director is scoped to one owner and a portfolio of Projects; each operation has one Operation Manager; the existing Integrator is not treated as a semantic supervisor; concurrent operations use separate worktrees and a priority queue; no fixed product cap replaces CPU, memory, disk, provider and worktree backpressure. Compile plan is gated on the recorded Lead assessment, frozen Lead plan and executable ActionSpec on every path, including requests with a stored PLAN; a missing prerequisite returns 409 ASSESSMENT_REQUIRED before any Planner model call, repair or WorkGraph write, informational requests still return PLANNER_NOT_APPLICABLE, and the Office exposes the same Core-backed assessment action with all three readiness facts.
     real: Two simultaneous browser requests are coordinated by the Director, run in separate worktrees and expose their own Operation Managers and evidence.
   evidence:
     deterministic:
