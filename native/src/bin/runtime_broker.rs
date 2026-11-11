@@ -734,7 +734,18 @@ impl App {
         // for a bounded window instead of reporting a transient digest mismatch
         // as a permanent outage. The broker still fails closed at the deadline.
         let mut last_reason = String::new();
-        for attempt in 0..24u32 {
+        for attempt in 0..120u32 {
+            // Re-read the sidecar each attempt: the one-shot bundle service may
+            // still be replacing the multi-gigabyte tar after a restart, so the
+            // digest observed at process start is not authoritative yet.
+            let runtime = load_environment_builder_runtime();
+            if runtime.status == "UNAVAILABLE" {
+                last_reason = runtime.reason;
+                if attempt < 119 {
+                    time::sleep(Duration::from_secs(5)).await;
+                }
+                continue;
+            }
             match self.import_environment_builder(&runtime).await {
                 Ok(image_id) => {
                     let ready = EnvironmentBuilderRuntime::ready(
@@ -755,7 +766,7 @@ impl App {
                 }
                 Err(reason) => {
                     last_reason = reason;
-                    if attempt < 23 {
+                    if attempt < 119 {
                         time::sleep(Duration::from_secs(5)).await;
                     }
                 }
@@ -808,6 +819,11 @@ impl App {
                 let _ = version;
                 return Ok(image_id);
             }
+            if !digest.is_empty() {
+                let _ = self
+                    .podman_output(["rmi", "--force", runtime.image.as_str()])
+                    .await;
+            }
         }
         let bundle = env::var("FACTORY_RUNTIME_ENVIRONMENT_BUILDER_BUNDLE")
             .map_err(|_| "environment-builder bundle is not configured".to_owned())?;
@@ -815,9 +831,6 @@ impl App {
         if !bundle.is_absolute() || !bundle.is_file() {
             return Err("environment-builder bundle is unavailable".into());
         }
-        // The trusted one-shot bundle service hashes the exact rootfs tar and
-        // writes the digest next to it. The imported image is labelled with that
-        // digest and its inspected ID is pinned; the broker never pulls the tag.
         let actual_digest = tokio::task::spawn_blocking({
             let bundle = bundle.clone();
             move || bundle_digest(&bundle)
@@ -2149,6 +2162,7 @@ fn has_host_root_mapping(map: &str) -> bool {
     !any
 }
 
+#[cfg(test)]
 fn bundle_digest_text(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
         .iter()
@@ -2171,7 +2185,11 @@ fn bundle_digest(path: &std::path::Path) -> Result<String, String> {
         }
         digest.update(&buffer[..read]);
     }
-    Ok(bundle_digest_text(&digest.finalize()))
+    Ok(digest
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
 }
 
 fn validate_argv(argv: &[String]) -> Result<(), String> {
@@ -4164,8 +4182,10 @@ async fn ensure_environment_store(
     let volume = ENVIRONMENT_NIX_STORE_VOLUME;
     match app.volume_labels(volume).await {
         Ok(Some(labels)) => {
-            let managed =
-                labels.get("io.software-factory.managed").map(String::as_str) == Some("true");
+            let managed = labels
+                .get("io.software-factory.managed")
+                .map(String::as_str)
+                == Some("true");
             let owner = labels.get(OWNER_LABEL).map(String::as_str) == Some("environment");
             let workspace = labels.get(WORKSPACE_LABEL).map(String::as_str) == Some("nix-store");
             if !(managed && owner && workspace) {
@@ -4434,6 +4454,7 @@ async fn run_environment_container(
         "--workdir=/cache".into(),
         "--env=HOME=/home/factory".into(),
         "--env=TMPDIR=/tmp".into(),
+        "--env=FACTORY_ENVIRONMENT_BUILDER_SHARED_STORE=1".into(),
         format!(
             "--env=FACTORY_ENVIRONMENT_BUILDER_DISK_MIB={}",
             plan.resources.disk_mib
@@ -4774,6 +4795,57 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn bundle_digest_matches_the_standard_sha256_encoding() {
+        let path =
+            std::env::temp_dir().join(format!("factory-env-bundle-known-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&path, b"abc").unwrap();
+        assert_eq!(
+            bundle_digest(&path).unwrap(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn bundle_sidecar_eventual_consistency_is_checked_after_each_attempt() {
+        let path = std::env::temp_dir().join(format!(
+            "factory-env-bundle-consistency-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let sidecar = path.with_extension("digest");
+        std::fs::write(&path, b"old tar").unwrap();
+        std::fs::write(
+            &sidecar,
+            format!("sha256:{}\n", bundle_digest(&path).unwrap()),
+        )
+        .unwrap();
+        let old = normalize_digest(&std::fs::read_to_string(&sidecar).unwrap()).unwrap();
+        assert_eq!(
+            normalize_digest(&bundle_digest(&path).unwrap()).unwrap(),
+            old
+        );
+
+        // The bundle service moves a new tar into place before the sidecar.
+        std::fs::write(&path, b"new tar").unwrap();
+        assert_ne!(
+            normalize_digest(&bundle_digest(&path).unwrap()).unwrap(),
+            old
+        );
+        std::fs::write(
+            &sidecar,
+            format!("sha256:{}\n", bundle_digest(&path).unwrap()),
+        )
+        .unwrap();
+        let new = normalize_digest(&std::fs::read_to_string(&sidecar).unwrap()).unwrap();
+        assert_eq!(
+            normalize_digest(&bundle_digest(&path).unwrap()).unwrap(),
+            new
+        );
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(sidecar);
     }
 
     #[test]

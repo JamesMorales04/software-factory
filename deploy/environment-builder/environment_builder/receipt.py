@@ -85,13 +85,13 @@ def observe_attestation(
         # credential mount.
         if target in AUTHORIZED_PROJECT_OR_CACHE_MOUNTS or target.startswith("/inputs/workspace"):
             continue
-        if any(fragment in source for fragment in FORBIDDEN_MOUNT_SOURCES):
-            no_host_mount = False
-            break
         if target == "/":
             continue
         if any(target == prefix or target.startswith(prefix + "/") for prefix in ALLOWED_MOUNT_PREFIXES):
             continue
+        if any(fragment in source for fragment in FORBIDDEN_MOUNT_SOURCES):
+            no_host_mount = False
+            break
         no_host_mount = False
         break
     no_host_socket = not any(
@@ -195,7 +195,9 @@ def build_receipt(
     attestation: dict[str, Any],
     blockers: list[dict[str, str]],
     duration_ms: int,
+    sbom_sha256: str = "",
 ) -> dict[str, Any]:
+    bound_sbom = sbom_sha256 if is_sha256(sbom_sha256) else str(spec.get("sbomSha256", ""))
     return {
         "schemaVersion": SCHEMA_VERSION,
         "receiptId": receipt_id(),
@@ -207,6 +209,7 @@ def build_receipt(
         "status": status,
         "storePath": store_path,
         "outputSha256": output_sha256 if is_sha256(output_sha256) else "",
+        "sbomSha256": bound_sbom,
         "logRef": log_ref,
         "sandboxAttestation": attestation,
         "blockers": blockers,
