@@ -13662,20 +13662,33 @@ fn openspec_change_for_plan(
                 .collect(),
         })
         .collect::<Vec<_>>();
-    let tasks = graph
-        .units
-        .iter()
-        .enumerate()
-        .map(|(index, unit)| {
+    // Every requirement must be covered by at least one task. A specification
+    // may contain more requirements than the WorkGraph has units; map tasks
+    // cyclically over the requirements and extend the task list when needed.
+    // The extra tasks reuse the last unit's scope so they cannot widen the
+    // authorized paths, and their titles bind the uncovered requirement.
+    if graph.units.is_empty() {
+        return Err("the WorkGraph has no units for OpenSpec tasks".into());
+    }
+    let task_count = graph.units.len().max(requirements.len()).max(1);
+    let requirement_count = requirements.len().max(1);
+    let tasks = (0..task_count)
+        .map(|index| {
+            let unit = &graph.units[index.min(graph.units.len().saturating_sub(1))];
             let requirement = requirements
-                .get(index.min(requirements.len().saturating_sub(1)))
+                .get(index % requirement_count)
                 .map(|requirement| requirement.id.as_str())
                 .unwrap_or("REQ-001");
             let mut acceptance = unit.acceptance.clone();
             acceptance.push(format!("Requirement: {requirement}"));
+            let title = if index < graph.units.len() {
+                unit.title.clone()
+            } else {
+                format!("{} ({requirement})", unit.title)
+            };
             OpenSpecTask {
                 id: format!("T{}", index + 1),
-                title: unit.title.clone(),
+                title,
                 paths: unit.paths.clone(),
                 acceptance,
                 evidence: evidence.to_vec(),

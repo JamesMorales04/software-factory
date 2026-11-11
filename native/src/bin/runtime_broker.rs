@@ -670,7 +670,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             tracing::info!(removed, "environment container epoch sweep finished");
         }
         Err(error) => {
-            tracing::error!(%error, "environment container epoch sweep failed");
+            tracing::error!(%error, "environment container epoch sweep failed; refusing startup");
+            return Err(error.into());
         }
     }
     app.prepare_environment_builder().await;
@@ -5340,10 +5341,21 @@ fn inspect_mounts_are_broker_managed(
             ));
         }
     }
-    if let Some(path) = object.get("ResolvConfPath").and_then(Value::as_str)
-        && !path.is_empty()
-        && !runtime_file_path_matches(path, id, "resolv.conf")
-    {
+    let network_mode = object
+        .get("HostConfig")
+        .and_then(|config| config.get("NetworkMode"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if network_mode != "none" {
+        return Err("the builder build container is not offline".to_owned());
+    }
+    let resolv = object
+        .get("ResolvConfPath")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    // A `--network=none` container has no resolv.conf mount. If the engine
+    // reports one, it must be this exact container's runtime file.
+    if !resolv.is_empty() && !runtime_file_path_matches(resolv, id, "resolv.conf") {
         return Err(
             "the builder container ResolvConfPath is not this container's runtime file".to_owned(),
         );
@@ -8131,6 +8143,7 @@ exit 1
                 "HostsPath": "/run/containers/storage/vfs-containers/__ID__/userdata/hosts",
                 "HostnamePath": "/run/containers/storage/vfs-containers/__ID__/userdata/hostname",
                 "ResolvConfPath": "",
+                "HostConfig": {"NetworkMode": "none"},
                 "Mounts": [
                     {"Type": "volume", "Name": "__WS__", "Destination": "/inputs/workspace", "RW": false},
                     {"Type": "volume", "Name": "__CACHE__", "Destination": "/cache", "RW": true},
@@ -9376,6 +9389,7 @@ exit 0
             "HostsPath": format!("/run/containers/storage/vfs-containers/{id}/userdata/hosts"),
             "HostnamePath": format!("/run/containers/storage/vfs-containers/{id}/userdata/hostname"),
             "ResolvConfPath": "",
+            "HostConfig": {"NetworkMode": "none"},
             "Mounts": [
                 {"Type": "volume", "Name": "ws", "Destination": "/inputs/workspace", "RW": false},
                 {"Type": "volume", "Name": "cache", "Destination": "/cache", "RW": true},
@@ -9383,6 +9397,23 @@ exit 0
             ]
         }]);
         inspect_mounts_are_broker_managed(&valid, "ws", "cache").unwrap();
+
+        let mut bridge = valid.clone();
+        bridge[0]["HostConfig"]["NetworkMode"] = json!("bridge");
+        assert!(inspect_mounts_are_broker_managed(&bridge, "ws", "cache").is_err());
+
+        let mut resolv = valid.clone();
+        resolv[0]["ResolvConfPath"] = json!(format!(
+            "/run/containers/storage/vfs-containers/{id}/userdata/resolv.conf"
+        ));
+        inspect_mounts_are_broker_managed(&resolv, "ws", "cache").unwrap();
+
+        let mut wrong_resolv = valid.clone();
+        wrong_resolv[0]["ResolvConfPath"] = json!(format!(
+            "/run/containers/storage/vfs-containers/{}/userdata/resolv.conf",
+            "b".repeat(64)
+        ));
+        assert!(inspect_mounts_are_broker_managed(&wrong_resolv, "ws", "cache").is_err());
 
         let mut wrong_name = valid.clone();
         wrong_name[0]["Mounts"][1]["Name"] = json!("other");
