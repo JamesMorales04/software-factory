@@ -295,6 +295,34 @@ assert_helper_failure "backup file may not be a symlink" \
 [[ ! -e "$TMP/symlink-backup-target.sqlite" ]] ||
   fail "symlinked backup entry created a target database"
 
+# A planted restore temp symlink must not overwrite its target.
+RESTORE_TMP_TARGET="$TMP/restore-tmp-target.sqlite"
+RESTORE_TMP_VICTIM="$TMP/restore-tmp-victim"
+printf 'sentinel\n' >"$RESTORE_TMP_VICTIM"
+ln -s "$RESTORE_TMP_VICTIM" "$RESTORE_TMP_TARGET.restore-tmp"
+assert_helper_failure "restore temporary path may not be a symlink" \
+  env FACTORY_TEST_DATA_RESET=1 python3 "$HELPER" \
+  --database "$RESTORE_TMP_TARGET" \
+  --evidence-dir "$TMP/restore-tmp-evidence" \
+  --project wp6-test --confirmed-project wp6-test \
+  --restore-from "$RUN_EVIDENCE"
+[[ "$(cat "$RESTORE_TMP_VICTIM")" == "sentinel" ]] ||
+  fail "restore temp symlink overwrote its target"
+[[ ! -e "$RESTORE_TMP_TARGET" ]] ||
+  fail "restore temp symlink created the destination database"
+
+# A stale regular restore temp file is removed safely and restore proceeds.
+STALE_TEMP_TARGET="$TMP/stale-temp-target.sqlite"
+printf 'stale temp\n' >"$STALE_TEMP_TARGET.restore-tmp"
+env FACTORY_TEST_DATA_RESET=1 python3 "$HELPER" \
+  --database "$STALE_TEMP_TARGET" \
+  --evidence-dir "$TMP/stale-temp-evidence" \
+  --project wp6-test --confirmed-project wp6-test \
+  --restore-from "$RUN_EVIDENCE" >/dev/null
+assert_count "$STALE_TEMP_TARGET" campaigns 1
+[[ ! -e "$STALE_TEMP_TARGET.restore-tmp" ]] ||
+  fail "stale restore temp file was not cleaned up"
+
 # --- post-commit integrity failure auto-restores ---------------------------
 INTEGRITY="$TMP/integrity.sqlite"
 cp "$MASTER" "$INTEGRITY"

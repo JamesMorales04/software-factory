@@ -25,6 +25,7 @@ import shutil
 import sqlite3
 import stat
 import sys
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -350,23 +351,30 @@ def validate_database_inputs(database: Path, required: bool) -> None:
 
 
 def sha256_file(path: Path) -> tuple[str, int]:
-    if path.is_symlink():
-        raise ResetError(f"refusing to hash a symlink: {path}")
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     digest = hashlib.sha256()
     size = 0
-    with path.open("rb") as handle:
+    with os.fdopen(descriptor, "rb") as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            raise ResetError(f"refusing to hash a non-regular file: {path}")
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
             size += len(chunk)
     return digest.hexdigest(), size
 
 
-def copy_and_hash(source: Path, destination: Path) -> dict[str, object]:
-    validate_regular_file(source, "backup source", required=True)
+def copy_regular_file(
+    source: Path,
+    destination: Path,
+    source_label: str = "backup source",
+    destination_label: str = "backup destination",
+) -> None:
+    """Copy one regular file to a new regular file without following links."""
+    validate_regular_file(source, source_label, required=True)
     source_fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
     try:
         if not stat.S_ISREG(os.fstat(source_fd).st_mode):
-            raise ResetError(f"backup source is not a regular file: {source}")
+            raise ResetError(f"{source_label} is not a regular file: {source}")
         source_handle = os.fdopen(source_fd, "rb")
         source_fd = -1
         with source_handle:
@@ -381,17 +389,72 @@ def copy_and_hash(source: Path, destination: Path) -> dict[str, object]:
         if source_fd != -1:
             os.close(source_fd)
     if destination.is_symlink() or not stat.S_ISREG(destination.lstat().st_mode):
-        raise ResetError(f"backup destination is not a regular file: {destination}")
+        raise ResetError(f"{destination_label} is not a regular file: {destination}")
     os.chmod(destination, 0o600)
+
+
+def copy_and_hash(source: Path, destination: Path) -> dict[str, object]:
+    copy_regular_file(source, destination)
     digest, size = sha256_file(destination)
     return {"sha256": digest, "bytes": size}
 
 
+def secure_restore_copy(source: Path, destination: Path) -> None:
+    """Replace one restore destination through a non-following temporary file."""
+    validate_regular_file(source, "backup file", required=True)
+    temporary = destination.with_name(destination.name + ".restore-tmp")
+    if temporary.is_symlink():
+        raise ResetError(f"restore temporary path may not be a symlink: {temporary}")
+    if temporary.exists():
+        if not stat.S_ISREG(temporary.lstat().st_mode):
+            raise ResetError(
+                f"restore temporary path must be a regular file: {temporary}"
+            )
+        os.unlink(temporary)
+    try:
+        copy_regular_file(source, temporary, "backup file", "restore temporary file")
+        os.replace(temporary, destination)
+    except Exception:
+        if temporary.is_symlink() or temporary.exists():
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+        raise
+    if destination.is_symlink() or not stat.S_ISREG(destination.lstat().st_mode):
+        try:
+            os.unlink(destination)
+        except OSError:
+            pass
+        raise ResetError(f"restore destination is not a regular file: {destination}")
+
+
 def write_json(path: Path, payload: dict[str, object]) -> None:
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
-    os.chmod(temporary, 0o600)
-    temporary.replace(path)
+    serialized = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w") as handle:
+            handle.write(serialized)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    except Exception:
+        if temporary.is_symlink() or temporary.exists():
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+        raise
+    if path.is_symlink() or not stat.S_ISREG(path.lstat().st_mode):
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        raise ResetError(f"JSON report destination is not a regular file: {path}")
 
 
 def ensure_empty_directory(path: Path) -> None:
@@ -606,10 +669,7 @@ def restore_database(
             destination = Path(str(database) + "-shm")
         else:
             raise ResetError(f"unexpected backup file: {name}")
-        temporary = destination.with_name(destination.name + ".restore-tmp")
-        shutil.copy2(safe_backup_path(backup, name), temporary, follow_symlinks=False)
-        os.chmod(temporary, 0o600)
-        temporary.replace(destination)
+        secure_restore_copy(safe_backup_path(backup, name), destination)
     connection = connect(database)
     try:
         integrity = connection.execute("PRAGMA integrity_check").fetchone()

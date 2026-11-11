@@ -151,7 +151,10 @@ The script verifies `SHA256SUMS`, accepts only the exact names
 separators, `..`, absolute paths, symlinks and unknown sidecars, backs up the
 current database into a new empty evidence directory, removes stale WAL/SHM
 files, restores the main database and any WAL from the backup, then runs
-integrity and foreign-key checks:
+integrity and foreign-key checks. Restore files are written through a
+`*.restore-tmp` path created with exclusive/no-follow semantics; a pre-existing
+regular temp file is removed, while a planted temp symlink is refused without
+touching its target:
 
 ```sh
 FACTORY_TEST_DATA_RESET=1 scripts/reset-test-data.sh \
@@ -183,8 +186,8 @@ transactional rows (including immutable-delete triggers and an
 symlinked database/sidecar refusal, dry-run rollback, backup checksums, reset
 cutover, trigger restoration, restored integrity, corrupt-backup refusal,
 duplicate-checksum and path-traversal refusal, symlinked backup refusal,
-automatic restore after an injected post-commit integrity failure, and
-automatic restore after a simulated Core health failure. The health-failure
+restore-temp symlink refusal, automatic restore after an injected post-commit
+integrity failure, and automatic restore after a simulated Core health failure. The health-failure
 case uses a fake `podman` shim, a temporary database/volume directory and
 reduced health-probe attempts; it never starts Compose, reads `/data`, or calls
 a paid provider.
