@@ -15243,6 +15243,40 @@ async fn get_agentic_spec(
     .into_response()
 }
 
+fn validate_spec_unit_mapping(
+    frozen: &factory_native::agentic::FrozenSpec,
+    graph: &factory_native::agentic::ValidatedWorkGraph,
+) -> Result<(), String> {
+    let unit_ids = graph
+        .units
+        .iter()
+        .map(|unit| unit.id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    for requirement in &frozen.requirements {
+        if requirement.work_unit_id.is_empty()
+            || !unit_ids.contains(requirement.work_unit_id.as_str())
+        {
+            return Err(format!(
+                "requirement {} must bind an exact WorkGraph unit id",
+                requirement.id
+            ));
+        }
+    }
+    for unit in &graph.units {
+        if !frozen
+            .requirements
+            .iter()
+            .any(|requirement| requirement.work_unit_id == unit.id)
+        {
+            return Err(format!(
+                "WorkGraph unit {} is not covered by any requirement",
+                unit.id
+            ));
+        }
+    }
+    Ok(())
+}
+
 async fn author_agentic_spec(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
@@ -15368,46 +15402,12 @@ JSON Schema:
                 .into_response();
         }
     };
-    let unit_ids = graph
-        .units
-        .iter()
-        .map(|unit| unit.id.as_str())
-        .collect::<std::collections::BTreeSet<_>>();
-    for requirement in &frozen.requirements {
-        if requirement.work_unit_id.is_empty()
-            || !unit_ids.contains(requirement.work_unit_id.as_str())
-        {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "error": format!(
-                        "requirement {} must bind an exact WorkGraph unit id",
-                        requirement.id
-                    ),
-                    "code": "AGENTIC_SPEC_INVALID",
-                })),
-            )
-                .into_response();
-        }
-    }
-    for unit in &graph.units {
-        if !frozen
-            .requirements
-            .iter()
-            .any(|requirement| requirement.work_unit_id == unit.id)
-        {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "error": format!(
-                        "WorkGraph unit {} is not covered by any requirement",
-                        unit.id
-                    ),
-                    "code": "AGENTIC_SPEC_INVALID",
-                })),
-            )
-                .into_response();
-        }
+    if let Err(error) = validate_spec_unit_mapping(&frozen, &graph) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": error, "code": "AGENTIC_SPEC_INVALID"})),
+        )
+            .into_response();
     }
     let draft_json = match serde_json::to_string(&draft) {
         Ok(json) => json,
@@ -15524,6 +15524,16 @@ async fn freeze_agentic_spec(
                 .into_response();
         }
     };
+    // The freeze path recompiles the stored draft, including legacy drafts
+    // that predate the explicit mapping. Reapply the same membership and
+    // coverage checks so an unmapped draft can never be frozen.
+    if let Err(error) = validate_spec_unit_mapping(&frozen, &graph) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": error, "code": "AGENTIC_SPEC_INVALID"})),
+        )
+            .into_response();
+    }
     if frozen.spec_sha256 != input.expected_spec_sha256 {
         return agentic_conflict(
             "SPEC_REVISION_CHANGED",
