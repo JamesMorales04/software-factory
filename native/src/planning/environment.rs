@@ -2142,7 +2142,13 @@ fn validate_generated_nix(path: &str, content: &str) -> Result<(), EnvironmentEr
         "builtins.getenv",
         "fetchgit",
         "fetchtarball",
-        "cachix",
+        // The pinned open-source devenv and git-hooks flakes are hosted in
+        // the `cachix` GitHub organization. That is not a Cachix account,
+        // token or paid cache; only those credential/hosted constructs are
+        // refused here.
+        "cachix authtoken",
+        "cachix login",
+        "cachix_auth_token",
         "devenv.sh/cloud",
         "/var/run/docker.sock",
         "/run/podman/podman.sock",
@@ -4726,6 +4732,34 @@ mod tests {
         })
         .unwrap_err();
         assert_eq!(error.code, EnvironmentBlockerCode::EnvironmentSandboxDenied);
+    }
+
+    #[test]
+    fn generated_files_allow_pinned_devenv_input_but_reject_cachix_credentials() {
+        let lock = r#"{"nodes":{"devenv":{"locked":{"owner":"cachix","repo":"devenv","rev":"622870a7de39fde2bba604c39612d145af90198a","type":"github"}},"git-hooks":{"locked":{"owner":"cachix","repo":"git-hooks.nix","rev":"204b6977e00caac19e2313015a598543ca7be150","type":"github"}}},"root":"devenv"}"#;
+        assert!(validate_generated_nix("devenv.lock", lock).is_ok());
+        // The public devenv binary cache remains an optional performance
+        // input; it is not an account or a paid service.
+        assert!(
+            validate_generated_nix(
+                "devenv.nix",
+                "{ substituters = [ \"https://devenv.cachix.org\" ]; }\n",
+            )
+            .is_ok()
+        );
+
+        for content in [
+            "cachix authtoken abcdef",
+            "cachix login example",
+            "CACHIX_AUTH_TOKEN=abcdef",
+        ] {
+            let error = validate_generated_nix("devenv.nix", content).unwrap_err();
+            assert_eq!(
+                error.code,
+                EnvironmentBlockerCode::EnvironmentSandboxDenied,
+                "{content}"
+            );
+        }
     }
 
     #[test]
