@@ -1,0 +1,13 @@
+$ devenv shell --offline -- true
+Building shell in 4.63s
+Entering shell
+Running tasks     devenv:enterShell
+
+Running           devenv:files:cleanup
+Succeeded         devenv:files:cleanup (8.05ms)
+Running           devenv:enterShell
+Succeeded         devenv:enterShell (10.35ms)
+Running           devenv:enterTest
+No command        devenv:enterTest
+1 Skipped, 2 Succeeded
+✨ devenv 1.11.2 is out of date. Please update to 2.4.0: https://devenv.sh/getting-started/#installation

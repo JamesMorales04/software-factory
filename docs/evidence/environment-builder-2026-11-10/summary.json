@@ -1,0 +1,181 @@
+{
+  "baseline": "05c78b2",
+  "candidateBranch": "feat/environment-builder",
+  "coreInterfaceCommit": "e9be02c",
+  "deterministic": {
+    "bashSyntax": "PASS",
+    "gitDiffCheck": "PASS",
+    "pyCompile": "PASS",
+    "unitTests": {
+      "command": "python3 -m unittest discover -s deploy/environment-builder/tests -v",
+      "count": 32,
+      "status": "PASS"
+    }
+  },
+  "finalImage": {
+    "containerfile": "deploy/environment-builder/Containerfile",
+    "descriptor": {
+      "builderStatus": "READY",
+      "platform": "x86_64-linux",
+      "status": "PASS"
+    },
+    "image": "localhost/software-factory-environment-builder:wp1b-340fa54-r3",
+    "imageDigest": "sha256:8f7693fcdc1298bf4cc96190631ece69c13561a14533d8006cb707ba8c867cd7",
+    "imageId": "sha256:fc2f984cc02aa7a91f5a59426b23e814ae64e798e7d1972758993e08595fe836",
+    "selfTest": {
+      "chromiumVersion": "143.0.7499.169",
+      "devenvVersion": "1.11.2",
+      "nixVersion": "2.28.3",
+      "nodeVersion": "22.20.0",
+      "status": "PASS"
+    },
+    "size": "6.44 GB",
+    "tagPolicy": "unique WP1-B evidence tag; the shared :dev tag belongs to the WP1-C Compose bundle"
+  },
+  "notTested": [
+    "deploy/factory-browser/Containerfile build and its Chromium launch",
+    "registry publication and registry-manifest digest pinning",
+    "Compose/runtime-broker invocation of the builder image",
+    "final Compose bundle rebuild of the same Containerfile under its own digest",
+    "check under the product Core authorization/Gate path",
+    "independent verification or acceptance",
+    "exact disk quota enforcement (post-hoc du bound only; disk.exact=false)"
+  ],
+  "paidInference": false,
+  "positiveAcceptance": {
+    "build": {
+      "durationMs": 5304,
+      "outputSha256": "12dfb45e5adf93454e35c846472d8101d7a52eec0438aaa95e867636f7f7c23a",
+      "status": "SUCCEEDED"
+    },
+    "builderImage": "localhost/software-factory-environment-builder:wp1b-340fa54-r3",
+    "builderImageDigest": "sha256:8f7693fcdc1298bf4cc96190631ece69c13561a14533d8006cb707ba8c867cd7",
+    "closureEntries": 481,
+    "disk": {
+      "enforcement": "POST_HOC_DU",
+      "exact": false,
+      "exceeded": false,
+      "observedKiB": 9978060,
+      "observedMiB": 9744.199,
+      "planDiskMiB": 10240
+    },
+    "fetch": {
+      "buildNetwork": "none",
+      "closureManifestSha256": "d576d49fb1a52d1fcf15b1a4f7561bfced46a79fce2e8a2c32562c3ba561747d",
+      "environmentDigest": "5bcadda94a65c2516f97d731c141c58a472e4654e549f8fac26af7c647dc043b",
+      "fetchDurationMs": 150198,
+      "fetchResultSpecSha256": "cb365859f1f8bcb7cadedfe8f3188d7aa57e0dd8768cfbcfbc82e79a7add7d85",
+      "fetchSpecSha256": "cb365859f1f8bcb7cadedfe8f3188d7aa57e0dd8768cfbcfbc82e79a7add7d85",
+      "network": "factory-egress-internal",
+      "networkInternalVerified": true,
+      "proxyEnforced": true,
+      "proxySha256": "66d31ec13fdf23ae35ba3eb75b31f1986104d47c037a1c1405f68329027d353d"
+    },
+    "nodePlaywrightCheck": {
+      "detail": "real Chromium launch; tests/smoke.spec.mjs passed",
+      "durationMs": 9742,
+      "exitCode": 0,
+      "status": "PASSED"
+    },
+    "rustCheck": {
+      "detail": "cargo test --offline; wp0_rust_spike unit test passed",
+      "durationMs": 5681,
+      "exitCode": 0,
+      "status": "PASSED"
+    },
+    "sandboxAttestation": {
+      "boundedResources": true,
+      "impure": false,
+      "noHostMount": true,
+      "noHostNetwork": true,
+      "noHostSocket": true,
+      "noSecrets": true,
+      "nonRoot": true,
+      "sandbox": true
+    },
+    "sbom": {
+      "cycloneDxDocumentSha256": "0a587c2adf5e1446c8faa46240691ae82c750eb2d66cc604ded92aa35cc18945",
+      "frozenSbomSha256": "5f2a9b5b3ec0d7dbfea7c890af8fbb0f1ef267b3f26bf6b0c0a195fb3521539e",
+      "matchesFrozenSpec": true
+    },
+    "signatureVerification": {
+      "enabled": true,
+      "requireSigsDisabled": false,
+      "trustedKeys": [
+        "cache.nixos.org-1",
+        "devenv.cachix.org-1"
+      ]
+    },
+    "specSha256": "cb365859f1f8bcb7cadedfe8f3188d7aa57e0dd8768cfbcfbc82e79a7add7d85",
+    "storePath": "/nix/store/c2nf1xssr9jvifvw55v4dpf1hnp1qk5g-devenv-shell-env",
+    "warmRepeat": {
+      "durationMs": 6702,
+      "outputSha256": "12dfb45e5adf93454e35c846472d8101d7a52eec0438aaa95e867636f7f7c23a",
+      "status": "SUCCEEDED"
+    }
+  },
+  "schemaVersion": 1,
+  "security": "TRUSTED_LOCAL",
+  "typedFailures": [
+    {
+      "case": "missing image or digest",
+      "code": "ENVIRONMENT_BUILDER_UNAVAILABLE",
+      "exitCode": 2,
+      "status": "PASS"
+    },
+    {
+      "case": "configured digest does not match inspected image",
+      "code": "ENVIRONMENT_HASH_MISMATCH",
+      "exitCode": 2,
+      "status": "PASS"
+    },
+    {
+      "case": "denied license",
+      "code": "ENVIRONMENT_LICENSE_DENIED",
+      "exitCode": 2,
+      "status": "PASS"
+    },
+    {
+      "case": "build network not NONE",
+      "code": "ENVIRONMENT_NETWORK_DENIED",
+      "exitCode": 2,
+      "status": "PASS"
+    },
+    {
+      "case": "fetch network host",
+      "code": "ENVIRONMENT_NETWORK_DENIED",
+      "exitCode": 2,
+      "status": "PASS"
+    },
+    {
+      "case": "non-none fetch network without proxy",
+      "code": "ENVIRONMENT_NETWORK_DENIED",
+      "exitCode": 2,
+      "status": "PASS"
+    },
+    {
+      "case": "non-internal fetch network",
+      "code": "ENVIRONMENT_NETWORK_DENIED",
+      "exitCode": 2,
+      "status": "PASS"
+    },
+    {
+      "case": "CPU bound outside policy",
+      "code": "ENVIRONMENT_RESOURCE_LIMIT",
+      "exitCode": 2,
+      "status": "PASS"
+    },
+    {
+      "case": "offline build with empty store cache",
+      "code": "ENVIRONMENT_NETWORK_DENIED",
+      "exitCode": 2,
+      "status": "PASS"
+    }
+  ],
+  "versionCoordination": {
+    "action": "Core must set FACTORY_ENVIRONMENT_DEVENV_VERSION=1.11.2 or the image must be rebuilt for 1.10.0; the builder fails ENVIRONMENT_HASH_MISMATCH on mismatch",
+    "builderDevenvVersion": "1.11.2",
+    "builderNixVersion": "2.28.3",
+    "coreDefaultDevenvVersionAtE9be02c": "1.10.0"
+  }
+}

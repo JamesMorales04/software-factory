@@ -1,0 +1,99 @@
+# Software Factory Nix/devenv environment builder.
+#
+# One generic builder compiles any project EnvironmentSpec. It contains Nix,
+# devenv, Node 22, npm, Rust, Python (for this entrypoint), Chromium/Playwright
+# and common system tools. It is NOT a per-language catalog: the frozen plan
+# decides which tools the project environment exposes.
+#
+# Security: TRUSTED_LOCAL. Generated Nix/devenv files are untrusted input. The
+# host wrapper must run this image non-root with --network none for the build
+# phase, no host socket, no host credentials and bounded CPU/memory/PIDs/time.
+# A container is not isolation certification.
+
+ARG NIX_IMAGE=docker.io/nixos/nix:2.28.3@sha256:d078d7153763895fce17c5fbbdeb86fcfcac414ca0ba875d413c1df57be19931
+ARG NIXPKGS_REV=ac62194c3917d5f474c1a844b6fd6da2db95077d
+
+FROM ${NIX_IMAGE}
+
+ARG NIXPKGS_REV
+ARG DEVENV_VERSION=1.11.2
+
+LABEL org.opencontainers.image.title="software-factory-environment-builder" \
+      org.opencontainers.image.description="Generic Nix/devenv project environment builder and check runtime" \
+      org.opencontainers.image.version="1" \
+      io.software-factory.builder.policy-revision="nix-devenv-environment-v1" \
+      io.software-factory.devenv.version="${DEVENV_VERSION}" \
+      io.software-factory.nix.version="2.28.3" \
+      io.software-factory.platform="x86_64-linux"
+
+RUN printf 'factory:x:10001:10001:Factory Builder:/home/factory:/bin/sh\n' >> /etc/passwd \
+    && printf 'factory:x:10001:\n' >> /etc/group \
+    && mkdir -p /home/factory /opt \
+    && chown -R 10001:10001 /nix /home/factory /opt
+
+USER 10001:10001
+ENV HOME=/home/factory \
+    NIX_CONFIG="experimental-features = nix-command flakes" \
+    PATH=/home/factory/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Generic, pinned toolchain. Node/Rust versions a project actually uses come
+# from its frozen devenv/flake inputs; these are warm-cache defaults and the
+# entrypoint/runtime itself. Every package is fetched from cache.nixos.org.
+RUN nix profile install --profile /home/factory/.nix-profile \
+      github:NixOS/nixpkgs/${NIXPKGS_REV}#devenv \
+      github:NixOS/nixpkgs/${NIXPKGS_REV}#nodejs_22 \
+      github:NixOS/nixpkgs/${NIXPKGS_REV}#python3 \
+      github:NixOS/nixpkgs/${NIXPKGS_REV}#rustc \
+      github:NixOS/nixpkgs/${NIXPKGS_REV}#cargo \
+      github:NixOS/nixpkgs/${NIXPKGS_REV}#rustfmt \
+      github:NixOS/nixpkgs/${NIXPKGS_REV}#clippy \
+      github:NixOS/nixpkgs/${NIXPKGS_REV}#git \
+      github:NixOS/nixpkgs/${NIXPKGS_REV}#gnumake \
+      github:NixOS/nixpkgs/${NIXPKGS_REV}#gcc \
+      github:NixOS/nixpkgs/${NIXPKGS_REV}#pkg-config \
+      github:NixOS/nixpkgs/${NIXPKGS_REV}#bash \
+      github:NixOS/nixpkgs/${NIXPKGS_REV}#coreutils \
+      github:NixOS/nixpkgs/${NIXPKGS_REV}#findutils \
+      github:NixOS/nixpkgs/${NIXPKGS_REV}#diffutils \
+      github:NixOS/nixpkgs/${NIXPKGS_REV}#util-linux \
+      github:NixOS/nixpkgs/${NIXPKGS_REV}#procps \
+      github:NixOS/nixpkgs/${NIXPKGS_REV}#which \
+      github:NixOS/nixpkgs/${NIXPKGS_REV}#gnutar \
+      github:NixOS/nixpkgs/${NIXPKGS_REV}#gzip \
+      github:NixOS/nixpkgs/${NIXPKGS_REV}#xz \
+      github:NixOS/nixpkgs/${NIXPKGS_REV}#zstd \
+      github:NixOS/nixpkgs/${NIXPKGS_REV}#jq \
+      github:NixOS/nixpkgs/${NIXPKGS_REV}#cacert \
+      github:NixOS/nixpkgs/${NIXPKGS_REV}#chromium \
+      github:NixOS/nixpkgs/${NIXPKGS_REV}#sbomnix \
+    && devenv --version \
+    && node --version \
+    && npm --version \
+    && cargo --version \
+    && python3 --version
+
+# Chromium is the generic browser runtime. Project Playwright environments
+# still provide their own matching playwright-driver browsers from the frozen
+# plan; this binary is only the Factory-owned runner target.
+RUN test -x /home/factory/.nix-profile/bin/chromium \
+    && chromium --version
+
+# Fixed Factory browser runner. The project's own Playwright/Node dependencies
+# are still provided by the frozen EnvironmentPlan; this copy is only the
+# Factory-owned runner used for browser checks.
+COPY --chown=10001:10001 office/e2e-browser/package.json office/e2e-browser/package-lock.json /opt/factory-browser/
+RUN cd /opt/factory-browser \
+    && npm ci --no-audit --no-fund \
+    && test -d /opt/factory-browser/node_modules/playwright-core
+
+ENV FACTORY_PLAYWRIGHT_CORE=/opt/factory-browser/node_modules/playwright-core \
+    CHROMIUM_EXE=/home/factory/.nix-profile/bin/chromium \
+    PYTHONDONTWRITEBYTECODE=1
+
+COPY --chown=10001:10001 deploy/environment-builder /opt/factory-environment-builder
+RUN chmod 0755 /opt/factory-environment-builder/entrypoint.py
+
+VOLUME ["/cache"]
+WORKDIR /cache
+ENTRYPOINT ["/opt/factory-environment-builder/entrypoint.py"]
+STOPSIGNAL SIGTERM
