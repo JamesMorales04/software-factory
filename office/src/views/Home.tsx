@@ -654,6 +654,7 @@ export function Home() {
                         ...current,
                         environmentConstraints: undefined,
                       }));
+                      resetRequestKey();
                     }}
                     placeholder={
                       '{\n  "nixpkgs": "github:NixOS/nixpkgs/<revision>",\n  "packages": []\n}'
