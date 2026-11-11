@@ -1,12 +1,12 @@
 $ devenv shell --offline -- true
-Building shell in 6.11s
+Building shell in 4.63s
 Entering shell
 Running tasks     devenv:enterShell
 
 Running           devenv:files:cleanup
-Succeeded         devenv:files:cleanup (20.80ms)
+Succeeded         devenv:files:cleanup (8.05ms)
 Running           devenv:enterShell
-Succeeded         devenv:enterShell (12.87ms)
+Succeeded         devenv:enterShell (10.35ms)
 Running           devenv:enterTest
 No command        devenv:enterTest
 1 Skipped, 2 Succeeded

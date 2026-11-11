@@ -1,31 +1,31 @@
 $ devenv shell --offline -- true
-Building shell in 5.45s
+Building shell in 4.36s
 Entering shell
 Running tasks     devenv:enterShell
 
 Running           devenv:files:cleanup
-Succeeded         devenv:files:cleanup (8.24ms)
+Succeeded         devenv:files:cleanup (8.13ms)
 Running           devenv:enterShell
-Succeeded         devenv:enterShell (11.01ms)
+Succeeded         devenv:enterShell (10.81ms)
 Running           devenv:enterTest
 No command        devenv:enterTest
 1 Skipped, 2 Succeeded
 ✨ devenv 1.11.2 is out of date. Please update to 2.4.0: https://devenv.sh/getting-started/#installation
 $ devenv shell --offline -- env -C /cache/workspace/projects/rust cargo test --offline
-Building shell in 87.7ms
+Building shell in 31.0ms
 Entering shell
 Running tasks     devenv:enterShell
 
 Running           devenv:files:cleanup
-Succeeded         devenv:files:cleanup (10.38ms)
+Succeeded         devenv:files:cleanup (8.30ms)
 Running           devenv:enterShell
-Succeeded         devenv:enterShell (15.64ms)
+Succeeded         devenv:enterShell (10.39ms)
 Running           devenv:enterTest
 No command        devenv:enterTest
 1 Skipped, 2 Succeeded
 ✨ devenv 1.11.2 is out of date. Please update to 2.4.0: https://devenv.sh/getting-started/#installation
    Compiling wp0-rust-spike v0.1.0 (/cache/workspace/projects/rust)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.89s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.62s
      Running unittests src/lib.rs (target/debug/deps/wp0_rust_spike-fdc9e33aa5fe8dde)
 
 running 1 test

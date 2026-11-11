@@ -10778,16 +10778,16 @@
   ],
   "metadata": {
     "component": {
-      "bom-ref": "spec:e059527402146c560851ad350708b7aa9a8e63835c26b7affdef89efc6e6fb9e",
+      "bom-ref": "spec:cb365859f1f8bcb7cadedfe8f3188d7aa57e0dd8768cfbcfbc82e79a7add7d85",
       "name": "factory-environment",
       "properties": [
         {
           "name": "factory:spec-sha256",
-          "value": "e059527402146c560851ad350708b7aa9a8e63835c26b7affdef89efc6e6fb9e"
+          "value": "cb365859f1f8bcb7cadedfe8f3188d7aa57e0dd8768cfbcfbc82e79a7add7d85"
         },
         {
           "name": "factory:plan-sha256",
-          "value": "fde0be35a2fa3bf8222758131a390ecb7475e4699a3cc1f395e073140c3674da"
+          "value": "694f8cdc14adddca30e8ac3d5ce4aa2f387515bf0e90571e121cf678bbbec93d"
         },
         {
           "name": "factory:nix-version",
@@ -10807,7 +10807,7 @@
         }
       ],
       "type": "application",
-      "version": "e05952740214"
+      "version": "cb365859f1f8"
     },
     "timestamp": "2026-11-10T00:00:00Z",
     "tools": {
@@ -10820,7 +10820,7 @@
       ]
     }
   },
-  "serialNumber": "urn:uuid:9ebaf7d2-bc92-5083-9d14-79328180251a",
+  "serialNumber": "urn:uuid:fe9689b7-b903-57a1-b24c-ead57f399086",
   "specVersion": "1.5",
   "version": 1
 }

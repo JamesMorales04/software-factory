@@ -8,9 +8,9 @@ was used.
 This record separates what actually ran from what did not. The positive
 environment build used the final `deploy/environment-builder/Containerfile`
 image under the unique WP1-B tag
-`localhost/software-factory-environment-builder:wp1b-eb2ebb1-r2`
-(`sha256:081a092764f484ef3ee0fcb2e8de39b4dbdc8ee626f92bb8751d1fdb88180109`,
-image ID `sha256:708a09d5…`). It is a real rootless Podman image run with a
+`localhost/software-factory-environment-builder:wp1b-340fa54-r3`
+(`sha256:8f7693fcdc1298bf4cc96190631ece69c13561a14533d8006cb707ba8c867cd7`,
+image ID `sha256:fc2f984c…`). It is a real rootless Podman image run with a
 verified image identity, not a mock. The shared `:dev` tag belongs to the
 WP1-C Compose bundle and was not overwritten by this evidence run.
 
@@ -20,7 +20,7 @@ WP1-C Compose bundle and was not overwritten by this evidence run.
 |---|---|
 | `python3 -m py_compile deploy/environment-builder/entrypoint.py deploy/environment-builder/environment_builder/*.py scripts/environment-builder-fixture.py scripts/environment-builder-path-policy.py scripts/environment-builder-disk-policy.py` | PASS |
 | `bash -n scripts/environment-builder.sh` | PASS |
-| `python3 -m unittest discover -s deploy/environment-builder/tests -v` | PASS — 28 tests |
+| `python3 -m unittest discover -s deploy/environment-builder/tests -v` | PASS — 31 tests |
 | `git diff --check` | PASS |
 
 Covered: secret-shaped file rejection, `builtins.exec`, unpinned fetch,
@@ -28,14 +28,15 @@ pinned fetch acceptance, unknown/denied license, unfree without/with exact
 override, network policy, sandbox policy, resource bounds, argv checks, receipt
 binding, failed receipt blockers, exact cgroup CPU/memory/PID bounds, fetch
 network/proxy/allowlist enforcement, protected cache/workspace descendants,
-symlink/`..` escapes, disk-overflow success-artifact purge, deterministic
-CycloneDX SBOM, transitive `NOASSERTION`, SBOM-to-frozen-spec binding, and the
-Core-shaped license inventory.
+symlink/`..` escapes, rootful-Podman rejection, disk-overflow success-artifact
+purge, wrapper nonzero-exit cleanup, deterministic CycloneDX SBOM, transitive
+`NOASSERTION`, SBOM-to-frozen-spec binding, and the Core-shaped license
+inventory.
 
 ## 2. Positive Node+Playwright and Rust acceptance
 
-Spec hash: `e059527402146c560851ad350708b7aa9a8e63835c26b7affdef89efc6e6fb9e`.
-Builder image: `localhost/software-factory-environment-builder:wp1b-eb2ebb1-r2@sha256:081a092764f484ef3ee0fcb2e8de39b4dbdc8ee626f92bb8751d1fdb88180109`.
+Spec hash: `cb365859f1f8bcb7cadedfe8f3188d7aa57e0dd8768cfbcfbc82e79a7add7d85`.
+Builder image: `localhost/software-factory-environment-builder:wp1b-340fa54-r3@sha256:8f7693fcdc1298bf4cc96190631ece69c13561a14533d8006cb707ba8c867cd7`.
 This is the WP1-B builder-image evidence tag, not the shared `:dev` tag used by
 the WP1-C Compose bundle. The final Compose integration must rebuild this same
 `deploy/environment-builder/Containerfile` under its own digest and validate
@@ -47,13 +48,13 @@ Closure entries: 481.
 |---|---|
 | Final image build | `PASS`; 6.44 GB; Nix 2.28.3, devenv 1.11.2, Node 22.20.0, Chromium 143.0.7499.169 |
 | Descriptor / self-test | `PASS`; `READY`; exact image digest |
-| Offline build receipt | `SUCCEEDED`; `outputSha256=b0d8a767b2f415b5642531703d2db366338443a05b256bdec6c5ae5d3afe55dd`; 6 932 ms |
-| Warm repeat build | `SUCCEEDED`; same spec and same `outputSha256`; 6 143 ms |
-| Node + Playwright check (`npm test`, real Chromium) | `PASSED`; exit 0; 10 036 ms |
-| Rust check (`cargo test --offline`) | `PASSED`; exit 0; 7 647 ms |
+| Offline build receipt | `SUCCEEDED`; `outputSha256=12dfb45e5adf93454e35c846472d8101d7a52eec0438aaa95e867636f7f7c23a`; 5 304 ms |
+| Warm repeat build | `SUCCEEDED`; same spec and same `outputSha256`; 6 702 ms |
+| Node + Playwright check (`npm test`, real Chromium) | `PASSED`; exit 0; 9 742 ms |
+| Rust check (`cargo test --offline`) | `PASSED`; exit 0; 5 681 ms |
 | Sandbox attestation | complete: non-root, no secrets, no host network/socket/mount, Nix sandbox, pure, bounded resources |
 | Frozen SBOM hash | `5f2a9b5b3ec0d7dbfea7c890af8fbb0f1ef267b3f26bf6b0c0a195fb3521539e` |
-| CycloneDX document hash | `f1e014e2c5a82d88de687a5f8dafae4169b00ff306dce4633d918635047da2ba` |
+| CycloneDX document hash | `0a587c2adf5e1446c8faa46240691ae82c750eb2d66cc604ded92aa35cc18945` |
 | SBOM matches frozen spec | `true` |
 
 The Node check log contains a real Playwright run: `1 passed` for
@@ -61,7 +62,7 @@ The Node check log contains a real Playwright run: `1 passed` for
 `wp0_rust_spike` unit test.
 
 The exact included fetch artifact is `fetch-result.json` for spec
-`e0595274…` with `fetch-request.json` (fetch duration 126 761 ms); it used the approved internal broker
+`cb365859…` with `fetch-request.json` (fetch duration 150 198 ms; environment digest `5bcadda9…`, closure manifest hash `d576d49f…`); it used the approved internal broker
 network (`factory-egress-internal`) and a deny-by-default HTTP CONNECT proxy
 that allowed only the frozen plan destinations (`cache.nixos.org`,
 `devenv.cachix.org`, GitHub, npm, crates.io/rust static hosts). The build and

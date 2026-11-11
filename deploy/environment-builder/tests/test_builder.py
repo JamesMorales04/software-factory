@@ -30,6 +30,7 @@ from environment_builder.policy import (  # noqa: E402
     validate_sbom_binding,
     validate_secrets,
 )
+from environment_builder.nix import closure_manifest_sha256  # noqa: E402
 from environment_builder.receipt import build_receipt, limits_within_plan  # noqa: E402
 from environment_builder.sbom import build_sbom, license_inventory_copy  # noqa: E402
 
@@ -392,6 +393,13 @@ class SbomTests(unittest.TestCase):
         with self.assertRaises(BuilderError) as raised:
             validate_sbom_binding(frozen, plan)
         self.assertEqual(raised.exception.code, "ENVIRONMENT_HASH_MISMATCH")
+
+    def test_closure_manifest_hash_is_not_the_environment_digest(self) -> None:
+        manifest = [{"path": "/nix/store/" + "a" * 32 + "-x", "narHash": "sha256-x", "narSize": 1}]
+        value = closure_manifest_sha256(manifest)
+        self.assertEqual(len(value), 64)
+        self.assertEqual(value, closure_manifest_sha256(manifest))
+        self.assertNotEqual(value, "194a9ca32c4006d453e46828512f87678f9310d2750a4903335a5367592cbf69")
 
     def test_inventory_copy_keeps_the_core_shape(self) -> None:
         plan = {"licenseInventory": license_inventory([])}

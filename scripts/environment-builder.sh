@@ -71,14 +71,32 @@ write_disk_failure() {
   disk_policy failure --run-dir "$1" --output "$2" --phase "$3"
 }
 
-copy_disk_evidence() {
+copy_failure_evidence() {
   local run_dir="$1" output="$2" name
   mkdir -p "$output"
-  for name in disk-usage.json disk-failure.json build.log check.log; do
+  for name in disk-usage.json disk-failure.json failure.json build.log check.log; do
     if [[ -f "$run_dir/$name" ]]; then
       cp -f "$run_dir/$name" "$output/$name"
     fi
   done
+}
+
+write_run_failure() {
+  disk_policy failure --run-dir "$1" --output "$2" --phase "$3" \
+    --code "$4" --message "$5" --name failure.json
+}
+
+fail_after_run() {
+  local run_dir="$1" output="$2" disk_mib="$3" phase="$4" code="$5" message="$6"
+  check_disk_budget "$run_dir" "$NIX_STORE_CACHE" "$disk_mib" "$phase" || true
+  purge_success_artifacts "$run_dir" "$output"
+  if [[ "$code" == "ENVIRONMENT_RESOURCE_LIMIT" ]]; then
+    write_disk_failure "$run_dir" "$output" "$phase"
+  else
+    write_run_failure "$run_dir" "$output" "$phase" "$code" "$message"
+  fi
+  copy_failure_evidence "$run_dir" "$output"
+  typed_failure "$code" "$message"
 }
 
 check_disk_budget() {
@@ -160,6 +178,16 @@ validate_fetch_proxy() {
   fi
   if [[ "$proxy" == *"@"* || ! "$proxy" =~ ^https?:// ]]; then
     typed_failure ENVIRONMENT_NETWORK_DENIED "fetch proxy must be a credential-free HTTP(S) proxy"
+  fi
+}
+
+verify_rootless() {
+  local rootless
+  if ! rootless="$(podman info --format '{{.Host.Security.Rootless}}' 2>/dev/null)"; then
+    typed_failure ENVIRONMENT_BUILDER_UNAVAILABLE "podman info is unavailable; rootless Podman is required"
+  fi
+  if [[ "$rootless" != "true" ]]; then
+    typed_failure ENVIRONMENT_SANDBOX_DENIED "rootful Podman is forbidden; run the builder with rootless Podman"
   fi
 }
 
@@ -334,6 +362,7 @@ copy_outputs() {
 cmd="${1:-}"
 case "$cmd" in
   descriptor)
+    verify_rootless
     verify_image
     podman run --rm --network none --cap-drop ALL --security-opt unmask=ALL \
       --security-opt no-new-privileges --user 10001:10001 \
@@ -379,6 +408,7 @@ case "$cmd" in
     fi
     validate_fetch_network "$FETCH_NETWORK"
     validate_fetch_proxy "$FETCH_NETWORK" "$FETCH_PROXY"
+    verify_rootless
     verify_image
     mkdir -p "$CACHE"
     chmod 700 "$CACHE" 2>/dev/null || true
@@ -398,19 +428,17 @@ case "$cmd" in
     read -r cpu memory pids timeout_secs disk_mib < <(prepare "$request" "$workspace" "$run_dir" "$check_doc" "$FETCH_NETWORK" "$FETCH_PROXY")
 
     if ! check_disk_budget "$run_dir" "$NIX_STORE_CACHE" "$disk_mib" "pre-${cmd}"; then
-      purge_success_artifacts "$run_dir" "$output"
-      write_disk_failure "$run_dir" "$output" "pre-${cmd}"
-      copy_disk_evidence "$run_dir" "$output"
-      typed_failure ENVIRONMENT_RESOURCE_LIMIT "builder cache/store already exceeds the frozen disk bound"
+      fail_after_run "$run_dir" "$output" "$disk_mib" "pre-${cmd}" \
+        ENVIRONMENT_RESOURCE_LIMIT "builder cache/store already exceeds the frozen disk bound"
     fi
     if [[ "$cmd" == "build" && "$fetch_first" == "1" ]]; then
       if ! run_container fetch "$run_dir" "$FETCH_NETWORK" "$timeout_secs" "$cpu" "$memory" "$pids" "$workspace"; then
-        copy_outputs "$run_dir" "$output"
-        typed_failure ENVIRONMENT_BUILD_FAILED "the broker fetch phase failed"
+        fail_after_run "$run_dir" "$output" "$disk_mib" "post-fetch" \
+          ENVIRONMENT_BUILD_FAILED "the broker fetch phase failed"
       fi
       if [[ ! -f "$run_dir/fetch-result.json" ]]; then
-        copy_outputs "$run_dir" "$output"
-        typed_failure ENVIRONMENT_BUILD_FAILED "the broker fetch phase produced no fetch result"
+        fail_after_run "$run_dir" "$output" "$disk_mib" "post-fetch" \
+          ENVIRONMENT_BUILD_FAILED "the broker fetch phase produced no fetch result"
       fi
       cp -f "$run_dir/request.json" "$run_dir/fetch-request.json"
     fi
@@ -437,15 +465,16 @@ with open(path, "w", encoding="utf-8") as handle:
 PYREQUEST
     fi
     if ! run_container "$cmd" "$run_dir" "$network" "$timeout_secs" "$cpu" "$memory" "$pids" "$workspace"; then
-      copy_outputs "$run_dir" "$output"
-      typed_failure ENVIRONMENT_BUILD_FAILED "the builder container failed; see build.log/result.json"
+      fail_after_run "$run_dir" "$output" "$disk_mib" "post-${cmd}" \
+        ENVIRONMENT_BUILD_FAILED "the builder container failed; see failure.json/disk-usage.json"
     fi
     if ! check_disk_budget "$run_dir" "$NIX_STORE_CACHE" "$disk_mib" "post-${cmd}"; then
-      purge_success_artifacts "$run_dir" "$output"
-      write_disk_failure "$run_dir" "$output" "post-${cmd}"
-      copy_disk_evidence "$run_dir" "$output"
-      typed_failure ENVIRONMENT_RESOURCE_LIMIT "observed builder disk usage exceeds the frozen disk bound"
+      fail_after_run "$run_dir" "$output" "$disk_mib" "post-${cmd}" \
+        ENVIRONMENT_RESOURCE_LIMIT "observed builder disk usage exceeds the frozen disk bound"
     fi
+    # A successful rerun must not leave an earlier failure record visible.
+    rm -f "$run_dir/failure.json" "$run_dir/disk-failure.json"
+    rm -f "$output/failure.json" "$output/disk-failure.json"
     copy_outputs "$run_dir" "$output"
     if [[ -f "$output/result.json" ]]; then
       cat "$output/result.json"

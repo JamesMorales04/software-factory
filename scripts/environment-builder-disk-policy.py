@@ -40,7 +40,15 @@ def purge_success(run_dir: Path, output_dir: Path) -> None:
                     alias_path.unlink()
 
 
-def write_failure(run_dir: Path, output_dir: Path, phase: str) -> dict:
+def write_failure(
+    run_dir: Path,
+    output_dir: Path,
+    phase: str,
+    *,
+    code: str = "ENVIRONMENT_RESOURCE_LIMIT",
+    message: str = "observed builder disk usage exceeds the frozen disk bound",
+    name: str = "disk-failure.json",
+) -> dict:
     usage_path = run_dir / "disk-usage.json"
     usage = {}
     if usage_path.is_file():
@@ -49,15 +57,12 @@ def write_failure(run_dir: Path, output_dir: Path, phase: str) -> dict:
         "schemaVersion": 1,
         "status": "FAILED",
         "phase": phase,
-        "blocker": {
-            "code": "ENVIRONMENT_RESOURCE_LIMIT",
-            "message": "observed builder disk usage exceeds the frozen disk bound",
-        },
+        "blocker": {"code": code, "message": message},
         "diskUsage": usage,
     }
     for base in (run_dir, output_dir):
         base.mkdir(parents=True, exist_ok=True)
-        path = base / "disk-failure.json"
+        path = base / name
         path.write_text(json.dumps(failure, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         path.chmod(0o600)
     return failure
@@ -69,13 +74,23 @@ def main() -> int:
     parser.add_argument("--run-dir", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--phase", default="post")
+    parser.add_argument("--code", default="ENVIRONMENT_RESOURCE_LIMIT")
+    parser.add_argument("--message", default="observed builder disk usage exceeds the frozen disk bound")
+    parser.add_argument("--name", default="disk-failure.json")
     args = parser.parse_args()
     run_dir = Path(args.run_dir)
     output_dir = Path(args.output)
     if args.action == "purge":
         purge_success(run_dir, output_dir)
     else:
-        write_failure(run_dir, output_dir, args.phase)
+        write_failure(
+            run_dir,
+            output_dir,
+            args.phase,
+            code=args.code,
+            message=args.message,
+            name=args.name,
+        )
     return 0
 
 

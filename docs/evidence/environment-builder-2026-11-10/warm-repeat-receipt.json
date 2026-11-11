@@ -1,14 +1,14 @@
 {
   "blockers": [],
-  "builderImage": "localhost/software-factory-environment-builder:wp1b-eb2ebb1-r2",
-  "builderImageDigest": "sha256:081a092764f484ef3ee0fcb2e8de39b4dbdc8ee626f92bb8751d1fdb88180109",
+  "builderImage": "localhost/software-factory-environment-builder:wp1b-340fa54-r3",
+  "builderImageDigest": "sha256:8f7693fcdc1298bf4cc96190631ece69c13561a14533d8006cb707ba8c867cd7",
   "builderPolicyRevision": "nix-devenv-environment-v1",
-  "createdAt": "2026-11-11T07:02:32Z",
-  "durationMs": 6143,
+  "createdAt": "2026-11-11T07:29:18Z",
+  "durationMs": 6702,
   "logRef": "build.log",
-  "outputSha256": "b0d8a767b2f415b5642531703d2db366338443a05b256bdec6c5ae5d3afe55dd",
+  "outputSha256": "12dfb45e5adf93454e35c846472d8101d7a52eec0438aaa95e867636f7f7c23a",
   "platform": "x86_64-linux",
-  "receiptId": "2c8133eb-e329-4124-8f45-d95986e67510",
+  "receiptId": "f0485bf6-79a8-40b2-bff2-f3d682be027e",
   "sandboxAttestation": {
     "boundedResources": true,
     "impure": false,
@@ -20,7 +20,7 @@
     "sandbox": true
   },
   "schemaVersion": 1,
-  "specSha256": "e059527402146c560851ad350708b7aa9a8e63835c26b7affdef89efc6e6fb9e",
+  "specSha256": "cb365859f1f8bcb7cadedfe8f3188d7aa57e0dd8768cfbcfbc82e79a7add7d85",
   "status": "SUCCEEDED",
   "storePath": "/nix/store/c2nf1xssr9jvifvw55v4dpf1hnp1qk5g-devenv-shell-env"
 }

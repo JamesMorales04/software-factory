@@ -35,8 +35,8 @@
       }
     ],
     "builder": {
-      "digest": "sha256:081a092764f484ef3ee0fcb2e8de39b4dbdc8ee626f92bb8751d1fdb88180109",
-      "image": "localhost/software-factory-environment-builder:wp1b-eb2ebb1-r2",
+      "digest": "sha256:8f7693fcdc1298bf4cc96190631ece69c13561a14533d8006cb707ba8c867cd7",
+      "image": "localhost/software-factory-environment-builder:wp1b-340fa54-r3",
       "platform": "x86_64-linux",
       "policyRevision": "nix-devenv-environment-v1",
       "status": "READY"
@@ -256,7 +256,7 @@
       }
     ],
     "planId": "fixture-plan",
-    "planSha256": "fde0be35a2fa3bf8222758131a390ecb7475e4699a3cc1f395e073140c3674da",
+    "planSha256": "694f8cdc14adddca30e8ac3d5ce4aa2f387515bf0e90571e121cf678bbbec93d",
     "projectId": "fixture-project",
     "requestId": "fixture-request",
     "resources": {
@@ -287,13 +287,13 @@
     ]
   },
   "requestId": "fixture-request",
-  "runDir": "/home/james/.cache/sf-quality-wave12/environment-builder/cache/runs/wp1b2-38116e941ee9453ebb24ec1156ce5be5",
+  "runDir": "/home/james/.cache/sf-quality-wave12/environment-builder/cache/runs/r3-78021b0477264c23a303f98efc62233c",
   "schemaVersion": 1,
   "spec": {
     "actionId": "fixture-action",
     "baseCommit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "builderImage": "localhost/software-factory-environment-builder:wp1b-eb2ebb1-r2",
-    "builderImageDigest": "sha256:081a092764f484ef3ee0fcb2e8de39b4dbdc8ee626f92bb8751d1fdb88180109",
+    "builderImage": "localhost/software-factory-environment-builder:wp1b-340fa54-r3",
+    "builderImageDigest": "sha256:8f7693fcdc1298bf4cc96190631ece69c13561a14533d8006cb707ba8c867cd7",
     "campaignId": null,
     "conventionsSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     "devenvLockSha256": "55774648db7dbd6834cb5f11de227f76e5391f705d653f8e2a4091499a6eb759",
@@ -324,7 +324,7 @@
     },
     "nixVersion": "2.28.3",
     "planId": "fixture-plan",
-    "planSha256": "fde0be35a2fa3bf8222758131a390ecb7475e4699a3cc1f395e073140c3674da",
+    "planSha256": "694f8cdc14adddca30e8ac3d5ce4aa2f387515bf0e90571e121cf678bbbec93d",
     "platform": "x86_64-linux",
     "projectId": "fixture-project",
     "requestId": "fixture-request",
@@ -339,7 +339,7 @@
     "sbomSha256": "5f2a9b5b3ec0d7dbfea7c890af8fbb0f1ef267b3f26bf6b0c0a195fb3521539e",
     "schemaVersion": 1,
     "specId": "fixture-spec",
-    "specSha256": "e059527402146c560851ad350708b7aa9a8e63835c26b7affdef89efc6e6fb9e",
+    "specSha256": "cb365859f1f8bcb7cadedfe8f3188d7aa57e0dd8768cfbcfbc82e79a7add7d85",
     "status": "FROZEN"
   },
   "workspace": "/inputs/workspace"

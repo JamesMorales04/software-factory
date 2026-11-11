@@ -1,13 +1,13 @@
 {
   "closureEntries": 481,
-  "createdAt": "2026-11-11T07:02:32Z",
+  "createdAt": "2026-11-11T07:29:18Z",
   "devenvVersion": "1.11.2",
-  "environmentDigest": "194a9ca32c4006d453e46828512f87678f9310d2750a4903335a5367592cbf69",
+  "environmentDigest": "5bcadda94a65c2516f97d731c141c58a472e4654e549f8fac26af7c647dc043b",
   "frozenSbomSha256": "5f2a9b5b3ec0d7dbfea7c890af8fbb0f1ef267b3f26bf6b0c0a195fb3521539e",
   "licenseInventorySha256": "8cce25b2a1f0351bee1dd1f0c2169362d42418c9e1c7997e1b72615cea09bff6",
   "nixVersion": "2.28.3",
-  "outputSha256": "b0d8a767b2f415b5642531703d2db366338443a05b256bdec6c5ae5d3afe55dd",
-  "planSha256": "fde0be35a2fa3bf8222758131a390ecb7475e4699a3cc1f395e073140c3674da",
+  "outputSha256": "12dfb45e5adf93454e35c846472d8101d7a52eec0438aaa95e867636f7f7c23a",
+  "planSha256": "694f8cdc14adddca30e8ac3d5ce4aa2f387515bf0e90571e121cf678bbbec93d",
   "sandboxAttestation": {
     "boundedResources": true,
     "impure": false,
@@ -18,9 +18,9 @@
     "nonRoot": true,
     "sandbox": true
   },
-  "sbomDocumentSha256": "f1e014e2c5a82d88de687a5f8dafae4169b00ff306dce4633d918635047da2ba",
+  "sbomDocumentSha256": "0a587c2adf5e1446c8faa46240691ae82c750eb2d66cc604ded92aa35cc18945",
   "schemaVersion": 1,
-  "specSha256": "e059527402146c560851ad350708b7aa9a8e63835c26b7affdef89efc6e6fb9e",
+  "specSha256": "cb365859f1f8bcb7cadedfe8f3188d7aa57e0dd8768cfbcfbc82e79a7add7d85",
   "status": "SUCCEEDED",
   "storePath": "/nix/store/c2nf1xssr9jvifvw55v4dpf1hnp1qk5g-devenv-shell-env"
 }

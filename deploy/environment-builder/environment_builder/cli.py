@@ -22,6 +22,7 @@ from .errors import BuilderError, fail
 from .nix import (
     BuildLog,
     closure_manifest,
+    closure_manifest_sha256,
     devenv_version,
     environment_digest,
     nix_version,
@@ -232,7 +233,8 @@ def build(args: argparse.Namespace) -> int:
                         "specSha256": spec["specSha256"],
                         "storePath": root,
                         "outputSha256": output_sha,
-                        "closureManifestSha256": digest,
+                        "environmentDigest": digest,
+                        "closureManifestSha256": closure_manifest_sha256(manifest),
                         "closureEntries": len(manifest),
                         "durationMs": int((time.monotonic() - started) * 1000),
                     },

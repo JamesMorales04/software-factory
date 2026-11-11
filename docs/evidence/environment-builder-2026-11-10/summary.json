@@ -8,7 +8,7 @@
     "pyCompile": "PASS",
     "unitTests": {
       "command": "python3 -m unittest discover -s deploy/environment-builder/tests -v",
-      "count": 28,
+      "count": 31,
       "status": "PASS"
     }
   },
@@ -19,9 +19,9 @@
       "platform": "x86_64-linux",
       "status": "PASS"
     },
-    "image": "localhost/software-factory-environment-builder:wp1b-eb2ebb1-r2",
-    "imageDigest": "sha256:081a092764f484ef3ee0fcb2e8de39b4dbdc8ee626f92bb8751d1fdb88180109",
-    "imageId": "sha256:708a09d5328bf6aa47fe780745cbc80b229d575c8db5e5de28246821fc270961",
+    "image": "localhost/software-factory-environment-builder:wp1b-340fa54-r3",
+    "imageDigest": "sha256:8f7693fcdc1298bf4cc96190631ece69c13561a14533d8006cb707ba8c867cd7",
+    "imageId": "sha256:fc2f984cc02aa7a91f5a59426b23e814ae64e798e7d1972758993e08595fe836",
     "selfTest": {
       "chromiumVersion": "143.0.7499.169",
       "devenvVersion": "1.11.2",
@@ -44,26 +44,28 @@
   "paidInference": false,
   "positiveAcceptance": {
     "build": {
-      "durationMs": 6932,
-      "outputSha256": "b0d8a767b2f415b5642531703d2db366338443a05b256bdec6c5ae5d3afe55dd",
+      "durationMs": 5304,
+      "outputSha256": "12dfb45e5adf93454e35c846472d8101d7a52eec0438aaa95e867636f7f7c23a",
       "status": "SUCCEEDED"
     },
-    "builderImage": "localhost/software-factory-environment-builder:wp1b-eb2ebb1-r2",
-    "builderImageDigest": "sha256:081a092764f484ef3ee0fcb2e8de39b4dbdc8ee626f92bb8751d1fdb88180109",
+    "builderImage": "localhost/software-factory-environment-builder:wp1b-340fa54-r3",
+    "builderImageDigest": "sha256:8f7693fcdc1298bf4cc96190631ece69c13561a14533d8006cb707ba8c867cd7",
     "closureEntries": 481,
     "disk": {
       "enforcement": "POST_HOC_DU",
       "exact": false,
       "exceeded": false,
-      "observedKiB": 9978048,
-      "observedMiB": 9744.188,
+      "observedKiB": 9978060,
+      "observedMiB": 9744.199,
       "planDiskMiB": 10240
     },
     "fetch": {
       "buildNetwork": "none",
-      "fetchDurationMs": 126761,
-      "fetchResultSpecSha256": "e059527402146c560851ad350708b7aa9a8e63835c26b7affdef89efc6e6fb9e",
-      "fetchSpecSha256": "e059527402146c560851ad350708b7aa9a8e63835c26b7affdef89efc6e6fb9e",
+      "closureManifestSha256": "d576d49fb1a52d1fcf15b1a4f7561bfced46a79fce2e8a2c32562c3ba561747d",
+      "environmentDigest": "5bcadda94a65c2516f97d731c141c58a472e4654e549f8fac26af7c647dc043b",
+      "fetchDurationMs": 150198,
+      "fetchResultSpecSha256": "cb365859f1f8bcb7cadedfe8f3188d7aa57e0dd8768cfbcfbc82e79a7add7d85",
+      "fetchSpecSha256": "cb365859f1f8bcb7cadedfe8f3188d7aa57e0dd8768cfbcfbc82e79a7add7d85",
       "network": "factory-egress-internal",
       "networkInternalVerified": true,
       "proxyEnforced": true,
@@ -71,13 +73,13 @@
     },
     "nodePlaywrightCheck": {
       "detail": "real Chromium launch; tests/smoke.spec.mjs passed",
-      "durationMs": 10036,
+      "durationMs": 9742,
       "exitCode": 0,
       "status": "PASSED"
     },
     "rustCheck": {
       "detail": "cargo test --offline; wp0_rust_spike unit test passed",
-      "durationMs": 7647,
+      "durationMs": 5681,
       "exitCode": 0,
       "status": "PASSED"
     },
@@ -92,7 +94,7 @@
       "sandbox": true
     },
     "sbom": {
-      "cycloneDxDocumentSha256": "f1e014e2c5a82d88de687a5f8dafae4169b00ff306dce4633d918635047da2ba",
+      "cycloneDxDocumentSha256": "0a587c2adf5e1446c8faa46240691ae82c750eb2d66cc604ded92aa35cc18945",
       "frozenSbomSha256": "5f2a9b5b3ec0d7dbfea7c890af8fbb0f1ef267b3f26bf6b0c0a195fb3521539e",
       "matchesFrozenSpec": true
     },
@@ -104,11 +106,11 @@
         "devenv.cachix.org-1"
       ]
     },
-    "specSha256": "e059527402146c560851ad350708b7aa9a8e63835c26b7affdef89efc6e6fb9e",
+    "specSha256": "cb365859f1f8bcb7cadedfe8f3188d7aa57e0dd8768cfbcfbc82e79a7add7d85",
     "storePath": "/nix/store/c2nf1xssr9jvifvw55v4dpf1hnp1qk5g-devenv-shell-env",
     "warmRepeat": {
-      "durationMs": 6143,
-      "outputSha256": "b0d8a767b2f415b5642531703d2db366338443a05b256bdec6c5ae5d3afe55dd",
+      "durationMs": 6702,
+      "outputSha256": "12dfb45e5adf93454e35c846472d8101d7a52eec0438aaa95e867636f7f7c23a",
       "status": "SUCCEEDED"
     }
   },

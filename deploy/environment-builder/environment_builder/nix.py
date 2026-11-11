@@ -280,6 +280,10 @@ def closure_manifest(root: str) -> list[dict[str, Any]]:
     return manifest
 
 
+def closure_manifest_sha256(manifest: list[dict[str, Any]]) -> str:
+    return sha256_text(canonical_json(manifest))
+
+
 def environment_digest(
     spec_sha256: str,
     platform: str,
