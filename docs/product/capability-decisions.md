@@ -61,7 +61,7 @@ product roadmap, and it does not mean rejected.**
 | CAP-023 | Context and knowledge resolver | ADAPT | F1-S4-E | FUTURE_FEATURE | Not implemented | Bounded retrieval port; simple source reads first |
 | CAP-024 | GitHub PR delivery | ADAPT | F1-S5 | FUTURE_FEATURE | Not implemented | Core delivery adapter |
 | CAP-025 | CI and review reconciliation | ADAPT | F1-S5 | FUTURE_FEATURE | Not implemented | Delivery reconciliation |
-| CAP-026 | Conditional R0 merge | ADAPT | F1-S5 | FUTURE_FEATURE | Not implemented | Protected merge policy |
+| CAP-026 | Conditional R0 merge | ADAPT | F1-S5 | REQUIRED_FOR_MIGRATION | Append-only delivery policy, exact-candidate attempts, R0 auto-merge, R1 charter/manual plus post-merge check, R2/R3 manual, salvage human-review block, incidents and manual revert; real GitHub delivery remains not tested | Protected merge policy |
 | CAP-027 | Persistent maintenance objectives | ADAPT | F1-S5-M | FUTURE_FEATURE | Not implemented | Maintenance campaign service |
 | CAP-028 | Project health monitoring | EVALUATE | F1-S5-M | FUTURE_FEATURE | Not implemented | Health signal port |
 | CAP-029 | Incident diagnosis and Action creation | ADAPT | F1-S5-M | FUTURE_FEATURE | Not implemented | Incident application service |
@@ -182,3 +182,4 @@ Product Owner decision.
 | CAP-064 | Bounded repair orchestration | ADOPT | F1-S10 | REQUIRED_FOR_MIGRATION | RepairPacket from the exact candidate, Repairer, C+1, evidence invalidation, affected and full revalidation, R0/R1 policy and reserved R2/R3 effects | Productive autonomous recovery |
 | CAP-065 | Owner charter and delegated autonomy | ADOPT | F1-S10 | REQUIRED_FOR_MIGRATION | Durable owner charter, reserved matters, separate execution/repair/delivery/policy autonomy, expiry and revocation | Owner-level control |
 | CAP-066 | Agent fleet observability and cost | ADOPT | F1-S10 | REQUIRED_FOR_MIGRATION | Participant, context, handoff, skill, tool, usage, latency and cost projections from Core records; telemetry never grants authority | Measured autonomy |
+| CAP-067 | Delivery policy editor and incident control | ADOPT | F1-S5 | REQUIRED_FOR_MIGRATION | Office policy editor with non-default manual bases, base selector, risk/eligibility/blockers, salvage evidence state, incident/revert status; real Chromium acceptance remains | Governed delivery controls |

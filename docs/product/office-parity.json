@@ -1191,7 +1191,8 @@
    ],
    "acceptance": [
     "office/src/components/office/CampaignDelivery.test.tsx",
-    "office/src/components/office/DeliveryPolicyEditor.test.tsx"
+    "office/src/components/office/DeliveryPolicyEditor.test.tsx",
+    "office/e2e-browser/delivery-policy.mjs"
    ],
    "notes": "Core remains the only delivery authority. Gate ACCEPTED is necessary but never sufficient. R0 auto-merge requires an enabled RISK_TIERED policy; R1 adds explicit opt-in, a current Owner Charter delivery grant and a post-merge check; R2/R3/unknown are manual. A failed post-merge check opens an incident, freezes auto-merge and requires a manual revert. Real Chromium acceptance remains pending. R1/R2/R3 stagnation salvage is blocked with SALVAGE_HUMAN_REVIEW_REQUIRED; R0 salvage remains on the ordinary R0 path. Every R1 merge, including owner-confirmed manual delivery, runs the post-merge check. A blocked attempt cannot reuse its PR for a different base; the change is a typed BASE_MISMATCH. Missing or invalid R0 salvage evidence is shown as a blocker and disables delivery. The durable attempt is reserved before GitHub effects; concurrent different-base requests cannot both push/open a PR or call the issue hook."
   },
@@ -1233,7 +1234,8 @@
    ],
    "acceptance": [
     "office/src/components/office/CampaignDelivery.test.tsx",
-    "office/src/components/office/DeliveryPolicyEditor.test.tsx"
+    "office/src/components/office/DeliveryPolicyEditor.test.tsx",
+    "office/e2e-browser/delivery-policy.mjs"
    ],
    "notes": "Office never receives the GitHub token and cannot merge without a fresh Core eligibility read. R2/R3/unknown remain manual. No decorative action is offered; every control invokes an authenticated Core operation. The policy editor displays non-default manual bases and the Campaign panel can select them for manual delivery."
   }

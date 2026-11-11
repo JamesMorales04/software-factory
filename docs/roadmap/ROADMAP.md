@@ -182,8 +182,7 @@ Decision: `proposed`
 - PR creation
 - CI and review observation
 - exact-SHA delivery receipts
-- conditional R0/R1 eligibility
-- append-only delivery policy, exact-candidate attempts, incidents and manual revert
+- conditional R0 eligibility
 
 ### Exclusions
 

@@ -120,6 +120,7 @@ milestones:
   - CAP-024
   - CAP-025
   - CAP-026
+  - CAP-067
   exclusions:
   - Unconditional merge
   - controller binary promotion
@@ -1518,7 +1519,7 @@ capabilities:
     real: Exercise an authorized disposable GitHub repository through policy configuration, exact-candidate push, PR open, protected merge, issue close and a manual revert.
   evidence:
     deterministic:
-    - native/src/delivery_tests.rs
+    - docs/evidence/delivery-policy-deterministic-2026-11-11.json
     live_agent: []
     uat: []
     deployment: []
@@ -3311,8 +3312,7 @@ capabilities:
     real: A browser journey appends a policy with supported manual bases, selects a manual base, opens a PR, delivers an eligible candidate and records a manual revert after a post-merge incident at desktop, tablet and 320 px in EN and ES.
   evidence:
     deterministic:
-    - office/src/components/office/CampaignDelivery.test.tsx
-    - office/src/components/office/DeliveryPolicyEditor.test.tsx
+    - docs/evidence/delivery-policy-deterministic-2026-11-11.json
     live_agent: []
     uat: []
     deployment: []
