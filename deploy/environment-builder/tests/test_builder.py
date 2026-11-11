@@ -28,6 +28,7 @@ from environment_builder.policy import (  # noqa: E402
     EnvironmentFile,
     core_entries_sha256,
     validate_check,
+    validate_closure_licenses,
     validate_fetch_policy,
     validate_license_expression,
     validate_license_inventory,
@@ -168,11 +169,14 @@ class PolicyTests(unittest.TestCase):
             "permittedUnfreePackages = [ \"nixpkgs.hello\" ];",
             "nixpkgs.config.allowUnfree = true;",
             "config.${builtins.getAttr (\"allow\" + \"Unfree\") { allowUnfree = true; }} = true;",
+            "let allow = \"allowUn\" + \"freePredicate\"; in import nixpkgs { config = builtins.listToAttrs [ { name = allow; value = _: true; } ]; }",
         ]:
             with self.assertRaises(BuilderError) as raised:
                 validate_nix_constructs([env_file("flake.nix", content)])
-            self.assertEqual(
-                raised.exception.code, "ENVIRONMENT_LICENSE_DENIED", content
+            self.assertIn(
+                raised.exception.code,
+                ("ENVIRONMENT_LICENSE_DENIED", "ENVIRONMENT_SANDBOX_DENIED"),
+                content,
             )
 
     def test_builder_metadata_rejects_licence_or_version_lies(self) -> None:
@@ -217,10 +221,80 @@ class PolicyTests(unittest.TestCase):
                     "environment_builder.cli.nix_eval_json", return_value=[observed]
                 ):
                     with self.assertRaises(BuilderError) as raised:
-                        cli._package_metadata(workspace, plan, {}, 30, log)
+                        cli._package_metadata(
+                            "github:NixOS/nixpkgs/" + "a" * 40,
+                            plan,
+                            {},
+                            30,
+                            log,
+                        )
                 self.assertEqual(raised.exception.code, expected_code)
         finally:
             log.close()
+
+    def test_package_metadata_uses_the_plan_pin_not_a_workspace_flake(self) -> None:
+        pin = "github:NixOS/nixpkgs/" + "a" * 40
+        expression = cli._package_metadata_expression(
+            pin, [{"name": "ripgrep", "attr": "ripgrep"}]
+        )
+        self.assertIn(pin, expression)
+        self.assertNotIn("path:", expression)
+        closure = cli._closure_metadata_expression(
+            pin, ["/nix/store/" + "b" * 32 + "-bash-5.2"]
+        )
+        self.assertIn(pin, closure)
+        self.assertIn("/nix/store/" + "b" * 32 + "-bash-5.2", closure)
+
+    def test_closure_license_policy_rejects_unfree_denied_and_unknown(self) -> None:
+        base = {
+            "path": "/nix/store/" + "a" * 32 + "-bash-5.2",
+            "name": "bash",
+            "version": "5.2",
+            "license": "GPL-3.0-or-later",
+            "unfree": False,
+        }
+        self.assertEqual(validate_closure_licenses([base])[0]["name"], "bash")
+        for change, code in [
+            ({"unfree": True}, "ENVIRONMENT_UNFREE_REQUIRES_OWNER"),
+            ({"license": "AGPL-3.0-only"}, "ENVIRONMENT_LICENSE_DENIED"),
+            ({"license": "NOASSERTION"}, "ENVIRONMENT_LICENSE_UNKNOWN"),
+            ({"license": "Unknown-Proprietary"}, "ENVIRONMENT_LICENSE_UNKNOWN"),
+        ]:
+            entry = {**base, **change}
+            with self.assertRaises(BuilderError) as raised:
+                validate_closure_licenses([entry])
+            self.assertEqual(raised.exception.code, code, change)
+
+    def test_missing_command_executable_is_rejected(self) -> None:
+        plan = {"commands": {"test": {"argv": ["cargo", "test"]}}}
+        with mock.patch(
+            "environment_builder.cli.check_command_available",
+            return_value=(False, "not found"),
+        ):
+            with self.assertRaises(BuilderError) as raised:
+                cli._verify_command_executables(
+                    Path("/tmp"),
+                    Path("/tmp"),
+                    plan,
+                    offline=True,
+                    resources={"timeoutSecs": 30},
+                    timeout=30,
+                    proxy=None,
+                )
+        self.assertEqual(raised.exception.code, "ENVIRONMENT_PLAN_INVALID")
+        with mock.patch(
+            "environment_builder.cli.check_command_available",
+            return_value=(True, "/nix/store/cargo"),
+        ):
+            cli._verify_command_executables(
+                Path("/tmp"),
+                Path("/tmp"),
+                plan,
+                offline=True,
+                resources={"timeoutSecs": 30},
+                timeout=30,
+                proxy=None,
+            )
 
     def test_package_source_must_name_the_exact_validated_attribute(self) -> None:
         validate_package_source(

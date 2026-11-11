@@ -102,10 +102,12 @@ per-language table. Instead:
 5. A model proposal may **not** supply Nix/devenv files. `EnvironmentProposal`
    with a non-empty `files` map is rejected with
    `ENVIRONMENT_SANDBOX_DENIED`; Core generates `flake.nix` from the validated
-   toolchains/packages/commands. Authenticated explicit request files and
-   committed project files remain supported, and the generated-file validator
-   rejects every `unfree` policy identifier, `builtins.getAttr`, impure
-   evaluation, unpinned fetches, secrets and unsafe sandbox/network constructs.
+   toolchains/packages/commands. Committed project files remain supported, and
+   the generated-file validator rejects every `unfree` policy identifier,
+   dynamic config construction (`listToAttrs`, `mapAttrs`, `getAttr`,
+   `fromJSON`, `attrNames`, `functionArgs`), impure evaluation, unpinned
+   fetches, secrets and unsafe sandbox/network constructs. The production
+   `RequestEnvironmentConstraints` does not expose a `files` field.
 6. Precedence remains: explicit request `environmentConstraints`; committed
    conventions; CI/version evidence; the model proposal, which only fills
    missing toolchains, packages and commands. `EnvironmentProposal::validate`
@@ -114,13 +116,21 @@ per-language table. Instead:
    out-of-bound commands before any field is merged.
 7. `compile_environment_plan` re-pins, licenses, validates the sandbox/resources
    and records package claims. Before freeze, Core requires builder resolution
-   for every plan with selected packages. The builder evaluates
-   `meta.version`/`meta.license`/`meta.unfree` for each exact pinned nixpkgs
-   attribute in a bounded pure `nix eval`; `EnvironmentResolution.packages`
+   for every generated plan and every plan with selected packages. The builder
+   evaluates `meta.version`/`meta.license`/`meta.unfree` for each exact pinned
+   nixpkgs attribute in a bounded pure `nix eval` against the plan's pinned
+   nixpkgs (so Devenv-only projects work); `EnvironmentResolution.packages`
    carries the observed metadata. Core requires exact coverage and rejects a
-   missing, mismatched or unknown version, licence or unfree state. A plan with
-   packages and no verified metadata cannot freeze.
-8. The model-selected stack profile is the input to the architecture, skill and
+   missing, mismatched or unknown version, licence or unfree state.
+8. Resolution also realises the exact environment and inspects the **actual
+   closure**, including transitive packages. `EnvironmentResolution.closureLicenses`
+   records builder-observed closure licence metadata; any unfree, denied or
+   unknown closure package fails closed. This check is independent of the plan
+   copy and of Nix text, so a constructed `allowUnfreePredicate` cannot hide an
+   unfree dependency. The builder also checks every plan command's executable
+   with `command -v` inside the realised devShell and fails closed if it is
+   missing.
+9. The model-selected stack profile is the input to the architecture, skill and
    Definition of Done artifacts. The raw triage profile remains audit context;
    the architecture artifact records the selected stack explicitly. The Lead
    environment review is still required before freeze.
@@ -237,7 +247,7 @@ before any assignment.
 ## 6. Verification performed
 
 - `cargo fmt --all -- --check` — clean.
-- `cargo test -p factory-native --lib` — 963 passed, 4 ignored. Includes the
+- `cargo test -p factory-native --lib` — 964 passed, 4 ignored. Includes the
   greenfield Node/Rust environment proposal, explicit-constraint precedence,
   unknown licence/pin/source rejection, model-file rejection, every unfree
   policy form, independently observed package metadata mismatch, model stack
@@ -253,7 +263,7 @@ before any assignment.
 - `cargo test -p factory-native --bin factory-runtime-broker` — 71 passed.
 - `cargo test -p factory-native --bin factory-supervisor` — 11 passed.
 - `python3 -W error::ResourceWarning -m unittest discover -s
-  deploy/environment-builder/tests` — 68 tests OK.
+  deploy/environment-builder/tests` — 71 tests OK.
 - `cargo clippy -p factory-native --all-targets --all-features -- -D warnings`
   — clean.
 - Office: `npm ci`, `npm run typecheck`, `npm run lint`,
@@ -269,9 +279,11 @@ before any assignment.
   does not add a repository-hygiene finding.
 
 **Not tested / not claimed:** a real Nix/devenv build, a real builder image, the
-real bounded `nix eval` that observes package metadata, the Node/Playwright
-runtime, live Podman check execution, real Chromium acceptance of the new panel,
-a live provider stack-selection call for the calculator request, a live re-plan
-of that request, and independent acceptance. The metadata comparison and the
-expression-generation/policy path are deterministic/unit tested; a real Nix
-evaluation remains NOT_TESTED. `TRUSTED_LOCAL` remains not isolated.
+real bounded `nix eval` that observes package metadata and the realised closure,
+the real devShell `command -v` check, the Node/Playwright runtime, live Podman
+check execution, real Chromium acceptance of the new panel, a live provider
+stack-selection call for the calculator request, a live re-plan of that request,
+and independent acceptance. The closure policy, metadata comparison, command
+policy and expression generation are deterministic/unit tested; real Nix
+evaluation and closure realisation remain NOT_TESTED. `TRUSTED_LOCAL` remains
+not isolated.

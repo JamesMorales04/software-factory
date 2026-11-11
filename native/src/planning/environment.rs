@@ -2326,6 +2326,11 @@ fn validate_generated_nix(path: &str, content: &str) -> Result<(), EnvironmentEr
         // A computed attribute name is another way to reach an unfree policy
         // without the literal identifier.
         "builtins.getattr",
+        "builtins.listtoattrs",
+        "builtins.mapattrs",
+        "builtins.fromjson",
+        "builtins.attrnames",
+        "builtins.functionargs",
         "sandbox = false",
         "sandbox=false",
         "builtins.getenv",
@@ -2492,6 +2497,34 @@ const DENIED_SPDX: &[&str] = &[
     "SSPL-1.0",
 ];
 
+/// Closure-wide policy accepts common copyleft licences that are not denied,
+/// while still rejecting every unfree/denied/unknown transitive package.
+const CLOSURE_ALLOWED_SPDX: &[&str] = &[
+    "0BSD",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSD-4-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "GPL-2.0-only",
+    "GPL-2.0-or-later",
+    "GPL-3.0-only",
+    "GPL-3.0-or-later",
+    "ISC",
+    "LGPL-2.1-only",
+    "LGPL-2.1-or-later",
+    "LGPL-3.0-only",
+    "LGPL-3.0-or-later",
+    "MIT",
+    "MIT-0",
+    "MPL-2.0",
+    "OpenSSL",
+    "PostgreSQL",
+    "Unlicense",
+    "Zlib",
+];
+
 fn validate_license_expression(value: &str) -> Result<(), EnvironmentError> {
     let value = value.trim();
     if value.is_empty() {
@@ -2529,6 +2562,42 @@ fn validate_license_expression(value: &str) -> Result<(), EnvironmentError> {
     Err(license_blocked(format!(
         "the license expression {value} is unknown and blocks the plan"
     )))
+}
+
+fn validate_closure_license_expression(value: &str) -> Result<(), EnvironmentError> {
+    let value = value.trim();
+    if value.is_empty() || matches!(value, "NONE" | "NOASSERTION" | "UNLICENSED" | "UNKNOWN") {
+        return Err(EnvironmentError::new(
+            EnvironmentBlockerCode::EnvironmentLicenseUnknown,
+            format!("the closure license expression {value:?} is unknown"),
+        ));
+    }
+    if DENIED_SPDX.contains(&value) {
+        return Err(EnvironmentError::new(
+            EnvironmentBlockerCode::EnvironmentLicenseDenied,
+            format!("the closure license expression {value} is denied by policy"),
+        ));
+    }
+    if CLOSURE_ALLOWED_SPDX.contains(&value) {
+        return Ok(());
+    }
+    let normalized = value
+        .replace(['(', ')'], " ")
+        .replace(" AND ", " ")
+        .replace(" OR ", " ")
+        .replace(" WITH ", " ");
+    let atoms = normalized.split_whitespace().collect::<Vec<_>>();
+    if !atoms.is_empty()
+        && atoms
+            .iter()
+            .all(|atom| CLOSURE_ALLOWED_SPDX.contains(atom) || atom.starts_with("LLVM-exception"))
+    {
+        return Ok(());
+    }
+    Err(EnvironmentError::new(
+        EnvironmentBlockerCode::EnvironmentLicenseUnknown,
+        format!("the closure license expression {value} is unknown"),
+    ))
 }
 
 fn substrate_license_entries() -> Vec<LicenseEntry> {
@@ -3844,6 +3913,20 @@ pub struct VerifiedPackage {
     pub unfree: bool,
 }
 
+/// One package observed in the realised environment closure. The builder
+/// derives this from the actual closure and the pinned nixpkgs metadata, not
+/// from the Core plan, so a constructed nixpkgs config cannot hide an unfree
+/// transitive dependency.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ClosureLicense {
+    pub path: String,
+    pub name: String,
+    pub version: String,
+    pub license: String,
+    pub unfree: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct EnvironmentResolution {
@@ -3860,6 +3943,11 @@ pub struct EnvironmentResolution {
     /// packages cannot freeze without complete, matching evidence.
     #[serde(default)]
     pub packages: Vec<VerifiedPackage>,
+    /// Builder-observed licence state for the realised closure, including
+    /// transitive packages. A resolved generated/package plan cannot freeze
+    /// without it, and any unfree/denied/unknown entry fails closed.
+    #[serde(default)]
+    pub closure_licenses: Vec<ClosureLicense>,
 }
 
 impl EnvironmentResolution {
@@ -3896,6 +3984,31 @@ impl EnvironmentResolution {
                 ));
             }
         }
+        if self.closure_licenses.len() > 4_096 {
+            return Err(EnvironmentError::new(
+                EnvironmentBlockerCode::EnvironmentLicenseUnknown,
+                "the environment closure exceeds its package bound",
+            ));
+        }
+        let mut paths = BTreeSet::new();
+        for entry in &self.closure_licenses {
+            bounded_text("closure license path", &entry.path, 512)?;
+            if !entry.path.starts_with("/nix/store/") || !paths.insert(entry.path.as_str()) {
+                return Err(EnvironmentError::new(
+                    EnvironmentBlockerCode::EnvironmentLicenseUnknown,
+                    "a closure license path is invalid or duplicated",
+                ));
+            }
+            bounded_text("closure license name", &entry.name, 200)?;
+            bounded_text("closure license version", &entry.version, 128)?;
+            if entry.unfree {
+                return Err(license_blocked(format!(
+                    "transitive closure package {} {} is unfree",
+                    entry.name, entry.version
+                )));
+            }
+            validate_closure_license_expression(&entry.license)?;
+        }
         Ok(())
     }
 
@@ -3904,6 +4017,14 @@ impl EnvironmentResolution {
         if self.plan_sha256 != plan.plan_sha256 {
             return Err(hash_mismatch(
                 "the environment resolution is bound to a different plan",
+            ));
+        }
+        if (plan.source == EnvironmentPlanSource::Generated || !plan.packages.is_empty())
+            && self.closure_licenses.is_empty()
+        {
+            return Err(EnvironmentError::new(
+                EnvironmentBlockerCode::EnvironmentLicenseUnknown,
+                "the builder returned no realised closure license evidence",
             ));
         }
         let mut observed = BTreeMap::new();
@@ -4335,6 +4456,16 @@ mod tests {
             now: now(),
         })
         .unwrap()
+    }
+
+    fn closure_license() -> ClosureLicense {
+        ClosureLicense {
+            path: format!("/nix/store/{}-bash-5.2", "a".repeat(32)),
+            name: "bash".into(),
+            version: "5.2".into(),
+            license: "GPL-3.0-or-later".into(),
+            unfree: false,
+        }
     }
 
     fn model_call() -> EnvironmentReviewModelCall {
@@ -4841,6 +4972,7 @@ mod tests {
             nix_version: "2.28.3".into(),
             devenv_version: "1.11.2".into(),
             packages: Vec::new(),
+            closure_licenses: vec![closure_license()],
         });
         plan.refresh_hash();
         plan.resolution.as_mut().expect("resolution").plan_sha256 = plan.plan_sha256.clone();
@@ -4888,6 +5020,7 @@ mod tests {
                 license: "MIT".into(),
                 unfree: false,
             }],
+            closure_licenses: vec![closure_license()],
         });
         plan.refresh_hash();
         plan.resolution.as_mut().unwrap().plan_sha256 = plan.plan_sha256.clone();
@@ -4936,6 +5069,53 @@ mod tests {
     }
 
     #[test]
+    fn closure_license_evidence_rejects_unfree_or_unknown_transitive_packages() {
+        let (repository, base) = repository(&[("README.md", "# Empty\n")]);
+        let mut values = requirements();
+        values.explicit_constraints.nixpkgs =
+            Some("github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into());
+        let mut plan = compile(&repository, &base, &values);
+        let content = "{\"nodes\":{}}".to_string();
+        plan.resolution = Some(EnvironmentResolution {
+            schema_version: ENVIRONMENT_SCHEMA_VERSION,
+            plan_sha256: String::new(),
+            files: vec![EnvironmentFile {
+                path: "flake.lock".into(),
+                sha256: sha256_hex(content.as_bytes()),
+                origin: EnvironmentFileOrigin::Generated,
+                content: Some(content),
+            }],
+            nix_version: "2.28.3".into(),
+            devenv_version: "1.11.2".into(),
+            packages: Vec::new(),
+            closure_licenses: vec![ClosureLicense {
+                path: format!("/nix/store/{}-secret-tool-1.0", "c".repeat(32)),
+                name: "secret-tool".into(),
+                version: "1.0".into(),
+                license: "MIT".into(),
+                unfree: true,
+            }],
+        });
+        plan.refresh_hash();
+        plan.resolution.as_mut().unwrap().plan_sha256 = plan.plan_sha256.clone();
+        let error = plan.validate(now()).unwrap_err();
+        assert_eq!(
+            error.code,
+            EnvironmentBlockerCode::EnvironmentLicenseBlocked
+        );
+
+        plan.resolution.as_mut().unwrap().closure_licenses[0].unfree = false;
+        plan.resolution.as_mut().unwrap().closure_licenses[0].license = "NOASSERTION".into();
+        plan.refresh_hash();
+        plan.resolution.as_mut().unwrap().plan_sha256 = plan.plan_sha256.clone();
+        let error = plan.validate(now()).unwrap_err();
+        assert_eq!(
+            error.code,
+            EnvironmentBlockerCode::EnvironmentLicenseUnknown
+        );
+    }
+
+    #[test]
     fn campaign_binding_does_not_change_plan_or_spec_identity() {
         let (repository, base) = repository(&[("README.md", "# Empty\n")]);
         let mut values = requirements();
@@ -4955,6 +5135,7 @@ mod tests {
             nix_version: "2.28.3".into(),
             devenv_version: "1.11.2".into(),
             packages: Vec::new(),
+            closure_licenses: vec![closure_license()],
         });
         plan.files.push(EnvironmentFile {
             path: "flake.lock".into(),
@@ -5430,6 +5611,7 @@ mod tests {
             "permittedUnfreePackages = [ \"nixpkgs.hello\" ];",
             "nixpkgs.config.allowUnfree = true;",
             "config.${builtins.getAttr (\"allow\" + \"Unfree\") { allowUnfree = true; }} = true;",
+            "let allow = \"allowUn\" + \"freePredicate\"; in import nixpkgs { config = builtins.listToAttrs [ { name = allow; value = _: true; } ]; }",
         ] {
             let error = validate_generated_nix("flake.nix", content).unwrap_err();
             assert_eq!(

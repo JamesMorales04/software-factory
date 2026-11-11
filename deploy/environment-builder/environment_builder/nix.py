@@ -124,6 +124,7 @@ def _run_bounded_capture(
     failure_code: str,
     stdout_limit: int,
     stderr_limit: int,
+    cwd: Path | None = None,
 ) -> tuple[int, bytes, bytes, bool, bool]:
     """Run one process while bounding both captured streams."""
     import threading
@@ -131,6 +132,7 @@ def _run_bounded_capture(
     try:
         process = subprocess.Popen(
             argv,
+            cwd=str(cwd) if cwd is not None else None,
             env=environment_without_secrets(env),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
@@ -466,6 +468,7 @@ def closure_manifest(root: str) -> list[dict[str, Any]]:
                 "path": path,
                 "narHash": str(info.get("narHash", "")),
                 "narSize": int(info.get("narSize", 0) or 0),
+                "deriver": str(info.get("deriver", "")),
             }
         )
     return manifest
@@ -508,6 +511,51 @@ def _environment_command(workspace: Path, argv: list[str], *, offline: bool) -> 
         command.append("--offline")
     command.extend([".#default", "--command", *argv])
     return command
+
+
+def check_command_available(
+    workspace: Path,
+    cache: Path,
+    executable: str,
+    *,
+    offline: bool,
+    resources: dict[str, int],
+    timeout: int,
+    proxy: str | None = None,
+) -> tuple[bool, str]:
+    """Check that the realised devShell provides an executable.
+
+    The argv vector passes the executable as `$1`; it is never interpolated
+    into shell source.
+    """
+    env = child_environment(
+        workspace,
+        cache,
+        offline=offline,
+        resources=resources,
+        proxy=proxy,
+    )
+    argv = _environment_command(
+        workspace,
+        ["sh", "-c", 'command -v "$1"', "sh", executable],
+        offline=offline,
+    )
+    returncode, stdout, stderr, stdout_truncated, stderr_truncated = _run_bounded_capture(
+        argv,
+        cwd=workspace,
+        timeout=timeout,
+        env=env,
+        failure_code="ENVIRONMENT_PLAN_INVALID",
+        stdout_limit=MAX_TOOL_OUTPUT_BYTES,
+        stderr_limit=MAX_TOOL_OUTPUT_BYTES,
+    )
+    output = (
+        stdout.decode("utf-8", errors="replace")
+        + stderr.decode("utf-8", errors="replace")
+    )
+    if stdout_truncated or stderr_truncated:
+        return False, tail(output, 2_000)
+    return returncode == 0 and bool(stdout.strip()), tail(output, 2_000)
 
 
 def realize_environment(

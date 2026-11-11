@@ -12,8 +12,10 @@ capabilities.
 > empty, and lets the Lead planning proposal supply a concrete
 > `EnvironmentProposal` without overriding explicit constraints. Model proposals
 > cannot supply Nix files, and selected package licence/version/source claims are
-> checked against builder-observed pinned nixpkgs metadata before freeze. The
-> selected stack profile now feeds architecture, skills and the Definition of
+> checked against builder-observed pinned nixpkgs metadata before freeze.
+> Resolution also realises the actual closure, rejects any unfree/denied/unknown
+> transitive package, and checks planned command executables in the devShell.
+> The selected stack profile now feeds architecture, skills and the Definition of
 > Done. The remaining findings (global verifier image, dependency adapters, DoD
 > language fallbacks, Office profile vocabulary) are unchanged and still require
 > their named work packages.

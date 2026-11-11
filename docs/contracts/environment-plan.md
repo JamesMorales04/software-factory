@@ -174,6 +174,10 @@ Rules:
   exact pinned nixpkgs attribute and returns version, SPDX licence and unfree
   metadata. Core requires exact coverage and rejects missing or mismatched
   claims; a package plan without verified metadata cannot freeze.
+- Resolution realises the exact environment and independently verifies the
+  **actual closure**, including transitive packages. Any unfree, denied or
+  unknown closure licence fails closed. The builder also verifies each planned
+  command executable exists in the realised devShell.
 - When semantic triage and deterministic detection leave the stack empty, one
   bounded Lead-route model call selects an exact deterministic stack option;
   Core validates the option and its required project capability and records a

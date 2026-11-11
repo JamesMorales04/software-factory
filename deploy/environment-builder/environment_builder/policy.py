@@ -81,6 +81,22 @@ DENIED_SPDX: Final[frozenset[str]] = frozenset(
     }
 )
 
+# Closure-wide licensing accepts common copyleft licences that are not denied
+# by product policy, while still rejecting every unfree/denied/unknown package.
+CLOSURE_ALLOWED_SPDX: Final[frozenset[str]] = ALLOWED_SPDX | frozenset(
+    {
+        "GPL-2.0-only",
+        "GPL-2.0-or-later",
+        "GPL-3.0-only",
+        "GPL-3.0-or-later",
+        "BSD-4-Clause",
+        "OpenSSL",
+        "PostgreSQL",
+        "Public Domain",
+    }
+)
+MAX_CLOSURE_PACKAGES: Final[int] = 4096
+
 # Patterns that make a generated/project environment untrusted code instead of
 # a declarative environment. The sandbox is the enforcement boundary; these
 # checks are defence in depth and produce a typed blocker.
@@ -98,6 +114,13 @@ FORBIDDEN_NIX_PATTERNS: Final[tuple[tuple[re.Pattern[str], str, str], ...]] = (
     # config.allowUnfree, nixpkgs.config.allowUnfree and equivalent forms.
     (re.compile(r"unfree", re.IGNORECASE), "ENVIRONMENT_LICENSE_DENIED", "unfree policy"),
     (re.compile(r"\bbuiltins\.getAttr\b", re.IGNORECASE), "ENVIRONMENT_SANDBOX_DENIED", "builtins.getAttr"),
+    # Dynamic attribute/config construction can rebuild an unfree policy from
+    # fragments that do not contain the literal identifier.
+    (re.compile(r"\bbuiltins\.listToAttrs\b", re.IGNORECASE), "ENVIRONMENT_SANDBOX_DENIED", "builtins.listToAttrs"),
+    (re.compile(r"\bbuiltins\.mapAttrs\b", re.IGNORECASE), "ENVIRONMENT_SANDBOX_DENIED", "builtins.mapAttrs"),
+    (re.compile(r"\bbuiltins\.fromJSON\b", re.IGNORECASE), "ENVIRONMENT_SANDBOX_DENIED", "builtins.fromJSON"),
+    (re.compile(r"\bbuiltins\.attrNames\b", re.IGNORECASE), "ENVIRONMENT_SANDBOX_DENIED", "builtins.attrNames"),
+    (re.compile(r"\bbuiltins\.functionArgs\b", re.IGNORECASE), "ENVIRONMENT_SANDBOX_DENIED", "builtins.functionArgs"),
     (re.compile(r"\bsandbox\s*=\s*false\b"), "ENVIRONMENT_SANDBOX_DENIED", "sandbox=false"),
     (re.compile(r"\bnixConfig\s*=\b"), "ENVIRONMENT_SANDBOX_DENIED", "flake nixConfig"),
     (re.compile(r"\bextra-substituters\b"), "ENVIRONMENT_NETWORK_DENIED", "extra substituter"),
@@ -750,6 +773,69 @@ def validate_license_expression(value: str) -> None:
     ):
         return
     fail("ENVIRONMENT_LICENSE_UNKNOWN", f"the license expression {value} is unknown")
+
+
+def _closure_license_known(value: str) -> bool:
+    if value in DENIED_SPDX:
+        return False
+    if value in CLOSURE_ALLOWED_SPDX:
+        return True
+    normalized = (
+        value.replace("(", " ")
+        .replace(")", " ")
+        .replace(" AND ", " ")
+        .replace(" OR ", " ")
+        .replace(" WITH ", " ")
+    )
+    atoms = normalized.split()
+    return bool(atoms) and all(
+        atom in CLOSURE_ALLOWED_SPDX or atom.startswith("LLVM-exception")
+        for atom in atoms
+    )
+
+
+def validate_closure_licenses(entries: Any) -> list[dict[str, Any]]:
+    """Fail closed on any unfree, denied or unknown package in the realised
+    environment closure. This evidence comes from the builder's independent
+    closure metadata evaluation, not from the Core plan's package claims."""
+    entries = _require_list(entries, "closure license entries")
+    if len(entries) > MAX_CLOSURE_PACKAGES:
+        fail("ENVIRONMENT_LICENSE_UNKNOWN", "the environment closure exceeds its package bound")
+    observed: list[dict[str, Any]] = []
+    for entry in entries:
+        entry = _require_mapping(entry, "closure license entry")
+        path = _require_str(entry.get("path"), "closure license path", 512)
+        if not path.startswith("/nix/store/"):
+            fail("ENVIRONMENT_LICENSE_UNKNOWN", "a closure license path is not a Nix store path")
+        name = _require_str(entry.get("name"), "closure license name", 200)
+        version = _require_str(entry.get("version"), "closure license version", 128)
+        license_value = _require_str(entry.get("license"), "closure license expression", 200)
+        unfree = _require_bool(entry.get("unfree"), "closure license unfree")
+        if unfree:
+            fail(
+                "ENVIRONMENT_UNFREE_REQUIRES_OWNER",
+                f"transitive closure package {name} {version} is unfree",
+            )
+        if license_value in DENIED_SPDX:
+            fail(
+                "ENVIRONMENT_LICENSE_DENIED",
+                f"transitive closure package {name} {version} uses denied license {license_value}",
+            )
+        if not _closure_license_known(license_value):
+            fail(
+                "ENVIRONMENT_LICENSE_UNKNOWN",
+                f"transitive closure package {name} {version} has unknown license {license_value}",
+            )
+        observed.append(
+            {
+                "path": path,
+                "name": name,
+                "version": version,
+                "license": license_value,
+                "unfree": unfree,
+            }
+        )
+    return observed
 
 
 PACKAGE_ATTR = re.compile(r"^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$")

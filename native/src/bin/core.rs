@@ -29351,14 +29351,14 @@ mod tests {
                     "evidence": ["planner-stack-selection"]
                 }],
                 "packages": [{
-                    "name": "rustc",
+                    "name": "cargo",
                     "version": "1.90.0",
                     "license": "MIT",
                     "source": "nixpkgs",
-                    "attr": "rustc",
+                    "attr": "cargo",
                     "sha256": "",
                     "unfree": false,
-                    "attribution": "Rust is MIT licensed."
+                    "attribution": "Cargo is MIT licensed."
                 }],
                 "commands": {
                     "test": {
@@ -29566,7 +29566,7 @@ mod tests {
             assert!(
                 plan.packages
                     .iter()
-                    .any(|package| package.name == "rustc" && package.license == "MIT")
+                    .any(|package| package.name == "cargo" && package.license == "MIT")
             );
             assert!(plan.files.iter().any(|file| file.path == "flake.nix"));
             assert_eq!(
@@ -29931,8 +29931,8 @@ mod tests {
             {
                 Box::pin(async move {
                     use factory_native::planning::environment::{
-                        ENVIRONMENT_SCHEMA_VERSION, EnvironmentFile, EnvironmentFileOrigin,
-                        EnvironmentResolution, VerifiedPackage,
+                        ClosureLicense, ENVIRONMENT_SCHEMA_VERSION, EnvironmentFile,
+                        EnvironmentFileOrigin, EnvironmentResolution, VerifiedPackage,
                     };
                     let content = "{\"nodes\":{\"nixpkgs\":{\"locked\":{\"owner\":\"NixOS\",\"repo\":\"nixpkgs\",\"rev\":\"2222222222222222222222222222222222222222\"}}}}"
                         .to_string();
@@ -29968,6 +29968,13 @@ mod tests {
                         nix_version: "2.28.3".into(),
                         devenv_version: "1.11.2".into(),
                         packages,
+                        closure_licenses: vec![ClosureLicense {
+                            path: format!("/nix/store/{}-bash-5.2", "b".repeat(32)),
+                            name: "bash".into(),
+                            version: "5.2".into(),
+                            license: "GPL-3.0-or-later".into(),
+                            unfree: false,
+                        }],
                     })
                 })
             }
