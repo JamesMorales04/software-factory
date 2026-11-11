@@ -1241,6 +1241,51 @@ async fn r1_without_opt_in_is_blocked_before_merge() {
 }
 
 #[tokio::test]
+async fn changing_base_for_a_blocked_attempt_is_a_typed_conflict() {
+    let fixture = setup_fixture("R1").await;
+    let hook = RecordingHook::default();
+    let error = deliver(&fixture, &hook, false).await.unwrap_err();
+    assert_eq!(error.kind(), "R1_OPT_IN_REQUIRED");
+    let blocked = fixture
+        .db
+        .latest_delivery_attempt(&fixture.campaign_id, &fixture.candidate_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(blocked.base_branch, "main");
+    assert_eq!(blocked.pull_request_number, Some(42));
+    let fake = fixture.fake.lock().unwrap();
+    assert_eq!(fake.create_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(fake.merge_calls.load(Ordering::SeqCst), 0);
+    drop(fake);
+
+    let client = GitHubClient::with_base_url(&fixture.base_url, true).unwrap();
+    let credential = credential();
+    let service = DeliveryService::new(&fixture.db, &client, &credential, &hook);
+    let mut request = request(
+        &fixture.campaign_id,
+        &fixture.candidate_id,
+        DeliveryOperation::Merge,
+        true,
+    );
+    request.base_branch = Some("release");
+    let error = service.deliver(&request).await.unwrap_err();
+    assert_eq!(error.kind(), "BASE_MISMATCH");
+    let fake = fixture.fake.lock().unwrap();
+    assert_eq!(fake.create_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(fake.merge_calls.load(Ordering::SeqCst), 0);
+    let attempts = fixture
+        .db
+        .delivery_projection(&fixture.campaign_id, &fixture.candidate_id)
+        .await
+        .unwrap()
+        .attempts;
+    assert_eq!(attempts.len(), 1);
+    assert_eq!(attempts[0].base_branch, "main");
+    assert_eq!(attempts[0].pull_request_number, Some(42));
+}
+
+#[tokio::test]
 async fn r1_with_opt_in_charter_and_post_merge_check_merges() {
     let fixture = setup_fixture("R1").await;
     let input = DeliveryPolicyInput {
@@ -1314,6 +1359,71 @@ async fn r1_salvage_requires_exact_core_evidence() {
     assert_eq!(error.kind(), "SALVAGE_EVIDENCE_REQUIRED");
     let fake = fixture.fake.lock().unwrap();
     assert_eq!(fake.merge_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn status_surfaces_missing_r0_salvage_evidence_and_blocks_delivery() {
+    let fixture = setup_salvage_fixture("R0", false).await;
+    let client = GitHubClient::with_base_url(&fixture.base_url, true).unwrap();
+    let credential = credential();
+    let status = load_delivery_status(
+        &fixture.db,
+        Some(&client),
+        Some(&credential),
+        &fixture.campaign_id,
+        &fixture.candidate_id,
+    )
+    .await
+    .unwrap();
+    assert_eq!(status.final_source, CandidateFinalSource::StagnationSalvage);
+    assert!(!status.salvage_requires_human_review);
+    assert!(status.salvage_evidence.is_none());
+    assert!(
+        status
+            .salvage_error
+            .as_deref()
+            .is_some_and(|error| error.contains("SALVAGE_EVIDENCE_REQUIRED"))
+    );
+    let hook = RecordingHook::default();
+    let error = deliver(&fixture, &hook, false).await.unwrap_err();
+    assert_eq!(error.kind(), "SALVAGE_EVIDENCE_REQUIRED");
+}
+
+#[tokio::test]
+async fn status_surfaces_invalid_r0_salvage_evidence() {
+    let fixture = setup_salvage_fixture("R0", true).await;
+    let row: (String,) = sqlx::query_as::query_as(
+        "SELECT detail FROM events
+         WHERE subject_id='candidate-salvage' AND kind='worker.stagnation_finalized'",
+    )
+    .fetch_one(fixture.db.test_pool())
+    .await
+    .unwrap();
+    let mut detail: serde_json::Value = serde_json::from_str(&row.0).unwrap();
+    detail["commitSha"] = serde_json::json!("f".repeat(40));
+    sqlx::query::query(
+        "UPDATE events SET detail=?1
+         WHERE subject_id='candidate-salvage' AND kind='worker.stagnation_finalized'",
+    )
+    .bind(detail.to_string())
+    .execute(fixture.db.test_pool())
+    .await
+    .unwrap();
+    let client = GitHubClient::with_base_url(&fixture.base_url, true).unwrap();
+    let credential = credential();
+    let status = load_delivery_status(
+        &fixture.db,
+        Some(&client),
+        Some(&credential),
+        &fixture.campaign_id,
+        &fixture.candidate_id,
+    )
+    .await
+    .unwrap();
+    assert!(status.salvage_error.is_some());
+    let hook = RecordingHook::default();
+    let error = deliver(&fixture, &hook, false).await.unwrap_err();
+    assert_eq!(error.kind(), "SALVAGE_EVIDENCE_REQUIRED");
 }
 
 #[tokio::test]

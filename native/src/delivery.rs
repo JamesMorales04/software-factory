@@ -1024,6 +1024,7 @@ pub struct DeliveryStatus {
     pub final_source: CandidateFinalSource,
     pub salvage_requires_human_review: bool,
     pub salvage_evidence: Option<CandidateSalvageEvidenceRecord>,
+    pub salvage_error: Option<String>,
     pub gate_outcome: Option<GateOutcome>,
     pub gate_revision: Option<String>,
     pub policy: Option<DeliveryPolicy>,
@@ -1768,7 +1769,13 @@ pub async fn load_delivery_status(
         Ok((_, changed_paths)) => revalidate_risk(recorded_risk, &changed_paths),
         Err(_) => DeliveryRisk::Unknown,
     };
-    let salvage = db.candidate_salvage_record(&candidate.id).await.ok();
+    let (salvage, salvage_error) = match db.candidate_salvage_record(&candidate.id).await {
+        Ok(record) => (Some(record), None),
+        Err(DbError::Invalid(detail)) => {
+            (None, Some(format!("SALVAGE_EVIDENCE_REQUIRED: {detail}")))
+        }
+        Err(error) => (None, Some(format!("SALVAGE_EVIDENCE_REQUIRED: {error}"))),
+    };
     let final_source = salvage
         .as_ref()
         .map(|record| record.final_source)
@@ -1847,6 +1854,7 @@ pub async fn load_delivery_status(
         final_source,
         salvage_requires_human_review,
         salvage_evidence,
+        salvage_error,
         gate_revision: gate.as_ref().map(|record| record.decided_at.clone()),
         gate_outcome: gate.map(|record| record.outcome),
         policy: projection.policy.clone(),
@@ -1969,6 +1977,26 @@ impl<'a, H: DeliveryIssueHook> DeliveryService<'a, H> {
             &expected_head_sha,
             DeliveryOperation::Merge.as_str(),
         );
+        if let Some(bound) = self
+            .db
+            .delivery_attempt_for_merge_binding(
+                &context.candidate.id,
+                policy.revision,
+                &expected_head_sha,
+                DeliveryOperation::Merge.as_str(),
+            )
+            .await?
+            && bound.base_branch != context.base_branch
+        {
+            return Err(DeliveryError::blocked(
+                "BASE_MISMATCH",
+                format!(
+                    "the durable delivery attempt is bound to base {}; changing to {} requires an explicit new delivery decision",
+                    bound.base_branch, context.base_branch
+                ),
+            )
+            .with_attempt(bound.attempt_id));
+        }
         // Replay is resolved before any GitHub write, comment or merge. A
         // durable merged attempt returns its recorded evidence unchanged.
         if let Some(existing) = self.db.delivery_attempt_by_key(&key).await? {

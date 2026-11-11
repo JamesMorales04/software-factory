@@ -41,6 +41,9 @@ function blockerList(status: DeliveryStatus): string[] {
       }`,
     );
   }
+  if (status.salvageError) {
+    values.push(status.salvageError);
+  }
   if (status.eligibility?.decision === "DENY") {
     values.push(
       ...status.eligibility.reasons.map(
@@ -202,7 +205,8 @@ export function CampaignDelivery({
     Boolean(policy) &&
     !terminalAttempt &&
     !active &&
-    !status.salvageRequiresHumanReview;
+    !status.salvageRequiresHumanReview &&
+    !status.salvageError;
   const canOpen = Boolean(status.binding) && !terminalAttempt;
   const defaultBranch = status.binding?.default_branch ?? "main";
   const selectedBase = baseBranch || defaultBranch;
@@ -412,15 +416,21 @@ export function CampaignDelivery({
         </section>
       </div>
 
-      {status.finalSource === "STAGNATION_SALVAGE" && (
-        <p
-          className={status.salvageRequiresHumanReview ? "warning" : "muted"}
-          role="status"
-        >
-          {status.salvageRequiresHumanReview
-            ? t("delivery.salvageReviewRequired")
-            : t("delivery.salvageR0")}
+      {status.salvageError ? (
+        <p className="warning" role="alert">
+          {status.salvageError}
         </p>
+      ) : (
+        status.finalSource === "STAGNATION_SALVAGE" && (
+          <p
+            className={status.salvageRequiresHumanReview ? "warning" : "muted"}
+            role="status"
+          >
+            {status.salvageRequiresHumanReview
+              ? t("delivery.salvageReviewRequired")
+              : t("delivery.salvageR0")}
+          </p>
+        )
       )}
       {manualControlVisible && availableBases.length > 1 && (
         <Select

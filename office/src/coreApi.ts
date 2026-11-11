@@ -1020,6 +1020,7 @@ export interface DeliveryStatus {
   finalSource: CandidateFinalSource;
   salvageRequiresHumanReview: boolean;
   salvageEvidence: CandidateSalvageEvidenceRecord | null;
+  salvageError: string | null;
   gateOutcome: string | null;
   gateRevision: string | null;
   policy: DeliveryPolicy | null;

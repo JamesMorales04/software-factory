@@ -119,6 +119,7 @@ function status(overrides: Partial<DeliveryStatus> = {}): DeliveryStatus {
     finalSource: "MODEL_FINAL",
     salvageRequiresHumanReview: false,
     salvageEvidence: null,
+    salvageError: null,
     gateOutcome: "ACCEPTED",
     gateRevision: "gate-1",
     policy,
@@ -536,6 +537,27 @@ describe("CampaignDelivery", () => {
     expect(
       await screen.findByText(/requires authenticated human review/),
     ).toBeDefined();
+    const deliver = screen.getByRole("button", {
+      name: "Deliver candidate",
+    }) as HTMLButtonElement;
+    expect(deliver.disabled).toBe(true);
+  });
+
+  it("disables R0 delivery when salvage evidence is missing", async () => {
+    mocks.getCandidateDelivery.mockResolvedValue(
+      status({
+        riskClass: "R0",
+        finalSource: "STAGNATION_SALVAGE",
+        salvageRequiresHumanReview: false,
+        salvageEvidence: null,
+        salvageError:
+          "SALVAGE_EVIDENCE_REQUIRED: stagnation salvage evidence is missing",
+      }),
+    );
+    renderPanel();
+    expect(
+      (await screen.findAllByText(/SALVAGE_EVIDENCE_REQUIRED/)).length,
+    ).toBeGreaterThan(0);
     const deliver = screen.getByRole("button", {
       name: "Deliver candidate",
     }) as HTMLButtonElement;
