@@ -1,0 +1,88 @@
+{
+  "implementationSha": "00b54d7",
+  "scope": "Risk-tiered delivery, issue-linked lifecycle and Office delivery controls (WP2 + WP3 + WP5)",
+  "environment": {
+    "kind": "deterministic local verification",
+    "paidInference": false,
+    "github": "fake GitHub and local bare remote only"
+  },
+  "checks": [
+    {
+      "name": "focused delivery tests",
+      "command": "cargo test --locked -p factory-native --lib delivery_tests",
+      "pass": true,
+      "detail": "37 passed; 0 failed"
+    },
+    {
+      "name": "factory-native library suite",
+      "command": "cargo test --locked -p factory-native --lib",
+      "pass": true,
+      "detail": "925 passed; 0 failed; 4 ignored"
+    },
+    {
+      "name": "factory-core binary suite",
+      "command": "cargo test --locked -p factory-native --bin factory-core",
+      "pass": true,
+      "detail": "60 passed; 0 failed"
+    },
+    {
+      "name": "factory-worker binary suite",
+      "command": "cargo test --locked -p factory-native --bin factory-worker",
+      "pass": true,
+      "detail": "28 passed; 0 failed"
+    },
+    {
+      "name": "factory-verifier binary suite",
+      "command": "cargo test --locked -p factory-native --bin factory-verifier",
+      "pass": true,
+      "detail": "7 passed; 0 failed"
+    },
+    {
+      "name": "Office component and view tests",
+      "command": "npm test -- --run",
+      "pass": true,
+      "detail": "49 files; 346 tests passed"
+    },
+    {
+      "name": "Office typecheck and lint",
+      "command": "npm run typecheck && npm run lint",
+      "pass": true
+    },
+    {
+      "name": "risk-tiered policy and exact-candidate guards",
+      "pass": true,
+      "detail": "R0 auto-merge only under enabled policy; R1 requires opt-in, matching charter grant and post-merge check; R2/R3/unknown stay manual; exact head/base/Gate/policy/checks/protection re-read before merge"
+    },
+    {
+      "name": "salvage policy",
+      "pass": true,
+      "detail": "R1/R2/R3 STAGNATION_SALVAGE blocked with SALVAGE_HUMAN_REVIEW_REQUIRED even with owner confirmation; missing/mismatched evidence returns SALVAGE_EVIDENCE_REQUIRED and appears as an Office blocker; R0 remains eligible"
+    },
+    {
+      "name": "manual R1 post-merge check",
+      "pass": true,
+      "detail": "every effective R1 merge runs the configured post-merge check; failure opens an incident, freezes auto-merge and leaves NEEDS_ATTENTION; Factory does not auto-revert"
+    },
+    {
+      "name": "base-bound attempts and concurrency",
+      "pass": true,
+      "detail": "durable attempt is reserved atomically before credentials, push, PR or issue hooks; concurrent different-base requests yield one winner and one BASE_MISMATCH with no loser side effects; sequential base change is a typed conflict"
+    },
+    {
+      "name": "issue-linked lifecycle",
+      "pass": true,
+      "detail": "issue links frozen at request creation; PR-open comment; close only after merge; partial issues remain open; idempotent claims"
+    },
+    {
+      "name": "Office delivery surface",
+      "pass": true,
+      "detail": "policy editor with non-default manual bases, base selector, risk/eligibility/blockers, salvage evidence state, incident/revert status; control disabled when Core reports a salvage-evidence blocker"
+    }
+  ],
+  "notTested": [
+    "Real GitHub push, PR, protected merge, issue comment/close and manual revert against an authorized repository",
+    "Live R1/R2/R3 Campaign delivery",
+    "Real Chromium acceptance at desktop, tablet and 320 px in EN and ES",
+    "Authenticated human-review record/action for R1/R2/R3 salvage (delivery fails closed)"
+  ]
+}

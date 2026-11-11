@@ -151,6 +151,12 @@ export const es: Catalog = {
   "home.projectFallback": "Proyecto {id}",
   "home.project.label": "Proyecto",
   "home.project.select": "Selecciona un Proyecto",
+  "home.environmentConstraints.summary": "Restricciones de entorno (opcional)",
+  "home.environmentConstraints.help":
+    "JSON opcional para el entorno Nix/devenv generado: nixpkgs, toolchains, paquetes, servicios, navegadores y recursos. Core lo valida; los campos desconocidos se rechazan. Las convenciones confirmadas tienen prioridad.",
+  "home.environmentConstraints.label": "JSON de restricciones de entorno",
+  "home.environmentConstraints.invalid":
+    "Introduce un objeto JSON con campos de restricciones admitidos.",
   "home.objective.label": "Tu instrucción al Lead",
   "home.objective.placeholder":
     "Describe qué quieres construir, corregir o mejorar…",
@@ -522,6 +528,8 @@ export const es: Catalog = {
   "environment.baseCommit": "Commit base",
   "environment.conventionsHash": "SHA-256 de convenciones",
   "environment.blockers.title": "Bloqueos del entorno",
+  "environment.constraints.action":
+    "Añade restricciones explícitas de entorno (nixpkgs, paquetes, servicios, navegadores o recursos) a una nueva solicitud, o confirma un entorno de proyecto fijado.",
   "environment.yes": "Sí",
   "environment.no": "No",
   "environment.detection.title": "Evidencia de detección",
@@ -1288,6 +1296,7 @@ export const es: Catalog = {
   "issues.board.ready": "Listas",
   "issues.board.queued": "En cola",
   "issues.board.working": "En curso",
+  "issues.board.review": "En revisión",
   "issues.board.attention": "Requieren atención",
   "issues.board.done": "Terminadas",
   "issues.board.empty": "Nada por aquí.",
@@ -3096,7 +3105,15 @@ export const es: Catalog = {
   "evidence.identity.tree": "Árbol",
   "evidence.identity.attempt": "Intento",
   "evidence.identity.implementer": "Implementador",
+  "evidence.identity.finalSource": "Origen final",
   "evidence.identity.recorded": "Registrado",
+  "evidence.finalSource.model": "Final del modelo",
+  "evidence.finalSource.modelDetail":
+    "El proveedor devolvió una respuesta final normal.",
+  "evidence.finalSource.salvage": "Rescate por estancamiento",
+  "evidence.finalSource.salvageDetail":
+    "Finalización determinista tras el diagnóstico de estancamiento del Core; el bucle del modelo ya se había detenido.",
+  "evidence.gate.finalSource": "Origen final del candidato:",
 
   "projectFiles.title": "Archivos del Proyecto",
   "projectFiles.description":
@@ -4068,4 +4085,146 @@ export const es: Catalog = {
   "home.thread.state.ASSESSED":
     "La evaluación está completa; no se requiere un plan de ejecución.",
   "charter.decisions.choose": "Selecciona una opción del owner",
+  "issues.delivery.state": "Entrega: {state}",
+  "issues.delivery.pullRequest": "PR #{number}",
+  "issues.delivery.merge": "Merge {sha}",
+  "issues.delivery.retry": "Reintentar efecto en la incidencia",
+  "issues.delivery.retrying": "Reintentando…",
+  "issues.delivery.retried":
+    "Core reintentó el efecto en la incidencia #{number}.",
+  "issues.delivery.retryError":
+    "No se pudo reintentar el efecto en la incidencia.",
+  "linkedIssues.title": "Incidencias vinculadas",
+  "linkedIssues.description":
+    "Congeladas al crear la solicitud. El estado y los recibos de entrega provienen de Core; solo un merge puede completar una incidencia.",
+  "linkedIssues.empty":
+    "Esta solicitud no seleccionó una incidencia de GitHub, por lo que no hay un mapeo de entrega.",
+  "linkedIssues.count": "{count} incidencia(s) vinculada(s)",
+  "linkedIssues.rolePrimary": "Principal",
+  "linkedIssues.roleRelated": "Relacionada",
+  "linkedIssues.delivery": "Entrega",
+  "linkedIssues.workUnit": "Unidad de trabajo",
+  "linkedIssues.pullRequest": "Pull request",
+  "linkedIssues.merge": "Merge",
+  "linkedIssues.receipts": "Recibos de entrega ({count})",
+  "linkedIssues.noReceipts":
+    "No se ha registrado ningún efecto en la incidencia de GitHub.",
+  "linkedIssues.event": "Evento",
+  "linkedIssues.attempts": "intentos {count}",
+  "linkedIssues.retry": "Reintentar",
+  "linkedIssues.retrying": "Reintentando…",
+  "linkedIssues.retryError": "Core no pudo reintentar este evento de entrega.",
+  "delivery.title": "Entrega",
+  "delivery.description":
+    "Entrega por nivel de riesgo controlada por Core. El Gate ACCEPTED es necesario pero nunca suficiente: el candidato, head, política, checks y protección de rama exactos se releen inmediatamente antes de cualquier merge.",
+  "delivery.loading": "Leyendo el estado de entrega…",
+  "delivery.error": "Core no pudo leer el estado de entrega.",
+  "delivery.retry": "Reintentar",
+  "delivery.empty":
+    "No se ha registrado ningún intento de entrega para este candidato.",
+  "delivery.policy": "Política de entrega",
+  "delivery.policyMissing":
+    "No hay política de entrega. Añade una en los ajustes del Proyecto antes de entregar.",
+  "delivery.policyDisabled": "Solo entrega manual",
+  "delivery.policyEnabled": "Auto-merge por riesgo habilitado",
+  "delivery.policyRevision": "Revisión {revision}",
+  "delivery.risk": "Nivel de riesgo",
+  "delivery.autoMerge": "Auto-merge",
+  "delivery.autoMergeR0": "R0 automático",
+  "delivery.autoMergeR1": "R1 automático con opt-in, charter y check posterior",
+  "delivery.manualOnly": "R2, R3 y riesgo desconocido son solo manuales",
+  "delivery.mergeMethod": "Método de merge",
+  "delivery.postMergeCheck": "Check posterior al merge",
+  "delivery.postMergeNotConfigured": "no configurado",
+  "delivery.pullRequest": "Pull request",
+  "delivery.noPullRequest": "No se ha abierto ningún pull request.",
+  "delivery.checks": "Checks",
+  "delivery.noChecks": "No hay una lectura de checks en vivo.",
+  "delivery.protection": "Protección de rama",
+  "delivery.protectionVerified":
+    "Protección verificada con checks requeridos y sin force-push ni borrado.",
+  "delivery.protectionUnverified": "La protección no está verificada.",
+  "delivery.blockers": "Bloqueos",
+  "delivery.noBlockers": "No hay bloqueos registrados.",
+  "delivery.state": "Estado de entrega",
+  "delivery.authorization": "Autorización",
+  "delivery.mergeCommit": "Commit de merge",
+  "delivery.mergedAt": "Mergeado el",
+  "delivery.openPullRequest": "Abrir pull request",
+  "delivery.deliver": "Entregar candidato",
+  "delivery.delivering": "Entregando…",
+  "delivery.manualConfirm": "Soy el owner y apruebo este merge exacto",
+  "delivery.manualConfirmHint":
+    "La entrega manual vuelve a leer candidato, Gate, política, checks y protección antes de escribir.",
+  "delivery.openHint":
+    "Core empuja el candidato exacto a su rama determinista, reutiliza un pull request abierto y nunca hace force-push.",
+  "delivery.issueReceipts": "Recibos de issues",
+  "delivery.noIssueReceipts": "No hay recibos de issues para este intento.",
+  "delivery.incident": "Incidente de entrega",
+  "delivery.noIncident": "No hay incidentes de entrega abiertos.",
+  "delivery.incidentOpen":
+    "El auto-merge está congelado hasta que el owner resuelva este incidente.",
+  "delivery.manualRevertRequired":
+    "Factory no revierte automáticamente. Abre un PR de reversión revisado, mergealo por la ruta protegida normal y regístralo aquí.",
+  "delivery.revertPr": "Número del pull request de reversión",
+  "delivery.revertSha": "SHA del commit de merge de reversión",
+  "delivery.revertRationale": "Motivo de la reversión",
+  "delivery.recordRevert": "Registrar reversión manual",
+  "delivery.recordingRevert": "Registrando…",
+  "delivery.revertRecorded": "Evidencia de reversión manual registrada.",
+  "delivery.reverts": "Reversiones manuales",
+  "delivery.noReverts": "No se ha registrado ninguna reversión manual.",
+  "delivery.liveUnavailable":
+    "La lectura en vivo de GitHub no está disponible: {detail}",
+  "delivery.refresh": "Actualizar entrega",
+  "delivery.gate": "Gate",
+  "delivery.base": "Base",
+  "delivery.expectedHead": "Head esperado",
+  "delivery.candidate": "Candidato",
+  "delivery.actionError": "Core bloqueó o falló la operación de entrega.",
+  "delivery.opened": "Pull request abierto o reutilizado.",
+  "delivery.mergedNotice":
+    "Core registró el merge. Actualiza para ver los recibos finales de issues.",
+  "delivery.freeze": "Congelación de entrega",
+  "delivery.freezeDetail":
+    "Un incidente abierto o el kill switch bloquean todo auto-merge de este Proyecto.",
+  "deliveryPolicy.title": "Política de entrega",
+  "deliveryPolicy.description":
+    "Política de Proyecto append-only. R0 solo puede auto-mergear cuando la entrega por riesgo está habilitada; R1 también exige opt-in explícito, una concesión vigente del Owner Charter y un check posterior. R2/R3 y riesgo desconocido siguen siendo manuales.",
+  "deliveryPolicy.loading": "Leyendo la política de entrega…",
+  "deliveryPolicy.error":
+    "Core no pudo leer la política de entrega del Proyecto.",
+  "deliveryPolicy.unbound":
+    "Vincula este Proyecto a un repositorio de GitHub antes de configurar la entrega.",
+  "deliveryPolicy.enabled": "Habilitar entrega por nivel de riesgo",
+  "deliveryPolicy.r1":
+    "Permitir auto-merge R1 con una concesión coincidente del Owner Charter",
+  "deliveryPolicy.mergeMethod": "Método de merge",
+  "deliveryPolicy.squash": "Squash (obligatorio)",
+  "deliveryPolicy.checks": "Checks requeridos",
+  "deliveryPolicy.checksHint":
+    "Nombres de check separados por comas que exige la protección de rama.",
+  "deliveryPolicy.postMerge": "Check posterior al merge",
+  "deliveryPolicy.postMergeHint":
+    "Obligatorio para R1. Core lo ejecuta contra el commit de merge antes de completar la entrega.",
+  "deliveryPolicy.timeout": "Timeout posterior al merge (segundos)",
+  "deliveryPolicy.killSwitch": "Activar el kill switch de entrega del Proyecto",
+  "deliveryPolicy.save": "Añadir revisión de política",
+  "deliveryPolicy.saving": "Guardando…",
+  "deliveryPolicy.saved": "Revisión de política de entrega añadida.",
+  "deliveryPolicy.currentRevision": "Revisión actual {revision}",
+  "deliveryPolicy.noPolicy": "Todavía no existe ninguna revisión de política.",
+  "deliveryPolicy.manualBase": "Bases manuales",
+  "deliveryPolicy.expiresAt": "Caducidad (RFC3339, opcional)",
+  "deliveryPolicy.ownerOnly":
+    "Solo una operación autenticada del owner puede añadir una revisión de política.",
+  "deliveryPolicy.manualBases": "Ramas base manuales",
+  "deliveryPolicy.manualBasesHint":
+    "Ramas protegidas separadas por comas permitidas para entrega manual. La rama protegida por defecto siempre está disponible.",
+  "delivery.baseBranch": "Rama base",
+  "delivery.salvage": "Origen final de salvamento",
+  "delivery.salvageR0":
+    "El salvamento por estancamiento R0 es elegible para el Gate y la política R0 ordinarios.",
+  "delivery.salvageReviewRequired":
+    "El salvamento por estancamiento R1/R2/R3 requiere revisión humana autenticada del origen final y la evidencia. Nunca se auto-mergea.",
 };

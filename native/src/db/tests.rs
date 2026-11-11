@@ -524,6 +524,39 @@ async fn p5_group_readable_database_is_rejected_without_changing_data_or_mode() 
 
 #[cfg(unix)]
 #[tokio::test]
+async fn executable_action_specs_require_an_environment_binding() {
+    let (path, db) = temp_db("environment-required").await;
+    insert_project(&db, "project", "/fixture", &"a".repeat(40)).await;
+    let action = db
+        .create_action_with_spec(
+            "project",
+            "Require an environment.",
+            "opencode",
+            "deepseek-v4.1-flash",
+            "environment-required-action",
+            ActionSpecInput {
+                allowed_paths: &["src".to_string()],
+                checks: &[],
+                dependency_plan: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(validate_environment_requirement(&action.spec).is_ok());
+    db.clear_test_action_environment(&action.id).await.unwrap();
+    let action = db.action(&action.id).await.unwrap();
+    assert!(matches!(
+        validate_environment_requirement(&action.spec),
+        Err(Error::IntakeConflict {
+            code: "ENVIRONMENT_PLAN_REQUIRED",
+            ..
+        })
+    ));
+    db.close().await;
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
 async fn database_symlink_path_is_rejected() {
     let directory = std::env::temp_dir().join(format!("factory-db-link-{}", Uuid::new_v4()));
     std::fs::create_dir(&directory).unwrap();
@@ -1453,6 +1486,8 @@ async fn candidate_fixture() -> CandidateFixture {
                 action_spec_sha256: action.spec_sha256.clone(),
                 commit_sha: revision.commit_sha,
                 tree_sha: revision.tree_sha,
+                final_source: crate::quality::CandidateFinalSource::ModelFinal,
+                salvage: None,
             },
             now_ms,
         )
@@ -1470,14 +1505,387 @@ async fn candidate_fixture() -> CandidateFixture {
     }
 }
 
+struct SalvageFixture {
+    root: PathBuf,
+    db: Database,
+    repo: PathBuf,
+    base_commit: String,
+    campaign_id: String,
+    attempt_id: String,
+    worker_id: String,
+    generation: i64,
+    spec_sha256: String,
+    commit_sha: String,
+    tree_sha: String,
+    checks: Vec<crate::lead::SpecCheck>,
+    session_id: String,
+    authorization_id: String,
+    policy_id: String,
+}
+
+impl Drop for SalvageFixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+fn salvage_checks() -> Vec<crate::lead::SpecCheck> {
+    use crate::lead::{CheckKind, SpecCheck};
+    vec![
+        SpecCheck {
+            id: "build".into(),
+            kind: CheckKind::Build,
+            description: "cargo build".into(),
+            command: vec!["cargo".into(), "build".into()],
+            expect_exit: 0,
+            timeout_secs: 120,
+            environment_plan_id: None,
+            environment_spec_sha256: None,
+        },
+        SpecCheck {
+            id: "test".into(),
+            kind: CheckKind::Test,
+            description: "cargo test".into(),
+            command: vec!["cargo".into(), "test".into()],
+            expect_exit: 0,
+            timeout_secs: 120,
+            environment_plan_id: None,
+            environment_spec_sha256: None,
+        },
+    ]
+}
+
+impl SalvageFixture {
+    async fn start() -> Self {
+        Self::start_with_checks(salvage_checks()).await
+    }
+
+    async fn start_with_checks(checks: Vec<crate::lead::SpecCheck>) -> Self {
+        let root = std::env::temp_dir().join(format!("factory-salvage-{}", Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let repo = root.join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        git_fixture(&repo, &["init", "-q"]);
+        git_fixture(&repo, &["config", "user.name", "Fixture"]);
+        git_fixture(&repo, &["config", "user.email", "fixture@example.invalid"]);
+        std::fs::write(repo.join("seed.txt"), "base\n").unwrap();
+        git_fixture(&repo, &["add", "seed.txt"]);
+        git_fixture(&repo, &["commit", "-qm", "base"]);
+        let db = Database::open(&root.join("factory.sqlite")).await.unwrap();
+        let project = db.register_project(&repo, "salvage-project").await.unwrap();
+        let action = db
+            .create_action_with_spec(
+                &project.id,
+                "salvage objective",
+                "opencode",
+                "test/model",
+                "salvage-action",
+                ActionSpecInput {
+                    allowed_paths: &["seed.txt".to_string()],
+                    checks: &checks,
+                    dependency_plan: None,
+                },
+            )
+            .await
+            .unwrap();
+        let campaign = db
+            .create_campaign(&action.id, "salvage-campaign")
+            .await
+            .unwrap();
+        db.authorize_campaign(
+            &campaign.id,
+            &NewCampaignAuthorization {
+                authorization_id: "auth-salvage".into(),
+                risk_class: "R0".into(),
+                execution_mode: "FIXTURE".into(),
+                actor: "test".into(),
+                rationale: "salvage fixture".into(),
+                authorized_paths: vec!["seed.txt".into()],
+                provider: String::new(),
+                model: String::new(),
+                provider_mode: String::new(),
+                delegation_id: String::new(),
+                allowed_tools: Vec::new(),
+                monetary_envelope_id: crate::db::authorization::NO_BILLABLE_ENVELOPE.into(),
+                progress: fixture_progress(),
+                operations: fixture_operations(),
+            },
+        )
+        .await
+        .unwrap();
+        let authorization = db.campaign_authorization(&campaign.id).await.unwrap();
+        let policy = authorization.policy.as_ref().unwrap();
+        let run = db.create_run(&campaign.id, "salvage-run").await.unwrap();
+        let attempt = db.create_attempt(&run.id, "salvage-attempt").await.unwrap();
+        let now_ms = Utc::now().timestamp_millis();
+        let lease = db
+            .claim_attempt("worker-salvage", now_ms, 60_000)
+            .await
+            .unwrap()
+            .unwrap();
+        let allocator =
+            crate::workspace::WorkspaceAllocator::new(&repo, root.join("attempts")).unwrap();
+        let mut workspace = allocator
+            .allocate(&attempt.id, &project.base_commit)
+            .unwrap();
+        std::fs::write(workspace.path().join("seed.txt"), "salvage candidate\n").unwrap();
+        git_fixture(workspace.path(), &["add", "seed.txt"]);
+        git_fixture(workspace.path(), &["commit", "-qm", "salvage candidate"]);
+        let revision = workspace.candidate_revision().unwrap();
+        workspace.cleanup().unwrap();
+
+        let now = Utc::now().to_rfc3339();
+        let session_id = "session-salvage".to_string();
+        sqlx::query::query(
+            "INSERT INTO provider_sessions
+             (session_record_id,attempt_id,worker_id,generation,provider,model,provider_mode,
+              state,provider_session_id,turn_id,created_at,updated_at)
+             VALUES (?1,?2,'worker-salvage',?3,'opencode','test/model','build','ACTIVE',
+                     'ses_salvage','turn-1',?4,?4)",
+        )
+        .bind(&session_id)
+        .bind(&attempt.id)
+        .bind(lease.generation)
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO provider_turn_reservations
+             (reservation_id,session_record_id,attempt_id,generation,provider,model,
+              max_input_tokens,max_output_tokens,max_total_tokens,max_cost_micros,
+              request_sha256,state,expires_at_ms,created_at,updated_at)
+             VALUES ('turn-salvage',?1,?2,?3,'opencode','test/model',1000,1000,2000,0,
+                     ?4,'SETTLED',0,?5,?5)",
+        )
+        .bind(&session_id)
+        .bind(&attempt.id)
+        .bind(lease.generation)
+        .bind("a".repeat(64))
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+        Self {
+            root,
+            db,
+            repo,
+            base_commit: project.base_commit,
+            campaign_id: campaign.id,
+            attempt_id: attempt.id,
+            worker_id: "worker-salvage".into(),
+            generation: lease.generation,
+            spec_sha256: action.spec_sha256,
+            commit_sha: revision.commit_sha,
+            tree_sha: revision.tree_sha,
+            checks,
+            session_id,
+            authorization_id: authorization.authorization_id,
+            policy_id: policy.policy_id.clone(),
+        }
+    }
+
+    async fn record_diagnose_checkpoint(&self, decision: &str, stagnant: i64, replans: i64) {
+        let now = Utc::now().to_rfc3339();
+        let checkpoint_id = format!("diagnose-{decision}-{}", Uuid::new_v4());
+        let digest = sha256_hex(checkpoint_id.as_bytes());
+        sqlx::query::query(
+            "INSERT INTO progress_checkpoints
+             (checkpoint_id,campaign_id,work_item_id,attempt_id,operation_id,evidence_ids_json,
+              outcome_sha256,classification,decision,stagnant_checkpoints,unsuccessful_replans,
+              checkpoint_json,checkpoint_sha256,created_at)
+             VALUES (?1,?2,?2,?3,?4,'[]',?5,'STAGNANT',?6,?7,?8,'{}',?5,?9)",
+        )
+        .bind(&checkpoint_id)
+        .bind(&self.campaign_id)
+        .bind(&self.attempt_id)
+        .bind(format!("op-{checkpoint_id}"))
+        .bind(&digest)
+        .bind(decision)
+        .bind(stagnant)
+        .bind(replans)
+        .bind(&now)
+        .execute(&self.db.pool)
+        .await
+        .unwrap();
+    }
+
+    async fn record_final_nudge(&self) {
+        self.db
+            .record_provider_tool_event(&ProviderToolEventInput {
+                session_record_id: self.session_id.clone(),
+                worker_id: self.worker_id.clone(),
+                generation: self.generation,
+                call_id: "nudge-1".into(),
+                tool: "final_nudge".into(),
+                decision: "ERROR".into(),
+                detail: "final nudge requested".into(),
+                check: None,
+            })
+            .await
+            .unwrap();
+    }
+
+    async fn record_receipts(&self) {
+        for check in &self.checks {
+            self.db
+                .record_provider_tool_event(&ProviderToolEventInput {
+                    session_record_id: self.session_id.clone(),
+                    worker_id: self.worker_id.clone(),
+                    generation: self.generation,
+                    call_id: format!("salvage-check-{}", check.id),
+                    tool: "run_command".into(),
+                    decision: "RESULT".into(),
+                    detail: "exit=Some(0)".into(),
+                    check: Some(crate::db::ExecutionCheckInput {
+                        command: check.command.clone(),
+                        candidate_sha256: "c".repeat(64),
+                        exit_code: Some(check.expect_exit),
+                        candidate_commit_sha: Some(self.commit_sha.clone()),
+                        candidate_tree_sha: Some(self.tree_sha.clone()),
+                    }),
+                })
+                .await
+                .unwrap();
+        }
+    }
+
+    fn submission(&self, commit_sha: &str, tree_sha: &str) -> NewCandidate {
+        NewCandidate {
+            attempt_id: self.attempt_id.clone(),
+            worker_id: self.worker_id.clone(),
+            generation: self.generation,
+            action_spec_sha256: self.spec_sha256.clone(),
+            commit_sha: commit_sha.into(),
+            tree_sha: tree_sha.into(),
+            final_source: crate::quality::CandidateFinalSource::StagnationSalvage,
+            salvage: Some(CandidateSalvageClaim {
+                work_item_id: self.campaign_id.clone(),
+            }),
+        }
+    }
+
+    async fn submit(&self) -> Result<CandidateRecord, Error> {
+        self.db
+            .record_candidate(
+                &self.submission(&self.commit_sha, &self.tree_sha),
+                Utc::now().timestamp_millis(),
+            )
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn insert_raw_receipt(
+        &self,
+        suffix: &str,
+        check_id: &str,
+        campaign_id: &str,
+        attempt_id: &str,
+        work_item_id: &str,
+        commit_sha: &str,
+        tree_sha: &str,
+        outcome: &str,
+    ) {
+        let now = Utc::now().to_rfc3339();
+        let (sequence,): (i64,) = sqlx::query_as::query_as(
+            "SELECT COALESCE(MAX(sequence),0)+1 FROM provider_tool_events
+             WHERE session_record_id=?1",
+        )
+        .bind(&self.session_id)
+        .fetch_one(&self.db.pool)
+        .await
+        .unwrap();
+        let call_id = format!("raw-{suffix}");
+        sqlx::query::query(
+            "INSERT INTO provider_tool_events
+             (session_record_id,sequence,call_id,tool,decision,detail,created_at)
+             VALUES (?1,?2,?3,'run_command','RESULT','exit=Some(0)',?4)",
+        )
+        .bind(&self.session_id)
+        .bind(sequence)
+        .bind(&call_id)
+        .bind(&now)
+        .execute(&self.db.pool)
+        .await
+        .unwrap();
+        let command_json = serde_json::to_string(&self.checks[0].command).unwrap();
+        let command_sha256 = sha256_hex(command_json.as_bytes());
+        sqlx::query::query(
+            "INSERT INTO execution_check_receipts
+             (receipt_id,session_record_id,sequence,campaign_id,attempt_id,work_item_id,
+              generation,call_id,check_id,suite,command_json,command_sha256,candidate_sha256,
+              candidate_commit_sha,candidate_tree_sha,exit_code,expected_exit,outcome,
+              result_sha256,created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,0,0,?16,?17,?18)",
+        )
+        .bind(format!("raw-receipt-{suffix}"))
+        .bind(&self.session_id)
+        .bind(sequence)
+        .bind(campaign_id)
+        .bind(attempt_id)
+        .bind(work_item_id)
+        .bind(self.generation)
+        .bind(&call_id)
+        .bind(check_id)
+        .bind(crate::db::execution_receipts::suite_for_command(
+            &self.checks[0].command,
+        ))
+        .bind(&command_json)
+        .bind(&command_sha256)
+        .bind("c".repeat(64))
+        .bind(commit_sha)
+        .bind(tree_sha)
+        .bind(outcome)
+        .bind(sha256_hex(format!("raw-{suffix}").as_bytes()))
+        .bind(&now)
+        .execute(&self.db.pool)
+        .await
+        .unwrap();
+    }
+
+    async fn alternate_candidate(&self) -> (String, String) {
+        let allocator = crate::workspace::WorkspaceAllocator::new(
+            &self.repo,
+            self.root.join("alternate-attempts"),
+        )
+        .unwrap();
+        let mut workspace = allocator
+            .allocate("alternate-attempt", &self.base_commit)
+            .unwrap();
+        std::fs::write(workspace.path().join("seed.txt"), "alternate candidate\n").unwrap();
+        git_fixture(workspace.path(), &["add", "seed.txt"]);
+        git_fixture(workspace.path(), &["commit", "-qm", "alternate"]);
+        let revision = workspace.candidate_revision().unwrap();
+        workspace.cleanup().unwrap();
+        (revision.commit_sha, revision.tree_sha)
+    }
+}
+
 fn quality_receipt(fixture: &CandidateFixture, id: &str, principal: &str) -> QualityReceiptInput {
+    quality_receipt_for(
+        &fixture.spec_sha256,
+        &fixture.commit_sha,
+        &fixture.tree_sha,
+        id,
+        principal,
+    )
+}
+
+fn quality_receipt_for(
+    spec_sha256: &str,
+    commit_sha: &str,
+    tree_sha: &str,
+    id: &str,
+    principal: &str,
+) -> QualityReceiptInput {
     QualityReceiptInput {
         receipt_id: id.into(),
         principal_id: principal.into(),
         reviewer_role: None,
-        action_spec_sha256: fixture.spec_sha256.clone(),
-        commit_sha: fixture.commit_sha.clone(),
-        tree_sha: fixture.tree_sha.clone(),
+        action_spec_sha256: spec_sha256.into(),
+        commit_sha: commit_sha.into(),
+        tree_sha: tree_sha.into(),
         result: ReceiptResult::Pass,
         evidence: EvidenceKind::Executed,
         findings: Vec::new(),
@@ -3147,12 +3555,457 @@ async fn receipt_rejects_conflicts_wrong_binding_and_forged_generation() {
                     action_spec_sha256: fixture.spec_sha256.clone(),
                     commit_sha: candidate.commit_sha,
                     tree_sha: candidate.tree_sha,
+                    final_source: crate::quality::CandidateFinalSource::ModelFinal,
+                    salvage: None,
                 },
                 Utc::now().timestamp_millis(),
             )
             .await
             .is_err()
     );
+    fixture.db.close().await;
+}
+
+#[tokio::test]
+async fn stagnation_salvage_candidate_records_verified_source_and_event() {
+    let fixture = SalvageFixture::start().await;
+    fixture.record_diagnose_checkpoint("DIAGNOSE", 2, 0).await;
+    fixture.record_final_nudge().await;
+    fixture.record_receipts().await;
+    let candidate = fixture.submit().await.unwrap();
+    assert_eq!(
+        candidate.final_source,
+        crate::quality::CandidateFinalSource::StagnationSalvage
+    );
+    let events = fixture.db.events().await.unwrap();
+    let recorded = events
+        .iter()
+        .find(|event| event.subject_id == candidate.id && event.kind == "candidate.recorded")
+        .expect("candidate.recorded event");
+    assert!(recorded.detail.contains("finalSource=STAGNATION_SALVAGE"));
+    let salvage = events
+        .iter()
+        .find(|event| {
+            event.subject_id == candidate.id && event.kind == "worker.stagnation_finalized"
+        })
+        .expect("stagnation salvage event");
+    let detail: serde_json::Value = serde_json::from_str(&salvage.detail).unwrap();
+    assert_eq!(detail["decision"], "DIAGNOSE");
+    assert_eq!(detail["modelTurns"], 1);
+    assert_eq!(detail["finalNudges"], 1);
+    assert_eq!(detail["frozenChecks"], 2);
+    assert_eq!(detail["passedChecks"], 2);
+    assert_eq!(detail["attemptId"], fixture.attempt_id);
+    assert_eq!(detail["workItemId"], fixture.campaign_id);
+    assert_eq!(detail["campaignId"], fixture.campaign_id);
+    assert_eq!(detail["policyId"], fixture.policy_id);
+    assert_eq!(detail["authorizationId"], fixture.authorization_id);
+    assert!(
+        detail["diagnoseCheckpointId"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("diagnose-DIAGNOSE-"))
+    );
+    assert_eq!(detail["stagnantCheckpoints"], 2);
+    assert_eq!(detail["diff"]["changedFiles"], 1);
+    assert_eq!(
+        detail["diff"]["changedPaths"],
+        serde_json::json!(["seed.txt"])
+    );
+    assert!(
+        detail["diff"]["diffStat"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
+    );
+    let receipts = detail["checkReceipts"].as_array().unwrap();
+    assert_eq!(receipts.len(), 2);
+    let check_ids = receipts
+        .iter()
+        .map(|receipt| receipt["checkId"].as_str().unwrap())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(check_ids, ["build", "test"].into_iter().collect());
+    fixture.db.close().await;
+}
+
+#[tokio::test]
+async fn model_final_candidate_never_emits_stagnation_evidence() {
+    let fixture = candidate_fixture().await;
+    let candidate = fixture.db.candidate(&fixture.candidate_id).await.unwrap();
+    assert_eq!(
+        candidate.final_source,
+        crate::quality::CandidateFinalSource::ModelFinal
+    );
+    let events = fixture.db.events().await.unwrap();
+    assert!(
+        events.iter().all(|event| {
+            event.subject_id != fixture.candidate_id || event.kind != "worker.stagnation_finalized"
+        }),
+        "a normal model final must not emit worker.stagnation_finalized"
+    );
+    let recorded = events
+        .iter()
+        .find(|event| {
+            event.subject_id == fixture.candidate_id && event.kind == "candidate.recorded"
+        })
+        .expect("candidate.recorded event");
+    assert!(recorded.detail.contains("finalSource=MODEL_FINAL"));
+    fixture.db.close().await;
+}
+
+#[tokio::test]
+async fn r0_salvage_can_reach_an_accepted_gate() {
+    let fixture = SalvageFixture::start().await;
+    fixture.record_diagnose_checkpoint("DIAGNOSE", 2, 0).await;
+    fixture.record_final_nudge().await;
+    fixture.record_receipts().await;
+    let candidate = fixture.submit().await.unwrap();
+    fixture
+        .db
+        .record_quality_receipt(
+            &candidate.id,
+            QualityRole::Verifier,
+            &quality_receipt_for(
+                &fixture.spec_sha256,
+                &fixture.commit_sha,
+                &fixture.tree_sha,
+                "verifier",
+                "verifier-1",
+            ),
+        )
+        .await
+        .unwrap();
+    let result = fixture
+        .db
+        .record_quality_receipt(
+            &candidate.id,
+            QualityRole::Reviewer,
+            &quality_receipt_for(
+                &fixture.spec_sha256,
+                &fixture.commit_sha,
+                &fixture.tree_sha,
+                "reviewer",
+                "reviewer-1",
+            ),
+        )
+        .await
+        .unwrap();
+    let gate = result.gate.expect("gate decision");
+    assert_eq!(gate.outcome, GateOutcome::Accepted);
+    fixture.db.close().await;
+}
+
+#[tokio::test]
+async fn salvage_without_exact_per_check_receipts_is_rejected() {
+    let fixture = SalvageFixture::start().await;
+    fixture.record_diagnose_checkpoint("DIAGNOSE", 2, 0).await;
+    fixture.record_final_nudge().await;
+    let error = fixture.submit().await.unwrap_err();
+    assert!(matches!(error, Error::Forbidden(_)), "{error:?}");
+    fixture.db.close().await;
+}
+
+#[tokio::test]
+async fn salvage_with_a_wrong_check_receipt_is_rejected() {
+    let fixture = SalvageFixture::start().await;
+    fixture.record_diagnose_checkpoint("DIAGNOSE", 2, 0).await;
+    fixture.record_final_nudge().await;
+    for suffix in ["build", "test"] {
+        fixture
+            .insert_raw_receipt(
+                suffix,
+                "wrong-check",
+                &fixture.campaign_id,
+                &fixture.attempt_id,
+                &fixture.campaign_id,
+                &fixture.commit_sha,
+                &fixture.tree_sha,
+                "PASS",
+            )
+            .await;
+    }
+    let error = fixture.submit().await.unwrap_err();
+    assert!(matches!(error, Error::Forbidden(_)), "{error:?}");
+    fixture.db.close().await;
+}
+
+#[tokio::test]
+async fn salvage_with_an_extra_duplicate_receipt_is_rejected() {
+    let fixture = SalvageFixture::start().await;
+    fixture.record_diagnose_checkpoint("DIAGNOSE", 2, 0).await;
+    fixture.record_final_nudge().await;
+    fixture.record_receipts().await;
+    fixture
+        .insert_raw_receipt(
+            "duplicate-build",
+            "build",
+            &fixture.campaign_id,
+            &fixture.attempt_id,
+            &fixture.campaign_id,
+            &fixture.commit_sha,
+            &fixture.tree_sha,
+            "PASS",
+        )
+        .await;
+    let error = fixture.submit().await.unwrap_err();
+    assert!(matches!(error, Error::Forbidden(_)), "{error:?}");
+    fixture.db.close().await;
+}
+
+#[tokio::test]
+async fn salvage_with_a_failing_receipt_is_rejected() {
+    let fixture = SalvageFixture::start().await;
+    fixture.record_diagnose_checkpoint("DIAGNOSE", 2, 0).await;
+    fixture.record_final_nudge().await;
+    fixture
+        .insert_raw_receipt(
+            "build-pass",
+            "build",
+            &fixture.campaign_id,
+            &fixture.attempt_id,
+            &fixture.campaign_id,
+            &fixture.commit_sha,
+            &fixture.tree_sha,
+            "PASS",
+        )
+        .await;
+    fixture
+        .insert_raw_receipt(
+            "test-fail",
+            "test",
+            &fixture.campaign_id,
+            &fixture.attempt_id,
+            &fixture.campaign_id,
+            &fixture.commit_sha,
+            &fixture.tree_sha,
+            "FAIL",
+        )
+        .await;
+    let error = fixture.submit().await.unwrap_err();
+    assert!(matches!(error, Error::Forbidden(_)), "{error:?}");
+    fixture.db.close().await;
+}
+
+#[tokio::test]
+async fn salvage_with_stale_candidate_identity_is_rejected() {
+    let fixture = SalvageFixture::start().await;
+    fixture.record_diagnose_checkpoint("DIAGNOSE", 2, 0).await;
+    fixture.record_final_nudge().await;
+    fixture.record_receipts().await;
+    let (alternate_commit, alternate_tree) = fixture.alternate_candidate().await;
+    let error = fixture
+        .db
+        .record_candidate(
+            &fixture.submission(&alternate_commit, &alternate_tree),
+            Utc::now().timestamp_millis(),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, Error::Forbidden(_)), "{error:?}");
+    fixture.db.close().await;
+}
+
+#[tokio::test]
+async fn salvage_with_stale_attempt_campaign_or_work_item_receipts_is_rejected() {
+    let fixture = SalvageFixture::start().await;
+    fixture.record_diagnose_checkpoint("DIAGNOSE", 2, 0).await;
+    fixture.record_final_nudge().await;
+    let (action_id,): (String,) =
+        sqlx::query_as::query_as("SELECT action_id FROM campaigns WHERE id=?1")
+            .bind(&fixture.campaign_id)
+            .fetch_one(&fixture.db.pool)
+            .await
+            .unwrap();
+    let other_run = fixture
+        .db
+        .create_run(&fixture.campaign_id, "other-run")
+        .await
+        .unwrap();
+    let other_attempt = fixture
+        .db
+        .create_attempt(&other_run.id, "other-attempt")
+        .await
+        .unwrap();
+    let other_campaign = fixture
+        .db
+        .create_campaign(&action_id, "other-campaign")
+        .await
+        .unwrap();
+    let cases = [
+        (
+            "attempt",
+            fixture.campaign_id.as_str(),
+            other_attempt.id.as_str(),
+            fixture.campaign_id.as_str(),
+        ),
+        (
+            "campaign",
+            other_campaign.id.as_str(),
+            fixture.attempt_id.as_str(),
+            fixture.campaign_id.as_str(),
+        ),
+        (
+            "work-item",
+            fixture.campaign_id.as_str(),
+            fixture.attempt_id.as_str(),
+            "other-work-item",
+        ),
+    ];
+    for (suffix, campaign, attempt, work_item) in cases {
+        fixture
+            .insert_raw_receipt(
+                suffix,
+                "build",
+                campaign,
+                attempt,
+                work_item,
+                &fixture.commit_sha,
+                &fixture.tree_sha,
+                "PASS",
+            )
+            .await;
+    }
+    let error = fixture.submit().await.unwrap_err();
+    assert!(matches!(error, Error::Forbidden(_)), "{error:?}");
+    fixture.db.close().await;
+}
+
+#[tokio::test]
+async fn salvage_without_a_durable_diagnose_is_rejected() {
+    let fixture = SalvageFixture::start().await;
+    fixture.record_final_nudge().await;
+    fixture.record_receipts().await;
+    let error = fixture.submit().await.unwrap_err();
+    assert!(matches!(error, Error::Forbidden(_)), "{error:?}");
+    fixture.db.close().await;
+}
+
+#[tokio::test]
+async fn salvage_after_a_later_continue_checkpoint_is_rejected() {
+    let fixture = SalvageFixture::start().await;
+    fixture.record_diagnose_checkpoint("DIAGNOSE", 2, 0).await;
+    fixture.record_diagnose_checkpoint("CONTINUE", 0, 0).await;
+    fixture.record_final_nudge().await;
+    fixture.record_receipts().await;
+    let error = fixture.submit().await.unwrap_err();
+    assert!(matches!(error, Error::Forbidden(_)), "{error:?}");
+    fixture.db.close().await;
+}
+
+#[tokio::test]
+async fn salvage_with_zero_frozen_checks_is_rejected() {
+    let fixture = SalvageFixture::start_with_checks(Vec::new()).await;
+    fixture.record_diagnose_checkpoint("DIAGNOSE", 2, 0).await;
+    fixture.record_final_nudge().await;
+    let error = fixture.submit().await.unwrap_err();
+    match error {
+        Error::Forbidden(message) => assert!(
+            message.contains(crate::quality::SALVAGE_EMPTY_FROZEN_CHECKS),
+            "{message}"
+        ),
+        other => panic!("expected typed empty-check rejection, got {other:?}"),
+    }
+    fixture.db.close().await;
+}
+
+#[tokio::test]
+async fn salvage_with_a_non_diagnose_progress_decision_is_rejected() {
+    let fixture = SalvageFixture::start().await;
+    fixture.record_diagnose_checkpoint("CONTINUE", 2, 0).await;
+    fixture.record_final_nudge().await;
+    fixture.record_receipts().await;
+    let error = fixture.submit().await.unwrap_err();
+    assert!(matches!(error, Error::Forbidden(_)), "{error:?}");
+    fixture.db.close().await;
+}
+
+#[tokio::test]
+async fn salvage_without_a_durable_final_nudge_is_rejected() {
+    let fixture = SalvageFixture::start().await;
+    fixture.record_diagnose_checkpoint("DIAGNOSE", 2, 0).await;
+    fixture.record_receipts().await;
+    let error = fixture.submit().await.unwrap_err();
+    assert!(matches!(error, Error::Forbidden(_)), "{error:?}");
+    fixture.db.close().await;
+}
+
+#[tokio::test]
+async fn salvage_with_insufficient_diagnose_counts_is_rejected() {
+    let fixture = SalvageFixture::start().await;
+    fixture.record_diagnose_checkpoint("DIAGNOSE", 1, 0).await;
+    fixture.record_final_nudge().await;
+    fixture.record_receipts().await;
+    let error = fixture.submit().await.unwrap_err();
+    assert!(matches!(error, Error::Forbidden(_)), "{error:?}");
+    fixture.db.close().await;
+}
+
+#[tokio::test]
+async fn salvage_rejects_forged_worker_counts_and_an_empty_diff() {
+    let value = serde_json::json!({
+        "attempt_id": "attempt",
+        "worker_id": "worker",
+        "generation": 1,
+        "action_spec_sha256": "a".repeat(64),
+        "commit_sha": "b".repeat(40),
+        "tree_sha": "c".repeat(40),
+        "final_source": "STAGNATION_SALVAGE",
+        "salvage": {
+            "workItemId": "campaign",
+            "passedChecks": 99,
+            "finalNudges": 99,
+            "diff": {"changedFiles": 99}
+        }
+    });
+    assert!(serde_json::from_value::<NewCandidate>(value).is_err());
+
+    let fixture = SalvageFixture::start().await;
+    fixture.record_diagnose_checkpoint("DIAGNOSE", 2, 0).await;
+    fixture.record_final_nudge().await;
+    fixture.record_receipts().await;
+    let base_tree = git_fixture(&fixture.repo, &["rev-parse", "HEAD^{tree}"]);
+    let error = fixture
+        .db
+        .record_candidate(
+            &fixture.submission(&fixture.base_commit, &base_tree),
+            Utc::now().timestamp_millis(),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, Error::Forbidden(_)), "{error:?}");
+    fixture.db.close().await;
+}
+
+#[tokio::test]
+async fn a_work_item_can_use_only_one_stagnation_salvage() {
+    let fixture = SalvageFixture::start().await;
+    fixture.record_diagnose_checkpoint("DIAGNOSE", 2, 0).await;
+    fixture.record_final_nudge().await;
+    fixture.record_receipts().await;
+    let other_run = fixture
+        .db
+        .create_run(&fixture.campaign_id, "prior-salvage-run")
+        .await
+        .unwrap();
+    let other_attempt = fixture
+        .db
+        .create_attempt(&other_run.id, "prior-salvage-attempt")
+        .await
+        .unwrap();
+    sqlx::query::query(
+        "INSERT INTO candidates
+         (id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at,
+          integration,lineage_json,final_source)
+         VALUES ('prior-salvage',?1,?2,?3,?4,'prior-worker','2026-01-01T00:00:00Z',
+                 0,'[]','STAGNATION_SALVAGE')",
+    )
+    .bind(&other_attempt.id)
+    .bind(&fixture.spec_sha256)
+    .bind(&fixture.commit_sha)
+    .bind(&fixture.tree_sha)
+    .execute(&fixture.db.pool)
+    .await
+    .unwrap();
+    let error = fixture.submit().await.unwrap_err();
+    assert!(matches!(error, Error::Conflict(_)), "{error:?}");
     fixture.db.close().await;
 }
 
@@ -3471,6 +4324,8 @@ async fn candidate_outside_scope_and_symlink_are_rejected() {
                 action_spec_sha256: action.spec_sha256.clone(),
                 commit_sha: outside.commit_sha,
                 tree_sha: outside.tree_sha,
+                final_source: crate::quality::CandidateFinalSource::ModelFinal,
+                salvage: None,
             },
             now,
         )
@@ -3504,6 +4359,8 @@ async fn candidate_outside_scope_and_symlink_are_rejected() {
                 action_spec_sha256: action.spec_sha256.clone(),
                 commit_sha: linked.commit_sha,
                 tree_sha: linked.tree_sha,
+                final_source: crate::quality::CandidateFinalSource::ModelFinal,
+                salvage: None,
             },
             now + 1,
         )
@@ -3730,6 +4587,105 @@ async fn model_call_budget_unknown_usage_and_ambiguity_fail_closed() {
         .unwrap();
     let ModelCallDecision::Reserved(_) = db.authorize_model_call(&third).await.unwrap() else {
         panic!("resolved call should be retryable");
+    };
+    db.close().await;
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn ambiguous_model_call_release_requires_reason_and_records_audit_after_operator_resolution()
+{
+    let (path, db) = temp_db("factory-model-call-resolution").await;
+    let scope = "evaluation-release";
+    db.admit_test_subscription_dispatch(scope).await.unwrap();
+    let policy = model_call_policy(1_000, 500, 10_000);
+    let input = model_call_input(&"f".repeat(64), scope, 120, 300, 200, policy);
+    let ModelCallDecision::Reserved(grant) = db.authorize_model_call(&input).await.unwrap() else {
+        panic!("expected a reservation");
+    };
+    sqlx::query::query(
+        "UPDATE model_call_reservations SET expires_at_ms=0 WHERE reservation_id=?1",
+    )
+    .bind(&grant.reservation_id)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let unresolved = db.unresolved_model_calls().await.unwrap();
+    assert_eq!(
+        unresolved
+            .iter()
+            .find(|record| record.reservation_id == grant.reservation_id)
+            .map(|record| record.state.as_str()),
+        Some("AMBIGUOUS")
+    );
+    let (count, bound) = db.unresolved_model_call_budget().await.unwrap();
+    assert_eq!(count, 1);
+    assert_eq!(bound, grant.max_cost_micros);
+
+    for (actor, reason) in [("", "operator reason"), ("operator", "  ")] {
+        assert!(matches!(
+            db.resolve_ambiguous_model_call(&grant.reservation_id, actor, reason)
+                .await,
+            Err(Error::Invalid("model call resolution identity"))
+        ));
+        let unresolved = db.unresolved_model_calls().await.unwrap();
+        assert_eq!(
+            unresolved
+                .iter()
+                .find(|record| record.reservation_id == grant.reservation_id)
+                .map(|record| record.state.as_str()),
+            Some("AMBIGUOUS"),
+            "an invalid resolution must not release the ambiguous reservation"
+        );
+        assert_eq!(db.unresolved_model_call_budget().await.unwrap(), (1, bound));
+        assert!(
+            !db.events()
+                .await
+                .unwrap()
+                .iter()
+                .any(|event| event.kind == "model.call_resolved"),
+            "an invalid resolution must not emit a resolution audit event"
+        );
+    }
+
+    db.resolve_ambiguous_model_call(
+        &grant.reservation_id,
+        "owner",
+        "provider aborted before usage was reported",
+    )
+    .await
+    .unwrap();
+    let records = db.model_calls_for_scope(scope).await.unwrap();
+    let record = records
+        .iter()
+        .find(|record| record.reservation_id == grant.reservation_id)
+        .expect("resolved model call");
+    assert_eq!(record.state, "RELEASED");
+    assert!(record.error.contains("owner"));
+    assert!(record.error.contains("provider aborted"));
+    assert_eq!(db.unresolved_model_call_budget().await.unwrap(), (0, 0));
+    let events = db.events().await.unwrap();
+    let audit = events
+        .iter()
+        .find(|event| {
+            event.kind == "model.call_resolved"
+                && event.subject_id == scope
+                && event.detail.contains(&grant.reservation_id)
+        })
+        .expect("model call resolution audit event");
+    assert!(audit.detail.contains("actor=owner"));
+    assert!(
+        audit
+            .detail
+            .contains("provider aborted before usage was reported")
+    );
+    assert!(matches!(
+        db.resolve_ambiguous_model_call(&grant.reservation_id, "owner", "again")
+            .await,
+        Err(Error::Conflict("model call is not ambiguous"))
+    ));
+    let ModelCallDecision::Reserved(_) = db.authorize_model_call(&input).await.unwrap() else {
+        panic!("an explicitly released call should be retryable");
     };
     db.close().await;
     let _ = std::fs::remove_file(path);

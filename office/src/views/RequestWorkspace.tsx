@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
+import { LinkedIssues } from "../components/office/LinkedIssues";
 import { StatusBadge } from "../components/office/StatusBadge";
 import { Badge } from "../components/ui/Badge";
 import { Button, buttonClass } from "../components/ui/Button";
@@ -542,6 +543,11 @@ export function RequestWorkspace() {
           {notice}
         </p>
       )}
+
+      <LinkedIssues
+        links={data.linked_issues}
+        onRetried={() => void load(true)}
+      />
 
       <div className="request-layout">
         <div className="request-column">

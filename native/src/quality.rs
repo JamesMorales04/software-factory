@@ -130,6 +130,44 @@ pub struct GateDecision {
     pub reasons: Vec<String>,
 }
 
+/// Provenance of the terminal Candidate submission. `ModelFinal` is the normal
+/// provider final path; `StagnationSalvage` is the deterministic Worker
+/// completion after Core returned `Diagnose` for a written, fully checked
+/// candidate. This is durable evidence, not an authority grant.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum CandidateFinalSource {
+    #[default]
+    ModelFinal,
+    StagnationSalvage,
+}
+
+impl CandidateFinalSource {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ModelFinal => "MODEL_FINAL",
+            Self::StagnationSalvage => "STAGNATION_SALVAGE",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "MODEL_FINAL" => Some(Self::ModelFinal),
+            "STAGNATION_SALVAGE" => Some(Self::StagnationSalvage),
+            _ => None,
+        }
+    }
+}
+
+/// Typed Gate reason for a stagnation salvage that requires an authenticated
+/// owner/human decision before acceptance. The automatic Gate never accepts an
+/// R1+ salvage and never merges one.
+pub const SALVAGE_HUMAN_REVIEW_REQUIRED: &str = "SALVAGE_HUMAN_REVIEW_REQUIRED";
+
+/// Stable reason code for a salvage submission whose frozen ActionSpec has no
+/// acceptance checks. An empty check list cannot prove a candidate.
+pub const SALVAGE_EMPTY_FROZEN_CHECKS: &str = "SALVAGE_EMPTY_FROZEN_CHECKS";
+
 /// Evaluate all supplied evidence deterministically.
 ///
 /// Ordering is intentional: authorization, candidate identity, and evidence
@@ -350,6 +388,35 @@ fn decision(outcome: GateOutcome, reason: impl Into<String>) -> GateDecision {
     GateDecision {
         outcome,
         reasons: vec![reason.into()],
+    }
+}
+
+/// Apply the salvage-specific human-review requirement without weakening any
+/// existing Gate rule. R0 salvage remains eligible for the normal Gate. R1-R3
+/// salvage can never be accepted by the automatic Gate: an accepting or already
+/// human-required decision becomes an explicit typed `HUMAN_REQUIRED` hold, and
+/// a blocking decision keeps its stronger outcome with the typed reason added.
+pub fn apply_salvage_review_policy(
+    decision: GateDecision,
+    final_source: CandidateFinalSource,
+    risk_class: Option<&str>,
+) -> GateDecision {
+    if final_source != CandidateFinalSource::StagnationSalvage || matches!(risk_class, Some("R0")) {
+        return decision;
+    }
+    let reason = format!(
+        "{SALVAGE_HUMAN_REVIEW_REQUIRED}: R1+ stagnation salvage requires an authenticated owner/human review before acceptance; automatic acceptance and merge are disabled"
+    );
+    match decision.outcome {
+        GateOutcome::Accepted | GateOutcome::HumanRequired => GateDecision {
+            outcome: GateOutcome::HumanRequired,
+            reasons: vec![reason],
+        },
+        _ => {
+            let mut decision = decision;
+            decision.reasons.push(reason);
+            decision
+        }
     }
 }
 
@@ -616,5 +683,64 @@ mod tests {
             "c".repeat(40)
         );
         assert!(serde_json::from_str::<VerifierReceipt>(&json).is_err());
+    }
+
+    #[test]
+    fn r0_salvage_keeps_the_normal_gate_outcome() {
+        let accepted = evaluate(Some(&verifier()), Some(&reviewer()));
+        assert_eq!(
+            apply_salvage_review_policy(
+                accepted.clone(),
+                CandidateFinalSource::StagnationSalvage,
+                Some("R0")
+            ),
+            accepted
+        );
+    }
+
+    #[test]
+    fn r1_salvage_can_never_be_accepted_automatically() {
+        let reviewed = apply_salvage_review_policy(
+            evaluate(Some(&verifier()), Some(&reviewer())),
+            CandidateFinalSource::StagnationSalvage,
+            Some("R1"),
+        );
+        assert_eq!(reviewed.outcome, GateOutcome::HumanRequired);
+        assert!(
+            reviewed
+                .reasons
+                .iter()
+                .any(|reason| reason.contains(SALVAGE_HUMAN_REVIEW_REQUIRED)),
+            "the human-required hold must carry the typed salvage reason: {reviewed:?}"
+        );
+
+        let blocked = apply_salvage_review_policy(
+            GateDecision {
+                outcome: GateOutcome::Blocked,
+                reasons: vec!["risk exceeds policy".into()],
+            },
+            CandidateFinalSource::StagnationSalvage,
+            Some("R2"),
+        );
+        assert_eq!(blocked.outcome, GateOutcome::Blocked);
+        assert!(
+            blocked
+                .reasons
+                .iter()
+                .any(|reason| reason.contains(SALVAGE_HUMAN_REVIEW_REQUIRED))
+        );
+    }
+
+    #[test]
+    fn model_final_is_never_relabelled_as_salvage() {
+        let normal = evaluate(Some(&verifier()), Some(&reviewer()));
+        assert_eq!(
+            apply_salvage_review_policy(
+                normal.clone(),
+                CandidateFinalSource::ModelFinal,
+                Some("R1")
+            ),
+            normal
+        );
     }
 }

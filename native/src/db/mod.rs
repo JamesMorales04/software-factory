@@ -136,6 +136,8 @@ pub struct ActionSpec {
     #[serde(default)]
     pub environment_plan_sha256: Option<String>,
     #[serde(default)]
+    pub environment_spec_id: Option<String>,
+    #[serde(default)]
     pub environment_spec_sha256: Option<String>,
     #[serde(default)]
     pub environment_builder_image: Option<String>,
@@ -171,18 +173,13 @@ pub fn validate_dependency_requirement(spec: &ActionSpec) -> Result<(), Error> {
 /// authorized or executed without the exact frozen plan/spec, and every check
 /// must carry the same binding. There is no language-image fallback.
 pub fn validate_environment_requirement(spec: &ActionSpec) -> Result<(), Error> {
-    let bound = spec.environment_plan_id.is_some()
-        || spec.environment_plan_sha256.is_some()
-        || spec.environment_spec_sha256.is_some();
-    if !spec.environment_required && !bound {
-        return Ok(());
-    }
     let plan_id = spec
         .environment_plan_id
         .as_deref()
         .ok_or_else(|| Error::IntakeConflict {
             code: "ENVIRONMENT_PLAN_REQUIRED",
-            message: "the ActionSpec has no exact environment plan binding".into(),
+            message: "every executable ActionSpec requires an exact environment plan binding"
+                .into(),
         })?;
     let plan_sha =
         spec.environment_plan_sha256
@@ -191,6 +188,13 @@ pub fn validate_environment_requirement(spec: &ActionSpec) -> Result<(), Error> 
                 code: "ENVIRONMENT_PLAN_REQUIRED",
                 message: "the ActionSpec has no exact environment plan hash".into(),
             })?;
+    let spec_id = spec
+        .environment_spec_id
+        .as_deref()
+        .ok_or_else(|| Error::IntakeConflict {
+            code: "ENVIRONMENT_PLAN_REQUIRED",
+            message: "the ActionSpec has no frozen environment spec id".into(),
+        })?;
     let spec_sha =
         spec.environment_spec_sha256
             .as_deref()
@@ -198,7 +202,23 @@ pub fn validate_environment_requirement(spec: &ActionSpec) -> Result<(), Error> 
                 code: "ENVIRONMENT_PLAN_REQUIRED",
                 message: "the ActionSpec has no frozen environment spec hash".into(),
             })?;
-    if plan_id.len() > 64 || plan_sha.len() != 64 || spec_sha.len() != 64 {
+    if !spec.environment_required
+        || spec
+            .environment_builder_image
+            .as_deref()
+            .is_none_or(str::is_empty)
+        || spec
+            .environment_builder_image_digest
+            .as_deref()
+            .is_none_or(|digest| !digest.starts_with("sha256:"))
+    {
+        return Err(Error::IntakeConflict {
+            code: "ENVIRONMENT_PLAN_REQUIRED",
+            message: "the ActionSpec does not carry a frozen environment and digest-pinned builder identity"
+                .into(),
+        });
+    }
+    if plan_id.len() > 64 || spec_id.len() > 64 || plan_sha.len() != 64 || spec_sha.len() != 64 {
         return Err(Error::IntakeConflict {
             code: "ENVIRONMENT_PLAN_REQUIRED",
             message: "the ActionSpec environment binding is not a valid plan/spec identity".into(),
@@ -374,6 +394,11 @@ pub const EVENT_KINDS: &[&str] = &[
     "github.project_bound",
     "intake.message_recorded",
     "intake.request_created",
+    "issue_delivery.applied",
+    "issue_delivery.failed",
+    "issue_delivery.pending",
+    "issue_delivery.retried",
+    "issue_link.created",
     "issue_intake.batch_acknowledged",
     "issue_intake.batch_revoked",
     "issue_intake.policy_configured",
@@ -426,6 +451,7 @@ pub const EVENT_KINDS: &[&str] = &[
     "worker.claim_released",
     "worker.registered",
     "worker.session_rotated",
+    "worker.stagnation_finalized",
     "worker.terminal_reported",
     "work_integration.started",
     "workflow.checkpoint.recorded",
@@ -457,6 +483,8 @@ pub struct CandidateRecord {
     pub integration: bool,
     #[serde(default)]
     pub lineage: Vec<String>,
+    #[serde(default)]
+    pub final_source: crate::quality::CandidateFinalSource,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -484,6 +512,60 @@ pub struct NewCandidate {
     pub action_spec_sha256: String,
     pub commit_sha: String,
     pub tree_sha: String,
+    #[serde(default)]
+    pub final_source: crate::quality::CandidateFinalSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub salvage: Option<CandidateSalvageClaim>,
+}
+
+/// The only Worker-supplied salvage fact accepted by Core. Every trigger and
+/// receipt is derived from durable Core records; this claim only binds the
+/// stable work-item identity to the submission.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct CandidateSalvageClaim {
+    pub work_item_id: String,
+}
+
+/// Core-derived, exact-candidate salvage evidence recorded in the immutable
+/// `worker.stagnation_finalized` event. No field is copied from an unverified
+/// Worker count.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct CandidateSalvageEvidence {
+    pub campaign_id: String,
+    pub work_item_id: String,
+    pub attempt_id: String,
+    pub model_turns: u64,
+    pub final_nudges: u64,
+    pub frozen_checks: u64,
+    pub passed_checks: u64,
+    pub written: bool,
+    pub decision: String,
+    pub reason: String,
+    pub policy_id: String,
+    pub authorization_id: String,
+    pub diagnose_checkpoint_id: String,
+    pub stagnant_checkpoints: u32,
+    pub unsuccessful_replans: u32,
+    pub diff: CandidateSalvageDiff,
+    pub check_receipts: Vec<CandidateSalvageCheckReceipt>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct CandidateSalvageDiff {
+    pub changed_files: u64,
+    pub changed_paths: Vec<String>,
+    pub diff_stat: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct CandidateSalvageCheckReceipt {
+    pub check_id: String,
+    pub receipt_id: String,
+    pub result_sha256: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -1090,9 +1172,19 @@ pub use issue_intake::{
     IssueIntakeReconcileResult, IssueIntakeState, NewIssueIntakeBatch, NewIssueIntakeBatchItem,
     NewIssueIntakePolicy, NewIssueIntakePolicyV2,
 };
+mod issue_links;
+pub use issue_links::{
+    ClaimedIssueDeliveryAttempt, IssueDeliveryClaimOutcome, IssueDeliveryEventCompletion,
+    NewIssueDeliveryEvent,
+};
 pub use model_calls::{
     ModelCallDecision, ModelCallGrant, ModelCallPolicy, ModelCallRecord, ModelCallResult,
     ModelCallRole, ModelCallUsage, NewModelCallAuthorization,
+};
+mod delivery;
+pub use delivery::{
+    DeliveryAttemptUpdate, NewDeliveryAttempt, NewDeliveryAttemptEvent, NewDeliveryDecision,
+    NewDeliveryIncident,
 };
 mod lifecycle;
 pub mod participants;
@@ -1106,6 +1198,10 @@ mod project_configs;
 pub use execution_receipts::{ExecutionCheckInput, ExecutionCheckReceiptRecord};
 mod environment;
 pub use environment::{CampaignEnvironmentBinding, StoredEnvironmentPlan, StoredEnvironmentSpec};
+#[cfg(any(test, feature = "test-support"))]
+pub use environment::{
+    TestEnvironmentBinding, apply_test_environment_binding, test_environment_binding,
+};
 mod provider_sessions;
 mod provider_settings;
 mod subscription_admissions;
@@ -1199,6 +1295,21 @@ async fn install_test_subscription_dispatch_admissions(pool: &SqlitePool) -> Res
     .execute(pool)
     .await?;
     Ok(())
+}
+
+#[cfg(test)]
+impl Database {
+    pub(crate) fn test_pool(&self) -> &SqlitePool {
+        &self.pool
+    }
+
+    pub(crate) async fn test_ensure_project_config(&self, project_id: &str) -> Result<(), Error> {
+        let mut transaction = self.pool.begin().await?;
+        self.ensure_project_config(&mut transaction, project_id)
+            .await?;
+        transaction.commit().await?;
+        Ok(())
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]

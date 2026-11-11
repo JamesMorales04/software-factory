@@ -1,6 +1,7 @@
 import { ArrowLeft, RefreshCw, ScanSearch, Wrench } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
+import { DeliveryPolicyEditor } from "../components/office/DeliveryPolicyEditor";
 import { StatusBadge } from "../components/office/StatusBadge";
 import { Badge, type BadgeTone } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
@@ -418,6 +419,8 @@ export function ProjectDetail() {
           </dl>
         </Panel>
       </div>
+
+      <DeliveryPolicyEditor projectId={projectId} />
 
       <Panel className="project-tooling" data-testid="project-tooling">
         <div className="project-tooling-head">

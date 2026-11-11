@@ -22,6 +22,7 @@ use crate::issue_intake::{
     evaluate_issue_intake_eligibility, expiry_within_policy, issue_objective, policy_content_hash,
     queue_item_id_for_batch_item, validate_policy_terms,
 };
+use crate::issues::{IssueRole, NewIssueLinkSpec};
 use crate::lead::{Capability, ProjectConfig, RiskClass, StandingDelegationV2};
 
 use super::delegations::{create_standing_delegation_v2_in_tx, load_delegation_v2};
@@ -1670,6 +1671,15 @@ impl Database {
         .bind(&item.id)
         .execute(&mut *transaction)
         .await?;
+        let issue_links = [NewIssueLinkSpec {
+            owner: binding.owner.clone(),
+            repo: binding.repo.clone(),
+            number: item.issue_number,
+            github_issue_id: observed.github_id,
+            title: observed.title.clone(),
+            role: IssueRole::Primary,
+            work_unit_id: None,
+        }];
         let intake = create_intake_request_in_tx(
             &mut transaction,
             project_id,
@@ -1680,6 +1690,7 @@ impl Database {
             &config,
             &delegation,
             prepared,
+            &issue_links,
         )
         .await?;
         link_reconciled_queue(

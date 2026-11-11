@@ -1,5 +1,5 @@
 {
-  "count": 483,
+  "count": 481,
   "entries": [
     {
       "narHash": "sha256-AhKbCYdHqUpcwW9Bi6Ba0HHw6kIBI9PssbPafvFQx18=",
@@ -230,11 +230,6 @@
       "narHash": "sha256-RvYwi3gjIcL5bejfec+OIdGzQMY9iMeRrvXVUB3BQNM=",
       "narSize": 565576,
       "path": "/nix/store/2py9gyblpjn4md4dajbrjdpkici9fdjz-aws-c-mqtt-0.11.0"
-    },
-    {
-      "narHash": "sha256-sBItCmYOs2a3TmtLq22v998sWu5xRb3ER5pXbJSsxrg=",
-      "narSize": 2144,
-      "path": "/nix/store/2s0ds2hhd7qhvj04q169m569j5ydd40i-init-npm.sh"
     },
     {
       "narHash": "sha256-Fm+rXG3x1ve5lovMiuwIfcaExC7Zo6+IHufD9oryjKw=",
@@ -642,11 +637,6 @@
       "path": "/nix/store/8lhvpyps5dpp8z2d6l6bx4l3si2jvws0-python3.12-toml-0.10.2"
     },
     {
-      "narHash": "sha256-EeGQBdFPKc+YJopurLKKpv97F4Aq9Eotr5USOyFG4vY=",
-      "narSize": 20824,
-      "path": "/nix/store/8ppi9bfzwgskrf4c863j9avbfaj36155-flock-0.4.0"
-    },
-    {
       "narHash": "sha256-tUQ2Ah3ljuBZxKwpS4jLuWv+80+2mju6LhsKaAcvS+A=",
       "narSize": 270352,
       "path": "/nix/store/8shigvs0alcz29qy763lx5xwg17ls0kz-lz4-1.10.0-lib"
@@ -910,6 +900,11 @@
       "narHash": "sha256-u6sNKnf/KMK3BQG2tqOOuBLvtt2fwnkpuaG3Sn3r3lQ=",
       "narSize": 7793736,
       "path": "/nix/store/c1hian0qsxix0a7pswp442c2c201cmd9-shared-mime-info-2.4"
+    },
+    {
+      "narHash": "sha256-52DMRWtg0UY8ExoDzXUMhasz9aRLRWvJMu1Qrp850/E=",
+      "narSize": 105584,
+      "path": "/nix/store/c2nf1xssr9jvifvw55v4dpf1hnp1qk5g-devenv-shell-env"
     },
     {
       "narHash": "sha256-6VRKr481HTYZUsZshDId3qn6li/pQqc4w4Zsywiv82o=",
@@ -2155,11 +2150,6 @@
       "narHash": "sha256-oXstvgVPkg8rO3NGP0zwtQR6+hoZhi+IvF4qJaH8rMw=",
       "narSize": 16048,
       "path": "/nix/store/wyfc8fx4h9fw9jscjb69pldxz7npy948-perl5.40.0-HTML-Tagset-3.20"
-    },
-    {
-      "narHash": "sha256-QzLNpleqSYctTP4rMctIopvCXJtid3pqEs4Yp+m01IY=",
-      "narSize": 105648,
-      "path": "/nix/store/wyrgjl56z5nyq18clgnj1fkqr6vlvbzj-devenv-shell-env"
     },
     {
       "narHash": "sha256-09St6qOZgTmw443YtIZqKn7Z2jWKNGjMP22mX4HCb6U=",

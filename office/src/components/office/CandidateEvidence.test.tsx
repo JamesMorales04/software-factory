@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { Gate, QualityReceipt, ReviewFinding } from "../../coreApi";
 import { I18nProvider } from "../../i18n";
 import {
+  CandidateFinalSourceBadge,
   QualityGatePanel,
   ReceiptModelProvenance,
   ReviewFindings,
@@ -132,5 +133,28 @@ describe("CandidateEvidence", () => {
       </I18nProvider>,
     );
     expect(screen.getByText("Repair authorization")).toBeDefined();
+  });
+
+  it("labels a stagnation salvage candidate truthfully", () => {
+    render(
+      <I18nProvider>
+        <CandidateFinalSourceBadge source="STAGNATION_SALVAGE" />
+        <QualityGatePanel
+          gate={{
+            ...gateWithOutcome("HUMAN_REQUIRED"),
+            final_source: "STAGNATION_SALVAGE",
+            reasons: [
+              "SALVAGE_HUMAN_REVIEW_REQUIRED: R1+ stagnation salvage requires an authenticated owner/human review before acceptance",
+            ],
+          }}
+          candidateId="candidate-1"
+        />
+      </I18nProvider>,
+    );
+    expect(screen.getAllByText("Stagnation salvage").length).toBe(2);
+    expect(
+      screen.getAllByText(/the model loop had stopped/).length,
+    ).toBeGreaterThan(0);
+    expect(screen.getByText(/SALVAGE_HUMAN_REVIEW_REQUIRED/)).toBeDefined();
   });
 });

@@ -48,25 +48,43 @@ impl Database {
         .map_err(|error| Error::Forbidden(format!("candidate lineage rejected: {error}")))?;
         let spec: ActionSpec = serde_json::from_str(&context.spec_json)
             .map_err(|_| Error::Invalid("stored ActionSpec encoding"))?;
-        if !spec.allowed_paths.is_empty() {
+        let repository = context.repository.clone();
+        let base_commit = context.base_commit.clone();
+        let commit_sha = verified.commit_sha.clone();
+        let changed = tokio::task::spawn_blocking(move || {
+            crate::workspace::changed_paths(Path::new(&repository), &base_commit, &commit_sha)
+        })
+        .await
+        .map_err(|error| Error::Forbidden(format!("candidate path task failed: {error}")))?
+        .map_err(|error| Error::Forbidden(format!("candidate path check failed: {error}")))?;
+        if !spec.allowed_paths.is_empty()
+            && let Some(path) = changed
+                .iter()
+                .find(|path| !crate::workspace::path_covered(path, &spec.allowed_paths))
+        {
+            return Err(Error::Forbidden(format!(
+                "candidate path {path:?} is outside the frozen allowed paths"
+            )));
+        }
+        let diff_stat = if input.final_source
+            == crate::quality::CandidateFinalSource::StagnationSalvage
+        {
             let repository = context.repository.clone();
             let base_commit = context.base_commit.clone();
             let commit_sha = verified.commit_sha.clone();
-            let changed = tokio::task::spawn_blocking(move || {
-                crate::workspace::changed_paths(Path::new(&repository), &base_commit, &commit_sha)
-            })
-            .await
-            .map_err(|error| Error::Forbidden(format!("candidate path task failed: {error}")))?
-            .map_err(|error| Error::Forbidden(format!("candidate path check failed: {error}")))?;
-            if let Some(path) = changed
-                .iter()
-                .find(|path| !crate::workspace::path_covered(path, &spec.allowed_paths))
-            {
-                return Err(Error::Forbidden(format!(
-                    "candidate path {path:?} is outside the frozen allowed paths"
-                )));
-            }
-        }
+            Some(
+                tokio::task::spawn_blocking(move || {
+                    crate::workspace::diff_stat(Path::new(&repository), &base_commit, &commit_sha)
+                })
+                .await
+                .map_err(|error| Error::Forbidden(format!("candidate diff task failed: {error}")))?
+                .map_err(|error| {
+                    Error::Forbidden(format!("candidate diff summary failed: {error}"))
+                })?,
+            )
+        } else {
+            None
+        };
 
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin().await?;
@@ -88,6 +106,7 @@ impl Database {
                     .commit_sha
                     .eq_ignore_ascii_case(&verified.commit_sha)
                 && existing.tree_sha.eq_ignore_ascii_case(&verified.tree_sha)
+                && existing.final_source == input.final_source
             {
                 transaction.commit().await?;
                 return Ok(existing);
@@ -96,6 +115,17 @@ impl Database {
                 "attempt already recorded a different candidate revision",
             ));
         }
+        let salvage = derive_salvage_evidence(
+            &mut transaction,
+            input,
+            &current,
+            &spec,
+            &verified.commit_sha,
+            &verified.tree_sha,
+            &changed,
+            diff_stat.as_deref(),
+        )
+        .await?;
         require_live_lease(
             &current,
             &input.worker_id,
@@ -112,11 +142,12 @@ impl Database {
             created_at: Utc::now().to_rfc3339(),
             integration: false,
             lineage: Vec::new(),
+            final_source: input.final_source,
         };
         sqlx::query::query(
             "INSERT INTO candidates
-             (id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at,integration,lineage_json)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,0,'[]')",
+             (id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at,integration,lineage_json,final_source)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,0,'[]',?8)",
         )
             .bind(&candidate.id)
             .bind(&candidate.attempt_id)
@@ -125,6 +156,7 @@ impl Database {
             .bind(&candidate.tree_sha)
             .bind(&candidate.implementer_id)
             .bind(&candidate.created_at)
+            .bind(candidate.final_source.as_str())
             .execute(&mut *transaction)
             .await?;
         let changed = sqlx::query::query(
@@ -148,11 +180,30 @@ impl Database {
             &candidate.id,
             "candidate.recorded",
             &format!(
-                "attempt={} commit={} tree={}",
-                candidate.attempt_id, candidate.commit_sha, candidate.tree_sha
+                "attempt={} commit={} tree={} finalSource={}",
+                candidate.attempt_id,
+                candidate.commit_sha,
+                candidate.tree_sha,
+                candidate.final_source.as_str()
             ),
         )
         .await?;
+        if let Some(evidence) = salvage.as_ref() {
+            let mut detail = serde_json::to_value(evidence)
+                .map_err(|_| Error::Invalid("stagnation salvage evidence encoding"))?;
+            if let Some(object) = detail.as_object_mut() {
+                object.insert("candidateId".into(), serde_json::json!(candidate.id));
+                object.insert("commitSha".into(), serde_json::json!(candidate.commit_sha));
+            }
+            record_event(
+                &mut transaction,
+                &candidate.id,
+                "worker.stagnation_finalized",
+                &serde_json::to_string(&detail)
+                    .map_err(|_| Error::Invalid("stagnation salvage evidence encoding"))?,
+            )
+            .await?;
+        }
         transaction.commit().await?;
         Ok(candidate)
     }
@@ -492,11 +543,12 @@ impl Database {
             created_at: Utc::now().to_rfc3339(),
             integration: true,
             lineage: verified.parent_shas.clone(),
+            final_source: crate::quality::CandidateFinalSource::ModelFinal,
         };
         sqlx::query::query(
             "INSERT INTO candidates
-             (id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at,integration,lineage_json)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,1,?8)",
+             (id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at,integration,lineage_json,final_source)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,1,?8,'MODEL_FINAL')",
         )
         .bind(&candidate.id)
         .bind(&candidate.attempt_id)
@@ -543,12 +595,12 @@ impl Database {
     pub async fn candidates(&self) -> Result<Vec<CandidateRecord>, Error> {
         let rows: Vec<CandidateColumns> = sqlx::query_as::query_as(
             "SELECT id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at,
-                    integration,lineage_json
+                    integration,lineage_json,final_source
              FROM candidates ORDER BY created_at,id",
         )
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows.into_iter().map(candidate_from_columns).collect())
+        rows.into_iter().map(candidate_from_columns).collect()
     }
 
     /// Latest candidate produced by a Campaign. Repair always starts from the
@@ -559,7 +611,7 @@ impl Database {
     ) -> Result<CandidateRecord, Error> {
         let row: Option<CandidateColumns> = sqlx::query_as::query_as(
             "SELECT cd.id,cd.attempt_id,cd.action_spec_sha256,cd.commit_sha,cd.tree_sha,
-                    cd.implementer_id,cd.created_at,cd.integration,cd.lineage_json
+                    cd.implementer_id,cd.created_at,cd.integration,cd.lineage_json,cd.final_source
              FROM candidates cd
              JOIN attempts a ON a.id=cd.attempt_id
              JOIN runs r ON r.id=a.run_id
@@ -569,7 +621,9 @@ impl Database {
         .bind(campaign_id)
         .fetch_optional(&self.pool)
         .await?;
-        row.map(candidate_from_columns).ok_or(Error::NotFound)
+        row.map(candidate_from_columns)
+            .transpose()?
+            .ok_or(Error::NotFound)
     }
 
     /// Accepted repair candidates whose Project base has not necessarily been
@@ -761,12 +815,17 @@ struct CandidateContext {
     execution_mode: String,
     kind: String,
     integration_candidates: Vec<String>,
+    campaign_id: String,
+    work_item_id: String,
+    authorization_id: String,
+    policy_id: String,
 }
 
 type CandidateContextRow = (
     Option<String>,
     Option<i64>,
     Option<i64>,
+    String,
     String,
     String,
     String,
@@ -786,7 +845,7 @@ async fn candidate_context(
         "SELECT l.worker_id,l.generation,l.expires_at_ms,a.status,c.status,p.repository,
                 COALESCE(aps.base_commit,p.base_commit),COALESCE(aps.spec_sha256,s.spec_sha256),
                 COALESCE(aps.spec_json,s.spec_json),COALESCE(ca.execution_mode,'NONE'),
-                COALESCE(aps.kind,'UNIT'),COALESCE(aps.integration_candidates_json,'[]')
+                COALESCE(aps.kind,'UNIT'),COALESCE(aps.integration_candidates_json,'[]'),c.id
          FROM attempts a
          JOIN runs r ON r.id=a.run_id
          JOIN campaigns c ON c.id=r.campaign_id
@@ -799,7 +858,7 @@ async fn candidate_context(
          WHERE a.id=?1",
     )
     .bind(attempt_id)
-    .fetch_optional(connection)
+    .fetch_optional(&mut *connection)
     .await?;
     let (
         worker_id,
@@ -814,7 +873,23 @@ async fn candidate_context(
         execution_mode,
         kind,
         integration_candidates,
+        campaign_id,
     ) = row.ok_or(Error::NotFound)?;
+    let (work_item_id, authorization_id, policy_id): (String, String, String) =
+        sqlx::query_as::query_as(
+            "SELECT COALESCE(lt.unit_id,li.integration_id,c.id),
+                COALESCE(ca.authorization_id,''),COALESCE(ca.policy_id,'')
+         FROM attempts a
+         JOIN runs r ON r.id=a.run_id
+         JOIN campaigns c ON c.id=r.campaign_id
+         LEFT JOIN campaign_authorizations ca ON ca.campaign_id=c.id
+         LEFT JOIN lead_tasks lt ON lt.attempt_id=a.id
+         LEFT JOIN lead_integrations li ON li.attempt_id=a.id
+         WHERE a.id=?1",
+        )
+        .bind(attempt_id)
+        .fetch_one(&mut *connection)
+        .await?;
     Ok(CandidateContext {
         worker_id: worker_id.unwrap_or_default(),
         generation: generation.unwrap_or(0),
@@ -829,6 +904,10 @@ async fn candidate_context(
         kind,
         integration_candidates: serde_json::from_str(&integration_candidates)
             .map_err(|_| Error::Invalid("stored integration candidates"))?,
+        campaign_id,
+        work_item_id,
+        authorization_id,
+        policy_id,
     })
 }
 
@@ -872,7 +951,252 @@ fn validate_candidate_input(input: &NewCandidate) -> Result<(), Error> {
     {
         return Err(Error::Invalid("candidate submission"));
     }
-    Ok(())
+    validate_candidate_finalization(input)
+}
+
+fn validate_candidate_finalization(input: &NewCandidate) -> Result<(), Error> {
+    match (input.final_source, input.salvage.as_ref()) {
+        (crate::quality::CandidateFinalSource::ModelFinal, None) => Ok(()),
+        (crate::quality::CandidateFinalSource::ModelFinal, Some(_)) => Err(Error::Invalid(
+            "a model final cannot carry stagnation salvage evidence",
+        )),
+        (crate::quality::CandidateFinalSource::StagnationSalvage, None) => Err(Error::Invalid(
+            "stagnation salvage requires a work-item claim",
+        )),
+        (crate::quality::CandidateFinalSource::StagnationSalvage, Some(claim)) => {
+            if claim.work_item_id.trim().is_empty() || claim.work_item_id.len() > 128 {
+                return Err(Error::Invalid("stagnation salvage work-item claim"));
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Derive every salvage fact from immutable Core records. Worker-supplied
+/// booleans, counts, diff text and receipt lists are not accepted: the only
+/// Worker input is the work-item claim.
+#[allow(clippy::too_many_arguments)]
+async fn derive_salvage_evidence(
+    connection: &mut SqliteConnection,
+    input: &NewCandidate,
+    context: &CandidateContext,
+    spec: &ActionSpec,
+    candidate_commit: &str,
+    candidate_tree: &str,
+    changed: &[String],
+    diff_stat: Option<&str>,
+) -> Result<Option<CandidateSalvageEvidence>, Error> {
+    let Some(claim) = input.salvage.as_ref() else {
+        return Ok(None);
+    };
+    if claim.work_item_id != context.work_item_id {
+        return Err(Error::Forbidden(
+            "stagnation salvage work item does not match the Attempt".into(),
+        ));
+    }
+    if changed.is_empty() {
+        return Err(Error::Forbidden(
+            "stagnation salvage requires a non-empty exact candidate diff".into(),
+        ));
+    }
+    if changed.len() > 200 {
+        return Err(Error::Forbidden(
+            "stagnation salvage diff exceeds the bounded evidence limit".into(),
+        ));
+    }
+    let diff_stat = diff_stat
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            Error::Forbidden("stagnation salvage requires an exact diff summary".into())
+        })?;
+    if diff_stat.len() > 16_000 {
+        return Err(Error::Forbidden(
+            "stagnation salvage diff summary exceeds the bounded evidence limit".into(),
+        ));
+    }
+
+    if spec.checks.is_empty() {
+        return Err(Error::Forbidden(format!(
+            "{}: stagnation salvage requires at least one frozen acceptance check",
+            crate::quality::SALVAGE_EMPTY_FROZEN_CHECKS
+        )));
+    }
+    let checkpoint: Option<(String, String, i64, i64)> = sqlx::query_as::query_as(
+        "SELECT checkpoint_id,decision,stagnant_checkpoints,unsuccessful_replans
+         FROM progress_checkpoints
+         WHERE campaign_id=?1 AND work_item_id=?2 AND attempt_id=?3
+         ORDER BY rowid DESC LIMIT 1",
+    )
+    .bind(&context.campaign_id)
+    .bind(&context.work_item_id)
+    .bind(&input.attempt_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    let Some((checkpoint_id, decision, stagnant_checkpoints, unsuccessful_replans)) = checkpoint
+    else {
+        return Err(Error::Forbidden(
+            "stagnation salvage requires a durable progress diagnose for this Attempt".into(),
+        ));
+    };
+    if decision != "DIAGNOSE" {
+        return Err(Error::Forbidden(
+            "the latest durable progress decision is not Diagnose".into(),
+        ));
+    }
+    let policy_json: Option<(String,)> = sqlx::query_as::query_as(
+        "SELECT progress_policy_json FROM execution_policies WHERE policy_id=?1",
+    )
+    .bind(&context.policy_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    let progress: crate::execution_policy::ProgressPolicy = policy_json
+        .map(|(value,)| serde_json::from_str(&value))
+        .transpose()
+        .map_err(|_| Error::Invalid("stored progress policy encoding"))?
+        .ok_or_else(|| {
+            Error::Forbidden("stagnation salvage has no frozen progress policy".into())
+        })?;
+    let stagnant_checkpoints = u32::try_from(stagnant_checkpoints).unwrap_or(u32::MAX);
+    let unsuccessful_replans = u32::try_from(unsuccessful_replans).unwrap_or(u32::MAX);
+    if stagnant_checkpoints < progress.diagnose_after_stagnant_checkpoints.get()
+        || unsuccessful_replans >= progress.escalate_after_unsuccessful_replans.get()
+    {
+        return Err(Error::Forbidden(
+            "durable progress counts do not meet the frozen Diagnose policy".into(),
+        ));
+    }
+
+    let (final_nudges,): (i64,) = sqlx::query_as::query_as(
+        "SELECT COUNT(*) FROM provider_tool_events e
+         JOIN provider_sessions ps ON ps.session_record_id=e.session_record_id
+         WHERE ps.attempt_id=?1 AND ps.generation=?2
+           AND e.tool='final_nudge' AND e.decision='ERROR'",
+    )
+    .bind(&input.attempt_id)
+    .bind(input.generation)
+    .fetch_one(&mut *connection)
+    .await?;
+    let final_nudges = u64::try_from(final_nudges).unwrap_or(0);
+    if final_nudges == 0 {
+        return Err(Error::Forbidden(
+            "stagnation salvage requires durable Core-recorded final-nudge evidence".into(),
+        ));
+    }
+    let (model_turns,): (i64,) = sqlx::query_as::query_as(
+        "SELECT COUNT(*) FROM provider_turn_reservations
+         WHERE attempt_id=?1 AND generation=?2 AND state='SETTLED'",
+    )
+    .bind(&input.attempt_id)
+    .bind(input.generation)
+    .fetch_one(&mut *connection)
+    .await?;
+    let model_turns = u64::try_from(model_turns).unwrap_or(0);
+    if model_turns == 0 {
+        return Err(Error::Forbidden(
+            "stagnation salvage requires a durable settled provider turn".into(),
+        ));
+    }
+
+    let rows: Vec<(String, String, String, String, String)> = sqlx::query_as::query_as(
+        "SELECT receipt_id,check_id,command_json,outcome,result_sha256
+         FROM execution_check_receipts
+         WHERE campaign_id=?1 AND attempt_id=?2 AND work_item_id=?3
+           AND generation=?4 AND candidate_commit_sha=?5 AND candidate_tree_sha=?6
+         ORDER BY rowid",
+    )
+    .bind(&context.campaign_id)
+    .bind(&input.attempt_id)
+    .bind(&context.work_item_id)
+    .bind(input.generation)
+    .bind(candidate_commit)
+    .bind(candidate_tree)
+    .fetch_all(&mut *connection)
+    .await?;
+    let mut receipts = Vec::with_capacity(spec.checks.len());
+    let frozen_ids = spec
+        .checks
+        .iter()
+        .map(|check| check.id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    for check in &spec.checks {
+        let matches = rows
+            .iter()
+            .filter(|(_, check_id, _, _, _)| check_id == &check.id)
+            .collect::<Vec<_>>();
+        if matches.len() != 1 {
+            return Err(Error::Forbidden(
+                "stagnation salvage requires exactly one execution receipt per frozen check".into(),
+            ));
+        }
+        let (receipt_id, check_id, command_json, outcome, result_sha256) = matches[0];
+        let command: Vec<String> = serde_json::from_str(command_json).map_err(|_| {
+            Error::Forbidden("stagnation salvage receipt command is invalid".into())
+        })?;
+        if outcome != "PASS" || command != check.command {
+            return Err(Error::Forbidden(
+                "stagnation salvage execution receipt is not a PASS for the frozen check".into(),
+            ));
+        }
+        receipts.push(CandidateSalvageCheckReceipt {
+            check_id: check_id.clone(),
+            receipt_id: receipt_id.clone(),
+            result_sha256: result_sha256.clone(),
+        });
+    }
+    if rows.len() != spec.checks.len()
+        || rows
+            .iter()
+            .any(|(_, check_id, _, _, _)| !frozen_ids.contains(check_id.as_str()))
+    {
+        return Err(Error::Forbidden(
+            "stagnation salvage contains extra or mismatched execution receipts".into(),
+        ));
+    }
+
+    let prior: Option<(String,)> = sqlx::query_as::query_as(
+        "SELECT cd.id FROM candidates cd
+         JOIN attempts a ON a.id=cd.attempt_id
+         JOIN runs r ON r.id=a.run_id
+         LEFT JOIN lead_tasks lt ON lt.attempt_id=a.id
+         LEFT JOIN lead_integrations li ON li.attempt_id=a.id
+         WHERE r.campaign_id=?1
+           AND COALESCE(lt.unit_id,li.integration_id,r.campaign_id)=?2
+           AND cd.final_source='STAGNATION_SALVAGE'
+         LIMIT 1",
+    )
+    .bind(&context.campaign_id)
+    .bind(&context.work_item_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    if prior.is_some() {
+        return Err(Error::Conflict(
+            "work item already used its one stagnation salvage",
+        ));
+    }
+
+    Ok(Some(CandidateSalvageEvidence {
+        campaign_id: context.campaign_id.clone(),
+        work_item_id: context.work_item_id.clone(),
+        attempt_id: input.attempt_id.clone(),
+        model_turns,
+        final_nudges,
+        frozen_checks: u64::try_from(spec.checks.len()).unwrap_or(u64::MAX),
+        passed_checks: u64::try_from(spec.checks.len()).unwrap_or(u64::MAX),
+        written: true,
+        decision: "DIAGNOSE".into(),
+        reason: "DIAGNOSE_WITH_WRITE_AND_ALL_FROZEN_CHECKS_PASS".into(),
+        policy_id: context.policy_id.clone(),
+        authorization_id: context.authorization_id.clone(),
+        diagnose_checkpoint_id: checkpoint_id,
+        stagnant_checkpoints,
+        unsuccessful_replans,
+        diff: CandidateSalvageDiff {
+            changed_files: u64::try_from(changed.len()).unwrap_or(u64::MAX),
+            changed_paths: changed.to_vec(),
+            diff_stat: diff_stat.to_owned(),
+        },
+        check_receipts: receipts,
+    }))
 }
 
 fn validate_receipt_input(role: QualityRole, input: &QualityReceiptInput) -> Result<(), Error> {
@@ -1633,7 +1957,7 @@ async fn evaluate_gate_decision(
         && principals.len() >= requirement.count
         && covered_roles.len() >= requirement.roles.len();
 
-    let policy = load_gate_policy(connection, candidate_id).await?;
+    let (policy, risk_class) = load_gate_policy(connection, candidate_id).await?;
     let reviewer_values = reviewer_records
         .iter()
         .map(to_reviewer_receipt)
@@ -1819,6 +2143,11 @@ async fn evaluate_gate_decision(
     {
         return Ok(None);
     }
+    decision = crate::quality::apply_salvage_review_policy(
+        decision,
+        candidate.final_source,
+        risk_class.as_deref(),
+    );
     Ok(Some(EvaluatedGate {
         decision,
         verifier: verifier.clone(),
@@ -2133,9 +2462,10 @@ type CandidateColumns = (
     String,
     i64,
     String,
+    String,
 );
 
-fn candidate_from_columns(columns: CandidateColumns) -> CandidateRecord {
+fn candidate_from_columns(columns: CandidateColumns) -> Result<CandidateRecord, Error> {
     let (
         id,
         attempt_id,
@@ -2146,8 +2476,9 @@ fn candidate_from_columns(columns: CandidateColumns) -> CandidateRecord {
         created_at,
         integration,
         lineage,
+        final_source,
     ) = columns;
-    CandidateRecord {
+    Ok(CandidateRecord {
         id,
         attempt_id,
         action_spec_sha256,
@@ -2157,7 +2488,9 @@ fn candidate_from_columns(columns: CandidateColumns) -> CandidateRecord {
         created_at,
         integration: integration == 1,
         lineage: serde_json::from_str(&lineage).unwrap_or_default(),
-    }
+        final_source: crate::quality::CandidateFinalSource::parse(&final_source)
+            .ok_or(Error::Invalid("stored candidate final source"))?,
+    })
 }
 
 async fn load_candidate(
@@ -2166,13 +2499,15 @@ async fn load_candidate(
 ) -> Result<CandidateRecord, Error> {
     let row: Option<CandidateColumns> = sqlx::query_as::query_as(
         "SELECT id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at,
-                integration,lineage_json
+                integration,lineage_json,final_source
          FROM candidates WHERE id=?1",
     )
     .bind(id)
     .fetch_optional(connection)
     .await?;
-    row.map(candidate_from_columns).ok_or(Error::NotFound)
+    row.map(candidate_from_columns)
+        .transpose()?
+        .ok_or(Error::NotFound)
 }
 
 async fn load_candidate_for_attempt(
@@ -2181,13 +2516,13 @@ async fn load_candidate_for_attempt(
 ) -> Result<Option<CandidateRecord>, Error> {
     let row: Option<CandidateColumns> = sqlx::query_as::query_as(
         "SELECT id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at,
-                integration,lineage_json
+                integration,lineage_json,final_source
          FROM candidates WHERE attempt_id=?1",
     )
     .bind(attempt_id)
     .fetch_optional(connection)
     .await?;
-    Ok(row.map(candidate_from_columns))
+    row.map(candidate_from_columns).transpose()
 }
 
 fn receipt_from_row(row: &SqliteRow) -> Result<QualityReceiptRecord, Error> {
@@ -2340,7 +2675,7 @@ async fn load_gate(
 async fn load_gate_policy(
     connection: &mut SqliteConnection,
     candidate_id: &str,
-) -> Result<GatePolicy, Error> {
+) -> Result<(GatePolicy, Option<String>), Error> {
     let row: Option<(String, Option<String>, Option<String>)> = sqlx::query_as::query_as(
         "SELECT c.status,ca.risk_class,ca.execution_mode FROM candidates cd
          JOIN attempts a ON a.id=cd.attempt_id
@@ -2360,16 +2695,19 @@ async fn load_gate_policy(
         ("BLOCKED_AUTHORIZATION", _) => AuthorizationStatus::HumanApprovalRequired,
         _ => AuthorizationStatus::Denied,
     };
-    let risk = match risk.as_deref() {
+    let risk_status = match risk.as_deref() {
         Some("R0") => RiskStatus::WithinPolicy,
         Some("R1") => RiskStatus::HumanApprovalRequired,
         Some("R2" | "R3") => RiskStatus::ExceedsPolicy,
         _ => RiskStatus::Unknown,
     };
-    Ok(GatePolicy {
-        authorization,
+    Ok((
+        GatePolicy {
+            authorization,
+            risk: risk_status,
+        },
         risk,
-    })
+    ))
 }
 
 fn to_verifier_receipt(record: &QualityReceiptRecord) -> VerifierReceipt {

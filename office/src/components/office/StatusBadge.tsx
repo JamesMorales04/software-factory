@@ -17,6 +17,8 @@ const SUCCESS = new Set([
   "CURRENT",
   "REGISTERED",
   "AVAILABLE",
+  "MERGED",
+  "REVERTED",
 ]);
 
 const ATTENTION = new Set([
@@ -37,6 +39,10 @@ const ATTENTION = new Set([
   "WAITING",
   "ENDPOINT_UNSUPPORTED",
   "INVALID_RESPONSE",
+  "NEEDS_ATTENTION",
+  "OPEN",
+  "ACKNOWLEDGED",
+  "REVERT_PENDING",
 ]);
 
 const DANGER = new Set([
@@ -62,6 +68,7 @@ const INFO = new Set([
   "RESERVED",
   "SUPPORTED_TRUSTED_LOCAL",
   "DEFAULT",
+  "MERGING",
 ]);
 
 export function statusTone(status: string): BadgeTone {

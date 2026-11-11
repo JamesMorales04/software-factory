@@ -333,6 +333,11 @@ dedicated engine storage. A restart preserves the Project, Campaign, candidate
 and gate; services wait for init material and the runtime bundle marker before
 starting, then converge through health checks.
 
+Test installations that accumulated old Campaigns or unresolved model
+reservations can use the guarded, backed-up [test-data reset](test-data-reset.md).
+It is a development/operator tool, never an install step or automatic cleanup,
+and it only resets Core database state.
+
 Upgrading from a pre-owner-label installation can leave managed
 `factory-ws-*` volumes with an exact workspace label but no owner label. The
 Supervisor's `create_volume` call adopts only that exact workspace identity:

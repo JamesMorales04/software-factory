@@ -326,7 +326,9 @@ impl Database {
         }
         let project = load_project(&mut transaction, project_id).await?;
         let objective_sha256 = sha256_hex(objective.as_bytes());
-        let spec = ActionSpec {
+        let action_id = Uuid::new_v4().to_string();
+        #[allow(unused_mut)]
+        let mut spec = ActionSpec {
             schema_version: 1,
             project_id: project_id.into(),
             repository: project.repository,
@@ -347,11 +349,14 @@ impl Database {
             environment_builder_image: None,
             environment_builder_image_digest: None,
             environment_required: false,
+            environment_spec_id: None,
         };
+        #[cfg(test)]
+        crate::db::apply_test_environment_binding(&mut spec, &action_id);
         let spec_json = serde_json::to_string(&spec).expect("ActionSpec serializes");
         let spec_sha256 = sha256_hex(spec_json.as_bytes());
         let action = Action {
-            id: Uuid::new_v4().to_string(),
+            id: action_id,
             project_id: project_id.into(),
             objective: objective.into(),
             provider: provider.into(),
@@ -396,6 +401,11 @@ impl Database {
         )
         .await?;
         transaction.commit().await?;
+        #[cfg(test)]
+        let action = {
+            let mut connection = self.pool.acquire().await?;
+            load_action(&mut connection, &action.id).await?
+        };
         Ok(action)
     }
 

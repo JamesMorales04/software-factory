@@ -1325,6 +1325,7 @@ mod tests {
                 implementer_id: "worker-1".into(),
                 integration: false,
                 lineage: Vec::new(),
+                final_source: factory_native::quality::CandidateFinalSource::ModelFinal,
                 created_at: "2026-11-10T12:00:00Z".into(),
             },
             action_id: "action-1".into(),
@@ -1347,6 +1348,8 @@ mod tests {
                 environment_builder_image: None,
                 environment_builder_image_digest: None,
                 environment_required: true,
+
+                environment_spec_id: None,
             },
             action_spec_sha256: "a".repeat(64),
             repository: "/tmp/repo".into(),

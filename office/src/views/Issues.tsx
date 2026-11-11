@@ -35,6 +35,7 @@ const COLUMNS = [
   { id: "ready", labelKey: "issues.board.ready", tone: "success" },
   { id: "queued", labelKey: "issues.board.queued", tone: "info" },
   { id: "working", labelKey: "issues.board.working", tone: "accent" },
+  { id: "review", labelKey: "issues.board.review", tone: "info" },
   { id: "attention", labelKey: "issues.board.attention", tone: "attention" },
   { id: "done", labelKey: "issues.board.done", tone: "neutral" },
 ] as const;
@@ -65,12 +66,94 @@ function errorText(cause: unknown, fallback: string): string {
   return cause instanceof CoreApiError ? cause.message : fallback;
 }
 
+function deliveryFailureDetail(cause: unknown): string | null {
+  if (!(cause instanceof CoreApiError)) return null;
+  const body =
+    typeof cause.body === "object" && cause.body !== null
+      ? (cause.body as { failures?: unknown })
+      : null;
+  if (!Array.isArray(body?.failures)) return null;
+  const details = body.failures
+    .map((failure) => {
+      if (typeof failure !== "object" || failure === null) return null;
+      const value = failure as { kind?: unknown; detail?: unknown };
+      return typeof value.detail === "string"
+        ? `${typeof value.kind === "string" ? `${value.kind}: ` : ""}${value.detail}`
+        : null;
+    })
+    .filter((detail): detail is string => detail !== null);
+  return details.length > 0 ? details.join("; ") : null;
+}
+
 function cardState(
   board: BoardProject,
   issue: GitHubIssueSummary,
   requestById: Map<string, IntakeRequestSummary>,
   t: (key: MessageKey) => string,
 ): Omit<CardData, "project" | "issue"> {
+  const link = issue.issueLink;
+  if (link) {
+    const reason =
+      link.latestErrorDetail !== null
+        ? `${link.latestErrorKind ?? "GITHUB_WRITE_FAILED"}: ${link.latestErrorDetail}`
+        : null;
+    if (
+      link.deliveryState === "FAILED" ||
+      link.deliveryState === "BLOCKED" ||
+      link.deliveryState === "PARTIAL"
+    ) {
+      return {
+        state: "attention",
+        queue: null,
+        intakeRequestId: link.requestId,
+        reason,
+      };
+    }
+    switch (link.state) {
+      case "DONE":
+        return {
+          state: "done",
+          queue: null,
+          intakeRequestId: link.requestId,
+          reason: null,
+        };
+      case "IN_REVIEW":
+        return {
+          state: "review",
+          queue: null,
+          intakeRequestId: link.requestId,
+          reason: null,
+        };
+      case "NEEDS_ATTENTION":
+        return {
+          state: "attention",
+          queue: null,
+          intakeRequestId: link.requestId,
+          reason,
+        };
+      case "IN_PROGRESS":
+        return {
+          state: "working",
+          queue: null,
+          intakeRequestId: link.requestId,
+          reason: null,
+        };
+      case "QUEUED":
+        return {
+          state: "queued",
+          queue: null,
+          intakeRequestId: link.requestId,
+          reason: null,
+        };
+      case "READY":
+        return {
+          state: "ready",
+          queue: null,
+          intakeRequestId: link.requestId,
+          reason: null,
+        };
+    }
+  }
   const queue = (board.intake?.queue ?? [])
     .filter((item) => item.issue_number === issue.number)
     .sort((left, right) => right.updated_at.localeCompare(left.updated_at))[0];
@@ -300,6 +383,7 @@ export function Issues() {
       ready: 0,
       queued: 0,
       working: 0,
+      review: 0,
       attention: 0,
       done: 0,
     };
@@ -332,6 +416,7 @@ export function Issues() {
     const ready = cards.find(
       (card) =>
         card.state === "ready" &&
+        !card.issue.issueLink &&
         !autoAttempted.current.has(`${card.project.id}:${card.issue.number}`),
     );
     if (!ready) return;
@@ -396,7 +481,40 @@ export function Issues() {
     }
   }
 
+  async function retryDelivery(card: CardData) {
+    const link = card.issue.issueLink;
+    if (!link?.latestErrorEventId) return;
+    const key = `${link.id}:${link.latestErrorEventId}`;
+    setBusy(`retry:${key}`);
+    setError(null);
+    setNotice(null);
+    try {
+      await coreApi.retryIssueDelivery(link.id, link.latestErrorEventId);
+      setNotice(t("issues.delivery.retried", { number: card.issue.number }));
+      await load();
+    } catch (cause) {
+      const detail = deliveryFailureDetail(cause);
+      const message = detail
+        ? `${t("issues.delivery.retryError")} ${detail}`
+        : errorText(cause, t("issues.delivery.retryError"));
+      await load();
+      setError(message);
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function startIssue(card: CardData, navigateToRequest = true) {
+    const link = card.issue.issueLink;
+    if (
+      link &&
+      !(link.state === "NEEDS_ATTENTION" && link.latestErrorEventId === null)
+    ) {
+      if (navigateToRequest) {
+        navigate(`/requests/${link.requestId}`);
+      }
+      return;
+    }
     const board = boards?.find((entry) => entry.project.id === card.project.id);
     if (!board?.intake?.policy?.enabled) {
       setPolicyProject(board ?? null);
@@ -882,6 +1000,42 @@ export function Issues() {
               <Badge tone={toneFor(selected.state)}>
                 {t(`issues.board.${selected.state}`)}
               </Badge>
+              {selected.issue.issueLink && (
+                <Badge
+                  tone={
+                    selected.issue.issueLink.deliveryState === "CLOSED"
+                      ? "success"
+                      : selected.issue.issueLink.deliveryState === "FAILED" ||
+                          selected.issue.issueLink.deliveryState ===
+                            "BLOCKED" ||
+                          selected.issue.issueLink.deliveryState === "PARTIAL"
+                        ? "attention"
+                        : "info"
+                  }
+                >
+                  {t("issues.delivery.state", {
+                    state: selected.issue.issueLink.deliveryState,
+                  })}
+                </Badge>
+              )}
+              {selected.issue.issueLink?.pullRequestUrl && (
+                <a
+                  href={selected.issue.issueLink.pullRequestUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {t("issues.delivery.pullRequest", {
+                    number: selected.issue.issueLink.pullRequestNumber ?? "",
+                  })}
+                </a>
+              )}
+              {selected.issue.issueLink?.mergeSha && (
+                <code>
+                  {t("issues.delivery.merge", {
+                    sha: selected.issue.issueLink.mergeSha.slice(0, 12),
+                  })}
+                </code>
+              )}
               <span>{selected.issue.author ?? t("common.unknown")}</span>
               <span>{formatTimestamp(selected.issue.updated_at)}</span>
               <a
@@ -906,18 +1060,34 @@ export function Issues() {
                   {t("issues.detail.openRequest")}
                 </Link>
               )}
-              {(selected.state === "ready" ||
-                selected.state === "attention") && (
-                <Button
-                  variant="primary"
-                  disabled={busy !== null}
-                  onClick={() => void startIssue(selected)}
-                >
-                  {busy?.startsWith("start:")
-                    ? t("issues.start.starting")
-                    : t("issues.start.action")}
-                </Button>
-              )}
+              {selected.issue.issueLink?.latestErrorEventId &&
+                (selected.issue.issueLink.deliveryState === "FAILED" ||
+                  selected.issue.issueLink.deliveryState === "BLOCKED") && (
+                  <Button
+                    variant="secondary"
+                    disabled={busy !== null}
+                    onClick={() => void retryDelivery(selected)}
+                  >
+                    {busy ===
+                    `retry:${selected.issue.issueLink.id}:${selected.issue.issueLink.latestErrorEventId}`
+                      ? t("issues.delivery.retrying")
+                      : t("issues.delivery.retry")}
+                  </Button>
+                )}
+              {(selected.state === "ready" || selected.state === "attention") &&
+                (!selected.issue.issueLink ||
+                  (selected.issue.issueLink.state === "NEEDS_ATTENTION" &&
+                    selected.issue.issueLink.latestErrorEventId === null)) && (
+                  <Button
+                    variant="primary"
+                    disabled={busy !== null}
+                    onClick={() => void startIssue(selected)}
+                  >
+                    {busy?.startsWith("start:")
+                      ? t("issues.start.starting")
+                      : t("issues.start.action")}
+                  </Button>
+                )}
               {!boards?.find(
                 (board) => board.project.id === selected.project.id,
               )?.intake?.policy?.enabled && (

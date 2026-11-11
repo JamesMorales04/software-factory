@@ -526,6 +526,69 @@ pub struct EnvironmentBrokerResult {
     pub duration_ms: u64,
 }
 
+/// Read one project environment file without following a symlink or escaping
+/// the canonical workspace root. The byte bound is enforced while reading so a
+/// special or growing file cannot allocate first and fail later.
+fn read_workspace_environment_file(root: &Path, relative: &str) -> Result<String, String> {
+    use std::io::Read;
+    let relative_path = Path::new(relative);
+    if relative.is_empty()
+        || relative_path.is_absolute()
+        || relative_path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        })
+    {
+        return Err(format!(
+            "project environment file {relative} is not a safe relative path"
+        ));
+    }
+    let canonical_root = root
+        .canonicalize()
+        .map_err(|_| format!("project environment workspace for {relative} is unavailable"))?;
+    let mut current = canonical_root.clone();
+    for component in relative_path.components() {
+        let std::path::Component::Normal(part) = component else {
+            return Err(format!(
+                "project environment file {relative} is not a safe relative path"
+            ));
+        };
+        current.push(part);
+        let metadata = std::fs::symlink_metadata(&current)
+            .map_err(|_| format!("project environment file {relative} is unavailable"))?;
+        if metadata.file_type().is_symlink() {
+            return Err(format!(
+                "project environment file {relative} must not be a symbolic link"
+            ));
+        }
+    }
+    let canonical = current
+        .canonicalize()
+        .map_err(|_| format!("project environment file {relative} is unavailable"))?;
+    if !canonical.starts_with(&canonical_root) {
+        return Err(format!(
+            "project environment file {relative} escapes the workspace"
+        ));
+    }
+    let file = std::fs::File::open(&canonical)
+        .map_err(|_| format!("project environment file {relative} is unavailable"))?;
+    let mut bytes = Vec::new();
+    file.take(MAX_ENVIRONMENT_WORKSPACE_FILE_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| format!("project environment file {relative} cannot be read"))?;
+    if bytes.len() > MAX_ENVIRONMENT_WORKSPACE_FILE_BYTES {
+        return Err(format!(
+            "project environment file {relative} exceeds its bound"
+        ));
+    }
+    String::from_utf8(bytes)
+        .map_err(|_| format!("project environment file {relative} is not UTF-8 text"))
+}
+
 /// Absolute workspace root used to read project environment files. Core passes
 /// it only to the client implementation; it is never sent to the broker and the
 /// broker never receives a host path.
@@ -538,21 +601,7 @@ pub fn environment_workspace_files(
     for file in &plan.files {
         let content = match (&file.content, workspace) {
             (Some(content), _) => content.clone(),
-            (None, Some(root)) => {
-                let path = root.join(&file.path);
-                let bytes = std::fs::read(&path).map_err(|_| {
-                    format!("project environment file {} is unavailable", file.path)
-                })?;
-                if bytes.len() > MAX_ENVIRONMENT_WORKSPACE_FILE_BYTES {
-                    return Err(format!(
-                        "project environment file {} exceeds its bound",
-                        file.path
-                    ));
-                }
-                String::from_utf8(bytes).map_err(|_| {
-                    format!("project environment file {} is not UTF-8 text", file.path)
-                })?
-            }
+            (None, Some(root)) => read_workspace_environment_file(root, &file.path)?,
             (None, None) => {
                 return Err(format!(
                     "project environment file {} requires an explicit workspace",
@@ -560,6 +609,12 @@ pub fn environment_workspace_files(
                 ));
             }
         };
+        if content.len() > MAX_ENVIRONMENT_WORKSPACE_FILE_BYTES {
+            return Err(format!(
+                "project environment file {} exceeds its bound",
+                file.path
+            ));
+        }
         if file.content.is_none()
             && crate::planning::environment::sha256_hex(content.as_bytes()) != file.sha256
         {
@@ -1010,6 +1065,41 @@ impl From<BrokerError> for ExecutionError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workspace_file_reads_reject_symlink_escape_and_oversize() {
+        use std::os::unix::fs::symlink;
+        let root =
+            std::env::temp_dir().join(format!("factory-env-workspace-{}", uuid::Uuid::new_v4()));
+        let outside =
+            std::env::temp_dir().join(format!("factory-env-outside-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(root.join("flake.nix"), b"{}\n").unwrap();
+        std::fs::write(outside.join("secret"), b"secret").unwrap();
+        assert_eq!(
+            read_workspace_environment_file(&root, "flake.nix").unwrap(),
+            "{}\n"
+        );
+
+        symlink(outside.join("secret"), root.join("escape")).unwrap();
+        assert!(read_workspace_environment_file(&root, "escape").is_err());
+
+        symlink(&outside, root.join("outside-dir")).unwrap();
+        assert!(read_workspace_environment_file(&root, "outside-dir/secret").is_err());
+
+        std::fs::write(
+            root.join("huge"),
+            vec![b'a'; MAX_ENVIRONMENT_WORKSPACE_FILE_BYTES + 1],
+        )
+        .unwrap();
+        assert!(read_workspace_environment_file(&root, "huge").is_err());
+        assert!(read_workspace_environment_file(&root, "../secret").is_err());
+        assert!(read_workspace_environment_file(&root, "/etc/passwd").is_err());
+
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(outside);
+    }
 
     #[test]
     fn broker_url_and_token_are_strict() {

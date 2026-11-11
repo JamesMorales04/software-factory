@@ -84,6 +84,9 @@ const ENVIRONMENT_EGRESS_PORT: u16 = 18081;
 const ENVIRONMENT_EGRESS_SLOTS: u8 = 64;
 const ENVIRONMENT_NETWORK_PREFIX: &str = "factory-env-egress-";
 const ENVIRONMENT_BUILDER_LABEL: &str = "io.software-factory.environment-builder.source-digest";
+const ENVIRONMENT_CACHE_LABEL: &str = "io.software-factory.environment-cache";
+const MAX_ENVIRONMENT_CACHE_VOLUMES: usize = 8;
+const MAX_ENVIRONMENT_DISK_MIB: u32 = 262_144;
 const ENVIRONMENT_BUILDER_POLICY_LABEL: &str =
     "io.software-factory.environment-builder.policy-revision";
 
@@ -812,6 +815,19 @@ impl App {
         // The trusted one-shot bundle service hashes the exact rootfs tar and
         // writes the digest next to it. The imported image is labelled with that
         // digest and its inspected ID is pinned; the broker never pulls the tag.
+        let actual_digest = tokio::task::spawn_blocking({
+            let bundle = bundle.clone();
+            move || bundle_digest(&bundle)
+        })
+        .await
+        .map_err(|error| format!("environment-builder bundle hash task failed: {error}"))??;
+        let actual_digest = normalize_digest(&actual_digest)?;
+        let configured_digest = normalize_digest(&runtime.digest)?;
+        if actual_digest != configured_digest {
+            return Err(format!(
+                "environment-builder bundle digest {actual_digest} does not match configured {configured_digest}"
+            ));
+        }
         let digest_label = format!("LABEL {ENVIRONMENT_BUILDER_LABEL}={}", runtime.digest);
         let policy_label = format!(
             "LABEL {ENVIRONMENT_BUILDER_POLICY_LABEL}={}",
@@ -3008,6 +3024,10 @@ async fn environment_operation(
         Ok(validated) => validated,
         Err(failure) => return failure.response(),
     };
+    // The operation is intentionally detached from HTTP request cancellation:
+    // a dropped client connection must not orphan a running builder container.
+    // It remains bounded by the frozen deadline and the RunResources drop guard
+    // always schedules container/staging cleanup on every exit path.
     let task = tokio::spawn(execute_environment_operation(app, input, validated));
     match task.await {
         Ok(Ok(response)) => Json(response).into_response(),
@@ -3051,6 +3071,14 @@ async fn validate_environment_request(
     input.plan.resources.validate().map_err(|error| {
         EnvironmentBrokerFailure::new("ENVIRONMENT_RESOURCE_LIMIT", error.message)
     })?;
+    if input.plan.resources.disk_mib == 0
+        || input.plan.resources.disk_mib > MAX_ENVIRONMENT_DISK_MIB
+    {
+        return Err(EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_RESOURCE_LIMIT",
+            "the plan disk bound is outside the broker maximum",
+        ));
+    }
     input.plan.network.validate().map_err(|error| {
         EnvironmentBrokerFailure::new("ENVIRONMENT_NETWORK_DENIED", error.message)
     })?;
@@ -3755,6 +3783,9 @@ async fn execute_environment_inner(
         false,
     )
     .await?;
+    if resources.cache_persistent {
+        bound_environment_caches(&app, &resources.cache_volume).await?;
+    }
     create_environment_volume(
         &app,
         &resources.cache_volume,
@@ -4036,6 +4067,91 @@ fn final_logs(logs: Vec<u8>) -> String {
     String::from_utf8_lossy(&logs).into_owned()
 }
 
+fn environment_cache_inventory(bytes: &[u8], keep: &str) -> Result<Vec<String>, String> {
+    if bytes.iter().all(u8::is_ascii_whitespace) {
+        return Ok(Vec::new());
+    }
+    let entries: Vec<serde_json::Value> = serde_json::from_slice(bytes)
+        .map_err(|error| format!("environment cache inventory is invalid JSON: {error}"))?;
+    let mut caches = Vec::new();
+    for entry in entries {
+        let Some(name) = entry.get("Name").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        if !name.starts_with("factory-env-cache-") {
+            continue;
+        }
+        let labels = entry.get("Labels");
+        let managed = labels
+            .and_then(|labels| labels.get("io.software-factory.managed"))
+            .and_then(serde_json::Value::as_str)
+            == Some("true");
+        let owner = labels
+            .and_then(|labels| labels.get(OWNER_LABEL))
+            .and_then(serde_json::Value::as_str)
+            == Some("environment");
+        let cache = labels
+            .and_then(|labels| labels.get(ENVIRONMENT_CACHE_LABEL))
+            .and_then(serde_json::Value::as_str)
+            == Some("true");
+        if !managed || !owner || !cache {
+            continue;
+        }
+        let created = entry
+            .get("CreatedAt")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        caches.push((created, name.to_owned()));
+    }
+    caches.sort();
+    let target_present = caches.iter().any(|(_, name)| name == keep);
+    let projected = caches
+        .len()
+        .saturating_add(if target_present { 0 } else { 1 });
+    let remove = projected.saturating_sub(MAX_ENVIRONMENT_CACHE_VOLUMES);
+    Ok(caches
+        .into_iter()
+        .filter(|(_, name)| name != keep)
+        .map(|(_, name)| name)
+        .take(remove)
+        .collect())
+}
+
+async fn bound_environment_caches(
+    app: &Arc<App>,
+    keep: &str,
+) -> Result<(), EnvironmentBrokerFailure> {
+    let bytes = app
+        .run_bounded(
+            [
+                "volume",
+                "ls",
+                "--filter",
+                "label=io.software-factory.owner=environment",
+                "--format",
+                "json",
+            ],
+            "environment cache inventory",
+            MAX_RESOURCE_INVENTORY_BYTES,
+        )
+        .await
+        .map_err(|error| EnvironmentBrokerFailure::new("ENVIRONMENT_BUILDER_UNAVAILABLE", error))?;
+    let evictions = environment_cache_inventory(&bytes, keep)
+        .map_err(|error| EnvironmentBrokerFailure::new("ENVIRONMENT_BUILDER_UNAVAILABLE", error))?;
+    for volume in evictions {
+        if app.active.is_active(&volume) {
+            continue;
+        }
+        let lock = app.resource_lock(&volume);
+        let _guard = lock.lock().await;
+        let _ = app
+            .podman_output(["volume", "rm", "--force", volume.as_str()])
+            .await;
+    }
+    Ok(())
+}
+
 async fn create_environment_volume(
     app: &Arc<App>,
     volume: &str,
@@ -4071,18 +4187,23 @@ async fn create_environment_volume(
     }
     let owner = format!("{OWNER_LABEL}=environment");
     let workspace = format!("{WORKSPACE_LABEL}={workspace_label}");
+    let mut args = vec![
+        "volume".to_owned(),
+        "create".to_owned(),
+        "--label".to_owned(),
+        MANAGED_LABEL.to_owned(),
+        "--label".to_owned(),
+        owner,
+        "--label".to_owned(),
+        workspace,
+    ];
+    if reuse {
+        args.push("--label".to_owned());
+        args.push(format!("{ENVIRONMENT_CACHE_LABEL}=true"));
+    }
+    args.push(volume.to_owned());
     let output = app
-        .podman_output([
-            "volume",
-            "create",
-            "--label",
-            MANAGED_LABEL,
-            "--label",
-            owner.as_str(),
-            "--label",
-            workspace.as_str(),
-            volume,
-        ])
+        .podman_output(args.iter().map(String::as_str))
         .await
         .map_err(|error| EnvironmentBrokerFailure::new("ENVIRONMENT_BUILD_FAILED", error))?;
     if !output.status.success() {
@@ -4206,6 +4327,10 @@ async fn run_environment_container(
         "--workdir=/cache".into(),
         "--env=HOME=/home/factory".into(),
         "--env=TMPDIR=/tmp".into(),
+        format!(
+            "--env=FACTORY_ENVIRONMENT_BUILDER_DISK_MIB={}",
+            plan.resources.disk_mib
+        ),
         format!("--volume={workspace_volume}:/inputs/workspace:ro"),
         format!("--volume={cache_volume}:/cache:rw"),
     ];
@@ -4514,6 +4639,45 @@ mod tests {
         assert!(!has_host_root_mapping(
             "         0       1000          1\n         1     100000      65536\n"
         ));
+    }
+
+    #[test]
+    fn environment_cache_inventory_bounds_entries_and_keeps_the_active_spec() {
+        let entries = (0..10)
+            .map(|index| {
+                format!(
+                    r#"{{"Name":"factory-env-cache-{index:032x}","CreatedAt":"2026-11-11T00:00:{index:02}Z","Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"environment","io.software-factory.environment-cache":"true"}}}}"#
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let inventory = format!("[{entries}]");
+        let keep = format!("factory-env-cache-{:032x}", 0);
+        let evictions = environment_cache_inventory(inventory.as_bytes(), &keep).unwrap();
+        assert_eq!(evictions.len(), 2);
+        assert!(!evictions.contains(&keep));
+
+        let foreign = format!(
+            r#"[{{"Name":"factory-env-cache-{:032x}","Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"verifier","io.software-factory.environment-cache":"true"}}}}]"#,
+            99
+        );
+        assert!(
+            environment_cache_inventory(foreign.as_bytes(), &keep)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn tampered_bundle_tar_does_not_match_its_sidecar_digest() {
+        let path =
+            std::env::temp_dir().join(format!("factory-env-bundle-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&path, b"trusted bundle bytes").unwrap();
+        let expected = normalize_digest(&bundle_digest(&path).unwrap()).unwrap();
+        std::fs::write(&path, b"tampered bundle bytes").unwrap();
+        let actual = normalize_digest(&bundle_digest(&path).unwrap()).unwrap();
+        assert_ne!(expected, actual);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
@@ -6760,6 +6924,18 @@ exit 0
         assert_eq!(body["code"], "ENVIRONMENT_RESOURCE_LIMIT");
 
         let mut request = environment_request(EnvironmentBrokerOperation::Build);
+        request.plan.resources.disk_mib = 0;
+        let response = build_environment(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Environment),
+            Json(request),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = environment_response_body(response).await;
+        assert_eq!(body["code"], "ENVIRONMENT_RESOURCE_LIMIT");
+
+        let mut request = environment_request(EnvironmentBrokerOperation::Build);
         request.plan.network.fetch_allowlist = vec!["http://insecure.invalid".into()];
         request
             .spec
@@ -6839,6 +7015,41 @@ exit 0
         assert_eq!(body["phase"], "RESOLVE");
         assert_eq!(body["resolution"]["planSha256"], TEST_PLAN_SHA);
         assert_eq!(body["resolution"]["files"][0]["path"], "flake.lock");
+    }
+
+    #[tokio::test]
+    async fn dropped_environment_resources_schedule_cleanup_without_the_http_task() {
+        let directory =
+            std::env::temp_dir().join(format!("factory-env-cancel-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let log_path = directory.join("podman.log");
+        let script = format!(
+            r#"#!/bin/sh
+printf '%s
+' "$*" >> "{}"
+case "$1" in
+  rm) exit 0 ;;
+  container) [ "$2" = "exists" ] && exit 1 ;;
+  volume)
+    case "$2" in
+      rm) exit 0 ;;
+      exists) exit 1 ;;
+    esac
+    ;;
+esac
+exit 0
+"#,
+            log_path.display()
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app(podman);
+        {
+            let _resources = EnvironmentRunResources::new(Arc::clone(&app));
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let log = std::fs::read_to_string(log_path).unwrap();
+        assert!(log.contains("rm --force --time=0 factory-env-"), "{log}");
+        assert!(log.contains("volume rm --force factory-env-ws-"), "{log}");
     }
 
     #[tokio::test]

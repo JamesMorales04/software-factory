@@ -440,6 +440,11 @@ No paid inference was used.
 
 ### 6.3 Stagnant Implementer salvage
 
+> Historical note: the WP5 trust-boundary repair in §6.4 supersedes this flow.
+> The current Worker finalizes the exact candidate first, then re-runs every
+> frozen check to obtain Core receipts bound to that commit/tree. Core derives
+> all salvage facts and does not trust Worker counts.
+
 A live Implementer wrote a complete Rust CLI and passed build/tests, but never
 emitted a valid `final`. After three stagnant checkpoints Core returned
 `ContinuationDecision::Diagnose` and the Worker blocked the attempt, discarding
@@ -488,6 +493,39 @@ valid
 
 Repair commit: `fix(worker): salvage checked stagnant candidates`.
 No paid inference was used.
+
+### 6.4 Salvage provenance and Gate policy (WP5)
+
+The Worker salvage path now records durable provenance instead of only a stderr
+line:
+
+- migration `0075_candidate_final_source.sql` adds `final_source` with the closed
+  values `MODEL_FINAL` / `STAGNATION_SALVAGE` and the safe `MODEL_FINAL` default;
+  existing candidates are not rewritten;
+- a salvage Candidate submission carries only a work-item claim. Core derives
+  the trigger from immutable records: the latest progress checkpoint for the
+  exact Attempt/work item must be `DIAGNOSE` and its counts must satisfy the
+  frozen progress policy; the ActionSpec must have at least one frozen check;
+  the exact candidate diff must be non-empty; at least one Core-recorded
+  `final_nudge` provider event must exist; and every frozen check must have
+  exactly one PASS execution receipt bound to the exact check id, candidate
+  commit/tree, Attempt, Campaign and work item;
+- Core records `worker.stagnation_finalized` with the Core-derived
+  candidate/attempt/work-item and policy identity, model turns, final nudges,
+  diff summary/paths and check receipts in the same transaction as the
+  Candidate;
+- a normal model final records `MODEL_FINAL` and never emits the salvage event;
+- one stagnation salvage is allowed per work item, including across Attempts;
+- R0 salvage remains eligible for the ordinary Gate. R1-R3 salvage can never be
+  accepted or merged automatically and carries `SALVAGE_HUMAN_REVIEW_REQUIRED`.
+  The current authorization route still refuses R1-R3 execution, so the R1+
+  branch is domain-tested but not reachable through that route.
+
+The pre-existing accepted candidate `be5eb14f` has no durable salvage evidence
+and is not claimed as salvage. It keeps the migration default `MODEL_FINAL`.
+
+Validation is recorded in the WP5 handoff and candidate commit; no paid
+inference was used.
 
 ## 7. Documentation integration
 
