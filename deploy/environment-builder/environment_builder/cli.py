@@ -174,6 +174,7 @@ def _write_failure(
         attestation=attestation,
         blockers=[error.blocker()],
         duration_ms=int((time.monotonic() - started) * 1000),
+        sbom_sha256=str((spec or {}).get("sbomSha256", "")),
     )
     write_json(run_dir / "result.json", receipt)
     write_json(
@@ -304,6 +305,7 @@ def build(args: argparse.Namespace) -> int:
             attestation=attestation,
             blockers=[],
             duration_ms=int((time.monotonic() - started) * 1000),
+            sbom_sha256=frozen_sbom_sha256,
         )
         write_json(run_dir / "result.json", receipt)
         write_json(

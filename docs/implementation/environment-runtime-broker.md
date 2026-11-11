@@ -199,11 +199,12 @@ fetch/resolve.
   exit-code mapping, timeout refusal and exact request binding.
 - `cargo test -p factory-native --bin factory-verifier` — 11 passed, including
   the broker builder-check path, refusal, cleanup and missing binding.
-- `cargo test -p factory-native --bin factory-runtime-broker` — 60 passed,
+- `cargo test -p factory-native --bin factory-runtime-broker` — 62 passed,
   including environment-check owner separation, workspace ownership, exact
   builder identity, plan/spec/receipt mismatch, argv/timeout bounds,
   success/failure exit mapping, fabricated-PASS refusal, resource-limit cache
-  purge, narrow container arguments and timeout cleanup.
+  purge, bundle digest/cache bounds, narrow container arguments and timeout
+  cleanup.
 - `cargo test -p factory-native --bin factory-supervisor` — 11 passed, including
   grant/image/workspace refusal and successful typed proxy.
 - `python3 -m unittest discover -s deploy/environment-builder/tests` — 40
@@ -213,10 +214,12 @@ fetch/resolve.
   failure evidence.
 - `podman compose -f compose.yaml config --quiet` — exit 0.
 - `factory-architecture-check --root .` — PASS.
-- Isolated Compose observation (`podman compose -p wp1c-e2e`): bundle tar digest
-  `sha256:58befb…`, runtime broker health `environmentBuilder.status=READY`,
-  imported builder image ID `sha256:9f8e05…`, Core health `READY` with the same
-  image/digest. The live `software-factory` project was not modified. See the
+- Isolated Compose observation (`podman compose -p wp1c-e2e2`, source commit
+  `4bc082f`): bundle tar digest `sha256:efc5bc…`, runtime broker health
+  `environmentBuilder.status=READY`, imported builder image ID
+  `sha256:152191…`, Core health `READY` with the same image/digest and
+  `defaultNixpkgs=github:NixOS/nixpkgs/ac62194c…`. The live
+  `software-factory` project was not modified. See the
   [evidence record](../evidence/environment-runtime-broker-2026-11-11/README.md).
 
 **NOT_TESTED / remaining gap:** a real end-to-end `check` through the broker
