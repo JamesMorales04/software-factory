@@ -3278,29 +3278,69 @@ async fn execute_codex_tool(
                     )
                 })?;
             let target = check_execution_target(context, check)?;
-            let image = target
-                .as_ref()
-                .map(|target| format!("{}@{}", target.builder_image, target.builder_image_digest));
-            let run = tokio::time::timeout_at(
-                deadline,
-                supervisor_run(
-                    context,
-                    &handle.workspace_id,
-                    &handle.capability,
-                    image.as_deref(),
-                    &argv,
-                    timeout_secs,
-                ),
-            )
+            // Codex dynamic tool calls follow the same rule as the OpenCode
+            // path: an environment-bound check runs through the environment
+            // check endpoint; only an unbound check uses generic run.
+            let run = tokio::time::timeout_at(deadline, async {
+                if let Some(target) = target {
+                    let execution = context
+                        .assignment
+                        .environment_execution
+                        .as_ref()
+                        .ok_or_else(|| {
+                            format!(
+                                "ENVIRONMENT_PLAN_REQUIRED: check {check_id} requires the Campaign environment binding"
+                            )
+                        })?;
+                    let environment_check =
+                        factory_native::runtime_broker::EnvironmentCheckSpec {
+                            check_id: target.check_id.clone(),
+                            argv: target.argv.clone(),
+                            cwd: target.cwd.clone(),
+                            timeout_secs: target.timeout_secs,
+                            expect_exit: target.expect_exit,
+                        };
+                    let result = supervisor_environment_check(
+                        context,
+                        &handle.workspace_id,
+                        &handle.capability,
+                        execution,
+                        &environment_check,
+                    )
+                    .await?;
+                    Ok::<_, Box<dyn std::error::Error>>((
+                        result.exit_code,
+                        result.stdout,
+                        result.stderr,
+                        result.stdout_truncated || result.stderr_truncated,
+                    ))
+                } else {
+                    let result = supervisor_run(
+                        context,
+                        &handle.workspace_id,
+                        &handle.capability,
+                        None,
+                        &argv,
+                        timeout_secs,
+                    )
+                    .await?;
+                    Ok::<_, Box<dyn std::error::Error>>((
+                        result.exit_code,
+                        result.stdout,
+                        result.stderr,
+                        result.stdout_truncated || result.stderr_truncated,
+                    ))
+                }
+            })
             .await;
             match run {
-                Ok(Ok(result)) => {
+                Ok(Ok((exit_code, stdout, stderr, _truncated))) => {
                     let receipt = post_check_result(
                         context,
                         call_id,
                         &argv,
                         &progress.candidate_digest(),
-                        result.exit_code,
+                        exit_code,
                         None,
                     )
                     .await?;
@@ -3311,8 +3351,7 @@ async fn execute_codex_tool(
                     Ok((
                         receipt.outcome == "PASS",
                         bounded_tool_text(&format!(
-                            "exit={:?}\nstdout:\n{}\nstderr:\n{}",
-                            result.exit_code, result.stdout, result.stderr
+                            "exit={exit_code:?}\nstdout:\n{stdout}\nstderr:\n{stderr}"
                         )),
                     ))
                 }
