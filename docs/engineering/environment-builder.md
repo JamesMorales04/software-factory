@@ -171,6 +171,14 @@ must normalize to exactly
 `overlay-containers/<container-id>/userdata/<hosts|hostname|resolv.conf>`;
 `..`/`.` components, other filenames and bare host paths are rejected. A
 forbidden host path at any allowed target cannot produce `noHostMount=true`.
+The builder's in-container observation is defense-in-depth, not provenance:
+the untrusted Nix build inherits `CAP_SYS_ADMIN`. On the product path the
+broker keeps the build container until Podman's own `inspect` confirms exactly
+the three expected named volumes (name, target and read/write mode) and the
+runtime host files of that exact container id; only then does the broker
+replace `noHostMount` with its authoritative attestation. Fetch containers are
+removed before the build container starts, and the build container is removed
+after inspection.
 Generated and project-committed environment files may pin the open-source
 `github:cachix/devenv` and `github:cachix/git-hooks.nix` inputs and may name
 the public `devenv.cachix.org` cache as an optional performance input.

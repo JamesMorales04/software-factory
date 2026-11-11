@@ -4729,6 +4729,12 @@ async fn execute_environment_inner(
                     &output.stdout,
                     &output.stderr,
                 );
+                // The fetch container must release the shared name before the
+                // build container starts. The build container is kept until
+                // after the broker's authoritative mount inspection.
+                let _ = app
+                    .podman_output(["rm", "--force", "--time=0", &resources.container])
+                    .await;
             }
             let output = run_environment_container(
                 &app,
@@ -4751,7 +4757,7 @@ async fn execute_environment_inner(
                 &output.stdout,
                 &output.stderr,
             );
-            let receipt: factory_native::planning::environment::EnvironmentBuildReceipt =
+            let mut receipt: factory_native::planning::environment::EnvironmentBuildReceipt =
                 read_environment_json(
                     &app,
                     &validated.image_id,
@@ -4773,6 +4779,18 @@ async fn execute_environment_inner(
                         .unwrap_or_else(|| "the environment builder did not succeed".into()),
                 ));
             }
+            // The in-container observation is not provenance: the untrusted
+            // build inherits CAP_SYS_ADMIN. Replace `noHostMount` only after
+            // Podman's own inspect confirms the exact named volumes and the
+            // runtime files belonging to this container id.
+            verify_environment_container_mounts(
+                &app,
+                &resources.container,
+                &resources.workspace_volume,
+                &resources.cache_volume,
+            )
+            .await?;
+            receipt.sandbox_attestation.no_host_mount = true;
             if let Ok(build_log) = read_environment_output(
                 &app,
                 &validated.image_id,
@@ -5199,6 +5217,130 @@ async fn import_environment_volume(
 // plan, deadline and both broker-managed volumes. Each value is independently
 // validated; grouping them would add no safety boundary.
 #[allow(clippy::too_many_arguments)]
+/// Authoritative mount provenance for a builder container.
+///
+/// The builder's in-container `/proc/self/mountinfo` observation can be
+/// spoofed by a child with `CAP_SYS_ADMIN` (the untrusted Nix build inherits
+/// it). The broker created the container and therefore asks Podman for the
+/// engine's own mount record: every bind must be one of the three expected
+/// named volumes with the exact name and read/write mode, and the runtime
+/// host files must belong to this exact container id. Only then does the
+/// broker replace the builder's `noHostMount` observation with its
+/// authoritative attestation.
+fn inspect_mounts_are_broker_managed(
+    value: &Value,
+    workspace_volume: &str,
+    cache_volume: &str,
+) -> Result<(), String> {
+    let object = value
+        .as_array()
+        .and_then(|entries| entries.first())
+        .ok_or_else(|| "the builder container inspect returned no object".to_owned())?;
+    let id = object
+        .get("Id")
+        .and_then(Value::as_str)
+        .filter(|id| id.len() == 64 && id.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .ok_or_else(|| "the builder container inspect has no exact container id".to_owned())?;
+    let expected = [
+        ("/inputs/workspace", workspace_volume, false),
+        ("/cache", cache_volume, true),
+        ("/nix", ENVIRONMENT_NIX_STORE_VOLUME, true),
+    ];
+    let mounts = object
+        .get("Mounts")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "the builder container inspect has no mount list".to_owned())?;
+    let mut seen = std::collections::BTreeSet::new();
+    for mount in mounts {
+        let destination = mount
+            .get("Destination")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let Some((_, expected_name, expected_rw)) = expected
+            .iter()
+            .find(|(expected_destination, _, _)| *expected_destination == destination)
+        else {
+            return Err(format!(
+                "the builder container has an unexpected mount at {destination}"
+            ));
+        };
+        if mount.get("Type").and_then(Value::as_str) != Some("volume")
+            || mount.get("Name").and_then(Value::as_str) != Some(*expected_name)
+            || mount.get("RW").and_then(Value::as_bool) != Some(*expected_rw)
+        {
+            return Err(format!(
+                "the builder mount at {destination} is not the expected named volume"
+            ));
+        }
+        seen.insert(destination);
+    }
+    if seen.len() != expected.len() {
+        return Err("the builder container is missing an expected named volume".to_owned());
+    }
+    for (field, file) in [("HostsPath", "hosts"), ("HostnamePath", "hostname")] {
+        let path = object
+            .get(field)
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if !runtime_file_path_matches(path, id, file) {
+            return Err(format!(
+                "the builder container {field} is not this container's runtime file"
+            ));
+        }
+    }
+    if let Some(path) = object.get("ResolvConfPath").and_then(Value::as_str)
+        && !path.is_empty()
+        && !runtime_file_path_matches(path, id, "resolv.conf")
+    {
+        return Err(
+            "the builder container ResolvConfPath is not this container's runtime file".to_owned(),
+        );
+    }
+    Ok(())
+}
+
+fn runtime_file_path_matches(path: &str, id: &str, file: &str) -> bool {
+    path.ends_with(&format!("/vfs-containers/{id}/userdata/{file}"))
+        || path.ends_with(&format!("/overlay-containers/{id}/userdata/{file}"))
+}
+
+async fn verify_environment_container_mounts(
+    app: &Arc<App>,
+    container: &str,
+    workspace_volume: &str,
+    cache_volume: &str,
+) -> Result<(), EnvironmentBrokerFailure> {
+    let output = app
+        .podman_output(["inspect", "--format", "json", container])
+        .await
+        .map_err(|error| {
+            EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_SANDBOX_DENIED",
+                format!("the broker could not inspect the builder container: {error}"),
+            )
+        })?;
+    if !output.status.success() {
+        return Err(EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_SANDBOX_DENIED",
+            format!(
+                "the broker could not inspect the builder container: {}",
+                stderr(&output)
+            ),
+        ));
+    }
+    let value: Value = serde_json::from_slice(&output.stdout).map_err(|error| {
+        EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_SANDBOX_DENIED",
+            format!("the builder container inspect is not JSON: {error}"),
+        )
+    })?;
+    inspect_mounts_are_broker_managed(&value, workspace_volume, cache_volume)
+        .map_err(|error| EnvironmentBrokerFailure::new("ENVIRONMENT_SANDBOX_DENIED", error))
+}
+
+// The broker-owned container spec is intentionally explicit; every call site
+// is audited and no caller supplies arbitrary Podman flags.
+#[allow(clippy::too_many_arguments)]
 async fn run_environment_container(
     app: &Arc<App>,
     image_id: &str,
@@ -5227,7 +5369,6 @@ async fn run_environment_container(
     let pids = plan.resources.pids.to_string();
     let mut args: Vec<String> = vec![
         "run".into(),
-        "--rm".into(),
         format!("--name={container}"),
         format!("--label={MANAGED_LABEL}"),
         format!("--label={OWNER_LABEL}=environment"),
@@ -7928,6 +8069,24 @@ exit 1
         let resolution_path = directory.join("resolution.json");
         let check_path = directory.join("check-result.json");
         let log_path = directory.join("podman.log");
+        let state_path = directory.join("container-state.txt");
+        let inspect_template = directory.join("inspect-template.json");
+        std::fs::write(
+            &inspect_template,
+            serde_json::to_vec(&json!([{
+                "Id": "__ID__",
+                "HostsPath": "/run/containers/storage/vfs-containers/__ID__/userdata/hosts",
+                "HostnamePath": "/run/containers/storage/vfs-containers/__ID__/userdata/hostname",
+                "ResolvConfPath": "",
+                "Mounts": [
+                    {"Type": "volume", "Name": "__WS__", "Destination": "/inputs/workspace", "RW": false},
+                    {"Type": "volume", "Name": "__CACHE__", "Destination": "/cache", "RW": true},
+                    {"Type": "volume", "Name": ENVIRONMENT_NIX_STORE_VOLUME, "Destination": "/nix", "RW": true}
+                ]
+            }]))
+            .unwrap(),
+        )
+        .unwrap();
         std::fs::write(
             &result_path,
             serde_json::to_vec(&environment_receipt()).unwrap(),
@@ -7962,6 +8121,12 @@ case "$1" in
     esac
     ;;
   rm) exit 0 ;;
+  inspect)
+    ws=$(sed -n '1p' "{}")
+    cache=$(sed -n '2p' "{}")
+    sed -e "s/__WS__/$ws/g" -e "s/__CACHE__/$cache/g" -e "s/__ID__/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/g" "{}"
+    exit 0
+    ;;
   container) [ "$2" = "exists" ] && exit 1 ;;
   network)
     case "$2" in
@@ -7972,6 +8137,15 @@ case "$1" in
     esac
     ;;
   run)
+    ws=
+    cache=
+    for arg in "$@"; do
+      case "$arg" in
+        --volume=*:/inputs/workspace:ro) ws="${{arg#--volume=}}"; ws="${{ws%%:*}}" ;;
+        --volume=*:/cache:rw) cache="${{arg#--volume=}}"; cache="${{cache%%:*}}" ;;
+      esac
+    done
+    if [ -n "$cache" ]; then printf '%s\n%s\n' "$ws" "$cache" > "{}"; fi
     case " $* " in
       *"/cache/result.json"*) cat "{}"; exit 0 ;;
       *"/cache/resolution.json"*) cat "{}"; exit 0 ;;
@@ -7987,6 +8161,10 @@ exit 0
             TEST_BUILDER_IMAGE_ID,
             TEST_BUILDER_DIGEST,
             TEST_BUILDER_IMAGE_ID,
+            state_path.display(),
+            state_path.display(),
+            inspect_template.display(),
+            state_path.display(),
             result_path.display(),
             resolution_path.display(),
             check_path.display()
@@ -9107,6 +9285,49 @@ exit 0
             log.contains("rm --force --time=0 factory-env-check-timeout"),
             "{log}"
         );
+    }
+
+    #[test]
+    fn broker_mount_inspection_requires_exact_named_volumes_and_runtime_files() {
+        let id = "a".repeat(64);
+        let valid = json!([{
+            "Id": id,
+            "HostsPath": format!("/run/containers/storage/vfs-containers/{id}/userdata/hosts"),
+            "HostnamePath": format!("/run/containers/storage/vfs-containers/{id}/userdata/hostname"),
+            "ResolvConfPath": "",
+            "Mounts": [
+                {"Type": "volume", "Name": "ws", "Destination": "/inputs/workspace", "RW": false},
+                {"Type": "volume", "Name": "cache", "Destination": "/cache", "RW": true},
+                {"Type": "volume", "Name": ENVIRONMENT_NIX_STORE_VOLUME, "Destination": "/nix", "RW": true}
+            ]
+        }]);
+        inspect_mounts_are_broker_managed(&valid, "ws", "cache").unwrap();
+
+        let mut wrong_name = valid.clone();
+        wrong_name[0]["Mounts"][1]["Name"] = json!("other");
+        assert!(inspect_mounts_are_broker_managed(&wrong_name, "ws", "cache").is_err());
+
+        let mut extra = valid.clone();
+        extra[0]["Mounts"]
+            .as_array_mut()
+            .expect("mounts")
+            .push(json!({"Type": "bind", "Name": "", "Destination": "/etc/hosts", "RW": false}));
+        assert!(inspect_mounts_are_broker_managed(&extra, "ws", "cache").is_err());
+
+        let mut wrong_rw = valid.clone();
+        wrong_rw[0]["Mounts"][0]["RW"] = json!(true);
+        assert!(inspect_mounts_are_broker_managed(&wrong_rw, "ws", "cache").is_err());
+
+        let mut wrong_host = valid.clone();
+        wrong_host[0]["HostsPath"] = json!(format!(
+            "/run/containers/storage/vfs-containers/{}/userdata/hosts",
+            "b".repeat(64)
+        ));
+        assert!(inspect_mounts_are_broker_managed(&wrong_host, "ws", "cache").is_err());
+
+        let mut missing = valid.clone();
+        missing[0]["Mounts"].as_array_mut().expect("mounts").pop();
+        assert!(inspect_mounts_are_broker_managed(&missing, "ws", "cache").is_err());
     }
 
     #[tokio::test]

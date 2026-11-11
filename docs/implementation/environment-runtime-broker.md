@@ -48,7 +48,13 @@ whose resolution binding does not match its final hash is rejected by
 The build operation runs a fetch container on the broker-owned internal
 environment egress network when the plan allowlist is non-empty, then a
 `--network=none` build container. A fetch failure is a typed error; there is no
-fallback to the host wrapper, host Podman or a language image.
+fallback to the host wrapper, host Podman or a language image. After a
+successful build, the broker keeps the build container and asks Podman for its
+authoritative mount record: exactly the three expected named volumes with their
+names, targets and read/write modes, and the runtime host files of that exact
+container id. Only then does it replace the builder's in-container
+`noHostMount` observation with the broker attestation; the container is
+removed after inspection.
 
 ### Frozen check execution (WP1-D)
 
