@@ -1104,6 +1104,43 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
         Ok(record.handle())
     }
 
+    /// Materialize the exact current host worktree into the workspace volume
+    /// before a Supervisor-proxied frozen environment check.
+    ///
+    /// Allocation creates an empty volume and only `run_tool` or
+    /// `acquire_dependencies` refresh it. A frozen check may be the first
+    /// operation on an Attempt (or may follow `write_files`), so reusing the
+    /// volume without staging would run the check against stale or empty
+    /// content. The snapshot excludes `.git`, matching the archive contract.
+    pub async fn stage_workspace_for_check(
+        &self,
+        workspace_id: &str,
+    ) -> Result<(), ExecutionError> {
+        validate_workspace_id(workspace_id)?;
+        let _write = self.lock.lock().await;
+        if self.cancelled.lock().unwrap().contains(workspace_id) {
+            return Err(ExecutionError::Conflict);
+        }
+        let mut record = self.find_by_id(workspace_id)?;
+        if record.status != WorkspaceStatus::Allocated {
+            return Err(ExecutionError::Conflict);
+        }
+        let workspace = self.open_existing(&record)?;
+        workspace.verify_identity((record.worktree_device, record.worktree_inode))?;
+        let snapshot = tokio::task::spawn_blocking({
+            let path = workspace.path().to_owned();
+            move || workspace_archive::snapshot(&path)
+        })
+        .await
+        .map_err(|error| ExecutionError::Invalid(format!("snapshot task: {error}")))??;
+        self.backend
+            .import_volume(&record.volume, &snapshot.bytes)
+            .await?;
+        record.updated_at_ms = now_ms();
+        self.write_record(&record)?;
+        Ok(())
+    }
+
     pub async fn run_tool(
         &self,
         workspace_id: &str,

@@ -2891,6 +2891,7 @@ async fn run_provider_tool_loop(
                             let environment_check =
                                 factory_native::runtime_broker::EnvironmentCheckSpec {
                                     check_id: target.check_id.clone(),
+                                    description: target.description.clone(),
                                     argv: target.argv.clone(),
                                     cwd: target.cwd.clone(),
                                     timeout_secs: target.timeout_secs,
@@ -2955,10 +2956,14 @@ async fn run_provider_tool_loop(
                                 } else {
                                     "failed"
                                 };
-                                let diagnostic = bounded_tool_text(&format!(
-                                    "exit={exit_code:?}\nstdout:\n{stdout}\nstderr:\n{stderr}"
-                                ));
-                                let _ = output_truncated;
+                                let diagnostic = frozen_check_tool_diagnostic(
+                                    &check.description,
+                                    exit_code,
+                                    check.expect_exit,
+                                    &stdout,
+                                    &stderr,
+                                    output_truncated,
+                                );
                                 prompt = tool_result(
                                     context.assignment.provider.as_str(),
                                     context.assignment.model.as_str(),
@@ -3160,6 +3165,25 @@ fn bounded_tool_text(value: &str) -> String {
     value.chars().take(8_000).collect()
 }
 
+/// The tool result an Implementer sees. The frozen check description is always
+/// present, even when the command writes nothing to stdout/stderr.
+fn frozen_check_tool_diagnostic(
+    description: &str,
+    exit_code: Option<i32>,
+    expect_exit: i32,
+    stdout: &str,
+    stderr: &str,
+    truncated: bool,
+) -> String {
+    let description: String = description.chars().take(500).collect();
+    let mut text = format!(
+        "check: {description}\nexit={exit_code:?} (expected {expect_exit}){}",
+        if truncated { "\noutput truncated" } else { "" }
+    );
+    text.push_str(&format!("\nstdout:\n{stdout}\nstderr:\n{stderr}"));
+    bounded_tool_text(&text)
+}
+
 struct CodexToolState {
     call_ids: std::collections::BTreeSet<String>,
     passed_checks: std::collections::BTreeSet<String>,
@@ -3316,6 +3340,7 @@ async fn execute_codex_tool(
                     let environment_check =
                         factory_native::runtime_broker::EnvironmentCheckSpec {
                             check_id: target.check_id.clone(),
+                            description: target.description.clone(),
                             argv: target.argv.clone(),
                             cwd: target.cwd.clone(),
                             timeout_secs: target.timeout_secs,
@@ -3355,7 +3380,7 @@ async fn execute_codex_tool(
             })
             .await;
             match run {
-                Ok(Ok((exit_code, stdout, stderr, _truncated))) => {
+                Ok(Ok((exit_code, stdout, stderr, truncated))) => {
                     let receipt = post_check_result(
                         context,
                         call_id,
@@ -3371,9 +3396,14 @@ async fn execute_codex_tool(
                     }
                     Ok((
                         receipt.outcome == "PASS",
-                        bounded_tool_text(&format!(
-                            "exit={exit_code:?}\nstdout:\n{stdout}\nstderr:\n{stderr}"
-                        )),
+                        frozen_check_tool_diagnostic(
+                            &check.description,
+                            exit_code,
+                            check.expect_exit,
+                            &stdout,
+                            &stderr,
+                            truncated,
+                        ),
                     ))
                 }
                 Ok(Err(error)) => {
@@ -4135,6 +4165,7 @@ fn missing_frozen_checks<'a>(
 #[derive(Debug)]
 struct FrozenCheckExecution {
     check_id: String,
+    description: String,
     exit_code: Option<i32>,
     expected_exit: i32,
     passed: bool,
@@ -4263,6 +4294,7 @@ async fn execute_frozen_checks(
                 })?;
             let environment_check = factory_native::runtime_broker::EnvironmentCheckSpec {
                 check_id: target.check_id.clone(),
+                description: target.description.clone(),
                 argv: target.argv.clone(),
                 cwd: target.cwd.clone(),
                 timeout_secs: target.timeout_secs,
@@ -4334,6 +4366,7 @@ async fn execute_frozen_checks(
         }
         executions.push(FrozenCheckExecution {
             check_id: check.id.clone(),
+            description: check.description.clone(),
             exit_code,
             expected_exit: check.expect_exit,
             passed,
@@ -4360,8 +4393,9 @@ fn frozen_check_failure_summary(executions: &[FrozenCheckExecution]) -> Option<S
     );
     for execution in failed {
         summary.push_str(&format!(
-            "\nFrozen check {} FAILED: exit={:?}, expected={}{}:\nstdout:\n{}\nstderr:\n{}\n",
+            "\nFrozen check {} FAILED: {}\nexit={:?}, expected={}{}:\nstdout:\n{}\nstderr:\n{}\n",
             execution.check_id,
+            bounded_tool_text(&execution.description),
             execution.exit_code,
             execution.expected_exit,
             if execution.output_truncated {
@@ -4852,6 +4886,7 @@ async fn supervisor_environment_check(
     result
         .validate_for_check(
             &check.check_id,
+            &check.description,
             &execution.spec.spec_sha256,
             check.expect_exit,
         )
@@ -5586,6 +5621,34 @@ mod tests {
     use std::time::Duration;
 
     #[test]
+    fn frozen_check_tool_diagnostic_always_carries_the_description() {
+        let diagnostic = super::frozen_check_tool_diagnostic(
+            "missing Delivery acceptance heading",
+            Some(1),
+            0,
+            "",
+            "",
+            false,
+        );
+        assert!(
+            diagnostic.starts_with(
+                "check: missing Delivery acceptance heading\nexit=Some(1) (expected 0)"
+            ),
+            "{diagnostic}"
+        );
+        let bounded = super::frozen_check_tool_diagnostic(
+            &"d".repeat(20_000),
+            Some(254),
+            0,
+            "",
+            "npm error enoent",
+            true,
+        );
+        assert!(bounded.chars().count() <= 8_000);
+        assert!(bounded.contains("output truncated"));
+    }
+
+    #[test]
     fn opencode_provider_config_does_not_hardcode_retry_suppression() {
         let config = opencode_sandbox_config(
             "opencode-go",
@@ -5956,11 +6019,13 @@ mod tests {
         }
         axum::Json(serde_json::json!({
             "checkId": body["check"]["checkId"],
+            "description": body["check"]["description"],
             "specSha256": body["spec"]["specSha256"],
             "status": "PASSED",
             "exitCode": 0,
             "expectExit": body["check"]["expectExit"],
             "passed": true,
+            "diagnostic": format!("{} (exit 0, expected 0)", body["check"]["description"].as_str().unwrap_or("")),
             "logs": "environment check passed\n",
             "logsTruncated": false,
             "stdout": "environment check passed\n",
@@ -6555,6 +6620,7 @@ mod tests {
         assert_eq!(requests.len(), 1);
         let request = &requests[0];
         assert_eq!(request["check"]["checkId"], "build");
+        assert_eq!(request["check"]["description"], check.description);
         assert_eq!(
             request["check"]["argv"],
             serde_json::json!(["cargo", "build"])
@@ -6607,11 +6673,13 @@ mod tests {
             axum::http::StatusCode::OK,
             serde_json::json!({
                 "checkId": "build",
+                "description": check.description,
                 "specSha256": binding.spec.spec_sha256,
                 "status": "FAILED",
                 "exitCode": 2,
                 "expectExit": 0,
                 "passed": false,
+                "diagnostic": "build the frozen workspace (exit 2, expected 0): error[E0001]",
                 "logs": "compile failed\n",
                 "logsTruncated": false,
                 "stdout": "compile failed\n",

@@ -1,0 +1,7 @@
+== empty (allocated but never staged) workspace volume
+{"exitCode": 254, "gitMetadata": false, "packageJson": false, "stderr": "npm error code ENOENT\nnpm error syscall open\nnpm error path /cache/check-workspace/package.json\nnpm error errno -2\nnpm error enoent Could not read package.json: Error: ENOENT: no such file or directory, open '/cache/check-workspace/package.json'\nnpm error enoent This is related to npm not being able to find a file.\nnpm error enoent\nnpm error A complete log of this run can be found in: /cache/npm/_logs/2026-11-11T18_47_40_317Z-debug-0.log\n", "stderrTruncated": false, "stdout": "", "stdoutTruncated": false}
+== git-worktree candidate workspace
+{"exitCode": 0, "gitMetadata": false, "packageJson": true, "stderr": "", "stderrTruncated": false, "stdout": "\n> factory-check-fixture@1.0.0 test\n> node -e \"console.log('tests passed')\"\n\ntests passed\n", "stdoutTruncated": false}
+== plain-directory base project (manual comparison)
+{"exitCode": 0, "gitMetadata": false, "packageJson": true, "stderr": "", "stderrTruncated": false, "stdout": "\n> factory-check-fixture@1.0.0 test\n> node -e \"console.log('tests passed')\"\n\ntests passed\n", "stdoutTruncated": false}
+PASS: empty workspace reproduces npm exit 254; git worktree and plain project pass

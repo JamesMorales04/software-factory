@@ -54,7 +54,14 @@ from .policy import (
 )
 from .receipt import build_receipt, observe_attestation
 from .sbom import build_sbom, license_inventory_copy, sbom_sha256, sbom_text
-from .util import now_rfc3339, read_json, sha256_text, tail, write_json
+from .util import (
+    last_nonempty_line,
+    now_rfc3339,
+    read_json,
+    sha256_text,
+    tail,
+    write_json,
+)
 
 CACHE_ROOT = Path("/cache")
 
@@ -584,12 +591,14 @@ def check(args: argparse.Namespace) -> int:
                 "schemaVersion": SCHEMA_VERSION,
                 "status": "PASSED" if passed else "FAILED",
                 "checkId": check_spec["checkId"],
+                "description": check_spec["description"],
                 "specSha256": spec["specSha256"],
                 "outputSha256": receipt.get("outputSha256"),
                 "exitCode": code,
                 "expectExit": check_spec["expectExit"],
                 "stdout": stdout,
                 "stderr": stderr,
+                "stderrTail": last_nonempty_line(stderr),
                 "stdoutTruncated": stdout_truncated,
                 "stderrTruncated": stderr_truncated,
                 "durationMs": int((time.monotonic() - started) * 1000),

@@ -802,6 +802,13 @@ async fn environment_check<B: factory_native::execution::VolumeBackend + 'static
         )
             .into_response();
     };
+    // Allocation creates an empty volume and only generic run/dependency
+    // operations refresh it. Stage the exact current worktree here so a frozen
+    // check that is the first operation (or that follows write_files) never
+    // runs against an empty or stale workspace.
+    if let Err(error) = app.manager.stage_workspace_for_check(&workspace_id).await {
+        return execution_error(error);
+    }
     let workspace_volume = match app.manager.workspace_volume(&workspace_id) {
         Ok(volume) => volume,
         Err(error) => return execution_error(error),
@@ -1308,13 +1315,16 @@ mod tests {
     use tower::ServiceExt;
     use uuid::Uuid;
 
+    type CapturedRequests = std::sync::Arc<Mutex<Vec<serde_json::Value>>>;
+    type TestVolumes = std::sync::Arc<Mutex<HashMap<String, PathBuf>>>;
+
     const TEST_TOKEN: &str = "supervisor-token-0123456789abcdef0123456789abcdef";
     const TEST_GRANT_KEY: &[u8] = b"attempt-grant-key-0123456789abcdef";
     const TEST_CAPABILITY_KEY: &[u8] = b"capability-key-0123456789abcdef0";
 
-    #[derive(Default)]
+    #[derive(Default, Clone)]
     struct TestBackend {
-        volumes: Mutex<HashMap<String, PathBuf>>,
+        volumes: TestVolumes,
     }
 
     impl TestBackend {
@@ -1447,6 +1457,7 @@ mod tests {
         app: Arc<App<TestBackend>>,
         root: PathBuf,
         repository: PathBuf,
+        volumes: TestVolumes,
     }
 
     impl Drop for TestFixture {
@@ -1472,14 +1483,21 @@ mod tests {
         );
         git(&repository, &["config", "user.name", "Test"]);
         fs::write(repository.join("seed.txt"), "base\n").unwrap();
-        git(&repository, &["add", "seed.txt"]);
+        fs::write(
+            repository.join("package.json"),
+            "{\"name\":\"fixture\",\"version\":\"1.0.0\",\"scripts\":{\"test\":\"node -e \\\"process.exit(0)\\\"\"}}\n",
+        )
+        .unwrap();
+        git(&repository, &["add", "seed.txt", "package.json"]);
         git(&repository, &["commit", "-qm", "base"]);
         let images: BTreeSet<String> = ["test/image:1".to_owned()].into();
+        let backend = TestBackend::default();
+        let volumes = std::sync::Arc::clone(&backend.volumes);
         let manager = WorkspaceManager::new(
             root.join("work"),
             root.join("state"),
             [repository.clone()],
-            TestBackend::default(),
+            backend,
         )
         .unwrap();
         TestFixture {
@@ -1499,6 +1517,7 @@ mod tests {
             }),
             root,
             repository,
+            volumes,
         }
     }
 
@@ -1769,6 +1788,7 @@ mod tests {
             },
             "check": {
                 "checkId": "check-1",
+                "description": "fixture environment check",
                 "argv": ["/bin/sh", "-c", "printf 'http\\n' > result.txt"],
                 "cwd": ".",
                 "timeoutSecs": 30,
@@ -1796,15 +1816,85 @@ mod tests {
                         captured.lock().unwrap().push(body.clone());
                         axum::Json(json!({
                             "checkId": body["check"]["checkId"],
+                            "description": body["check"]["description"],
                             "specSha256": body["spec"]["specSha256"],
                             "status": "PASSED",
                             "exitCode": 0,
                             "expectExit": body["check"]["expectExit"],
                             "passed": true,
+                            "diagnostic": "fixture environment check (exit 0, expected 0)",
                             "logs": "ok\n",
                             "logsTruncated": false,
                             "stdout": "ok\n",
                             "stderr": "",
+                            "stdoutTruncated": false,
+                            "stderrTruncated": false,
+                            "cleanupConfirmed": true,
+                            "durationMs": 3
+                        }))
+                    },
+                ),
+            )
+            .with_state(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        (format!("http://{address}"), captured, server)
+    }
+
+    /// Fake broker that reproduces `npm test`'s real exit 254 when the staged
+    /// candidate workspace has no `package.json`. A correctly staged git
+    /// worktree passes; an empty or stale volume fails exactly as the live
+    /// campaign did.
+    async fn fake_environment_broker_checking_workspace(
+        volumes: TestVolumes,
+    ) -> (String, CapturedRequests, tokio::task::JoinHandle<()>) {
+        use axum::routing::post;
+        let captured = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let state = (std::sync::Arc::clone(&captured), volumes);
+        let router = axum::Router::new()
+            .route(
+                "/v1/environments/check",
+                post(
+                    |axum::extract::State((captured, volumes)): axum::extract::State<(
+                        CapturedRequests,
+                        TestVolumes,
+                    )>,
+                     axum::Json(body): axum::Json<serde_json::Value>| async move {
+                        captured.lock().unwrap().push(body.clone());
+                        let volume = body["workspaceVolume"].as_str().unwrap_or("");
+                        let path = volumes.lock().unwrap().get(volume).cloned();
+                        let fresh = path.as_ref().is_some_and(|path| {
+                            std::fs::read_to_string(path.join("package.json"))
+                                .is_ok_and(|body| body.contains("\"fresh\""))
+                        });
+                        let (exit, status, stderr) = if fresh {
+                            (0, "PASSED", "")
+                        } else {
+                            (
+                                254,
+                                "FAILED",
+                                "npm error code ENOENT\nnpm error path /cache/check-workspace/package.json\n",
+                            )
+                        };
+                        axum::Json(json!({
+                            "checkId": body["check"]["checkId"],
+                            "description": body["check"]["description"],
+                            "specSha256": body["spec"]["specSha256"],
+                            "status": status,
+                            "exitCode": exit,
+                            "expectExit": body["check"]["expectExit"],
+                            "passed": exit == 0,
+                            "diagnostic": format!(
+                                "{} (exit {exit}, expected 0): npm error path /cache/check-workspace/package.json",
+                                body["check"]["description"].as_str().unwrap_or("")
+                            ),
+                            "logs": stderr,
+                            "logsTruncated": false,
+                            "stdout": "",
+                            "stderr": stderr,
                             "stdoutTruncated": false,
                             "stderrTruncated": false,
                             "cleanupConfirmed": true,
@@ -2304,6 +2394,97 @@ mod tests {
         assert_eq!(
             forwarded["workspaceVolume"],
             fixture.app.manager.workspace_volume(&workspace_id).unwrap()
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn environment_check_stages_the_git_worktree_before_the_broker() {
+        let mut fixture = fixture();
+        let digest_file = fixture.root.join("environment-builder.digest");
+        fs::write(&digest_file, format!("{TEST_ENV_BUILDER_DIGEST}\n")).unwrap();
+        let (broker_url, captured, server) =
+            fake_environment_broker_checking_workspace(std::sync::Arc::clone(&fixture.volumes))
+                .await;
+        {
+            let app = Arc::get_mut(&mut fixture.app).unwrap();
+            app.environment_broker = Some(
+                RuntimeBrokerClient::new(
+                    &broker_url,
+                    TEST_TOKEN.to_owned(),
+                    ResourceOwner::Supervisor,
+                )
+                .unwrap(),
+            );
+            app.environment_builder = Some(EnvironmentBuilderAllowlist {
+                image: TEST_ENV_BUILDER_IMAGE.into(),
+                digest_file,
+            });
+        }
+        let router = build_router(fixture.app.clone());
+        let allocate = allocation_body("environment-check-staging", &fixture.repository);
+        let handle = body_json(
+            router
+                .clone()
+                .oneshot(json_request("/v1/workspaces", Some(TEST_TOKEN), &allocate))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let workspace_id = handle["workspaceId"].as_str().unwrap().to_owned();
+        let capability = handle["capability"].as_str().unwrap().to_owned();
+        let volume = fixture.app.manager.workspace_volume(&workspace_id).unwrap();
+        let volume_path = fixture
+            .volumes
+            .lock()
+            .unwrap()
+            .get(&volume)
+            .cloned()
+            .unwrap();
+        assert!(
+            !volume_path.join("package.json").is_file(),
+            "allocation must start with an empty broker volume"
+        );
+        // A write after allocation only changes the host worktree. The check
+        // must see this exact content, not the empty or stale volume.
+        fs::write(
+            fixture
+                .root
+                .join("work")
+                .join("environment-check-staging")
+                .join("package.json"),
+            "{\"name\":\"fresh\",\"version\":\"1.0.0\",\"scripts\":{\"test\":\"node -e \\\"process.exit(0)\\\"\"}}\n",
+        )
+        .unwrap();
+        let body = environment_check_body();
+        let grant = operation_grant(&handle, "run", &body);
+        let response = router
+            .oneshot(operation_request(
+                &format!("/v1/workspaces/{workspace_id}/environment-check"),
+                &capability,
+                &grant,
+                &body,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let result = body_json(response).await;
+        assert_eq!(result["status"], "PASSED", "{result}");
+        assert_eq!(result["description"], "fixture environment check");
+        assert!(
+            fs::read_to_string(volume_path.join("package.json"))
+                .is_ok_and(|body| body.contains("\"fresh\"")),
+            "the Supervisor must stage the current git worktree into the check volume"
+        );
+        assert!(
+            !volume_path.join(".git").exists(),
+            "the workspace archive excludes Git metadata"
+        );
+        let requests = captured.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0]["check"]["description"],
+            "fixture environment check"
         );
         server.abort();
     }

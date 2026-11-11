@@ -3501,6 +3501,8 @@ struct BuilderCheckResult {
     #[serde(default)]
     check_id: String,
     #[serde(default)]
+    description: String,
+    #[serde(default)]
     spec_sha256: String,
     #[serde(default)]
     exit_code: Option<i32>,
@@ -3510,6 +3512,8 @@ struct BuilderCheckResult {
     stdout: String,
     #[serde(default)]
     stderr: String,
+    #[serde(default)]
+    stderr_tail: String,
     #[serde(default)]
     stdout_truncated: bool,
     #[serde(default)]
@@ -3671,6 +3675,12 @@ async fn execute_environment_check_inner(
             "the environment builder ran a different check id",
         ));
     }
+    if result.description != input.check.description {
+        return Err(EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_HASH_MISMATCH",
+            "the environment builder check bound a different description",
+        ));
+    }
     if result.spec_sha256 != input.spec.spec_sha256 {
         return Err(EnvironmentBrokerFailure::new(
             "ENVIRONMENT_HASH_MISMATCH",
@@ -3713,13 +3723,21 @@ async fn execute_environment_check_inner(
     } else {
         u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
     };
+    let diagnostic = factory_native::runtime_broker::bounded_check_diagnostic(
+        &result.description,
+        exit_code,
+        result.expect_exit,
+        &result.stderr_tail,
+    );
     Ok(factory_native::runtime_broker::EnvironmentCheckResult {
         check_id: result.check_id,
         spec_sha256: result.spec_sha256,
+        description: result.description,
         status,
         exit_code: Some(exit_code),
         expect_exit: result.expect_exit,
         passed,
+        diagnostic,
         logs: final_logs(logs),
         logs_truncated,
         stdout: result.stdout,
@@ -5766,7 +5784,7 @@ mod tests {
         LicenseInventory, NetworkPolicy, ProjectConventions, ResourceLimits, SandboxAttestation,
         SandboxPolicy,
     };
-    use factory_native::runtime_broker::EnvironmentCheckSpec;
+    use factory_native::runtime_broker::{EnvironmentCheckSpec, bounded_check_diagnostic};
     use tower::ServiceExt;
 
     #[test]
@@ -8095,6 +8113,7 @@ exit 1
             receipt,
             check: EnvironmentCheckSpec {
                 check_id: "check-1".into(),
+                description: "fixture environment check".into(),
                 argv: vec!["/bin/sh".into(), "-c".into(), "printf 'ok\\n'".into()],
                 cwd: ".".into(),
                 timeout_secs: 30,
@@ -8352,12 +8371,14 @@ exit 0
             "schemaVersion": 1,
             "status": status,
             "checkId": "check-1",
+            "description": "fixture environment check",
             "specSha256": spec_sha256,
             "outputSha256": "5".repeat(64),
             "exitCode": exit_code,
             "expectExit": expect_exit,
             "stdout": stdout,
             "stderr": stderr,
+            "stderrTail": stderr.lines().rev().find(|line| !line.trim().is_empty()).unwrap_or(""),
             "stdoutTruncated": false,
             "stderrTruncated": false,
             "durationMs": 7,
@@ -8921,6 +8942,31 @@ exit 0
         assert_eq!(body["passed"], false);
         assert_eq!(body["stdout"], "compilation failed\n");
         assert_eq!(body["stderr"], "error[E0001]\n");
+        assert_eq!(body["description"], "fixture environment check");
+        let diagnostic = body["diagnostic"].as_str().unwrap();
+        assert!(
+            diagnostic.contains("fixture environment check"),
+            "{diagnostic}"
+        );
+        assert!(diagnostic.contains("error[E0001]"), "{diagnostic}");
+        assert!(diagnostic.chars().count() <= 1_400, "{diagnostic}");
+    }
+
+    #[test]
+    fn check_diagnostic_is_description_first_and_bounded() {
+        let diagnostic = bounded_check_diagnostic(
+            "missing Delivery acceptance heading",
+            1,
+            0,
+            "prefix\n\n  final stderr line  \n",
+        );
+        assert_eq!(
+            diagnostic,
+            "missing Delivery acceptance heading (exit 1, expected 0): final stderr line"
+        );
+        let long = bounded_check_diagnostic(&"d".repeat(5_000), 1, 0, &"e".repeat(5_000));
+        assert!(long.chars().count() <= 1_400, "{}", long.chars().count());
+        assert!(long.contains("exit 1"));
     }
 
     #[tokio::test]

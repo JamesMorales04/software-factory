@@ -159,6 +159,19 @@ def last_lines(value: str, lines: int = 60, limit: int = 8_192) -> str:
     return tail(selected, limit)
 
 
+def last_nonempty_line(value: str, limit: int = 512) -> str:
+    """Return one redacted, bounded stderr line for a check diagnostic.
+
+    Never return more than a single line: a failed check may print an
+    unbounded body that the broker must not copy into a tool result.
+    """
+    for line in reversed(redact(value).splitlines()):
+        line = line.strip()
+        if line:
+            return line[:limit]
+    return ""
+
+
 def unique(values: Iterable[str]) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []

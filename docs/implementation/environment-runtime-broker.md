@@ -97,16 +97,47 @@ Worker and Verifier integration:
 - the Worker sends the typed plan/spec/receipt/check through
   `POST /v1/workspaces/{workspace_id}/environment-check` on the Supervisor. The
   Supervisor authenticates the workspace capability and a `run` operation grant
-  whose frozen argv/timeout must match, resolves the volume from its durable
-  `WorkspaceManager` record, verifies the configured builder image/digest and
-  calls the broker with its own token. A missing or stale Campaign environment
-  binding fails before execution; there is no generic image fallback.
+  whose frozen argv/timeout must match, **materializes the exact current host
+  worktree into the broker workspace volume**, resolves the volume from its
+  durable `WorkspaceManager` record, verifies the configured builder
+  image/digest and calls the broker with its own token. Allocation creates an
+  empty volume and only generic run/dependency operations refresh it, so a
+  frozen check that is the first operation (or that follows `write_files`)
+  must stage the worktree itself; otherwise it runs against an empty or stale
+  workspace. A missing or stale Campaign environment binding fails before
+  execution; there is no generic image fallback.
+- every `EnvironmentCheckSpec` carries the human `SpecCheck` description. The
+  builder echoes it into `check-result.json` together with one redacted,
+  bounded stderr line; the broker returns a bounded
+  `description`/`diagnostic` in `EnvironmentCheckResult`, and the Worker/Verifier
+  show it even when a failed check writes no output.
 - the verifier stages its clean candidate worktree into its own broker volume and
   calls the broker check route with the verifier token. Its direct Podman/local
   development backend has no builder-check route and refuses rather than running
   the generic verifier image.
 - check receipts keep the exact check id, exit code, expected exit, passed
   state, stdout, stderr and truncation from the builder result.
+
+### Workspace staging and failed-check diagnostics
+
+A live campaign exposed two coupled defects. First, the Supervisor's
+environment-check route used the recorded workspace volume without staging the
+current worktree. Allocation creates an empty volume and only generic
+`run`/dependency calls refresh it, so a frozen `npm test` that was the first
+operation ran in a check workspace containing only generated environment files.
+Real npm reported `ENOENT ... package.json` and exited 254; the same check
+against the plain project or a properly staged Git worktree passed. The route
+now calls `WorkspaceManager::stage_workspace_for_check`, which snapshots the
+exact worktree (excluding `.git`, matching the archive contract) into the
+volume under the manager lock before the broker call.
+
+Second, a failing check could return an exit code with no stderr, leaving the
+Implementer unable to tell what failed. The check description is now part of
+`EnvironmentCheckSpec`, the builder result and `EnvironmentCheckResult`; the
+broker produces a bounded `diagnostic` containing the description, exit code,
+expected exit and at most one redacted stderr line. The Worker tool result,
+automatic-final summary and Verifier failure all surface it. Source bodies and
+full logs are never copied into the diagnostic.
 
 ## 2. Image identity and allowlist
 
@@ -214,27 +245,38 @@ fetch/resolve.
 
 - `cargo fmt --all -- --check`
 - `cargo clippy -p factory-native --all-targets --all-features -- -D warnings`
-- `cargo test -p factory-native --lib` — 942 passed, 4 ignored.
+- `cargo test -p factory-native --lib -- --test-threads=1` — 946 passed,
+  4 ignored.
 - `cargo test -p factory-native --bin factory-core` — 65 passed.
-- `cargo test -p factory-native --bin factory-worker` — 32 passed, including
-  the frozen builder-check path, missing Campaign binding refusal, failure
+- `cargo test -p factory-native --bin factory-worker` — 34 passed, including
+  the frozen builder-check path, description propagation, bounded
+  description-first tool diagnostics, missing Campaign binding refusal, failure
   exit-code mapping, timeout refusal and exact request binding.
 - `cargo test -p factory-native --bin factory-verifier` — 11 passed, including
-  the broker builder-check path, refusal, cleanup and missing binding.
-- `cargo test -p factory-native --bin factory-runtime-broker` — 69 passed,
+  the broker builder-check path, description binding, refusal, cleanup and
+  missing binding.
+- `cargo test -p factory-native --bin factory-runtime-broker` — 72 passed,
   including environment-check owner separation, workspace ownership, exact
-  builder identity, plan/spec/receipt mismatch, argv/timeout bounds,
-  success/failure exit mapping, fabricated-PASS refusal, resource-limit cache
-  purge/quarantine, bundle digest/cache bounds, narrow container arguments and
-  timeout cleanup.
-- `cargo test -p factory-native --bin factory-supervisor` — 11 passed, including
-  grant/image/workspace refusal and successful typed proxy.
+  builder identity, description binding, plan/spec/receipt mismatch,
+  argv/timeout bounds, success/failure exit mapping, bounded diagnostics,
+  fabricated-PASS refusal, resource-limit cache purge/quarantine, bundle
+  digest/cache bounds, narrow container arguments and timeout cleanup.
+- `cargo test -p factory-native --bin factory-supervisor` — 12 passed, including
+  grant/image/workspace refusal, successful typed proxy, and a real Git
+  worktree check that fails with npm exit 254 when the workspace volume is
+  empty and passes after `stage_workspace_for_check`.
 - `python3 -W error::ResourceWarning -m unittest discover -s deploy/environment-builder/tests`
-  — 61 passed, including failed-check exit-code/stdout/stderr preservation,
-  proof that a check uses the candidate workspace rather than the build cache,
-  over-budget build/check termination, unreadable-scan fail-closed behavior,
-  mount-source attestation for root/system targets, epoch-sweep restart safety, bounded noisy-output
-  capture, pipe cleanup and disk failure evidence.
+  — 69 passed, including description bounds, failed-check
+  exit-code/stdout/stderr preservation, bounded redacted stderr tail,
+  requested-cwd propagation, typed timeout, offline npm cache, proof that a
+  check uses the candidate workspace rather than the build cache, over-budget
+  build/check termination, unreadable-scan fail-closed behavior, mount-source
+  attestation for root/system targets, epoch-sweep restart safety, bounded
+  noisy-output capture, pipe cleanup and disk failure evidence.
+- `TMPDIR=… bash scripts/environment-check-reproduce.sh` — PASS in the real
+  builder image: empty workspace volume → npm exit 254; Git worktree and plain
+  project → exit 0. See the
+  [staging evidence](../evidence/environment-check-staging-2026-11-11/README.md).
 - `podman compose -f compose.yaml config --quiet` — exit 0.
 - `factory-architecture-check --root .` — PASS.
 - Isolated Compose observation (`podman compose -p wp1c-e2e2`, source commit
@@ -250,4 +292,8 @@ against a running Compose stack with a real frozen spec/receipt and a real
 Node/Rust workspace has not been run for WP1-D. The check route, Supervisor
 proxy, Worker and Verifier wiring are exercised with deterministic unit/fixture
 tests only; those tests do not claim a real Nix/devenv environment-check result.
-The earlier WP1-C `resolve`/`build` end-to-end gap also remains.
+The live campaign's `npm test` exit 254 was reproduced against the real builder
+image and real npm for an unstaged workspace, and the staging regression is
+covered by a real Git worktree plus archive import. A full live Compose rerun
+with the v16 environment remains open. The earlier WP1-C `resolve`/`build`
+end-to-end gap also remains.

@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import types
@@ -38,7 +39,13 @@ from environment_builder.policy import (  # noqa: E402
     validate_sbom_binding,
     validate_secrets,
 )
-from environment_builder.nix import BuildLog, closure_manifest_sha256, run_check  # noqa: E402
+from environment_builder.nix import (  # noqa: E402
+    BuildLog,
+    child_environment,
+    closure_manifest_sha256,
+    run_check,
+)
+from environment_builder.util import last_nonempty_line  # noqa: E402
 from environment_builder.receipt import (  # noqa: E402
     _mount_attestation,
     _mounts_authorized,
@@ -286,11 +293,47 @@ class PolicyTests(unittest.TestCase):
 
     def test_check_argv_is_typed(self) -> None:
         with self.assertRaises(BuilderError):
-            validate_check({"checkId": "c1", "argv": "npm test", "cwd": ".", "timeoutSecs": 60})
+            validate_check(
+                {
+                    "checkId": "c1",
+                    "description": "run the tests",
+                    "argv": "npm test",
+                    "cwd": ".",
+                    "timeoutSecs": 60,
+                }
+            )
         parsed = validate_check(
-            {"checkId": "c1", "argv": ["npm", "test"], "cwd": ".", "timeoutSecs": 60, "expectExit": 0}
+            {
+                "checkId": "c1",
+                "description": "run the tests",
+                "argv": ["npm", "test"],
+                "cwd": ".",
+                "timeoutSecs": 60,
+                "expectExit": 0,
+            }
         )
         self.assertEqual(parsed["argv"], ["npm", "test"])
+        self.assertEqual(parsed["description"], "run the tests")
+        with self.assertRaises(BuilderError):
+            validate_check(
+                {
+                    "checkId": "c1",
+                    "description": "x" * 501,
+                    "argv": ["npm", "test"],
+                    "cwd": ".",
+                    "timeoutSecs": 60,
+                }
+            )
+        with self.assertRaises(BuilderError):
+            validate_check(
+                {
+                    "checkId": "c1",
+                    "description": "   ",
+                    "argv": ["npm", "test"],
+                    "cwd": ".",
+                    "timeoutSecs": 60,
+                }
+            )
 
 
     def test_fetch_policy_rejects_host_and_unenforced_proxy(self) -> None:
@@ -844,6 +887,138 @@ class CheckExecutionTests(unittest.TestCase):
         self.assertFalse(stdout_truncated)
         self.assertFalse(stderr_truncated)
 
+    def test_check_runs_in_the_requested_working_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workspace = root / "workspace"
+            subdir = workspace / "projects" / "node"
+            cache = root / "cache"
+            subdir.mkdir(parents=True)
+            cache.mkdir()
+            seen: dict[str, list[str]] = {}
+            log = BuildLog(cache / "check.log")
+            try:
+                def fake_command(
+                    _workspace: Path, argv: list[str], *, offline: bool
+                ) -> list[str]:
+                    self.assertTrue(offline)
+                    seen["argv"] = argv
+                    return ["true"]
+
+                with (
+                    mock.patch(
+                        "environment_builder.nix._environment_command",
+                        side_effect=fake_command,
+                    ),
+                    mock.patch(
+                        "environment_builder.nix.subprocess.Popen",
+                        return_value=self._Process(),
+                    ),
+                ):
+                    run_check(
+                        workspace,
+                        cache,
+                        subdir,
+                        ["npm", "test"],
+                        timeout=30,
+                        resources={
+                            "cpu": 2,
+                            "memoryMiB": 4096,
+                            "diskMiB": 10240,
+                            "pids": 512,
+                            "timeoutSecs": 1800,
+                        },
+                        log=log,
+                        expect_exit=0,
+                    )
+            finally:
+                log.close()
+            self.assertEqual(
+                seen["argv"], ["env", "-C", str(subdir), "npm", "test"]
+            )
+
+    def test_check_timeout_is_a_typed_builder_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workspace = root / "workspace"
+            cache = root / "cache"
+            workspace.mkdir()
+            cache.mkdir()
+            log = BuildLog(cache / "check.log")
+            try:
+                process = self._Process()
+
+                def timeout(*_args: object, **_kwargs: object) -> int:
+                    raise subprocess.TimeoutExpired("npm", 1)
+
+                process.wait = timeout  # type: ignore[method-assign]
+                with (
+                    mock.patch(
+                        "environment_builder.nix._environment_command",
+                        return_value=["npm", "test"],
+                    ),
+                    mock.patch(
+                        "environment_builder.nix.subprocess.Popen",
+                        return_value=process,
+                    ),
+                    mock.patch("environment_builder.nix._terminate_process"),
+                ):
+                    with self.assertRaises(BuilderError) as raised:
+                        run_check(
+                            workspace,
+                            cache,
+                            workspace,
+                            ["npm", "test"],
+                            timeout=30,
+                            resources={
+                                "cpu": 2,
+                                "memoryMiB": 4096,
+                                "diskMiB": 10240,
+                                "pids": 512,
+                                "timeoutSecs": 1800,
+                            },
+                            log=log,
+                            expect_exit=0,
+                        )
+            finally:
+                log.close()
+            self.assertEqual(raised.exception.code, "ENVIRONMENT_BUILD_TIMEOUT")
+
+    def test_offline_check_sets_the_npm_offline_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workspace = root / "workspace"
+            cache = root / "cache"
+            workspace.mkdir()
+            cache.mkdir()
+            resources = {
+                "cpu": 2,
+                "memoryMiB": 4096,
+                "diskMiB": 10240,
+                "pids": 512,
+                "timeoutSecs": 1800,
+            }
+            offline = child_environment(
+                workspace, cache, offline=True, resources=resources
+            )
+            self.assertEqual(offline["npm_config_offline"], "true")
+            self.assertEqual(offline["npm_config_cache"], str(cache / "npm"))
+            self.assertEqual(offline["HOME"], str(cache / "home"))
+            self.assertIn("substituters =\n", offline["NIX_CONFIG"])
+            online = child_environment(
+                workspace, cache, offline=False, resources=resources
+            )
+            self.assertEqual(online["npm_config_offline"], "false")
+
+    def test_check_stderr_tail_is_one_bounded_redacted_line(self) -> None:
+        self.assertEqual(
+            last_nonempty_line("first\n\n  final line  \n"), "final line"
+        )
+        self.assertEqual(last_nonempty_line(""), "")
+        self.assertEqual(last_nonempty_line("x" * 4_000), "x" * 512)
+        redacted = last_nonempty_line("token = abcdefghijklmnop")
+        self.assertNotIn("abcdefghijklmnop", redacted)
+
     def test_check_uses_the_candidate_workspace_not_the_build_cache(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -894,6 +1069,7 @@ class CheckExecutionTests(unittest.TestCase):
             }
             check = {
                 "checkId": "candidate-visible",
+                "description": "the check sees the candidate workspace",
                 "argv": ["true"],
                 "cwd": ".",
                 "timeoutSecs": 30,
@@ -969,6 +1145,10 @@ class CheckExecutionTests(unittest.TestCase):
                 (output / "check-result.json").read_text(encoding="utf-8")
             )
             self.assertEqual(result["status"], "PASSED")
+            self.assertEqual(
+                result["description"], "the check sees the candidate workspace"
+            )
+            self.assertEqual(result["stderrTail"], "")
 
 
 if __name__ == "__main__":
