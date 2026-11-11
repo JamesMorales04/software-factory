@@ -216,7 +216,7 @@ fetch/resolve.
 - `cargo test -p factory-native --bin factory-supervisor` — 11 passed, including
   grant/image/workspace refusal and successful typed proxy.
 - `python3 -W error::ResourceWarning -m unittest discover -s deploy/environment-builder/tests`
-  — 52 passed, including failed-check exit-code/stdout/stderr preservation,
+  — 54 passed, including failed-check exit-code/stdout/stderr preservation,
   proof that a check uses the candidate workspace rather than the build cache,
   over-budget build/check termination, unreadable-scan fail-closed behavior,
   mount-source attestation for root/system targets, epoch-sweep restart safety, bounded noisy-output

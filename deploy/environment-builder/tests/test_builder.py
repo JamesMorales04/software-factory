@@ -505,9 +505,31 @@ class AttestationTests(unittest.TestCase):
                 "/etc/hosts",
                 "ext4",
             ),
+            self.mount(
+                "/var/lib/containers/storage/overlay-containers/abc/userdata/hostname",
+                "/etc/hostname",
+                "ext4",
+            ),
+            self.mount(
+                "/var/lib/containers/storage/overlay-containers/abc/userdata/resolv.conf",
+                "/etc/resolv.conf",
+                "ext4",
+            ),
         ]
         self.assertTrue(_mounts_authorized(mounts))
         self.assertTrue(_mount_attestation(mounts, True))
+
+    def test_container_runtime_file_source_must_match_target(self) -> None:
+        prefix = "/var/lib/containers/storage/overlay-containers/abc/userdata"
+        self.assertFalse(
+            _mounts_authorized([self.mount(f"{prefix}/config.json", "/etc/hosts")])
+        )
+        self.assertFalse(
+            _mounts_authorized([self.mount(f"{prefix}/hostname", "/etc/hosts")])
+        )
+        self.assertFalse(
+            _mounts_authorized([self.mount("/etc/hosts", "/etc/hosts", "ext4")])
+        )
 
     def test_missing_or_incomplete_mountinfo_is_not_attested(self) -> None:
         self.assertFalse(_mount_attestation([], False))
