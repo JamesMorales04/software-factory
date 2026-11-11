@@ -106,7 +106,7 @@ explicit, frozen planning artifact.
 
 | ID | Current assumption | Evidence | Impact | Disposition | Owner |
 | --- | --- | --- | --- | --- | --- |
-| DEL-01 | Worker stagnation/salvage can finalize a candidate after frozen checks; it is a candidate-submission path, not delivery. | `native/src/bin/worker.rs:2011-2280`, `:6910` regression test | Salvage must not be mistaken for merge/delivery authority. | **BIND**: candidate final source + delivery attempt; salvage never writes a branch/PR/merge. | WP-D2, WP-E2 |
+| DEL-01 | Worker stagnation/salvage can finalize a candidate after frozen checks; it is a candidate-submission path, not delivery. | `native/src/bin/worker.rs:2011-2280`, `:6910` regression test | Salvage must not be mistaken for merge/delivery authority. | **BIND**: candidate final source + delivery attempt; salvage never writes a branch/PR/merge. | WP5 / WP3 (table/WP-D2, environment/WP-E2) |
 | DEL-02 | The merge handler is operator-confirmed and checks Gate/head/PR/checks, but has no risk-tier policy, durable attempt, idempotency, incident or post-merge check. | `native/src/bin/core.rs:5250-5405`; `:4716-4760` | R0/R1 cannot be safely automated; retries lack durable intent. | **EXTEND**: policy/attempt/incident/issue bindings (ADR-0040, 0042). | WP-D1, WP-D2 |
 | DEL-03 | `db/quality.rs` stores candidates/receipts/gates but no delivery/issue-link records. | `native/src/db/quality.rs` (no delivery terms) | Delivery state is not durable or queryable. | **ADD** migrations/tables reserved as 0073/0074/0075. | WP-D1, WP-D2 |
 | DEL-04 | Gate `ACCEPTED` is already checked before the existing merge, but there is no separate delivery decision. | `native/src/bin/core.rs:5304-5312` | The handler can drift into treating Gate as delivery authority. | **BIND**: separate `DeliveryDecision`; Gate remains necessary, not sufficient. | WP-D1 |
@@ -120,6 +120,51 @@ explicit, frozen planning artifact.
 | DEV-02 | The supervisor runtime installs `python3`; this is a runtime-language dependency that a project check could accidentally rely on. | `deploy/Containerfile:95-103` | A project check may silently use Python from the Factory runtime instead of its frozen environment. | **REPLACE** project checks with the environment builder/verifier; retain only Factory-internal tooling. | WP-E2 |
 | DEV-03 | Compose's OpenSpec image is Node-based. | `compose.yaml:542` | It is a Factory tooling image, not a user project runtime. | **RETAIN (Factory-only)**; do not infer Node for user projects. | WP-E2 |
 | DEV-04 | Provider image contains OpenCode/Codex and Node. | `deploy/Containerfile:213-241` | Provider runtime requirement; not a project environment. | **RETAIN (Factory-only)**; keep separate from execution. | WP-E2 |
+
+### 3.6 Additional active-path findings
+
+These paths were not in the first audit pass. Each is classified explicitly as
+production project-toolchain bias, Factory-only, or fixture/test-only. A
+fixture-only image is not evidence that production execution is Rust-only, and
+it is not a project environment.
+
+| ID | Current assumption | Evidence | Class | Disposition | Owner |
+| --- | --- | --- | --- | --- | --- |
+| ENV-23 | Dependency validation requires the lockfile path to end with `Cargo.lock`; acquisition defaults to `Cargo.lock`/`cargo fetch`/`cargo vendor` and prepares `CARGO_HOME`. | `native/src/dependency_service.rs:384-385`, `:787-797`; `native/src/bin/dependency_acquire.rs:77-89`, `:164` | **Project-toolchain bias (production dependency path)** | **GENERALIZE**: environment-selected lockfile/ecosystem adapter; broker policy stays. | WP-E3 |
+| ENV-24 | Every Podman/broker execution container receives a `/cargo-target` tmpfs and `CARGO_TARGET_DIR`, regardless of project language. | `native/src/execution.rs:466-477`; `native/src/bin/runtime_broker.rs:2140-2154` | **Project-toolchain bias (production execution setup)**; harmless for a non-Cargo command but still a hidden Rust assumption | **BIND**: target/cache directories and env names come from the frozen `EnvironmentSpec`. | WP-E2 |
+| ENV-25 | The Supervisor's production execution image allowlist is the Rust image. | `compose.yaml:334`; `native/src/bin/supervisor.rs:346-348`, `:623-626` | **Project-toolchain bias (production execution)** | **GENERALIZE**: allowlist resolved from the frozen environment image digest; retain a pinned Factory verifier/runtime image separately. | WP-E2 |
+| ENV-26 | The Worker fixture image is the Rust image. | `compose.yaml:374`; `native/src/bin/worker.rs:151` | **Fixture/test-only**, not live project execution | **RETAIN as fixture infrastructure**, label it clearly and never use it to infer a project toolchain. | WP-T1 (WP-E2 review) |
+| ENV-27 | The Office Project form offers only `generic`, `node-basic` and `node-browser` quality profiles. | `office/src/views/Projects.tsx:823-829` | **Project-toolchain bias (production Office surface)** | **GENERALIZE**: show the Core-owned environment/profile choices; do not invent a profile or claim environment support. | WP-O1 (depends WP-E4) |
+| ENV-28 | Semantic review context ranks `lib.rs`/`main.rs` and `Cargo.toml`/`package.json` ahead of other files. | `native/src/semantic_review.rs:321-327` | **Project-toolchain bias (production review context)** | **REPLACE**: rank by changed/impacted paths and environment conventions, not Rust/Node filenames. | WP-E4 |
+
+### 3.7 Salvage and final source
+
+The Worker salvage path can finalize a stagnated Implementer only when it has
+already written a changed workspace and every remaining frozen check passes
+(`native/src/bin/worker.rs:2226-2286`). That is a **candidate submission**, not a
+merge, delivery or issue close.
+
+Required policy:
+
+1. The exact final source used by salvage is recorded in
+   `0075_candidate_final_source.sql`: candidate commit/tree/content digest,
+   frozen environment hash, salvage checkpoint and check receipts, and the
+   normal verifier/reviewer/Gate lineage. A missing final-source record is
+   `FINAL_SOURCE_REQUIRED`/`NOT_TESTED`, not an accepted candidate.
+2. **R0 salvage** is visible through the final-source record and is eligible for
+   the ordinary verifier/reviewer/Gate and the ordinary R0 delivery policy. It
+   receives no special acceptance claim.
+3. **R1/R2/R3 salvage** requires an authenticated human review of the
+   final-source and salvage evidence, even if the Gate later accepts it. It is
+   **never auto-merged**; delivery is manual only. A model cannot self-approve
+   the salvage.
+4. Salvage never writes a branch, PR, merge, tag or issue close. Those remain
+   Core delivery/issue operations under ADR-0040/ADR-0042.
+
+**Owner:** WP5 / WP3. WP5 owns the Worker salvage/finalization and
+provider-failure boundary; WP3 owns the planning/risk/Gate integration and the
+final-source acceptance rule. WP-D2 implements the reserved `0075` table and
+delivery binding with WP-E2's environment hash.
 
 ## 4. Cross-cutting conclusions
 
@@ -138,6 +183,11 @@ explicit, frozen planning artifact.
 5. **Delivery and issue closure are separate from quality.** A candidate can be
    accepted and still not be delivered; an issue can be referenced and still
    remain open.
+6. **Salvage is candidate submission, not delivery.** R0 salvage is visible via
+   `candidate_final_source` and eligible for the ordinary Gate; R1+ salvage
+   requires human review and is never auto-merged (WP5/WP3).
+7. **Auto-merge is default-branch-only.** A non-default protected base remains
+   manual-only; the policy must not imply otherwise.
 
 ## 5. Work-package ownership
 
@@ -149,10 +199,17 @@ explicit, frozen planning artifact.
 | WP-E3 | Dependency/supply-chain generalization | `native/src/dependencies.rs`, `native/src/dependency_broker.rs`, `native/src/bin/dependency_acquire.rs`, `compose.yaml` deps | WP0, WP-E1 | non-Rust lockfile/adapter, SBOM/license/audit, broker |
 | WP-E4 | Planning/stack/quality generalization | `native/src/planning/stack.rs`, `native/src/planning/*`, `native/src/agentic.rs`, `native/src/bin/core.rs` planning handlers | WP0, WP-E1, WP-E2 | no hardcoded language default; environment artifact in plan |
 | WP-D1 | Delivery policy + 0073 | `native/src/db/delivery*`, `migrations/0073_delivery_policies.sql`, Core routes | WP0 | policy revisions, R0/R1/R2/R3 eligibility |
-| WP-D2 | Delivery execution/incidents + 0074/0075 | `native/src/bin/core.rs` delivery handlers, `native/src/db/delivery*`, `migrations/0074_delivery_attempts.sql`, `0075_candidate_final_source.sql` | WP0, WP-D1 | exact-head merge, idempotency, incident, manual revert |
+| WP-D2 | Delivery execution/incidents + 0074/0075 | `native/src/bin/core.rs` delivery handlers, `native/src/db/delivery*`, `migrations/0074_delivery_attempts.sql`, `0075_candidate_final_source.sql` | WP0, WP-D1 | exact-head merge, idempotency, incident, manual revert, final-source binding for salvage |
 | WP-I1 | Issue links/lifecycle + 0072 | `native/src/issue_intake.rs`, `native/src/db/issue_intake.rs`, `native/src/github.rs`, `migrations/0072_issue_links.sql` | WP0 | links frozen, six states, comment/close receipts |
 | WP-O1 | Office surfaces | `office/src/views/*`, `office/src/coreApi.ts`, `docs/product/office-parity.json` | WP-E1, WP-D1, WP-D2, WP-I1 | per-option browser/a11y; parity updated |
 | WP-T1 | Tests/chaos/evidence | `native/tests/*`, `office/e2e-browser/*`, fixtures | all | deterministic + real Podman/browser evidence |
+
+**Cross-program salvage ownership:** WP5 / WP3 own the salvage/final-source
+policy (WP5 Worker salvage/finalization; WP3 planning/risk/Gate integration).
+WP-D2 implements the reserved `0075_candidate_final_source.sql` table and
+delivery binding; WP-E2 supplies the frozen environment hash. This is an
+explicit ownership assignment, not a claim that WP5/WP3 have implemented the
+policy.
 
 Shared-file rules and migration reservations are in
 [delivery-environment program](delivery-environment-program.md). No WP0 file

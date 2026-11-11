@@ -45,7 +45,8 @@ delivery authority.
   "policySha256": "…",
   "mode": "MANUAL | RISK_TIERED",
   "r1Enabled": false,
-  "allowedBaseBranches": ["main"],
+  "autoMergeBaseBranch": "main",
+  "manualBaseBranches": ["main", "release"],
   "requiredChecks": ["…"],
   "postMergeCheck": {
     "requiredForR1": true,
@@ -65,13 +66,20 @@ Rules:
 
 - The default is `MANUAL`; a missing policy is `DELIVERY_POLICY_REQUIRED`.
 - `RISK_TIERED` enables R0 auto-merge. `r1Enabled=true` is a second explicit
-  opt-in and requires a matching Owner Charter `delivery_autonomy` grant.
+  opt-in and requires a matching Owner Charter `delivery_autonomy` grant covering
+  this project/repository/`autoMergeBaseBranch` and R1.
+- `autoMergeBaseBranch` MUST equal the Project's protected default branch.
+  Auto-merge never uses any other branch.
+- `manualBaseBranches` may list the default and additional protected branches
+  for **manual** delivery only. A non-default protected base remains manual-only
+  until a later ADR explicitly changes this rule.
 - `postMergeCheck.requiredForR1` is `true`; disabling it makes R1 ineligible.
 - `killSwitch` or `incidentFreeze` blocks all auto-merge for the Project.
 - Policy revisions are immutable; an update appends a new revision. A frozen
   candidate/attempt keeps the revision it was evaluated under.
-- The policy cannot enable R2/R3 auto-merge, a branch-protection bypass, a
-  force-push, a deployment or a cross-project write.
+- The policy cannot enable R2/R3 auto-merge, auto-merge on a non-default branch,
+  a branch-protection bypass, a force-push, a deployment or a cross-project
+  write.
 
 ### 2.2 DeliveryAttempt
 
@@ -106,9 +114,11 @@ Rules:
 }
 ```
 
-`expectedHeadSha` must equal `candidateSha`; `baseBranch` must be an allowed
-protected base. `authorization` records why Core believed the write was allowed;
-it is validated against the live policy/charter, not trusted as a caller input.
+`expectedHeadSha` must equal `candidateSha`. For auto-merge, `baseBranch` must
+equal `autoMergeBaseBranch` and the Project's protected default branch; for
+manual delivery it must be in `manualBaseBranches` and protected. `authorization`
+records why Core believed the write was allowed; it is validated against the live
+policy/charter, not trusted as a caller input.
 
 ### 2.3 DeliveryDecision
 
@@ -139,11 +149,15 @@ policy, charter or Gate revision invalidates it.
 
 | Risk | `MANUAL` | `RISK_TIERED` |
 | --- | --- | --- |
-| `R0` | Owner confirmation | Auto-merge after all preconditions |
-| `R1` | Owner confirmation | Auto-merge only with `r1Enabled=true`, a current matching Owner Charter `delivery_autonomy` grant and a configured post-merge check |
+| `R0` | Owner confirmation | Auto-merge on the protected default branch after all preconditions |
+| `R1` | Owner confirmation | Auto-merge on the protected default branch only with `r1Enabled=true`, a current matching Owner Charter `delivery_autonomy` grant and a configured post-merge check |
 | `R2` | Owner confirmation | Owner confirmation (never auto) |
 | `R3` | Owner confirmation + applicable independent security review | Owner confirmation + applicable independent security review (never auto) |
 | Unknown | Owner confirmation | Owner confirmation (never auto) |
+
+Auto-merge rows use only `autoMergeBaseBranch` (the protected default branch).
+A configured non-default protected base in `manualBaseBranches` does not make
+that base auto-mergeable.
 
 Risk class is revalidated by Core from the actual candidate diff. A model label,
 a historical Gate label or an Office selection cannot downgrade risk. If the
@@ -159,7 +173,9 @@ Auto-merge is allowed only when every condition holds:
    rejected or from a failed Attempt.
 3. The Core Gate decision is `ACCEPTED` and is the current effective revision.
 4. The candidate commit/tree/content digest resolve exactly.
-5. The PR is open, non-draft and targets an allowed protected base branch.
+5. The PR is open, non-draft and targets the Project's protected default branch
+   (`autoMergeBaseBranch`). Auto-merge on any other base is `BASE_NOT_DEFAULT`;
+   a configured non-default protected base is manual-only.
 6. The PR head SHA equals `expectedHeadSha` equals the candidate commit SHA.
 7. The PR base SHA is the current protected base (or GitHub's merge would be
    stale; reject).
@@ -169,15 +185,42 @@ Auto-merge is allowed only when every condition holds:
 10. The PR/check/protection reads are no older than 120 seconds at the merge
     call; otherwise re-read.
 11. No delivery incident or kill switch is active.
-12. For R1: `r1Enabled=true`, a current matching charter grant exists and the
-    post-merge check is configured.
+12. For R1: `r1Enabled=true`, a current matching charter grant for this
+    project/repository/`autoMergeBaseBranch` and R1 exists, and the post-merge
+    check is configured.
 13. For R2/R3: an authenticated owner decision exists for this exact candidate,
     head and base (and security review for R3).
 14. The Core-only write credential is present, unexpired and not revoked.
 
+### 4.1 Salvage-finalized candidates
+
+A candidate finalized by the Worker salvage path is not a separate quality or
+delivery path. It must have an immutable `candidate_final_source` record
+(reserved migration `0075`) containing:
+
+- the exact final candidate commit/tree/content digest;
+- the frozen `EnvironmentSpec` hash;
+- the salvage checkpoint, frozen-check receipts and the normal
+  verifier/reviewer/Gate lineage;
+- the exact source used to produce the candidate, so a later workspace change
+  cannot be mistaken for the salvaged source.
+
+Rules:
+
+- **R0 salvage** is visible through `candidate_final_source` and eligible for the
+  ordinary verifier/reviewer/Gate and the ordinary R0 delivery policy. It gets no
+  special acceptance claim.
+- **R1/R2/R3 salvage** requires an authenticated human review of the final-source
+  and salvage evidence, even if the Gate later accepts it. It is **never
+  auto-merged**; delivery is manual only. A model cannot self-approve.
+- Missing final-source or salvage evidence is `FINAL_SOURCE_REQUIRED` or
+  `SALVAGE_REVIEW_REQUIRED`; it cannot be treated as `ACCEPTED`, `MERGED` or
+  `DONE`.
+
 ## 5. Merge protocol
 
-1. Core re-reads the candidate, Gate, policy, charter, PR, base branch, branch
+1. Core re-reads the candidate, Gate, policy, charter, PR, base branch (which
+   must equal `autoMergeBaseBranch` for auto-merge), branch
    protection/rulesets and checks. No cached state is used for the write.
 2. Core builds a `DeliveryDecision`. Any `DENY` returns a stable failure code and
    performs no write.
@@ -262,6 +305,10 @@ Auto-merge is allowed only when every condition holds:
     model, prompt, log or evidence.
 11. Delivery policies, attempts, decisions, incidents and revert records are
     append-only/immutable; corrections append a revision.
+12. Auto-merge uses only the protected default branch
+    (`autoMergeBaseBranch`); a non-default protected base is manual-only.
+13. R0 salvage is eligible for the ordinary Gate/policy; R1+ salvage requires
+    human review and is never auto-merged.
 
 ## 10. Failure codes
 
@@ -277,7 +324,8 @@ Auto-merge is allowed only when every condition holds:
 | `CHARTER_GRANT_EXPIRED` | Grant expired/revoked/out of scope |
 | `CANDIDATE_SUPERSEDED` | Candidate is not current/latest |
 | `HEAD_MISMATCH` | PR head differs from candidate/expected head |
-| `BASE_MISMATCH` | PR base is not the allowed protected base |
+| `BASE_MISMATCH` | PR base is not a permitted protected base |
+| `BASE_NOT_DEFAULT` | Auto-merge requested for a non-default protected base; manual only |
 | `PR_NOT_OPEN` | PR closed, missing or not open |
 | `PR_DRAFT` | PR is a draft |
 | `PR_ALREADY_MERGED` | Already merged; reconcile idempotently |
@@ -289,6 +337,8 @@ Auto-merge is allowed only when every condition holds:
 | `MERGE_IDENTITY_MISMATCH` | Merged commit/head differs from the decision |
 | `POST_MERGE_CHECK_MISSING` | R1 has no configured/available check |
 | `POST_MERGE_CHECK_FAILED` | Required check failed after merge |
+| `FINAL_SOURCE_REQUIRED` | Salvage-finalized candidate lacks the exact final-source record |
+| `SALVAGE_REVIEW_REQUIRED` | R1+ salvage lacks authenticated human review; never auto-merge |
 | `DELIVERY_INCIDENT_OPEN` | Incident/kill switch freezes auto-merge |
 | `DELIVERY_CREDENTIAL_UNAVAILABLE` | Core write credential absent/revoked |
 | `IDEMPOTENCY_CONFLICT` | Same key with different exact inputs |
@@ -309,7 +359,9 @@ A delivery retains:
 7. merge method, merge commit SHA and merged-at time;
 8. post-merge check receipt (R1);
 9. incident/revert records and owner decisions;
-10. issue link/comment/close receipts per the issue contract.
+10. issue link/comment/close receipts per the issue contract;
+11. for a salvage-finalized candidate, the `candidate_final_source` record and
+    authenticated human-review decision (R1+).
 
 Evidence is immutable and exact-candidate-bound. A webhook or UI claim is not
 evidence of a merge; only the provider-confirmed merge state and Core attempt
@@ -321,10 +373,13 @@ The implementation must expose delivery on the existing Campaign/candidate
 surface (no new authority is created by this contract):
 
 - risk tier, policy revision, charter grant and eligibility/blocked reasons;
-- exact candidate/head/base and Gate revision;
+- exact candidate/head/base, protected default branch and Gate revision; a
+  non-default base is visibly manual-only;
 - check freshness, branch-protection status and required checks;
 - R0 auto-merge state; R1 opt-in/charter/post-merge-check state; R2/R3 manual
   approval; owner decision form where required;
+- salvage final-source state and the R1+ human-review requirement (never
+  auto-merge);
 - merge result, merge commit, incident, freeze and manual revert record;
 - loading, empty, error, offline, blocked, stale, incident and merged states;
 - no control that can merge without a fresh Core eligibility read; no token or
@@ -346,6 +401,8 @@ Positive:
 - R1 with project opt-in, matching charter grant and a passing post-merge check
   reaches `MERGED`/`DONE`;
 - R2/R3 with an exact owner decision merges manually and records the decision;
+- R0 salvage with an exact final-source record passes the ordinary Gate and
+  ordinary R0 policy;
 - a duplicate request returns the same attempt and does not merge twice;
 - a retry after a confirmed merge reconciles as success.
 
@@ -354,6 +411,10 @@ Negative:
 - `ACCEPTED` Gate with no policy does not merge;
 - R1 without `r1Enabled` or charter grant does not merge;
 - R2/R3 without owner decision does not merge;
+- auto-merge on a non-default protected base is `BASE_NOT_DEFAULT`, never a
+  silent auto-merge;
+- R1/R2/R3 salvage without authenticated human review is
+  `SALVAGE_REVIEW_REQUIRED`, never auto-merged;
 - draft/closed PR, wrong base, wrong head, stale checks, failed checks, unknown
   protection or an open incident does not merge;
 - a changed head after the decision invalidates it;

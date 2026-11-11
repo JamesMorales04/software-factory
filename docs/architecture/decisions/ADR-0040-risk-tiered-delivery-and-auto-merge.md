@@ -83,8 +83,8 @@ policy revision it was evaluated under.
 
 | Risk | Delivery behavior |
 | --- | --- |
-| `R0` | Automatic merge after all preconditions pass. No per-merge owner click. |
-| `R1` | Automatic merge only when **all** of the following hold: the project policy explicitly enables R1 (`r1_enabled=true`), a current Owner Charter `delivery_autonomy` grant covers this project/repository/base branch and R1, and a required post-merge check is configured. The post-merge check must pass and be recorded before delivery is `DONE`. |
+| `R0` | Automatic merge on the protected default branch after all preconditions pass. No per-merge owner click. |
+| `R1` | Automatic merge on the protected default branch only when **all** of the following hold: the project policy explicitly enables R1 (`r1_enabled=true`), a current Owner Charter `delivery_autonomy` grant covers this project/repository/default branch and R1, and a required post-merge check is configured. The post-merge check must pass and be recorded before delivery is `DONE`. |
 | `R2` | Manual merge only. An authenticated owner decision is required for every merge. |
 | `R3` | Manual merge only. An authenticated owner decision and the applicable independent security review are required for every merge. |
 | Unknown / unclassified | Manual merge only. Unknown risk is never auto-merged. |
@@ -100,7 +100,9 @@ Auto-merge is eligible only when:
 - the candidate is the latest frozen candidate for its Attempt and has not been
   superseded or rejected;
 - the pull request is open, non-draft, and targets the Project's protected
-  default branch (manual merges may target another explicitly configured base);
+  **default branch**. Auto-merge never targets a non-default branch; a
+  configured non-default protected base remains manual-only until a later ADR
+  explicitly changes this rule (manual merges may use such a base);
 - the pull request head SHA equals the candidate commit SHA exactly;
 - the candidate tree SHA and content digest still resolve to that commit;
 - the pull request base SHA is the current protected base, or the merge is
@@ -111,6 +113,14 @@ Auto-merge is eligible only when:
 A new commit, force-push, rebase, base update or branch-protection change
 invalidates the decision. The exact candidate SHA must be re-read; a decision
 never follows a moving branch.
+
+A candidate finalized by the Worker salvage path follows the same exact-candidate
+and Gate rules, but has an additional delivery restriction. Its
+`candidate_final_source` record (reserved migration `0075`) must expose the exact
+final source and salvage evidence. R0 salvage is eligible for the ordinary Gate
+and ordinary R0 delivery policy. R1/R2/R3 salvage requires an authenticated human
+review of the final-source and salvage evidence and is **never auto-merged**,
+even if the Gate accepts it.
 
 ### 4. Fresh pull request and check read
 
@@ -207,6 +217,8 @@ is recorded against the exact candidate.
 11. The Core write token never leaves Core.
 12. Delivery records and evidence are immutable and append-only; corrections
     append a new attempt or incident revision.
+13. Auto-merge uses only the Project's protected default branch. A non-default
+    protected base is manual-only, and R1+ salvage is always manual.
 
 ## Failure and stop conditions
 
@@ -218,6 +230,7 @@ ADR are:
 - Gate not `ACCEPTED` or a newer Gate revision exists;
 - candidate superseded, rejected or not the latest candidate;
 - PR closed, draft, already merged, wrong base or wrong head;
+- auto-merge requested for a non-default protected base;
 - checks missing, failing, stale or not bound to the exact head;
 - branch protection/ruleset unverifiable;
 - policy/read older than the freshness bound;
@@ -262,9 +275,13 @@ ADR are:
 
 - Deterministic fake-GitHub tests for every risk tier, disabled policy, missing
   charter, expired/revoked grant, stale head, changed base, draft/closed PR,
-  failing/incomplete/stale checks, unverified branch protection, duplicate
-  idempotency key, retry after merge, merge-commit mismatch, post-merge failure,
-  incident freeze and manual revert record.
+  failing/incomplete/stale checks, unverified branch protection, non-default
+  protected base (`BASE_NOT_DEFAULT`), duplicate idempotency key, retry after
+  merge, merge-commit mismatch, post-merge failure, incident freeze and manual
+  revert record.
+- Salvage tests: R0 final-source visible and eligible for the ordinary Gate;
+  R1+ final-source requires authenticated human review and is never auto-merged,
+  even after Gate acceptance.
 - Database tests for append-only policy revisions, immutable delivery attempts,
   unique idempotency keys, incident state and candidate/policy/gate binding.
 - Core API tests proving no token, model or Office path can merge without the
