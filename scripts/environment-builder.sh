@@ -26,15 +26,16 @@ DIGEST="${FACTORY_ENVIRONMENT_BUILDER_DIGEST:-}"
 PLATFORM="${FACTORY_ENVIRONMENT_BUILDER_PLATFORM:-x86_64-linux}"
 POLICY_REVISION="${FACTORY_ENVIRONMENT_BUILDER_POLICY_REVISION:-nix-devenv-environment-v1}"
 CACHE="${FACTORY_ENVIRONMENT_BUILDER_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/software-factory/environment-builder}"
+CACHE="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$CACHE")"
 NIX_STORE_CACHE="${FACTORY_ENVIRONMENT_BUILDER_NIX_STORE:-$CACHE/nix-store}"
+NIX_STORE_CACHE="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$NIX_STORE_CACHE")"
 FETCH_NETWORK="${FACTORY_ENVIRONMENT_BUILDER_FETCH_NETWORK:-none}"
 FETCH_PROXY="${FACTORY_ENVIRONMENT_BUILDER_FETCH_PROXY:-}"
 APPROVED_FETCH_NETWORKS=(
   none
-  factory-egress
-  factory-deps-egress
   factory-egress-internal
-  software-factory_factory-egress
+  factory-deps-egress
+  software-factory_factory-egress-internal
   software-factory_factory-deps-egress
 )
 
@@ -43,6 +44,88 @@ VERIFIED_DIGEST=""
 VERIFIED_REPO_DIGEST=""
 
 log() { printf '%s\n' "$*" >&2; }
+
+canonical() {
+  python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1"
+}
+
+require_within_cache() {
+  local label="$1" path="$2"
+  local real
+  real="$(canonical "$path")"
+  case "$real" in
+    "${CACHE}"/*) printf '%s\n' "$real" ;;
+    *) typed_failure ENVIRONMENT_RESOURCE_LIMIT \
+         "${label} must stay inside the builder cache root ${CACHE}" ;;
+  esac
+}
+
+validate_cache_root() {
+  local cache="$1"
+  python3 - "$cache" "$HOME" "$ROOT" <<'PYCACHE'
+import os, sys
+cache, home, root = sys.argv[1:4]
+real = os.path.realpath(cache)
+forbidden = {"/", "/root", os.path.realpath(home), os.path.realpath(root)}
+if real in forbidden:
+    raise SystemExit(f"cache root {real} is a protected host path")
+print(real)
+PYCACHE
+}
+
+validate_workspace() {
+  local workspace="$1"
+  python3 - "$workspace" "$HOME" "$ROOT" <<'PYWORKSPACE'
+import os, sys
+workspace, home, root = sys.argv[1:4]
+real = os.path.realpath(workspace)
+forbidden = {
+    "/", "/root", "/home", "/etc", "/proc", "/sys", "/dev", "/run", "/var/run",
+    os.path.realpath(home), os.path.realpath(root),
+}
+if real in forbidden:
+    raise SystemExit(f"workspace {real} is a protected host path and must not be mounted")
+if not os.path.isdir(real):
+    raise SystemExit(f"workspace {real} is not a directory")
+if "/.local/share/containers" in real or "podman.sock" in real:
+    raise SystemExit("workspace must not expose the container engine")
+print(real)
+PYWORKSPACE
+}
+
+disk_usage_kib() {
+  local run_dir="$1" store_dir="$2"
+  du -sk "$run_dir" "$store_dir" 2>/dev/null | awk '{sum += $1} END {print sum + 0}'
+}
+
+check_disk_budget() {
+  local run_dir="$1" store_dir="$2" disk_mib="$3" phase="$4"
+  local observed
+  observed="$(disk_usage_kib "$run_dir" "$store_dir")"
+  python3 - "$run_dir" "$store_dir" "$disk_mib" "$observed" "$phase" <<'PYDISK'
+import json, os, sys
+run_dir, store_dir, disk_mib, observed, phase = sys.argv[1:6]
+plan = int(disk_mib)
+observed = int(observed)
+record = {
+    "schemaVersion": 1,
+    "phase": phase,
+    "planDiskMiB": plan,
+    "observedKiB": observed,
+    "observedMiB": round(observed / 1024, 3),
+    "enforcement": "POST_HOC_DU",
+    "exact": False,
+    "exceeded": observed > plan * 1024,
+    "runDir": run_dir,
+    "storeCache": store_dir,
+}
+with open(os.path.join(run_dir, "disk-usage.json"), "w", encoding="utf-8") as handle:
+    json.dump(record, handle, indent=2, sort_keys=True)
+    handle.write("\n")
+if record["exceeded"]:
+    raise SystemExit(1)
+PYDISK
+}
 
 typed_failure() {
   python3 - "$1" "$2" <<'PY'
@@ -63,10 +146,24 @@ validate_fetch_network() {
   esac
   local approved
   for approved in "${APPROVED_FETCH_NETWORKS[@]}"; do
-    [[ "$value" == "$approved" ]] && return 0
+    if [[ "$value" == "$approved" ]]; then
+      if [[ "$value" == "none" ]]; then
+        return 0
+      fi
+      local internal
+      if ! internal="$(podman network inspect "$value" --format '{{.Internal}}' 2>/dev/null)"; then
+        typed_failure ENVIRONMENT_NETWORK_DENIED \
+          "fetch network '${value}' cannot be inspected; fail closed"
+      fi
+      if [[ "$internal" != "true" ]]; then
+        typed_failure ENVIRONMENT_NETWORK_DENIED \
+          "fetch network '${value}' is not internal; direct egress bypass is forbidden"
+      fi
+      return 0
+    fi
   done
   typed_failure ENVIRONMENT_NETWORK_DENIED \
-    "fetch network '${value}' is not an approved broker network"
+    "fetch network '${value}' is not an approved internal broker network"
 }
 
 validate_fetch_proxy() {
@@ -177,11 +274,11 @@ plan_resources = request.get("plan", {}).get("resources", {})
 spec_resources = request.get("spec", {}).get("resourcePolicy", {})
 if plan_resources != spec_resources:
     raise SystemExit("plan resources do not match the frozen spec resource policy")
-for key, default in (("cpu", 2), ("memoryMiB", 4096), ("pids", 512), ("timeoutSecs", 1800)):
+for key, default in (("cpu", 2), ("memoryMiB", 4096), ("pids", 512), ("timeoutSecs", 1800), ("diskMiB", 10240)):
     value = plan_resources.get(key, default)
     if not isinstance(value, int) or value <= 0:
         raise SystemExit(f"invalid resource {key}")
-print(f"{plan_resources.get('cpu', 2)} {plan_resources.get('memoryMiB', 4096)} {plan_resources.get('pids', 512)} {plan_resources.get('timeoutSecs', 1800)}")
+print(f"{plan_resources.get('cpu', 2)} {plan_resources.get('memoryMiB', 4096)} {plan_resources.get('pids', 512)} {plan_resources.get('timeoutSecs', 1800)} {plan_resources.get('diskMiB', 10240)}")
 PY
 }
 
@@ -240,7 +337,7 @@ copy_outputs() {
   mkdir -p "$output"
   local name
   for name in result.json builder-evidence.json build.log check.log check-result.json \
-              fetch-result.json sbom.cdx.json license-inventory.json closure.json sbom-digest.json; do
+              fetch-result.json sbom.cdx.json license-inventory.json closure.json sbom-digest.json disk-usage.json; do
     if [[ -f "$run_dir/$name" ]]; then
       cp -f "$run_dir/$name" "$output/$name"
     fi
@@ -284,20 +381,34 @@ case "$cmd" in
     [[ -n "$request" && -f "$request" ]] || typed_failure ENVIRONMENT_SPEC_INVALID "a request JSON file is required"
     [[ -n "$workspace" && -d "$workspace" ]] || typed_failure ENVIRONMENT_PLAN_INVALID "a project workspace is required"
     [[ -n "$output" ]] || typed_failure ENVIRONMENT_SPEC_INVALID "--output is required"
+    workspace="$(validate_workspace "$workspace")" || typed_failure ENVIRONMENT_PLAN_INVALID "workspace is not an allowed project path"
     validate_fetch_network "$FETCH_NETWORK"
     validate_fetch_proxy "$FETCH_NETWORK" "$FETCH_PROXY"
     verify_image
+    if ! CACHE="$(validate_cache_root "$CACHE")"; then
+      typed_failure ENVIRONMENT_RESOURCE_LIMIT "builder cache root is a protected host path"
+    fi
     mkdir -p "$CACHE"
+    chmod 700 "$CACHE" 2>/dev/null || true
+    if ! NIX_STORE_CACHE="$(require_within_cache "nix store cache" "$NIX_STORE_CACHE")"; then
+      typed_failure ENVIRONMENT_RESOURCE_LIMIT "nix store cache must stay inside the builder cache root ${CACHE}"
+    fi
     ensure_nix_store
     if [[ -n "$run_dir_override" ]]; then
-      run_dir="$run_dir_override"
+      if ! run_dir="$(require_within_cache "run directory" "$run_dir_override")"; then
+        typed_failure ENVIRONMENT_RESOURCE_LIMIT "run directory must stay inside the builder cache root ${CACHE}"
+      fi
       mkdir -p "$run_dir"
     else
       run_id="$(python3 -c 'import uuid; print(uuid.uuid4().hex)')"
       run_dir="$CACHE/runs/$run_id"
     fi
-    read -r cpu memory pids timeout_secs < <(prepare "$request" "$workspace" "$run_dir" "$check_doc" "$FETCH_NETWORK" "$FETCH_PROXY")
+    read -r cpu memory pids timeout_secs disk_mib < <(prepare "$request" "$workspace" "$run_dir" "$check_doc" "$FETCH_NETWORK" "$FETCH_PROXY")
 
+    if ! check_disk_budget "$run_dir" "$NIX_STORE_CACHE" "$disk_mib" "pre-${cmd}"; then
+      copy_outputs "$run_dir" "$output" 2>/dev/null || true
+      typed_failure ENVIRONMENT_RESOURCE_LIMIT "builder cache/store already exceeds the frozen disk bound"
+    fi
     if [[ "$cmd" == "build" && "$fetch_first" == "1" ]]; then
       if ! run_container fetch "$run_dir" "$FETCH_NETWORK" "$timeout_secs" "$cpu" "$memory" "$pids" "$workspace"; then
         copy_outputs "$run_dir" "$output"
@@ -333,6 +444,11 @@ PYREQUEST
     if ! run_container "$cmd" "$run_dir" "$network" "$timeout_secs" "$cpu" "$memory" "$pids" "$workspace"; then
       copy_outputs "$run_dir" "$output"
       typed_failure ENVIRONMENT_BUILD_FAILED "the builder container failed; see build.log/result.json"
+    fi
+    if ! check_disk_budget "$run_dir" "$NIX_STORE_CACHE" "$disk_mib" "post-${cmd}"; then
+      rm -f "$run_dir/result.json"
+      copy_outputs "$run_dir" "$output"
+      typed_failure ENVIRONMENT_RESOURCE_LIMIT "observed builder disk usage exceeds the frozen disk bound"
     fi
     copy_outputs "$run_dir" "$output"
     if [[ -f "$output/result.json" ]]; then

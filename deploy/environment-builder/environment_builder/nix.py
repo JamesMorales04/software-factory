@@ -190,9 +190,6 @@ def nix_config(offline: bool, resources: dict[str, int]) -> str:
         "keep-going = false",
         "http-connections = 8",
         "trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw=",
-        # The local file cache is produced by the same builder run and is
-        # imported only into the same cache mount. Public caches stay signed.
-        "require-sigs = false",
     ]
     if offline:
         lines.extend(["substituters =", "connect-timeout = 1"])
@@ -249,80 +246,6 @@ def child_environment(
     if "/home/factory/.nix-profile/bin" not in env["PATH"]:
         env["PATH"] = f"/home/factory/.nix-profile/bin:{env['PATH']}"
     return env
-
-
-def restore_store(cache_dir: Path) -> None:
-    """Restore the exact fetched store, including derivations and sources.
-
-    The runtime closure alone is not enough for an offline ``devenv``
-    re-evaluation: devenv-tasks and flake source derivations are build-time
-    inputs. The fetch phase therefore copies every valid store path into a
-    local binary cache and the build/check phase imports it.
-    """
-    if not cache_dir.is_dir():
-        fail("ENVIRONMENT_BUILDER_UNAVAILABLE", "the cached builder store is missing")
-    completed = subprocess.run(
-        ["nix", "copy", "--from", f"file://{cache_dir}", "--all"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        timeout=1_800,
-        env=environment_without_secrets(dict(os.environ)),
-    )
-    if completed.returncode != 0:
-        fail(
-            "ENVIRONMENT_BUILD_FAILED",
-            f"cannot restore the cached builder store: {tail(completed.stdout, 2_000)}",
-        )
-
-
-def export_store(cache_dir: Path) -> None:
-    """Copy every valid store path into the local cache for offline reuse."""
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    completed = subprocess.run(
-        ["nix", "copy", "--to", f"file://{cache_dir}", "--all"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        timeout=1_800,
-        env=environment_without_secrets(dict(os.environ)),
-    )
-    if completed.returncode != 0:
-        fail(
-            "ENVIRONMENT_BUILD_FAILED",
-            f"cannot export the builder store: {tail(completed.stdout, 2_000)}",
-        )
-
-
-def export_closure(root: str, destination: Path) -> None:
-    """Export the exact environment closure for later offline checks."""
-    completed = subprocess.run(
-        ["nix-store", "--query", "--requisites", root],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=300,
-        env=environment_without_secrets(dict(os.environ)),
-    )
-    if completed.returncode != 0:
-        fail("ENVIRONMENT_BUILD_FAILED", "cannot enumerate the environment closure")
-    paths = [line for line in completed.stdout.splitlines() if line.startswith("/nix/store/")]
-    if not paths:
-        fail("ENVIRONMENT_BUILD_FAILED", "the environment closure is empty")
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    with destination.open("wb") as handle:
-        exported = subprocess.run(
-            ["nix-store", "--export", *paths],
-            stdout=handle,
-            stderr=subprocess.PIPE,
-            timeout=900,
-            env=environment_without_secrets(dict(os.environ)),
-        )
-    if exported.returncode != 0:
-        fail(
-            "ENVIRONMENT_BUILD_FAILED",
-            f"cannot export the environment closure: {tail(exported.stderr.decode('utf-8', 'replace'), 2_000)}",
-        )
 
 
 def closure_manifest(root: str) -> list[dict[str, Any]]:

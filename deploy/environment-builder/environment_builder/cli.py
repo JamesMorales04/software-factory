@@ -24,11 +24,9 @@ from .nix import (
     closure_manifest,
     devenv_version,
     environment_digest,
-    export_store,
     nix_version,
     prepare_workspace,
     realize_environment,
-    restore_store,
     run_check,
     write_environment_files,
 )
@@ -53,7 +51,6 @@ from .sbom import build_sbom, license_inventory_copy, sbom_sha256, sbom_text
 from .util import now_rfc3339, read_json, tail, write_json
 
 CACHE_ROOT = Path("/cache")
-CLOSURE_DIR = CACHE_ROOT / "closures"
 
 
 def _env(name: str, default: str = "") -> str:
@@ -206,10 +203,11 @@ def build(args: argparse.Namespace) -> int:
         if proxy is not None:
             if not isinstance(proxy, str) or not proxy.startswith(("http://", "https://")) or "@" in proxy:
                 fail("ENVIRONMENT_NETWORK_DENIED", "fetchProxy must be a credential-free HTTP(S) proxy")
-        shared_store = os.environ.get("FACTORY_ENVIRONMENT_BUILDER_SHARED_STORE") == "1"
-        store_cache = CLOSURE_DIR / spec["specSha256"]
-        if phase == "build" and not shared_store and store_cache.is_dir():
-            restore_store(store_cache)
+        if os.environ.get("FACTORY_ENVIRONMENT_BUILDER_SHARED_STORE") != "1":
+            fail(
+                "ENVIRONMENT_BUILDER_UNAVAILABLE",
+                "the builder requires a persistent verified Nix store cache; unsigned local closure import is not supported",
+            )
         log = BuildLog(run_dir / "build.log")
         try:
             root = realize_environment(
@@ -225,8 +223,6 @@ def build(args: argparse.Namespace) -> int:
             output_sha = environment_digest(
                 spec["specSha256"], spec["platform"], root, manifest, frozen_sbom_sha256
             )
-            if not shared_store:
-                export_store(store_cache)
             if phase == "fetch":
                 write_json(
                     run_dir / "fetch-result.json",
@@ -363,10 +359,11 @@ def check(args: argparse.Namespace) -> int:
         check_spec = validate_check(request.get("check"))
         if check_spec["checkId"] != args.check_id and args.check_id:
             fail("ENVIRONMENT_SPEC_INVALID", "the requested check id does not match the check document")
-        shared_store = os.environ.get("FACTORY_ENVIRONMENT_BUILDER_SHARED_STORE") == "1"
-        store_cache = CLOSURE_DIR / spec["specSha256"]
-        if not shared_store:
-            restore_store(store_cache)
+        if os.environ.get("FACTORY_ENVIRONMENT_BUILDER_SHARED_STORE") != "1":
+            fail(
+                "ENVIRONMENT_BUILDER_UNAVAILABLE",
+                "the builder requires a persistent verified Nix store cache; unsigned local closure import is not supported",
+            )
         build_workspace = run_dir / "workspace"
         prepare_workspace(source_workspace, build_workspace, reuse=build_workspace.is_dir())
         write_environment_files(build_workspace, files)
