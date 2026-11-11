@@ -2507,10 +2507,13 @@ const CLOSURE_ALLOWED_SPDX: &[&str] = &[
     "BSD-4-Clause",
     "BSL-1.0",
     "CC0-1.0",
+    "curl",
     "GPL-2.0-only",
     "GPL-2.0-or-later",
     "GPL-3.0-only",
     "GPL-3.0-or-later",
+    "LGPL-2.0-only",
+    "LGPL-2.0-or-later",
     "ISC",
     "LGPL-2.1-only",
     "LGPL-2.1-or-later",
@@ -2519,6 +2522,7 @@ const CLOSURE_ALLOWED_SPDX: &[&str] = &[
     "MIT",
     "MIT-0",
     "MPL-2.0",
+    "NCSA",
     "OpenSSL",
     "PostgreSQL",
     "Unlicense",
@@ -3908,6 +3912,10 @@ pub fn environment_error_from_broker(
 pub struct VerifiedPackage {
     pub name: String,
     pub attr: String,
+    /// Exact realised store output. Generated closure audits start from these
+    /// package outputs, never from the Core-generated devShell wrapper.
+    #[serde(default)]
+    pub store_path: String,
     pub version: String,
     pub license: String,
     pub unfree: bool,
@@ -4019,9 +4027,7 @@ impl EnvironmentResolution {
                 "the environment resolution is bound to a different plan",
             ));
         }
-        if (plan.source == EnvironmentPlanSource::Generated || !plan.packages.is_empty())
-            && self.closure_licenses.is_empty()
-        {
+        if !plan.packages.is_empty() && self.closure_licenses.is_empty() {
             return Err(EnvironmentError::new(
                 EnvironmentBlockerCode::EnvironmentLicenseUnknown,
                 "the builder returned no realised closure license evidence",
@@ -4065,6 +4071,12 @@ impl EnvironmentResolution {
                     ),
                 ));
             };
+            if !reported.store_path.starts_with("/nix/store/") {
+                return Err(pin_missing(format!(
+                    "package {} metadata has no exact realised store output",
+                    package.name
+                )));
+            }
             if reported.version != package.version {
                 return Err(pin_missing(format!(
                     "package {} version {} does not match the independently observed {}",
@@ -5016,6 +5028,7 @@ mod tests {
             packages: vec![VerifiedPackage {
                 name: "ripgrep".into(),
                 attr: "ripgrep".into(),
+                store_path: format!("/nix/store/{}-ripgrep-14.1.1", "d".repeat(32)),
                 version: "14.1.1".into(),
                 license: "MIT".into(),
                 unfree: false,

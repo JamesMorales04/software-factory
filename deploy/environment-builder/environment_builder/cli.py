@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -38,6 +39,7 @@ from .nix import (
 )
 from .policy import (
     MAX_ENVIRONMENT_FILE_BYTES,
+    NIXPKGS_PREFIX,
     validate_check,
     validate_closure_licenses,
     validate_environment_digest,
@@ -256,9 +258,9 @@ def build(args: argparse.Namespace) -> int:
                 proxy=proxy if phase == "fetch" else None,
             )
             manifest = closure_manifest(root)
-            closure_licenses = _closure_license_entries(
+            package_metadata = _package_metadata(
+                str(plan["nix"]["nixpkgs"]),
                 plan,
-                manifest,
                 child_environment(
                     build_workspace,
                     run_dir,
@@ -268,6 +270,32 @@ def build(args: argparse.Namespace) -> int:
                 ),
                 resources["timeoutSecs"],
                 log,
+            )
+            if plan.get("source") == "GENERATED":
+                license_manifest = (
+                    closure_manifest(
+                        [str(package["storePath"]) for package in package_metadata]
+                    )
+                    if package_metadata
+                    else []
+                )
+                exclude_paths: set[str] = set()
+            else:
+                license_manifest = manifest
+                exclude_paths = {root}
+            closure_licenses = _closure_license_entries(
+                plan,
+                license_manifest,
+                child_environment(
+                    build_workspace,
+                    run_dir,
+                    offline=phase == "build",
+                    resources=resources,
+                    proxy=proxy if phase == "fetch" else None,
+                ),
+                resources["timeoutSecs"],
+                log,
+                exclude=exclude_paths,
             )
             output_sha = environment_digest(
                 spec["specSha256"], spec["platform"], root, manifest, frozen_sbom_sha256
@@ -442,6 +470,7 @@ in map (entry:
   in {
     name = entry.name;
     attr = entry.attr;
+    storePath = pkg.outPath;
     version = pkg.version or "";
     license = licenseOf pkg;
     unfree = unfreeOf pkg;
@@ -494,12 +523,15 @@ def _package_metadata(
             fail("ENVIRONMENT_PLAN_INVALID", "package metadata is not an object")
         name = raw.get("name")
         attr = raw.get("attr")
+        out_path = raw.get("storePath")
         version = raw.get("version")
         license_value = raw.get("license")
         unfree = raw.get("unfree")
         if (
             not isinstance(name, str)
             or not isinstance(attr, str)
+            or not isinstance(out_path, str)
+            or not out_path.startswith("/nix/store/")
             or not isinstance(version, str)
             or not isinstance(license_value, str)
             or not isinstance(unfree, bool)
@@ -526,6 +558,7 @@ def _package_metadata(
             {
                 "name": name,
                 "attr": attr,
+                "storePath": out_path,
                 "version": version,
                 "license": license_value,
                 "unfree": unfree,
@@ -556,16 +589,35 @@ def _closure_metadata_expression(
        else if builtins.isAttrs p.meta.license then !(p.meta.license.free or true)
        else false)
     else false;
+  names = builtins.attrNames pkgs;
+  candidates = builtins.concatMap
+    (name:
+      let attempt = builtins.tryEval pkgs.${{name}};
+      in if attempt.success && builtins.isAttrs attempt.value then [ attempt.value ] else [])
+    names;
+  candidatesWithUnwrapped = builtins.concatMap
+    (p:
+      if (p ? unwrapped) && builtins.isAttrs p.unwrapped && (p.unwrapped ? outPath)
+      then [ p p.unwrapped ] else [ p ])
+    candidates;
 in map (p: {{
     path = p.outPath;
+    outputPaths = if p ? outputs then map (name: p.${{name}}.outPath) p.outputs else [ p.outPath ];
+    drvPath = p.drvPath or "";
     name = p.pname or p.name or "";
     version = p.version or "";
     license = licenseOf p;
     unfree = unfreeOf p;
   }})
   (builtins.filter
-    (p: builtins.isAttrs p && (p ? outPath) && builtins.elem p.outPath wanted)
-    (builtins.attrValues pkgs))
+    (p:
+      let attempt = builtins.tryEval (
+        (p ? outPath) && lib.any
+          (output: builtins.elem output wanted)
+          (if p ? outputs then map (name: p.${{name}}.outPath) p.outputs else [ p.outPath ])
+      );
+      in attempt.success && attempt.value)
+    candidatesWithUnwrapped)
 """
     )
 
@@ -620,12 +672,43 @@ def _verify_command_executables(
             )
 
 
+# Explicitly reviewed internal bootstrap packages that are not exposed as
+# top-level nixpkgs attributes. Any other unobserved closure path fails closed.
+INTERNAL_CLOSURE_LICENSES: dict[str, str] = {
+    "xgcc": "GPL-3.0-or-later",
+}
+STORE_NAME = re.compile(r"^[a-z0-9]{32}-(.+)$")
+STORE_NAME_VERSION = re.compile(r"^([A-Za-z0-9_+.-]+?)-(\d.*)$")
+
+
+def _internal_closure_license(path: str) -> dict[str, Any] | None:
+    match = STORE_NAME.match(Path(path).name)
+    if match is None:
+        return None
+    name_match = STORE_NAME_VERSION.match(match.group(1))
+    if name_match is None:
+        return None
+    name, version = name_match.group(1), name_match.group(2)
+    license_value = INTERNAL_CLOSURE_LICENSES.get(name)
+    if license_value is None:
+        return None
+    return {
+        "path": path,
+        "name": name,
+        "version": version,
+        "license": license_value,
+        "unfree": False,
+    }
+
+
 def _closure_license_entries(
     plan: dict[str, Any],
     manifest: list[dict[str, Any]],
     environment: dict[str, str],
     timeout: int,
     log: BuildLog,
+    *,
+    exclude: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     pin = str(plan.get("nix", {}).get("nixpkgs", ""))
     if not pin.startswith(NIXPKGS_PREFIX):
@@ -636,6 +719,8 @@ def _closure_license_entries(
         if not isinstance(entry, dict) or not str(entry.get("deriver", "")).strip():
             continue
         path = str(entry.get("path", ""))
+        if path in (exclude or set()):
+            continue
         basename = Path(path).name
         # The Nix/devenv substrate licenses are recorded by the frozen
         # inventory; they are not nixpkgs package outputs.
@@ -645,7 +730,7 @@ def _closure_license_entries(
             paths.add(path)
     ordered_paths = sorted(paths)
     if not ordered_paths:
-        fail("ENVIRONMENT_LICENSE_UNKNOWN", "the realised environment closure has no package outputs")
+        return []
     observed = nix_eval_json(
         _closure_metadata_expression(pin, ordered_paths),
         env=environment,
@@ -655,14 +740,58 @@ def _closure_license_entries(
     )
     if not isinstance(observed, list):
         fail("ENVIRONMENT_LICENSE_UNKNOWN", "closure metadata evaluation did not return a list")
-    seen = {str(entry.get("path", "")) for entry in observed if isinstance(entry, dict)}
-    missing = [path for path in ordered_paths if path not in seen]
-    if missing:
-        fail(
-            "ENVIRONMENT_LICENSE_UNKNOWN",
-            f"transitive closure path has no independently observed package metadata: {missing[0]}",
+    observed_entries = [entry for entry in observed if isinstance(entry, dict)]
+    by_path: dict[str, dict[str, Any]] = {}
+    for entry in observed_entries:
+        output_paths = entry.get("outputPaths")
+        if not isinstance(output_paths, list):
+            output_paths = [entry.get("path", "")]
+        for output_path in output_paths:
+            by_path[str(output_path)] = entry
+    by_deriver = {
+        str(entry.get("drvPath", "")): entry
+        for entry in observed_entries
+        if str(entry.get("drvPath", "")).strip()
+    }
+    manifest_by_path = {
+        str(entry.get("path", "")): entry
+        for entry in manifest
+        if isinstance(entry, dict)
+    }
+    resolved: list[dict[str, Any]] = []
+    for path in ordered_paths:
+        observed_entry = by_path.get(path)
+        if observed_entry is None:
+            # A package may expose several outputs (for example libgcc) that
+            # are not the attribute's default outPath. They share the deriver
+            # and therefore the parent package's observed metadata.
+            deriver = str(manifest_by_path.get(path, {}).get("deriver", "")).strip()
+            observed_entry = by_deriver.get(deriver)
+        if observed_entry is None:
+            internal = _internal_closure_license(path)
+            if internal is not None:
+                resolved.append(internal)
+                continue
+            fail(
+                "ENVIRONMENT_LICENSE_UNKNOWN",
+                f"transitive closure path has no independently observed package metadata: {path}",
+            )
+        name = str(observed_entry.get("name", ""))
+        version = str(observed_entry.get("version", ""))
+        if not version:
+            name_version = STORE_NAME_VERSION.match(name)
+            if name_version is not None:
+                name, version = name_version.group(1), name_version.group(2)
+        resolved.append(
+            {
+                "path": path,
+                "name": name,
+                "version": version,
+                "license": observed_entry.get("license"),
+                "unfree": observed_entry.get("unfree"),
+            }
         )
-    return validate_closure_licenses(observed)
+    return validate_closure_licenses(resolved)
 
 
 def resolve(args: argparse.Namespace) -> int:
@@ -753,13 +882,33 @@ def resolve(args: argparse.Namespace) -> int:
             proxy=proxy if isinstance(proxy, str) else None,
             disk_budget=disk_budget,
         )
-        closure_licenses = _closure_license_entries(
-            plan,
-            closure_manifest(root),
-            environment,
-            timeout,
-            log,
+        package_metadata = _package_metadata(
+            str(plan["nix"]["nixpkgs"]), plan, environment, timeout, log
         )
+        if plan.get("source") == "GENERATED":
+            # Audit the selected package outputs and their transitive package
+            # closure. The Core-generated devShell wrapper is not a nixpkgs
+            # package attribute and must not be part of this lookup.
+            roots = [str(package["storePath"]) for package in package_metadata]
+            closure_licenses = _closure_license_entries(
+                plan,
+                closure_manifest(roots) if roots else [],
+                environment,
+                timeout,
+                log,
+            )
+        else:
+            # A committed environment may carry packages in flake/devenv files
+            # that are not listed in the plan. Audit its realised closure, but
+            # exclude only the exact devShell/root wrapper path.
+            closure_licenses = _closure_license_entries(
+                plan,
+                closure_manifest(root),
+                environment,
+                timeout,
+                log,
+                exclude={root},
+            )
         disk_budget.check()
         resolution = {
             "schemaVersion": SCHEMA_VERSION,
@@ -767,9 +916,7 @@ def resolve(args: argparse.Namespace) -> int:
             "files": resolution_files,
             "nixVersion": actual_nix,
             "devenvVersion": actual_devenv,
-            "packages": _package_metadata(
-                str(plan["nix"]["nixpkgs"]), plan, environment, timeout, log
-            ),
+            "packages": package_metadata,
             "closureLicenses": closure_licenses,
         }
         write_json(run_dir / "resolution.json", resolution)

@@ -439,9 +439,12 @@ def child_environment(
     return env
 
 
-def closure_manifest(root: str) -> list[dict[str, Any]]:
+def closure_manifest(root: str | list[str]) -> list[dict[str, Any]]:
+    roots = [root] if isinstance(root, str) else list(root)
+    if not roots:
+        return []
     returncode, stdout, stderr, stdout_truncated, _stderr_truncated = _run_bounded_capture(
-        ["nix", "path-info", "--json", "--recursive", "--offline", root],
+        ["nix", "path-info", "--json", "--recursive", "--offline", *roots],
         timeout=300,
         env=dict(os.environ),
         failure_code="ENVIRONMENT_BUILD_FAILED",
@@ -537,7 +540,15 @@ def check_command_available(
     )
     argv = _environment_command(
         workspace,
-        ["sh", "-c", 'command -v "$1"', "sh", executable],
+        [
+            "sh",
+            "-c",
+            'p=$(command -v "$1") || exit 1; '
+            'case "$p" in /*) ;; *) exit 1;; esac; '
+            'test -x "$p" && printf "%s" "$p"',
+            "sh",
+            executable,
+        ],
         offline=offline,
     )
     returncode, stdout, stderr, stdout_truncated, stderr_truncated = _run_bounded_capture(

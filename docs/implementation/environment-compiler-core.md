@@ -125,11 +125,14 @@ per-language table. Instead:
 8. Resolution also realises the exact environment and inspects the **actual
    closure**, including transitive packages. `EnvironmentResolution.closureLicenses`
    records builder-observed closure licence metadata; any unfree, denied or
-   unknown closure package fails closed. This check is independent of the plan
-   copy and of Nix text, so a constructed `allowUnfreePredicate` cannot hide an
-   unfree dependency. The builder also checks every plan command's executable
-   with `command -v` inside the realised devShell and fails closed if it is
-   missing.
+   unknown closure package fails closed. Outputs of an observed package are
+   mapped by their exact output path or shared deriver; a small explicit
+   reviewed bootstrap mapping covers the internal `xgcc` compiler output. Any
+   other unobserved closure path fails closed. This check is independent of the
+   plan copy and of Nix text, so a constructed `allowUnfreePredicate` cannot
+   hide an unfree dependency. The builder also checks every plan command's
+   executable with `command -v` inside the realised devShell and fails closed
+   if it is missing.
 9. The model-selected stack profile is the input to the architecture, skill and
    Definition of Done artifacts. The raw triage profile remains audit context;
    the architecture artifact records the selected stack explicitly. The Lead
@@ -263,7 +266,10 @@ before any assignment.
 - `cargo test -p factory-native --bin factory-runtime-broker` — 71 passed.
 - `cargo test -p factory-native --bin factory-supervisor` — 11 passed.
 - `python3 -W error::ResourceWarning -m unittest discover -s
-  deploy/environment-builder/tests` — 71 tests OK.
+  deploy/environment-builder/tests` — 74 tests OK.
+- `scripts/environment-builder-real-resolve-smoke.sh` — real Nix resolution
+  against the pinned nixpkgs passed: `real-nix-resolve: PASS packages=1
+  closure=24`.
 - `cargo clippy -p factory-native --all-targets --all-features -- -D warnings`
   — clean.
 - Office: `npm ci`, `npm run typecheck`, `npm run lint`,
@@ -278,12 +284,32 @@ before any assignment.
   findings in `planning/dod.rs` and `planning/skills/catalog.rs`; this candidate
   does not add a repository-hygiene finding.
 
-**Not tested / not claimed:** a real Nix/devenv build, a real builder image, the
-real bounded `nix eval` that observes package metadata and the realised closure,
-the real devShell `command -v` check, the Node/Playwright runtime, live Podman
-check execution, real Chromium acceptance of the new panel, a live provider
-stack-selection call for the calculator request, a live re-plan of that request,
-and independent acceptance. The closure policy, metadata comparison, command
-policy and expression generation are deterministic/unit tested; real Nix
-evaluation and closure realisation remain NOT_TESTED. `TRUSTED_LOCAL` remains
-not isolated.
+### 6.1 Real Nix resolution observation (2026-11-11)
+
+`scripts/environment-builder-real-resolve-smoke.sh` builds a minimal generated
+environment (`flake.nix` with `pkgs.cargo`, exact nixpkgs pin
+`ac62194c3917d5f474c1a844b6fd6da2db95077d`) and runs the current working-tree
+builder code inside the existing
+`localhost/software-factory-environment-builder:dev` image. The image provides
+Nix 2.28.3 and devenv 1.11.2; no host toolchain is installed.
+
+Observed result: exit 0, `real-nix-resolve: PASS packages=1 closure=24`.
+`flake.lock` was generated, the builder observed `cargo 1.86.0` with
+`MIT AND Apache-2.0`, and the closure audit independently observed 24
+transitive packages (including bash, glibc, gcc, llvm/LLVM-exception, curl,
+openssl, zlib, libffi and the reviewed internal `xgcc` bootstrap output) with no
+unfree, denied or unknown licence. The generated devShell wrapper was not
+required to be a nixpkgs package attribute.
+
+The smoke uses `--privileged` because this developer host does not grant the
+nested kernel namespaces Nix sandboxing needs; that is a harness detail, not the
+product broker policy. This is implementer evidence, not independent acceptance
+or a claim that the full Compose builder/broker topology or real Campaign
+execution passed.
+
+**Not tested / not claimed:** a real Nix/devenv **build** and builder receipt
+(the resolution smoke above is real Nix lock/develop/eval evidence), the real
+devShell `command -v` check in a built environment, the Node/Playwright runtime,
+live Podman check execution, real Chromium acceptance of the new panel, a live
+provider stack-selection call for the calculator request, a live re-plan of that
+request, and independent acceptance. `TRUSTED_LOCAL` remains not isolated.

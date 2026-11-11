@@ -29947,7 +29947,12 @@ mod tests {
                             };
                             VerifiedPackage {
                                 name: package.name.clone(),
-                                attr,
+                                attr: attr.clone(),
+                                store_path: format!(
+                                    "/nix/store/{}-{}",
+                                    "c".repeat(32),
+                                    package.name
+                                ),
                                 version: package.version.clone(),
                                 license: package.license.clone(),
                                 unfree: package.unfree,

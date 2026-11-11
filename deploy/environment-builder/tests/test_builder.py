@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import types
@@ -200,6 +201,7 @@ class PolicyTests(unittest.TestCase):
                     {
                         "name": "ripgrep",
                         "attr": "ripgrep",
+                        "storePath": "/nix/store/" + "c" * 32 + "-ripgrep-14.1.1",
                         "version": "14.1.1",
                         "license": "Apache-2.0",
                         "unfree": False,
@@ -210,6 +212,7 @@ class PolicyTests(unittest.TestCase):
                     {
                         "name": "ripgrep",
                         "attr": "ripgrep",
+                        "storePath": "/nix/store/" + "c" * 32 + "-ripgrep-14.1.1",
                         "version": "0.0.1",
                         "license": "MIT",
                         "unfree": False,
@@ -231,6 +234,76 @@ class PolicyTests(unittest.TestCase):
                 self.assertEqual(raised.exception.code, expected_code)
         finally:
             log.close()
+
+    def test_closure_audit_excludes_only_the_exact_devshell_wrapper(self) -> None:
+        root = "/nix/store/" + "a" * 32 + "-devshell"
+        package = "/nix/store/" + "b" * 32 + "-bash-5.2"
+        unknown = "/nix/store/" + "c" * 32 + "-mystery-1.0"
+        manifest = [
+            {"path": root, "deriver": "/nix/store/root.drv"},
+            {"path": package, "deriver": "/nix/store/bash.drv"},
+        ]
+        plan = {"nix": {"nixpkgs": "github:NixOS/nixpkgs/" + "d" * 40}}
+        workspace = Path(tempfile.mkdtemp())
+        log = BuildLog(workspace / "resolve.log")
+        observed = {
+            "path": package,
+            "name": "bash",
+            "version": "5.2",
+            "license": "GPL-3.0-or-later",
+            "unfree": False,
+        }
+        try:
+            with mock.patch(
+                "environment_builder.cli.nix_eval_json", return_value=[observed]
+            ):
+                entries = cli._closure_license_entries(
+                    plan, manifest, {}, 30, log, exclude={root}
+                )
+            self.assertEqual([entry["path"] for entry in entries], [package])
+
+            # An arbitrary unknown package output is not silently excluded.
+            manifest.append({"path": unknown, "deriver": "/nix/store/mystery.drv"})
+            with mock.patch(
+                "environment_builder.cli.nix_eval_json", return_value=[observed]
+            ):
+                with self.assertRaises(BuilderError) as raised:
+                    cli._closure_license_entries(
+                        plan, manifest, {}, 30, log, exclude={root}
+                    )
+            self.assertEqual(raised.exception.code, "ENVIRONMENT_LICENSE_UNKNOWN")
+        finally:
+            log.close()
+
+    def test_committed_dynamic_attrset_keys_are_rejected(self) -> None:
+        content = (
+            'let allow = "allowUn" + "freePredicate"; '
+            'in import nixpkgs { config = { ${allow} = _: true; }; }'
+        )
+        from environment_builder.util import sha256_text
+
+        file = EnvironmentFile("flake.nix", sha256_text(content), "PROJECT", content)
+        with self.assertRaises(BuilderError) as raised:
+            validate_nix_constructs([file])
+        self.assertEqual(raised.exception.code, "ENVIRONMENT_SANDBOX_DENIED")
+        # Core-generated files keep their controlled interpolation.
+        generated = EnvironmentFile("flake.nix", sha256_text(content), "GENERATED", content)
+        validate_nix_constructs([generated])
+
+    def test_command_check_rejects_shell_builtins_and_accepts_real_binary(self) -> None:
+        script = (
+            'p=$(command -v "$1") || exit 1; '
+            'case "$p" in /*) ;; *) exit 1;; esac; '
+            'test -x "$p" && printf "%s" "$p"'
+        )
+        for executable, expected in [("source", False), ("sh", True)]:
+            result = subprocess.run(
+                ["sh", "-c", script, "sh", executable],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode == 0, expected, executable)
 
     def test_package_metadata_uses_the_plan_pin_not_a_workspace_flake(self) -> None:
         pin = "github:NixOS/nixpkgs/" + "a" * 40

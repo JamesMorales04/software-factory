@@ -89,9 +89,13 @@ CLOSURE_ALLOWED_SPDX: Final[frozenset[str]] = ALLOWED_SPDX | frozenset(
         "GPL-2.0-or-later",
         "GPL-3.0-only",
         "GPL-3.0-or-later",
+        "LGPL-2.0-only",
+        "LGPL-2.0-or-later",
         "BSD-4-Clause",
+        "curl",
         "OpenSSL",
         "PostgreSQL",
+        "NCSA",
         "Public Domain",
     }
 )
@@ -558,6 +562,15 @@ def validate_nix_constructs(files: Iterable[EnvironmentFile]) -> None:
     for file in files:
         if not file.path.endswith((".nix", ".yaml", ".yml")):
             continue
+        # Committed Nix is restricted to a safe subset: dynamic attrset keys and
+        # string interpolation can construct an unfree config without any
+        # forbidden literal. Core-generated files keep their controlled
+        # interpolation.
+        if file.origin == "PROJECT" and "${" in file.content:
+            fail(
+                "ENVIRONMENT_SANDBOX_DENIED",
+                f"{file.path} uses dynamic interpolation in a committed Nix file",
+            )
         for pattern, code, label in FORBIDDEN_NIX_PATTERNS:
             if pattern.search(file.content):
                 # fetch* and currentSystem need a pin check, not an automatic
