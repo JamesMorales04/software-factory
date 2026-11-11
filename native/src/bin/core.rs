@@ -10436,6 +10436,7 @@ async fn agentic_projection_for_request(
         .map(|proposal| proposal.work_units.len())
         .unwrap_or(0);
     let plan = app.db.frozen_lead_plan(&record.lead_request_id).await.ok();
+    let prerequisites = lead_planning_prerequisites(app, record).await?;
     let tasks = if let Some(campaign_id) = &record.campaign_id {
         app.db.campaign_tasks(campaign_id).await.unwrap_or_default()
     } else {
@@ -10537,6 +10538,8 @@ async fn agentic_projection_for_request(
             "campaignId": lead.campaign_id,
             "failureReason": lead.failure_reason,
         },
+        "assessmentReady": prerequisites.assessment_ready,
+        "leadPlanReady": prerequisites.lead_plan_ready,
         "triage": triage,
         "planningLane": planning_lane_code(context.planning_lane),
         "planning": {
@@ -10970,6 +10973,78 @@ fn planning_work_graph_conflict(message: &str, missing: &[&'static str]) -> Resp
             "error": message,
             "code": "WORK_GRAPH_REQUIRED",
             "missingArtifacts": missing,
+        })),
+    )
+        .into_response()
+}
+
+/// The Lead assessment is the prerequisite that records the proposal, freezes
+/// the Lead plan and derives the first executable ActionSpec. The Planner must
+/// never run against a request that has not crossed that boundary: doing so
+/// spends a model call and then fails while attaching the dependency plan.
+#[derive(Debug, Clone, Copy)]
+struct LeadPlanningPrerequisites {
+    assessment_ready: bool,
+    lead_plan_ready: bool,
+    action_spec_ready: bool,
+}
+
+impl LeadPlanningPrerequisites {
+    fn ready(self) -> bool {
+        self.assessment_ready && self.lead_plan_ready && self.action_spec_ready
+    }
+
+    fn missing(self) -> Vec<&'static str> {
+        let mut missing = Vec::new();
+        if !self.assessment_ready {
+            missing.push("LEAD_ASSESSMENT");
+        }
+        if !self.lead_plan_ready {
+            missing.push("FROZEN_LEAD_PLAN");
+        }
+        if !self.action_spec_ready {
+            missing.push("ACTION_SPEC");
+        }
+        missing
+    }
+}
+
+async fn lead_planning_prerequisites(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+) -> Result<LeadPlanningPrerequisites, Error> {
+    let assessment_ready = match app.db.lead_assessment(&record.lead_request_id).await {
+        Ok(_) => true,
+        Err(Error::NotFound) => false,
+        Err(error) => return Err(error),
+    };
+    let lead_plan_ready = match app.db.frozen_lead_plan(&record.lead_request_id).await {
+        Ok(_) => true,
+        Err(Error::NotFound) => false,
+        Err(error) => return Err(error),
+    };
+    let action_spec_ready = match app.db.action(&record.action_id).await {
+        Ok(_) => true,
+        Err(Error::NotFound) => false,
+        Err(error) => return Err(error),
+    };
+    Ok(LeadPlanningPrerequisites {
+        assessment_ready,
+        lead_plan_ready,
+        action_spec_ready,
+    })
+}
+
+fn assessment_required_response(prerequisites: LeadPlanningPrerequisites) -> Response {
+    (
+        StatusCode::CONFLICT,
+        Json(json!({
+            "code": "ASSESSMENT_REQUIRED",
+            "error": "Lead assessment is required before compiling a plan; run the assessment so Core records the frozen Lead plan and ActionSpec first.",
+            "action": "Run assessment",
+            "assessmentReady": prerequisites.assessment_ready,
+            "leadPlanReady": prerequisites.lead_plan_ready,
+            "missingPrerequisites": prerequisites.missing(),
         })),
     )
         .into_response()
@@ -11944,6 +12019,16 @@ async fn plan_agentic_request(
             "PLANNER_NOT_APPLICABLE",
             "informational requests do not compile a Planner WorkGraph",
         );
+    }
+    // Check before reviewer validation, model reservations or any WorkGraph
+    // write. A missing Lead assessment is an operator-actionable prerequisite,
+    // not an internal dependency-plan failure discovered after the model call.
+    let prerequisites = match lead_planning_prerequisites(&app, &record).await {
+        Ok(prerequisites) => prerequisites,
+        Err(error) => return api_error(error),
+    };
+    if !prerequisites.ready() {
+        return assessment_required_response(prerequisites);
     }
     let reviewer_plan = factory_native::planning::route::required_reviewers(
         context.planning_lane,
@@ -22786,6 +22871,15 @@ mod tests {
             behavior: StructuredLeadUpstreamBehavior,
             key: &str,
         ) -> (Fixture, Arc<Mutex<Vec<Value>>>) {
+            structured_lead_fixture_with_assessment(behavior, key, true).await
+        }
+
+        #[cfg(feature = "test-support")]
+        async fn structured_lead_fixture_with_assessment(
+            behavior: StructuredLeadUpstreamBehavior,
+            key: &str,
+            assess: bool,
+        ) -> (Fixture, Arc<Mutex<Vec<Value>>>) {
             unsafe { std::env::set_var("FACTORY_ALLOW_TEST_UPSTREAM", "1") };
             let master_key = structured_lead_master_key();
             let (url, calls) = structured_lead_upstream(behavior).await;
@@ -22864,7 +22958,9 @@ mod tests {
                     .await
                     .unwrap();
             }
-            fixture_plan(&fixture, &intake_id, "FIXTURE").await;
+            if assess {
+                fixture_plan(&fixture, &intake_id, "FIXTURE").await;
+            }
             (fixture, calls)
         }
 
@@ -22975,6 +23071,112 @@ mod tests {
                 .next()
                 .unwrap()
                 .id
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn planner_blocks_without_assessment_then_compiles_after_it() {
+            let (fixture, calls) = structured_lead_fixture_with_assessment(
+                StructuredLeadUpstreamBehavior::Sequence(vec![
+                    StructuredLeadUpstreamReply::Content(planner_model_content()),
+                ]),
+                "planner-requires-assessment",
+                false,
+            )
+            .await;
+            let intake_id = fixture_intake_id(&fixture).await;
+            let request = fixture.app.db.intake_request(&intake_id).await.unwrap();
+
+            let (status, detail) = send(
+                &fixture.router,
+                "GET",
+                &format!("/agentic/requests/{intake_id}"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{detail}");
+            assert_eq!(detail["assessmentReady"], false);
+            assert_eq!(detail["leadPlanReady"], false);
+
+            let (status, refused) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+            assert_eq!(refused["code"], "ASSESSMENT_REQUIRED");
+            assert_eq!(refused["action"], "Run assessment");
+            assert_eq!(refused["assessmentReady"], false);
+            assert_eq!(refused["leadPlanReady"], false);
+            let missing = refused["missingPrerequisites"].as_array().unwrap();
+            assert!(missing.contains(&json!("LEAD_ASSESSMENT")), "{missing:?}");
+            assert!(missing.contains(&json!("FROZEN_LEAD_PLAN")), "{missing:?}");
+            assert!(missing.contains(&json!("ACTION_SPEC")), "{missing:?}");
+            assert!(
+                calls.lock().unwrap().is_empty(),
+                "the Planner model must not be called before the Lead assessment"
+            );
+            assert!(
+                fixture
+                    .app
+                    .db
+                    .lead_model_calls(&request.lead_request_id)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(matches!(
+                fixture.app.db.agentic_work_graph(&intake_id).await,
+                Err(Error::NotFound)
+            ));
+            assert!(
+                fixture
+                    .app
+                    .db
+                    .planning_artifacts(&intake_id)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+
+            fixture_plan(&fixture, &intake_id, "FIXTURE").await;
+            let (status, detail) = send(
+                &fixture.router,
+                "GET",
+                &format!("/agentic/requests/{intake_id}"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{detail}");
+            assert_eq!(detail["assessmentReady"], true);
+            assert_eq!(detail["leadPlanReady"], true);
+
+            let (status, planned) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{planned}");
+            assert!(planned["graph"]["graphSha256"].is_string(), "{planned}");
+            assert_eq!(calls.lock().unwrap().len(), 1, "one Planner call");
+            assert!(
+                fixture
+                    .app
+                    .db
+                    .planning_artifacts(&intake_id)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .any(|artifact| artifact.kind == "PLAN")
+            );
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
         }
 
         #[cfg(feature = "test-support")]
@@ -25005,6 +25207,58 @@ mod tests {
                 result.is_err(),
                 "a database failure must not be treated as absence: {result:?}"
             );
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
+        async fn compile_plan_requires_the_lead_assessment_before_model_access() {
+            let fixture = setup().await;
+            let (status, _) = enable_policy(&fixture).await;
+            assert_eq!(status, StatusCode::CREATED);
+            let (status, created) =
+                create_intake(&fixture, "request-api-assessment-required").await;
+            assert_eq!(status, StatusCode::CREATED, "{created}");
+            let intake_id = created["id"].as_str().unwrap().to_owned();
+            let request = fixture.app.db.intake_request(&intake_id).await.unwrap();
+
+            let (status, refused) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+            assert_eq!(refused["code"], "ASSESSMENT_REQUIRED");
+            assert_eq!(refused["action"], "Run assessment");
+            assert_eq!(refused["assessmentReady"], false);
+            assert_eq!(refused["leadPlanReady"], false);
+            assert!(
+                fixture
+                    .app
+                    .db
+                    .lead_model_calls(&request.lead_request_id)
+                    .await
+                    .unwrap()
+                    .is_empty(),
+                "a missing Lead assessment must not reserve or dispatch a model call"
+            );
+            assert!(matches!(
+                fixture.app.db.agentic_work_graph(&intake_id).await,
+                Err(Error::NotFound)
+            ));
+            assert!(
+                fixture
+                    .app
+                    .db
+                    .planning_artifacts(&intake_id)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+
+            fixture.app.db.close().await;
             let _ = std::fs::remove_file(fixture.path);
             let _ = std::fs::remove_dir_all(fixture.repository);
         }

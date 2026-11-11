@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   listAgenticPortfolio: vi.fn(),
   getAgenticRequest: vi.fn(),
   assessAgenticRequest: vi.fn(),
+  assessIntakeRequest: vi.fn(),
   getAgenticScheduler: vi.fn(),
   setAgenticPriority: vi.fn(),
   getAgenticPlan: vi.fn(),
@@ -68,6 +69,8 @@ const detail: AgenticRequestDetail = {
     updatedAt: "2026-11-08T12:00:00Z",
   },
   lead: { state: "Running", campaignId: "campaign-1", failureReason: null },
+  assessmentReady: true,
+  leadPlanReady: true,
   triage: {
     requestKind: "CHANGE",
     route: "FORMAL_SPEC",
@@ -278,6 +281,7 @@ describe("Director", () => {
     mocks.listAgenticPortfolio.mockReset().mockResolvedValue(portfolio);
     mocks.getAgenticRequest.mockReset().mockResolvedValue(detail);
     mocks.assessAgenticRequest.mockReset().mockResolvedValue({});
+    mocks.assessIntakeRequest.mockReset().mockResolvedValue({});
     mocks.getAgenticScheduler.mockReset().mockResolvedValue({
       capacity: 4,
       active: 1,
@@ -407,6 +411,48 @@ describe("Director", () => {
         "The Planner WorkGraph was validated and recorded.",
       ),
     ).toBeDefined();
+  });
+
+  it("gates Compile plan on the Lead assessment and runs the Core action", async () => {
+    const submitted: AgenticRequestDetail = {
+      ...detail,
+      lead: { state: "SUBMITTED", campaignId: null, failureReason: null },
+      assessmentReady: false,
+      leadPlanReady: false,
+    };
+    const assessed: AgenticRequestDetail = {
+      ...detail,
+      lead: { state: "READY", campaignId: null, failureReason: null },
+      assessmentReady: true,
+      leadPlanReady: true,
+    };
+    mocks.getAgenticRequest
+      .mockReset()
+      .mockResolvedValueOnce(submitted)
+      .mockResolvedValueOnce(assessed);
+    renderDirector();
+    await screen.findByRole("heading", { name: "Add an ICS export endpoint" });
+
+    const compile = screen.getByRole("button", { name: "Compile plan" });
+    expect((compile as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(/Lead assessment is required/)).toBeDefined();
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Run assessment" }),
+    );
+    expect(mocks.assessIntakeRequest).toHaveBeenCalledWith("request-1");
+    expect(mocks.assessAgenticRequest).not.toHaveBeenCalled();
+    expect(
+      await screen.findByText(/Core recorded the Lead assessment/),
+    ).toBeDefined();
+    expect(screen.queryByText(/Lead assessment is required/)).toBeNull();
+    expect(
+      (
+        screen.getByRole("button", {
+          name: "Compile plan",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(false);
   });
 
   it("shows required reviewer roles, assigned principals and independent receipts", async () => {

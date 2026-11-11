@@ -1993,6 +1993,8 @@ export interface AgenticRequestDetail {
     campaignId: string | null;
     failureReason: string | null;
   };
+  assessmentReady: boolean;
+  leadPlanReady: boolean;
   triage: AgenticTriage;
   planningLane: PlanningLane;
   planning: {

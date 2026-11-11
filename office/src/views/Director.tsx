@@ -94,6 +94,9 @@ export function Director() {
   const [triageBusy, setTriageBusy] = useState(false);
   const [triageError, setTriageError] = useState<string | null>(null);
   const [triageNotice, setTriageNotice] = useState<string | null>(null);
+  const [assessmentBusy, setAssessmentBusy] = useState(false);
+  const [assessmentError, setAssessmentError] = useState<string | null>(null);
+  const [assessmentNotice, setAssessmentNotice] = useState<string | null>(null);
   const [lastLoadedAt, setLastLoadedAt] = useState<string | null>(null);
   const [scheduler, setScheduler] = useState<{
     capacity: number;
@@ -192,6 +195,8 @@ export function Director() {
     setFindingError(null);
     setTriageNotice(null);
     setTriageError(null);
+    setAssessmentNotice(null);
+    setAssessmentError(null);
   }, [activeId]);
 
   useEffect(() => {
@@ -285,6 +290,22 @@ export function Director() {
       setTriageError(errorText(cause, t("director.triage.error")));
     } finally {
       setTriageBusy(false);
+    }
+  }
+
+  async function runLeadAssessment() {
+    if (!activeId) return;
+    setAssessmentBusy(true);
+    setAssessmentError(null);
+    setAssessmentNotice(null);
+    try {
+      await coreApi.assessIntakeRequest(activeId);
+      setDetail(await coreApi.getAgenticRequest(activeId));
+      setAssessmentNotice(t("director.plan.assessmentSuccess"));
+    } catch (cause) {
+      setAssessmentError(errorText(cause, t("director.plan.assessmentError")));
+    } finally {
+      setAssessmentBusy(false);
     }
   }
 
@@ -945,6 +966,36 @@ export function Director() {
                   ) : (
                     <p className="muted">{t("director.plan.empty")}</p>
                   )}
+                  {assessmentError && (
+                    <p className="ui-callout ui-callout--danger" role="alert">
+                      {assessmentError}
+                    </p>
+                  )}
+                  {assessmentNotice && (
+                    <p className="notice" role="status">
+                      {assessmentNotice}
+                    </p>
+                  )}
+                  {detail.triage.route !== "NO_AGENT" &&
+                    (!detail.assessmentReady || !detail.leadPlanReady) && (
+                      <div
+                        className="ui-callout ui-callout--attention"
+                        role="status"
+                      >
+                        <p>{t("director.plan.assessmentRequired")}</p>
+                        <Button
+                          variant="primary"
+                          size="sm"
+                          busy={assessmentBusy}
+                          disabled={assessmentBusy}
+                          onClick={() => void runLeadAssessment()}
+                        >
+                          {assessmentBusy
+                            ? t("director.plan.assessing")
+                            : t("director.plan.runAssessment")}
+                        </Button>
+                      </div>
+                    )}
                   <div className="director-priority">
                     <Button
                       variant="secondary"
@@ -952,6 +1003,8 @@ export function Director() {
                       busy={planBusy}
                       disabled={
                         planBusy ||
+                        !detail.assessmentReady ||
+                        !detail.leadPlanReady ||
                         detail.triage.route === "NO_AGENT" ||
                         Boolean(spec?.frozen || spec?.draft)
                       }
