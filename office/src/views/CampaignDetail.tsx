@@ -12,6 +12,7 @@ import {
 } from "../components/office/CandidateEvidence";
 import { CandidatePullRequest } from "../components/office/CandidatePullRequest";
 import { CheapOpsPanel } from "../components/office/CheapOpsPanel";
+import { LinkedIssues } from "../components/office/LinkedIssues";
 import { ParticipantSessionList } from "../components/office/ParticipantSessionList";
 import { StatusBadge } from "../components/office/StatusBadge";
 import { WorkGraphPanel } from "../components/office/WorkGraph";
@@ -591,6 +592,11 @@ export function CampaignDetail() {
         </div>
       )}
       {notice && <p className="notice">{notice}</p>}
+
+      <LinkedIssues
+        links={detail.linked_issues}
+        onRetried={() => void load()}
+      />
 
       <div className="campaign-detail-layout">
         <div className="campaign-detail-main">

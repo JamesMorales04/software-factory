@@ -1191,6 +1191,7 @@ export const es: Catalog = {
   "issues.board.ready": "Listas",
   "issues.board.queued": "En cola",
   "issues.board.working": "En curso",
+  "issues.board.review": "En revisión",
   "issues.board.attention": "Requieren atención",
   "issues.board.done": "Terminadas",
   "issues.board.empty": "Nada por aquí.",
@@ -3959,4 +3960,33 @@ export const es: Catalog = {
   "home.thread.state.ASSESSED":
     "La evaluación está completa; no se requiere un plan de ejecución.",
   "charter.decisions.choose": "Selecciona una opción del owner",
+  "issues.delivery.state": "Entrega: {state}",
+  "issues.delivery.pullRequest": "PR #{number}",
+  "issues.delivery.merge": "Merge {sha}",
+  "issues.delivery.retry": "Reintentar efecto en la incidencia",
+  "issues.delivery.retrying": "Reintentando…",
+  "issues.delivery.retried":
+    "Core reintentó el efecto en la incidencia #{number}.",
+  "issues.delivery.retryError":
+    "No se pudo reintentar el efecto en la incidencia.",
+  "linkedIssues.title": "Incidencias vinculadas",
+  "linkedIssues.description":
+    "Congeladas al crear la solicitud. El estado y los recibos de entrega provienen de Core; solo un merge puede completar una incidencia.",
+  "linkedIssues.empty":
+    "Esta solicitud no seleccionó una incidencia de GitHub, por lo que no hay un mapeo de entrega.",
+  "linkedIssues.count": "{count} incidencia(s) vinculada(s)",
+  "linkedIssues.rolePrimary": "Principal",
+  "linkedIssues.roleRelated": "Relacionada",
+  "linkedIssues.delivery": "Entrega",
+  "linkedIssues.workUnit": "Unidad de trabajo",
+  "linkedIssues.pullRequest": "Pull request",
+  "linkedIssues.merge": "Merge",
+  "linkedIssues.receipts": "Recibos de entrega ({count})",
+  "linkedIssues.noReceipts":
+    "No se ha registrado ningún efecto en la incidencia de GitHub.",
+  "linkedIssues.event": "Evento",
+  "linkedIssues.attempts": "intentos {count}",
+  "linkedIssues.retry": "Reintentar",
+  "linkedIssues.retrying": "Reintentando…",
+  "linkedIssues.retryError": "Core no pudo reintentar este evento de entrega.",
 };

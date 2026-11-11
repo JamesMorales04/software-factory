@@ -26,6 +26,7 @@ pub mod github_sync;
 pub mod inference_ledger;
 pub mod intake;
 pub mod issue_intake;
+pub mod issues;
 pub mod knowledge;
 pub mod lead;
 pub mod lead_model;

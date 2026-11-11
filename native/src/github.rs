@@ -823,6 +823,19 @@ impl GitHubClient {
         number: u64,
         body: &str,
     ) -> Result<GitHubComment, GitHubError> {
+        self.create_issue_comment(token, owner, repo, number, body)
+            .await
+    }
+
+    /// Add one plain comment to an issue or pull request conversation.
+    pub async fn create_issue_comment(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        number: u64,
+        body: &str,
+    ) -> Result<GitHubComment, GitHubError> {
         validate_token(token)?;
         validate_repo_coordinates(owner, repo)?;
         validate_pull_number(number)?;
@@ -846,6 +859,140 @@ impl GitHubClient {
         let raw: RawIssueComment = parse_json(&response.body, "comment")?;
         raw.into_comment("issue")
             .ok_or_else(|| GitHubError::InvalidResponse("comment had no usable shape".into()))
+    }
+
+    /// Read one bounded page of issue comments. Used to find a deterministic
+    /// Core marker before retrying a comment whose local receipt was lost.
+    pub async fn issue_comments(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<GitHubCommentList, GitHubError> {
+        validate_token(token)?;
+        validate_repo_coordinates(owner, repo)?;
+        validate_pull_number(number)?;
+        let mut comments = Vec::new();
+        let mut truncated = false;
+        for page in 1..=5 {
+            let response = self
+                .execute(
+                    self.client
+                        .get(format!(
+                            "{}/repos/{owner}/{repo}/issues/{number}/comments",
+                            self.base_url
+                        ))
+                        .query(&[("per_page", "100"), ("page", &page.to_string())]),
+                    token,
+                )
+                .await?;
+            let raw: Vec<RawIssueComment> = parse_json(&response.body, "issue comments")?;
+            let full = raw.len() >= 100;
+            comments.extend(
+                raw.into_iter()
+                    .filter_map(|comment| comment.into_comment("issue")),
+            );
+            if !full {
+                break;
+            }
+            if page == 5 {
+                truncated = true;
+            }
+        }
+        comments.sort_by(|left, right| {
+            left.created_at
+                .cmp(&right.created_at)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        Ok(GitHubCommentList {
+            truncated,
+            comments,
+            fetched_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        })
+    }
+
+    /// Add existing labels to an issue. The adapter never invents labels; Core
+    /// supplies the exact names and GitHub remains authoritative for whether
+    /// the label exists in the repository.
+    pub async fn add_issue_labels(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        number: u64,
+        labels: &[String],
+    ) -> Result<Vec<GitHubLabel>, GitHubError> {
+        validate_token(token)?;
+        validate_repo_coordinates(owner, repo)?;
+        validate_pull_number(number)?;
+        validate_issue_labels(labels)?;
+        if labels.is_empty() {
+            return Err(GitHubError::Invalid(
+                "at least one issue label is required".into(),
+            ));
+        }
+        let response = self
+            .execute(
+                self.client
+                    .post(format!(
+                        "{}/repos/{owner}/{repo}/issues/{number}/labels",
+                        self.base_url
+                    ))
+                    .json(&serde_json::json!({"labels": labels})),
+                token,
+            )
+            .await?;
+        let raw: Vec<RawLabel> = parse_json(&response.body, "issue labels")?;
+        Ok(raw
+            .into_iter()
+            .filter(|label| !label.name.trim().is_empty())
+            .take(MAX_LABELS)
+            .map(|label| GitHubLabel {
+                name: bounded(&clean_single_line(&label.name), MAX_LABEL_NAME_BYTES),
+                color: label
+                    .color
+                    .filter(|color| {
+                        color.len() == 6 && color.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    })
+                    .map(|color| color.to_lowercase()),
+            })
+            .collect())
+    }
+
+    /// Close one issue only after Core has recorded an authorized merge.
+    pub async fn close_issue(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        number: u64,
+        state_reason: Option<&str>,
+    ) -> Result<GitHubIssue, GitHubError> {
+        validate_token(token)?;
+        validate_repo_coordinates(owner, repo)?;
+        validate_pull_number(number)?;
+        let state_reason = state_reason.unwrap_or("completed");
+        if !matches!(state_reason, "completed" | "not_planned" | "duplicate") {
+            return Err(GitHubError::Invalid("issue close reason is invalid".into()));
+        }
+        let response = self
+            .execute(
+                self.client
+                    .patch(format!(
+                        "{}/repos/{owner}/{repo}/issues/{number}",
+                        self.base_url
+                    ))
+                    .json(&serde_json::json!({
+                        "state": "closed",
+                        "state_reason": state_reason,
+                    })),
+                token,
+            )
+            .await?;
+        let raw: RawIssue = parse_json(&response.body, "issue")?;
+        raw.into_issue()
+            .ok_or_else(|| GitHubError::InvalidResponse("issue had no usable shape".into()))
     }
 
     /// Request reviews from named GitHub users. No approval is inferred here.
@@ -2408,6 +2555,93 @@ mod tests {
             axum::serve(listener, app).await.unwrap();
         });
         (url, fake)
+    }
+
+    #[derive(Clone)]
+    struct WriteFake {
+        label_body: Arc<Mutex<Option<serde_json::Value>>>,
+        close_body: Arc<Mutex<Option<serde_json::Value>>>,
+    }
+
+    async fn write_issue_handler(
+        State(fake): State<WriteFake>,
+        axum::extract::Path((_owner, _repo, number)): axum::extract::Path<(String, String, u64)>,
+        method: axum::http::Method,
+        body: Option<axum::Json<serde_json::Value>>,
+    ) -> Response {
+        let mut payload = issue(number);
+        if method == axum::http::Method::PATCH {
+            let body = body.map(|axum::Json(value)| value).unwrap_or_default();
+            *fake.close_body.lock().unwrap() = Some(body);
+            payload["state"] = serde_json::json!("closed");
+            payload["state_reason"] = serde_json::json!("completed");
+            payload["closed_at"] = serde_json::json!("2026-10-03T00:00:00Z");
+        }
+        axum::Json(payload).into_response()
+    }
+
+    async fn write_labels_handler(
+        State(fake): State<WriteFake>,
+        axum::extract::Path((_owner, _repo, _number)): axum::extract::Path<(String, String, u64)>,
+        axum::Json(body): axum::Json<serde_json::Value>,
+    ) -> Response {
+        *fake.label_body.lock().unwrap() = Some(body);
+        axum::Json(serde_json::json!([
+            {"name": "factory:delivered", "color": "00ff00"}
+        ]))
+        .into_response()
+    }
+
+    #[tokio::test]
+    async fn adds_issue_labels_and_closes_with_typed_payloads() {
+        let fake = WriteFake {
+            label_body: Arc::new(Mutex::new(None)),
+            close_body: Arc::new(Mutex::new(None)),
+        };
+        let app = Router::new()
+            .route(
+                "/repos/{owner}/{repo}/issues/{number}",
+                get(write_issue_handler).patch(write_issue_handler),
+            )
+            .route(
+                "/repos/{owner}/{repo}/issues/{number}/labels",
+                axum::routing::post(write_labels_handler),
+            )
+            .with_state(fake.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = GitHubClient::with_base_url(&url, true).unwrap();
+        let labels = client
+            .add_issue_labels(TOKEN, "acme", "widgets", 7, &["factory:delivered".into()])
+            .await
+            .unwrap();
+        assert_eq!(labels[0].name, "factory:delivered");
+        assert_eq!(
+            fake.label_body.lock().unwrap().as_ref().unwrap()["labels"][0],
+            "factory:delivered"
+        );
+        let closed = client
+            .close_issue(TOKEN, "acme", "widgets", 7, Some("completed"))
+            .await
+            .unwrap();
+        assert_eq!(closed.state, "closed");
+        assert_eq!(
+            fake.close_body.lock().unwrap().as_ref().unwrap()["state"],
+            "closed"
+        );
+        assert_eq!(
+            fake.close_body.lock().unwrap().as_ref().unwrap()["state_reason"],
+            "completed"
+        );
+        assert!(
+            client
+                .close_issue(TOKEN, "acme", "widgets", 0, None)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

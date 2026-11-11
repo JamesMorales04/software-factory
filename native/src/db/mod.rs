@@ -295,6 +295,11 @@ pub const EVENT_KINDS: &[&str] = &[
     "github.project_bound",
     "intake.message_recorded",
     "intake.request_created",
+    "issue_delivery.applied",
+    "issue_delivery.failed",
+    "issue_delivery.pending",
+    "issue_delivery.retried",
+    "issue_link.created",
     "issue_intake.batch_acknowledged",
     "issue_intake.batch_revoked",
     "issue_intake.policy_configured",
@@ -1007,6 +1012,8 @@ pub use issue_intake::{
     IssueIntakeReconcileResult, IssueIntakeState, NewIssueIntakeBatch, NewIssueIntakeBatchItem,
     NewIssueIntakePolicy, NewIssueIntakePolicyV2,
 };
+mod issue_links;
+pub use issue_links::{IssueDeliveryEventCompletion, NewIssueDeliveryEvent};
 pub use model_calls::{
     ModelCallDecision, ModelCallGrant, ModelCallPolicy, ModelCallRecord, ModelCallResult,
     ModelCallRole, ModelCallUsage, NewModelCallAuthorization,
@@ -1114,6 +1121,21 @@ async fn install_test_subscription_dispatch_admissions(pool: &SqlitePool) -> Res
     .execute(pool)
     .await?;
     Ok(())
+}
+
+#[cfg(test)]
+impl Database {
+    pub(crate) fn test_pool(&self) -> &SqlitePool {
+        &self.pool
+    }
+
+    pub(crate) async fn test_ensure_project_config(&self, project_id: &str) -> Result<(), Error> {
+        let mut transaction = self.pool.begin().await?;
+        self.ensure_project_config(&mut transaction, project_id)
+            .await?;
+        transaction.commit().await?;
+        Ok(())
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
