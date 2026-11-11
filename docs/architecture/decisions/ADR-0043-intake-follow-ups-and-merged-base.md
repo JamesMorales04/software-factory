@@ -107,7 +107,10 @@ new Project config revision whose base commit is that merge commit. The write is
 
 A later follow-up uses that config revision. The merge commit identity comes from
 the provider-confirmed merge and branch read, never from a model or Office
-projection.
+projection. A branch-read error never falls through to base advancement. A
+replay that repairs a missing base write re-proves the same default-branch head,
+exact merge SHA and required post-merge success; absent or failed evidence leaves
+the base unchanged.
 
 ### 5. Office thread projection
 

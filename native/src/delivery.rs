@@ -2023,10 +2023,8 @@ impl<'a, H: DeliveryIssueHook> DeliveryService<'a, H> {
         let attempt = reservation.attempt;
         let attempt_id = attempt.attempt_id.clone();
         if attempt.state == DeliveryAttemptState::Merged {
-            if context.base_branch == context.binding.default_branch
-                && let Some(merge_sha) = attempt.merge_commit_sha.as_deref()
-            {
-                self.advance_project_base_after_merge(&context, merge_sha)
+            if let Some(merge_sha) = attempt.merge_commit_sha.as_deref() {
+                self.revalidate_merged_replay(&attempt, &context, merge_sha)
                     .await?;
             }
             let _receipts = self.db.delivery_issue_receipts(&attempt_id).await?;
@@ -2129,10 +2127,8 @@ impl<'a, H: DeliveryIssueHook> DeliveryService<'a, H> {
             attempt
         };
         if attempt.state == DeliveryAttemptState::Merged {
-            if context.base_branch == context.binding.default_branch
-                && let Some(merge_sha) = attempt.merge_commit_sha.as_deref()
-            {
-                self.advance_project_base_after_merge(&context, merge_sha)
+            if let Some(merge_sha) = attempt.merge_commit_sha.as_deref() {
+                self.revalidate_merged_replay(&attempt, &context, merge_sha)
                     .await?;
             }
             let _receipts = self.db.delivery_issue_receipts(&attempt_id).await?;
@@ -2335,10 +2331,8 @@ impl<'a, H: DeliveryIssueHook> DeliveryService<'a, H> {
         if !claimed {
             return match claimed_attempt.state {
                 DeliveryAttemptState::Merged => {
-                    if context.base_branch == context.binding.default_branch
-                        && let Some(merge_sha) = claimed_attempt.merge_commit_sha.as_deref()
-                    {
-                        self.advance_project_base_after_merge(&context, merge_sha)
+                    if let Some(merge_sha) = claimed_attempt.merge_commit_sha.as_deref() {
+                        self.revalidate_merged_replay(&claimed_attempt, &context, merge_sha)
                             .await?;
                     }
                     Ok(DeliveryRun {
@@ -2390,10 +2384,8 @@ impl<'a, H: DeliveryIssueHook> DeliveryService<'a, H> {
                                 },
                             )
                             .await?;
-                        if context.base_branch == context.binding.default_branch {
-                            self.advance_project_base_after_merge(&context, &merge_sha)
-                                .await?;
-                        }
+                        self.revalidate_merged_replay(&attempt, &context, &merge_sha)
+                            .await?;
                         return Ok(DeliveryRun {
                             attempt,
                             policy,
@@ -2568,7 +2560,7 @@ impl<'a, H: DeliveryIssueHook> DeliveryService<'a, H> {
                 detail: &merge_sha,
             })
             .await?;
-        if let Ok(branch) = self
+        let branch = match self
             .github
             .branch_commit(
                 self.credential.token(),
@@ -2577,8 +2569,29 @@ impl<'a, H: DeliveryIssueHook> DeliveryService<'a, H> {
                 &context.binding.default_branch,
             )
             .await
-            && !branch.commit_sha.eq_ignore_ascii_case(&merge_sha)
         {
+            Ok(branch) => branch,
+            Err(error) => {
+                let error = DeliveryError::from(error);
+                let incident = self
+                    .open_incident(
+                        &attempt,
+                        &context,
+                        "DEFAULT_BRANCH_UNCONFIRMED",
+                        error.detail(),
+                    )
+                    .await?;
+                return Err(DeliveryError::blocked(
+                    "DEFAULT_BRANCH_UNCONFIRMED",
+                    format!(
+                        "the protected default branch could not be read after merge: {}",
+                        error.detail()
+                    ),
+                )
+                .with_attempt(incident.attempt_id));
+            }
+        };
+        if !branch.commit_sha.eq_ignore_ascii_case(&merge_sha) {
             let incident = self
                 .open_incident(
                     &attempt,
@@ -2710,6 +2723,100 @@ impl<'a, H: DeliveryIssueHook> DeliveryService<'a, H> {
                 "the Project base could not be advanced to the merge commit",
             )
         }))
+    }
+
+    /// A replay of a recorded MERGED attempt may repair a missing Project base
+    /// advance only after re-proving the original delivery evidence: the
+    /// protected default branch still names the exact merge commit, and any
+    /// required post-merge check is recorded PASSED for that same merge. A read
+    /// error or missing/failed evidence leaves the base untouched.
+    async fn revalidate_merged_replay(
+        &self,
+        attempt: &DeliveryAttemptRecord,
+        context: &DeliveryContext,
+        merge_sha: &str,
+    ) -> Result<(), DeliveryError> {
+        if context.base_branch != context.binding.default_branch {
+            return Ok(());
+        }
+        let branch = match self
+            .github
+            .branch_commit(
+                self.credential.token(),
+                &context.binding.owner,
+                &context.binding.repo,
+                &context.binding.default_branch,
+            )
+            .await
+        {
+            Ok(branch) => branch,
+            Err(error) => {
+                let error = DeliveryError::from(error);
+                return Err(DeliveryError::blocked(
+                    "DEFAULT_BRANCH_UNCONFIRMED",
+                    format!(
+                        "the protected default branch could not be read during replay: {}",
+                        error.detail()
+                    ),
+                ));
+            }
+        };
+        if !branch.commit_sha.eq_ignore_ascii_case(merge_sha) {
+            return Err(DeliveryError::blocked(
+                "MERGE_IDENTITY_MISMATCH",
+                "the protected default branch no longer points at the recorded merge commit",
+            ));
+        }
+        let policy = self
+            .db
+            .delivery_policy_revision(&context.project.id, attempt.policy_revision)
+            .await?;
+        if context.risk == DeliveryRisk::R1 {
+            let check_id = policy.post_merge_check_id.trim();
+            if check_id.is_empty() {
+                return Err(DeliveryError::blocked(
+                    "POST_MERGE_CHECK_MISSING",
+                    "R1 replay requires a configured post-merge check",
+                ));
+            }
+            let record = match self
+                .db
+                .delivery_post_merge_check(&attempt.attempt_id, check_id)
+                .await
+            {
+                Ok(record) => record,
+                Err(DbError::NotFound) => {
+                    return Err(DeliveryError::blocked(
+                        "POST_MERGE_CHECK_MISSING",
+                        "the required post-merge check has no recorded result",
+                    ));
+                }
+                Err(error) => return Err(error.into()),
+            };
+            if !record.merge_commit_sha.eq_ignore_ascii_case(merge_sha) {
+                return Err(DeliveryError::blocked(
+                    "MERGE_IDENTITY_MISMATCH",
+                    "the recorded post-merge check is bound to another merge commit",
+                ));
+            }
+            match record.status.as_str() {
+                "PASSED" => {}
+                "FAILED" => {
+                    return Err(DeliveryError::blocked(
+                        "POST_MERGE_CHECK_FAILED",
+                        "the recorded post-merge check failed",
+                    ));
+                }
+                _ => {
+                    return Err(DeliveryError::blocked(
+                        "POST_MERGE_CHECK_MISSING",
+                        "the recorded post-merge check did not pass",
+                    ));
+                }
+            }
+        }
+        self.advance_project_base_after_merge(context, merge_sha)
+            .await
     }
 
     pub async fn record_manual_revert(

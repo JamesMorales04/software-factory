@@ -1229,6 +1229,18 @@ async fn resolve_follow_up_policy_grant_in_tx(
     profile: &ResolvedIntakeProfile,
     config: &crate::lead::ProjectConfig,
 ) -> Result<StandingDelegationV2, Error> {
+    // The parent's exact owner-confirmed policy path is authoritative. A caller
+    // with their own matching grant may not continue another principal's thread.
+    let parent_grant = load_delegation_v2(connection, &parent.delegation_id).await?;
+    let parent_policy = load_execution_policy_grant(connection, &parent_grant.id).await?;
+    if parent_policy.principal_id != principal_id {
+        return Err(Error::IntakeConflict {
+            code: "FOLLOW_UP_POLICY_PRINCIPAL_MISMATCH",
+            message:
+                "only the principal that confirmed the parent execution policy may continue it"
+                    .into(),
+        });
+    }
     if let Some(grant) = matching_execution_policy_grant_in_tx(
         connection,
         &parent.project_id,
@@ -1241,8 +1253,6 @@ async fn resolve_follow_up_policy_grant_in_tx(
     {
         return Ok(grant);
     }
-    let parent_grant = load_delegation_v2(connection, &parent.delegation_id).await?;
-    let parent_policy = load_execution_policy_grant(connection, &parent_grant.id).await?;
     let now = Utc::now();
     if parent_grant.revoked_at.is_some()
         || parent_grant.expires_at <= now
@@ -1259,14 +1269,6 @@ async fn resolve_follow_up_policy_grant_in_tx(
         && !(parent_policy.autonomous && parent_policy.subscription_confirmed)
     {
         return Err(follow_up_policy_required());
-    }
-    if parent_policy.principal_id != principal_id {
-        return Err(Error::IntakeConflict {
-            code: "FOLLOW_UP_POLICY_PRINCIPAL_MISMATCH",
-            message:
-                "only the principal that confirmed the parent execution policy may continue it"
-                    .into(),
-        });
     }
     // Re-bind the exact parent grant terms to the current Core-owned config. This
     // is not a widening: the material scope, route, risk and operation limits are
@@ -4142,6 +4144,59 @@ mod tests {
         ));
         let messages = db.intake_messages(&parent.id).await.unwrap();
         assert_eq!(messages.len(), 1);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn another_principal_with_a_matching_grant_cannot_continue_the_parent_policy() {
+        let (path, db, profile, config) = fixture().await;
+        let _parent_policy = create_policy(&db, &profile, &config).await;
+        let parent = create_request(&db, &profile, "request-parent-other-principal").await;
+        mark_request_completed(&db, &parent).await;
+        // A second authenticated principal has its own current grant for the
+        // same Project, exact profile revision and scope.
+        db.create_execution_policy_grant(NewExecutionPolicyGrant {
+            project_id: "project",
+            profile_id: &profile.id,
+            expected_revision: profile.revision,
+            expected_revision_hash: &profile.content_hash,
+            project_config_hash: &config.config_hash,
+            acknowledge: true,
+            autonomous: false,
+            subscription_confirmed: false,
+            idempotency_key: "policy-other-principal",
+            principal_id: "other-operator",
+            principal_label: None,
+        })
+        .await
+        .unwrap();
+
+        let error = db
+            .append_intake_message_or_start_follow_up(
+                &parent.id,
+                "Another principal tries to continue this thread.",
+                "follow-up-message-other-principal",
+                "other-operator",
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            Error::IntakeConflict {
+                code: "FOLLOW_UP_POLICY_PRINCIPAL_MISMATCH",
+                ..
+            }
+        ));
+        assert_eq!(
+            count_for(
+                "SELECT COUNT(*) FROM intake_requests WHERE parent_request_id=?1",
+                &parent.id,
+                &db
+            )
+            .await,
+            0
+        );
+        assert!(db.intake_messages(&parent.id).await.unwrap().is_empty());
         let _ = std::fs::remove_file(path);
     }
 

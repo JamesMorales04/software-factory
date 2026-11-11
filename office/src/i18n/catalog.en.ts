@@ -478,6 +478,10 @@ export const en = {
   "request.conversation.followUpExists":
     "This thread already has one follow-up request. Continue in the follow-up.",
   "request.conversation.openFollowUp": "Open follow-up",
+  "request.followUp.policyRequired":
+    "Core refused the follow-up: the parent owner-confirmed execution policy no longer matches this Project, profile or scope. Re-enable execution policy or start a new request; Core will not reuse another principal's grant.",
+  "request.followUp.exists":
+    "This thread already has a follow-up request. Open it to continue.",
   "request.conversation.followUpFrom": "Follow-up from",
   "request.details.title": "Request details",
   "request.details.request": "Request",

@@ -144,6 +144,20 @@ export function RequestWorkspace() {
     } catch (cause) {
       if (
         cause instanceof CoreApiError &&
+        cause.code === "FOLLOW_UP_EXECUTION_POLICY_REQUIRED"
+      ) {
+        setActionError(t("request.followUp.policyRequired"));
+        return false;
+      }
+      if (
+        cause instanceof CoreApiError &&
+        cause.code === "INTAKE_FOLLOW_UP_EXISTS"
+      ) {
+        setActionError(t("request.followUp.exists"));
+        return false;
+      }
+      if (
+        cause instanceof CoreApiError &&
         cause.code === "LEAD_ALREADY_STARTED"
       ) {
         const body =

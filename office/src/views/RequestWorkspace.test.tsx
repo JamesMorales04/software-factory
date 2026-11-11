@@ -663,6 +663,59 @@ describe("RequestWorkspace", () => {
     expect(screen.queryByLabelText("Start a follow-up request")).toBeNull();
   });
 
+  it("explains a follow-up policy refusal in English", async () => {
+    mocks.getIntakeRequest.mockResolvedValue(
+      makeProjection({ state: "COMPLETED" }),
+    );
+    mocks.messageIntakeRequest.mockRejectedValue(
+      new CoreApiError(409, "policy no longer matches", {
+        code: "FOLLOW_UP_EXECUTION_POLICY_REQUIRED",
+        error: "policy no longer matches",
+      }),
+    );
+    renderRequest();
+    await screen.findByLabelText("Start a follow-up request");
+    await userEvent.type(
+      screen.getByLabelText("Start a follow-up request"),
+      "Continue with a new objective.",
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Start follow-up" }),
+    );
+    expect(
+      await screen.findByText(/parent owner-confirmed execution policy/),
+    ).toBeDefined();
+    expect(screen.getByRole("alert")).toBeDefined();
+    expect(screen.getByLabelText("Start a follow-up request")).toBeDefined();
+  });
+
+  it("explains a follow-up policy refusal in Spanish", async () => {
+    mocks.getIntakeRequest.mockResolvedValue(
+      makeProjection({ state: "COMPLETED" }),
+    );
+    mocks.messageIntakeRequest.mockRejectedValue(
+      new CoreApiError(409, "policy no longer matches", {
+        code: "FOLLOW_UP_EXECUTION_POLICY_REQUIRED",
+        error: "policy no longer matches",
+      }),
+    );
+    renderRequest("es");
+    await screen.findByLabelText("Iniciar una solicitud de seguimiento");
+    await userEvent.type(
+      screen.getByLabelText("Iniciar una solicitud de seguimiento"),
+      "Continúa con un nuevo objetivo.",
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Iniciar seguimiento" }),
+    );
+    expect(
+      await screen.findByText(
+        /política de ejecución confirmada por el propietario/,
+      ),
+    ).toBeDefined();
+    expect(screen.getByRole("alert")).toBeDefined();
+  });
+
   it("shows the parent thread on a follow-up request", async () => {
     mocks.getIntakeRequest.mockResolvedValue(
       makeProjection({

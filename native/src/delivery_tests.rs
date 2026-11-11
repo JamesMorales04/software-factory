@@ -112,6 +112,8 @@ struct FakeState {
     merge_sha: String,
     candidate_branch_sha: String,
     default_branch_sha: String,
+    default_branch_after_merge: Option<String>,
+    branch_read_error: bool,
     release_branch_sha: String,
     pr_base_ref: String,
     pr_open: bool,
@@ -149,6 +151,8 @@ impl FakeState {
             merge_sha: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".into(),
             candidate_branch_sha: repo.candidate.clone(),
             default_branch_sha: repo.base.clone(),
+            default_branch_after_merge: None,
+            branch_read_error: false,
             release_branch_sha: repo.base.clone(),
             pr_base_ref: "main".into(),
             pr_open: false,
@@ -237,6 +241,9 @@ async fn branch_or_protection_handler(
     }
     let branch = rest;
     let state = fake.state.lock().unwrap();
+    if state.branch_read_error && state.pr_merged && branch == "main" {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
     let sha = if branch == "main" {
         state.default_branch_sha.clone()
     } else if branch == "release" {
@@ -339,7 +346,10 @@ async fn merge_handler(State(fake): State<Fake>, Json(body): Json<serde_json::Va
     }
     state.pr_merged = true;
     state.pr_state = "closed".into();
-    state.default_branch_sha = state.merge_sha.clone();
+    state.default_branch_sha = state
+        .default_branch_after_merge
+        .clone()
+        .unwrap_or_else(|| state.merge_sha.clone());
     (
         StatusCode::OK,
         Json(serde_json::json!({
@@ -1162,6 +1172,65 @@ fn policy_input_requires_squash_and_r1_post_merge_check() {
     assert!(input.validate("main").is_ok());
 }
 
+async fn configure_r1_delivery(fixture: &Fixture) {
+    let input = DeliveryPolicyInput {
+        enabled: true,
+        r1_enabled: true,
+        auto_merge_base_branch: "main".into(),
+        manual_base_branches: vec!["main".into()],
+        required_checks: vec!["ci".into()],
+        merge_method: "squash".into(),
+        post_merge_check_id: "post-merge".into(),
+        post_merge_timeout_secs: 3,
+        kill_switch: false,
+        expires_at: None,
+    };
+    fixture
+        .db
+        .append_delivery_policy("project", "main", &input, "owner")
+        .await
+        .unwrap();
+    fixture
+        .db
+        .create_agentic_charter(&crate::db::NewAgenticCharter {
+            owner: "owner",
+            project_id: "project",
+            domains: &["delivery".into()],
+            risk_appetite: RiskClass::R1,
+            execution_autonomy: false,
+            repair_autonomy: false,
+            delivery_autonomy: true,
+            reserved_matters: &["credentials".into()],
+            expires_at: &(Utc::now() + chrono::Duration::days(1)).to_rfc3339(),
+        })
+        .await
+        .unwrap();
+}
+
+async fn reset_project_base_to_repo_base(fixture: &Fixture) {
+    let mut config = fixture.db.project_config("project").await.unwrap();
+    config.base_commit = fixture.repo.base.clone();
+    config.revision += 1;
+    config.updated_at = Utc::now().to_rfc3339();
+    config.config_hash = config.compute_hash();
+    sqlx::query::query("UPDATE projects SET base_commit=?1 WHERE id='project'")
+        .bind(&fixture.repo.base)
+        .execute(fixture.db.test_pool())
+        .await
+        .unwrap();
+    sqlx::query::query(
+        "UPDATE project_configs SET base_commit=?1,revision=?2,config_hash=?3,updated_at=?4
+         WHERE project_id='project'",
+    )
+    .bind(&fixture.repo.base)
+    .bind(i64::from(config.revision))
+    .bind(&config.config_hash)
+    .bind(&config.updated_at)
+    .execute(fixture.db.test_pool())
+    .await
+    .unwrap();
+}
+
 // -------------------------------------------------------------------------
 // Fake GitHub integration
 // -------------------------------------------------------------------------
@@ -1465,6 +1534,72 @@ async fn r1_with_opt_in_charter_and_post_merge_check_merges() {
     assert_eq!(post.len(), 1);
     assert_eq!(post[0].status, "PASSED");
     assert_eq!(hook.calls(), vec!["pr_opened", "merge_succeeded"]);
+}
+
+#[tokio::test]
+async fn default_branch_read_error_after_merge_does_not_advance_the_base() {
+    let fixture = setup_fixture("R0").await;
+    fake_set(&fixture.fake, |state| state.branch_read_error = true);
+    let hook = RecordingHook::default();
+    let error = deliver(&fixture, &hook, false).await.unwrap_err();
+    assert_eq!(error.kind(), "DEFAULT_BRANCH_UNCONFIRMED");
+    let config = fixture.db.project_config("project").await.unwrap();
+    assert_eq!(config.base_commit, fixture.repo.base);
+    assert_eq!(config.revision, 1);
+}
+
+#[tokio::test]
+async fn wrong_default_branch_head_after_merge_does_not_advance_the_base() {
+    let fixture = setup_fixture("R0").await;
+    fake_set(&fixture.fake, |state| {
+        state.default_branch_after_merge = Some("f".repeat(40));
+    });
+    let hook = RecordingHook::default();
+    let error = deliver(&fixture, &hook, false).await.unwrap_err();
+    assert_eq!(error.kind(), "MERGE_IDENTITY_MISMATCH");
+    let config = fixture.db.project_config("project").await.unwrap();
+    assert_eq!(config.base_commit, fixture.repo.base);
+    assert_eq!(config.revision, 1);
+}
+
+#[tokio::test]
+async fn merged_replay_requires_the_recorded_post_merge_evidence_before_advancing() {
+    let fixture = setup_fixture("R1").await;
+    configure_r1_delivery(&fixture).await;
+    let hook = RecordingHook::default();
+    let run = deliver(&fixture, &hook, false).await.unwrap();
+    assert_eq!(run.attempt.state, DeliveryAttemptState::Merged);
+    let attempt_id = run.attempt.attempt_id.clone();
+    // Model a Core restart before the base write, with the required evidence
+    // absent. Replay must not use the stored merge SHA to advance blindly.
+    sqlx::query::query("DELETE FROM delivery_post_merge_checks WHERE attempt_id=?1")
+        .bind(&attempt_id)
+        .execute(fixture.db.test_pool())
+        .await
+        .unwrap();
+    reset_project_base_to_repo_base(&fixture).await;
+
+    let error = deliver(&fixture, &hook, false).await.unwrap_err();
+    assert_eq!(error.kind(), "POST_MERGE_CHECK_MISSING");
+    let config = fixture.db.project_config("project").await.unwrap();
+    assert_eq!(config.base_commit, fixture.repo.base);
+
+    // A recorded failure is also not evidence of success.
+    fixture
+        .db
+        .record_delivery_post_merge_check(
+            &attempt_id,
+            "post-merge",
+            &fixture.merge_sha,
+            "FAILED",
+            "post-merge check failed",
+        )
+        .await
+        .unwrap();
+    let error = deliver(&fixture, &hook, false).await.unwrap_err();
+    assert_eq!(error.kind(), "POST_MERGE_CHECK_FAILED");
+    let config = fixture.db.project_config("project").await.unwrap();
+    assert_eq!(config.base_commit, fixture.repo.base);
 }
 
 #[tokio::test]

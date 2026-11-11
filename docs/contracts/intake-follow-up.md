@@ -134,6 +134,10 @@ The Request workspace must show:
 | `CAMPAIGN_STARTED` | Active execution still uses the Campaign workspace |
 | `PROJECT_BASE_UPDATE_CONFLICT` | The Project config revision fence changed |
 | `PROJECT_BASE_UPDATE_FAILED` | Delivery could not record merged main |
+| `DEFAULT_BRANCH_UNCONFIRMED` | The protected default branch could not be read after merge or replay |
+| `MERGE_IDENTITY_MISMATCH` | The default branch or post-merge evidence is bound to another merge |
+| `POST_MERGE_CHECK_MISSING` | Required post-merge evidence is absent or not passing |
+| `POST_MERGE_CHECK_FAILED` | The recorded post-merge check failed |
 
 ## 9. Acceptance cases
 

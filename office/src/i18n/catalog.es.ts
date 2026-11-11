@@ -489,6 +489,10 @@ export const es: Catalog = {
   "request.conversation.followUpExists":
     "Este hilo ya tiene una solicitud de seguimiento. Continúa en el seguimiento.",
   "request.conversation.openFollowUp": "Abrir seguimiento",
+  "request.followUp.policyRequired":
+    "Core rechazó el seguimiento: la política de ejecución confirmada por el propietario del padre ya no coincide con este Proyecto, perfil o alcance. Vuelve a habilitar la política o inicia una nueva solicitud; Core no reutilizará la concesión de otro principal.",
+  "request.followUp.exists":
+    "Este hilo ya tiene una solicitud de seguimiento. Ábrela para continuar.",
   "request.conversation.followUpFrom": "Seguimiento de",
   "request.details.title": "Detalles de la solicitud",
   "request.details.request": "Solicitud",
