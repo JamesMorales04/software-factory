@@ -2769,6 +2769,8 @@ mod tests {
             environment_builder_image: None,
             environment_builder_image_digest: None,
             environment_required: false,
+
+            environment_spec_id: None,
         };
         let (assessment, proposal) = fixture_lead_assessment(
             "request-1",

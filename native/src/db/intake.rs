@@ -173,6 +173,34 @@ impl Database {
         idempotency_key: &str,
         principal_id: &str,
     ) -> Result<(IntakeRequestRecord, bool), Error> {
+        self.create_intake_request_with_environment(
+            project_id,
+            objective,
+            execution_profile_id,
+            mode,
+            idempotency_key,
+            principal_id,
+            None,
+        )
+        .await
+    }
+
+    /// Create an intake request with explicit production environment
+    /// constraints. The constraints are part of the immutable submission
+    /// snapshot and are the supported input path for a generated environment.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_intake_request_with_environment(
+        &self,
+        project_id: &str,
+        objective: &str,
+        execution_profile_id: Option<&str>,
+        mode: IntakeMode,
+        idempotency_key: &str,
+        principal_id: &str,
+        environment_constraints: Option<
+            &crate::planning::environment::RequestEnvironmentConstraints,
+        >,
+    ) -> Result<(IntakeRequestRecord, bool), Error> {
         validate_intake_submission(
             project_id,
             objective,
@@ -180,12 +208,13 @@ impl Database {
             idempotency_key,
             principal_id,
         )?;
-        let prepared = prepare_intake_request(
+        let prepared = prepare_intake_request_with_environment(
             project_id,
             objective,
             execution_profile_id,
             mode,
             principal_id,
+            environment_constraints,
         )?;
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
@@ -294,6 +323,8 @@ impl Database {
             environment_builder_image: None,
             environment_builder_image_digest: None,
             environment_required: false,
+
+            environment_spec_id: None,
         })
     }
 
@@ -1038,6 +1069,24 @@ pub(super) fn prepare_intake_request(
     mode: IntakeMode,
     principal_id: &str,
 ) -> Result<PreparedIntakeRequest, Error> {
+    prepare_intake_request_with_environment(
+        project_id,
+        objective,
+        execution_profile_id,
+        mode,
+        principal_id,
+        None,
+    )
+}
+
+pub(super) fn prepare_intake_request_with_environment(
+    project_id: &str,
+    objective: &str,
+    execution_profile_id: Option<&str>,
+    mode: IntakeMode,
+    principal_id: &str,
+    environment_constraints: Option<&crate::planning::environment::RequestEnvironmentConstraints>,
+) -> Result<PreparedIntakeRequest, Error> {
     let submission_json = serde_json::to_string(&serde_json::json!({
         "schema":"factory-intake-submission-v1",
         "projectId":project_id,
@@ -1045,6 +1094,7 @@ pub(super) fn prepare_intake_request(
         "mode":mode,
         "executionProfileId":execution_profile_id,
         "principalId":principal_id,
+        "environmentConstraints":environment_constraints,
     }))
     .map_err(|_| Error::Invalid("intake submission encoding"))?;
     let submission_hash = sha256_hex(submission_json.as_bytes());
@@ -2167,6 +2217,8 @@ mod tests {
             environment_builder_image: None,
             environment_builder_image_digest: None,
             environment_required: false,
+
+            environment_spec_id: None,
         };
         let (assessment, proposal) = crate::lead::fixture_lead_assessment(
             &lead.id,
@@ -3465,6 +3517,8 @@ mod tests {
             environment_builder_image: None,
             environment_builder_image_digest: None,
             environment_required: false,
+
+            environment_spec_id: None,
         };
         let (assessment, proposal) = crate::lead::fixture_lead_assessment(
             &lead.id,

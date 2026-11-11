@@ -522,6 +522,8 @@ export const es: Catalog = {
   "environment.baseCommit": "Commit base",
   "environment.conventionsHash": "SHA-256 de convenciones",
   "environment.blockers.title": "Bloqueos del entorno",
+  "environment.constraints.action":
+    "Añade restricciones explícitas de entorno (nixpkgs, paquetes, servicios, navegadores o recursos) a una nueva solicitud, o confirma un entorno de proyecto fijado.",
   "environment.yes": "Sí",
   "environment.no": "No",
   "environment.detection.title": "Evidencia de detección",

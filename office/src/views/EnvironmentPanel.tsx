@@ -140,6 +140,16 @@ export function EnvironmentPanel({
         </div>
       )}
 
+      {environment.blockers.some((blocker) =>
+        ["ENVIRONMENT_PIN_MISSING", "ENVIRONMENT_CONVENTIONS_MISSING"].includes(
+          blocker.code,
+        ),
+      ) && (
+        <p className="ui-callout ui-callout--attention">
+          {t("environment.constraints.action")}
+        </p>
+      )}
+
       {!plan ? (
         <EmptyState
           title={t("environment.emptyTitle")}

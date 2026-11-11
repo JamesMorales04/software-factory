@@ -402,6 +402,12 @@ struct NewIntakeRequest {
     /// reserved before the first billable Lead assessment.
     #[serde(default)]
     authorized_micros: Option<u64>,
+    /// Optional production constraints for the generated Nix/devenv
+    /// environment. Committed conventions still take precedence; missing pins
+    /// fall back to the builder's documented default pin and otherwise block.
+    #[serde(default)]
+    environment_constraints:
+        Option<factory_native::planning::environment::RequestEnvironmentConstraints>,
 }
 
 #[cfg(feature = "test-support")]
@@ -11206,6 +11212,12 @@ fn environment_builder_descriptor()
         digest: digest.trim().to_owned(),
         platform,
         policy_revision: ENVIRONMENT_POLICY_REVISION.into(),
+        default_nixpkgs: std::env::var("FACTORY_ENVIRONMENT_DEFAULT_NIXPKGS")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| {
+                factory_native::planning::environment::DEFAULT_ENVIRONMENT_NIXPKGS.into()
+            }),
         status,
     }
 }
@@ -11307,8 +11319,8 @@ async fn compile_environment_for_request(
     risk_class: &str,
 ) -> Result<factory_native::planning::environment::EnvironmentPlan, Response> {
     use factory_native::planning::environment::{
-        CompileEnvironmentInput, EnvironmentBlocker, EnvironmentBlockerCode,
-        EnvironmentRequirements, compile_environment_plan, discover_project_conventions,
+        CompileEnvironmentInput, EnvironmentBlocker, compile_environment_plan,
+        discover_project_conventions,
     };
     let repository = std::path::PathBuf::from(&config.repository);
     let risk_class = risk_class.to_owned();
@@ -11356,7 +11368,64 @@ async fn compile_environment_for_request(
             .map_err(api_error)?;
         return Ok(plan);
     }
-    let requirements = EnvironmentRequirements::default();
+    let mut requirements = match serde_json::from_str::<serde_json::Value>(&record.submission_json)
+    {
+        Ok(submission) => match submission.get("environmentConstraints") {
+            None | Some(serde_json::Value::Null) => {
+                factory_native::planning::environment::EnvironmentRequirements::default()
+            }
+            Some(value) => match serde_json::from_value::<
+                factory_native::planning::environment::RequestEnvironmentConstraints,
+            >(value.clone())
+            {
+                Ok(constraints) => constraints.into_requirements(),
+                Err(error) => {
+                    let blocked = blocked_environment_plan(
+                        record,
+                        revision,
+                        &risk_class,
+                        &conventions,
+                        EnvironmentBlocker {
+                            code: factory_native::planning::environment::EnvironmentBlockerCode::EnvironmentPlanInvalid,
+                            message: format!(
+                                "the stored environmentConstraints are malformed: {error}"
+                            ),
+                        },
+                    );
+                    app.db
+                        .save_environment_plan(&blocked)
+                        .await
+                        .map_err(api_error)?;
+                    return Ok(blocked);
+                }
+            },
+        },
+        Err(error) => {
+            let blocked = blocked_environment_plan(
+                record,
+                revision,
+                &risk_class,
+                &conventions,
+                EnvironmentBlocker {
+                    code: factory_native::planning::environment::EnvironmentBlockerCode::EnvironmentPlanInvalid,
+                    message: format!("the stored intake submission is malformed: {error}"),
+                },
+            );
+            app.db
+                .save_environment_plan(&blocked)
+                .await
+                .map_err(api_error)?;
+            return Ok(blocked);
+        }
+    };
+    if requirements.explicit_constraints.nixpkgs.is_none()
+        && conventions.pins_named("nixpkgs").is_empty()
+    {
+        let descriptor = app.environment_builder().descriptor();
+        if !descriptor.default_nixpkgs.trim().is_empty() {
+            requirements.explicit_constraints.nixpkgs = Some(descriptor.default_nixpkgs);
+        }
+    }
     match compile_environment_plan(CompileEnvironmentInput {
         plan_id: uuid::Uuid::new_v4().simple().to_string(),
         project_id: &record.project_id,
@@ -11410,15 +11479,7 @@ async fn compile_environment_for_request(
                 &risk_class,
                 &conventions,
                 EnvironmentBlocker {
-                    code: if matches!(
-                        error.code,
-                        EnvironmentBlockerCode::EnvironmentConventionsConflict
-                            | EnvironmentBlockerCode::EnvironmentConventionsMissing
-                    ) {
-                        error.code
-                    } else {
-                        EnvironmentBlockerCode::EnvironmentPlanInvalid
-                    },
+                    code: error.code,
                     message: error.message,
                 },
             );
@@ -11961,16 +12022,8 @@ async fn environment_ready_for_request(
         }
         Err(Error::NotFound) => {
             let action = app.db.action(&record.action_id).await.map_err(api_error)?;
-            if action.spec.environment_required {
-                return Err((
-                    StatusCode::CONFLICT,
-                    Json(json!({
-                        "error": "the action requires a frozen environment plan but none is recorded",
-                        "code": "ENVIRONMENT_PLAN_REQUIRED",
-                    })),
-                )
-                    .into_response());
-            }
+            factory_native::db::validate_environment_requirement(&action.spec)
+                .map_err(api_error)?;
             Ok(())
         }
         Err(error) => Err(api_error(error)),
@@ -13840,14 +13893,9 @@ async fn ensure_planning_ready_or_error(
                 });
             }
         }
-        Err(Error::NotFound) if action.spec.environment_required => {
-            return Err(Error::IntakeConflict {
-                code: "ENVIRONMENT_PLAN_REQUIRED",
-                message: "the action requires a frozen environment plan but none is recorded"
-                    .into(),
-            });
+        Err(Error::NotFound) => {
+            factory_native::db::validate_environment_requirement(&action.spec)?;
         }
-        Err(Error::NotFound) => {}
         Err(error) => return Err(error),
     }
     factory_native::db::validate_environment_requirement(&action.spec)?;
@@ -16920,13 +16968,14 @@ async fn create_intake_request(
         authenticated_operator(session.as_ref().map(|Extension(device)| device));
     match app
         .db
-        .create_intake_request(
+        .create_intake_request_with_environment(
             &input.project_id,
             &input.objective,
             input.execution_profile_id.as_deref(),
             input.mode,
             &input.idempotency_key,
             &principal_id,
+            input.environment_constraints.as_ref(),
         )
         .await
     {
@@ -22358,6 +22407,7 @@ mod tests {
 
     async fn create_ready_approval_lead(
         db: &Database,
+        path: &std::path::Path,
         project_id: &str,
         config_hash: &str,
         grant: &factory_native::lead::StandingDelegationV2,
@@ -22380,6 +22430,19 @@ mod tests {
             )
             .await
             .unwrap();
+        let config = db.project_config(project_id).await.unwrap();
+        seed_core_test_environment(
+            db,
+            path,
+            &action.id,
+            project_id,
+            &config.base_commit,
+            "R0",
+            None,
+        )
+        .await
+        .unwrap();
+        let action = db.action(&action.id).await.unwrap();
         let (request, _) = db
             .create_lead_request(
                 project_id,
@@ -22542,12 +22605,24 @@ mod tests {
         db.create_standing_delegation_v2(&grant, "approval-grant-key")
             .await
             .unwrap();
-        let (request_id, expected) =
-            create_ready_approval_lead(&db, &project.id, &config.config_hash, &grant, "first")
-                .await;
-        let (withdrawn_request, _) =
-            create_ready_approval_lead(&db, &project.id, &config.config_hash, &grant, "second")
-                .await;
+        let (request_id, expected) = create_ready_approval_lead(
+            &db,
+            &path,
+            &project.id,
+            &config.config_hash,
+            &grant,
+            "first",
+        )
+        .await;
+        let (withdrawn_request, _) = create_ready_approval_lead(
+            &db,
+            &path,
+            &project.id,
+            &config.config_hash,
+            &grant,
+            "second",
+        )
+        .await;
         let app = Arc::new(App {
             db,
             operator_token: "operator-token".into(),
@@ -22965,6 +23040,256 @@ mod tests {
 
         app.db.close().await;
         let _ = std::fs::remove_file(path);
+    }
+
+    #[derive(Clone)]
+    struct CoreTestEnvironmentBinding {
+        plan_id: String,
+        spec_id: String,
+        builder_image: String,
+        builder_image_digest: String,
+    }
+
+    fn core_test_environment_binding(action_id: &str) -> CoreTestEnvironmentBinding {
+        CoreTestEnvironmentBinding {
+            plan_id: format!("test-plan-{action_id}"),
+            spec_id: format!("test-spec-{action_id}"),
+            builder_image: "fixture/environment-builder".into(),
+            builder_image_digest: format!("sha256:{}", "a".repeat(64)),
+        }
+    }
+
+    #[cfg(feature = "test-support")]
+    async fn clear_core_test_action_environment(
+        path: &std::path::Path,
+        action_id: &str,
+    ) -> Result<(), std::io::Error> {
+        use sqlx::connection::Connection as SqlxConnection;
+        use sqlx_sqlite::{SqliteConnectOptions, SqliteConnection};
+        let options = SqliteConnectOptions::new().filename(path);
+        let mut connection = SqliteConnection::connect_with(&options)
+            .await
+            .map_err(std::io::Error::other)?;
+        let row: Option<(String,)> =
+            sqlx::query_as::query_as("SELECT spec_json FROM action_specs WHERE action_id=?1")
+                .bind(action_id)
+                .fetch_optional(&mut connection)
+                .await
+                .map_err(std::io::Error::other)?;
+        let Some((spec_json,)) = row else {
+            return Ok(());
+        };
+        let mut spec: factory_native::db::ActionSpec =
+            serde_json::from_str(&spec_json).map_err(std::io::Error::other)?;
+        spec.environment_plan_id = None;
+        spec.environment_plan_sha256 = None;
+        spec.environment_spec_id = None;
+        spec.environment_spec_sha256 = None;
+        spec.environment_builder_image = None;
+        spec.environment_builder_image_digest = None;
+        spec.environment_required = false;
+        for check in &mut spec.checks {
+            check.environment_plan_id = None;
+            check.environment_spec_sha256 = None;
+        }
+        let spec_json = serde_json::to_string(&spec).map_err(std::io::Error::other)?;
+        let spec_sha256 = factory_native::planning::environment::sha256_hex(spec_json.as_bytes());
+        sqlx::query::query(
+            "UPDATE action_specs SET spec_json=?1,spec_sha256=?2 WHERE action_id=?3",
+        )
+        .bind(&spec_json)
+        .bind(&spec_sha256)
+        .bind(action_id)
+        .execute(&mut connection)
+        .await
+        .map_err(std::io::Error::other)?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn seed_core_test_environment(
+        db: &Database,
+        path: &std::path::Path,
+        action_id: &str,
+        project_id: &str,
+        base_commit: &str,
+        risk_class: &str,
+        request_id: Option<&str>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use factory_native::planning::environment::{
+            ENVIRONMENT_POLICY_REVISION, ENVIRONMENT_SCHEMA_VERSION, EnvironmentBuildReceipt,
+            EnvironmentBuilderDescriptor, EnvironmentBuilderStatus, EnvironmentFile,
+            EnvironmentFileOrigin, EnvironmentNixPolicy, EnvironmentPlan, EnvironmentPlanSource,
+            EnvironmentPlanStatus, EnvironmentSpec, EnvironmentSpecStatus, ExistingEnvironmentKind,
+            LicenseInventory, NetworkPolicy, ProjectConventions, ResourceLimits,
+            SandboxAttestation, SandboxPolicy, sha256_hex,
+        };
+        if db.action(action_id).await.is_err()
+            || db.environment_spec_for_action(action_id).await.is_ok()
+        {
+            return Ok(());
+        }
+        let binding = core_test_environment_binding(action_id);
+        let mut conventions = ProjectConventions {
+            schema_version: ENVIRONMENT_SCHEMA_VERSION,
+            project_id: project_id.into(),
+            base_commit: base_commit.into(),
+            conventions_sha256: String::new(),
+            scanned_at: chrono::Utc::now().to_rfc3339(),
+            files: Vec::new(),
+            commands: Vec::new(),
+            conflicts: Vec::new(),
+            truncated: false,
+            skipped_entries: 0,
+            provenance: "test-fixture".into(),
+            existing_environment: ExistingEnvironmentKind::None,
+        };
+        conventions.conventions_sha256 = conventions.compute_sha256();
+        let mut inventory = LicenseInventory::default();
+        inventory.refresh_hashes(&binding.plan_id);
+        let builder = EnvironmentBuilderDescriptor {
+            image: binding.builder_image.clone(),
+            digest: binding.builder_image_digest.clone(),
+            platform: "x86_64-linux".into(),
+            policy_revision: ENVIRONMENT_POLICY_REVISION.into(),
+            default_nixpkgs: "github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into(),
+            status: EnvironmentBuilderStatus::Ready,
+        };
+        let mut plan = EnvironmentPlan {
+            schema_version: ENVIRONMENT_SCHEMA_VERSION,
+            plan_id: binding.plan_id.clone(),
+            project_id: project_id.into(),
+            request_id: request_id.unwrap_or(action_id).into(),
+            action_id: action_id.into(),
+            campaign_id: None,
+            base_commit: base_commit.into(),
+            conventions_sha256: conventions.conventions_sha256.clone(),
+            conventions,
+            risk_class: risk_class.into(),
+            status: EnvironmentPlanStatus::Frozen,
+            revision: 1,
+            source: EnvironmentPlanSource::ProjectCommitted,
+            toolchains: Vec::new(),
+            packages: Vec::new(),
+            services: Vec::new(),
+            commands: Default::default(),
+            browsers: Vec::new(),
+            files: vec![EnvironmentFile {
+                path: "flake.lock".into(),
+                sha256: "a".repeat(64),
+                origin: EnvironmentFileOrigin::Project,
+                content: None,
+            }],
+            nix: EnvironmentNixPolicy {
+                nixpkgs: "github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into(),
+                inputs: Vec::new(),
+                allow_unfree: false,
+                sandbox: SandboxPolicy::default(),
+            },
+            resources: ResourceLimits::default(),
+            network: NetworkPolicy::default(),
+            license_inventory: inventory,
+            license_inventory_sha256: String::new(),
+            builder,
+            resolution: None,
+            lead_review: None,
+            blockers: Vec::new(),
+            commands_rationale: "test fixture".into(),
+            plan_sha256: String::new(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+        plan.license_inventory_sha256 = plan.license_inventory.inventory_sha256.clone();
+        plan.refresh_hash();
+        db.save_environment_plan(&plan).await?;
+        // Insert a test review row directly; it is fixture provenance, not a
+        // production Lead model decision.
+        use sqlx::connection::Connection as SqlxConnection;
+        use sqlx_sqlite::{SqliteConnectOptions, SqliteConnection};
+        let options = SqliteConnectOptions::new().filename(path);
+        let mut connection = SqliteConnection::connect_with(&options).await?;
+        let review_id = format!("test-review-{action_id}");
+        let now = chrono::Utc::now().to_rfc3339();
+        sqlx::query::query(
+            "INSERT INTO environment_plan_reviews
+             (id,request_id,action_id,plan_id,plan_sha256,plan_revision,risk_class,
+              reviewer_role,principal_id,recorded_by,decision,rationale,
+              constraints_json,evidence_json,model_call_json,decided_at,created_at)
+             VALUES (?1,?2,?3,?4,?5,1,?6,'LEAD',?7,'test-fixture','APPROVED',
+                     'fixture review','[]','[]',?8,?9,?9)",
+        )
+        .bind(&review_id)
+        .bind(request_id)
+        .bind(action_id)
+        .bind(&plan.plan_id)
+        .bind(&plan.plan_sha256)
+        .bind(risk_class)
+        .bind(format!("lead:test-{action_id}"))
+        .bind(r#"{"mechanism":"MODEL","provider":"fixture","model":"fixture","reservationId":"test-reservation","requestSha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","inputTokens":0,"outputTokens":0,"totalTokens":0,"costMicros":0,"usageKnown":false}"#)
+        .bind(&now)
+        .execute(&mut connection)
+        .await?;
+        drop(connection);
+        let mut spec = EnvironmentSpec {
+            schema_version: ENVIRONMENT_SCHEMA_VERSION,
+            spec_id: binding.spec_id,
+            spec_sha256: String::new(),
+            project_id: project_id.into(),
+            request_id: request_id.unwrap_or(action_id).into(),
+            action_id: action_id.into(),
+            campaign_id: None,
+            base_commit: base_commit.into(),
+            plan_id: plan.plan_id.clone(),
+            plan_sha256: plan.plan_sha256.clone(),
+            conventions_sha256: plan.conventions_sha256.clone(),
+            review_id,
+            platform: "x86_64-linux".into(),
+            nix_version: "2.28.3".into(),
+            devenv_version: "1.11.2".into(),
+            flake_lock_sha256: "a".repeat(64),
+            devenv_lock_sha256: String::new(),
+            license_inventory_sha256: plan.license_inventory.inventory_sha256.clone(),
+            sbom_sha256: plan.license_inventory.sbom_sha256.clone(),
+            builder_image: plan.builder.image.clone(),
+            builder_image_digest: plan.builder.digest.clone(),
+            resource_policy: plan.resources,
+            network_policy: plan.network.clone(),
+            status: EnvironmentSpecStatus::Frozen,
+            frozen_at: now.clone(),
+        };
+        spec.spec_sha256 = spec.compute_sha256();
+        db.save_environment_spec(&spec).await?;
+        let receipt = EnvironmentBuildReceipt {
+            schema_version: ENVIRONMENT_SCHEMA_VERSION,
+            receipt_id: format!("test-receipt-{action_id}"),
+            spec_sha256: spec.spec_sha256.clone(),
+            platform: spec.platform.clone(),
+            builder_image: spec.builder_image.clone(),
+            builder_image_digest: spec.builder_image_digest.clone(),
+            builder_policy_revision: ENVIRONMENT_POLICY_REVISION.into(),
+            status: EnvironmentBuilderStatus::Succeeded,
+            store_path: "/nix/store/test".into(),
+            output_sha256: "b".repeat(64),
+            sbom_sha256: spec.sbom_sha256.clone(),
+            log_ref: "test-fixture".into(),
+            sandbox_attestation: SandboxAttestation {
+                non_root: true,
+                no_secrets: true,
+                no_host_network: true,
+                no_host_socket: true,
+                no_host_mount: true,
+                sandbox: true,
+                impure: false,
+                bounded_resources: true,
+            },
+            blockers: Vec::new(),
+            duration_ms: 0,
+            created_at: now,
+        };
+        db.save_environment_build_receipt(&receipt).await?;
+        db.set_action_environment_binding(action_id, &plan, &spec)
+            .await?;
+        let _ = sha256_hex(b"");
+        Ok(())
     }
 
     mod intake_api {
@@ -23396,6 +23721,24 @@ mod tests {
             intake_id: &str,
             mechanism: &str,
         ) -> factory_native::db::IntakeApprovalContext {
+            fixture_plan_with_seed(fixture, intake_id, mechanism, true).await
+        }
+
+        #[cfg(feature = "test-support")]
+        async fn fixture_plan_unseeded(
+            fixture: &Fixture,
+            intake_id: &str,
+            mechanism: &str,
+        ) -> factory_native::db::IntakeApprovalContext {
+            fixture_plan_with_seed(fixture, intake_id, mechanism, false).await
+        }
+
+        async fn fixture_plan_with_seed(
+            fixture: &Fixture,
+            intake_id: &str,
+            mechanism: &str,
+            seed_environment: bool,
+        ) -> factory_native::db::IntakeApprovalContext {
             let request = fixture.app.db.intake_request(intake_id).await.unwrap();
             let lead = fixture
                 .app
@@ -23441,6 +23784,7 @@ mod tests {
                 dependencies_required: false,
                 environment_plan_id: None,
                 environment_plan_sha256: None,
+                environment_spec_id: None,
                 environment_spec_sha256: None,
                 environment_builder_image: None,
                 environment_builder_image_digest: None,
@@ -23483,6 +23827,19 @@ mod tests {
                 .freeze_lead_plan_to_ready(&lead.id, "api-fixture-f")
                 .await
                 .unwrap();
+            if seed_environment {
+                seed_core_test_environment(
+                    &fixture.app.db,
+                    &fixture.path,
+                    &lead.action_id,
+                    &lead.project_id,
+                    &config.base_commit,
+                    "R0",
+                    Some(&request.id),
+                )
+                .await
+                .unwrap();
+            }
             fixture
                 .app
                 .db
@@ -23528,6 +23885,31 @@ mod tests {
             review_seed: PlanReviewSeed,
         ) -> factory_native::agentic::ValidatedWorkGraph {
             let request = fixture.app.db.intake_request(intake_id).await.unwrap();
+            if fixture
+                .app
+                .db
+                .environment_spec_for_action(&request.action_id)
+                .await
+                .is_err()
+            {
+                let config = fixture
+                    .app
+                    .db
+                    .project_config(&request.project_id)
+                    .await
+                    .unwrap();
+                seed_core_test_environment(
+                    &fixture.app.db,
+                    &fixture.path,
+                    &request.action_id,
+                    &request.project_id,
+                    &config.base_commit,
+                    "R0",
+                    Some(&request.id),
+                )
+                .await
+                .unwrap();
+            }
             let digest = "a".repeat(64);
             let graph = match fixture.app.db.agentic_work_graph(&request.id).await {
                 Ok(record) => serde_json::from_str::<factory_native::agentic::ValidatedWorkGraph>(
@@ -24044,7 +24426,7 @@ mod tests {
                     .unwrap();
             }
             if assess {
-                fixture_plan(&fixture, &intake_id, "FIXTURE").await;
+                fixture_plan_unseeded(&fixture, &intake_id, "FIXTURE").await;
             }
             (fixture, calls)
         }
@@ -24228,7 +24610,7 @@ mod tests {
                     .is_empty()
             );
 
-            fixture_plan(&fixture, &intake_id, "FIXTURE").await;
+            fixture_plan_unseeded(&fixture, &intake_id, "FIXTURE").await;
             let (status, detail) = send(
                 &fixture.router,
                 "GET",
@@ -25237,6 +25619,8 @@ mod tests {
                 environment_builder_image: None,
                 environment_builder_image_digest: None,
                 environment_required: false,
+
+                environment_spec_id: None,
             };
             let (assessment, _) = factory_native::lead::fixture_lead_assessment(
                 &lead.id,
@@ -27834,7 +28218,7 @@ mod tests {
                     .await;
             assert_eq!(status, StatusCode::CREATED, "{intake}");
             let intake_id = intake["id"].as_str().unwrap().to_string();
-            let _ = fixture_plan(&fixture, &intake_id, "FIXTURE").await;
+            let _ = fixture_plan_unseeded(&fixture, &intake_id, "FIXTURE").await;
             let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
             fixture
                 .app
@@ -27976,6 +28360,8 @@ mod tests {
                     digest: format!("sha256:{}", "a".repeat(64)),
                     platform: "x86_64-linux".into(),
                     policy_revision: ENVIRONMENT_POLICY_REVISION.into(),
+                    default_nixpkgs:
+                        "github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into(),
                     status: EnvironmentBuilderStatus::Ready,
                 }
             }
@@ -28202,7 +28588,6 @@ mod tests {
             let (status, intake) = create_intake(&fixture, "environment-request-1").await;
             assert_eq!(status, StatusCode::CREATED, "{intake}");
             let intake_id = intake["id"].as_str().unwrap().to_string();
-            let _ = fixture_plan(&fixture, &intake_id, "FIXTURE").await;
             let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
             let config = fixture
                 .app
@@ -28308,14 +28693,14 @@ mod tests {
             assert_eq!(status, StatusCode::OK, "{still_pending}");
             assert_eq!(still_pending["status"], "CORE_VALIDATED");
             assert!(still_pending["leadApproval"].is_null());
-            let action = fixture.app.db.action(&record.action_id).await.unwrap();
-            assert!(!action.spec.environment_required);
             assert!(
-                action
-                    .spec
-                    .checks
-                    .iter()
-                    .all(|check| check.environment_plan_id.is_none())
+                fixture
+                    .app
+                    .db
+                    .environment_plan_reviews(&intake_id)
+                    .await
+                    .unwrap()
+                    .is_empty()
             );
 
             let (status, stale) = send(
@@ -28337,6 +28722,76 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn environment_compile_preserves_typed_license_blocker() {
+            let fixture = setup().await;
+            let (status, _) = enable_policy(&fixture).await;
+            assert!(matches!(status, StatusCode::CREATED | StatusCode::OK));
+            let (status, intake) = send(
+                &fixture.router,
+                "POST",
+                "/intake/requests",
+                Some(json!({
+                    "project_id": fixture.project_id,
+                    "objective": "Use a package with an unknown licence.",
+                    "execution_profile_id": fixture.profile.id,
+                    "mode": "REVIEW_PLAN",
+                    "idempotency_key": "environment-license-blocker",
+                    "environment_constraints": {
+                        "packages": [{
+                            "name": "mystery",
+                            "version": "1.0.0",
+                            "license": "Unknown",
+                            "source": "nixpkgs",
+                            "attr": "mystery",
+                            "sha256": "c".repeat(64),
+                            "unfree": false,
+                            "attribution": ""
+                        }]
+                    }
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{intake}");
+            let intake_id = intake["id"].as_str().unwrap().to_string();
+            let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            let config = fixture
+                .app
+                .db
+                .project_config(&record.project_id)
+                .await
+                .unwrap();
+            let plan = compile_environment_for_request(&fixture.app, &record, &config, 1, "R0")
+                .await
+                .unwrap();
+            assert_eq!(
+                plan.status,
+                factory_native::planning::environment::EnvironmentPlanStatus::Blocked
+            );
+            assert!(plan.blockers.iter().any(|blocker| {
+                blocker.code
+                    == factory_native::planning::environment::EnvironmentBlockerCode::EnvironmentLicenseBlocked
+            }));
+            let (status, projection) = send(
+                &fixture.router,
+                "GET",
+                &format!("/agentic/requests/{intake_id}/environment"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{projection}");
+            assert!(
+                projection["blockers"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|blocker| blocker["code"] == "ENVIRONMENT_LICENSE_BLOCKED")
+            );
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
         async fn owner_plan_approval_does_not_record_a_lead_environment_review() {
             let fixture = setup().await;
             let (status, _) = enable_policy(&fixture).await;
@@ -28344,7 +28799,6 @@ mod tests {
             let (status, intake) = create_intake(&fixture, "environment-owner-only").await;
             assert_eq!(status, StatusCode::CREATED, "{intake}");
             let intake_id = intake["id"].as_str().unwrap().to_string();
-            let _ = fixture_plan(&fixture, &intake_id, "FIXTURE").await;
             let _ = seed_complete_planning(&fixture, &intake_id, ParticipantSeed::None).await;
             let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
             let config = fixture

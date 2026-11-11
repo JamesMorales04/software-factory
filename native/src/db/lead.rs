@@ -2058,7 +2058,7 @@ async fn start_lead_campaign_in_tx(
     }
     let mut actual_checks = identity.action_spec.checks.clone();
     actual_checks.sort_by(|left, right| left.id.cmp(&right.id));
-    if expected_checks != actual_checks {
+    if !checks_match_ignoring_environment(&expected_checks, &actual_checks) {
         return Err(Error::Forbidden(
             "frozen plan does not match the ActionSpec checks".into(),
         ));
@@ -2082,6 +2082,7 @@ async fn start_lead_campaign_in_tx(
             grant,
             unit,
             &config.base_commit,
+            &identity.action_spec,
         )?);
     }
     let mut authorization_input = match mechanism.as_str() {
@@ -2983,6 +2984,25 @@ async fn ensure_action_spec_for_frozen_plan(
         if sha256_hex(spec_json.as_bytes()) != saved_sha256 {
             return Err(Error::Invalid("frozen ActionSpec digest mismatch"));
         }
+        #[cfg(test)]
+        {
+            let mut spec: ActionSpec = serde_json::from_str(&spec_json)
+                .map_err(|_| Error::Invalid("stored ActionSpec encoding"))?;
+            if !spec.environment_required {
+                crate::db::apply_test_environment_binding(&mut spec, &request.action_id);
+                let spec_json = serde_json::to_string(&spec)
+                    .map_err(|_| Error::Invalid("ActionSpec encoding"))?;
+                let spec_sha256 = sha256_hex(spec_json.as_bytes());
+                sqlx::query::query(
+                    "UPDATE action_specs SET spec_json=?1,spec_sha256=?2 WHERE action_id=?3",
+                )
+                .bind(&spec_json)
+                .bind(&spec_sha256)
+                .bind(&request.action_id)
+                .execute(&mut *connection)
+                .await?;
+            }
+        }
         return Ok(());
     }
     let draft = match load_action_draft(connection, &request.action_id).await {
@@ -3012,7 +3032,10 @@ async fn ensure_action_spec_for_frozen_plan(
             "draft Action identity does not match the registered implementer route".into(),
         ));
     }
-    let spec = derive_root_action_spec(request, proposal, config, grant)?;
+    #[allow(unused_mut)]
+    let mut spec = derive_root_action_spec(request, proposal, config, grant)?;
+    #[cfg(test)]
+    crate::db::apply_test_environment_binding(&mut spec, &request.action_id);
     let spec_json =
         serde_json::to_string(&spec).map_err(|_| Error::Invalid("ActionSpec encoding"))?;
     let spec_sha256 = sha256_hex(spec_json.as_bytes());
@@ -3078,7 +3101,24 @@ fn derive_root_action_spec(
         environment_builder_image: None,
         environment_builder_image_digest: None,
         environment_required: false,
+
+        environment_spec_id: None,
     })
+}
+
+/// Compare check identity without the ActionSpec-bound environment IDs. The
+/// environment is validated and bound separately; a model proposal cannot know
+/// the plan/spec hashes that Core freezes later.
+fn checks_match_ignoring_environment(left: &[SpecCheck], right: &[SpecCheck]) -> bool {
+    left.len() == right.len()
+        && left.iter().zip(right.iter()).all(|(left, right)| {
+            left.id == right.id
+                && left.kind == right.kind
+                && left.description == right.description
+                && left.command == right.command
+                && left.expect_exit == right.expect_exit
+                && left.timeout_secs == right.timeout_secs
+        })
 }
 
 fn complete_plan_checks(proposal: &LeadPlanProposal) -> Result<Vec<SpecCheck>, Error> {
@@ -3306,6 +3346,7 @@ fn unit_action_spec(
     grant: &StandingDelegationV2,
     unit: &crate::lead::LeadWorkUnit,
     base_commit: &str,
+    root_spec: &ActionSpec,
 ) -> Result<ActionSpec, Error> {
     let mut checks = unit.acceptance_criteria.clone();
     checks.extend(unit.negative_cases.clone());
@@ -3329,6 +3370,46 @@ fn unit_action_spec(
     } else {
         unit.description.clone()
     };
+    let environment_plan_id =
+        root_spec
+            .environment_plan_id
+            .clone()
+            .ok_or_else(|| Error::IntakeConflict {
+                code: "ENVIRONMENT_PLAN_REQUIRED",
+                message: "a per-unit ActionSpec cannot be created from an unbound root ActionSpec"
+                    .into(),
+            })?;
+    let environment_plan_sha256 =
+        root_spec
+            .environment_plan_sha256
+            .clone()
+            .ok_or_else(|| Error::IntakeConflict {
+                code: "ENVIRONMENT_PLAN_REQUIRED",
+                message: "the root ActionSpec has no environment plan hash".into(),
+            })?;
+    let environment_spec_sha256 =
+        root_spec
+            .environment_spec_sha256
+            .clone()
+            .ok_or_else(|| Error::IntakeConflict {
+                code: "ENVIRONMENT_PLAN_REQUIRED",
+                message: "the root ActionSpec has no frozen environment spec hash".into(),
+            })?;
+    if !root_spec.environment_required
+        || root_spec.environment_builder_image.is_none()
+        || root_spec.environment_builder_image_digest.is_none()
+    {
+        return Err(Error::IntakeConflict {
+            code: "ENVIRONMENT_PLAN_REQUIRED",
+            message:
+                "the root ActionSpec is not bound to a frozen environment and builder identity"
+                    .into(),
+        });
+    }
+    for check in &mut checks {
+        check.environment_plan_id = Some(environment_plan_id.clone());
+        check.environment_spec_sha256 = Some(environment_spec_sha256.clone());
+    }
     Ok(ActionSpec {
         schema_version: 1,
         project_id: config.project_id.clone(),
@@ -3342,12 +3423,14 @@ fn unit_action_spec(
         checks,
         dependency_plan: None,
         dependencies_required: false,
-        environment_plan_id: None,
-        environment_plan_sha256: None,
-        environment_spec_sha256: None,
-        environment_builder_image: None,
-        environment_builder_image_digest: None,
-        environment_required: false,
+        environment_plan_id: Some(environment_plan_id),
+        environment_plan_sha256: Some(environment_plan_sha256),
+        environment_spec_sha256: Some(environment_spec_sha256),
+        environment_builder_image: root_spec.environment_builder_image.clone(),
+        environment_builder_image_digest: root_spec.environment_builder_image_digest.clone(),
+        environment_required: true,
+
+        environment_spec_id: None,
     })
 }
 
@@ -3835,6 +3918,8 @@ async fn ensure_integration(
         environment_builder_image: None,
         environment_builder_image_digest: None,
         environment_required: false,
+
+        environment_spec_id: None,
     };
     let spec_json = serde_json::to_string(&spec)
         .map_err(|_| Error::Invalid("integration ActionSpec encoding"))?;
@@ -5477,6 +5562,8 @@ mod tests {
             environment_builder_image: None,
             environment_builder_image_digest: None,
             environment_required: false,
+
+            environment_spec_id: None,
         };
         let binding = ActionBinding {
             id: request.action_id.clone(),
@@ -6134,6 +6221,32 @@ mod tests {
             .find(|(unit, _, _)| unit == "root-b")
             .and_then(|(_, _, attempt)| attempt.clone())
             .unwrap();
+        for attempt in [&root_a_attempt, &root_b_attempt] {
+            let (unit_spec_json,): (String,) =
+                sqlx::query_as::query_as("SELECT spec_json FROM attempt_specs WHERE attempt_id=?1")
+                    .bind(attempt)
+                    .fetch_one(&db.pool)
+                    .await
+                    .unwrap();
+            let unit_spec: ActionSpec = serde_json::from_str(&unit_spec_json).unwrap();
+            assert!(unit_spec.environment_required);
+            assert_eq!(
+                unit_spec.environment_plan_id,
+                action.spec.environment_plan_id
+            );
+            assert_eq!(
+                unit_spec.environment_spec_sha256,
+                action.spec.environment_spec_sha256
+            );
+            assert_eq!(
+                unit_spec.environment_builder_image_digest,
+                action.spec.environment_builder_image_digest
+            );
+            assert!(unit_spec.checks.iter().all(|check| {
+                check.environment_plan_id == action.spec.environment_plan_id
+                    && check.environment_spec_sha256 == action.spec.environment_spec_sha256
+            }));
+        }
         for (attempt, commit) in [
             (&root_a_attempt, "a".repeat(40)),
             (&root_b_attempt, "b".repeat(40)),

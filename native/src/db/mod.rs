@@ -136,6 +136,8 @@ pub struct ActionSpec {
     #[serde(default)]
     pub environment_plan_sha256: Option<String>,
     #[serde(default)]
+    pub environment_spec_id: Option<String>,
+    #[serde(default)]
     pub environment_spec_sha256: Option<String>,
     #[serde(default)]
     pub environment_builder_image: Option<String>,
@@ -171,18 +173,13 @@ pub fn validate_dependency_requirement(spec: &ActionSpec) -> Result<(), Error> {
 /// authorized or executed without the exact frozen plan/spec, and every check
 /// must carry the same binding. There is no language-image fallback.
 pub fn validate_environment_requirement(spec: &ActionSpec) -> Result<(), Error> {
-    let bound = spec.environment_plan_id.is_some()
-        || spec.environment_plan_sha256.is_some()
-        || spec.environment_spec_sha256.is_some();
-    if !spec.environment_required && !bound {
-        return Ok(());
-    }
     let plan_id = spec
         .environment_plan_id
         .as_deref()
         .ok_or_else(|| Error::IntakeConflict {
             code: "ENVIRONMENT_PLAN_REQUIRED",
-            message: "the ActionSpec has no exact environment plan binding".into(),
+            message: "every executable ActionSpec requires an exact environment plan binding"
+                .into(),
         })?;
     let plan_sha =
         spec.environment_plan_sha256
@@ -191,6 +188,13 @@ pub fn validate_environment_requirement(spec: &ActionSpec) -> Result<(), Error> 
                 code: "ENVIRONMENT_PLAN_REQUIRED",
                 message: "the ActionSpec has no exact environment plan hash".into(),
             })?;
+    let spec_id = spec
+        .environment_spec_id
+        .as_deref()
+        .ok_or_else(|| Error::IntakeConflict {
+            code: "ENVIRONMENT_PLAN_REQUIRED",
+            message: "the ActionSpec has no frozen environment spec id".into(),
+        })?;
     let spec_sha =
         spec.environment_spec_sha256
             .as_deref()
@@ -198,7 +202,23 @@ pub fn validate_environment_requirement(spec: &ActionSpec) -> Result<(), Error> 
                 code: "ENVIRONMENT_PLAN_REQUIRED",
                 message: "the ActionSpec has no frozen environment spec hash".into(),
             })?;
-    if plan_id.len() > 64 || plan_sha.len() != 64 || spec_sha.len() != 64 {
+    if !spec.environment_required
+        || spec
+            .environment_builder_image
+            .as_deref()
+            .is_none_or(str::is_empty)
+        || spec
+            .environment_builder_image_digest
+            .as_deref()
+            .is_none_or(|digest| !digest.starts_with("sha256:"))
+    {
+        return Err(Error::IntakeConflict {
+            code: "ENVIRONMENT_PLAN_REQUIRED",
+            message: "the ActionSpec does not carry a frozen environment and digest-pinned builder identity"
+                .into(),
+        });
+    }
+    if plan_id.len() > 64 || spec_id.len() > 64 || plan_sha.len() != 64 || spec_sha.len() != 64 {
         return Err(Error::IntakeConflict {
             code: "ENVIRONMENT_PLAN_REQUIRED",
             message: "the ActionSpec environment binding is not a valid plan/spec identity".into(),
@@ -1106,6 +1126,10 @@ mod project_configs;
 pub use execution_receipts::{ExecutionCheckInput, ExecutionCheckReceiptRecord};
 mod environment;
 pub use environment::{CampaignEnvironmentBinding, StoredEnvironmentPlan, StoredEnvironmentSpec};
+#[cfg(any(test, feature = "test-support"))]
+pub use environment::{
+    TestEnvironmentBinding, apply_test_environment_binding, test_environment_binding,
+};
 mod provider_sessions;
 mod provider_settings;
 mod subscription_admissions;

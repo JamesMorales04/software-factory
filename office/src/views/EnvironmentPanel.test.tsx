@@ -315,6 +315,26 @@ describe("EnvironmentPanel", () => {
     expect(screen.getAllByText("Yes").length).toBeGreaterThanOrEqual(1);
   });
 
+  it("shows a typed missing-pin blocker and the constraints action", () => {
+    renderPanel(
+      state({
+        status: "BLOCKED",
+        plan: null,
+        blockers: [
+          {
+            code: "ENVIRONMENT_PIN_MISSING",
+            message:
+              "the environment plan requires a committed or explicit pinned nixpkgs input",
+          },
+        ],
+      } as Partial<EnvironmentStateView>),
+    );
+    expect(screen.getByText("ENVIRONMENT_PIN_MISSING")).toBeTruthy();
+    expect(
+      screen.getByText(/Add explicit environment constraints/),
+    ).toBeTruthy();
+  });
+
   it("shows builder unavailability and frozen spec evidence", () => {
     const frozen = state({
       status: "FROZEN",

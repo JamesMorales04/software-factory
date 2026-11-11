@@ -111,6 +111,13 @@ Factory configuration:
 | `FACTORY_ENVIRONMENT_BUILDER_PLATFORM` | Builder platform; defaults to `x86_64-linux`. |
 | `FACTORY_ENVIRONMENT_NIX_VERSION` | Pinned Nix version recorded in a frozen spec. |
 | `FACTORY_ENVIRONMENT_DEVENV_VERSION` | Pinned devenv version recorded in a frozen spec. |
+| `FACTORY_ENVIRONMENT_DEFAULT_NIXPKGS` | Deliberate override for the compiled default pin `github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d` (WP1-B builder `NIXPKGS_REV`). The constant is used when neither the request nor committed conventions pin one; it is infrastructure policy, never a language default. |
+
+Production intake requests may carry `environmentConstraints` with `nixpkgs`,
+`toolchains`, `packages`, `services`, `browsers` and `resources`. Committed
+conventions take precedence; a generated environment uses the builder's
+documented default pin only when the request is silent, and otherwise exposes
+`ENVIRONMENT_PIN_MISSING` in Core and Office.
 
 An absent image/digest is `ENVIRONMENT_BUILDER_UNAVAILABLE` at resolution and
 check selection; it does not select a Rust or generic image. A generated
@@ -144,19 +151,32 @@ Every displayed action calls an existing authenticated Core route:
 `POST /agentic/requests/{id}/environment/review`. No button invents state or
 acceptance.
 
+## 5.1 Test-only fixture boundary
+
+Production authorization has no fake-binding path. Library unit tests use a
+plain `#[cfg(test)]` fallback only: when a test ActionSpec has an exact
+environment identity but no `environment_specs` row, authorization inserts a
+test Campaign binding and the assignment loader may omit the execution receipt.
+That fallback is not compiled for `feature = "test-support"`, binaries or
+production builds; binary test harnesses seed real `environment_plans`,
+reviews, `environment_specs` and build receipts into SQLite through a
+`#[cfg(test)]` helper in the Core test module. The Core HTTP tests prove the
+strict production path: missing plan/spec returns `ENVIRONMENT_PLAN_REQUIRED`
+before any assignment.
+
 ## 6. Verification performed
 
 - `cargo fmt --all`
-- `cargo test -p factory-native --lib` — 872 passed, 4 ignored.
-- `cargo test -p factory-native --bin factory-core` — 60 passed.
+- `cargo test -p factory-native --lib` — 876 passed, 4 ignored.
+- `cargo test -p factory-native --bin factory-core` — 61 passed.
 - `cargo test -p factory-native --bin factory-core --features test-support` —
-  76 passed, including the model-driven Lead approval, operator-forgery,
-  Owner-approval-only, replay and stale-hash tests.
+  77 passed, including the model-driven Lead approval, operator-forgery,
+  Owner-approval-only, replay, stale-hash and multi-unit binding tests.
 - `cargo test -p factory-native --bin factory-worker` — 29 passed.
 - `cargo test -p factory-native --bin factory-verifier` — 9 passed.
 - `cargo clippy -p factory-native --lib --bins -- -D warnings` — clean.
 - Office: `npm ci`, `npm run typecheck`, `npm run lint`,
-  `npm test -- --run` — 47 files / 331 tests passed.
+  `npm test -- --run` — 47 files / 332 tests passed.
 - `podman compose config --quiet` — exit 0.
 - `docs/product/office-parity.json` parses as valid JSON and includes the
   environment states and endpoints. `docs/product/capabilities.yaml` and the

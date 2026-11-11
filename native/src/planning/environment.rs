@@ -32,6 +32,12 @@ pub const ENVIRONMENT_SCHEMA_VERSION: u32 = 1;
 pub const ENVIRONMENT_POLICY_REVISION: &str = "nix-devenv-environment-v1";
 pub const LICENSE_POLICY_REVISION: &str = "nix-devenv-license-v1";
 pub const DEFAULT_PLATFORM: &str = "x86_64-linux";
+/// Core default nixpkgs revision used only when neither the project nor the
+/// request supplies a pin. It is an exact NixOS/nixpkgs commit, not a branch or
+/// floating channel. Source: NixOS/nixpkgs commit 12e847a3f104db49190ac9564eb56acaf9e94783
+/// (observed 2026-11-11); WP1-B updates this together with its builder image.
+pub const DEFAULT_ENVIRONMENT_NIXPKGS: &str =
+    "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d";
 pub const MAX_CONVENTION_FILES: usize = 256;
 pub const MAX_CONVENTION_COMMANDS: usize = 64;
 pub const MAX_CONVENTION_CONFLICTS: usize = 32;
@@ -1077,6 +1083,48 @@ pub struct ExplicitEnvironmentConstraints {
     pub files: BTreeMap<String, String>,
 }
 
+/// Operator-supplied environment constraints carried by a production intake
+/// request. This is the supported production input path for a generated
+/// environment; absent fields are resolved from committed conventions or the
+/// builder's documented default pin.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct RequestEnvironmentConstraints {
+    #[serde(default)]
+    pub nixpkgs: Option<String>,
+    #[serde(default)]
+    pub toolchains: Vec<ToolchainRequirement>,
+    #[serde(default)]
+    pub packages: Vec<PackageRequirement>,
+    #[serde(default)]
+    pub services: Vec<ServiceRequirement>,
+    #[serde(default)]
+    pub browsers: Vec<BrowserRequirement>,
+    #[serde(default)]
+    pub resources: Option<ResourceLimits>,
+}
+
+impl RequestEnvironmentConstraints {
+    pub fn into_requirements(self) -> EnvironmentRequirements {
+        EnvironmentRequirements {
+            schema_version: ENVIRONMENT_SCHEMA_VERSION,
+            explicit_constraints: ExplicitEnvironmentConstraints {
+                toolchains: self.toolchains,
+                packages: self.packages,
+                services: self.services,
+                browsers: self.browsers,
+                nixpkgs: self.nixpkgs,
+                ..ExplicitEnvironmentConstraints::default()
+            },
+            proposal: None,
+            allow_unfree: false,
+            owner_overrides: Vec::new(),
+            resource_limits: self.resources.unwrap_or_default(),
+            network: NetworkPolicy::default(),
+        }
+    }
+}
+
 /// A model/Lead/Librarian proposal. Every field is untrusted and Core
 /// revalidates it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
@@ -1338,6 +1386,11 @@ pub struct EnvironmentBuilderDescriptor {
     pub platform: String,
     #[serde(default = "default_builder_policy_revision")]
     pub policy_revision: String,
+    /// Builder-pinned nixpkgs revision used when neither the request nor the
+    /// committed conventions provide an explicit pin. This is infrastructure
+    /// policy, never a language default.
+    #[serde(default)]
+    pub default_nixpkgs: String,
     pub status: EnvironmentBuilderStatus,
 }
 
@@ -1356,6 +1409,7 @@ impl Default for EnvironmentBuilderDescriptor {
             digest: String::new(),
             platform: default_platform_string(),
             policy_revision: default_builder_policy_revision(),
+            default_nixpkgs: DEFAULT_ENVIRONMENT_NIXPKGS.into(),
             status: EnvironmentBuilderStatus::Unavailable,
         }
     }
@@ -1396,6 +1450,9 @@ impl EnvironmentBuilderDescriptor {
             ));
         }
         bounded_text("builder policy revision", &self.policy_revision, 128)?;
+        if !self.default_nixpkgs.is_empty() {
+            validate_nixpkgs_pin(&self.default_nixpkgs)?;
+        }
         Ok(())
     }
 
@@ -1781,21 +1838,7 @@ impl EnvironmentPlan {
     }
 
     fn validate_nixpkgs(&self) -> Result<(), EnvironmentError> {
-        let value = self.nix.nixpkgs.trim();
-        if value.is_empty() {
-            return Err(pin_missing("the plan has no pinned nixpkgs input"));
-        }
-        let Some(rest) = value.strip_prefix("github:NixOS/nixpkgs/") else {
-            return Err(pin_missing(
-                "nixpkgs must be pinned as github:NixOS/nixpkgs/<exact-revision>",
-            ));
-        };
-        if !is_commit_id(rest) {
-            return Err(pin_missing(
-                "nixpkgs must pin an exact 40/64 character revision",
-            ));
-        }
-        Ok(())
+        validate_nixpkgs_pin(&self.nix.nixpkgs)
     }
 
     fn validate_inputs(&self) -> Result<(), EnvironmentError> {
@@ -2006,6 +2049,24 @@ fn validate_argv(argv: &[String]) -> Result<(), EnvironmentError> {
                 "command argv contains a secret-shaped value",
             ));
         }
+    }
+    Ok(())
+}
+
+fn validate_nixpkgs_pin(value: &str) -> Result<(), EnvironmentError> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(pin_missing("the plan has no pinned nixpkgs input"));
+    }
+    let Some(rest) = value.strip_prefix("github:NixOS/nixpkgs/") else {
+        return Err(pin_missing(
+            "nixpkgs must be pinned as github:NixOS/nixpkgs/<exact-revision>",
+        ));
+    };
+    if !is_commit_id(rest) {
+        return Err(pin_missing(
+            "nixpkgs must pin an exact 40/64 character revision",
+        ));
     }
     Ok(())
 }
@@ -3554,6 +3615,7 @@ mod tests {
             digest: format!("sha256:{}", "a".repeat(64)),
             platform: DEFAULT_PLATFORM.into(),
             policy_revision: ENVIRONMENT_POLICY_REVISION.into(),
+            default_nixpkgs: "github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into(),
             status: EnvironmentBuilderStatus::Ready,
         }
     }
@@ -3806,6 +3868,97 @@ mod tests {
         assert!(plan.toolchains.iter().any(|toolchain| toolchain.id == "go"));
         assert_eq!(plan.source, EnvironmentPlanSource::Generated);
         assert!(plan.files.iter().any(|file| file.path == "flake.nix"));
+    }
+
+    #[test]
+    fn request_environment_constraints_reject_unknown_and_wrong_typed_fields() {
+        assert!(serde_json::from_str::<RequestEnvironmentConstraints>(
+            r#"{"nixpkgs":"github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d","typo":1}"#
+        )
+        .is_err());
+        assert!(
+            serde_json::from_str::<RequestEnvironmentConstraints>(r#"{"nixpkgs":42}"#).is_err()
+        );
+    }
+
+    #[test]
+    fn generated_environment_uses_the_documented_default_nixpkgs_pin() {
+        let conventions = ProjectConventions {
+            schema_version: ENVIRONMENT_SCHEMA_VERSION,
+            project_id: "project-1".into(),
+            base_commit: "1".repeat(40),
+            conventions_sha256: String::new(),
+            scanned_at: now().to_rfc3339(),
+            files: Vec::new(),
+            commands: Vec::new(),
+            conflicts: Vec::new(),
+            truncated: false,
+            skipped_entries: 0,
+            provenance: "empty".into(),
+            existing_environment: ExistingEnvironmentKind::None,
+        };
+        let mut conventions = conventions;
+        conventions.conventions_sha256 = conventions.compute_sha256();
+        let mut requirements = requirements();
+        requirements.explicit_constraints.nixpkgs = Some(DEFAULT_ENVIRONMENT_NIXPKGS.into());
+        let plan = compile_environment_plan(CompileEnvironmentInput {
+            plan_id: "plan-default".into(),
+            project_id: "project-1",
+            request_id: "request-1",
+            action_id: "action-1",
+            campaign_id: None,
+            revision: 1,
+            risk_class: "R0",
+            conventions: &conventions,
+            requirements: &requirements,
+            builder: builder(),
+            now: now(),
+        })
+        .unwrap();
+        assert_eq!(plan.nix.nixpkgs, DEFAULT_ENVIRONMENT_NIXPKGS);
+        assert!(
+            plan.files
+                .iter()
+                .any(|file| file.path == "flake.nix" && file.content.is_some())
+        );
+        assert!(
+            EnvironmentBuilderDescriptor::default()
+                .default_nixpkgs
+                .starts_with("github:NixOS/nixpkgs/")
+        );
+    }
+
+    #[test]
+    fn request_constraints_populate_generated_requirements_and_default_pin() {
+        let constraints = RequestEnvironmentConstraints {
+            nixpkgs: Some("github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into()),
+            packages: vec![PackageRequirement {
+                name: "ripgrep".into(),
+                version: "14.1.1".into(),
+                license: "MIT".into(),
+                source: "nixpkgs".into(),
+                attr: "ripgrep".into(),
+                sha256: "c".repeat(64),
+                unfree: false,
+                attribution: "MIT ripgrep".into(),
+            }],
+            resources: Some(ResourceLimits {
+                cpu: 4,
+                ..ResourceLimits::default()
+            }),
+            ..RequestEnvironmentConstraints::default()
+        };
+        let requirements = constraints.into_requirements();
+        assert_eq!(
+            requirements.explicit_constraints.nixpkgs.as_deref(),
+            Some("github:NixOS/nixpkgs/2222222222222222222222222222222222222222")
+        );
+        assert_eq!(requirements.resource_limits.cpu, 4);
+        let descriptor = EnvironmentBuilderDescriptor {
+            default_nixpkgs: "github:NixOS/nixpkgs/3333333333333333333333333333333333333333".into(),
+            ..builder()
+        };
+        descriptor.validate().unwrap();
     }
 
     #[test]

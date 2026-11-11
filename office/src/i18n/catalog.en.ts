@@ -511,6 +511,8 @@ export const en = {
   "environment.baseCommit": "Base commit",
   "environment.conventionsHash": "Conventions SHA-256",
   "environment.blockers.title": "Environment blockers",
+  "environment.constraints.action":
+    "Add explicit environment constraints (nixpkgs, packages, services, browsers or resources) to a new request, or commit a pinned project environment.",
   "environment.yes": "Yes",
   "environment.no": "No",
   "environment.detection.title": "Detection evidence",

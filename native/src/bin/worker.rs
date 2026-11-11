@@ -6424,6 +6424,8 @@ mod tests {
                 environment_builder_image: None,
                 environment_builder_image_digest: None,
                 environment_required: false,
+
+                environment_spec_id: None,
             },
             action_spec_sha256: "c".repeat(64),
             repository: "/repo".into(),
