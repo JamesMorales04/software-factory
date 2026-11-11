@@ -99,7 +99,10 @@ enforces the documented boundary: it fails unless Podman reports rootless
 mode, accepts only `NETWORK=bridge` or `NETWORK=none`, and rejects
 `NIX_VOLUME`/`CACHE_VOLUME` values that contain `/` or start with `.` so a host
 path cannot become a bind mount. `CHECK_ONLY=1 ./run.sh` validates those checks
-without building or running.
+without building or running. `RESET=1` removes the named volumes only after
+confirming they exist; a real removal failure is fatal, while an absent volume
+is ignored, so a failed removal cannot silently reuse the cache while claiming
+a cold run. `test-boundaries.sh` exercises that distinction with a fake Podman.
 
 ## 4. Results
 
@@ -159,11 +162,13 @@ Factory workspace's SQLx/OpenSSL/SQLite/bubblewrap dependencies.
 | Cold `./run.sh all` with fresh `/nix` and `/cache` | 1,422,745 ms (23 m 42.7 s), exit 0 |
 | Warm `./run.sh all` with reused volumes | 18,214 ms (18.2 s), exit 0 |
 | Offline warm, `OFFLINE=1 NETWORK=none` | 18,944 ms (18.9 s), exit 0 |
-| Spike image size | 769,664,520 bytes / 770 MB (audited) |
-| Cached image rebuild | 4,410 ms (audited) |
+| Spike image size | 769,664,520 bytes (770 MB decimal / 735 MiB) |
+| Cached image rebuild | 4,050 ms (audited) |
 | Nix store after cold Node+Rust | `NOT_RECORDED` (an earlier unretained `du` showed ~4.8 GB) |
-| Nix store after adding `sbomnix`/tools | 5,289,178,057 bytes / 5.8 GB (audited) |
-| Cache volume after cold + SBOM | 51,981,029 bytes / 51 MB (audited) |
+| Nix store after adding `sbomnix`/tools — apparent | 5,289,178,057 bytes (`du -sb`) |
+| Nix store after adding `sbomnix`/tools — allocated | 6,132,748,288 bytes / 5.8G (`du -s --block-size=1` / `du -sh`) |
+| Cache volume after cold + SBOM — apparent | 51,981,029 bytes (`du -sb`) |
+| Cache volume after cold + SBOM — allocated | 53,039,104 bytes / 51M (`du -s --block-size=1` / `du -sh`) |
 | Node devShell closure | 1.4 GiB (audited) |
 | Rust devShell closure | 1.8 GiB (audited) |
 | `sbomnix` on the cold image, both devShells | 970,078 ms (16 m 10 s, audited) |
@@ -171,12 +176,13 @@ Factory workspace's SQLx/OpenSSL/SQLite/bubblewrap dependencies.
 Image, volume, closure and cached-rebuild figures are recorded in
 `evidence/measurements.log`. Cold/warm/offline timings are recorded in the
 corresponding `evidence/*.time` files. The pre-SBOM 4.8 GB store observation is
-explicitly `NOT_RECORDED`; the audited store measurement is 5.8 GB after the
-SBOM tools were added. The cold run starts with an already-pulled base image
-and a cached Containerfile build; its 23 m 43 s is dominated by
-`cache.nixos.org` downloads and Rust toolchain materialization. Warm and
-offline runs re-use the same `/nix` and `/cache` volumes and do not re-download
-the same store paths.
+explicitly `NOT_RECORDED`; the audited store measurement is 6,132,748,288
+allocated bytes (5.8G display) after the SBOM tools were added. The apparent
+size is 5,289,178,057 bytes; `du -sb` and `du -s --block-size=1`/`du -sh` are
+not equivalent. The cold run starts with an already-pulled base image and a
+cached Containerfile build; its 23 m 43 s is dominated by `cache.nixos.org`
+downloads and Rust toolchain materialization. Warm and offline runs re-use the
+same `/nix` and `/cache` volumes and do not re-download the same store paths.
 
 ### 4.4 Devenv evaluation
 

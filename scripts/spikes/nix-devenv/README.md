@@ -39,7 +39,8 @@ Run from this directory:
 # Build the spike image and run both trivial projects (warm if volumes exist).
 ./run.sh all
 
-# Remove the Nix store and cache volumes, then run cold.
+# Remove the Nix store and cache volumes, then run cold. A failed removal is
+# fatal; only an absent volume is ignored.
 RESET=1 ./run.sh all
 
 # One project at a time.
@@ -57,7 +58,11 @@ podman volume inspect wp0-spike-cache \
 # Validate the wrapper's boundary checks without building or running.
 CHECK_ONLY=1 ./run.sh
 
-# Record image, volume, closure and cached-rebuild measurements.
+# Exercise the volume/network boundary helpers with a fake Podman (no daemon).
+./test-boundaries.sh
+
+# Record image, volume, closure and cached-rebuild measurements. Apparent and
+# allocated sizes are reported separately.
 ./measure.sh
 ```
 
@@ -77,7 +82,9 @@ must be named Podman volumes; network overrides must be `bridge` or `none`.
 | `projects/rust` | Rust 1.90 trivial library test with a crates.io dependency |
 | `run-spike.sh` | In-container entrypoint (`versions`, `node`, `rust`, `sbom`, `all`) |
 | `run.sh` | Host wrapper using rootless Podman and named volumes, with boundary checks |
-| `measure.sh` | Quick image/volume/closure/cached-rebuild measurement log |
+| `lib.sh` | Shared rootless, volume-name and volume-removal boundary helpers |
+| `test-boundaries.sh` | Fake-Podman tests for the boundary helpers (no daemon) |
+| `measure.sh` | Quick image/volume/closure/cached-rebuild measurement log; apparent and allocated sizes are separate |
 | `evidence` | Cold/warm/offline logs, measurements, SBOMs, devenv info and summaries |
 
 ## Pins

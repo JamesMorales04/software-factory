@@ -3,34 +3,13 @@
 #
 # Only rootless Podman is required on the host. The image contains Nix, Node,
 # Cargo and Playwright; `/nix` and `/cache` are Podman named volumes. The
-# wrapper rejects host networking and host-path bind mounts, and verifies that
-# Podman is rootless before doing any work.
+# wrapper rejects host networking and host-path bind mounts, verifies that
+# Podman is rootless, and fails if RESET=1 cannot remove an existing volume.
 set -euo pipefail
 
 cd "$(dirname "$0")"
-
-die() {
-  printf 'run.sh: %s\n' "$*" >&2
-  exit 1
-}
-
-require_rootless_podman() {
-  local rootless
-  rootless="$(podman info --format '{{.Host.Security.Rootless}}' 2>/dev/null)" \
-    || die "podman info failed; rootless Podman is required"
-  [ "$rootless" = "true" ] \
-    || die "rootless Podman is required (podman reports Rootless=$rootless)"
-}
-
-validate_volume_name() {
-  local variable="$1"
-  local value="$2"
-  case "$value" in
-    "") die "$variable must name a Podman volume" ;;
-    */*|.*) die "$variable must be a named Podman volume, not a host path: $value" ;;
-    [!A-Za-z0-9]*|*[!A-Za-z0-9_.-]*) die "$variable is not a valid Podman volume name: $value" ;;
-  esac
-}
+# shellcheck source=scripts/spikes/nix-devenv/lib.sh
+. ./lib.sh
 
 IMAGE="${IMAGE:-localhost/wp0-nix-devenv-spike:2026-11-10}"
 NIX_VOLUME="${NIX_VOLUME:-wp0-spike-nix}"
@@ -64,7 +43,8 @@ if [ "${CHECK_ONLY:-0}" = "1" ]; then
 fi
 
 if [ "$RESET" = "1" ]; then
-  podman volume rm -f "$NIX_VOLUME" "$CACHE_VOLUME" >/dev/null 2>&1 || true
+  remove_volume_if_present "$NIX_VOLUME"
+  remove_volume_if_present "$CACHE_VOLUME"
 fi
 
 podman build -t "$IMAGE" .
