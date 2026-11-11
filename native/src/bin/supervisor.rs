@@ -620,7 +620,7 @@ async fn run_tool<B: factory_native::execution::VolumeBackend + 'static>(
         return StatusCode::FORBIDDEN.into_response();
     }
     let allowed_paths = grant.allowed_paths.clone();
-    if !app.allowed_images.contains(&input.image) {
+    if !image_is_allowlisted(&app.allowed_images, &input.image) {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({"error":"image is not allowlisted"})),
@@ -1007,7 +1007,7 @@ fn validate_execute<B: factory_native::execution::VolumeBackend>(
     app: &App<B>,
     input: &ExecuteWorkspace,
 ) -> Result<(), String> {
-    if !app.allowed_images.contains(&input.image) {
+    if !image_is_allowlisted(&app.allowed_images, &input.image) {
         return Err("image is not in the configured exact allowlist".into());
     }
     if input.argv.is_empty() || input.argv[0].is_empty() {
@@ -1104,6 +1104,19 @@ fn ensure_distinct_from_other_roles(token: &str) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn image_is_allowlisted(allowed: &BTreeSet<String>, image: &str) -> bool {
+    if allowed.contains(image) {
+        return true;
+    }
+    let Some((base, digest)) = image.rsplit_once('@') else {
+        return false;
+    };
+    allowed.contains(base)
+        && digest.len() == 71
+        && digest.starts_with("sha256:")
+        && digest[7..].bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn parse_images(raw: &str) -> Result<BTreeSet<String>, String> {
@@ -1880,6 +1893,22 @@ mod tests {
             .await,
             StatusCode::FORBIDDEN
         );
+    }
+
+    #[test]
+    fn image_allowlist_accepts_exact_digest_pins_for_an_allowed_base() {
+        let allowed = BTreeSet::from(["builder:1".to_owned()]);
+        assert!(image_is_allowlisted(&allowed, "builder:1"));
+        assert!(image_is_allowlisted(
+            &allowed,
+            &format!("builder:1@sha256:{}", "a".repeat(64))
+        ));
+        assert!(!image_is_allowlisted(&allowed, "builder:2"));
+        assert!(!image_is_allowlisted(
+            &allowed,
+            &format!("other:1@sha256:{}", "a".repeat(64))
+        ));
+        assert!(!image_is_allowlisted(&allowed, "builder:1@sha256:short"));
     }
 
     #[tokio::test]

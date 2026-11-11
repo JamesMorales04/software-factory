@@ -635,6 +635,23 @@ fn valid_environment_image(value: &str) -> bool {
         && !value.chars().any(char::is_control)
 }
 
+fn parse_environment_builder_images(raw: String) -> Result<BTreeSet<String>, String> {
+    let mut images = BTreeSet::new();
+    for entry in raw.split(',') {
+        let entry = entry.trim();
+        if entry.is_empty() || !valid_environment_image(entry) {
+            return Err(
+                "FACTORY_RUNTIME_ENVIRONMENT_BUILDER_IMAGES contains an invalid reference".into(),
+            );
+        }
+        images.insert(entry.to_owned());
+    }
+    if images.is_empty() {
+        return Err("FACTORY_RUNTIME_ENVIRONMENT_BUILDER_IMAGES must not be empty".into());
+    }
+    Ok(images)
+}
+
 fn load_environment_builder_runtime() -> EnvironmentBuilderRuntime {
     let image = env::var("FACTORY_RUNTIME_ENVIRONMENT_BUILDER_IMAGE").unwrap_or_default();
     let image = image.trim().to_owned();
@@ -646,6 +663,18 @@ fn load_environment_builder_runtime() -> EnvironmentBuilderRuntime {
     if !valid_environment_image(&image) {
         return EnvironmentBuilderRuntime::unavailable(
             "FACTORY_RUNTIME_ENVIRONMENT_BUILDER_IMAGE is invalid",
+        );
+    }
+    let allowlist = match env::var("FACTORY_RUNTIME_ENVIRONMENT_BUILDER_IMAGES") {
+        Ok(value) if !value.trim().is_empty() => match parse_environment_builder_images(value) {
+            Ok(images) => images,
+            Err(reason) => return EnvironmentBuilderRuntime::unavailable(reason),
+        },
+        _ => BTreeSet::from([image.clone()]),
+    };
+    if !allowlist.contains(&image) {
+        return EnvironmentBuilderRuntime::unavailable(
+            "the configured environment-builder image is not in its dedicated allowlist",
         );
     }
     let bundle = env::var("FACTORY_RUNTIME_ENVIRONMENT_BUILDER_BUNDLE").unwrap_or_default();
@@ -1046,7 +1075,15 @@ impl App {
     }
 
     async fn prepull_images(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let environment_image = self.environment_builder().image;
         for image in self.images.iter() {
+            // The environment builder is imported from its bundle by
+            // `prepare_environment_builder`; a missing bundle must disable only
+            // environment operations, never make the whole broker try to pull
+            // a mutable tag or fail startup.
+            if !environment_image.is_empty() && image == &environment_image {
+                continue;
+            }
             let exists = self
                 .podman_output(["image", "exists", image.as_str()])
                 .await?;
@@ -4957,6 +4994,18 @@ mod tests {
     }
 
     #[test]
+    fn environment_builder_allowlist_is_strict() {
+        let allowlist = parse_environment_builder_images(
+            "localhost/software-factory-environment-builder:dev".into(),
+        )
+        .unwrap();
+        assert!(allowlist.contains("localhost/software-factory-environment-builder:dev"));
+        assert!(parse_environment_builder_images("".into()).is_err());
+        assert!(parse_environment_builder_images("--privileged".into()).is_err());
+        assert!(parse_environment_builder_images("a b".into()).is_err());
+    }
+
+    #[test]
     fn import_images_are_strict() {
         assert!(parse_import_images("factory-provider:dev=/bundles/provider.tar".into()).is_ok());
         assert!(parse_import_images("factory-provider:dev=relative.tar".into()).is_err());
@@ -7280,6 +7329,33 @@ exit 0
             log.contains("rm --force --time=0 factory-env-timeout"),
             "{log}"
         );
+    }
+
+    #[tokio::test]
+    async fn generic_check_image_accepts_only_an_exact_inspected_digest() {
+        let image_id = format!("sha256:{}", "9".repeat(64));
+        let digest = format!("sha256:{}", "8".repeat(64));
+        let script = format!(
+            r#"#!/bin/sh
+if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then
+  printf '%s\t%s\t%s\n' "{}" "{}" ""
+  exit 0
+fi
+exit 1
+"#,
+            image_id, digest
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app(podman);
+        let resolved = resolve_run_image(&app, &format!("test/image:1@{digest}"))
+            .await
+            .unwrap();
+        assert_eq!(resolved, image_id);
+        let rejected =
+            resolve_run_image(&app, &format!("test/image:1@sha256:{}", "7".repeat(64))).await;
+        assert!(rejected.is_err());
+        let unlisted = resolve_run_image(&app, &format!("other/image:1@{digest}")).await;
+        assert!(unlisted.is_err());
     }
 
     #[tokio::test]

@@ -259,6 +259,7 @@ services:
       # The builder image is imported from the bundle, never pulled by tag.
       FACTORY_RUNTIME_IMAGES: docker.io/library/rust:1.90.0-bookworm
       FACTORY_RUNTIME_ENVIRONMENT_BUILDER_IMAGE: localhost/software-factory-environment-builder:dev
+      FACTORY_RUNTIME_ENVIRONMENT_BUILDER_IMAGES: localhost/software-factory-environment-builder:dev
       FACTORY_RUNTIME_ENVIRONMENT_BUILDER_BUNDLE: /bundles/environment-builder-rootfs.tar
       FACTORY_RUNTIME_ENVIRONMENT_BUILDER_DIGEST_FILE: /bundles/environment-builder.digest
       FACTORY_RUNTIME_ENVIRONMENT_BUILDER_PLATFORM: x86_64-linux
@@ -300,7 +301,7 @@ services:
     command:
       - /bin/sh
       - -c
-      - until [ -f /config/.ready ]; do sleep 1; done; i=0; until [ -f /bundles/environment-builder.digest ] || [ "$i" -ge 600 ]; do i=$((i+1)); sleep 1; done; exec /usr/local/bin/factory-core
+      - until [ -f /config/.ready ]; do sleep 1; done; i=0; until [ -f /bundles/environment-builder.digest ] || [ "$$i" -ge 900 ]; do i=$$((i+1)); sleep 1; done; exec /usr/local/bin/factory-core
     <<: *restricted
     read_only: true
     tmpfs:
@@ -339,7 +340,7 @@ services:
       FACTORY_ENVIRONMENT_BUILDER_PLATFORM: x86_64-linux
       FACTORY_ENVIRONMENT_NIX_VERSION: 2.28.3
       FACTORY_ENVIRONMENT_DEVENV_VERSION: 1.11.2
-      FACTORY_ENVIRONMENT_FETCH_ALLOWLIST: https://cache.nixos.org,https://github.com,https://codeload.github.com
+      FACTORY_ENVIRONMENT_FETCH_ALLOWLIST: https://cache.nixos.org,https://github.com,https://codeload.github.com,https://raw.githubusercontent.com,https://api.github.com
     networks:
       factory-control:
         aliases:
@@ -383,7 +384,7 @@ services:
       FACTORY_SUPERVISOR_WORKSPACE_ROOT: /state/workspaces
       FACTORY_SUPERVISOR_STATE_ROOT: /state
       FACTORY_SUPERVISOR_PROJECT_ROOTS: /projects
-      FACTORY_SUPERVISOR_IMAGES: docker.io/library/rust:1.90.0-bookworm
+      FACTORY_SUPERVISOR_IMAGES: docker.io/library/rust:1.90.0-bookworm,localhost/software-factory-environment-builder:dev
       FACTORY_RUNTIME_BROKER_URL: http://runtime:8770
       FACTORY_RUNTIME_BROKER_TOKEN_FILE: /config/runtime-broker-supervisor.token
     networks:

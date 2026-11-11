@@ -1,9 +1,10 @@
 # Environment runtime broker integration — WP1-C
 
 **Status:** Implemented WP1-C broker/build slice — 2026-11-11. This is not
-acceptance evidence and does not claim a real Nix/devenv build in the installed
-Compose stack. An isolated Compose observation (`wp1c-e2e`) verified the bundle
-digest, nested import, broker `READY` and Core `READY`; see the
+independent acceptance. An isolated Compose project verified the bundle digest,
+nested import, broker `READY`, Core `READY`, a real `resolve`/`build` through the
+broker with an exact plan/spec, an `EnvironmentBuildReceipt` with SBOM binding,
+and a warm repeat with the same output hash; see the
 [evidence record](../evidence/environment-runtime-broker-2026-11-11/README.md).
 `TRUSTED_LOCAL`; a container is not isolation certification.
 
@@ -48,9 +49,11 @@ fallback to the host wrapper, host Podman or a language image.
 - The broker reads the exact content digest from
   `FACTORY_RUNTIME_ENVIRONMENT_BUILDER_DIGEST_FILE` (Compose:
   `/bundles/environment-builder.digest`) or the explicit `_DIGEST` variable.
-- The bundle service computes `sha256:<rootfs-tar>` and writes it next to
-  `environment-builder-rootfs.tar`; the broker recomputes the bundle SHA-256
-  before `podman import` and labels the imported image with that exact digest.
+- The trusted one-shot bundle service computes `sha256:<rootfs-tar>` and writes
+  it next to `environment-builder-rootfs.tar` after the tar is complete. The
+  broker imports the tar, labels the imported image with that exact digest,
+  inspects the imported image ID and refuses any later identity change. It never
+  trusts or pulls the mutable tag.
 - Every request must match the configured image and digest. The broker inspects
   the imported image ID and refuses a changed identity. Generic execution by
   `builder-image@digest` is mapped to the verified imported image ID; an
@@ -136,8 +139,9 @@ fetch/resolve.
 - `cargo test -p factory-native --bin factory-core` — 65 passed.
 - `cargo test -p factory-native --bin factory-worker` — 29 passed.
 - `cargo test -p factory-native --bin factory-verifier` — 9 passed.
-- `cargo test -p factory-native --bin factory-runtime-broker` — 53 passed,
-  including owner separation, exact bundle digest/allowlist, tampered bundle,
+- `cargo test -p factory-native --bin factory-runtime-broker` — 55 passed,
+  including owner separation, the dedicated image allowlist and exact bundle
+  digest, tampered bundle,
   symlink/oversize workspace rejection, cache eviction, resource/network policy,
   narrow container args, fake builder success, resolve, timeout/cleanup,
   dropped-request cleanup and concurrent owner isolation.
@@ -150,13 +154,17 @@ fetch/resolve.
   `environmentBuilder.status=READY`, imported builder image ID
   `sha256:152191…`, Core health `READY` with the same image/digest and
   `defaultNixpkgs=github:NixOS/nixpkgs/ac62194c…`. The live
-  `software-factory` project was not modified. See the
-  [evidence record](../evidence/environment-runtime-broker-2026-11-11/README.md).
+  `software-factory` project was not modified.
+- Follow-up isolated Compose run (`podman compose -p sfwp1c`): real
+  `/v1/environments/resolve` and `/v1/environments/build` with plan
+  `38f126a7…`, spec `78f95db0…`, bundle digest `sha256:37957bf2…`, SBOM
+  `537f0865…`, output `80c3d40c…`, complete sandbox attestation and
+  `cleanupConfirmed=true`. The warm repeat produced the same output/SBOM hashes.
+  See the [evidence record](../evidence/environment-runtime-broker-2026-11-11/README.md).
 
-**NOT_TESTED / remaining gap:** a real end-to-end `resolve`/`build` through the
-broker (not the host wrapper) with a real project plan/spec producing an
-`EnvironmentBuildReceipt` with SBOM hash and warm repeat. Frozen Worker/Verifier
-check execution is **not wired** to a typed builder-check route: the existing
-generic `supervisor_run` path remains, so a frozen check still does not realize
-the Nix/devenv environment through `builder check`. That is the WP1-D gap; no
-check-execution claim is made here.
+**NOT_TESTED / remaining gap:** full Core intake -> Lead review -> freeze ->
+builder as a live model-driven Campaign, and frozen Worker/Verifier check
+execution through a typed builder-check route. The existing generic
+`supervisor_run` path verifies an `image@digest` reference against the inspected
+image identity, but it does not realize the frozen Nix/devenv environment through
+`builder check`. That is the WP1-D gap; no check-execution claim is made here.
