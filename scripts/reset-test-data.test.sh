@@ -376,12 +376,14 @@ assert_checksums "$TMP/wal-evidence"
 [[ -f "$TMP/wal-evidence/factory.sqlite-wal" ]] ||
   fail "pre-restore backup did not include the original WAL"
 
-# A failure after replacing main must roll back the original DB and WAL.
+# A failure after replacing main must roll back the original DB, WAL and SHM.
 ROLLBACK_TARGET="$TMP/rollback-target.sqlite"
 cp "$MASTER" "$ROLLBACK_TARGET"
 printf 'rollback wal\n' >"$ROLLBACK_TARGET-wal"
+printf 'rollback shm\n' >"$ROLLBACK_TARGET-shm"
 ROLLBACK_DB_BEFORE="$(sha256sum "$ROLLBACK_TARGET" | awk '{print $1}')"
 ROLLBACK_WAL_BEFORE="$(sha256sum "$ROLLBACK_TARGET-wal" | awk '{print $1}')"
+ROLLBACK_SHM_BEFORE="$(sha256sum "$ROLLBACK_TARGET-shm" | awk '{print $1}')"
 assert_helper_failure "original database restored" \
   env FACTORY_TEST_DATA_RESET=1 \
   FACTORY_TEST_DATA_RESET_FAIL_RESTORE_AFTER_REPLACE=1 \
@@ -394,7 +396,11 @@ assert_helper_failure "original database restored" \
   fail "restore rollback did not restore the original database bytes"
 [[ "$(sha256sum "$ROLLBACK_TARGET-wal" | awk '{print $1}')" == "$ROLLBACK_WAL_BEFORE" ]] ||
   fail "restore rollback did not restore the original WAL bytes"
+[[ "$(sha256sum "$ROLLBACK_TARGET-shm" | awk '{print $1}')" == "$ROLLBACK_SHM_BEFORE" ]] ||
+  fail "restore rollback did not restore the original SHM bytes"
 assert_checksums "$TMP/rollback-evidence"
+[[ -f "$TMP/rollback-evidence/factory.sqlite-shm" ]] ||
+  fail "pre-restore rollback snapshot did not include the original SHM"
 
 # --- post-commit integrity failure auto-restores ---------------------------
 INTEGRITY="$TMP/integrity.sqlite"

@@ -72,6 +72,7 @@ writes:
 |---|---|
 | `factory.sqlite` | Consistent main database copy |
 | `factory.sqlite-wal` | WAL copy when present at backup time |
+| `factory.sqlite-shm` | SHM copy in the pre-restore rollback snapshot when present |
 | `SHA256SUMS` | `sha256sum -c` compatible checksums |
 | `manifest.json` | Project, source path, file hashes and before counts |
 | `reset-report.json` | Dry-run/reset result, before/after counts and table classes |
@@ -153,11 +154,13 @@ current database into a new empty evidence directory, removes stale WAL/SHM
 files, restores the main database and any WAL from the backup, then runs
 integrity and foreign-key checks. All destination temp paths are preflighted
 before any sidecar deletion or file replacement, then every file is staged
-before the swap. A failure after mutation rolls back from the verified
-pre-restore backup; if rollback itself fails, the evidence location is
-reported. Restore files are written through a `*.restore-tmp` path created
-with exclusive/no-follow semantics; a pre-existing regular temp file is
-removed, while a planted temp symlink is refused without touching its target:
+before the swap. A failure after mutation rolls back the verified pre-restore
+snapshot, including the original SHM sidecar when present, and verifies the
+restored DB/WAL/SHM byte-for-byte without opening SQLite; if rollback itself
+fails, the evidence location is reported. Restore files are written through a
+`*.restore-tmp` path created with exclusive/no-follow semantics; a pre-existing
+regular temp file is removed, while a planted temp symlink is refused without
+touching its target:
 
 ```sh
 FACTORY_TEST_DATA_RESET=1 scripts/reset-test-data.sh \
@@ -190,9 +193,9 @@ symlinked database/sidecar refusal, dry-run rollback, backup checksums, reset
 cutover, trigger restoration, restored integrity, corrupt-backup refusal,
 duplicate-checksum and path-traversal refusal, symlinked backup refusal,
 restore-temp symlink refusal, WAL-temp preflight without changing the original
-database/sidecars, post-replacement rollback to byte-identical original files,
-automatic restore after an injected post-commit integrity failure, and
-automatic restore after a simulated Core health failure. The health-failure
+database/sidecars, post-replacement rollback to byte-identical original
+DB/WAL/SHM files, automatic restore after an injected post-commit integrity
+failure, and automatic restore after a simulated Core health failure. The health-failure
 case uses a fake `podman` shim, a temporary database/volume directory and
 reduced health-probe attempts; it never starts Compose, reads `/data`, or calls
 a paid provider.

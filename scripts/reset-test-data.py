@@ -525,11 +525,13 @@ def backup_database(
     project: str,
     mode: str,
     before: dict[str, int],
+    include_shm: bool = False,
 ) -> Path:
     validate_database_inputs(database, required=True)
     ensure_empty_directory(evidence)
+    suffixes = ("", "-wal", "-shm") if include_shm else ("", "-wal")
     files: dict[str, dict[str, object]] = {}
-    for suffix in ("", "-wal"):
+    for suffix in suffixes:
         source = Path(str(database) + suffix)
         if not source.exists():
             continue
@@ -710,7 +712,9 @@ def restore_database(
     ensure_empty_directory(evidence)
     had_database = database.exists()
     if had_database:
-        backup_database(database, evidence, project, "pre-restore", {})
+        backup_database(
+            database, evidence, project, "pre-restore", {}, include_shm=True
+        )
         # The rollback source must be verified before any destination mutation.
         verify_backup(evidence)
 
