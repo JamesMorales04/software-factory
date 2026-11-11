@@ -939,6 +939,9 @@ def validate_workspace_environment_overrides(root: Path) -> None:
 def validate_check(check: Any) -> dict[str, Any]:
     check = _require_mapping(check, "check")
     check_id = _require_str(check.get("checkId"), "check.checkId", 200)
+    description = _require_str(check.get("description", ""), f"check {check_id} description", 500)
+    if not description.strip():
+        fail("ENVIRONMENT_SPEC_INVALID", f"check {check_id} has no description")
     argv = _require_list(check.get("argv"), "check.argv")
     if not argv or len(argv) > MAX_ARGV:
         fail("ENVIRONMENT_PLAN_INVALID", f"check {check_id} has an invalid argv vector")
@@ -959,6 +962,7 @@ def validate_check(check: Any) -> dict[str, Any]:
         fail("ENVIRONMENT_PLAN_INVALID", f"check {check_id} has an invalid expected exit")
     return {
         "checkId": check_id,
+        "description": description,
         "argv": argv,
         "cwd": cwd,
         "timeoutSecs": timeout,

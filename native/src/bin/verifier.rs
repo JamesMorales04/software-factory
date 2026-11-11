@@ -456,6 +456,7 @@ fn select_verifier_check(
     }
     Ok(EnvironmentCheckSpec {
         check_id: target.check_id,
+        description: target.description,
         argv: target.argv,
         cwd: target.cwd,
         timeout_secs: target.timeout_secs,
@@ -525,6 +526,7 @@ async fn run_sandboxed_checks(
                 receipt: execution.receipt.clone(),
                 check: check_spec,
                 workspace_volume: volume.clone(),
+                check_token: Uuid::new_v4().to_string(),
             };
             let output = backend.environment_check(&request).await.map_err(|error| {
                 VerificationError::Infrastructure(format!(
@@ -534,16 +536,19 @@ async fn run_sandboxed_checks(
             })?;
             let code = output.exit_code.unwrap_or(-1);
             if code != check.expect_exit {
-                return Err(VerificationError::Check(format!(
-                    "check {} exited {code}, expected {}: {}",
-                    check.id,
-                    check.expect_exit,
+                let detail = if output.diagnostic.is_empty() {
                     check_diagnostic(
                         output.stdout.as_bytes(),
                         output.stdout_truncated,
                         output.stderr.as_bytes(),
-                        output.stderr_truncated
+                        output.stderr_truncated,
                     )
+                } else {
+                    output.diagnostic
+                };
+                return Err(VerificationError::Check(format!(
+                    "check {} ({}) exited {code}, expected {}: {detail}",
+                    check.id, check.description, check.expect_exit
                 )));
             }
         }
@@ -1885,11 +1890,13 @@ mod tests {
             axum::http::StatusCode::OK,
             serde_json::json!({
                 "checkId": "test",
+                "description": "frozen environment test",
                 "specSha256": binding.spec.spec_sha256,
                 "status": "PASSED",
                 "exitCode": 0,
                 "expectExit": 0,
                 "passed": true,
+                "diagnostic": "frozen environment test (exit 0, expected 0)",
                 "logs": "ok\n",
                 "logsTruncated": false,
                 "stdout": "ok\n",
@@ -1920,6 +1927,7 @@ mod tests {
         assert_eq!(requests.len(), 1);
         let request = &requests[0];
         assert_eq!(request["check"]["checkId"], "test");
+        assert_eq!(request["check"]["description"], "frozen environment test");
         assert_eq!(
             request["check"]["argv"],
             serde_json::json!(["cargo", "test"])

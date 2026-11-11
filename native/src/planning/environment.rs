@@ -3836,6 +3836,7 @@ impl EnvironmentBuildReceipt {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct CheckExecutionTarget {
     pub check_id: String,
+    pub description: String,
     pub environment_plan_id: String,
     pub environment_spec_sha256: String,
     pub argv: Vec<String>,
@@ -3910,6 +3911,7 @@ pub fn select_check_execution(
     }
     Ok(CheckExecutionTarget {
         check_id: check.id.clone(),
+        description: check.description.clone(),
         environment_plan_id: plan.plan_id.clone(),
         environment_spec_sha256: spec.spec_sha256.clone(),
         argv: check.command.clone(),

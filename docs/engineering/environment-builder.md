@@ -216,10 +216,16 @@ different license inventory cannot silently run. A check is refused without a
 plan/spec/receipt binding; there is no implicit Rust or generic verifier image.
 Every check prepares a fresh `check-workspace` from the broker-supplied
 candidate workspace and never reuses the build-phase `workspace` directory in
-the per-spec cache; only the Nix store and other cache state persist. Check
+the per-spec cache; only the Nix store and other cache state persist. The
+caller (Supervisor or Verifier) must materialize the exact candidate into that
+volume before the check; an empty or stale volume is otherwise indistinguishable
+from a valid project and surfaces only as the command's own failure. Check
 stdout/stderr are streamed concurrently into fixed-size buffers (256 KiB per
 stream) while the rest is drained and discarded, so noisy output cannot grow
-process memory without bound; truncation is recorded in the typed result.
+process memory without bound; truncation is recorded in the typed result. The
+typed result also carries the frozen `SpecCheck` description and one redacted,
+bounded stderr line, so a check that exits non-zero without output is still
+diagnosable.
 
 The sandbox attestation compares the observed cgroup memory/PID limits and
 `cpu.max` quota/period directly against the frozen plan: there is no multiplier

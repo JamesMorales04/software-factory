@@ -513,6 +513,9 @@ impl EnvironmentBrokerRequest {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct EnvironmentCheckSpec {
     pub check_id: String,
+    /// The human `SpecCheck` description. It is carried end to end so a failed
+    /// frozen check is diagnosable even when the command writes nothing.
+    pub description: String,
     pub argv: Vec<String>,
     pub cwd: String,
     pub timeout_secs: u32,
@@ -522,6 +525,8 @@ pub struct EnvironmentCheckSpec {
 pub const MAX_ENVIRONMENT_CHECK_ARGV_ITEMS: usize = 64;
 pub const MAX_ENVIRONMENT_CHECK_ARG_BYTES: usize = 2_000;
 pub const MAX_ENVIRONMENT_CHECK_ARGV_BYTES: usize = 64 * 1024;
+pub const MAX_ENVIRONMENT_CHECK_DESCRIPTION_CHARS: usize = 500;
+pub const MAX_ENVIRONMENT_CHECK_DIAGNOSTIC_CHARS: usize = 1_400;
 pub const MIN_ENVIRONMENT_CHECK_TIMEOUT_SECS: u32 = 30;
 pub const MAX_ENVIRONMENT_CHECK_TIMEOUT_SECS: u32 = 7_200;
 
@@ -534,6 +539,12 @@ impl EnvironmentCheckSpec {
             || self.check_id.chars().any(char::is_control)
         {
             return Err("environment check id is invalid".into());
+        }
+        if self.description.trim().is_empty()
+            || self.description.chars().count() > MAX_ENVIRONMENT_CHECK_DESCRIPTION_CHARS
+            || self.description.chars().any(char::is_control)
+        {
+            return Err("environment check description is required and bounded".into());
         }
         if self.argv.is_empty() || self.argv.len() > MAX_ENVIRONMENT_CHECK_ARGV_ITEMS {
             return Err("environment check argv is outside its bound".into());
@@ -577,6 +588,10 @@ pub struct EnvironmentCheckRequest {
     pub receipt: EnvironmentBuildReceipt,
     pub check: EnvironmentCheckSpec,
     pub workspace_volume: String,
+    /// Unique per-check cancellation token created by the Supervisor. It lets
+    /// a revocation cancel a request that has not reached broker registration
+    /// yet, without guessing a container name.
+    pub check_token: String,
 }
 
 impl EnvironmentCheckRequest {
@@ -598,8 +613,18 @@ impl EnvironmentCheckRequest {
         if !is_valid_volume_name(&self.workspace_volume) {
             return Err("environment check workspace volume is invalid".into());
         }
+        if !is_valid_check_token(&self.check_token) {
+            return Err("environment check token is invalid".into());
+        }
         self.check.validate_shape()
     }
+}
+
+pub fn is_valid_check_token(value: &str) -> bool {
+    (16..=128).contains(&value.len())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
 }
 
 /// The Supervisor-owned proxy request. It carries no workspace volume: the
@@ -627,10 +652,13 @@ pub enum EnvironmentCheckStatus {
 pub struct EnvironmentCheckResult {
     pub check_id: String,
     pub spec_sha256: String,
+    pub description: String,
     pub status: EnvironmentCheckStatus,
     pub exit_code: Option<i32>,
     pub expect_exit: i32,
     pub passed: bool,
+    #[serde(default)]
+    pub diagnostic: String,
     #[serde(default)]
     pub logs: String,
     #[serde(default)]
@@ -651,6 +679,7 @@ impl EnvironmentCheckResult {
     pub fn validate_for(&self, request: &EnvironmentCheckRequest) -> Result<(), String> {
         self.validate_for_check(
             &request.check.check_id,
+            &request.check.description,
             &request.spec.spec_sha256,
             request.check.expect_exit,
         )
@@ -659,14 +688,19 @@ impl EnvironmentCheckResult {
     pub fn validate_for_check(
         &self,
         check_id: &str,
+        description: &str,
         spec_sha256: &str,
         expect_exit: i32,
     ) -> Result<(), String> {
         if self.check_id != check_id
+            || self.description != description
             || self.spec_sha256 != spec_sha256
             || self.expect_exit != expect_exit
         {
             return Err("environment check result does not bind the request".into());
+        }
+        if self.diagnostic.chars().count() > MAX_ENVIRONMENT_CHECK_DIAGNOSTIC_CHARS {
+            return Err("environment check diagnostic exceeds its bound".into());
         }
         let Some(exit_code) = self.exit_code else {
             return Err("environment check result has no exit code".into());
@@ -680,6 +714,39 @@ impl EnvironmentCheckResult {
         }
         Ok(())
     }
+}
+
+/// Build a bounded, machine-readable diagnostic for a failed frozen check.
+/// It carries the human `SpecCheck` description and at most one redacted
+/// stderr line, never the full output or a source body.
+pub fn bounded_check_diagnostic(
+    description: &str,
+    exit_code: i32,
+    expect_exit: i32,
+    stderr_tail: &str,
+) -> String {
+    let description: String = description
+        .chars()
+        .take(MAX_ENVIRONMENT_CHECK_DESCRIPTION_CHARS)
+        .collect();
+    let mut diagnostic = format!("{description} (exit {exit_code}, expected {expect_exit})");
+    let tail: String = stderr_tail
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("")
+        .chars()
+        .take(600)
+        .collect();
+    if !tail.is_empty() {
+        diagnostic.push_str(": ");
+        diagnostic.push_str(&tail);
+    }
+    diagnostic
+        .chars()
+        .take(MAX_ENVIRONMENT_CHECK_DIAGNOSTIC_CHARS)
+        .collect()
 }
 
 fn is_environment_digest(value: &str) -> bool {
@@ -838,6 +905,7 @@ pub fn environment_workspace_files(
 pub const ENVIRONMENT_BUILD_ROUTE: &str = "v1/environments/build";
 pub const ENVIRONMENT_RESOLVE_ROUTE: &str = "v1/environments/resolve";
 pub const ENVIRONMENT_CHECK_ROUTE: &str = "v1/environments/check";
+pub const ENVIRONMENT_CHECK_CANCEL_ROUTE: &str = "v1/environments/check/cancel";
 
 pub const MAX_ENVIRONMENT_REQUEST_BYTES: usize = 16 * 1024 * 1024;
 const MAX_ENVIRONMENT_CHECK_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
@@ -1155,6 +1223,59 @@ impl RuntimeBrokerClient {
             .validate_for(input)
             .map_err(BrokerError::InvalidResponse)?;
         Ok(result)
+    }
+
+    /// Cancel an in-flight frozen check for one workspace volume. The broker
+    /// owns the check container name; the caller never supplies or guesses it.
+    /// A positive result records a cancellation tombstone for the exact check
+    /// token, so a request still in validation cannot start afterwards.
+    pub async fn cancel_environment_check(
+        &self,
+        workspace_volume: &str,
+        check_token: &str,
+    ) -> Result<bool, BrokerError> {
+        if !matches!(
+            self.owner,
+            ResourceOwner::Environment | ResourceOwner::Supervisor | ResourceOwner::Verifier
+        ) {
+            return Err(BrokerError::Invalid(
+                "environment check cancellation requires an environment, supervisor or verifier owner token"
+                    .into(),
+            ));
+        }
+        if !is_valid_volume_name(workspace_volume) {
+            return Err(BrokerError::Invalid(
+                "environment check workspace volume is invalid".into(),
+            ));
+        }
+        if !is_valid_check_token(check_token) {
+            return Err(BrokerError::Invalid(
+                "environment check token is invalid".into(),
+            ));
+        }
+        let response = self
+            .client
+            .post(self.join(ENVIRONMENT_CHECK_CANCEL_ROUTE)?)
+            .bearer_auth(&self.token)
+            .json(&serde_json::json!({
+                "workspaceVolume": workspace_volume,
+                "checkToken": check_token
+            }))
+            .timeout(Duration::from_secs(30))
+            .send()
+            .await?;
+        if !response.status().is_success() {
+            return Err(self.refusal(response).await);
+        }
+        let value: serde_json::Value = response.json().await?;
+        value
+            .get("cancelled")
+            .and_then(serde_json::Value::as_bool)
+            .ok_or_else(|| {
+                BrokerError::InvalidResponse(
+                    "environment check cancellation response is invalid".into(),
+                )
+            })
     }
 
     pub async fn run_container(
