@@ -151,6 +151,12 @@ export const es: Catalog = {
   "home.projectFallback": "Proyecto {id}",
   "home.project.label": "Proyecto",
   "home.project.select": "Selecciona un Proyecto",
+  "home.environmentConstraints.summary": "Restricciones de entorno (opcional)",
+  "home.environmentConstraints.help":
+    "JSON opcional para el entorno Nix/devenv generado: nixpkgs, toolchains, paquetes, servicios, navegadores y recursos. Core lo valida; los campos desconocidos se rechazan. Las convenciones confirmadas tienen prioridad.",
+  "home.environmentConstraints.label": "JSON de restricciones de entorno",
+  "home.environmentConstraints.invalid":
+    "Introduce un objeto JSON con campos de restricciones admitidos.",
   "home.objective.label": "Tu instrucción al Lead",
   "home.objective.placeholder":
     "Describe qué quieres construir, corregir o mejorar…",

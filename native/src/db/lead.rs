@@ -3429,8 +3429,7 @@ fn unit_action_spec(
         environment_builder_image: root_spec.environment_builder_image.clone(),
         environment_builder_image_digest: root_spec.environment_builder_image_digest.clone(),
         environment_required: true,
-
-        environment_spec_id: None,
+        environment_spec_id: root_spec.environment_spec_id.clone(),
     })
 }
 
@@ -3863,8 +3862,59 @@ async fn ensure_integration(
         .map_err(|_| Error::Invalid("stored proposal encoding"))?;
     let config = load_project_config(transaction, &project_id).await?;
     let grant = load_delegation_v2(transaction, &delegation_id).await?;
+    let root_spec_json: (String,) = sqlx::query_as::query_as(
+        "SELECT s.spec_json FROM campaigns c JOIN action_specs s ON s.action_id=c.action_id
+         WHERE c.id=?1",
+    )
+    .bind(campaign_id)
+    .fetch_one(&mut *transaction)
+    .await?;
+    let root_spec: ActionSpec = serde_json::from_str(&root_spec_json.0)
+        .map_err(|_| Error::Invalid("frozen root ActionSpec encoding"))?;
+    let environment_plan_id =
+        root_spec
+            .environment_plan_id
+            .clone()
+            .ok_or_else(|| Error::IntakeConflict {
+                code: "ENVIRONMENT_PLAN_REQUIRED",
+                message: "integration ActionSpec requires a bound Campaign environment plan".into(),
+            })?;
+    let environment_plan_sha256 =
+        root_spec
+            .environment_plan_sha256
+            .clone()
+            .ok_or_else(|| Error::IntakeConflict {
+                code: "ENVIRONMENT_PLAN_REQUIRED",
+                message: "integration ActionSpec requires the Campaign environment plan hash"
+                    .into(),
+            })?;
+    let environment_spec_id =
+        root_spec
+            .environment_spec_id
+            .clone()
+            .ok_or_else(|| Error::IntakeConflict {
+                code: "ENVIRONMENT_PLAN_REQUIRED",
+                message: "integration ActionSpec requires the frozen environment spec id".into(),
+            })?;
+    let environment_spec_sha256 =
+        root_spec
+            .environment_spec_sha256
+            .clone()
+            .ok_or_else(|| Error::IntakeConflict {
+                code: "ENVIRONMENT_PLAN_REQUIRED",
+                message: "integration ActionSpec requires the frozen environment spec hash".into(),
+            })?;
+    if !root_spec.environment_required
+        || root_spec.environment_builder_image.is_none()
+        || root_spec.environment_builder_image_digest.is_none()
+    {
+        return Err(Error::IntakeConflict {
+            code: "ENVIRONMENT_PLAN_REQUIRED",
+            message: "integration ActionSpec requires the Campaign builder identity".into(),
+        });
+    }
     let mut allowed_paths = std::collections::BTreeSet::new();
-    let checks = if purpose == "FANIN" {
+    let mut checks = if purpose == "FANIN" {
         let task = sqlx::query::query("SELECT spec_json FROM lead_tasks WHERE task_id=?1")
             .bind(next_task_id)
             .fetch_one(&mut *transaction)
@@ -3894,6 +3944,10 @@ async fn ensure_integration(
         }
         checks
     };
+    for check in &mut checks {
+        check.environment_plan_id = Some(environment_plan_id.clone());
+        check.environment_spec_sha256 = Some(environment_spec_sha256.clone());
+    }
     let objective = if purpose == "FINAL" {
         "Integrate final WorkGraph candidates".to_string()
     } else {
@@ -3912,14 +3966,13 @@ async fn ensure_integration(
         checks,
         dependency_plan: None,
         dependencies_required: false,
-        environment_plan_id: None,
-        environment_plan_sha256: None,
-        environment_spec_sha256: None,
-        environment_builder_image: None,
-        environment_builder_image_digest: None,
-        environment_required: false,
-
-        environment_spec_id: None,
+        environment_plan_id: Some(environment_plan_id),
+        environment_plan_sha256: Some(environment_plan_sha256),
+        environment_spec_id: Some(environment_spec_id),
+        environment_spec_sha256: Some(environment_spec_sha256),
+        environment_builder_image: root_spec.environment_builder_image.clone(),
+        environment_builder_image_digest: root_spec.environment_builder_image_digest.clone(),
+        environment_required: true,
     };
     let spec_json = serde_json::to_string(&spec)
         .map_err(|_| Error::Invalid("integration ActionSpec encoding"))?;
@@ -6243,6 +6296,10 @@ mod tests {
                 action.spec.environment_spec_sha256
             );
             assert_eq!(
+                unit_spec.environment_spec_id,
+                action.spec.environment_spec_id
+            );
+            assert_eq!(
                 unit_spec.environment_builder_image_digest,
                 action.spec.environment_builder_image_digest
             );
@@ -6287,6 +6344,38 @@ mod tests {
         assert_eq!(integration.0, "FANIN");
         assert_eq!(integration.1, "QUEUED");
         let integration_attempt = integration.2.unwrap();
+        let (integration_spec_json,): (String,) =
+            sqlx::query_as::query_as("SELECT spec_json FROM attempt_specs WHERE attempt_id=?1")
+                .bind(&integration_attempt)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        let integration_spec: ActionSpec = serde_json::from_str(&integration_spec_json).unwrap();
+        assert!(integration_spec.environment_required);
+        assert_eq!(
+            integration_spec.environment_plan_id,
+            action.spec.environment_plan_id
+        );
+        assert_eq!(
+            integration_spec.environment_plan_sha256,
+            action.spec.environment_plan_sha256
+        );
+        assert_eq!(
+            integration_spec.environment_spec_id,
+            action.spec.environment_spec_id
+        );
+        assert_eq!(
+            integration_spec.environment_spec_sha256,
+            action.spec.environment_spec_sha256
+        );
+        assert_eq!(
+            integration_spec.environment_builder_image_digest,
+            action.spec.environment_builder_image_digest
+        );
+        assert!(integration_spec.checks.iter().all(|check| {
+            check.environment_plan_id == action.spec.environment_plan_id
+                && check.environment_spec_sha256 == action.spec.environment_spec_sha256
+        }));
         let integrated = Uuid::new_v4().to_string();
         sqlx::query::query(
             "INSERT INTO candidates

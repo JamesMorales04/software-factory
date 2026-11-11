@@ -171,12 +171,13 @@ before any assignment.
 - `cargo test -p factory-native --bin factory-core` — 61 passed.
 - `cargo test -p factory-native --bin factory-core --features test-support` —
   77 passed, including the model-driven Lead approval, operator-forgery,
-  Owner-approval-only, replay, stale-hash and multi-unit binding tests.
+  Owner-approval-only, replay, stale-hash, multi-unit and FANIN/FINAL
+  integration-binding tests.
 - `cargo test -p factory-native --bin factory-worker` — 29 passed.
 - `cargo test -p factory-native --bin factory-verifier` — 9 passed.
 - `cargo clippy -p factory-native --lib --bins -- -D warnings` — clean.
 - Office: `npm ci`, `npm run typecheck`, `npm run lint`,
-  `npm test -- --run` — 47 files / 332 tests passed.
+  `npm test -- --run` — 47 files / 333 tests passed.
 - `podman compose config --quiet` — exit 0.
 - `docs/product/office-parity.json` parses as valid JSON and includes the
   environment states and endpoints. `docs/product/capabilities.yaml` and the

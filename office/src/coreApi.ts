@@ -2169,6 +2169,41 @@ export interface IntakeRequestProjection extends IntakeRequestSummary {
   linked_issues?: IssueLinkProjection[] | null;
 }
 
+export interface RequestEnvironmentConstraints {
+  nixpkgs?: string;
+  toolchains?: Array<{
+    id: string;
+    version: string;
+    source?: string;
+    evidence?: string[];
+  }>;
+  packages?: Array<{
+    name: string;
+    version: string;
+    license: string;
+    source?: string;
+    attr?: string;
+    sha256?: string;
+    unfree?: boolean;
+    attribution?: string;
+  }>;
+  services?: Array<{
+    name: string;
+    version: string;
+    ephemeral?: boolean;
+    network?: "LOOPBACK";
+    port?: number | null;
+  }>;
+  browsers?: Array<{ name: string; version: string; source?: string }>;
+  resources?: {
+    cpu: number;
+    memoryMib: number;
+    diskMib: number;
+    pids: number;
+    timeoutSecs: number;
+  };
+}
+
 export interface NewIntakeRequest {
   project_id: string;
   objective: string;
@@ -2181,6 +2216,7 @@ export interface NewIntakeRequest {
     number: number;
     role?: "PRIMARY" | "RELATED";
   }[];
+  environment_constraints?: RequestEnvironmentConstraints;
 }
 
 export interface ApproveIntakeRequest {

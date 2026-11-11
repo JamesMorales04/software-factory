@@ -148,6 +148,12 @@ export const en = {
   "home.projectFallback": "Project {id}",
   "home.project.label": "Project",
   "home.project.select": "Select a Project",
+  "home.environmentConstraints.summary": "Environment constraints (optional)",
+  "home.environmentConstraints.help":
+    "Optional JSON for the generated Nix/devenv environment: nixpkgs, toolchains, packages, services, browsers and resources. Core validates it; unknown fields are rejected. Committed conventions take precedence.",
+  "home.environmentConstraints.label": "Environment constraints JSON",
+  "home.environmentConstraints.invalid":
+    "Enter a JSON object with supported environment constraint fields.",
   "home.objective.label": "Your instruction to the Lead",
   "home.objective.placeholder":
     "Describe what you want to build, fix or improve…",
