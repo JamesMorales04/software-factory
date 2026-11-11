@@ -1159,28 +1159,183 @@ impl RequestEnvironmentConstraints {
 }
 
 /// A model/Lead/Librarian proposal. Every field is untrusted and Core
-/// revalidates it.
+/// revalidates it. This is the only path by which a greenfield project can
+/// receive a concrete environment without a per-language default in Core.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct EnvironmentProposal {
     #[serde(default)]
+    #[schemars(length(max = 16))]
     pub toolchains: Vec<ToolchainRequirement>,
     #[serde(default)]
+    #[schemars(length(max = 64))]
     pub packages: Vec<PackageRequirement>,
     #[serde(default)]
+    #[schemars(length(max = 16))]
     pub services: Vec<ServiceRequirement>,
+    /// Named build/test/lint/format/typecheck/run commands as argv vectors.
     #[serde(default)]
     pub commands: BTreeMap<String, CommandRequirement>,
+    /// Exact `github:NixOS/nixpkgs/<revision>` pin. Omit to use the builder's
+    /// documented default pin when neither the request nor the project commits
+    /// one.
     #[serde(default)]
     pub nixpkgs: Option<String>,
     #[serde(default)]
+    #[schemars(length(max = 16))]
     pub inputs: Vec<NixInput>,
     #[serde(default)]
+    #[schemars(length(max = 16))]
     pub browsers: Vec<BrowserRequirement>,
+    /// Must remain false. An unfree package requires an exact authenticated
+    /// Owner override outside the model proposal.
     #[serde(default)]
     pub allow_unfree: bool,
+    /// Generated Nix/devenv files. Core validates every path and construct and
+    /// never executes them during planning.
     #[serde(default)]
     pub files: BTreeMap<String, String>,
+}
+
+impl EnvironmentProposal {
+    /// Deterministic validation of untrusted model output before it is merged
+    /// with committed conventions or explicit owner constraints. The proposal
+    /// never becomes authority; compile_environment_plan still validates and
+    /// re-pins the resulting plan.
+    pub fn validate(&self) -> Result<(), EnvironmentError> {
+        if self.allow_unfree {
+            return Err(license_blocked(
+                "a model proposal cannot enable allowUnfree; an unfree package requires an exact owner override",
+            ));
+        }
+        if self.toolchains.len() > MAX_TOOLCHAINS
+            || self.packages.len() > MAX_PACKAGES
+            || self.services.len() > MAX_SERVICES
+            || self.inputs.len() > MAX_INPUTS
+            || self.browsers.len() > MAX_BROWSERS
+            || self.commands.len() > MAX_COMMANDS
+            || self.files.len() > 16
+        {
+            return Err(invalid("the model environment proposal exceeds its bounds"));
+        }
+        if let Some(nixpkgs) = &self.nixpkgs {
+            validate_nixpkgs_pin(nixpkgs)?;
+        }
+        let mut toolchain_ids = BTreeSet::new();
+        for toolchain in &self.toolchains {
+            bounded_text("proposal toolchain id", &toolchain.id, 64)?;
+            exact_version("proposal toolchain version", &toolchain.version)?;
+            if !toolchain_ids.insert(toolchain.id.to_ascii_lowercase()) {
+                return Err(invalid("duplicate proposal toolchain id"));
+            }
+            if !toolchain.source.is_empty() {
+                bounded_text("proposal toolchain source", &toolchain.source, 256)?;
+            }
+            for evidence in &toolchain.evidence {
+                bounded_text("proposal toolchain evidence", evidence, 256)?;
+            }
+        }
+        let mut package_names = BTreeSet::new();
+        for package in &self.packages {
+            bounded_text("proposal package name", &package.name, 200)?;
+            exact_version("proposal package version", &package.version)?;
+            bounded_text("proposal package license", &package.license, 200)?;
+            validate_license_expression(&package.license)?;
+            if !package.source.is_empty()
+                && package.source != "nixpkgs"
+                && package
+                    .source
+                    .strip_prefix("nixpkgs:")
+                    .is_none_or(|attr| attr.trim().is_empty())
+            {
+                return Err(pin_missing(
+                    "proposal packages must come from the pinned nixpkgs input",
+                ));
+            }
+            if !package.sha256.is_empty() && !is_sha256(&package.sha256) {
+                return Err(pin_missing("proposal package hash must be SHA-256"));
+            }
+            if !package.attr.is_empty() {
+                bounded_text("proposal package nix attribute", &package.attr, 128)?;
+            }
+            if !package_names.insert(package.name.to_ascii_lowercase()) {
+                return Err(invalid("duplicate proposal package name"));
+            }
+        }
+        let mut service_names = BTreeSet::new();
+        for service in &self.services {
+            bounded_text("proposal service name", &service.name, 200)?;
+            exact_version("proposal service version", &service.version)?;
+            if !service.ephemeral {
+                return Err(invalid("proposal services must be ephemeral"));
+            }
+            if service.network != ServiceNetwork::Loopback {
+                return Err(network_denied("proposal services must be loopback-only"));
+            }
+            if !service_names.insert(service.name.to_ascii_lowercase()) {
+                return Err(invalid("duplicate proposal service name"));
+            }
+        }
+        let mut input_names = BTreeSet::new();
+        for input in &self.inputs {
+            bounded_text("proposal Nix input name", &input.name, 64)?;
+            if !input_names.insert(input.name.as_str()) {
+                return Err(invalid("duplicate proposal Nix input name"));
+            }
+            if input.name.eq_ignore_ascii_case("nixpkgs") {
+                return Err(invalid(
+                    "nixpkgs is declared by the plan policy, not as an extra input",
+                ));
+            }
+            validate_pinned_nix_input(&input.url, &input.sha256)?;
+        }
+        for browser in &self.browsers {
+            bounded_text("proposal browser name", &browser.name, 64)?;
+            exact_version("proposal browser version", &browser.version)?;
+            if !browser.source.is_empty() {
+                bounded_text("proposal browser source", &browser.source, 256)?;
+            }
+        }
+        for (name, command) in &self.commands {
+            bounded_text("proposal command name", name, 64)?;
+            validate_argv(&command.argv)?;
+            if command.cwd != "."
+                && (command.cwd.starts_with('/')
+                    || command.cwd.starts_with('~')
+                    || command.cwd.split('/').any(|part| part == "..")
+                    || command.cwd.contains('\\'))
+            {
+                return Err(invalid(
+                    "proposal command working directory must stay inside the project root",
+                ));
+            }
+            if command.timeout_secs == 0 || command.timeout_secs > MAX_TIMEOUT_SECS {
+                return Err(EnvironmentError::new(
+                    EnvironmentBlockerCode::EnvironmentResourceLimit,
+                    "proposal command timeout is outside the supported bound",
+                ));
+            }
+            if command.expect_exit < 0 || command.expect_exit > 255 {
+                return Err(invalid("expected exit status must be between 0 and 255"));
+            }
+        }
+        for (path, content) in &self.files {
+            bounded_text("proposal environment file path", path, 256)?;
+            if path.starts_with('/')
+                || path.contains('\\')
+                || path.split('/').any(|part| part == "..")
+            {
+                return Err(invalid(
+                    "proposal environment file path must stay inside the project",
+                ));
+            }
+            if content.len() > MAX_FILE_BYTES {
+                return Err(invalid("proposal environment file exceeds its byte bound"));
+            }
+            validate_generated_nix(path, content)?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -2517,6 +2672,12 @@ pub fn derive_environment_requirements(
     }
     let explicit = &requirements.explicit_constraints;
     let proposal = requirements.proposal.as_ref();
+    if let Some(proposal) = proposal {
+        // The proposal is untrusted model output. Validate it as a whole before
+        // any field is merged so an unsafe or malformed proposal cannot be
+        // partially applied.
+        proposal.validate()?;
+    }
     let mut toolchains: BTreeMap<String, ToolchainRequirement> = BTreeMap::new();
     let mut commands: BTreeMap<String, CommandRequirement> = BTreeMap::new();
     let mut nixpkgs = explicit.nixpkgs.clone();
@@ -2592,6 +2753,18 @@ pub fn derive_environment_requirements(
         };
         manifest_languages.insert(language.to_owned());
     }
+    // Committed conventions outrank the untrusted proposal. Proposal commands
+    // only fill a command that neither CI nor the owner already supplied.
+    for command in &conventions.commands {
+        commands
+            .entry(command.name.clone())
+            .or_insert_with(|| CommandRequirement {
+                argv: command.argv.clone(),
+                cwd: command.cwd.clone(),
+                timeout_secs: default_command_timeout(),
+                expect_exit: 0,
+            });
+    }
     if let Some(proposal) = proposal {
         for toolchain in &proposal.toolchains {
             if toolchains.contains_key(&toolchain.id.to_ascii_lowercase()) {
@@ -2602,8 +2775,16 @@ pub fn derive_environment_requirements(
         if nixpkgs.is_none() {
             nixpkgs = proposal.nixpkgs.clone();
         }
-        if packages.is_empty() {
-            packages = proposal.packages.clone();
+        // Merge packages by name so an explicit owner package always wins while
+        // unrelated proposal packages still fill the rest of the environment.
+        let mut package_names = packages
+            .iter()
+            .map(|package| package.name.to_ascii_lowercase())
+            .collect::<BTreeSet<_>>();
+        for package in &proposal.packages {
+            if package_names.insert(package.name.to_ascii_lowercase()) {
+                packages.push(package.clone());
+            }
         }
         if services.is_empty() {
             services = proposal.services.clone();
@@ -2622,16 +2803,6 @@ pub fn derive_environment_requirements(
                 .entry(name.clone())
                 .or_insert_with(|| command.clone());
         }
-    }
-    for command in &conventions.commands {
-        commands
-            .entry(command.name.clone())
-            .or_insert_with(|| CommandRequirement {
-                argv: command.argv.clone(),
-                cwd: command.cwd.clone(),
-                timeout_secs: default_command_timeout(),
-                expect_exit: 0,
-            });
     }
     for (name, command) in &explicit.commands {
         commands.insert(name.clone(), command.clone());
@@ -2791,7 +2962,7 @@ pub fn compile_environment_plan(
         commands_rationale: if explicit.commands.is_empty() {
             "No build/test command was committed. Core will not invent a language-specific command; the Quality Profile remains responsible for required check kinds.".into()
         } else {
-            "Commands come from committed CI or an explicit owner requirement.".into()
+            "Commands come from committed CI, an explicit owner requirement, or an untrusted model proposal validated by Core.".into()
         },
         plan_sha256: String::new(),
         created_at: input.now.to_rfc3339(),
@@ -4358,6 +4529,180 @@ mod tests {
         assert!(flake.contains("pkgs.nodejs_22"));
         assert!(!plan.files.iter().any(|file| file.path == "devenv.nix"));
         assert!(!plan.files.iter().any(|file| file.path == "devenv.lock"));
+    }
+
+    fn node_proposal() -> EnvironmentProposal {
+        EnvironmentProposal {
+            nixpkgs: Some("github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into()),
+            toolchains: vec![ToolchainRequirement {
+                id: "node".into(),
+                version: "22.14.0".into(),
+                source: "lead-proposal".into(),
+                evidence: vec!["objective".into()],
+            }],
+            packages: vec![PackageRequirement {
+                name: "nodejs".into(),
+                version: "22.14.0".into(),
+                license: "MIT".into(),
+                source: "nixpkgs".into(),
+                attr: "nodejs_22".into(),
+                sha256: String::new(),
+                unfree: false,
+                attribution: "Node.js is MIT licensed.".into(),
+            }],
+            commands: BTreeMap::from([(
+                "test".into(),
+                CommandRequirement {
+                    argv: vec!["npm".into(), "test".into()],
+                    cwd: ".".into(),
+                    timeout_secs: 300,
+                    expect_exit: 0,
+                },
+            )]),
+            ..EnvironmentProposal::default()
+        }
+    }
+
+    #[test]
+    fn greenfield_calculator_uses_only_the_lead_proposed_node_environment() {
+        let (repository, base) = repository(&[("README.md", "# Calculator\n")]);
+        let mut values = requirements();
+        values.proposal = Some(node_proposal());
+        let plan = compile(&repository, &base, &values);
+        assert_eq!(plan.source, EnvironmentPlanSource::Generated);
+        assert_eq!(plan.toolchains.len(), 1);
+        assert_eq!(plan.toolchains[0].id, "node");
+        assert_eq!(plan.toolchains[0].version, "22.14.0");
+        assert_eq!(plan.packages.len(), 1);
+        assert_eq!(plan.packages[0].name, "nodejs");
+        assert_eq!(plan.packages[0].license, "MIT");
+        assert_eq!(plan.commands["test"].argv, vec!["npm", "test"]);
+        assert!(
+            plan.license_inventory
+                .entries
+                .iter()
+                .any(|entry| entry.name == "nodejs" && entry.license == "MIT")
+        );
+        let flake = plan
+            .files
+            .iter()
+            .find(|file| file.path == "flake.nix")
+            .and_then(|file| file.content.as_deref())
+            .expect("generated flake.nix");
+        assert!(flake.contains("pkgs.nodejs_22"));
+        assert_eq!(
+            plan.require_lead_approval().unwrap_err().code,
+            EnvironmentBlockerCode::EnvironmentLeadApprovalRequired
+        );
+    }
+
+    #[test]
+    fn empty_greenfield_environment_has_no_implicit_language_toolchain() {
+        let (repository, base) = repository(&[("README.md", "# Empty\n")]);
+        let mut values = requirements();
+        values.explicit_constraints.nixpkgs =
+            Some("github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into());
+        let plan = compile(&repository, &base, &values);
+        assert_eq!(plan.source, EnvironmentPlanSource::Generated);
+        assert!(plan.toolchains.is_empty());
+        assert!(plan.packages.is_empty());
+        assert!(plan.commands.is_empty());
+    }
+
+    #[test]
+    fn explicit_request_constraints_override_the_lead_environment_proposal() {
+        let (repository, base) = repository(&[("README.md", "# Calculator\n")]);
+        let mut values = requirements();
+        values.explicit_constraints.nixpkgs =
+            Some("github:NixOS/nixpkgs/1111111111111111111111111111111111111111".into());
+        values.explicit_constraints.toolchains = vec![ToolchainRequirement {
+            id: "node".into(),
+            version: "20.19.0".into(),
+            source: "owner".into(),
+            evidence: Vec::new(),
+        }];
+        values.explicit_constraints.packages = vec![PackageRequirement {
+            name: "nodejs".into(),
+            version: "20.19.0".into(),
+            license: "MIT".into(),
+            source: "nixpkgs".into(),
+            attr: "nodejs_20".into(),
+            sha256: String::new(),
+            unfree: false,
+            attribution: "Owner-selected Node.js.".into(),
+        }];
+        values.explicit_constraints.commands.insert(
+            "test".into(),
+            CommandRequirement {
+                argv: vec!["npm".into(), "run".into(), "test:owner".into()],
+                cwd: ".".into(),
+                timeout_secs: 120,
+                expect_exit: 0,
+            },
+        );
+        let mut proposal = node_proposal();
+        proposal.packages.push(PackageRequirement {
+            name: "ripgrep".into(),
+            version: "14.1.1".into(),
+            license: "MIT".into(),
+            source: "nixpkgs".into(),
+            attr: "ripgrep".into(),
+            sha256: String::new(),
+            unfree: false,
+            attribution: "MIT ripgrep".into(),
+        });
+        values.proposal = Some(proposal);
+        let plan = compile(&repository, &base, &values);
+        assert_eq!(
+            plan.nix.nixpkgs,
+            "github:NixOS/nixpkgs/1111111111111111111111111111111111111111"
+        );
+        assert_eq!(plan.toolchains.len(), 1);
+        assert_eq!(plan.toolchains[0].version, "20.19.0");
+        let nodejs = plan
+            .packages
+            .iter()
+            .find(|package| package.name == "nodejs")
+            .expect("nodejs package");
+        assert_eq!(nodejs.version, "20.19.0");
+        assert_eq!(nodejs.attr, "nodejs_20");
+        assert!(
+            plan.packages
+                .iter()
+                .any(|package| package.name == "ripgrep")
+        );
+        assert_eq!(plan.commands["test"].argv, vec!["npm", "run", "test:owner"]);
+    }
+
+    #[test]
+    fn lead_environment_proposal_rejects_unknown_license_package_source_and_pin() {
+        let mut invalid_pin = node_proposal();
+        invalid_pin.nixpkgs = Some("github:NixOS/nixpkgs/main".into());
+        assert_eq!(
+            invalid_pin.validate().unwrap_err().code,
+            EnvironmentBlockerCode::EnvironmentPinMissing
+        );
+
+        let mut unknown_license = node_proposal();
+        unknown_license.packages[0].license = "Unknown".into();
+        assert_eq!(
+            unknown_license.validate().unwrap_err().code,
+            EnvironmentBlockerCode::EnvironmentLicenseBlocked
+        );
+
+        let mut unsupported_source = node_proposal();
+        unsupported_source.packages[0].source = "cargo".into();
+        assert_eq!(
+            unsupported_source.validate().unwrap_err().code,
+            EnvironmentBlockerCode::EnvironmentPinMissing
+        );
+
+        let mut unfree = node_proposal();
+        unfree.allow_unfree = true;
+        assert_eq!(
+            unfree.validate().unwrap_err().code,
+            EnvironmentBlockerCode::EnvironmentLicenseBlocked
+        );
     }
 
     #[test]

@@ -19,6 +19,7 @@ use sha2::{Digest, Sha256};
 
 use crate::db::ActionSpec;
 use crate::execution_policy::{OperationLimits, ProgressPolicy};
+use crate::planning::environment::EnvironmentProposal;
 
 pub const MAX_WORK_UNITS: usize = 8;
 pub const MAX_PREDECESSORS: usize = 8;
@@ -743,6 +744,13 @@ pub struct LeadPlanProposal {
     #[schemars(skip)]
     pub max_sessions: u32,
     pub work_units: Vec<LeadWorkUnit>,
+    /// Bounded, untrusted environment proposal for a greenfield or otherwise
+    /// uncatalogued project. It supplies concrete pins, toolchains, nixpkgs
+    /// packages with SPDX licenses and commands. Core validates it before the
+    /// existing environment compiler can freeze a plan. `None` preserves the
+    /// previous behaviour for existing projects and older proposals.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_proposal: Option<EnvironmentProposal>,
 }
 
 impl LeadPlanProposal {
@@ -919,6 +927,7 @@ impl LeadPlanProposal {
             )));
         }
         self.validate_work_units(grant, project)?;
+        self.validate_environment_proposal()?;
         let implementer_attempts = self
             .implementer_task_count()
             .checked_mul(self.budget.max_attempts as usize)
@@ -1054,6 +1063,16 @@ impl LeadPlanProposal {
             )));
         }
         self.validate_work_units_against(&grant.allowed_paths, &grant.capabilities, project)?;
+        self.validate_environment_proposal()?;
+        Ok(())
+    }
+
+    fn validate_environment_proposal(&self) -> Result<(), LeadError> {
+        if let Some(proposal) = &self.environment_proposal {
+            proposal
+                .validate()
+                .map_err(|error| LeadError::Proposal(error.to_string()))?;
+        }
         Ok(())
     }
 
@@ -1606,6 +1625,7 @@ pub fn fixture_lead_assessment(
             acceptance_criteria: Vec::new(),
             negative_cases: Vec::new(),
         }],
+        environment_proposal: None,
     };
     proposal.validate_v2(grant, &project_config.binding(), action, now)?;
     let returned_proposal = proposal.clone();
@@ -2282,6 +2302,7 @@ mod tests {
             max_parallel: 2,
             max_sessions: 12,
             work_units: units,
+            environment_proposal: None,
         }
     }
 
@@ -2800,6 +2821,76 @@ mod tests {
         assert!(Submitted.transition(Running).is_err());
         assert!(Blocked.transition(Running).is_err());
         assert!(Running.transition(Ready).is_err());
+    }
+
+    fn environment_proposal() -> EnvironmentProposal {
+        use crate::planning::environment::{
+            CommandRequirement, PackageRequirement, ToolchainRequirement,
+        };
+        EnvironmentProposal {
+            nixpkgs: Some("github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into()),
+            toolchains: vec![ToolchainRequirement {
+                id: "node".into(),
+                version: "22.14.0".into(),
+                source: "lead-proposal".into(),
+                evidence: Vec::new(),
+            }],
+            packages: vec![PackageRequirement {
+                name: "nodejs".into(),
+                version: "22.14.0".into(),
+                license: "MIT".into(),
+                source: "nixpkgs".into(),
+                attr: "nodejs_22".into(),
+                sha256: String::new(),
+                unfree: false,
+                attribution: "Node.js is MIT licensed.".into(),
+            }],
+            commands: std::collections::BTreeMap::from([(
+                "test".into(),
+                CommandRequirement {
+                    argv: vec!["npm".into(), "test".into()],
+                    cwd: ".".into(),
+                    timeout_secs: 300,
+                    expect_exit: 0,
+                },
+            )]),
+            ..EnvironmentProposal::default()
+        }
+    }
+
+    #[test]
+    fn lead_proposal_round_trips_a_bounded_environment_proposal() {
+        let mut value = proposal(vec![unit("api")]);
+        value.environment_proposal = Some(environment_proposal());
+        let raw = serde_json::to_vec(&value).unwrap();
+        let decoded: LeadPlanProposal = serde_json::from_slice(&raw).unwrap();
+        assert_eq!(decoded.environment_proposal, value.environment_proposal);
+        decoded
+            .environment_proposal
+            .as_ref()
+            .expect("decoded environment proposal")
+            .validate()
+            .unwrap();
+        let schema = serde_json::to_value(schemars::schema_for!(LeadPlanProposal)).unwrap();
+        assert!(schema["properties"]["environmentProposal"].is_object());
+        assert!(
+            crate::model_output::validate_provider_schema(&schema).is_ok(),
+            "the environment proposal schema must remain provider-compatible"
+        );
+    }
+
+    #[test]
+    fn lead_proposal_rejects_an_unfree_environment_proposal() {
+        let mut value = proposal(vec![unit("api")]);
+        let mut environment = environment_proposal();
+        environment.allow_unfree = true;
+        value.environment_proposal = Some(environment);
+        assert!(
+            value
+                .validate(&grant(), &project(), &action(), now())
+                .is_err(),
+            "model output cannot enable allowUnfree"
+        );
     }
 
     #[test]

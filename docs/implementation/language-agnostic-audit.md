@@ -6,6 +6,15 @@ language-specific assumptions in the current execution, planning, verifier,
 dependency and Office paths. It does not change code, schema, parity states or
 capabilities.
 
+> **Later implementation note (2026-11-11):** the greenfield slice removes the
+> hidden `generic-toolchain` executable default from the Lead prompt (ENV-05),
+> adds a bounded validated `MODEL` stack decision when triage/detection are
+> empty, and lets the Lead planning proposal supply a concrete
+> `EnvironmentProposal` without overriding explicit constraints. The remaining
+> findings (global verifier image, dependency adapters, DoD language fallbacks,
+> Office profile vocabulary) are unchanged and still require their named work
+> packages.
+
 **Decisions:** [ADR-0040](../architecture/decisions/ADR-0040-risk-tiered-delivery-and-auto-merge.md),
 [ADR-0041](../architecture/decisions/ADR-0041-agnostic-environment-compiler.md),
 [ADR-0042](../architecture/decisions/ADR-0042-issue-linked-delivery-lifecycle.md).

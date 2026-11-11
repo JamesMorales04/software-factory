@@ -158,6 +158,17 @@ Rules:
   A request to change any of these is a blocker/owner decision, not a plan edit.
 - The plan may propose files, but Core writes them only into an ephemeral staging
   area; the untrusted content is not executed during planning.
+- For a greenfield request the Lead planning model may carry a bounded,
+  untrusted `EnvironmentProposal` (exact nixpkgs pin or omitted builder default,
+  toolchains, nixpkgs packages with SPDX licences and argv commands). It fills
+  only missing fields after explicit request constraints and committed
+  conventions; it never enables `allowUnfree`, chooses a language by default,
+  grants capabilities or bypasses Core validation and the Lead review.
+- When semantic triage and deterministic detection leave the stack empty, one
+  bounded Lead-route model call selects an exact deterministic stack option;
+  Core validates the option and its required project capability and records a
+  `MODEL` stack decision. Unknown, empty or unauthorized selections fail closed
+  with a typed `STACK_SELECTION_*` planning failure.
 
 ## 5. Lead approval and Core freeze
 

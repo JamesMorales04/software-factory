@@ -1,9 +1,11 @@
 # Agnostic environment compiler — Core and Office slice
 
-**Status:** Implemented WP1-A — 2026-11-10. This records the Core/domain/Office
-half of the agnostic environment compiler. It is not acceptance evidence and it
-does not claim a real Nix/devenv build. The Nix/devenv builder image and the
-Node/Playwright runtime are the separate WP1-B deliverable.
+**Status:** Implemented WP1-A — updated 2026-11-11. This records the
+Core/domain/Office half of the agnostic environment compiler, including
+greenfield stack selection and the Lead planning `EnvironmentProposal`. It is
+not acceptance evidence and it does not claim a real Nix/devenv build. The
+Nix/devenv builder image and the Node/Playwright runtime are the separate WP1-B
+deliverable.
 
 **Contracts:** [environment plan](../contracts/environment-plan.md),
 [ADR-0041](../architecture/decisions/ADR-0041-agnostic-environment-compiler.md),
@@ -67,6 +69,44 @@ is unavailable, the environment plan stays `CORE_VALIDATED` and execution is
 blocked. The Director/Request surface exposes a "Request Lead environment
 review" action that triggers the same model call. In every path Core validation
 remains authoritative.
+
+## 2.1 Greenfield stack selection and the Lead environment proposal
+
+A greenfield request has no committed language manifest. Core does not choose a
+language, image or package set from the Factory repository or from a
+per-language table. Instead:
+
+1. The semantic triage model may propose a concrete `StackProfile`. Prompting
+   requires one for a greenfield `CHANGE`; an empty or unknown stack remains
+   fail-closed.
+2. If the triage/detected stack is still empty, `compile_stack_decision` makes
+   one bounded Lead-route model call with purpose `lead_stack_selection`. The
+   prompt supplies the objective, project config, allowed paths, authorized
+   capabilities and the exact deterministic `selection_options` catalog. The
+   typed output is `StackSelectionModel` (`optionId`, `language`, `framework`,
+   `rationale`, optional `environmentProposal`).
+3. Core validates the returned id/language/framework against the catalog and
+   the option's `requiredCapability` against the project capabilities. Unknown,
+   empty, mismatched or unauthorized selections fail closed with
+   `STACK_SELECTION_INVALID`; route/inference unavailability is
+   `STACK_SELECTION_MODEL_UNAVAILABLE`; transport, truncation or schema failure
+   is `STACK_SELECTION_MODEL_FAILED`. A successful decision is recorded as
+   `StackSource::MODEL` with every considered option and a model-call event; the
+   model never grants capabilities or paths.
+4. The Lead planning model (`LeadPlanProposal.environmentProposal`) may carry a
+   bounded, untrusted `EnvironmentProposal`: an exact nixpkgs pin (or omitted to
+   use the builder default), toolchains, nixpkgs packages with SPDX licences,
+   and argv commands. A greenfield assessment prompt requires one; the
+   stack-selection call may also return a fallback proposal when an older
+   recorded Lead plan has none.
+5. Precedence remains: explicit request `environmentConstraints`; committed
+   conventions; CI/version evidence; the model proposal, which only fills
+   missing toolchains, packages and commands. `EnvironmentProposal::validate`
+   rejects unsafe `allowUnfree`, unknown licences, unpinned/unknown package
+   sources, unsafe generated files and out-of-bound commands before any field is
+   merged. `compile_environment_plan` then re-pins, licenses, validates the
+   sandbox/resources and freezes the exact plan; the Lead environment review is
+   still required before freeze.
 
 ## 3. Typed failures
 
@@ -158,6 +198,12 @@ Every displayed action calls an existing authenticated Core route:
 `POST /agentic/requests/{id}/environment/review`. No button invents state or
 acceptance.
 
+Greenfield stack selection adds no new Office control. The existing Request,
+Director and Campaign environment panel already renders the resulting `MODEL`
+stack decision's toolchains, packages, commands, license inventory and the
+truthful blocked/validated/frozen states. An operator never chooses or forges
+the stack or environment decision.
+
 ## 5.1 Test-only fixture boundary
 
 Production authorization has no fake-binding path. Library unit tests use a
@@ -173,16 +219,22 @@ before any assignment.
 
 ## 6. Verification performed
 
-- `cargo fmt --all`
-- `cargo test -p factory-native --lib` — 876 passed, 4 ignored.
-- `cargo test -p factory-native --bin factory-core` — 61 passed.
+- `cargo fmt --all -- --check` — clean.
+- `cargo test -p factory-native --lib` — 958 passed, 4 ignored. Includes the
+  greenfield Node/Python environment proposal, explicit-constraint precedence,
+  unknown licence/pin/source rejection, model stack selection, schema
+  round-trip and multi-line architecture-context tests.
+- `cargo test -p factory-native --bin factory-core` — 65 passed.
 - `cargo test -p factory-native --bin factory-core --features test-support` —
-  77 passed, including the model-driven Lead approval, operator-forgery,
-  Owner-approval-only, replay, stale-hash, multi-unit and FANIN/FINAL
-  integration-binding tests.
-- `cargo test -p factory-native --bin factory-worker` — 29 passed.
-- `cargo test -p factory-native --bin factory-verifier` — 9 passed.
-- `cargo clippy -p factory-native --lib --bins -- -D warnings` — clean.
+  84 passed, including the model-driven stack selection, invalid-selection,
+  typed model-failure, generated environment fallback, Lead approval,
+  operator-forgery, Owner-approval-only, replay and stale-hash tests.
+- `cargo test -p factory-native --bin factory-worker` — 33 passed.
+- `cargo test -p factory-native --bin factory-verifier` — 11 passed.
+- `cargo test -p factory-native --bin factory-runtime-broker` — 71 passed.
+- `cargo test -p factory-native --bin factory-supervisor` — 11 passed.
+- `cargo clippy -p factory-native --all-targets --all-features -- -D warnings`
+  — clean.
 - Office: `npm ci`, `npm run typecheck`, `npm run lint`,
   `npm test -- --run` — 47 files / 333 tests passed.
 - `podman compose config --quiet` — exit 0.
@@ -197,5 +249,6 @@ before any assignment.
 
 **Not tested / not claimed:** a real Nix/devenv build, a real builder image, the
 Node/Playwright runtime, live Podman check execution, real Chromium acceptance
-of the new panel, and independent acceptance. `TRUSTED_LOCAL` remains not
-isolated.
+of the new panel, a live provider stack-selection call for the calculator
+request, a live re-plan of that request, and independent acceptance.
+`TRUSTED_LOCAL` remains not isolated.
