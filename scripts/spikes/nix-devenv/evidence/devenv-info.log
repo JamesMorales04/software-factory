@@ -1,0 +1,56 @@
+• Validating lock
+✓ Validating lock in 2.77ms
+  evaluating file '«nix-internal»/derivation-internal.nix'
+• Configuring cachix
+✓ Configuring cachix in 5.65ms
+• Evaluating Nix
+✓ Evaluating Nix in 3.09s
+Inputs:
+├───devenv: github:cachix/devenv/4a1138b49c3b0503c214e4b6e59102dbdd3282ca?dir=src/modules&narHash=sha256-ks05AJY27rCF6KzuXIlmky0eZzNGgbSTfHKTr4j2rdg%3D
+├───nixpkgs: github:NixOS/nixpkgs/4fe25e12eb9f4c744966dd3de5a05246cf098601?narHash=sha256-WrSODdZFVIs/Hh2NzC0bY%2BROByi0bATg8WfePX8dPj8%3D
+└───rust-overlay: github:oxalica/rust-overlay/89750a2ef1c6a44db9f4251b16c23deffdcfddff?narHash=sha256-UZMtOt43/HRVssXPSuPv8t11Toq9%2BCjyWUfYQ3tqGVE%3D
+
+# env
+- CARGO_PROFILE_DEV_BUILD_OVERRIDE_CODEGEN_BACKEND: 
+- CARGO_PROFILE_DEV_CODEGEN_BACKEND: 
+- CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: /nix/store/wz3zhpf6avhr0i6frj3a39kih78kb25i-devenv-rust-linker-clang
+- CARGO_UNSTABLE_CODEGEN_BACKEND: 
+- DEVENV_DOTFILE: /spike/.devenv
+- DEVENV_PROFILE: /nix/store/mmspy0zqxwv5vpyz8g383b72d76bd53d-devenv-profile
+- DEVENV_ROOT: /spike
+- DEVENV_RUNTIME: /tmp/devenv-263b73c
+- DEVENV_STATE: /spike/.devenv/state
+- DEVENV_TASKS: 
+- DEVENV_TASK_FILE: /nix/store/dfm05m18b1qpnmczpf5fdqmydi1gjgxr-tasks.json
+- NIX_LD_USE_RESPONSE_FILE: 1
+- PLAYWRIGHT_BROWSERS_PATH: /nix/store/xzcwph37l5pv0r3gj3di4g35dlwrzazf-playwright-browsers
+- PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+- RUSTDOCFLAGS: 
+- RUSTFLAGS: 
+- RUST_SRC_PATH: /nix/store/5mikbw7za55jdl7qk395cvgscf5szba6-rust-src-1.90.0-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library
+
+# packages
+- bash-interactive-5.3p20
+- clang-wrapper-21.1.8
+- rust-analyzer-preview-1.90.0-x86_64-unknown-linux-gnu
+- rust-stable-1.90.0-1.90.0
+- nodejs-22.23.4
+- nodejs-22.23.4
+- typescript-language-server-6.0.3
+- clang-tools-21.1.8
+- stdenv-linux
+- gnumake-4.4.1
+- pkg-config-wrapper-0.29.2
+- ccls-0.20250815.1
+- gdb-17.2
+- valgrind-3.27.1
+- playwright-browsers
+- sbomnix-1.9.0
+- pkg-config-wrapper-0.29.2
+
+# tasks
+- devenv:container:copy:  (/nix/store/1n8yi23f18i3l4625kbnh77ggr1hq3vj-devenv-container-copy)
+- devenv:enterShell: Runs when entering the shell (/nix/store/w68azhv20vhxwxkgbji1l35x0d48xbj2-devenv-enterShell)
+- devenv:enterTest: Runs when entering the test environment (no command)
+- devenv:files:  (no command)
+- devenv:files:cleanup: Cleanup orphaned files (/nix/store/3h747m9x0wj2q6cad272h2rcq610q88q-devenv-files-cleanup)

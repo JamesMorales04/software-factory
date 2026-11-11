@@ -1,0 +1,29 @@
+# Reproducible WP0 spike image for the Nix/devenv environment compiler.
+#
+# The image contains only the pinned Nix distribution, the spike sources and a
+# small entrypoint. No host Nix, Node, npm, Cargo or Playwright installation is
+# used. `/nix` and `/cache` are intended to be Podman named volumes, not host
+# bind mounts.
+FROM docker.io/nixos/nix:2.28.3@sha256:e623d73af9cac82d1b50784c83e0cf2a4b83bfd2cfe8d5b67809a2fc94e043ac
+
+ENV NIX_CONFIG="experimental-features = nix-command flakes"
+
+# The upstream image already sets `sandbox = false`; make the settings explicit
+# so the recorded behaviour does not depend on the base image's defaults.
+RUN printf '%s\n' \
+      'experimental-features = nix-command flakes' \
+      'sandbox = false' \
+      'trusted-users = root' \
+      >> /etc/nix/nix.conf
+
+WORKDIR /spike
+
+COPY flake.nix flake.lock ./
+COPY devenv.nix devenv.yaml devenv.lock ./
+COPY projects ./projects
+COPY run-spike.sh /usr/local/bin/run-spike
+
+RUN chmod 0755 /usr/local/bin/run-spike
+
+ENTRYPOINT ["/usr/local/bin/run-spike"]
+CMD ["all"]

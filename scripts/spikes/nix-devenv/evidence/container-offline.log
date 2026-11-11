@@ -1,0 +1,78 @@
+STEP 1/11: FROM docker.io/nixos/nix:2.28.3@sha256:e623d73af9cac82d1b50784c83e0cf2a4b83bfd2cfe8d5b67809a2fc94e043ac
+STEP 2/11: ENV NIX_CONFIG="experimental-features = nix-command flakes"
+--> Using cache 966d8de1966dd80ea91a5e63553cf37cb16cd6a5766bad2a9ca3f25431a2503a
+--> 966d8de1966d
+STEP 3/11: RUN printf '%s\n'       'experimental-features = nix-command flakes'       'sandbox = false'       'trusted-users = root'       >> /etc/nix/nix.conf
+--> Using cache 526e1f87a9b3fe526c3592e9180d9930b89c979f1b30c0179cf5ae19064fe009
+--> 526e1f87a9b3
+STEP 4/11: WORKDIR /spike
+--> Using cache 4a9db6139eea4ca19e2bfa5ce3c52a89057afea9c7ef2e363630dd511765a4ef
+--> 4a9db6139eea
+STEP 5/11: COPY flake.nix flake.lock ./
+--> Using cache 11c41e51cb584f7d5f93ae17dbf3fb3ada0163e7e4c96ae3dabbd57dbfd9255a
+--> 11c41e51cb58
+STEP 6/11: COPY devenv.nix devenv.yaml devenv.lock ./
+--> Using cache ebbe76fa2bf88b7d79af3013abfeaca488ea6bb224675a12d82ca6932b0e1397
+--> ebbe76fa2bf8
+STEP 7/11: COPY projects ./projects
+--> Using cache f7a74ae8c6d1fc673bea275de6dbece657d05da527f32f0f5e83bc57903a3672
+--> f7a74ae8c6d1
+STEP 8/11: COPY run-spike.sh /usr/local/bin/run-spike
+--> Using cache a977f2b7c569c235aec0666df8d66f75e26c05e4de268a56bbdd795904a4f6c9
+--> a977f2b7c569
+STEP 9/11: RUN chmod 0755 /usr/local/bin/run-spike
+--> Using cache 06831ffd3ec271ab2c6e98195ddec60927bffdb9d381e5e823d12828cd54d4a6
+--> 06831ffd3ec2
+STEP 10/11: ENTRYPOINT ["/usr/local/bin/run-spike"]
+--> Using cache 222d202386cc8df63d83391a10ed75fe1fee8366684d8b7421ff0bd419d86e9a
+--> 222d202386cc
+STEP 11/11: CMD ["all"]
+--> Using cache 9ad7020138fa2d3e4349f61bc2c4adbbca2266f6d70260a880767c449e9746cb
+COMMIT localhost/wp0-nix-devenv-spike:2026-11-10
+--> 9ad7020138fa
+Successfully tagged localhost/wp0-nix-devenv-spike:2026-11-10
+9ad7020138fa2d3e4349f61bc2c4adbbca2266f6d70260a880767c449e9746cb
+v22.23.4
+10.9.9
+PLAYWRIGHT_BROWSERS_PATH=/nix/store/xzcwph37l5pv0r3gj3di4g35dlwrzazf-playwright-browsers
+chromium-1248
+chromium_headless_shell-1248
+ffmpeg-1013
+rustc 1.90.0 (1159e78c4 2025-09-14)
+cargo 1.90.0 (840b83a10 2025-07-30)
+clippy 0.1.90 (1159e78c47 2025-09-14)
+v22.23.4
+10.9.9
+
+added 3 packages in 402ms
+
+> wp0-node-playwright-spike@0.0.0 test
+> playwright test
+
+
+Running 1 test using 1 worker
+
+  ✓  1 tests/smoke.spec.mjs:3:1 › Chromium renders a page and runs JavaScript (78ms)
+
+  1 passed (578ms)
+
+> wp0-node-playwright-spike@0.0.0 measure
+> node measure-browser.mjs
+
+BROWSER_TIMING {"launchMs":40,"newPageMs":28,"renderMs":45}
+rustc 1.90.0 (1159e78c4 2025-09-14)
+cargo 1.90.0 (840b83a10 2025-07-30)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.02s
+     Running unittests src/lib.rs (/cache/target/debug/deps/wp0_rust_spike-502194c0868bbddd)
+
+running 1 test
+test tests::renders_expected_json ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests wp0_rust_spike
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
