@@ -828,3 +828,24 @@ scope and remaining architectural blockers. This does not enable model
 inference or alter historical ledger settlement/reconciliation. Container-native
 focused validation is author evidence only; independent review, live provider
 proof and real browser/runtime acceptance remain NOT_VERIFIED.
+
+## 2026-11-10 WP5 stagnation-salvage provenance
+
+Branch `fix/worker-salvage-evidence`, baseline `ba2dda9`. Migration `0075`
+adds `candidates.final_source` with closed `MODEL_FINAL` /
+`STAGNATION_SALVAGE` values and a non-rewriting `MODEL_FINAL` default. The
+Worker now requires `Diagnose`, an applied write, at least one deterministic
+final nudge, a non-empty Git diff and all frozen checks passing before it
+submits salvage. The Worker does not submit a later progress checkpoint after
+the Diagnose, so the latest Core decision remains DIAGNOSE. Core does not trust
+Worker counts: it derives the diagnose decision/counts, exact candidate diff,
+model turns and durable final-nudge events, requires at least one frozen check,
+and requires exactly one PASS execution receipt per frozen check bound
+to the exact check id, candidate commit/tree, Attempt, Campaign and work item
+before recording the source and `worker.stagnation_finalized` evidence (turns,
+nudges, diff summary/paths, receipts, reason, policy/Attempt identity). It
+enforces one salvage per work item and keeps R1+ salvage on a typed
+`SALVAGE_HUMAN_REVIEW_REQUIRED` hold. Office labels the
+source in Campaign and Gate views. Candidate `be5eb14f` predates the field and
+is not claimed as salvage. This is implementer evidence; independent
+verification and a real Compose browser acceptance remain pending.

@@ -4241,13 +4241,15 @@ impl Database {
         let now = Utc::now().to_rfc3339();
         let inserted = sqlx::query::query(
             "INSERT OR IGNORE INTO progress_checkpoints
-             (checkpoint_id,campaign_id,work_item_id,operation_id,evidence_ids_json,
-              outcome_sha256,classification,decision,checkpoint_json,checkpoint_sha256,created_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+             (checkpoint_id,campaign_id,work_item_id,attempt_id,operation_id,evidence_ids_json,
+              outcome_sha256,classification,decision,stagnant_checkpoints,unsuccessful_replans,
+              checkpoint_json,checkpoint_sha256,created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
         )
         .bind(&checkpoint.checkpoint_id)
         .bind(campaign_id)
         .bind(&checkpoint.work_item_id)
+        .bind(fence.map(|fence| fence.attempt_id).unwrap_or(""))
         .bind(&checkpoint.operation_id)
         .bind(
             serde_json::to_string(&checkpoint.evidence_ids)
@@ -4256,6 +4258,8 @@ impl Database {
         .bind(&checkpoint.outcome_sha256)
         .bind(&classification)
         .bind(&decision)
+        .bind(i64::from(outcome.stagnant_checkpoints))
+        .bind(i64::from(outcome.unsuccessful_replans))
         .bind(&checkpoint_json)
         .bind(&checkpoint_sha256)
         .bind(&now)
@@ -8068,6 +8072,8 @@ mod tests {
                 command: vec!["cargo".into(), "test".into()],
                 candidate_sha256: candidate_sha256.into(),
                 exit_code: Some(exit_code),
+                candidate_commit_sha: None,
+                candidate_tree_sha: None,
             }),
         })
         .await

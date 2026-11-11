@@ -330,6 +330,8 @@ export interface ProviderSession {
   updated_at: string;
 }
 
+export type CandidateFinalSource = "MODEL_FINAL" | "STAGNATION_SALVAGE";
+
 export interface Candidate {
   id: string;
   attempt_id: string;
@@ -338,6 +340,7 @@ export interface Candidate {
   tree_sha: string;
   implementer_id: string;
   created_at: string;
+  final_source: CandidateFinalSource;
 }
 
 export type GateOutcome =
@@ -375,6 +378,7 @@ export interface Gate {
   decided_at: string;
   reviewerReceiptIds?: string[];
   repair_authorization?: RepairAuthorization | null;
+  final_source?: CandidateFinalSource;
 }
 
 export interface CheapOpsReport {

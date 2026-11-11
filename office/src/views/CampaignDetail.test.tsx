@@ -294,6 +294,7 @@ describe("CampaignDetail", () => {
       tree_sha: "c".repeat(40),
       implementer_id: "worker-1",
       created_at: "2026-10-27T10:00:00Z",
+      final_source: "MODEL_FINAL",
     };
     mocks.getCampaignDetail.mockResolvedValue({
       ...detail,
