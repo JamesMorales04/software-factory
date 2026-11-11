@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => ({
   cancelCampaign: vi.fn(),
   getCandidateDiff: vi.fn(),
   getProjectGitHub: vi.fn(),
+  getCandidateDelivery: vi.fn(),
 }));
 
 vi.mock("../coreApi", () => ({
@@ -166,6 +167,32 @@ describe("CampaignDetail", () => {
     mocks.getLeadRequest.mockReset();
     mocks.cancelCampaign.mockReset();
     mocks.getCandidateDiff.mockReset();
+    mocks.getCandidateDelivery.mockReset().mockResolvedValue({
+      campaignId: "c1",
+      candidateId: "candidate-1",
+      candidateSha: "b".repeat(40),
+      projectId: "p1",
+      riskClass: "R0",
+      gateOutcome: null,
+      gateRevision: null,
+      policy: null,
+      binding: null,
+      projection: {
+        policy: null,
+        attempts: [],
+        decisions: [],
+        checkReceipts: [],
+        postMergeChecks: [],
+        incidents: [],
+        reverts: [],
+        issueReceipts: [],
+      },
+      pullRequest: null,
+      checks: null,
+      protection: null,
+      eligibility: null,
+      liveError: null,
+    });
     mocks.getProjectGitHub.mockReset().mockResolvedValue({
       binding: null,
       sync_state: null,

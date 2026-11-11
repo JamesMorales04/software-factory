@@ -327,6 +327,21 @@ pub struct GitHubPullRequestChecks {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GitHubBranchProtection {
+    pub protected: bool,
+    pub required_status_checks_strict: bool,
+    pub required_checks: Vec<String>,
+    pub required_pull_request_reviews: bool,
+    pub required_approving_review_count: u32,
+    pub enforce_admins: bool,
+    pub allow_force_pushes: bool,
+    pub allow_deletions: bool,
+    pub required_conversation_resolution: bool,
+    pub fetched_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GitHubComment {
     pub id: u64,
     pub kind: String,
@@ -370,6 +385,16 @@ pub struct GitHubMergeOutcome {
     pub merged: bool,
     pub merge_commit_sha: String,
     pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHubPullRequestMergeState {
+    pub number: u64,
+    pub state: String,
+    pub merged: bool,
+    pub merge_commit_sha: Option<String>,
+    pub head_sha: String,
 }
 
 pub struct NewPullRequest<'a> {
@@ -600,6 +625,54 @@ impl GitHubClient {
         project_pull_request(raw)
     }
 
+    /// Re-read the exact merge state of one pull request. Used to reconcile a
+    /// merge whose HTTP response did not carry a usable commit identity.
+    pub async fn pull_request_merge_state(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<GitHubPullRequestMergeState, GitHubError> {
+        validate_token(token)?;
+        validate_repo_coordinates(owner, repo)?;
+        validate_pull_number(number)?;
+        let response = self
+            .execute(
+                self.client.get(format!(
+                    "{}/repos/{owner}/{repo}/pulls/{number}",
+                    self.base_url
+                )),
+                token,
+            )
+            .await?;
+        let raw: RawPullRequestMergeState = parse_json(&response.body, "pull request")?;
+        let state = match raw.state.as_str() {
+            "open" | "closed" => raw.state,
+            _ => {
+                return Err(GitHubError::InvalidResponse(
+                    "pull request state is unknown".into(),
+                ));
+            }
+        };
+        let head_sha = raw.head.sha.to_ascii_lowercase();
+        if !is_object_id(&head_sha) {
+            return Err(GitHubError::InvalidResponse(
+                "pull request head is malformed".into(),
+            ));
+        }
+        Ok(GitHubPullRequestMergeState {
+            number: raw.number,
+            state,
+            merged: raw.merged,
+            merge_commit_sha: raw
+                .merge_commit_sha
+                .map(|sha| sha.to_ascii_lowercase())
+                .filter(|sha| is_object_id(sha)),
+            head_sha,
+        })
+    }
+
     /// List open pull requests whose head is one exact repository branch.
     pub async fn open_pull_requests_for_head(
         &self,
@@ -668,6 +741,74 @@ impl GitHubClient {
             .await?;
         let raw_status: RawCombinedStatus = parse_json(&combined.body, "commit status")?;
         project_checks(reference, raw_checks, raw_status)
+    }
+
+    /// Read branch protection/ruleset enforcement for one exact branch. A 404
+    /// means protection cannot be proven and delivery must fail closed.
+    pub async fn branch_protection(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+    ) -> Result<GitHubBranchProtection, GitHubError> {
+        validate_token(token)?;
+        validate_repo_coordinates(owner, repo)?;
+        validate_default_branch(branch)?;
+        let response = self
+            .execute(
+                self.client.get(format!(
+                    "{}/repos/{owner}/{repo}/branches/{branch}/protection",
+                    self.base_url
+                )),
+                token,
+            )
+            .await?;
+        let raw: RawBranchProtection = parse_json(&response.body, "branch protection")?;
+        let required_status_checks_strict = raw
+            .required_status_checks
+            .as_ref()
+            .is_some_and(|checks| checks.strict);
+        let mut required_checks = Vec::new();
+        if let Some(checks) = raw.required_status_checks {
+            for context in checks.contexts {
+                let name = bounded(&clean_single_line(&context), MAX_BRANCH_BYTES);
+                if !name.is_empty() && !required_checks.contains(&name) {
+                    required_checks.push(name);
+                }
+            }
+            for check in checks.checks {
+                let name = bounded(&clean_single_line(&check.context), MAX_BRANCH_BYTES);
+                if !name.is_empty() && !required_checks.contains(&name) {
+                    required_checks.push(name);
+                }
+            }
+        }
+        Ok(GitHubBranchProtection {
+            protected: true,
+            required_status_checks_strict,
+            required_checks,
+            required_pull_request_reviews: raw.required_pull_request_reviews.is_some(),
+            required_approving_review_count: raw
+                .required_pull_request_reviews
+                .as_ref()
+                .map(|reviews| reviews.required_approving_review_count)
+                .unwrap_or(0),
+            enforce_admins: raw.enforce_admins.as_ref().is_some_and(|flag| flag.enabled),
+            allow_force_pushes: raw
+                .allow_force_pushes
+                .as_ref()
+                .is_some_and(|flag| flag.enabled),
+            allow_deletions: raw
+                .allow_deletions
+                .as_ref()
+                .is_some_and(|flag| flag.enabled),
+            required_conversation_resolution: raw
+                .required_conversation_resolution
+                .as_ref()
+                .is_some_and(|flag| flag.enabled),
+            fetched_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        })
     }
 
     /// Read the bounded unified diff GitHub renders for one pull request.
@@ -1904,6 +2045,50 @@ struct RawBranch {
 }
 
 #[derive(serde::Deserialize)]
+struct RawBranchProtection {
+    #[serde(default)]
+    required_status_checks: Option<RawRequiredStatusChecks>,
+    #[serde(default)]
+    required_pull_request_reviews: Option<RawRequiredPullRequestReviews>,
+    #[serde(default)]
+    enforce_admins: Option<RawProtectionFlag>,
+    #[serde(default)]
+    allow_force_pushes: Option<RawProtectionFlag>,
+    #[serde(default)]
+    allow_deletions: Option<RawProtectionFlag>,
+    #[serde(default)]
+    required_conversation_resolution: Option<RawProtectionFlag>,
+}
+
+#[derive(serde::Deserialize)]
+struct RawRequiredStatusChecks {
+    #[serde(default)]
+    strict: bool,
+    #[serde(default)]
+    contexts: Vec<String>,
+    #[serde(default)]
+    checks: Vec<RawRequiredCheck>,
+}
+
+#[derive(serde::Deserialize)]
+struct RawRequiredCheck {
+    #[serde(default)]
+    context: String,
+}
+
+#[derive(serde::Deserialize)]
+struct RawRequiredPullRequestReviews {
+    #[serde(default)]
+    required_approving_review_count: u32,
+}
+
+#[derive(serde::Deserialize)]
+struct RawProtectionFlag {
+    #[serde(default)]
+    enabled: bool,
+}
+
+#[derive(serde::Deserialize)]
 struct RawCommitRef {
     sha: String,
 }
@@ -1940,6 +2125,17 @@ struct RawPullRequest {
     created_at: String,
     #[serde(default)]
     updated_at: String,
+}
+
+#[derive(serde::Deserialize)]
+struct RawPullRequestMergeState {
+    number: u64,
+    state: String,
+    #[serde(default)]
+    merged: bool,
+    #[serde(default)]
+    merge_commit_sha: Option<String>,
+    head: RawPullRequestRef,
 }
 
 #[derive(serde::Deserialize)]

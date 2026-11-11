@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { CancelCampaign } from "../CancelCampaign";
+import { CampaignDelivery } from "../components/office/CampaignDelivery";
 import { CampaignPulse } from "../components/office/CampaignPulse";
 import { CandidateDiff } from "../components/office/CandidateDiff";
 import {
@@ -1015,6 +1016,10 @@ export function CampaignDetail() {
                           candidateCommitSha={candidate.commit_sha}
                         />
                       )}
+                      <CampaignDelivery
+                        campaignId={campaign.id}
+                        candidateId={candidate.id}
+                      />
                       <div className="campaign-actions">
                         <Button size="sm" onClick={() => selectTab("evidence")}>
                           {t("campaignDetail.candidates.viewEvidence")}

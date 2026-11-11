@@ -820,6 +820,270 @@ export interface CandidatePullRequestOpenResult {
   source: string;
 }
 
+export type DeliveryMode = "MANUAL" | "RISK_TIERED";
+export type DeliveryRisk = "R0" | "R1" | "R2" | "R3" | "UNKNOWN";
+export type DeliveryAttemptState =
+  | "PENDING"
+  | "AUTHORIZED"
+  | "MERGING"
+  | "MERGED"
+  | "BLOCKED"
+  | "NEEDS_ATTENTION"
+  | "REVERTED";
+export type DeliveryAuthorization = "POLICY_R0" | "CHARTER_R1" | "OWNER_MANUAL";
+export interface CandidateSalvageEvidenceRecord {
+  candidateId: string;
+  commitSha: string;
+  attemptId: string;
+  workItemId: string;
+  frozenChecks: number;
+  passedChecks: number;
+  written: boolean;
+  decision: string;
+  changedPaths: string[];
+  checkReceiptIds: string[];
+}
+
+export type DeliveryIncidentState =
+  | "OPEN"
+  | "ACKNOWLEDGED"
+  | "REVERT_PENDING"
+  | "REVERTED"
+  | "CLOSED";
+
+export interface DeliveryPolicy {
+  schemaVersion: number;
+  projectId: string;
+  revision: number;
+  policySha256: string;
+  mode: DeliveryMode;
+  r1Enabled: boolean;
+  autoMergeBaseBranch: string;
+  manualBaseBranches: string[];
+  requiredChecks: string[];
+  mergeMethod: string;
+  postMergeCheckRequired: boolean;
+  postMergeCheckId: string;
+  postMergeTimeoutSecs: number;
+  killSwitch: boolean;
+  createdBy: string;
+  createdAt: string;
+  expiresAt: string | null;
+}
+
+export interface DeliveryBlock {
+  code: string;
+  detail: string;
+}
+
+export interface DeliveryAttempt {
+  attemptId: string;
+  idempotencyKey: string;
+  schemaVersion: number;
+  operation: string;
+  projectId: string;
+  campaignId: string;
+  candidateId: string;
+  candidateSha: string;
+  candidateTreeSha: string;
+  contentDigest: string;
+  gateRevision: string;
+  gateOutcome: string;
+  policyRevision: number;
+  policySha256: string;
+  riskClass: DeliveryRisk;
+  authorization: DeliveryAuthorization | null;
+  charterGrantId: string | null;
+  pullRequestNumber: number | null;
+  baseBranch: string;
+  expectedHeadSha: string;
+  observedHeadSha: string | null;
+  observedBaseSha: string | null;
+  mergeMethod: string;
+  state: DeliveryAttemptState;
+  mergeCommitSha: string | null;
+  incidentId: string | null;
+  postMergeCheckId: string | null;
+  blockerCode: string | null;
+  blockerDetail: string | null;
+  createdAt: string;
+  updatedAt: string;
+  mergedAt: string | null;
+}
+
+export interface DeliveryDecisionRecord {
+  decisionId: string;
+  attemptId: string;
+  candidateId: string;
+  candidateSha: string;
+  gateRevision: string;
+  gateOutcome: string;
+  policyRevision: number;
+  policySha256: string;
+  charterGrantId: string | null;
+  riskClass: DeliveryRisk;
+  expectedHeadSha: string;
+  baseBranch: string;
+  checksReadAt: string;
+  branchProtectionReadAt: string;
+  decision: "ALLOW" | "DENY";
+  reasons: DeliveryBlock[];
+  decidedAt: string;
+}
+
+export interface DeliveryCheckReceipt {
+  attemptId: string;
+  checkName: string;
+  headSha: string;
+  state: string;
+  conclusion: string;
+  requiredByProtection: boolean;
+  observedAt: string;
+}
+
+export interface DeliveryPostMergeCheck {
+  attemptId: string;
+  checkId: string;
+  mergeCommitSha: string;
+  status: "PENDING" | "PASSED" | "FAILED" | "MISSING";
+  detail: string;
+  observedAt: string;
+}
+
+export interface DeliveryIncident {
+  incidentId: string;
+  projectId: string;
+  attemptId: string;
+  candidateId: string;
+  mergeCommitSha: string;
+  kind: string;
+  state: DeliveryIncidentState;
+  detail: string;
+  createdAt: string;
+  updatedAt: string;
+  acknowledgedBy: string | null;
+  acknowledgedAt: string | null;
+  resolvedAt: string | null;
+}
+
+export interface DeliveryRevertRecord {
+  revertId: string;
+  incidentId: string;
+  revertPrNumber: number;
+  revertMergeSha: string;
+  actor: string;
+  rationale: string;
+  createdAt: string;
+}
+
+export interface DeliveryIssueReceipt {
+  receiptId: string;
+  attemptId: string;
+  issueLinkId: string | null;
+  action: string;
+  state: string;
+  externalId: string | null;
+  detail: string | null;
+  recordedAt: string;
+}
+
+export interface DeliveryProjection {
+  policy: DeliveryPolicy | null;
+  attempts: DeliveryAttempt[];
+  decisions: DeliveryDecisionRecord[];
+  checkReceipts: DeliveryCheckReceipt[];
+  postMergeChecks: DeliveryPostMergeCheck[];
+  incidents: DeliveryIncident[];
+  reverts: DeliveryRevertRecord[];
+  issueReceipts: DeliveryIssueReceipt[];
+}
+
+export interface DeliveryProtection {
+  protected: boolean;
+  requiredStatusChecksStrict: boolean;
+  requiredChecks: string[];
+  requiredPullRequestReviews: boolean;
+  requiredApprovingReviewCount: number;
+  enforceAdmins: boolean;
+  allowForcePushes: boolean;
+  allowDeletions: boolean;
+  requiredConversationResolution: boolean;
+  fetchedAt: string;
+}
+
+export interface DeliveryStatus {
+  campaignId: string;
+  candidateId: string;
+  candidateSha: string;
+  projectId: string;
+  riskClass: DeliveryRisk;
+  finalSource: CandidateFinalSource;
+  salvageRequiresHumanReview: boolean;
+  salvageEvidence: CandidateSalvageEvidenceRecord | null;
+  salvageError: string | null;
+  gateOutcome: string | null;
+  gateRevision: string | null;
+  policy: DeliveryPolicy | null;
+  binding: ProjectGitHubBinding | null;
+  projection: DeliveryProjection;
+  pullRequest: CandidatePullRequest | null;
+  checks: CandidatePullRequestChecks | null;
+  protection: DeliveryProtection | null;
+  eligibility: {
+    decision: "ALLOW" | "DENY";
+    authorization: DeliveryAuthorization | null;
+    reasons: DeliveryBlock[];
+  } | null;
+  liveError: string | null;
+}
+
+export interface DeliveryRunResult {
+  attempt: DeliveryAttempt;
+  policy: DeliveryPolicy;
+  decision: DeliveryDecisionRecord;
+  pullRequest: CandidatePullRequest | null;
+  checks: CandidatePullRequestChecks | null;
+  protection: DeliveryProtection | null;
+  issueOutcome: IssueDeliveryOutcome | null;
+  replayed: boolean;
+}
+
+export interface CandidateDeliveryOpenResult {
+  campaign_id: string;
+  candidate_id: string;
+  operation: "OPEN_PR";
+  pull_request: CandidatePullRequest;
+  created: boolean;
+  issue_delivery: IssueDeliveryOutcome | null;
+  source: string;
+}
+
+export interface ProjectDeliveryPolicyView {
+  policy: DeliveryPolicy | null;
+  revisions: DeliveryPolicy[];
+  binding: ProjectGitHubBinding | null;
+  default_branch: string | null;
+  merge_method: string;
+  source: string;
+}
+
+export interface DeliveryPolicyWrite {
+  enabled: boolean;
+  r1_enabled: boolean;
+  merge_method: "squash";
+  required_checks: string[];
+  post_merge_check_id: string;
+  post_merge_timeout_secs: number;
+  kill_switch: boolean;
+  expires_at: string | null;
+  manual_base_branches?: string[];
+}
+
+export interface DeliveryRevertResult {
+  revert: DeliveryRevertRecord;
+  source: string;
+}
+
 export type IssueRole = "PRIMARY" | "RELATED";
 export type IssueLinkState =
   | "READY"
@@ -4094,6 +4358,51 @@ export const coreApi = {
     }>(
       `/issue-links/${encodeURIComponent(linkId)}/delivery/${encodeURIComponent(eventId)}/retry`,
       { method: "POST" },
+    ),
+  getProjectDeliveryPolicy: (projectId: string) =>
+    request<ProjectDeliveryPolicyView>(
+      `/projects/${encodeURIComponent(projectId)}/delivery-policy`,
+    ),
+  updateProjectDeliveryPolicy: (
+    projectId: string,
+    input: DeliveryPolicyWrite,
+  ) =>
+    request<{
+      policy: DeliveryPolicy;
+      created: boolean;
+      binding: ProjectGitHubBinding;
+    }>(`/projects/${encodeURIComponent(projectId)}/delivery-policy`, {
+      method: "PUT",
+      body: JSON.stringify(input),
+    }),
+  getCandidateDelivery: (campaignId: string, candidateId: string) =>
+    request<DeliveryStatus>(
+      `/campaigns/${encodeURIComponent(campaignId)}/candidates/${encodeURIComponent(candidateId)}/delivery`,
+    ),
+  deliverCandidate: (
+    campaignId: string,
+    candidateId: string,
+    input: {
+      operation: "OPEN_PR" | "MERGE";
+      manual_confirmed: boolean;
+      base_branch?: string;
+    },
+  ) =>
+    request<DeliveryRunResult | CandidateDeliveryOpenResult>(
+      `/campaigns/${encodeURIComponent(campaignId)}/candidates/${encodeURIComponent(candidateId)}/delivery`,
+      { method: "POST", body: JSON.stringify(input) },
+    ),
+  recordDeliveryRevert: (
+    incidentId: string,
+    input: {
+      revert_pr_number: number;
+      revert_merge_sha: string;
+      rationale: string;
+    },
+  ) =>
+    request<DeliveryRevertResult>(
+      `/delivery/incidents/${encodeURIComponent(incidentId)}/revert`,
+      { method: "POST", body: JSON.stringify(input) },
     ),
   getProjectGitHub: (projectId: string) =>
     request<CandidatePullRequestBindingResult>(

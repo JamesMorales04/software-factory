@@ -17,10 +17,13 @@
 | Risk-tiered delivery | `delivery-policy.md` | WP0 / program | DeliveryPolicy, exact-head merge, R0/R1/R2/R3 eligibility, fresh checks, idempotency, incidents and manual revert |
 | Issue-linked delivery lifecycle | `issue-lifecycle.md` | WP0 / program | frozen issue links, six lifecycle states, PR comment, close-after-merge and partial-issue handling |
 
-The three WP0 program contracts are proposed and not implemented; they are
-interfaces for the [delivery and environment program](../implementation/delivery-environment-program.md)
+The three WP0 program contracts are interfaces for the
+[delivery and environment program](../implementation/delivery-environment-program.md)
 and its [language-agnostic audit](../implementation/language-agnostic-audit.md).
-They do not change capability or parity states.
+Issue lifecycle and risk-tiered delivery have native implementations (migrations
+0072/0073/0075/0077/0078); the environment compiler has Core planning, freeze and
+check binding (migration 0076) but its production runtime-broker builder wiring
+is still pending. Capability and parity states remain the source of truth.
 
 The remaining F0 rows below (Agent Session, Quality–Delivery beyond S4-A/S4-B) are still proposed. Legacy session-identity and recovery contracts are archived; their invariants must be re-expressed against direct provider adapters when provider execution is implemented.
 
