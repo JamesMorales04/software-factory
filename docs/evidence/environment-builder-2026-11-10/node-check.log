@@ -1,0 +1,36 @@
+$ devenv shell --offline -- true
+Building shell in 4.09s
+Entering shell
+Running tasks     devenv:enterShell
+
+Running           devenv:files:cleanup
+Succeeded         devenv:files:cleanup (8.18ms)
+Running           devenv:enterShell
+Succeeded         devenv:enterShell (10.05ms)
+Running           devenv:enterTest
+No command        devenv:enterTest
+1 Skipped, 2 Succeeded
+✨ devenv 1.11.2 is out of date. Please update to 2.4.0: https://devenv.sh/getting-started/#installation
+$ devenv shell --offline -- env -C /cache/workspace/projects/node env CHROMIUM_EXE=/nix/store/k6vmry8ij0ay963bxgfiazrcd6f112sc-playwright-chromium/chrome-linux/chrome npm test
+Building shell in 29.8ms
+Entering shell
+Running tasks     devenv:enterShell
+
+Running           devenv:files:cleanup
+Succeeded         devenv:files:cleanup (8.17ms)
+Running           devenv:enterShell
+Succeeded         devenv:enterShell (10.72ms)
+Running           devenv:enterTest
+No command        devenv:enterTest
+1 Skipped, 2 Succeeded
+✨ devenv 1.11.2 is out of date. Please update to 2.4.0: https://devenv.sh/getting-started/#installation
+
+> wp0-node-playwright-spike@0.0.0 test
+> playwright test
+
+
+Running 1 test using 1 worker
+
+  ✓  1 tests/smoke.spec.mjs:3:1 › Chromium renders a page and runs JavaScript (154ms)
+
+  1 passed (966ms)

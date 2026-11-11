@@ -21,18 +21,19 @@ from . import BUILDER_POLICY_REVISION, DEFAULT_PLATFORM, SCHEMA_VERSION
 from .errors import BuilderError, fail
 from .nix import (
     BuildLog,
+    child_environment,
     closure_manifest,
     devenv_version,
     environment_digest,
-    export_store,
     nix_version,
     prepare_workspace,
     realize_environment,
-    restore_store,
     run_check,
+    run_logged,
     write_environment_files,
 )
 from .policy import (
+    MAX_ENVIRONMENT_FILE_BYTES,
     validate_check,
     validate_environment_digest,
     validate_fetch_policy,
@@ -40,6 +41,7 @@ from .policy import (
     validate_license_inventory,
     validate_lock_pins,
     validate_nix_constructs,
+    validate_resolution_plan,
     validate_resources,
     validate_sandbox,
     validate_sbom_binding,
@@ -50,10 +52,9 @@ from .policy import (
 )
 from .receipt import build_receipt, observe_attestation
 from .sbom import build_sbom, license_inventory_copy, sbom_sha256, sbom_text
-from .util import now_rfc3339, read_json, tail, write_json
+from .util import now_rfc3339, read_json, sha256_text, tail, write_json
 
 CACHE_ROOT = Path("/cache")
-CLOSURE_DIR = CACHE_ROOT / "closures"
 
 
 def _env(name: str, default: str = "") -> str:
@@ -206,10 +207,11 @@ def build(args: argparse.Namespace) -> int:
         if proxy is not None:
             if not isinstance(proxy, str) or not proxy.startswith(("http://", "https://")) or "@" in proxy:
                 fail("ENVIRONMENT_NETWORK_DENIED", "fetchProxy must be a credential-free HTTP(S) proxy")
-        shared_store = os.environ.get("FACTORY_ENVIRONMENT_BUILDER_SHARED_STORE") == "1"
-        store_cache = CLOSURE_DIR / spec["specSha256"]
-        if phase == "build" and not shared_store and store_cache.is_dir():
-            restore_store(store_cache)
+        if os.environ.get("FACTORY_ENVIRONMENT_BUILDER_SHARED_STORE") != "1":
+            fail(
+                "ENVIRONMENT_BUILDER_UNAVAILABLE",
+                "the builder requires a persistent verified Nix store cache; unsigned local closure import is not supported",
+            )
         log = BuildLog(run_dir / "build.log")
         try:
             root = realize_environment(
@@ -225,8 +227,6 @@ def build(args: argparse.Namespace) -> int:
             output_sha = environment_digest(
                 spec["specSha256"], spec["platform"], root, manifest, frozen_sbom_sha256
             )
-            if not shared_store:
-                export_store(store_cache)
             if phase == "fetch":
                 write_json(
                     run_dir / "fetch-result.json",
@@ -313,6 +313,120 @@ def build(args: argparse.Namespace) -> int:
         return error.exit_code
 
 
+def _resolution_file(workspace: Path, name: str, origin: str) -> dict[str, Any]:
+    path = workspace / name
+    if not path.is_file():
+        fail("ENVIRONMENT_PIN_MISSING", f"the generated environment has no {name}")
+    try:
+        content = path.read_text(encoding="utf-8")
+    except OSError as error:
+        fail("ENVIRONMENT_PIN_MISSING", f"cannot read {name}: {error}")
+    if len(content.encode("utf-8")) > MAX_ENVIRONMENT_FILE_BYTES:
+        fail("ENVIRONMENT_PLAN_INVALID", f"{name} exceeds its byte bound")
+    try:
+        document = json.loads(content)
+    except json.JSONDecodeError:
+        fail("ENVIRONMENT_PIN_MISSING", f"{name} is not a valid lock document")
+    if not isinstance(document, dict) or not document:
+        fail("ENVIRONMENT_PIN_MISSING", f"{name} is not a valid lock document")
+    if name == "flake.lock" and not isinstance(document.get("nodes"), dict):
+        fail("ENVIRONMENT_PIN_MISSING", "flake.lock has no locked nodes")
+    return {
+        "path": name,
+        "sha256": sha256_text(content),
+        "origin": origin,
+        "content": content,
+    }
+
+
+def resolve(args: argparse.Namespace) -> int:
+    request = _load_request(args.request)
+    source_workspace = _workspace(request, args.workspace)
+    run_dir = _run_dir(request, args.output)
+    log = BuildLog(run_dir / "resolve.log")
+    try:
+        actual_nix, actual_devenv = _actual_versions()
+        desc = descriptor()
+        plan, files, resources = validate_resolution_plan(
+            request.get("plan"),
+            source_workspace=source_workspace,
+            descriptor_image=desc["image"],
+            descriptor_digest=desc["digest"],
+            descriptor_platform=desc["platform"],
+        )
+        validate_fetch_policy(request, plan, "resolve")
+        network = request.get("fetchNetwork", "none")
+        proxy = request.get("fetchProxy")
+        build_workspace = run_dir / "workspace"
+        prepare_workspace(source_workspace, build_workspace, reuse=True)
+        write_environment_files(build_workspace, files)
+        environment = child_environment(
+            build_workspace,
+            run_dir,
+            offline=network == "none",
+            resources=resources,
+            proxy=proxy if isinstance(proxy, str) else None,
+        )
+        existing = {
+            name: (build_workspace / name).is_file()
+            for name in ("flake.lock", "devenv.lock")
+        }
+        timeout = resources["timeoutSecs"]
+        if not existing["flake.lock"] and (
+            (build_workspace / "flake.nix").is_file()
+        ):
+            command = ["nix", "flake", "lock"]
+            if network == "none":
+                command.append("--offline")
+            run_logged(
+                command,
+                cwd=build_workspace,
+                env=environment,
+                timeout=timeout,
+                log=log,
+                failure_code="ENVIRONMENT_PIN_MISSING",
+                offline=network == "none",
+            )
+        if not existing["devenv.lock"] and (
+            (build_workspace / "devenv.nix").is_file()
+            or (build_workspace / "devenv.yaml").is_file()
+        ):
+            run_logged(
+                ["devenv", "update"],
+                cwd=build_workspace,
+                env=environment,
+                timeout=timeout,
+                log=log,
+                failure_code="ENVIRONMENT_PIN_MISSING",
+                offline=network == "none",
+            )
+        resolution_files = []
+        for name in ("flake.lock", "devenv.lock"):
+            if (build_workspace / name).is_file():
+                origin = "PROJECT" if existing[name] else "GENERATED"
+                resolution_files.append(_resolution_file(build_workspace, name, origin))
+        if not resolution_files:
+            fail(
+                "ENVIRONMENT_PIN_MISSING",
+                "the environment builder resolved no flake.lock or devenv.lock",
+            )
+        resolution = {
+            "schemaVersion": SCHEMA_VERSION,
+            "planSha256": plan["planSha256"],
+            "files": resolution_files,
+            "nixVersion": actual_nix,
+            "devenvVersion": actual_devenv,
+        }
+        write_json(run_dir / "resolution.json", resolution)
+        print(json.dumps(resolution, sort_keys=True))
+        return 0
+    except BuilderError as error:
+        print(json.dumps({"status": "FAILED", "blocker": error.blocker()}, sort_keys=True))
+        return error.exit_code
+    finally:
+        log.close()
+
+
 def _validate_receipt(spec: dict[str, Any], receipt: Any) -> dict[str, Any]:
     if not isinstance(receipt, dict):
         fail("ENVIRONMENT_BUILD_FAILED", "the check request has no build receipt")
@@ -363,10 +477,11 @@ def check(args: argparse.Namespace) -> int:
         check_spec = validate_check(request.get("check"))
         if check_spec["checkId"] != args.check_id and args.check_id:
             fail("ENVIRONMENT_SPEC_INVALID", "the requested check id does not match the check document")
-        shared_store = os.environ.get("FACTORY_ENVIRONMENT_BUILDER_SHARED_STORE") == "1"
-        store_cache = CLOSURE_DIR / spec["specSha256"]
-        if not shared_store:
-            restore_store(store_cache)
+        if os.environ.get("FACTORY_ENVIRONMENT_BUILDER_SHARED_STORE") != "1":
+            fail(
+                "ENVIRONMENT_BUILDER_UNAVAILABLE",
+                "the builder requires a persistent verified Nix store cache; unsigned local closure import is not supported",
+            )
         build_workspace = run_dir / "workspace"
         prepare_workspace(source_workspace, build_workspace, reuse=build_workspace.is_dir())
         write_environment_files(build_workspace, files)
@@ -393,7 +508,7 @@ def check(args: argparse.Namespace) -> int:
             cwd = build_workspace if check_spec["cwd"] == "." else build_workspace / check_spec["cwd"]
             if not cwd.is_dir():
                 fail("ENVIRONMENT_PLAN_INVALID", f"check working directory {check_spec['cwd']} is missing")
-            code = run_check(
+            code, stdout, stderr, stdout_truncated, stderr_truncated = run_check(
                 build_workspace,
                 run_dir,
                 cwd,
@@ -416,6 +531,10 @@ def check(args: argparse.Namespace) -> int:
                 "outputSha256": receipt.get("outputSha256"),
                 "exitCode": code,
                 "expectExit": check_spec["expectExit"],
+                "stdout": stdout,
+                "stderr": stderr,
+                "stdoutTruncated": stdout_truncated,
+                "stderrTruncated": stderr_truncated,
                 "durationMs": int((time.monotonic() - started) * 1000),
                 "createdAt": now_rfc3339(),
             },
@@ -455,6 +574,12 @@ def main(argv: list[str] | None = None) -> int:
 
     descriptor_parser = subparsers.add_parser("descriptor")
     descriptor_parser.set_defaults(handler=lambda _args: _print(descriptor()))
+
+    resolve_parser = subparsers.add_parser("resolve")
+    resolve_parser.add_argument("--request", required=True)
+    resolve_parser.add_argument("--workspace", default=None)
+    resolve_parser.add_argument("--output", default=None)
+    resolve_parser.set_defaults(handler=resolve)
 
     build_parser = subparsers.add_parser("build")
     build_parser.add_argument("--request", required=True)

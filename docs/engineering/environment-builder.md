@@ -97,14 +97,15 @@ matches Core's default.
 
 1. **fetch** — network only through `FACTORY_ENVIRONMENT_BUILDER_FETCH_PROXY`
    (credential-free HTTP(S) CONNECT proxy) on an explicitly selected broker
-   network. The only accepted values are `none`, `factory-egress`,
-   `factory-deps-egress`, `factory-egress-internal` and the Compose-prefixed
-   equivalents. `host`, `container`, `slirp4netns`, `pasta`, `bridge` and
-   arbitrary names are rejected. A non-`none` network requires the proxy; the
-   exact plan allowlist is passed as `fetchPolicy` and the builder refuses a
-   fetch whose broker policy is missing or differs from the plan. The fetch
-   phase realises the environment and copies every valid store path into the
-   persistent Nix store cache.
+   network. Only `none`, `factory-egress-internal`, `factory-deps-egress` and
+   their internal Compose-prefixed forms are accepted. The wrapper verifies
+   with `podman network inspect` that the selected network is
+   `internal=true`; `host`, `container`, `slirp4netns`, `pasta`, `bridge`,
+   non-internal `factory-egress` and arbitrary networks are rejected. A
+   non-`none` network requires the proxy; the exact plan allowlist is passed
+   as `fetchPolicy` and the builder refuses a fetch whose broker policy is
+   missing or differs from the plan. The fetch phase realises the environment
+   and populates the verified persistent Nix store cache.
 2. **build** — `--network none`, `subprocess` timeout, Nix
    `sandbox = true`, `sandbox-fallback = false`, `substituters =` empty and
    `--offline`. A missing prefetched path is `ENVIRONMENT_NETWORK_DENIED`, not a
@@ -112,9 +113,22 @@ matches Core's default.
 
 The wrapper mounts only the read-only project at `/inputs/workspace`, a
 writable run cache at `/cache`, and a persistent Nix store cache at `/nix`.
-The store cache is seeded from the verified image once and lets the offline
-build/check reuse the exact fetched derivations, sources and `devenv-tasks`
-inputs. Non-root execution uses `--userns=keep-id:uid=10001,gid=10001`,
+Run directories and the store cache must canonicalize inside the builder cache
+root; symlinks, `..` escapes, `/`, `$HOME`, the repository root, the container
+engine store and protected host paths are rejected. The store cache is seeded
+from the verified image once and lets the offline build/check reuse the exact
+fetched derivations, sources and `devenv-tasks` inputs. Nix signature
+verification stays enabled with the pinned `cache.nixos.org` and
+`devenv.cachix.org` keys; the builder does not set global
+`require-sigs=false` and does not import unsigned local closures.
+
+Disk is checked before and after the run against the frozen `diskMiB`; an
+over-budget run fails `ENVIRONMENT_RESOURCE_LIMIT` and is not issued a
+successful receipt. This is a post-hoc `du` bound (`disk.exact=false`), not an
+exact filesystem quota; the evidence records the observed usage and does not
+claim exact disk attestation.
+
+Non-root execution uses `--userns=keep-id:uid=10001,gid=10001`,
 `--user 10001:10001`, `--cap-drop ALL --cap-add SYS_ADMIN --cap-add
 SYS_CHROOT` (Nix sandbox and chroot), `--security-opt unmask=ALL` (Nix's
 `/proc` remount test), `no-new-privileges`, bounded
@@ -157,11 +171,14 @@ The sandbox attestation compares the observed cgroup memory/PID limits and
 or tolerance. The wrapper also refuses a request whose plan resources do not
 equal the spec resource policy.
 
-The wrapper host side is a development/CI harness. Integration must place the
-same image behind the runtime broker or an equivalent narrow execution service,
-with the broker's image allowlist/digest and the same no-secret/no-network
-limits. Core authorization, risk, Gate and candidate acceptance are unchanged by
-this slice.
+The wrapper host side is a development/CI harness. WP1-C now places the same
+image behind the runtime broker (`/v1/environments/resolve` and
+`/v1/environments/build`) with the broker's exact image/digest allowlist, bounded
+staging, internal fetch egress and no-secret/no-network limits; see the
+[environment runtime broker integration](../implementation/environment-runtime-broker.md).
+Core authorization, risk, Gate and candidate acceptance are unchanged by this
+slice. Frozen check execution does not yet call `builder check`; that remains the
+WP1-D gap and is not claimed as wired.
 
 ## 6. Evidence boundary
 

@@ -1,0 +1,81 @@
+{
+  "allowUnfree": false,
+  "blockers": [],
+  "entries": [
+    {
+      "attribution": "LGPL-2.1 tool; Factory invokes Nix as a separate executable.",
+      "license": "LGPL-2.1-only",
+      "name": "nix",
+      "ownerOverrideId": null,
+      "sha256": "",
+      "source": "https://github.com/NixOS/nix/blob/master/COPYING",
+      "unfree": false,
+      "version": "2.28.3"
+    },
+    {
+      "attribution": "Copyright 2003-2026 Eelco Dolstra and the Nixpkgs/NixOS contributors.",
+      "license": "MIT",
+      "name": "nixpkgs",
+      "ownerOverrideId": null,
+      "sha256": "",
+      "source": "https://github.com/NixOS/nixpkgs/blob/master/COPYING",
+      "unfree": false,
+      "version": "pinned"
+    },
+    {
+      "attribution": "Apache-2.0; repository LICENSE and Cargo.toml are authoritative.",
+      "license": "Apache-2.0",
+      "name": "devenv",
+      "ownerOverrideId": null,
+      "sha256": "",
+      "source": "https://github.com/cachix/devenv/blob/main/LICENSE",
+      "unfree": false,
+      "version": "1.11.2"
+    },
+    {
+      "attribution": "Node.js is MIT licensed.",
+      "license": "MIT",
+      "name": "nodejs",
+      "ownerOverrideId": null,
+      "sha256": "",
+      "source": "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d",
+      "unfree": false,
+      "version": "22.20.0"
+    },
+    {
+      "attribution": "Playwright is Apache-2.0 licensed.",
+      "license": "Apache-2.0",
+      "name": "playwright",
+      "ownerOverrideId": null,
+      "sha256": "",
+      "source": "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d",
+      "unfree": false,
+      "version": "1.64.1"
+    },
+    {
+      "attribution": "Chromium browser build distributed by the pinned Playwright driver.",
+      "license": "BSD-3-Clause",
+      "name": "chromium",
+      "ownerOverrideId": null,
+      "sha256": "",
+      "source": "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d",
+      "unfree": false,
+      "version": "1.64.1"
+    },
+    {
+      "attribution": "Rust toolchain is MIT/Apache-2.0 dual licensed.",
+      "license": "MIT",
+      "name": "rust",
+      "ownerOverrideId": null,
+      "sha256": "",
+      "source": "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d",
+      "unfree": false,
+      "version": "1.90.0"
+    }
+  ],
+  "inventorySha256": "8cce25b2a1f0351bee1dd1f0c2169362d42418c9e1c7997e1b72615cea09bff6",
+  "overrides": [],
+  "policyRevision": "nix-devenv-license-v1",
+  "sbomSha256": "5f2a9b5b3ec0d7dbfea7c890af8fbb0f1ef267b3f26bf6b0c0a195fb3521539e",
+  "schemaVersion": 1
+}

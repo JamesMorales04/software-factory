@@ -71,6 +71,7 @@ const CORE_SECRETS: &[&str] = &[
     "reviewer-operability.token",
     "attempt-grant.key",
     "master.key",
+    "runtime-broker-environment.token",
 ];
 const WORKER_SECRETS: &[&str] = &[
     "worker-bootstrap.token",
@@ -95,6 +96,7 @@ const RUNTIME_SECRETS: &[&str] = &[
     "runtime-broker-supervisor.token",
     "runtime-broker-verifier.token",
     "runtime-broker-provider.token",
+    "runtime-broker-environment.token",
 ];
 // The profile-gated OpenSpec validation job reads the latest durable
 // projection through the operator-authenticated Core endpoint. It receives only

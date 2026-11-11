@@ -14,11 +14,12 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     env,
+    io::Cursor,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
     process::Stdio,
     sync::{Arc, RwLock},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use axum::{
@@ -31,8 +32,9 @@ use axum::{
 };
 use factory_native::dependency_egress::{self, EgressAllowlist, PeerSubnet};
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use tar::{Builder, EntryType, Header};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     process::Command,
@@ -40,6 +42,9 @@ use tokio::{
 };
 
 use factory_native::runtime_broker::{
+    ENVIRONMENT_BUILD_ROUTE, ENVIRONMENT_RESOLVE_ROUTE, EnvironmentBrokerOperation,
+    EnvironmentBrokerRequest, MAX_ENVIRONMENT_REQUEST_BYTES, MAX_ENVIRONMENT_WORKSPACE_BYTES,
+    MAX_ENVIRONMENT_WORKSPACE_FILE_BYTES, MAX_ENVIRONMENT_WORKSPACE_FILES,
     MAX_RESOURCE_INVENTORY_BYTES, ManagedResources, ResourceOwner, is_valid_container_name,
     is_valid_exec_container_name, is_valid_provider_container_name, is_valid_volume_name,
     legacy_workspace_identity_matches, parse_container_inventory, parse_container_labels,
@@ -65,11 +70,22 @@ const MAX_ACTIVE_EXECUTIONS: usize = 4096;
 const DEPENDENCY_EGRESS_UNAVAILABLE: &str = "DEPENDENCY_EGRESS_UNAVAILABLE";
 const DEPENDENCY_RUNTIME_UNAVAILABLE: &str = "DEPENDENCY_RUNTIME_UNAVAILABLE";
 const MAX_DEPENDENCY_HEALTH_REASON: usize = 512;
-const OWNER_TOKEN_FILES: [(ResourceOwner, &str); 3] = [
+const OWNER_TOKEN_FILES: [(ResourceOwner, &str); 4] = [
     (ResourceOwner::Supervisor, "runtime-broker-supervisor.token"),
     (ResourceOwner::Verifier, "runtime-broker-verifier.token"),
     (ResourceOwner::Provider, "runtime-broker-provider.token"),
+    (
+        ResourceOwner::Environment,
+        "runtime-broker-environment.token",
+    ),
 ];
+const ENVIRONMENT_MAX_LOG_BYTES: usize = 1024 * 1024;
+const ENVIRONMENT_EGRESS_PORT: u16 = 18080;
+const ENVIRONMENT_EGRESS_SLOTS: u8 = 64;
+const ENVIRONMENT_NETWORK_PREFIX: &str = "factory-env-egress-";
+const ENVIRONMENT_BUILDER_LABEL: &str = "io.software-factory.environment-builder.source-digest";
+const ENVIRONMENT_BUILDER_POLICY_LABEL: &str =
+    "io.software-factory.environment-builder.policy-revision";
 
 const PROVIDER_ENV_KEYS: [&str; 19] = [
     "FACTORY_PROVIDER_SOCKET",
@@ -312,6 +328,60 @@ impl DependencySetupFailure {
     }
 }
 
+#[derive(Clone, Debug)]
+struct EnvironmentBuilderRuntime {
+    status: &'static str,
+    image: String,
+    digest: String,
+    image_id: String,
+    platform: String,
+    policy_revision: String,
+    reason: String,
+}
+
+impl EnvironmentBuilderRuntime {
+    fn unavailable(reason: impl Into<String>) -> Self {
+        Self {
+            status: "UNAVAILABLE",
+            image: String::new(),
+            digest: String::new(),
+            image_id: String::new(),
+            platform: String::new(),
+            policy_revision: String::new(),
+            reason: bounded_dependency_reason(&reason.into()),
+        }
+    }
+
+    fn ready(
+        image: String,
+        digest: String,
+        image_id: String,
+        platform: String,
+        policy_revision: String,
+    ) -> Self {
+        Self {
+            status: "READY",
+            image,
+            digest,
+            image_id,
+            platform,
+            policy_revision,
+            reason: String::new(),
+        }
+    }
+
+    fn health_projection(&self) -> Value {
+        json!({
+            "status": self.status,
+            "image": self.image,
+            "digest": self.digest,
+            "platform": self.platform,
+            "policyRevision": self.policy_revision,
+            "reason": self.reason,
+        })
+    }
+}
+
 #[derive(Clone)]
 struct App {
     tokens: Arc<OwnerTokens>,
@@ -325,6 +395,8 @@ struct App {
     provider_session_root: PathBuf,
     import_images: Vec<(String, PathBuf)>,
     dependency_acquisition: Arc<RwLock<DependencyAcquisitionState>>,
+    environment_builder: Arc<RwLock<EnvironmentBuilderRuntime>>,
+    environment_egress_slots: Arc<tokio::sync::Mutex<BTreeSet<u8>>>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -389,6 +461,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     let import_images =
         parse_import_images(env::var("FACTORY_RUNTIME_IMPORT_IMAGES").unwrap_or_default())?;
+    let environment_builder = load_environment_builder_runtime();
     let bind = env::var("FACTORY_BIND").unwrap_or_else(|_| "0.0.0.0:8770".into());
     let addr: std::net::SocketAddr = bind.parse()?;
     let container_mode = env::var("FACTORY_CONTAINER_MODE").as_deref() == Ok("1");
@@ -413,9 +486,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             DEPENDENCY_RUNTIME_UNAVAILABLE,
             "dependency acquisition setup has not completed",
         ))),
+        environment_builder: Arc::new(RwLock::new(environment_builder)),
+        environment_egress_slots: Arc::new(tokio::sync::Mutex::new(BTreeSet::new())),
     });
     app.preflight().await?;
     app.prepull_images().await?;
+    app.prepare_environment_builder().await;
 
     let dependency_setup = setup_dependency_acquisition(&app).await;
     app.set_dependency_acquisition(dependency_setup.state.clone());
@@ -436,7 +512,15 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             axum::routing::delete(remove_container),
         )
         .route("/v1/containers/{container}/status", get(container_status))
-        .route("/v1/providers/start", post(start_provider));
+        .route("/v1/providers/start", post(start_provider))
+        .route(
+            &format!("/{ENVIRONMENT_BUILD_ROUTE}"),
+            post(build_environment).layer(DefaultBodyLimit::max(MAX_ENVIRONMENT_REQUEST_BYTES)),
+        )
+        .route(
+            &format!("/{ENVIRONMENT_RESOLVE_ROUTE}"),
+            post(resolve_environment).layer(DefaultBodyLimit::max(MAX_ENVIRONMENT_REQUEST_BYTES)),
+        );
     if dependency_setup.service.is_none() {
         base_router = base_router.route(
             factory_native::dependency_service::DEPENDENCY_ACQUIRE_ROUTE,
@@ -513,7 +597,372 @@ fn parse_registries(raw: String) -> Result<Vec<String>, String> {
     Ok(registries)
 }
 
+fn is_sha256_digest(value: &str) -> bool {
+    value.len() == 71
+        && value.starts_with("sha256:")
+        && value[7..].bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn normalize_digest(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    let hex = value.strip_prefix("sha256:").unwrap_or(value);
+    if hex.len() != 64 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(format!("{value:?} is not a sha256 digest"));
+    }
+    Ok(format!("sha256:{}", hex.to_ascii_lowercase()))
+}
+
+fn normalize_image_id(value: &str) -> Option<String> {
+    let value = value.trim();
+    let hex = value.strip_prefix("sha256:").unwrap_or(value);
+    (hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .then(|| format!("sha256:{}", hex.to_ascii_lowercase()))
+}
+
+fn valid_environment_image(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 512
+        && !value.starts_with('-')
+        && !value.contains('@')
+        && !value.contains("://")
+        && !value.chars().any(char::is_whitespace)
+        && !value.chars().any(char::is_control)
+}
+
+fn load_environment_builder_runtime() -> EnvironmentBuilderRuntime {
+    let image = env::var("FACTORY_RUNTIME_ENVIRONMENT_BUILDER_IMAGE").unwrap_or_default();
+    let image = image.trim().to_owned();
+    if image.is_empty() {
+        return EnvironmentBuilderRuntime::unavailable(
+            "no environment-builder image is configured",
+        );
+    }
+    if !valid_environment_image(&image) {
+        return EnvironmentBuilderRuntime::unavailable(
+            "FACTORY_RUNTIME_ENVIRONMENT_BUILDER_IMAGE is invalid",
+        );
+    }
+    let bundle = env::var("FACTORY_RUNTIME_ENVIRONMENT_BUILDER_BUNDLE").unwrap_or_default();
+    let bundle = PathBuf::from(bundle.trim());
+    if !bundle.is_absolute() || !bundle.is_file() {
+        return EnvironmentBuilderRuntime::unavailable(
+            "FACTORY_RUNTIME_ENVIRONMENT_BUILDER_BUNDLE must be an absolute existing file",
+        );
+    }
+    let digest_file = env::var("FACTORY_RUNTIME_ENVIRONMENT_BUILDER_DIGEST_FILE")
+        .unwrap_or_else(|_| "/bundles/environment-builder.digest".into());
+    let digest_file = PathBuf::from(digest_file);
+    if !digest_file.is_absolute() {
+        return EnvironmentBuilderRuntime::unavailable(
+            "FACTORY_RUNTIME_ENVIRONMENT_BUILDER_DIGEST_FILE must be absolute",
+        );
+    }
+    let digest = match std::fs::read_to_string(&digest_file) {
+        Ok(value) => value.trim().to_owned(),
+        Err(_) => {
+            return EnvironmentBuilderRuntime::unavailable(format!(
+                "environment-builder digest file {} is unavailable",
+                digest_file.display()
+            ));
+        }
+    };
+    let digest = match normalize_digest(&digest) {
+        Ok(digest) => digest,
+        Err(_) => {
+            return EnvironmentBuilderRuntime::unavailable(
+                "environment-builder digest file does not contain a sha256 digest",
+            );
+        }
+    };
+    let platform = env::var("FACTORY_RUNTIME_ENVIRONMENT_BUILDER_PLATFORM")
+        .unwrap_or_else(|_| "x86_64-linux".into());
+    if platform != "x86_64-linux" {
+        return EnvironmentBuilderRuntime::unavailable(
+            "environment-builder platform is not supported",
+        );
+    }
+    let policy_revision = env::var("FACTORY_RUNTIME_ENVIRONMENT_BUILDER_POLICY_REVISION")
+        .unwrap_or_else(|_| "nix-devenv-environment-v1".into());
+    if policy_revision.trim().is_empty() || policy_revision.len() > 128 {
+        return EnvironmentBuilderRuntime::unavailable(
+            "environment-builder policy revision is invalid",
+        );
+    }
+    EnvironmentBuilderRuntime {
+        status: "IMPORTING",
+        image,
+        digest,
+        image_id: String::new(),
+        platform,
+        policy_revision,
+        reason: format!("importing {}", bundle.display()),
+    }
+}
+
 impl App {
+    fn environment_builder(&self) -> EnvironmentBuilderRuntime {
+        self.environment_builder
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    fn set_environment_builder(&self, value: EnvironmentBuilderRuntime) {
+        *self
+            .environment_builder
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = value;
+    }
+
+    async fn prepare_environment_builder(&self) {
+        let runtime = self.environment_builder();
+        if runtime.status == "UNAVAILABLE" {
+            tracing::info!(
+                reason = %runtime.reason,
+                "environment builder disabled at startup; runtime broker remains available"
+            );
+            return;
+        }
+        // Compose may start the runtime while a one-shot bundle job is still
+        // finalizing the multi-gigabyte rootfs tar. Retry the exact-digest import
+        // for a bounded window instead of reporting a transient digest mismatch
+        // as a permanent outage. The broker still fails closed at the deadline.
+        let mut last_reason = String::new();
+        for attempt in 0..24u32 {
+            match self.import_environment_builder(&runtime).await {
+                Ok(image_id) => {
+                    let ready = EnvironmentBuilderRuntime::ready(
+                        runtime.image.clone(),
+                        runtime.digest.clone(),
+                        image_id,
+                        runtime.platform.clone(),
+                        runtime.policy_revision.clone(),
+                    );
+                    tracing::info!(
+                        image = %ready.image,
+                        digest = %ready.digest,
+                        image_id = %ready.image_id,
+                        "environment builder ready"
+                    );
+                    self.set_environment_builder(ready);
+                    return;
+                }
+                Err(reason) => {
+                    last_reason = reason;
+                    if attempt < 23 {
+                        time::sleep(Duration::from_secs(5)).await;
+                    }
+                }
+            }
+        }
+        let reason = bounded_dependency_reason(&last_reason);
+        tracing::warn!(
+            reason = %reason,
+            "environment builder unavailable; environment operations fail closed"
+        );
+        self.set_environment_builder(EnvironmentBuilderRuntime::unavailable(reason));
+    }
+
+    async fn import_environment_builder(
+        &self,
+        runtime: &EnvironmentBuilderRuntime,
+    ) -> Result<String, String> {
+        let inspect = self
+            .podman_output([
+                "image",
+                "inspect",
+                "--format",
+                &format!(
+                    "{{{{.Id}}}}\t{{{{ index .Labels \"{ENVIRONMENT_BUILDER_LABEL}\" }}}}\t{{{{ index .Labels \"{ENVIRONMENT_BUILDER_POLICY_LABEL}\" }}}}"
+                ),
+                runtime.image.as_str(),
+            ])
+            .await;
+        if let Ok(output) = inspect
+            && output.status.success()
+        {
+            let text = String::from_utf8_lossy(&output.stdout);
+            let mut fields = text.trim().split('\t');
+            let image_id = fields.next().and_then(normalize_image_id);
+            let digest = fields.next().unwrap_or_default();
+            let policy = fields.next().unwrap_or_default();
+            if let Some(image_id) = image_id
+                && digest == runtime.digest
+                && policy == runtime.policy_revision
+            {
+                let version = self
+                    .podman_output([
+                        "image",
+                        "inspect",
+                        "--format",
+                        "{{.Version}}",
+                        image_id.as_str(),
+                    ])
+                    .await;
+                let _ = version;
+                return Ok(image_id);
+            }
+        }
+        let bundle = env::var("FACTORY_RUNTIME_ENVIRONMENT_BUILDER_BUNDLE")
+            .map_err(|_| "environment-builder bundle is not configured".to_owned())?;
+        let bundle = PathBuf::from(bundle);
+        if !bundle.is_absolute() || !bundle.is_file() {
+            return Err("environment-builder bundle is unavailable".into());
+        }
+        // The trusted one-shot bundle service hashes the exact rootfs tar and
+        // writes the digest next to it. The imported image is labelled with that
+        // digest and its inspected ID is pinned; the broker never pulls the tag.
+        let digest_label = format!("LABEL {ENVIRONMENT_BUILDER_LABEL}={}", runtime.digest);
+        let policy_label = format!(
+            "LABEL {ENVIRONMENT_BUILDER_POLICY_LABEL}={}",
+            runtime.policy_revision
+        );
+        let image_change = format!("ENV FACTORY_ENVIRONMENT_BUILDER_IMAGE={}", runtime.image);
+        let digest_change = format!("ENV FACTORY_ENVIRONMENT_BUILDER_DIGEST={}", runtime.digest);
+        let platform_change = format!(
+            "ENV FACTORY_ENVIRONMENT_BUILDER_PLATFORM={}",
+            runtime.platform
+        );
+        let policy_change = format!(
+            "ENV FACTORY_ENVIRONMENT_BUILDER_POLICY_REVISION={}",
+            runtime.policy_revision
+        );
+        let output = time::timeout(
+            Duration::from_secs(3_600),
+            self.podman_command([
+                "import",
+                "--change",
+                "ENV PATH=/home/factory/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                "--change",
+                "ENV HOME=/home/factory",
+                "--change",
+                "ENV NIX_CONFIG=experimental-features = nix-command flakes",
+                "--change",
+                "ENV FACTORY_PLAYWRIGHT_CORE=/opt/factory-browser/node_modules/playwright-core",
+                "--change",
+                "ENV CHROMIUM_EXE=/home/factory/.nix-profile/bin/chromium",
+                "--change",
+                "ENV PYTHONDONTWRITEBYTECODE=1",
+                "--change",
+                image_change.as_str(),
+                "--change",
+                digest_change.as_str(),
+                "--change",
+                platform_change.as_str(),
+                "--change",
+                policy_change.as_str(),
+                "--change",
+                digest_label.as_str(),
+                "--change",
+                policy_label.as_str(),
+                "--change",
+                "ENTRYPOINT [\"/opt/factory-environment-builder/entrypoint.py\"]",
+                "--change",
+                "WORKDIR /cache",
+                "--change",
+                "USER 10001:10001",
+                bundle.to_string_lossy().as_ref(),
+                runtime.image.as_str(),
+            ])
+            .output(),
+        )
+        .await
+        .map_err(|_| "environment-builder import timed out".to_owned())?
+        .map_err(|error| format!("environment-builder import failed: {error}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "environment-builder import failed: {}",
+                stderr(&output)
+            ));
+        }
+        let output = self
+            .podman_output([
+                "image",
+                "inspect",
+                "--format",
+                "{{.Id}}",
+                runtime.image.as_str(),
+            ])
+            .await?;
+        if !output.status.success() {
+            return Err("environment-builder image is unavailable after import".into());
+        }
+        let image_id = normalize_image_id(&String::from_utf8_lossy(&output.stdout))
+            .ok_or_else(|| "environment-builder image returned an invalid identity".to_owned())?;
+        let labels = self
+            .podman_output([
+                "image",
+                "inspect",
+                "--format",
+                &format!(
+                    "{{{{ index .Labels \"{ENVIRONMENT_BUILDER_LABEL}\" }}}}\t{{{{ index .Labels \"{ENVIRONMENT_BUILDER_POLICY_LABEL}\" }}}}"
+                ),
+                image_id.as_str(),
+            ])
+            .await?;
+        if !labels.status.success() {
+            return Err("environment-builder labels could not be inspected".into());
+        }
+        let text = String::from_utf8_lossy(&labels.stdout);
+        let mut fields = text.trim().split('\t');
+        if fields.next().unwrap_or_default() != runtime.digest
+            || fields.next().unwrap_or_default() != runtime.policy_revision
+        {
+            return Err("environment-builder image digest label does not match".into());
+        }
+        Ok(image_id)
+    }
+
+    async fn resolve_environment_builder_image(
+        &self,
+        image: &str,
+        digest: &str,
+    ) -> Result<String, EnvironmentBrokerFailure> {
+        let runtime = self.environment_builder();
+        if runtime.status != "READY" {
+            return Err(EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_BUILDER_UNAVAILABLE",
+                if runtime.reason.is_empty() {
+                    "the environment builder is not ready".to_owned()
+                } else {
+                    runtime.reason.clone()
+                },
+            ));
+        }
+        if image != runtime.image || digest != runtime.digest {
+            return Err(EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_HASH_MISMATCH",
+                "the requested builder image/digest is not the configured environment builder",
+            ));
+        }
+        let output = self
+            .podman_output(["image", "inspect", "--format", "{{.Id}}", image])
+            .await
+            .map_err(|error| {
+                EnvironmentBrokerFailure::new("ENVIRONMENT_BUILDER_UNAVAILABLE", error)
+            })?;
+        if !output.status.success() {
+            return Err(EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_BUILDER_UNAVAILABLE",
+                "the configured environment builder image is not present",
+            ));
+        }
+        let image_id =
+            normalize_image_id(&String::from_utf8_lossy(&output.stdout)).ok_or_else(|| {
+                EnvironmentBrokerFailure::new(
+                    "ENVIRONMENT_BUILDER_UNAVAILABLE",
+                    "the configured environment builder image has an invalid identity",
+                )
+            })?;
+        if image_id != runtime.image_id {
+            return Err(EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_HASH_MISMATCH",
+                "the configured environment builder image identity changed",
+            ));
+        }
+        Ok(image_id)
+    }
+
     fn dependency_acquisition(&self) -> DependencyAcquisitionState {
         self.dependency_acquisition
             .read()
@@ -1569,6 +2018,7 @@ async fn health(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
         "engine_exposed": false,
         "network": "none",
         "dependencyAcquisition": app.dependency_acquisition().health_projection(),
+        "environmentBuilder": app.environment_builder().health_projection(),
     }))
 }
 
@@ -1680,6 +2130,13 @@ fn has_host_root_mapping(map: &str) -> bool {
     !any
 }
 
+fn bundle_digest_text(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 fn bundle_digest(path: &std::path::Path) -> Result<String, String> {
     use std::io::Read;
     let mut file =
@@ -1695,11 +2152,7 @@ fn bundle_digest(path: &std::path::Path) -> Result<String, String> {
         }
         digest.update(&buffer[..read]);
     }
-    Ok(digest
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect())
+    Ok(bundle_digest_text(&digest.finalize()))
 }
 
 fn validate_argv(argv: &[String]) -> Result<(), String> {
@@ -1763,6 +2216,9 @@ async fn create_volume(
     }
     if owner == ResourceOwner::Provider {
         return forbidden("provider owner cannot create workspace volumes");
+    }
+    if owner == ResourceOwner::Environment {
+        return forbidden("environment owner cannot use generic workspace operations");
     }
     let lock = app.resource_lock(&input.volume);
     let _guard = lock.lock().await;
@@ -1838,6 +2294,9 @@ async fn remove_volume(
     let Some(owner) = app.owner(&headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
+    if owner == ResourceOwner::Environment {
+        return forbidden("environment owner cannot use generic workspace operations");
+    }
     if !is_valid_volume_name(&volume) {
         return bad_request("invalid volume name");
     }
@@ -1861,6 +2320,9 @@ async fn import_volume(
     let Some(owner) = app.owner(&headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
+    if owner == ResourceOwner::Environment {
+        return forbidden("environment owner cannot use generic workspace operations");
+    }
     if !is_valid_volume_name(&volume) || body.is_empty() || body.len() > MAX_ARCHIVE_BYTES {
         return bad_request("invalid volume import");
     }
@@ -1919,6 +2381,9 @@ async fn export_volume(
     let Some(owner) = app.owner(&headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
+    if owner == ResourceOwner::Environment {
+        return forbidden("environment owner cannot use generic workspace operations");
+    }
     if !is_valid_volume_name(&volume) {
         return bad_request("invalid volume name");
     }
@@ -1980,6 +2445,44 @@ async fn export_volume(
         .into_response()
 }
 
+async fn resolve_run_image(app: &Arc<App>, image: &str) -> Result<String, Response> {
+    let Some((base, digest)) = image.rsplit_once('@') else {
+        if app.images.contains(image) {
+            return Ok(image.to_owned());
+        }
+        return Err(bad_request("image is not allowlisted"));
+    };
+    let builder = app.environment_builder();
+    let builder_base_allowed = builder.status == "READY" && builder.image == base;
+    if !is_sha256_digest(digest) || (!app.images.contains(base) && !builder_base_allowed) {
+        return Err(bad_request("image digest is not allowlisted"));
+    }
+    let output = app
+        .podman_output([
+            "image",
+            "inspect",
+            "--format",
+            "{{.Id}}\t{{.Digest}}\t{{ index .Labels \"io.software-factory.environment-builder.source-digest\" }}",
+            base,
+        ])
+        .await
+        .map_err(operation_error)?;
+    if !output.status.success() {
+        return Err(bad_request("image digest cannot be resolved"));
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut fields = text.trim().split('\t');
+    let id = fields.next().and_then(normalize_image_id);
+    let repo_digest = fields.next().unwrap_or_default();
+    let source_digest = fields.next().unwrap_or_default();
+    if id.is_none() || (repo_digest != digest && source_digest != digest) {
+        return Err(bad_request(
+            "image digest does not match the inspected image",
+        ));
+    }
+    id.ok_or_else(|| bad_request("image identity is invalid"))
+}
+
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct RunContainer {
@@ -2007,9 +2510,13 @@ async fn run_container(
     if owner == ResourceOwner::Provider {
         return forbidden("provider owner cannot start execution containers");
     }
-    if !app.images.contains(&input.image) {
-        return bad_request("image is not allowlisted");
+    if owner == ResourceOwner::Environment {
+        return forbidden("environment owner cannot use generic execution containers");
     }
+    let run_image = match resolve_run_image(&app, &input.image).await {
+        Ok(image) => image,
+        Err(response) => return response,
+    };
     if let Err(error) = validate_argv(&input.argv) {
         return bad_request(&error);
     }
@@ -2042,9 +2549,10 @@ async fn run_container(
     drop(lock);
     let task_app = Arc::clone(&app);
     let task_input = input.clone();
+    let task_image = run_image.clone();
     let task = tokio::spawn(async move {
         tracing::info!(container=%task_input.container, volume=%task_input.volume, "child execution started");
-        let result = run_child(&task_app, &task_input, owner).await;
+        let result = run_child(&task_app, &task_input, owner, &task_image).await;
         let confirmed = task_app
             .confirm_execution_cleanup(&task_input.container, owner, &task_input.volume)
             .await;
@@ -2110,6 +2618,7 @@ async fn run_container(
     }
 }
 
+#[derive(Debug)]
 struct ChildOutput {
     exit_code: Option<i32>,
     stdout: Vec<u8>,
@@ -2122,6 +2631,7 @@ async fn run_child(
     app: &App,
     input: &RunContainer,
     owner: ResourceOwner,
+    image: &str,
 ) -> Result<ChildOutput, String> {
     let timeout = Duration::from_secs(input.timeout_secs);
     let owner_label = format!("{OWNER_LABEL}={}", owner.as_str());
@@ -2153,7 +2663,7 @@ async fn run_child(
         "--env=TMPDIR=/tmp".to_owned(),
         "--env=CARGO_TARGET_DIR=/cargo-target".to_owned(),
         format!("--volume={}:/workspace:rw", input.volume),
-        input.image.clone(),
+        image.to_owned(),
     ];
     let mut command = app.podman_command(args.iter().map(String::as_str));
     for argument in &input.argv {
@@ -2218,6 +2728,9 @@ async fn remove_container(
     let Some(owner) = app.owner(&headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
+    if owner == ResourceOwner::Environment {
+        return forbidden("environment owner cannot use generic containers");
+    }
     if !is_valid_container_name(&container) {
         return bad_request("invalid container name");
     }
@@ -2237,6 +2750,9 @@ async fn container_status(
     let Some(owner) = app.owner(&headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
+    if owner == ResourceOwner::Environment {
+        return forbidden("environment owner cannot use generic containers");
+    }
     if !is_valid_container_name(&container) {
         return bad_request("invalid container name");
     }
@@ -2417,6 +2933,1480 @@ async fn start_provider(
         .into_response()
 }
 
+#[derive(Debug)]
+struct EnvironmentBrokerFailure {
+    code: String,
+    message: String,
+    status: StatusCode,
+}
+
+impl EnvironmentBrokerFailure {
+    fn new(code: &str, message: impl Into<String>) -> Self {
+        let status = match code {
+            "ENVIRONMENT_BUILD_TIMEOUT" => StatusCode::GATEWAY_TIMEOUT,
+            "ENVIRONMENT_BUILD_FAILED" => StatusCode::UNPROCESSABLE_ENTITY,
+            "ENVIRONMENT_BUILDER_UNAVAILABLE" => StatusCode::SERVICE_UNAVAILABLE,
+            _ => StatusCode::BAD_REQUEST,
+        };
+        Self {
+            code: code.to_owned(),
+            message: message.into().chars().take(2_000).collect(),
+            status,
+        }
+    }
+
+    fn response(self) -> Response {
+        (
+            self.status,
+            Json(json!({"code": self.code, "error": self.message})),
+        )
+            .into_response()
+    }
+}
+
+struct ValidatedEnvironmentRequest {
+    image_id: String,
+    workspace: Vec<(String, Vec<u8>)>,
+    fetch_hosts: BTreeSet<String>,
+}
+
+async fn build_environment(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(input): Json<EnvironmentBrokerRequest>,
+) -> Response {
+    environment_operation(app, headers, input, EnvironmentBrokerOperation::Build).await
+}
+
+async fn resolve_environment(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(input): Json<EnvironmentBrokerRequest>,
+) -> Response {
+    environment_operation(app, headers, input, EnvironmentBrokerOperation::Resolve).await
+}
+
+async fn environment_operation(
+    app: Arc<App>,
+    headers: HeaderMap,
+    input: EnvironmentBrokerRequest,
+    expected: EnvironmentBrokerOperation,
+) -> Response {
+    let Some(owner) = app.owner(&headers) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    if owner != ResourceOwner::Environment {
+        return forbidden("only the environment owner may run environment operations");
+    }
+    if input.operation != expected {
+        return bad_request("the environment operation does not match its route");
+    }
+    if let Err(error) = input.validate_shape() {
+        return bad_request(&error);
+    }
+    let validated = match validate_environment_request(&app, &input).await {
+        Ok(validated) => validated,
+        Err(failure) => return failure.response(),
+    };
+    let task = tokio::spawn(execute_environment_operation(app, input, validated));
+    match task.await {
+        Ok(Ok(response)) => Json(response).into_response(),
+        Ok(Err(failure)) => failure.response(),
+        Err(error) => operation_error(format!("environment operation task failed: {error}")),
+    }
+}
+
+async fn validate_environment_request(
+    app: &Arc<App>,
+    input: &EnvironmentBrokerRequest,
+) -> Result<ValidatedEnvironmentRequest, EnvironmentBrokerFailure> {
+    if input.plan.schema_version
+        != factory_native::planning::environment::ENVIRONMENT_SCHEMA_VERSION
+    {
+        return Err(EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_PLAN_INVALID",
+            "unsupported environment plan schema version",
+        ));
+    }
+    if input.image.is_empty() || input.digest.is_empty() {
+        return Err(EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_HASH_MISMATCH",
+            "the environment builder image/digest is incomplete",
+        ));
+    }
+    if input.plan.builder.image != input.image
+        || input.plan.builder.digest != input.digest
+        || input.plan.builder.platform != factory_native::planning::environment::DEFAULT_PLATFORM
+        || input.plan.builder.policy_revision
+            != factory_native::planning::environment::ENVIRONMENT_POLICY_REVISION
+    {
+        return Err(EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_HASH_MISMATCH",
+            "the plan builder descriptor does not match the broker request",
+        ));
+    }
+    let image_id = app
+        .resolve_environment_builder_image(&input.image, &input.digest)
+        .await?;
+    input.plan.resources.validate().map_err(|error| {
+        EnvironmentBrokerFailure::new("ENVIRONMENT_RESOURCE_LIMIT", error.message)
+    })?;
+    input.plan.network.validate().map_err(|error| {
+        EnvironmentBrokerFailure::new("ENVIRONMENT_NETWORK_DENIED", error.message)
+    })?;
+    if !input.plan.nix.sandbox.sandbox
+        || input.plan.nix.sandbox.impure
+        || input.plan.nix.sandbox.privileged
+        || input.plan.nix.sandbox.host_network
+        || !input.plan.nix.sandbox.host_mounts.is_empty()
+        || !input.plan.nix.sandbox.host_sockets.is_empty()
+    {
+        return Err(EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_SANDBOX_DENIED",
+            "the environment plan requests an unsafe builder sandbox",
+        ));
+    }
+    if input.plan.nix.allow_unfree {
+        return Err(EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_LICENSE_DENIED",
+            "allowUnfree must remain false",
+        ));
+    }
+    if let Some(spec) = &input.spec {
+        if spec.status != factory_native::planning::environment::EnvironmentSpecStatus::Frozen {
+            return Err(EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_NOT_FROZEN",
+                "the environment spec is not FROZEN",
+            ));
+        }
+        if spec.builder_image != input.image || spec.builder_image_digest != input.digest {
+            return Err(EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_HASH_MISMATCH",
+                "the frozen spec builder identity does not match the request",
+            ));
+        }
+        if spec.plan_sha256 != input.plan.plan_sha256 {
+            return Err(EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_HASH_MISMATCH",
+                "the frozen spec does not bind the supplied plan hash",
+            ));
+        }
+        if spec.resource_policy != input.plan.resources {
+            return Err(EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_RESOURCE_LIMIT",
+                "the frozen spec resources do not match the plan",
+            ));
+        }
+        if spec.network_policy != input.plan.network {
+            return Err(EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_NETWORK_DENIED",
+                "the frozen spec network policy does not match the plan",
+            ));
+        }
+    } else if input.operation == EnvironmentBrokerOperation::Build {
+        return Err(EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_SPEC_INVALID",
+            "build operations require a frozen environment spec",
+        ));
+    }
+    let workspace = decode_environment_workspace(&input.workspace_files)?;
+    let present: BTreeSet<&str> = workspace.iter().map(|(path, _)| path.as_str()).collect();
+    for file in &input.plan.files {
+        let generated = file.content.is_some();
+        if !generated && !present.contains(file.path.as_str()) {
+            return Err(EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_PLAN_INVALID",
+                format!(
+                    "project environment file {} is missing from the broker workspace",
+                    file.path
+                ),
+            ));
+        }
+    }
+    if workspace.is_empty() && input.plan.files.iter().all(|file| file.content.is_none()) {
+        return Err(EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_PLAN_INVALID",
+            "the broker workspace is empty",
+        ));
+    }
+    let fetch_hosts = plan_fetch_hosts(&input.plan.network.fetch_allowlist)?;
+    Ok(ValidatedEnvironmentRequest {
+        image_id,
+        workspace,
+        fetch_hosts,
+    })
+}
+
+fn plan_fetch_hosts(entries: &[String]) -> Result<BTreeSet<String>, EnvironmentBrokerFailure> {
+    let mut hosts = BTreeSet::new();
+    for entry in entries {
+        if entry.starts_with("github:") {
+            for host in [
+                "github.com",
+                "codeload.github.com",
+                "raw.githubusercontent.com",
+            ] {
+                hosts.insert(format!("{host}:443"));
+            }
+            continue;
+        }
+        let url = reqwest::Url::parse(entry).map_err(|_| {
+            EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_NETWORK_DENIED",
+                format!("fetch allowlist entry {entry:?} is not a valid URL"),
+            )
+        })?;
+        if url.scheme() != "https"
+            || url.username() != ""
+            || url.password().is_some()
+            || url.fragment().is_some()
+        {
+            return Err(EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_NETWORK_DENIED",
+                format!("fetch allowlist entry {entry:?} is not a credential-free HTTPS URL"),
+            ));
+        }
+        let host = url.host_str().ok_or_else(|| {
+            EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_NETWORK_DENIED",
+                format!("fetch allowlist entry {entry:?} has no host"),
+            )
+        })?;
+        let port = url.port_or_known_default().unwrap_or(443);
+        hosts.insert(format!("{host}:{port}"));
+        if hosts.len() > 64 {
+            return Err(EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_NETWORK_DENIED",
+                "fetch allowlist expands beyond its bound",
+            ));
+        }
+    }
+    Ok(hosts)
+}
+
+fn decode_environment_workspace(
+    files: &[factory_native::runtime_broker::EnvironmentWorkspaceFile],
+) -> Result<Vec<(String, Vec<u8>)>, EnvironmentBrokerFailure> {
+    if files.len() > MAX_ENVIRONMENT_WORKSPACE_FILES {
+        return Err(EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_PLAN_INVALID",
+            "the environment workspace has too many files",
+        ));
+    }
+    let mut seen = BTreeSet::new();
+    let mut total = 0usize;
+    let mut decoded = Vec::with_capacity(files.len());
+    for file in files {
+        if !safe_environment_path(&file.path) {
+            return Err(EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_PLAN_INVALID",
+                format!("environment workspace path {:?} is not safe", file.path),
+            ));
+        }
+        if !seen.insert(file.path.clone()) {
+            return Err(EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_PLAN_INVALID",
+                format!("environment workspace path {:?} is duplicated", file.path),
+            ));
+        }
+        let bytes = file.content.as_bytes().to_vec();
+        if bytes.len() > MAX_ENVIRONMENT_WORKSPACE_FILE_BYTES {
+            return Err(EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_PLAN_INVALID",
+                format!(
+                    "environment workspace file {:?} exceeds its bound",
+                    file.path
+                ),
+            ));
+        }
+        total = total.saturating_add(bytes.len());
+        if total > MAX_ENVIRONMENT_WORKSPACE_BYTES {
+            return Err(EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_PLAN_INVALID",
+                "the environment workspace exceeds its byte bound",
+            ));
+        }
+        decoded.push((file.path.clone(), bytes));
+    }
+    decoded.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(decoded)
+}
+
+fn safe_environment_path(path: &str) -> bool {
+    !path.is_empty()
+        && path.len() <= 512
+        && !path.starts_with('/')
+        && !path.contains('\\')
+        && !path.contains('\0')
+        && !path.contains("//")
+        && path
+            .split('/')
+            .all(|component| !component.is_empty() && component != "." && component != "..")
+}
+
+fn build_tar(
+    entries: &[(String, Vec<u8>)],
+    directories: &[&str],
+) -> Result<Vec<u8>, EnvironmentBrokerFailure> {
+    let mut builder = Builder::new(Vec::new());
+    for directory in directories {
+        let mut header = Header::new_gnu();
+        header.set_entry_type(EntryType::Directory);
+        header.set_mode(0o755);
+        header.set_uid(10_001);
+        header.set_gid(10_001);
+        header.set_mtime(0);
+        header.set_size(0);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, directory, Cursor::new(Vec::new()))
+            .map_err(|error| {
+                EnvironmentBrokerFailure::new(
+                    "ENVIRONMENT_BUILD_FAILED",
+                    format!("cannot create the environment workspace archive: {error}"),
+                )
+            })?;
+    }
+    for (path, bytes) in entries {
+        if !safe_environment_path(path) {
+            return Err(EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_PLAN_INVALID",
+                format!("environment archive path {path:?} is not safe"),
+            ));
+        }
+        let mut header = Header::new_gnu();
+        header.set_entry_type(EntryType::Regular);
+        header.set_mode(0o644);
+        header.set_uid(10_001);
+        header.set_gid(10_001);
+        header.set_mtime(0);
+        header.set_size(bytes.len() as u64);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, path, Cursor::new(bytes))
+            .map_err(|error| {
+                EnvironmentBrokerFailure::new(
+                    "ENVIRONMENT_BUILD_FAILED",
+                    format!("cannot create the environment workspace archive: {error}"),
+                )
+            })?;
+    }
+    builder.into_inner().map_err(|error| {
+        EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_BUILD_FAILED",
+            format!("cannot finalize the environment workspace archive: {error}"),
+        )
+    })
+}
+
+fn builder_request_json(
+    input: &EnvironmentBrokerRequest,
+    phase: EnvironmentBrokerOperation,
+    network: &str,
+    proxy: Option<&str>,
+) -> Result<Value, EnvironmentBrokerFailure> {
+    let allowlist = input.plan.network.fetch_allowlist.clone();
+    let fetch_policy = if network == "none" {
+        json!({
+            "network": "none",
+            "proxy": null,
+            "allowlist": allowlist,
+            "enforcedBy": "offline",
+        })
+    } else {
+        json!({
+            "network": network,
+            "proxy": proxy,
+            "allowlist": allowlist,
+            "enforcedBy": "broker",
+        })
+    };
+    let plan = serde_json::to_value(&input.plan).map_err(|_| {
+        EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_SPEC_INVALID",
+            "cannot encode the environment plan",
+        )
+    })?;
+    let mut request = json!({
+        "schemaVersion": 1,
+        "plan": plan,
+        "workspace": "/inputs/workspace",
+        "runDir": "/cache",
+        "fetchNetwork": network,
+        "fetchPolicy": fetch_policy,
+    });
+    if phase != EnvironmentBrokerOperation::Resolve
+        && let Some(spec) = &input.spec
+    {
+        request["spec"] = serde_json::to_value(spec).map_err(|_| {
+            EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_SPEC_INVALID",
+                "cannot encode the environment spec",
+            )
+        })?;
+    }
+    if let Some(proxy) = proxy {
+        request["fetchProxy"] = json!(proxy);
+    }
+    Ok(request)
+}
+
+struct EnvironmentRunResources {
+    app: Arc<App>,
+    container: String,
+    workspace_volume: String,
+    cache_volume: String,
+    cache_persistent: bool,
+    cleaned: bool,
+}
+
+impl EnvironmentRunResources {
+    fn new(app: Arc<App>) -> Self {
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        Self {
+            app,
+            container: format!("factory-env-{}", &id[..32]),
+            workspace_volume: format!("factory-env-ws-{}", &id[..32]),
+            cache_volume: format!("factory-env-cache-{}", &id[..32]),
+            cache_persistent: false,
+            cleaned: false,
+        }
+    }
+
+    /// A build leaves one owner-scoped cache per exact spec so the later check
+    /// can restore the same fetched store offline. The cache name and workspace
+    /// label are derived from the immutable spec hash; it is never reused for a
+    /// different spec and is not exposed as a host path.
+    fn for_spec(app: Arc<App>, spec_sha256: &str) -> Self {
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        let cache_key: String = spec_sha256.chars().take(32).collect();
+        Self {
+            app,
+            container: format!("factory-env-{}", &id[..32]),
+            workspace_volume: format!("factory-env-ws-{}", &id[..32]),
+            cache_volume: format!("factory-env-cache-{cache_key}"),
+            cache_persistent: true,
+            cleaned: false,
+        }
+    }
+
+    async fn cleanup(&mut self) -> bool {
+        if self.cleaned {
+            return true;
+        }
+        self.cleaned = true;
+        cleanup_environment_resources(
+            &self.app,
+            &self.container,
+            &self.workspace_volume,
+            &self.cache_volume,
+            self.cache_persistent,
+        )
+        .await
+    }
+}
+
+impl Drop for EnvironmentRunResources {
+    fn drop(&mut self) {
+        if self.cleaned {
+            return;
+        }
+        let app = Arc::clone(&self.app);
+        let container = self.container.clone();
+        let workspace = self.workspace_volume.clone();
+        let cache = self.cache_volume.clone();
+        let persistent = self.cache_persistent;
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                let _ =
+                    cleanup_environment_resources(&app, &container, &workspace, &cache, persistent)
+                        .await;
+            });
+        }
+    }
+}
+
+async fn cleanup_environment_resources(
+    app: &Arc<App>,
+    container: &str,
+    workspace: &str,
+    cache: &str,
+    cache_persistent: bool,
+) -> bool {
+    let _ = app
+        .podman_output(["rm", "--force", "--time=0", container])
+        .await;
+    let mut confirmed = true;
+    let mut volumes = vec![workspace];
+    if !cache_persistent {
+        volumes.push(cache);
+    }
+    for volume in volumes {
+        let _ = app.podman_output(["volume", "rm", "--force", volume]).await;
+        match app.podman_output(["volume", "exists", volume]).await {
+            Ok(output) if output.status.code() == Some(1) => {}
+            Ok(_) => {
+                confirmed = false;
+                tracing::warn!(%volume, "environment volume still present after cleanup");
+            }
+            Err(error) => {
+                confirmed = false;
+                tracing::warn!(%volume, %error, "environment volume cleanup could not be confirmed")
+            }
+        }
+    }
+    match app.podman_output(["container", "exists", container]).await {
+        Ok(output) if output.status.code() == Some(1) => {}
+        Ok(_) => {
+            confirmed = false;
+            tracing::warn!(%container, "environment container still present after cleanup");
+        }
+        Err(error) => {
+            confirmed = false;
+            tracing::warn!(%container, %error, "environment container cleanup could not be confirmed")
+        }
+    }
+    confirmed
+}
+
+struct EnvironmentEgress {
+    app: Arc<App>,
+    network: String,
+    slot: u8,
+    proxy: Option<dependency_egress::RunningProxy>,
+    proxy_url: String,
+    cleaned: bool,
+}
+
+impl EnvironmentEgress {
+    async fn cleanup(&mut self) {
+        if self.cleaned {
+            return;
+        }
+        self.cleaned = true;
+        let app = Arc::clone(&self.app);
+        let network = self.network.clone();
+        let slot = self.slot;
+        app.environment_egress_slots.lock().await.remove(&slot);
+        if let Some(proxy) = self.proxy.take() {
+            proxy.abort();
+        }
+        let _ = app
+            .podman_output(["network", "rm", "--force", network.as_str()])
+            .await;
+    }
+}
+
+impl Drop for EnvironmentEgress {
+    fn drop(&mut self) {
+        if self.cleaned {
+            return;
+        }
+        if let Some(proxy) = self.proxy.take() {
+            proxy.abort();
+        }
+        let app = Arc::clone(&self.app);
+        let network = self.network.clone();
+        let slot = self.slot;
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                app.environment_egress_slots.lock().await.remove(&slot);
+                let _ = app
+                    .podman_output(["network", "rm", "--force", network.as_str()])
+                    .await;
+            });
+        }
+    }
+}
+
+async fn acquire_environment_egress(
+    app: &Arc<App>,
+    hosts: &BTreeSet<String>,
+) -> Result<EnvironmentEgress, EnvironmentBrokerFailure> {
+    if hosts.is_empty() {
+        return Err(EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_NETWORK_DENIED",
+            "the environment fetch policy has no allowlisted broker destinations",
+        ));
+    }
+    let allowlist = EgressAllowlist::new(hosts.iter().cloned()).map_err(|error| {
+        EnvironmentBrokerFailure::new("ENVIRONMENT_NETWORK_DENIED", error.to_string())
+    })?;
+    let mut slots = app.environment_egress_slots.lock().await;
+    let mut chosen = None;
+    for slot in 1..=ENVIRONMENT_EGRESS_SLOTS {
+        if !slots.contains(&slot) {
+            chosen = Some(slot);
+            break;
+        }
+    }
+    let Some(slot) = chosen else {
+        return Err(EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_RESOURCE_LIMIT",
+            "no environment fetch egress slot is available",
+        ));
+    };
+    slots.insert(slot);
+    drop(slots);
+    let subnet = format!("10.91.{slot}.0/24");
+    let gateway = format!("10.91.{slot}.1");
+    let network = format!("{ENVIRONMENT_NETWORK_PREFIX}{slot}");
+    let peer_subnet = PeerSubnet::parse(&subnet).map_err(|error| {
+        EnvironmentBrokerFailure::new("ENVIRONMENT_NETWORK_DENIED", error.to_string())
+    })?;
+    let existing = app
+        .podman_output(["network", "exists", network.as_str()])
+        .await
+        .map_err(|error| EnvironmentBrokerFailure::new("ENVIRONMENT_NETWORK_DENIED", error))?;
+    if existing.status.success() {
+        let inspected = app
+            .podman_output([
+                "network",
+                "inspect",
+                "--format",
+                "{{json .}}",
+                network.as_str(),
+            ])
+            .await
+            .map_err(|error| EnvironmentBrokerFailure::new("ENVIRONMENT_NETWORK_DENIED", error))?;
+        let managed = serde_json::from_slice::<Value>(&inspected.stdout)
+            .ok()
+            .and_then(|value| {
+                value
+                    .pointer("/labels/io.software-factory.owner")
+                    .and_then(Value::as_str)
+                    .map(|owner| owner == "environment")
+            })
+            .unwrap_or(false);
+        if !managed {
+            app.environment_egress_slots.lock().await.remove(&slot);
+            return Err(EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_NETWORK_DENIED",
+                "an unmanaged environment egress network already exists",
+            ));
+        }
+        let _ = app
+            .podman_output(["network", "rm", "--force", network.as_str()])
+            .await;
+    }
+    let created = app
+        .podman_output([
+            "network",
+            "create",
+            "--internal",
+            "--subnet",
+            subnet.as_str(),
+            "--gateway",
+            gateway.as_str(),
+            "--label",
+            MANAGED_LABEL,
+            "--label",
+            "io.software-factory.owner=environment",
+            network.as_str(),
+        ])
+        .await;
+    if !created.is_ok_and(|output| output.status.success()) {
+        app.environment_egress_slots.lock().await.remove(&slot);
+        return Err(EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_NETWORK_DENIED",
+            "the environment fetch network could not be created",
+        ));
+    }
+    let inspected = app
+        .podman_output([
+            "network",
+            "inspect",
+            "--format",
+            "{{json .}}",
+            network.as_str(),
+        ])
+        .await
+        .map_err(|error| EnvironmentBrokerFailure::new("ENVIRONMENT_NETWORK_DENIED", error))?;
+    let value: Value = serde_json::from_slice(&inspected.stdout).map_err(|_| {
+        EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_NETWORK_DENIED",
+            "the environment fetch network inspection is invalid",
+        )
+    })?;
+    if value.get("internal").and_then(Value::as_bool) != Some(true)
+        || value
+            .pointer("/labels/io.software-factory.managed")
+            .and_then(Value::as_str)
+            != Some("true")
+        || value.pointer("/subnets/0/gateway").and_then(Value::as_str) != Some(gateway.as_str())
+    {
+        let _ = app
+            .podman_output(["network", "rm", "--force", network.as_str()])
+            .await;
+        app.environment_egress_slots.lock().await.remove(&slot);
+        return Err(EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_NETWORK_DENIED",
+            "the environment fetch network is not a managed internal network",
+        ));
+    }
+    let address = SocketAddr::new(
+        gateway.parse().map_err(|_| {
+            EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_NETWORK_DENIED",
+                "invalid environment gateway",
+            )
+        })?,
+        ENVIRONMENT_EGRESS_PORT,
+    );
+    let proxy = match spawn_dependency_proxy(address, peer_subnet, allowlist).await {
+        Ok((proxy, _binding)) => proxy,
+        Err(error) => {
+            let _ = app
+                .podman_output(["network", "rm", "--force", network.as_str()])
+                .await;
+            app.environment_egress_slots.lock().await.remove(&slot);
+            return Err(EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_NETWORK_DENIED",
+                format!("the environment fetch proxy could not start: {error}"),
+            ));
+        }
+    };
+    Ok(EnvironmentEgress {
+        app: Arc::clone(app),
+        network,
+        slot,
+        proxy: Some(proxy),
+        proxy_url: format!("http://{address}"),
+        cleaned: false,
+    })
+}
+
+async fn execute_environment_operation(
+    app: Arc<App>,
+    input: EnvironmentBrokerRequest,
+    validated: ValidatedEnvironmentRequest,
+) -> Result<factory_native::runtime_broker::EnvironmentBrokerResult, EnvironmentBrokerFailure> {
+    let started = Instant::now();
+    // Fetch and build are separate container phases. Each phase is bounded by
+    // the frozen plan timeout; the operation deadline admits both phases plus a
+    // short cleanup grace only when a broker fetch is actually required.
+    let phase_timeout = u64::from(input.plan.resources.timeout_secs);
+    let phases = if input.operation == EnvironmentBrokerOperation::Build
+        && input.phase != Some(factory_native::runtime_broker::EnvironmentBuildPhase::Fetch)
+        && !input.plan.network.fetch_allowlist.is_empty()
+    {
+        2
+    } else {
+        1
+    };
+    let deadline = started + Duration::from_secs(phase_timeout.saturating_mul(phases));
+    let mut resources = match input.spec.as_ref() {
+        Some(spec) => EnvironmentRunResources::for_spec(Arc::clone(&app), &spec.spec_sha256),
+        None => EnvironmentRunResources::new(Arc::clone(&app)),
+    };
+    let result = execute_environment_inner(
+        Arc::clone(&app),
+        &input,
+        &validated,
+        &mut resources,
+        deadline,
+    )
+    .await;
+    let cleanup_confirmed = resources.cleanup().await;
+    let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    match result {
+        Ok((phase, resolution, receipt, logs, logs_truncated)) => {
+            Ok(factory_native::runtime_broker::EnvironmentBrokerResult {
+                schema_version: 1,
+                operation: input.operation,
+                phase,
+                spec_sha256: input
+                    .spec
+                    .as_ref()
+                    .map(|spec| spec.spec_sha256.clone())
+                    .unwrap_or_default(),
+                resolution,
+                receipt,
+                logs,
+                logs_truncated,
+                cleanup_confirmed,
+                duration_ms,
+            })
+        }
+        Err(failure) => Err(failure),
+    }
+}
+
+async fn execute_environment_inner(
+    app: Arc<App>,
+    input: &EnvironmentBrokerRequest,
+    validated: &ValidatedEnvironmentRequest,
+    resources: &mut EnvironmentRunResources,
+    deadline: Instant,
+) -> Result<
+    (
+        factory_native::runtime_broker::EnvironmentBuildPhase,
+        Option<factory_native::planning::environment::EnvironmentResolution>,
+        Option<factory_native::planning::environment::EnvironmentBuildReceipt>,
+        String,
+        bool,
+    ),
+    EnvironmentBrokerFailure,
+> {
+    create_environment_volume(
+        &app,
+        &resources.workspace_volume,
+        &resources.workspace_volume,
+        false,
+    )
+    .await?;
+    create_environment_volume(
+        &app,
+        &resources.cache_volume,
+        input
+            .spec
+            .as_ref()
+            .map(|spec| spec.spec_sha256.as_str())
+            .unwrap_or(&resources.cache_volume),
+        resources.cache_persistent,
+    )
+    .await?;
+    let workspace_tar = build_tar(&validated.workspace, &[])?;
+    import_environment_volume(&app, &resources.workspace_volume, workspace_tar).await?;
+
+    let mut egress = if validated.fetch_hosts.is_empty() {
+        None
+    } else {
+        Some(acquire_environment_egress(&app, &validated.fetch_hosts).await?)
+    };
+    let (fetch_network, fetch_proxy) = match &egress {
+        Some(egress) => (egress.network.clone(), Some(egress.proxy_url.clone())),
+        None => ("none".to_owned(), None),
+    };
+
+    let mut cache_entries = Vec::new();
+    match input.operation {
+        EnvironmentBrokerOperation::Resolve => {
+            let request = builder_request_json(
+                input,
+                input.operation,
+                &fetch_network,
+                fetch_proxy.as_deref(),
+            )?;
+            cache_entries.push((
+                "request-resolve.json".to_owned(),
+                serde_json::to_vec(&request).map_err(|_| {
+                    EnvironmentBrokerFailure::new(
+                        "ENVIRONMENT_SPEC_INVALID",
+                        "cannot encode the environment resolve request",
+                    )
+                })?,
+            ));
+        }
+        EnvironmentBrokerOperation::Build => {
+            let fetch = builder_request_json(
+                input,
+                input.operation,
+                &fetch_network,
+                fetch_proxy.as_deref(),
+            )?;
+            let build = builder_request_json(input, input.operation, "none", None)?;
+            cache_entries.push((
+                "request-fetch.json".to_owned(),
+                serde_json::to_vec(&fetch).map_err(|_| {
+                    EnvironmentBrokerFailure::new(
+                        "ENVIRONMENT_SPEC_INVALID",
+                        "cannot encode the environment fetch request",
+                    )
+                })?,
+            ));
+            cache_entries.push((
+                "request-build.json".to_owned(),
+                serde_json::to_vec(&build).map_err(|_| {
+                    EnvironmentBrokerFailure::new(
+                        "ENVIRONMENT_SPEC_INVALID",
+                        "cannot encode the environment build request",
+                    )
+                })?,
+            ));
+        }
+    }
+    cache_entries.push((".factory-cache".to_owned(), b"factory\n".to_vec()));
+    let cache_tar = build_tar(&cache_entries, &["./"])?;
+    import_environment_volume(&app, &resources.cache_volume, cache_tar).await?;
+
+    let mut logs = Vec::new();
+    let mut logs_truncated = false;
+    match input.operation {
+        EnvironmentBrokerOperation::Resolve => {
+            let output = run_environment_container(
+                &app,
+                &validated.image_id,
+                &resources.container,
+                &fetch_network,
+                fetch_proxy.as_deref(),
+                &input.plan,
+                deadline,
+                &resources.workspace_volume,
+                &resources.cache_volume,
+                "resolve",
+                "request-resolve.json",
+            )
+            .await;
+            if let Some(mut egress) = egress.take() {
+                egress.cleanup().await;
+            }
+            let output = output?;
+            append_logs(
+                &mut logs,
+                &mut logs_truncated,
+                &output.stdout,
+                &output.stderr,
+            );
+            let resolution: factory_native::planning::environment::EnvironmentResolution =
+                read_environment_json(
+                    &app,
+                    &validated.image_id,
+                    &resources.cache_volume,
+                    "resolution.json",
+                    "ENVIRONMENT_PIN_MISSING",
+                )
+                .await?;
+            Ok((
+                factory_native::runtime_broker::EnvironmentBuildPhase::Resolve,
+                Some(resolution),
+                None,
+                final_logs(logs),
+                logs_truncated,
+            ))
+        }
+        EnvironmentBrokerOperation::Build => {
+            if input.phase == Some(factory_native::runtime_broker::EnvironmentBuildPhase::Fetch) {
+                if egress.is_none() {
+                    return Err(EnvironmentBrokerFailure::new(
+                        "ENVIRONMENT_NETWORK_DENIED",
+                        "the fetch phase has no allowlisted broker destinations",
+                    ));
+                }
+                let output = run_environment_container(
+                    &app,
+                    &validated.image_id,
+                    &resources.container,
+                    &fetch_network,
+                    fetch_proxy.as_deref(),
+                    &input.plan,
+                    deadline,
+                    &resources.workspace_volume,
+                    &resources.cache_volume,
+                    "fetch",
+                    "request-fetch.json",
+                )
+                .await;
+                if let Some(mut egress) = egress.take() {
+                    egress.cleanup().await;
+                }
+                let output = output?;
+                append_logs(
+                    &mut logs,
+                    &mut logs_truncated,
+                    &output.stdout,
+                    &output.stderr,
+                );
+                return Ok((
+                    factory_native::runtime_broker::EnvironmentBuildPhase::Fetch,
+                    None,
+                    None,
+                    final_logs(logs),
+                    logs_truncated,
+                ));
+            }
+            if egress.is_some() {
+                let output = run_environment_container(
+                    &app,
+                    &validated.image_id,
+                    &resources.container,
+                    &fetch_network,
+                    fetch_proxy.as_deref(),
+                    &input.plan,
+                    deadline,
+                    &resources.workspace_volume,
+                    &resources.cache_volume,
+                    "fetch",
+                    "request-fetch.json",
+                )
+                .await;
+                if let Some(mut egress) = egress.take() {
+                    egress.cleanup().await;
+                }
+                let output = output?;
+                append_logs(
+                    &mut logs,
+                    &mut logs_truncated,
+                    &output.stdout,
+                    &output.stderr,
+                );
+            }
+            let output = run_environment_container(
+                &app,
+                &validated.image_id,
+                &resources.container,
+                "none",
+                None,
+                &input.plan,
+                deadline,
+                &resources.workspace_volume,
+                &resources.cache_volume,
+                "build",
+                "request-build.json",
+            )
+            .await?;
+            append_logs(
+                &mut logs,
+                &mut logs_truncated,
+                &output.stdout,
+                &output.stderr,
+            );
+            let receipt: factory_native::planning::environment::EnvironmentBuildReceipt =
+                read_environment_json(
+                    &app,
+                    &validated.image_id,
+                    &resources.cache_volume,
+                    "result.json",
+                    "ENVIRONMENT_BUILD_FAILED",
+                )
+                .await?;
+            if receipt.status
+                != factory_native::planning::environment::EnvironmentBuilderStatus::Succeeded
+            {
+                let blocker = receipt.blockers.first();
+                return Err(EnvironmentBrokerFailure::new(
+                    blocker
+                        .map(|blocker| blocker.code.as_str())
+                        .unwrap_or("ENVIRONMENT_BUILD_FAILED"),
+                    blocker
+                        .map(|blocker| blocker.message.clone())
+                        .unwrap_or_else(|| "the environment builder did not succeed".into()),
+                ));
+            }
+            if let Ok(build_log) = read_environment_output(
+                &app,
+                &validated.image_id,
+                &resources.cache_volume,
+                "build.log",
+                ENVIRONMENT_MAX_LOG_BYTES,
+            )
+            .await
+            {
+                append_logs(&mut logs, &mut logs_truncated, &build_log, &[]);
+            }
+            Ok((
+                factory_native::runtime_broker::EnvironmentBuildPhase::Build,
+                None,
+                Some(receipt),
+                final_logs(logs),
+                logs_truncated,
+            ))
+        }
+    }
+}
+
+fn append_logs(target: &mut Vec<u8>, truncated: &mut bool, stdout: &[u8], stderr: &[u8]) {
+    if !target.is_empty() {
+        target.extend_from_slice(b"\n");
+    }
+    if !stdout.is_empty() {
+        append_bounded(target, stdout, ENVIRONMENT_MAX_LOG_BYTES, truncated);
+    }
+    if !stderr.is_empty() {
+        target.extend_from_slice(b"\n[stderr]\n");
+        append_bounded(target, stderr, ENVIRONMENT_MAX_LOG_BYTES, truncated);
+    }
+}
+
+fn append_bounded(target: &mut Vec<u8>, bytes: &[u8], limit: usize, truncated: &mut bool) {
+    if target.len() >= limit {
+        *truncated = true;
+        return;
+    }
+    let remaining = limit - target.len();
+    if bytes.len() > remaining {
+        target.extend_from_slice(&bytes[..remaining]);
+        *truncated = true;
+    } else {
+        target.extend_from_slice(bytes);
+    }
+}
+
+fn final_logs(logs: Vec<u8>) -> String {
+    String::from_utf8_lossy(&logs).into_owned()
+}
+
+async fn create_environment_volume(
+    app: &Arc<App>,
+    volume: &str,
+    workspace_label: &str,
+    reuse: bool,
+) -> Result<(), EnvironmentBrokerFailure> {
+    if reuse {
+        match app.volume_labels(volume).await {
+            Ok(Some(labels)) => {
+                let managed = labels
+                    .get("io.software-factory.managed")
+                    .map(String::as_str)
+                    == Some("true");
+                let owner = labels.get(OWNER_LABEL).map(String::as_str) == Some("environment");
+                let workspace =
+                    labels.get(WORKSPACE_LABEL).map(String::as_str) == Some(workspace_label);
+                if managed && owner && workspace {
+                    return Ok(());
+                }
+                return Err(EnvironmentBrokerFailure::new(
+                    "ENVIRONMENT_BUILDER_UNAVAILABLE",
+                    "the environment cache volume is not owned by the environment broker",
+                ));
+            }
+            Ok(None) => {}
+            Err(error) => {
+                return Err(EnvironmentBrokerFailure::new(
+                    "ENVIRONMENT_BUILDER_UNAVAILABLE",
+                    error,
+                ));
+            }
+        }
+    }
+    let owner = format!("{OWNER_LABEL}=environment");
+    let workspace = format!("{WORKSPACE_LABEL}={workspace_label}");
+    let output = app
+        .podman_output([
+            "volume",
+            "create",
+            "--label",
+            MANAGED_LABEL,
+            "--label",
+            owner.as_str(),
+            "--label",
+            workspace.as_str(),
+            volume,
+        ])
+        .await
+        .map_err(|error| EnvironmentBrokerFailure::new("ENVIRONMENT_BUILD_FAILED", error))?;
+    if !output.status.success() {
+        return Err(EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_BUILD_FAILED",
+            format!("environment volume creation failed: {}", stderr(&output)),
+        ));
+    }
+    Ok(())
+}
+
+async fn import_environment_volume(
+    app: &Arc<App>,
+    volume: &str,
+    archive: Vec<u8>,
+) -> Result<(), EnvironmentBrokerFailure> {
+    let mut child = app
+        .podman_command(["volume", "import", volume, "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| {
+            EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_BUILD_FAILED",
+                format!("environment volume import could not start: {error}"),
+            )
+        })?;
+    let Some(mut stdin) = child.stdin.take() else {
+        return Err(EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_BUILD_FAILED",
+            "environment volume import stdin is unavailable",
+        ));
+    };
+    let writer = tokio::spawn(async move {
+        stdin.write_all(&archive).await?;
+        stdin.shutdown().await
+    });
+    let output = time::timeout(Duration::from_secs(120), child.wait_with_output())
+        .await
+        .map_err(|_| {
+            EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_BUILD_FAILED",
+                "environment volume import timed out",
+            )
+        })?
+        .map_err(|error| {
+            EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_BUILD_FAILED",
+                format!("environment volume import failed: {error}"),
+            )
+        })?;
+    if let Err(error) = writer.await.unwrap_or_else(|error| {
+        Err(std::io::Error::other(format!(
+            "environment volume import writer: {error}"
+        )))
+    }) {
+        return Err(EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_BUILD_FAILED",
+            format!("environment volume import writer failed: {error}"),
+        ));
+    }
+    if !output.status.success() {
+        return Err(EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_BUILD_FAILED",
+            format!("environment volume import failed: {}", stderr(&output)),
+        ));
+    }
+    Ok(())
+}
+
+// The environment runner needs the image, identity, network, proxy, frozen
+// plan, deadline and both broker-managed volumes. Each value is independently
+// validated; grouping them would add no safety boundary.
+#[allow(clippy::too_many_arguments)]
+async fn run_environment_container(
+    app: &Arc<App>,
+    image_id: &str,
+    container: &str,
+    network: &str,
+    proxy: Option<&str>,
+    plan: &factory_native::planning::environment::EnvironmentPlan,
+    deadline: Instant,
+    workspace_volume: &str,
+    cache_volume: &str,
+    phase: &str,
+    request_file: &str,
+) -> Result<ChildOutput, EnvironmentBrokerFailure> {
+    let remaining = deadline
+        .checked_duration_since(Instant::now())
+        .filter(|duration| !duration.is_zero())
+        .ok_or_else(|| {
+            EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_BUILD_TIMEOUT",
+                "the environment operation exceeded its wall-clock bound",
+            )
+        })?;
+    let cpus = plan.resources.cpu.to_string();
+    let memory = format!("{}m", plan.resources.memory_mib);
+    let pids = plan.resources.pids.to_string();
+    let mut args: Vec<String> = vec![
+        "run".into(),
+        "--rm".into(),
+        format!("--name={container}"),
+        format!("--label={MANAGED_LABEL}"),
+        format!("--label={OWNER_LABEL}=environment"),
+        "--pull=never".into(),
+        format!("--network={network}"),
+        "--read-only".into(),
+        "--tmpfs=/tmp:rw,noexec,nosuid,size=256m".into(),
+        "--tmpfs=/run:rw,noexec,nosuid,size=32m".into(),
+        "--cap-drop=all".into(),
+        "--cap-add=SYS_ADMIN".into(),
+        "--cap-add=SYS_CHROOT".into(),
+        "--security-opt=no-new-privileges".into(),
+        "--security-opt=unmask=ALL".into(),
+        "--user=10001:10001".into(),
+        format!("--cpus={cpus}"),
+        format!("--memory={memory}"),
+        format!("--pids-limit={pids}"),
+        "--workdir=/cache".into(),
+        "--env=HOME=/home/factory".into(),
+        "--env=TMPDIR=/tmp".into(),
+        format!("--volume={workspace_volume}:/inputs/workspace:ro"),
+        format!("--volume={cache_volume}:/cache:rw"),
+    ];
+    if let Some(proxy) = proxy {
+        args.extend([
+            format!("--env=HTTP_PROXY={proxy}"),
+            format!("--env=HTTPS_PROXY={proxy}"),
+            format!("--env=ALL_PROXY={proxy}"),
+            format!("--env=http_proxy={proxy}"),
+            format!("--env=https_proxy={proxy}"),
+            format!("--env=all_proxy={proxy}"),
+            "--env=NO_PROXY=127.0.0.1,localhost".into(),
+            format!("--env=FACTORY_ENVIRONMENT_BUILDER_FETCH_PROXY={proxy}"),
+        ]);
+    }
+    args.extend([
+        image_id.to_owned(),
+        phase.to_owned(),
+        "--request".to_owned(),
+        format!("/cache/{request_file}"),
+        "--workspace".to_owned(),
+        "/inputs/workspace".to_owned(),
+        "--output".to_owned(),
+        "/cache".to_owned(),
+    ]);
+    let mut command = app.podman_command(args.iter().map(String::as_str));
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().map_err(|error| {
+        EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_BUILD_FAILED",
+            format!("environment builder could not start: {error}"),
+        )
+    })?;
+    let Some(stdout) = child.stdout.take() else {
+        return Err(EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_BUILD_FAILED",
+            "environment builder stdout is unavailable",
+        ));
+    };
+    let Some(stderr) = child.stderr.take() else {
+        return Err(EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_BUILD_FAILED",
+            "environment builder stderr is unavailable",
+        ));
+    };
+    let stdout_task = tokio::spawn(read_bounded(stdout, MAX_STREAM_BYTES));
+    let stderr_task = tokio::spawn(read_bounded(stderr, MAX_STREAM_BYTES));
+    let status = match time::timeout(remaining, child.wait()).await {
+        Ok(Ok(status)) => status,
+        Ok(Err(error)) => {
+            stdout_task.abort();
+            stderr_task.abort();
+            let _ = app
+                .podman_output(["rm", "--force", "--time=0", container])
+                .await;
+            return Err(EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_BUILD_FAILED",
+                format!("environment builder wait failed: {error}"),
+            ));
+        }
+        Err(_) => {
+            let _ = child.kill().await;
+            let _ = app
+                .podman_output(["rm", "--force", "--time=0", container])
+                .await;
+            stdout_task.abort();
+            stderr_task.abort();
+            return Err(EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_BUILD_TIMEOUT",
+                format!("the environment {phase} phase exceeded its wall-clock bound"),
+            ));
+        }
+    };
+    let _ = app
+        .podman_output(["rm", "--force", "--time=0", container])
+        .await;
+    let (stdout, stdout_truncated) = stdout_task
+        .await
+        .map_err(|error| {
+            EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_BUILD_FAILED",
+                format!("environment builder stdout reader: {error}"),
+            )
+        })?
+        .map_err(|error| {
+            EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_BUILD_FAILED",
+                format!("environment builder stdout reader: {error}"),
+            )
+        })?;
+    let (stderr, stderr_truncated) = stderr_task
+        .await
+        .map_err(|error| {
+            EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_BUILD_FAILED",
+                format!("environment builder stderr reader: {error}"),
+            )
+        })?
+        .map_err(|error| {
+            EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_BUILD_FAILED",
+                format!("environment builder stderr reader: {error}"),
+            )
+        })?;
+    if !status.success() {
+        let code = failure_code_from_builder_output(&stdout)
+            .or_else(|| failure_code_from_builder_output(&stderr))
+            .unwrap_or_else(|| "ENVIRONMENT_BUILD_FAILED".to_owned());
+        let message = String::from_utf8_lossy(&stderr)
+            .chars()
+            .take(1_000)
+            .collect::<String>();
+        return Err(EnvironmentBrokerFailure::new(
+            &code,
+            if message.trim().is_empty() {
+                format!("the environment {phase} phase failed")
+            } else {
+                message
+            },
+        ));
+    }
+    Ok(ChildOutput {
+        exit_code: status.code(),
+        stdout,
+        stderr,
+        stdout_truncated,
+        stderr_truncated,
+    })
+}
+
+fn failure_code_from_builder_output(bytes: &[u8]) -> Option<String> {
+    let value: Value = serde_json::from_slice(bytes).ok()?;
+    value
+        .get("blocker")
+        .and_then(|blocker| blocker.get("code"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+}
+
+async fn run_environment_cat(
+    app: &Arc<App>,
+    image_id: &str,
+    cache_volume: &str,
+    name: &str,
+    limit: usize,
+) -> Result<Vec<u8>, EnvironmentBrokerFailure> {
+    let mount = format!("--volume={cache_volume}:/cache:ro");
+    let path = format!("/cache/{name}");
+    let args = vec![
+        "run",
+        "--rm",
+        "--network=none",
+        "--read-only",
+        "--pull=never",
+        "--user=10001:10001",
+        "--entrypoint=/home/factory/.nix-profile/bin/cat",
+        mount.as_str(),
+        image_id,
+        path.as_str(),
+    ];
+    app.run_bounded(args, "environment output read", limit)
+        .await
+        .map_err(|error| EnvironmentBrokerFailure::new("ENVIRONMENT_BUILD_FAILED", error))
+}
+
+async fn read_environment_output(
+    app: &Arc<App>,
+    image_id: &str,
+    cache_volume: &str,
+    name: &str,
+    limit: usize,
+) -> Result<Vec<u8>, EnvironmentBrokerFailure> {
+    run_environment_cat(app, image_id, cache_volume, name, limit).await
+}
+
+async fn read_environment_json<T: serde::de::DeserializeOwned>(
+    app: &Arc<App>,
+    image_id: &str,
+    cache_volume: &str,
+    name: &str,
+    missing_code: &str,
+) -> Result<T, EnvironmentBrokerFailure> {
+    let bytes = run_environment_cat(app, image_id, cache_volume, name, ENVIRONMENT_MAX_LOG_BYTES)
+        .await
+        .map_err(|_| {
+            EnvironmentBrokerFailure::new(
+                missing_code,
+                format!("the environment builder produced no {name}"),
+            )
+        })?;
+    serde_json::from_slice(&bytes).map_err(|_| {
+        EnvironmentBrokerFailure::new(
+            missing_code,
+            format!("the environment builder {name} is not valid JSON"),
+        )
+    })
+}
+
 fn bad_request(message: &str) -> Response {
     (StatusCode::BAD_REQUEST, Json(json!({"error": message}))).into_response()
 }
@@ -2510,6 +4500,25 @@ mod tests {
         assert!(!has_host_root_mapping(
             "         0       1000          1\n         1     100000      65536\n"
         ));
+    }
+
+    #[test]
+    fn bundle_digest_normalization_accepts_prefix_and_whitespace_once() {
+        let hex = "a".repeat(64);
+        assert_eq!(
+            normalize_digest(&format!("sha256:{hex}")).unwrap(),
+            format!("sha256:{hex}")
+        );
+        assert_eq!(
+            normalize_digest(&format!("{hex}\n")).unwrap(),
+            format!("sha256:{hex}")
+        );
+        assert_eq!(
+            normalize_digest(&format!("sha256:{}\r\n", hex.to_uppercase())).unwrap(),
+            format!("sha256:{hex}")
+        );
+        assert!(normalize_digest("sha256:short").is_err());
+        assert!(normalize_digest(&format!("sha256:sha256:{hex}")).is_err());
     }
 
     #[test]
@@ -2735,6 +4744,7 @@ mod tests {
     const TEST_SUPERVISOR_TOKEN: &str = "supervisor-token-0123456789abcdef0123456789";
     const TEST_VERIFIER_TOKEN: &str = "verifier-token-0123456789abcdef012345678901";
     const TEST_PROVIDER_TOKEN: &str = "provider-token-0123456789abcdef012345678901";
+    const TEST_ENVIRONMENT_TOKEN: &str = "environment-token-0123456789abcdef012345678";
 
     fn test_app(podman: PathBuf) -> Arc<App> {
         test_app_with_lock_limit(podman, RESOURCE_LOCK_ENTRIES)
@@ -2747,6 +4757,7 @@ mod tests {
                     (ResourceOwner::Supervisor, TEST_SUPERVISOR_TOKEN.into()),
                     (ResourceOwner::Verifier, TEST_VERIFIER_TOKEN.into()),
                     (ResourceOwner::Provider, TEST_PROVIDER_TOKEN.into()),
+                    (ResourceOwner::Environment, TEST_ENVIRONMENT_TOKEN.into()),
                 ],
             }),
             resource_locks: Arc::new(ResourceLocks::new()),
@@ -2758,6 +4769,10 @@ mod tests {
             provider_kind: String::new(),
             provider_session_root: std::env::temp_dir(),
             import_images: Vec::new(),
+            environment_builder: Arc::new(RwLock::new(EnvironmentBuilderRuntime::unavailable(
+                "test environment builder is not configured",
+            ))),
+            environment_egress_slots: Arc::new(tokio::sync::Mutex::new(BTreeSet::new())),
             dependency_acquisition: Arc::new(RwLock::new(DependencyAcquisitionState::disabled(
                 DEPENDENCY_RUNTIME_UNAVAILABLE,
                 "test configuration",
@@ -2770,6 +4785,7 @@ mod tests {
             ResourceOwner::Supervisor => TEST_SUPERVISOR_TOKEN,
             ResourceOwner::Verifier => TEST_VERIFIER_TOKEN,
             ResourceOwner::Provider => TEST_PROVIDER_TOKEN,
+            ResourceOwner::Environment => TEST_ENVIRONMENT_TOKEN,
         };
         let mut headers = HeaderMap::new();
         headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
@@ -2781,6 +4797,83 @@ mod tests {
             .await
             .unwrap();
         String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    #[tokio::test]
+    async fn environment_owner_cannot_start_generic_execution_containers() {
+        let volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let container = format!("factory-exec-{}", uuid::Uuid::new_v4());
+        let (podman, _serial) = fake_podman("#!/bin/sh\nexit 1\n").await;
+        let app = test_app(podman);
+        let response = run_container(
+            State(app),
+            test_headers(ResourceOwner::Environment),
+            Json(RunContainer {
+                volume,
+                container,
+                image: "test/image:1".into(),
+                argv: vec!["/bin/true".into()],
+                timeout_secs: 10,
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn builder_image_reference_requires_the_exact_digest_label() {
+        let image = "test/env-builder:1";
+        let image_id = format!("sha256:{}", "b".repeat(64));
+        let digest = format!("sha256:{}", "c".repeat(64));
+        let rust_id = format!("sha256:{}", "d".repeat(64));
+        let script = format!(
+            r#"#!/bin/sh
+if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then
+  case "$5" in
+    "{image}") printf '%s\t\t%s\n' "{image_id}" "{digest}" ;;
+    "test/image:1") printf '%s\t%s\t\n' "{rust_id}" "sha256:{rust_tag}" ;;
+    *) exit 1 ;;
+  esac
+  exit 0
+fi
+exit 1
+"#,
+            rust_tag = "a".repeat(64)
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let mut app = Arc::try_unwrap(test_app(podman)).ok().unwrap();
+        app.images = Arc::new(BTreeSet::from([
+            "test/image:1".to_owned(),
+            image.to_owned(),
+        ]));
+        app.environment_builder = Arc::new(RwLock::new(EnvironmentBuilderRuntime::ready(
+            image.to_owned(),
+            digest.clone(),
+            image_id.clone(),
+            "x86_64-linux".into(),
+            "nix-devenv-environment-v1".into(),
+        )));
+        let app = Arc::new(app);
+        assert_eq!(
+            resolve_run_image(&app, &format!("{image}@{digest}"))
+                .await
+                .unwrap(),
+            image_id
+        );
+        assert!(
+            resolve_run_image(&app, &format!("{image}@sha256:{}", "e".repeat(64)))
+                .await
+                .is_err()
+        );
+        assert!(
+            resolve_run_image(&app, &format!("test/image:1@sha256:{}", "e".repeat(64)))
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            resolve_run_image(&app, "test/image:1").await.unwrap(),
+            "test/image:1"
+        );
     }
 
     #[tokio::test]
@@ -4304,5 +6397,509 @@ exit 1
             body["dependencyAcquisition"]["reason"],
             "dependency image is not available"
         );
+    }
+
+    const TEST_BUILDER_IMAGE: &str = "localhost/software-factory-environment-builder:dev";
+    const TEST_BUILDER_DIGEST: &str =
+        "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+    const TEST_BUILDER_IMAGE_ID: &str =
+        "sha256:2222222222222222222222222222222222222222222222222222222222222222";
+    const TEST_SPEC_SHA: &str = "3333333333333333333333333333333333333333333333333333333333333333";
+    const TEST_PLAN_SHA: &str = "4444444444444444444444444444444444444444444444444444444444444444";
+
+    fn environment_plan() -> Value {
+        let content = "{ outputs = { self }: { default = builtins.currentSystem; }; }\n";
+        let sha = crate::bundle_digest_text(content.as_bytes());
+        json!({
+            "schemaVersion": 1,
+            "planId": "plan-1",
+            "projectId": "project-1",
+            "requestId": "request-1",
+            "actionId": "action-1",
+            "baseCommit": "b".repeat(40),
+            "conventionsSha256": "c".repeat(64),
+            "conventions": {
+                "schemaVersion": 1,
+                "projectId": "project-1",
+                "baseCommit": "b".repeat(40),
+                "conventionsSha256": "c".repeat(64),
+                "scannedAt": "2026-11-10T00:00:00Z",
+                "files": [],
+                "commands": [],
+                "conflicts": [],
+                "truncated": false,
+                "skippedEntries": 0,
+                "provenance": "test",
+                "existingEnvironment": "NONE"
+            },
+            "riskClass": "R0",
+            "status": "FROZEN",
+            "revision": 1,
+            "source": "GENERATED",
+            "files": [{
+                "path": "flake.nix",
+                "sha256": sha,
+                "origin": "GENERATED",
+                "content": content
+            }],
+            "nix": {
+                "nixpkgs": "github:NixOS/nixpkgs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "inputs": [],
+                "allowUnfree": false,
+                "sandbox": {
+                    "sandbox": true,
+                    "impure": false,
+                    "hostMounts": [],
+                    "privileged": false,
+                    "hostNetwork": false,
+                    "hostSockets": []
+                }
+            },
+            "resources": {
+                "cpu": 2,
+                "memoryMiB": 4096,
+                "diskMiB": 10240,
+                "pids": 512,
+                "timeoutSecs": 30
+            },
+            "network": {
+                "build": "NONE",
+                "fetch": "BROKER",
+                "fetchAllowlist": []
+            },
+            "builder": {
+                "image": TEST_BUILDER_IMAGE,
+                "digest": TEST_BUILDER_DIGEST,
+                "platform": "x86_64-linux",
+                "policyRevision": "nix-devenv-environment-v1",
+                "status": "READY"
+            },
+            "planSha256": TEST_PLAN_SHA,
+            "createdAt": "2026-11-10T00:00:00Z"
+        })
+    }
+
+    fn environment_spec(plan: &Value) -> Value {
+        json!({
+            "schemaVersion": 1,
+            "specId": "spec-1",
+            "specSha256": TEST_SPEC_SHA,
+            "projectId": "project-1",
+            "requestId": "request-1",
+            "actionId": "action-1",
+            "baseCommit": "b".repeat(40),
+            "planId": "plan-1",
+            "planSha256": plan["planSha256"],
+            "conventionsSha256": "c".repeat(64),
+            "reviewId": "review-1",
+            "platform": "x86_64-linux",
+            "nixVersion": "2.28.3",
+            "devenvVersion": "1.11.2",
+            "flakeLockSha256": "e".repeat(64),
+            "devenvLockSha256": "",
+            "licenseInventorySha256": "f".repeat(64),
+            "sbomSha256": "1".repeat(64),
+            "builderImage": TEST_BUILDER_IMAGE,
+            "builderImageDigest": TEST_BUILDER_DIGEST,
+            "resourcePolicy": plan["resources"],
+            "networkPolicy": plan["network"],
+            "status": "FROZEN",
+            "frozenAt": "2026-11-10T00:00:00Z"
+        })
+    }
+
+    fn environment_request(operation: EnvironmentBrokerOperation) -> EnvironmentBrokerRequest {
+        let plan_value = environment_plan();
+        let spec_value = environment_spec(&plan_value);
+        let plan: factory_native::planning::environment::EnvironmentPlan =
+            serde_json::from_value(plan_value).unwrap();
+        let spec: factory_native::planning::environment::EnvironmentSpec =
+            serde_json::from_value(spec_value).unwrap();
+        EnvironmentBrokerRequest {
+            schema_version: 1,
+            operation,
+            phase: Some(match operation {
+                EnvironmentBrokerOperation::Resolve => {
+                    factory_native::runtime_broker::EnvironmentBuildPhase::Resolve
+                }
+                EnvironmentBrokerOperation::Build => {
+                    factory_native::runtime_broker::EnvironmentBuildPhase::Build
+                }
+            }),
+            image: TEST_BUILDER_IMAGE.into(),
+            digest: TEST_BUILDER_DIGEST.into(),
+            plan,
+            spec: (operation == EnvironmentBrokerOperation::Build).then_some(spec),
+            workspace_files: Vec::new(),
+        }
+    }
+
+    fn environment_receipt() -> Value {
+        json!({
+            "schemaVersion": 1,
+            "receiptId": "receipt-1",
+            "specSha256": TEST_SPEC_SHA,
+            "platform": "x86_64-linux",
+            "builderImage": TEST_BUILDER_IMAGE,
+            "builderImageDigest": TEST_BUILDER_DIGEST,
+            "builderPolicyRevision": "nix-devenv-environment-v1",
+            "status": "SUCCEEDED",
+            "storePath": "/nix/store/fixture",
+            "outputSha256": "5".repeat(64),
+            "sbomSha256": "1".repeat(64),
+            "logRef": "build.log",
+            "sandboxAttestation": {
+                "nonRoot": true,
+                "noSecrets": true,
+                "noHostNetwork": true,
+                "noHostSocket": true,
+                "noHostMount": true,
+                "sandbox": true,
+                "impure": false,
+                "boundedResources": true
+            },
+            "blockers": [],
+            "durationMs": 1,
+            "createdAt": "2026-11-10T00:00:00Z"
+        })
+    }
+
+    fn environment_resolution() -> Value {
+        let content = "{\"nodes\":{\"root\":{}},\"root\":\"root\",\"version\":7}\n";
+        json!({
+            "schemaVersion": 1,
+            "planSha256": TEST_PLAN_SHA,
+            "files": [{
+                "path": "flake.lock",
+                "sha256": crate::bundle_digest_text(content.as_bytes()),
+                "origin": "GENERATED",
+                "content": content
+            }],
+            "nixVersion": "2.28.3",
+            "devenvVersion": "1.11.2"
+        })
+    }
+
+    async fn environment_test_app() -> (Arc<App>, PathBuf, tokio::sync::MutexGuard<'static, ()>) {
+        let directory =
+            std::env::temp_dir().join(format!("factory-env-broker-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let result_path = directory.join("result.json");
+        let resolution_path = directory.join("resolution.json");
+        let check_path = directory.join("check-result.json");
+        let log_path = directory.join("podman.log");
+        std::fs::write(
+            &result_path,
+            serde_json::to_vec(&environment_receipt()).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            &resolution_path,
+            serde_json::to_vec(&environment_resolution()).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(&check_path, b"{}").unwrap();
+        let script = format!(
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> "{}"
+case "$1" in
+  image)
+    if [ "$2" = "inspect" ]; then
+      case "$4" in
+        *source-digest*) printf '%s\t%s\t%s\n' "{}" "{}" "nix-devenv-environment-v1" ;;
+        *) printf '%s\n' "{}" ;;
+      esac
+      exit 0
+    fi
+    ;;
+  volume)
+    case "$2" in
+      create) exit 0 ;;
+      import) cat >/dev/null; exit 0 ;;
+      rm) exit 0 ;;
+      exists) exit 1 ;;
+      inspect) exit 1 ;;
+    esac
+    ;;
+  rm) exit 0 ;;
+  container) [ "$2" = "exists" ] && exit 1 ;;
+  network)
+    case "$2" in
+      create) exit 0 ;;
+      exists) exit 1 ;;
+      rm) exit 0 ;;
+      inspect) printf '%s\n' '{{"internal":true,"labels":{{"io.software-factory.managed":"true"}},"subnets":[{{"gateway":"10.91.1.1"}}]}}' ;;
+    esac
+    ;;
+  run)
+    case " $* " in
+      *"/cache/result.json"*) cat "{}"; exit 0 ;;
+      *"/cache/resolution.json"*) cat "{}"; exit 0 ;;
+      *"/cache/check-result.json"*) cat "{}"; exit 0 ;;
+      *"/cache/build.log"*) printf 'fixture build log\n'; exit 0 ;;
+    esac
+    exit 0
+    ;;
+esac
+exit 0
+"#,
+            log_path.display(),
+            TEST_BUILDER_IMAGE_ID,
+            TEST_BUILDER_DIGEST,
+            TEST_BUILDER_IMAGE_ID,
+            result_path.display(),
+            resolution_path.display(),
+            check_path.display()
+        );
+        let (podman, guard) = fake_podman(&script).await;
+        let app = test_app(podman);
+        app.set_environment_builder(EnvironmentBuilderRuntime::ready(
+            TEST_BUILDER_IMAGE.into(),
+            TEST_BUILDER_DIGEST.into(),
+            TEST_BUILDER_IMAGE_ID.into(),
+            "x86_64-linux".into(),
+            "nix-devenv-environment-v1".into(),
+        ));
+        (app, log_path, guard)
+    }
+
+    async fn environment_response_body(response: Response) -> Value {
+        let bytes = axum::body::to_bytes(response.into_body(), 16 * 1024 * 1024)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn environment_owner_is_distinct_and_generic_routes_are_refused() {
+        let (app, _log, _serial) = environment_test_app().await;
+        let request = environment_request(EnvironmentBrokerOperation::Build);
+        let supervisor = build_environment(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Supervisor),
+            Json(request.clone()),
+        )
+        .await;
+        assert_eq!(supervisor.status(), StatusCode::FORBIDDEN);
+
+        let environment = build_environment(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Environment),
+            Json(request),
+        )
+        .await;
+        assert_eq!(environment.status(), StatusCode::OK);
+
+        let volume = create_volume(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Environment),
+            Json(NewVolume {
+                volume: format!("factory-ws-{}", uuid::Uuid::new_v4()),
+                workspace_id: "workspace-a".into(),
+            }),
+        )
+        .await;
+        assert_eq!(volume.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn environment_builder_allowlist_and_digest_are_exact() {
+        let (app, _log, _serial) = environment_test_app().await;
+        let mut request = environment_request(EnvironmentBrokerOperation::Build);
+        request.image = "localhost/other-builder:dev".into();
+        let response = build_environment(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Environment),
+            Json(request),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = environment_response_body(response).await;
+        assert_eq!(body["code"], "ENVIRONMENT_HASH_MISMATCH");
+
+        app.set_environment_builder(EnvironmentBuilderRuntime::unavailable("not ready"));
+        let request = environment_request(EnvironmentBrokerOperation::Build);
+        let response = build_environment(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Environment),
+            Json(request),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = environment_response_body(response).await;
+        assert_eq!(body["code"], "ENVIRONMENT_BUILDER_UNAVAILABLE");
+    }
+
+    #[tokio::test]
+    async fn environment_resource_and_network_policy_fail_closed() {
+        let (app, _log, _serial) = environment_test_app().await;
+        let mut request = environment_request(EnvironmentBrokerOperation::Build);
+        request.plan.resources.cpu = 0;
+        let response = build_environment(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Environment),
+            Json(request),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = environment_response_body(response).await;
+        assert_eq!(body["code"], "ENVIRONMENT_RESOURCE_LIMIT");
+
+        let mut request = environment_request(EnvironmentBrokerOperation::Build);
+        request.plan.network.fetch_allowlist = vec!["http://insecure.invalid".into()];
+        request
+            .spec
+            .as_mut()
+            .unwrap()
+            .network_policy
+            .fetch_allowlist = vec!["http://insecure.invalid".into()];
+        let response = build_environment(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Environment),
+            Json(request),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = environment_response_body(response).await;
+        assert_eq!(body["code"], "ENVIRONMENT_NETWORK_DENIED");
+
+        let mut request = environment_request(EnvironmentBrokerOperation::Build);
+        request.plan.nix.sandbox.sandbox = false;
+        let response = build_environment(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Environment),
+            Json(request),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = environment_response_body(response).await;
+        assert_eq!(body["code"], "ENVIRONMENT_SANDBOX_DENIED");
+    }
+
+    #[tokio::test]
+    async fn environment_build_returns_typed_receipt_and_uses_narrow_container_args() {
+        let (app, log, _serial) = environment_test_app().await;
+        let request = environment_request(EnvironmentBrokerOperation::Build);
+        let response = build_environment(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Environment),
+            Json(request),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = environment_response_body(response).await;
+        assert_eq!(body["phase"], "BUILD");
+        assert_eq!(body["cleanupConfirmed"], true);
+        assert_eq!(body["receipt"]["status"], "SUCCEEDED");
+        assert_eq!(body["receipt"]["specSha256"], TEST_SPEC_SHA);
+        let log = std::fs::read_to_string(log).unwrap();
+        assert!(log.contains("--network=none"), "{log}");
+        assert!(log.contains("--read-only"), "{log}");
+        assert!(log.contains("--cap-drop=all"), "{log}");
+        assert!(log.contains("--security-opt=no-new-privileges"), "{log}");
+        assert!(log.contains("--cpus=2"), "{log}");
+        assert!(log.contains("--memory=4096m"), "{log}");
+        assert!(log.contains("--pids-limit=512"), "{log}");
+        assert!(log.contains("factory-env-ws-"), "{log}");
+        assert!(log.contains("factory-env-cache-"), "{log}");
+        assert!(!log.contains("--privileged"), "{log}");
+        assert!(!log.contains("--network=host"), "{log}");
+        assert!(!log.contains(":/workspace"), "{log}");
+        assert!(!log.contains("GITHUB_TOKEN"), "{log}");
+        assert!(!log.contains("OPENAI_API_KEY"), "{log}");
+        assert!(log.contains("volume rm --force"), "{log}");
+    }
+
+    #[tokio::test]
+    async fn environment_resolve_returns_plan_bound_lock_files() {
+        let (app, _log, _serial) = environment_test_app().await;
+        let request = environment_request(EnvironmentBrokerOperation::Resolve);
+        let response = resolve_environment(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Environment),
+            Json(request),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = environment_response_body(response).await;
+        assert_eq!(body["phase"], "RESOLVE");
+        assert_eq!(body["resolution"]["planSha256"], TEST_PLAN_SHA);
+        assert_eq!(body["resolution"]["files"][0]["path"], "flake.lock");
+    }
+
+    #[tokio::test]
+    async fn environment_timeout_kills_and_removes_the_container() {
+        let directory =
+            std::env::temp_dir().join(format!("factory-env-timeout-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let log_path = directory.join("podman.log");
+        let script = format!(
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> "{}"
+case "$1" in
+  run) sleep 5; exit 0 ;;
+  rm) exit 0 ;;
+  container) [ "$2" = "exists" ] && exit 1 ;;
+esac
+exit 0
+"#,
+            log_path.display()
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app(podman);
+        let plan_value = environment_plan();
+        let plan: factory_native::planning::environment::EnvironmentPlan =
+            serde_json::from_value(plan_value).unwrap();
+        let result = run_environment_container(
+            &app,
+            TEST_BUILDER_IMAGE_ID,
+            "factory-env-timeout",
+            "none",
+            None,
+            &plan,
+            Instant::now() + Duration::from_millis(100),
+            "factory-env-ws-timeout",
+            "factory-env-cache-timeout",
+            "build",
+            "request-build.json",
+        )
+        .await;
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().code,
+            "ENVIRONMENT_BUILD_TIMEOUT".to_owned()
+        );
+        let log = std::fs::read_to_string(log_path).unwrap();
+        assert!(
+            log.contains("rm --force --time=0 factory-env-timeout"),
+            "{log}"
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_environment_builds_use_distinct_volumes() {
+        let (app, log, _serial) = environment_test_app().await;
+        let first = environment_request(EnvironmentBrokerOperation::Build);
+        let second = environment_request(EnvironmentBrokerOperation::Build);
+        let (left, right) = tokio::join!(
+            build_environment(
+                State(Arc::clone(&app)),
+                test_headers(ResourceOwner::Environment),
+                Json(first),
+            ),
+            build_environment(
+                State(Arc::clone(&app)),
+                test_headers(ResourceOwner::Environment),
+                Json(second),
+            )
+        );
+        assert_eq!(left.status(), StatusCode::OK);
+        assert_eq!(right.status(), StatusCode::OK);
+        let log = std::fs::read_to_string(log).unwrap();
+        let workspaces = log
+            .match_indices("factory-env-ws-")
+            .map(|(index, _)| &log[index..index + 49])
+            .collect::<BTreeSet<_>>();
+        assert!(workspaces.len() >= 2, "{log}");
     }
 }

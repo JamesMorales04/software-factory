@@ -221,6 +221,7 @@ APPROVED_FETCH_NETWORKS: Final[frozenset[str]] = frozenset(
         "software-factory_factory-deps-egress",
     }
 )
+BROKER_FETCH_NETWORK = re.compile(r"factory-env-egress-[1-9][0-9]?")
 
 
 def validate_fetch_policy(request: dict[str, Any], plan: dict[str, Any], phase: str) -> None:
@@ -231,9 +232,12 @@ def validate_fetch_policy(request: dict[str, Any], plan: dict[str, Any], phase: 
     enforcement. Build/check runs may not carry a network at all.
     """
     network = request.get("fetchNetwork", "none")
-    if not isinstance(network, str) or network not in APPROVED_FETCH_NETWORKS:
+    if not isinstance(network, str) or (
+        network not in APPROVED_FETCH_NETWORKS
+        and BROKER_FETCH_NETWORK.fullmatch(network) is None
+    ):
         fail("ENVIRONMENT_NETWORK_DENIED", f"fetch network {network!r} is not approved")
-    if phase != "fetch":
+    if phase not in ("fetch", "resolve"):
         if network != "none":
             fail("ENVIRONMENT_NETWORK_DENIED", f"{phase} must run with network none")
         return
@@ -269,6 +273,66 @@ def validate_sandbox(sandbox: Any) -> None:
             "ENVIRONMENT_SANDBOX_DENIED",
             "the builder must run with sandbox=true, impure=false, no host mount, socket, privilege or host network",
         )
+
+
+def validate_resolution_plan(
+    plan: Any,
+    *,
+    source_workspace: Path,
+    descriptor_image: str,
+    descriptor_digest: str,
+    descriptor_platform: str,
+) -> tuple[dict[str, Any], list[EnvironmentFile], dict[str, int]]:
+    """Validate a generated plan before resolving its lock files.
+
+    Resolution happens before Core freezes the spec, so it validates the plan
+    itself and the exact builder identity instead of a frozen spec.
+    """
+    plan = _require_mapping(plan, "plan")
+    if _require_int(plan.get("schemaVersion"), "plan.schemaVersion") != SCHEMA_VERSION:
+        fail("ENVIRONMENT_SPEC_INVALID", "unsupported environment plan schema version")
+    status = _require_str(plan.get("status"), "plan.status", 32)
+    if status not in ("CORE_VALIDATED", "LEAD_APPROVED", "FROZEN"):
+        fail("ENVIRONMENT_NOT_FROZEN", "the environment plan is not validated for resolution")
+    for field in ("planId", "projectId", "requestId", "actionId", "baseCommit"):
+        _require_str(plan.get(field), f"plan.{field}", 200)
+    if not is_sha256(plan.get("planSha256")):
+        fail("ENVIRONMENT_SPEC_INVALID", "plan.planSha256 must be SHA-256")
+    if _require_str(plan.get("source"), "plan.source", 32) not in ("GENERATED", "PROJECT_COMMITTED"):
+        fail("ENVIRONMENT_PLAN_INVALID", "the environment plan source is invalid")
+    builder = _require_mapping(plan.get("builder"), "plan.builder")
+    image = _require_str(builder.get("image"), "plan.builder.image", 512)
+    digest = _require_str(builder.get("digest"), "plan.builder.digest", 71)
+    platform = _require_str(builder.get("platform"), "plan.builder.platform", 64)
+    policy_revision = _require_str(builder.get("policyRevision"), "plan.builder.policyRevision", 128)
+    if image != descriptor_image:
+        fail("ENVIRONMENT_HASH_MISMATCH", "the plan builder image does not match the descriptor")
+    if digest != descriptor_digest:
+        fail("ENVIRONMENT_HASH_MISMATCH", "the plan builder digest does not match the descriptor")
+    if descriptor_platform and platform != descriptor_platform:
+        fail("ENVIRONMENT_HASH_MISMATCH", "the plan builder platform does not match the descriptor")
+    if policy_revision != BUILDER_POLICY_REVISION:
+        fail("ENVIRONMENT_HASH_MISMATCH", "the plan builder policy revision is unsupported")
+    nix = _require_mapping(plan.get("nix"), "plan.nix")
+    nixpkgs = _require_str(nix.get("nixpkgs"), "plan.nix.nixpkgs", 256)
+    if not nixpkgs.startswith(NIXPKGS_PREFIX) or not is_git_revision(
+        nixpkgs.removeprefix(NIXPKGS_PREFIX).split("?", 1)[0]
+    ):
+        fail(
+            "ENVIRONMENT_PIN_MISSING",
+            "nixpkgs must be pinned as github:NixOS/nixpkgs/<exact-revision>",
+        )
+    if _require_bool(nix.get("allowUnfree"), "plan.nix.allowUnfree") is not False:
+        fail("ENVIRONMENT_LICENSE_DENIED", "allowUnfree must remain false")
+    validate_sandbox(nix.get("sandbox"))
+    resources = validate_resources(plan.get("resources"))
+    validate_network(plan.get("network"))
+    files = validate_environment_files(plan, source_workspace)
+    validate_workspace_environment_overrides(source_workspace)
+    validate_workspace_paths(source_workspace)
+    validate_nix_constructs(files)
+    validate_secrets(files, dict(os.environ))
+    return plan, files, resources
 
 
 def validate_spec_and_plan(

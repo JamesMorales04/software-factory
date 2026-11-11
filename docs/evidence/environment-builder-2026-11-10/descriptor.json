@@ -1,0 +1,1 @@
+{"digest": "sha256:3407adf8c56cf090fe18fc3801388a603adfdaa45d347e841063f886cfc6d1da", "image": "localhost/software-factory-environment-builder:dev", "platform": "x86_64-linux", "policyRevision": "nix-devenv-environment-v1", "status": "READY"}

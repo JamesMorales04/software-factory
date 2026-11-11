@@ -108,8 +108,8 @@ const plan: EnvironmentPlanView = {
   },
   resources: {
     cpu: 2,
-    memoryMib: 4096,
-    diskMib: 10240,
+    memoryMiB: 4096,
+    diskMiB: 10240,
     pids: 512,
     timeoutSecs: 1800,
   },

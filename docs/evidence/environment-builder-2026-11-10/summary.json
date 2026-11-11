@@ -18,7 +18,7 @@
   "finalImage": {
     "containerfile": "deploy/environment-builder/Containerfile",
     "image": "localhost/software-factory-environment-builder:dev",
-    "imageDigest": "sha256:c1f26ceccd45451ce6085fc7df9811bfdaef3e002300b14a71c5f93594815824",
+    "imageDigest": "sha256:3407adf8c56cf090fe18fc3801388a603adfdaa45d347e841063f886cfc6d1da",
     "size": "6.44 GB",
     "descriptor": {
       "status": "PASS",
@@ -35,30 +35,30 @@
   },
   "positiveAcceptance": {
     "builderImage": "localhost/software-factory-environment-builder:dev",
-    "builderImageDigest": "sha256:c1f26ceccd45451ce6085fc7df9811bfdaef3e002300b14a71c5f93594815824",
-    "specSha256": "c10481f8acdfacc19711a8b0b5b20c4a8704f748f2396cd2a3b08bf93a42677e",
+    "builderImageDigest": "sha256:3407adf8c56cf090fe18fc3801388a603adfdaa45d347e841063f886cfc6d1da",
+    "specSha256": "0630003b7be75e3b54ce9cbf0d3099f284abd093b874c80588bb5c3db236bdff",
     "storePath": "/nix/store/wyrgjl56z5nyq18clgnj1fkqr6vlvbzj-devenv-shell-env",
     "closureEntries": 483,
     "build": {
       "status": "SUCCEEDED",
-      "outputSha256": "4e79552f01aaac949d60cf1037ab7c0c7c63c66be2561f3655337cd1a1ba02d1",
-      "durationMs": 7354
+      "outputSha256": "43cf7804da91ec0c09360d11b0af40bc730c734520e7c46c7e24259f1704ebb1",
+      "durationMs": 4749
     },
     "warmRepeat": {
       "status": "SUCCEEDED",
-      "outputSha256": "4e79552f01aaac949d60cf1037ab7c0c7c63c66be2561f3655337cd1a1ba02d1",
-      "durationMs": 4936
+      "outputSha256": "43cf7804da91ec0c09360d11b0af40bc730c734520e7c46c7e24259f1704ebb1",
+      "durationMs": 4733
     },
     "nodePlaywrightCheck": {
       "status": "PASSED",
       "exitCode": 0,
-      "durationMs": 8683,
+      "durationMs": 6425,
       "detail": "real Chromium launch; tests/smoke.spec.mjs passed"
     },
     "rustCheck": {
       "status": "PASSED",
       "exitCode": 0,
-      "durationMs": 5224,
+      "durationMs": 5697,
       "detail": "cargo test --offline; wp0_rust_spike unit test passed"
     },
     "sandboxAttestation": {
@@ -71,15 +71,33 @@
       "impure": false,
       "boundedResources": true
     },
+    "disk": {
+      "planDiskMiB": 10240,
+      "observedKiB": 10001324,
+      "observedMiB": 9766.918,
+      "exceeded": false,
+      "enforcement": "POST_HOC_DU",
+      "exact": false
+    },
     "sbom": {
       "frozenSbomSha256": "5f2a9b5b3ec0d7dbfea7c890af8fbb0f1ef267b3f26bf6b0c0a195fb3521539e",
-      "cycloneDxDocumentSha256": "b2a0f3903c05c5487d4ef6c6cadee32b11afea27b7a29d18c8569aff1a9d8402",
+      "cycloneDxDocumentSha256": "33f74497c4edc09d6a6c4132b6922a6c02693268352760cfe2e328787e7b8eb5",
       "matchesFrozenSpec": true
     },
     "fetch": {
       "network": "factory-egress-internal",
+      "networkInternalVerified": true,
       "proxyEnforced": true,
-      "buildNetwork": "none"
+      "buildNetwork": "none",
+      "proxySha256": "66d31ec13fdf23ae35ba3eb75b31f1986104d47c037a1c1405f68329027d353d"
+    },
+    "signatureVerification": {
+      "enabled": true,
+      "requireSigsDisabled": false,
+      "trustedKeys": [
+        "cache.nixos.org-1",
+        "devenv.cachix.org-1"
+      ]
     }
   },
   "typedFailures": [
@@ -120,6 +138,12 @@
       "status": "PASS"
     },
     {
+      "case": "non-internal fetch network",
+      "code": "ENVIRONMENT_NETWORK_DENIED",
+      "exitCode": 2,
+      "status": "PASS"
+    },
+    {
       "case": "CPU bound outside policy",
       "code": "ENVIRONMENT_RESOURCE_LIMIT",
       "exitCode": 2,
@@ -137,7 +161,8 @@
     "registry publication and registry-manifest digest pinning",
     "Compose/runtime-broker invocation of the builder image",
     "check under the product Core authorization/Gate path",
-    "independent verification or acceptance"
+    "independent verification or acceptance",
+    "exact disk quota enforcement (post-hoc du bound only; disk.exact=false)"
   ],
   "versionCoordination": {
     "builderNixVersion": "2.28.3",

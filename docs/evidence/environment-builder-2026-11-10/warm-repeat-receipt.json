@@ -1,0 +1,26 @@
+{
+  "blockers": [],
+  "builderImage": "localhost/software-factory-environment-builder:dev",
+  "builderImageDigest": "sha256:3407adf8c56cf090fe18fc3801388a603adfdaa45d347e841063f886cfc6d1da",
+  "builderPolicyRevision": "nix-devenv-environment-v1",
+  "createdAt": "2026-11-11T06:23:12Z",
+  "durationMs": 4733,
+  "logRef": "build.log",
+  "outputSha256": "43cf7804da91ec0c09360d11b0af40bc730c734520e7c46c7e24259f1704ebb1",
+  "platform": "x86_64-linux",
+  "receiptId": "1dd74176-4ee9-4d9b-9dde-a93c306dc618",
+  "sandboxAttestation": {
+    "boundedResources": true,
+    "impure": false,
+    "noHostMount": true,
+    "noHostNetwork": true,
+    "noHostSocket": true,
+    "noSecrets": true,
+    "nonRoot": true,
+    "sandbox": true
+  },
+  "schemaVersion": 1,
+  "specSha256": "0630003b7be75e3b54ce9cbf0d3099f284abd093b874c80588bb5c3db236bdff",
+  "status": "SUCCEEDED",
+  "storePath": "/nix/store/wyrgjl56z5nyq18clgnj1fkqr6vlvbzj-devenv-shell-env"
+}

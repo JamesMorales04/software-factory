@@ -124,6 +124,39 @@ impl EnvironmentBlockerCode {
             Self::EnvironmentSuperseded => "ENVIRONMENT_SUPERSEDED",
         }
     }
+
+    /// Map a broker/CLI stable code back to the typed enum. Unknown values are
+    /// never silently accepted as a different failure class.
+    pub fn from_code(value: &str) -> Option<Self> {
+        Some(match value {
+            "ENVIRONMENT_SPEC_INVALID" => Self::EnvironmentSpecInvalid,
+            "ENVIRONMENT_BUILD_FAILED" => Self::EnvironmentBuildFailed,
+            "ENVIRONMENT_BUILDER_UNAVAILABLE" => Self::EnvironmentBuilderUnavailable,
+            "ENVIRONMENT_LICENSE_BLOCKED" => Self::EnvironmentLicenseBlocked,
+            "ENVIRONMENT_PLAN_REQUIRED" => Self::EnvironmentPlanRequired,
+            "ENVIRONMENT_CONVENTIONS_MISSING" => Self::EnvironmentConventionsMissing,
+            "ENVIRONMENT_CONVENTIONS_CONFLICT" => Self::EnvironmentConventionsConflict,
+            "ENVIRONMENT_CONVENTIONS_STALE" => Self::EnvironmentConventionsStale,
+            "ENVIRONMENT_PLAN_INVALID" => Self::EnvironmentPlanInvalid,
+            "ENVIRONMENT_UNSUPPORTED" => Self::EnvironmentUnsupported,
+            "ENVIRONMENT_PIN_MISSING" => Self::EnvironmentPinMissing,
+            "ENVIRONMENT_LICENSE_DENIED" => Self::EnvironmentLicenseDenied,
+            "ENVIRONMENT_LICENSE_UNKNOWN" => Self::EnvironmentLicenseUnknown,
+            "ENVIRONMENT_UNFREE_REQUIRES_OWNER" => Self::EnvironmentUnfreeRequiresOwner,
+            "ENVIRONMENT_PAID_SERVICE_REQUIRED" => Self::EnvironmentPaidServiceRequired,
+            "ENVIRONMENT_LEAD_APPROVAL_REQUIRED" => Self::EnvironmentLeadApprovalRequired,
+            "ENVIRONMENT_OWNER_APPROVAL_REQUIRED" => Self::EnvironmentOwnerApprovalRequired,
+            "ENVIRONMENT_SECRET_DETECTED" => Self::EnvironmentSecretDetected,
+            "ENVIRONMENT_SANDBOX_DENIED" => Self::EnvironmentSandboxDenied,
+            "ENVIRONMENT_NETWORK_DENIED" => Self::EnvironmentNetworkDenied,
+            "ENVIRONMENT_RESOURCE_LIMIT" => Self::EnvironmentResourceLimit,
+            "ENVIRONMENT_BUILD_TIMEOUT" => Self::EnvironmentBuildTimeout,
+            "ENVIRONMENT_HASH_MISMATCH" => Self::EnvironmentHashMismatch,
+            "ENVIRONMENT_NOT_FROZEN" => Self::EnvironmentNotFrozen,
+            "ENVIRONMENT_SUPERSEDED" => Self::EnvironmentSuperseded,
+            _ => return None,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1151,7 +1184,9 @@ impl Default for EnvironmentRequirements {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ResourceLimits {
     pub cpu: u16,
+    #[serde(rename = "memoryMiB")]
     pub memory_mib: u32,
+    #[serde(rename = "diskMiB")]
     pub disk_mib: u32,
     pub pids: u32,
     pub timeout_secs: u32,
@@ -3142,13 +3177,21 @@ pub trait EnvironmentBuilder {
     fn descriptor(&self) -> EnvironmentBuilderDescriptor;
 
     /// Resolve and pin a generated environment's lock data before freeze.
-    /// Existing committed environments with a lock may skip this step.
-    fn resolve<'a>(&'a self, plan: &'a EnvironmentPlan) -> EnvironmentResolutionFuture<'a>;
+    /// Existing committed environments with a lock may skip this step. The
+    /// workspace is an explicit Core-owned project root; the builder client
+    /// converts only the frozen environment files to a bounded file set and
+    /// never sends the host path to the broker.
+    fn resolve<'a>(
+        &'a self,
+        plan: &'a EnvironmentPlan,
+        workspace: Option<&'a std::path::Path>,
+    ) -> EnvironmentResolutionFuture<'a>;
 
     fn build<'a>(
         &'a self,
         spec: &'a EnvironmentSpec,
         plan: &'a EnvironmentPlan,
+        workspace: Option<&'a std::path::Path>,
     ) -> EnvironmentBuilderFuture<'a>;
 }
 
@@ -3163,7 +3206,11 @@ impl EnvironmentBuilder for UnavailableEnvironmentBuilder {
         EnvironmentBuilderDescriptor::default()
     }
 
-    fn resolve<'a>(&'a self, _plan: &'a EnvironmentPlan) -> EnvironmentResolutionFuture<'a> {
+    fn resolve<'a>(
+        &'a self,
+        _plan: &'a EnvironmentPlan,
+        _workspace: Option<&'a std::path::Path>,
+    ) -> EnvironmentResolutionFuture<'a> {
         Box::pin(async {
             Err(EnvironmentError::new(
                 EnvironmentBlockerCode::EnvironmentBuilderUnavailable,
@@ -3176,6 +3223,7 @@ impl EnvironmentBuilder for UnavailableEnvironmentBuilder {
         &'a self,
         _spec: &'a EnvironmentSpec,
         _plan: &'a EnvironmentPlan,
+        _workspace: Option<&'a std::path::Path>,
     ) -> EnvironmentBuilderFuture<'a> {
         Box::pin(async {
             Err(EnvironmentError::new(
@@ -3190,10 +3238,320 @@ pub fn unavailable_environment_builder() -> SharedEnvironmentBuilder {
     std::sync::Arc::new(UnavailableEnvironmentBuilder)
 }
 
+/// Environment builder that calls the trusted runtime broker. The broker owns
+/// the builder image identity, workspace staging, network proxy, resource
+/// limits and cleanup; Core only supplies a typed plan/spec and a bounded file
+/// set. The client never falls back to a host wrapper or global language image.
+pub struct RuntimeBrokerEnvironmentBuilder {
+    broker: crate::runtime_broker::RuntimeBrokerClient,
+    descriptor: EnvironmentBuilderDescriptor,
+    status: std::sync::RwLock<EnvironmentBuilderStatus>,
+}
+
+impl std::fmt::Debug for RuntimeBrokerEnvironmentBuilder {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RuntimeBrokerEnvironmentBuilder")
+            .field("descriptor", &self.descriptor)
+            .field("status", &self.status())
+            .finish()
+    }
+}
+
+impl RuntimeBrokerEnvironmentBuilder {
+    /// Build the client from explicit environment configuration. An absent
+    /// image or digest keeps the truthful UNAVAILABLE builder; a partial or
+    /// contradictory broker/credential configuration is an error rather than a
+    /// silent fallback.
+    pub async fn from_env() -> Result<Option<std::sync::Arc<Self>>, String> {
+        use crate::runtime_broker::{ResourceOwner, RuntimeBrokerClient};
+        let image = std::env::var("FACTORY_ENVIRONMENT_BUILDER_IMAGE")
+            .unwrap_or_default()
+            .trim()
+            .to_owned();
+        let mut digest = std::env::var("FACTORY_ENVIRONMENT_BUILDER_DIGEST")
+            .unwrap_or_default()
+            .trim()
+            .to_owned();
+        if digest.is_empty()
+            && let Ok(path) = std::env::var("FACTORY_ENVIRONMENT_BUILDER_DIGEST_FILE")
+            && let Ok(value) = std::fs::read_to_string(&path)
+        {
+            digest = value.trim().to_owned();
+        }
+        let platform = std::env::var("FACTORY_ENVIRONMENT_BUILDER_PLATFORM")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_PLATFORM.into());
+        let policy_revision = std::env::var("FACTORY_ENVIRONMENT_BUILDER_POLICY_REVISION")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| ENVIRONMENT_POLICY_REVISION.into());
+        if image.is_empty() || digest.is_empty() {
+            return Ok(None);
+        }
+        if !is_digest(&digest) {
+            return Err("FACTORY_ENVIRONMENT_BUILDER_DIGEST must be sha256:<64 hex>".into());
+        }
+        let broker_url = std::env::var("FACTORY_RUNTIME_BROKER_URL")
+            .map_err(|_| "FACTORY_RUNTIME_BROKER_URL is required for the environment builder")?;
+        let token = crate::secrets::required("FACTORY_RUNTIME_BROKER_TOKEN")
+            .map_err(|error| format!("runtime broker environment token: {error}"))?;
+        crate::telemetry::register_secret(&token);
+        let descriptor = EnvironmentBuilderDescriptor {
+            image,
+            digest,
+            platform,
+            policy_revision,
+            status: EnvironmentBuilderStatus::Unavailable,
+        };
+        descriptor.validate().map_err(|error| error.message)?;
+        let broker = RuntimeBrokerClient::new(&broker_url, token, ResourceOwner::Environment)
+            .map_err(|error| error.to_string())?;
+        // The runtime may still be importing the builder bundle when Core
+        // starts. Retry for a bounded window; never substitute a fake READY.
+        let mut status = EnvironmentBuilderStatus::Unavailable;
+        for attempt in 0..24u32 {
+            match broker.health().await {
+                Ok(health) => {
+                    let projection = health.get("environmentBuilder");
+                    let ready = projection
+                        .and_then(|value| value.get("status"))
+                        .and_then(serde_json::Value::as_str)
+                        == Some("READY")
+                        && projection
+                            .and_then(|value| value.get("image"))
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(|value| value == descriptor.image)
+                        && projection
+                            .and_then(|value| value.get("digest"))
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(|value| value == descriptor.digest);
+                    if ready {
+                        status = EnvironmentBuilderStatus::Ready;
+                        break;
+                    }
+                    if attempt == 23 {
+                        tracing::warn!(
+                            "runtime broker does not report a ready environment builder for the configured image/digest"
+                        );
+                    }
+                }
+                Err(error) => {
+                    if attempt == 23 {
+                        tracing::warn!(%error, "environment builder runtime broker is not reachable");
+                    }
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        }
+        Ok(Some(std::sync::Arc::new(Self {
+            broker,
+            descriptor,
+            status: std::sync::RwLock::new(status),
+        })))
+    }
+
+    fn status(&self) -> EnvironmentBuilderStatus {
+        *self
+            .status
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn set_status(&self, status: EnvironmentBuilderStatus) {
+        *self
+            .status
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = status;
+    }
+
+    fn request(
+        &self,
+        operation: crate::runtime_broker::EnvironmentBrokerOperation,
+        phase: Option<crate::runtime_broker::EnvironmentBuildPhase>,
+        plan: &EnvironmentPlan,
+        spec: Option<&EnvironmentSpec>,
+        workspace: Option<&std::path::Path>,
+    ) -> Result<crate::runtime_broker::EnvironmentBrokerRequest, EnvironmentError> {
+        let workspace_files = crate::runtime_broker::environment_workspace_files(plan, workspace)
+            .map_err(|message| {
+            let code = if message.contains("does not match the frozen plan hash") {
+                EnvironmentBlockerCode::EnvironmentHashMismatch
+            } else {
+                EnvironmentBlockerCode::EnvironmentPlanInvalid
+            };
+            EnvironmentError::new(code, message)
+        })?;
+        Ok(crate::runtime_broker::EnvironmentBrokerRequest {
+            schema_version: ENVIRONMENT_SCHEMA_VERSION,
+            operation,
+            phase,
+            image: self.descriptor.image.clone(),
+            digest: self.descriptor.digest.clone(),
+            plan: plan.clone(),
+            spec: spec.cloned(),
+            workspace_files,
+        })
+    }
+
+    async fn call(
+        &self,
+        request: &crate::runtime_broker::EnvironmentBrokerRequest,
+        timeout: std::time::Duration,
+    ) -> Result<crate::runtime_broker::EnvironmentBrokerResult, EnvironmentError> {
+        self.broker
+            .environment_build(request, timeout)
+            .await
+            .map_err(environment_error_from_broker)
+    }
+}
+
+impl EnvironmentBuilder for RuntimeBrokerEnvironmentBuilder {
+    fn descriptor(&self) -> EnvironmentBuilderDescriptor {
+        let mut descriptor = self.descriptor.clone();
+        descriptor.status = self.status();
+        descriptor
+    }
+
+    fn resolve<'a>(
+        &'a self,
+        plan: &'a EnvironmentPlan,
+        workspace: Option<&'a std::path::Path>,
+    ) -> EnvironmentResolutionFuture<'a> {
+        Box::pin(async move {
+            if self.status() == EnvironmentBuilderStatus::Unavailable {
+                return Err(EnvironmentError::new(
+                    EnvironmentBlockerCode::EnvironmentBuilderUnavailable,
+                    "the runtime environment builder is not available",
+                ));
+            }
+            let request = self.request(
+                crate::runtime_broker::EnvironmentBrokerOperation::Resolve,
+                None,
+                plan,
+                None,
+                workspace,
+            )?;
+            self.set_status(EnvironmentBuilderStatus::Building);
+            let result = self
+                .call(
+                    &request,
+                    std::time::Duration::from_secs(u64::from(plan.resources.timeout_secs) + 90),
+                )
+                .await;
+            self.set_status(EnvironmentBuilderStatus::Ready);
+            let result = result?;
+            let resolution = result.resolution.ok_or_else(|| {
+                EnvironmentError::new(
+                    EnvironmentBlockerCode::EnvironmentBuildFailed,
+                    "the environment builder returned no resolution",
+                )
+            })?;
+            resolution.validate_for(plan)?;
+            Ok(resolution)
+        })
+    }
+
+    fn build<'a>(
+        &'a self,
+        spec: &'a EnvironmentSpec,
+        plan: &'a EnvironmentPlan,
+        workspace: Option<&'a std::path::Path>,
+    ) -> EnvironmentBuilderFuture<'a> {
+        Box::pin(async move {
+            if self.status() == EnvironmentBuilderStatus::Unavailable {
+                return Err(EnvironmentError::new(
+                    EnvironmentBlockerCode::EnvironmentBuilderUnavailable,
+                    "the runtime environment builder is not available",
+                ));
+            }
+            let phase_timeout = u64::from(plan.resources.timeout_secs);
+            let request = self.request(
+                crate::runtime_broker::EnvironmentBrokerOperation::Build,
+                Some(crate::runtime_broker::EnvironmentBuildPhase::Build),
+                plan,
+                Some(spec),
+                workspace,
+            )?;
+            self.set_status(EnvironmentBuilderStatus::Building);
+            let result = self
+                .call(
+                    &request,
+                    std::time::Duration::from_secs(phase_timeout.saturating_mul(2) + 180),
+                )
+                .await;
+            self.set_status(EnvironmentBuilderStatus::Ready);
+            let result = result?;
+            let receipt = result.receipt.ok_or_else(|| {
+                EnvironmentError::new(
+                    EnvironmentBlockerCode::EnvironmentBuildFailed,
+                    "the environment builder returned no receipt",
+                )
+            })?;
+            if let Some(blocker) = receipt.blockers.first() {
+                return Err(EnvironmentError::new(blocker.code, blocker.message.clone()));
+            }
+            Ok(receipt)
+        })
+    }
+}
+
+/// Preserve the broker/CLI blocker class instead of collapsing it to a generic
+/// plan-invalid error. The code travels in the broker's typed JSON error body.
+pub fn environment_error_from_broker(
+    error: crate::runtime_broker::BrokerError,
+) -> EnvironmentError {
+    use crate::runtime_broker::BrokerError;
+    match error {
+        BrokerError::Refused(body) => {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) {
+                let code = value.get("code").and_then(serde_json::Value::as_str);
+                let message = value
+                    .get("error")
+                    .or_else(|| value.get("message"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("the runtime broker refused the environment operation");
+                if let Some(code) = code.and_then(EnvironmentBlockerCode::from_code) {
+                    return EnvironmentError::new(code, message);
+                }
+            }
+            EnvironmentError::new(EnvironmentBlockerCode::EnvironmentBuildFailed, body)
+        }
+        BrokerError::RefusedCode { code, message, .. } => {
+            let code = EnvironmentBlockerCode::from_code(&code)
+                .unwrap_or(EnvironmentBlockerCode::EnvironmentBuildFailed);
+            EnvironmentError::new(code, message)
+        }
+        BrokerError::Invalid(message) => {
+            EnvironmentError::new(EnvironmentBlockerCode::EnvironmentPlanInvalid, message)
+        }
+        BrokerError::InvalidConfiguration(message) => EnvironmentError::new(
+            EnvironmentBlockerCode::EnvironmentBuilderUnavailable,
+            message,
+        ),
+        BrokerError::InvalidResponse(message) => {
+            EnvironmentError::new(EnvironmentBlockerCode::EnvironmentBuildFailed, message)
+        }
+        BrokerError::Io(error) => EnvironmentError::new(
+            EnvironmentBlockerCode::EnvironmentBuilderUnavailable,
+            error.to_string(),
+        ),
+        BrokerError::Request(error) => EnvironmentError::new(
+            EnvironmentBlockerCode::EnvironmentBuilderUnavailable,
+            error.to_string(),
+        ),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct EnvironmentResolution {
     pub schema_version: u32,
+    /// Exact generated plan this resolution belongs to. A resolver may not
+    /// return locks for a different or mutable plan.
+    #[serde(default)]
+    pub plan_sha256: String,
     #[serde(default)]
     pub files: Vec<EnvironmentFile>,
     pub nix_version: String,
@@ -3204,6 +3562,11 @@ impl EnvironmentResolution {
     pub fn validate(&self) -> Result<(), EnvironmentError> {
         if self.schema_version != ENVIRONMENT_SCHEMA_VERSION {
             return Err(invalid("unsupported environment resolution schema version"));
+        }
+        if !is_sha256(&self.plan_sha256) {
+            return Err(invalid(
+                "the environment resolution is not bound to a plan hash",
+            ));
         }
         bounded_text("resolved Nix version", &self.nix_version, 64)?;
         bounded_text("resolved devenv version", &self.devenv_version, 64)?;
@@ -3228,6 +3591,16 @@ impl EnvironmentResolution {
                     "resolved lock content does not match its hash",
                 ));
             }
+        }
+        Ok(())
+    }
+
+    pub fn validate_for(&self, plan: &EnvironmentPlan) -> Result<(), EnvironmentError> {
+        self.validate()?;
+        if self.plan_sha256 != plan.plan_sha256 {
+            return Err(hash_mismatch(
+                "the environment resolution is bound to a different plan",
+            ));
         }
         Ok(())
     }

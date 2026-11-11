@@ -15,6 +15,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
 from environment_builder import BUILDER_POLICY_REVISION, LICENSE_POLICY_REVISION  # noqa: E402
+from environment_builder.cli import _resolution_file  # noqa: E402
 from environment_builder.errors import BuilderError  # noqa: E402
 from environment_builder.policy import (  # noqa: E402
     EnvironmentFile,
@@ -196,6 +197,48 @@ class PolicyTests(unittest.TestCase):
         }
         validated = validate_license_inventory(spec(), plan)
         self.assertEqual(validated["allowUnfree"], False)
+
+    def test_broker_environment_egress_network_is_accepted_but_arbitrary_names_are_not(self) -> None:
+        plan = {
+            "network": {
+                "build": "NONE",
+                "fetch": "BROKER",
+                "fetchAllowlist": ["https://cache.nixos.org"],
+            }
+        }
+        request = {
+            "fetchNetwork": "factory-env-egress-1",
+            "fetchProxy": "http://10.91.1.1:18080",
+            "fetchPolicy": {
+                "network": "factory-env-egress-1",
+                "proxy": "http://10.91.1.1:18080",
+                "allowlist": ["https://cache.nixos.org"],
+                "enforcedBy": "broker",
+            },
+        }
+        validate_fetch_policy(request, plan, "resolve")
+        for invalid in ("host", "container", "factory-env-egress-0", "factory-env-egress-999", "factory-env-egress-"):
+            request["fetchNetwork"] = invalid
+            with self.assertRaises(BuilderError) as raised:
+                validate_fetch_policy(request, plan, "resolve")
+            self.assertEqual(raised.exception.code, "ENVIRONMENT_NETWORK_DENIED")
+
+    def test_resolution_file_is_typed_and_hash_bound(self) -> None:
+        import tempfile
+        from pathlib import Path as FilePath
+
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = FilePath(directory)
+            content = '{"nodes":{"root":{}},"root":"root","version":7}\n'
+            (workspace / "flake.lock").write_text(content, encoding="utf-8")
+            file = _resolution_file(workspace, "flake.lock", "PROJECT")
+            self.assertEqual(file["path"], "flake.lock")
+            self.assertEqual(file["origin"], "PROJECT")
+            self.assertEqual(file["sha256"], __import__("hashlib").sha256(content.encode()).hexdigest())
+            (workspace / "flake.lock").write_text("not json", encoding="utf-8")
+            with self.assertRaises(BuilderError) as raised:
+                _resolution_file(workspace, "flake.lock", "PROJECT")
+            self.assertEqual(raised.exception.code, "ENVIRONMENT_PIN_MISSING")
 
     def test_network_build_must_be_none(self) -> None:
         with self.assertRaises(BuilderError) as raised:

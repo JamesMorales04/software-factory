@@ -177,6 +177,43 @@ services:
     network_mode: none
     restart: "no"
 
+  environment-builder-bundle:
+    build:
+      context: .
+      dockerfile: deploy/environment-builder/Containerfile
+    image: localhost/software-factory-environment-builder:dev
+    user: "0:0"
+    cap_drop:
+      - ALL
+    cap_add:
+      - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        mkdir -p /bundle
+        export PATH=/home/factory/.nix-profile/bin:$$PATH
+        rm -f /bundle/environment-builder-rootfs.tar /bundle/environment-builder-rootfs.tar.tmp /bundle/environment-builder.digest /bundle/environment-builder-rootfs.tar.ready
+        tar --one-file-system \
+          --exclude=./proc --exclude=./sys --exclude=./dev \
+          --exclude=./bundle --exclude=./run --exclude=./tmp \
+          -C / -cf /bundle/environment-builder-rootfs.tar.tmp .
+        sync /bundle/environment-builder-rootfs.tar.tmp || true
+        mv /bundle/environment-builder-rootfs.tar.tmp /bundle/environment-builder-rootfs.tar
+        digest="$$(sha256sum /bundle/environment-builder-rootfs.tar | cut -d' ' -f1)"
+        printf 'sha256:%s\n' "$$digest" > /bundle/environment-builder.digest.tmp
+        mv /bundle/environment-builder.digest.tmp /bundle/environment-builder.digest
+        touch /bundle/environment-builder-rootfs.tar.ready
+    volumes:
+      - factory-image-bundle:/bundle
+    network_mode: none
+    restart: "no"
+
   runtime:
     build:
       context: .
@@ -219,7 +256,13 @@ services:
       FACTORY_BIND: 0.0.0.0:8770
       FACTORY_CONTAINER_MODE: "1"
       FACTORY_RUNTIME_BROKER_TOKEN_DIR: /config
+      # The builder image is imported from the bundle, never pulled by tag.
       FACTORY_RUNTIME_IMAGES: docker.io/library/rust:1.90.0-bookworm
+      FACTORY_RUNTIME_ENVIRONMENT_BUILDER_IMAGE: localhost/software-factory-environment-builder:dev
+      FACTORY_RUNTIME_ENVIRONMENT_BUILDER_BUNDLE: /bundles/environment-builder-rootfs.tar
+      FACTORY_RUNTIME_ENVIRONMENT_BUILDER_DIGEST_FILE: /bundles/environment-builder.digest
+      FACTORY_RUNTIME_ENVIRONMENT_BUILDER_PLATFORM: x86_64-linux
+      FACTORY_RUNTIME_ENVIRONMENT_BUILDER_POLICY_REVISION: nix-devenv-environment-v1
       FACTORY_RUNTIME_PROVIDER_IMAGES: localhost/software-factory-provider:dev
       # The installed stack is fail-closed for the live OpenCode route:
       # the deterministic fixture adapter is selected only by the explicit
@@ -257,7 +300,7 @@ services:
     command:
       - /bin/sh
       - -c
-      - until [ -f /config/.ready ]; do sleep 1; done; exec /usr/local/bin/factory-core
+      - until [ -f /config/.ready ]; do sleep 1; done; i=0; until [ -f /bundles/environment-builder.digest ] || [ "$i" -ge 600 ]; do i=$((i+1)); sleep 1; done; exec /usr/local/bin/factory-core
     <<: *restricted
     read_only: true
     tmpfs:
@@ -269,6 +312,7 @@ services:
       - factory-config-core:/config:ro
       - factory-projects:/projects
       - factory-office-socket:/office-socket
+      - factory-image-bundle:/bundles:ro
     environment:
       # The full control listener binds only the dedicated control/egress
       # interfaces. It never listens on the optional Office-only network.
@@ -288,6 +332,14 @@ services:
       FACTORY_LEAD_FIXTURE_ASSESSOR: ${FACTORY_LEAD_FIXTURE_ASSESSOR:-0}
       FACTORY_ENABLE_AUTONOMOUS_START: "1"
       FACTORY_ENABLE_CODEX_REVIEW: "0"
+      FACTORY_RUNTIME_BROKER_URL: http://runtime:8770
+      FACTORY_RUNTIME_BROKER_TOKEN_FILE: /config/runtime-broker-environment.token
+      FACTORY_ENVIRONMENT_BUILDER_IMAGE: localhost/software-factory-environment-builder:dev
+      FACTORY_ENVIRONMENT_BUILDER_DIGEST_FILE: /bundles/environment-builder.digest
+      FACTORY_ENVIRONMENT_BUILDER_PLATFORM: x86_64-linux
+      FACTORY_ENVIRONMENT_NIX_VERSION: 2.28.3
+      FACTORY_ENVIRONMENT_DEVENV_VERSION: 1.11.2
+      FACTORY_ENVIRONMENT_FETCH_ALLOWLIST: https://cache.nixos.org,https://github.com,https://codeload.github.com
     networks:
       factory-control:
         aliases:

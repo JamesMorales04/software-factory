@@ -45,7 +45,7 @@ This is the exact reason it is not described as rootless-in-rootless.
 | Boundary | What crosses | What must not cross |
 |---|---|---|
 | Host → outer runtime container | Namespaced capabilities, private engine volume, provider-session volume, bundle/config volumes | Host Podman socket, host HOME, host network namespace |
-| Broker → inner engine | Typed operations only | Arbitrary Podman arguments, host paths, unlisted images |
+| Broker → inner engine | Typed operations only; environment image/digest allowlist | Arbitrary Podman arguments, host paths, unlisted images, environment caller argv |
 | Inner engine → child | Allowlisted image, one workspace volume or provider session subdir, bounded cgroups, no network | Core DB, provider credential, operator/role tokens, host repositories, other workspaces |
 | Worker → provider container | Per-run egress token and non-secret OpenCode config; private session volume | Long-lived provider credential (held by the Worker egress broker) |
 | Core → model provider | Core-held credential, budget reservation, strict schema | Provider credential to the browser or provider sandbox; the Worker receives only the exact assigned route while the attempt is `LEASED`, the Campaign is `AUTHORIZED`, the lease generation matches and the authorization deadline is active |
@@ -129,10 +129,12 @@ why the engine is trusted infrastructure and why SEC-01 remains blocked.
   DETERMINISTIC rather than pretending model review occurred; a configured
   default provider without constructible MODEL evidence fails closed at the
   gate. Independent review and isolation remain the mitigation.
-- The runtime broker uses three distinct owner credentials: Supervisor,
-  verifier and Worker/provider. Each caller authenticates as exactly one
-  `ResourceOwner`; the broker derives the owner from the token and applies it to
-  create/import/export/execute/delete/reset/status operations. The reviewer does
+- The runtime broker uses four distinct owner credentials: Supervisor,
+  verifier, Worker/provider and Core/environment. Each caller authenticates as
+  exactly one `ResourceOwner`; the broker derives the owner from the token and
+  applies it to create/import/export/execute/delete/reset/status operations. The
+  environment owner cannot use the generic workspace/container routes; it can
+  reach only the typed environment resolve/build routes. The reviewer does
   not receive a runtime-broker token. A compromised trusted service can still
   attempt operations within its own owner scope; this is scoped engine authority,
   not kernel or credential isolation.

@@ -1581,8 +1581,8 @@ export interface EnvironmentNixView {
 
 export interface EnvironmentResourceLimitsView {
   cpu: number;
-  memoryMib: number;
-  diskMib: number;
+  memoryMiB: number;
+  diskMiB: number;
   pids: number;
   timeoutSecs: number;
 }

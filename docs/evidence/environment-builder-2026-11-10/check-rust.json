@@ -1,0 +1,1 @@
+{"checkId":"rust-test","argv":["cargo","test","--offline"],"cwd":"projects/rust","timeoutSecs":300,"expectExit":0}

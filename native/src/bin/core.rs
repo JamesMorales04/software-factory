@@ -849,6 +849,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ),
         autopilot_in_flight: tokio::sync::Mutex::new(std::collections::HashSet::new()),
     });
+    match factory_native::planning::environment::RuntimeBrokerEnvironmentBuilder::from_env().await {
+        Ok(Some(builder)) => app.set_environment_builder(builder),
+        Ok(None) => {}
+        Err(error) => {
+            tracing::warn!(%error, "environment builder is unavailable; generated environments remain blocked")
+        }
+    }
     {
         let app_for_autopilot = Arc::clone(&app);
         tokio::spawn(async move {
@@ -993,6 +1000,14 @@ async fn shutdown_signal() {
     }
 }
 
+async fn health(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
+    Json(json!({
+        "healthy": true,
+        "version": "0.1.0",
+        "environmentBuilder": app.environment_builder().descriptor(),
+    }))
+}
+
 fn build_router(app: Arc<App>) -> Router {
     let api =
         api_router(Arc::clone(&app)).merge(factory_native::device_pairing::routes(app.db.clone()));
@@ -1033,10 +1048,7 @@ fn build_office_access_router(app: Arc<App>, office_directory: Option<PathBuf>) 
 
 fn office_api_router(app: Arc<App>) -> Router {
     let api = Router::new()
-        .route(
-            "/health",
-            get(|| async { Json(json!({"healthy":true,"version":"0.1.0"})) }),
-        )
+        .route("/health", get(health))
         .route("/auth/bootstrap", post(auth_bootstrap))
         .route("/auth/session", get(auth_session))
         .route("/auth/logout", post(auth_logout))
@@ -1338,10 +1350,7 @@ async fn office_api_route_not_found() -> Response {
 
 fn api_router(app: Arc<App>) -> Router {
     let api = Router::new()
-        .route(
-            "/health",
-            get(|| async { Json(json!({"healthy":true,"version":"0.1.0"})) }),
-        )
+        .route("/health", get(health))
         .route("/auth/bootstrap", post(auth_bootstrap))
         .route("/auth/session", get(auth_session))
         .route("/auth/logout", post(auth_logout))
@@ -1669,7 +1678,6 @@ impl App {
             .clone()
     }
 
-    #[cfg(test)]
     fn set_environment_builder(
         &self,
         builder: factory_native::planning::environment::SharedEnvironmentBuilder,
@@ -11184,32 +11192,6 @@ fn repository_file_sha256(
 const DEFAULT_ENVIRONMENT_NIX_VERSION: &str = "2.28.3";
 const DEFAULT_ENVIRONMENT_DEVENV_VERSION: &str = "1.11.2";
 
-fn environment_builder_descriptor()
--> factory_native::planning::environment::EnvironmentBuilderDescriptor {
-    use factory_native::planning::environment::{
-        DEFAULT_PLATFORM, ENVIRONMENT_POLICY_REVISION, EnvironmentBuilderDescriptor,
-        EnvironmentBuilderStatus,
-    };
-    let image = std::env::var("FACTORY_ENVIRONMENT_BUILDER_IMAGE").unwrap_or_default();
-    let digest = std::env::var("FACTORY_ENVIRONMENT_BUILDER_DIGEST").unwrap_or_default();
-    let platform = std::env::var("FACTORY_ENVIRONMENT_BUILDER_PLATFORM")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| DEFAULT_PLATFORM.into());
-    let status = if image.trim().is_empty() || digest.trim().is_empty() {
-        EnvironmentBuilderStatus::Unavailable
-    } else {
-        EnvironmentBuilderStatus::Ready
-    };
-    EnvironmentBuilderDescriptor {
-        image: image.trim().to_owned(),
-        digest: digest.trim().to_owned(),
-        platform,
-        policy_revision: ENVIRONMENT_POLICY_REVISION.into(),
-        status,
-    }
-}
-
 fn empty_conventions(
     project_id: &str,
     base_commit: &str,
@@ -11242,6 +11224,7 @@ fn blocked_environment_plan(
     risk_class: &str,
     conventions: &factory_native::planning::environment::ProjectConventions,
     blocker: factory_native::planning::environment::EnvironmentBlocker,
+    builder: factory_native::planning::environment::EnvironmentBuilderDescriptor,
 ) -> factory_native::planning::environment::EnvironmentPlan {
     use factory_native::planning::environment::{
         ENVIRONMENT_SCHEMA_VERSION, EnvironmentBlockerCode, EnvironmentNixPolicy, EnvironmentPlan,
@@ -11279,7 +11262,7 @@ fn blocked_environment_plan(
         network: NetworkPolicy::default(),
         license_inventory: LicenseInventory::default(),
         license_inventory_sha256: String::new(),
-        builder: environment_builder_descriptor(),
+        builder,
         resolution: None,
         lead_review: None,
         blockers: vec![blocker],
@@ -11331,6 +11314,7 @@ async fn compile_environment_for_request(
                     code: error.code,
                     message: error.message,
                 },
+                app.environment_builder().descriptor(),
             );
             app.db
                 .save_environment_plan(&plan)
@@ -11349,6 +11333,7 @@ async fn compile_environment_for_request(
                 code: error.code,
                 message: error.message,
             },
+            app.environment_builder().descriptor(),
         );
         app.db
             .save_environment_plan(&plan)
@@ -11356,7 +11341,15 @@ async fn compile_environment_for_request(
             .map_err(api_error)?;
         return Ok(plan);
     }
-    let requirements = EnvironmentRequirements::default();
+    let mut requirements = EnvironmentRequirements::default();
+    if let Ok(raw) = std::env::var("FACTORY_ENVIRONMENT_FETCH_ALLOWLIST") {
+        requirements.network.fetch_allowlist = raw
+            .split(',')
+            .map(str::trim)
+            .filter(|entry| !entry.is_empty())
+            .map(str::to_owned)
+            .collect();
+    }
     match compile_environment_plan(CompileEnvironmentInput {
         plan_id: uuid::Uuid::new_v4().simple().to_string(),
         project_id: &record.project_id,
@@ -11379,7 +11372,7 @@ async fn compile_environment_for_request(
                 == factory_native::planning::environment::EnvironmentPlanSource::Generated
                 && !has_lock
             {
-                match resolve_generated_environment(app, &plan).await {
+                match resolve_generated_environment(app, &plan, Some(repository.as_path())).await {
                     Ok(resolved) => plan = resolved,
                     Err(blocker) => {
                         let blocked = blocked_environment_plan(
@@ -11388,6 +11381,7 @@ async fn compile_environment_for_request(
                             &risk_class,
                             &conventions,
                             blocker,
+                            app.environment_builder().descriptor(),
                         );
                         app.db
                             .save_environment_plan(&blocked)
@@ -11421,6 +11415,7 @@ async fn compile_environment_for_request(
                     },
                     message: error.message,
                 },
+                app.environment_builder().descriptor(),
             );
             app.db
                 .save_environment_plan(&plan)
@@ -11434,19 +11429,20 @@ async fn compile_environment_for_request(
 async fn resolve_generated_environment(
     app: &App,
     plan: &factory_native::planning::environment::EnvironmentPlan,
+    workspace: Option<&std::path::Path>,
 ) -> Result<
     factory_native::planning::environment::EnvironmentPlan,
     factory_native::planning::environment::EnvironmentBlocker,
 > {
     use factory_native::planning::environment::{EnvironmentBlockerCode, EnvironmentBuilderStatus};
     let builder = app.environment_builder();
-    let resolution = builder.resolve(plan).await.map_err(|error| {
+    let resolution = builder.resolve(plan, workspace).await.map_err(|error| {
         factory_native::planning::environment::EnvironmentBlocker {
             code: error.code,
             message: error.message,
         }
     })?;
-    if let Err(error) = resolution.validate() {
+    if let Err(error) = resolution.validate_for(plan) {
         return Err(factory_native::planning::environment::EnvironmentBlocker {
             code: error.code,
             message: error.message,
@@ -11481,6 +11477,7 @@ async fn build_environment_before_freeze(
     app: &App,
     plan: &factory_native::planning::environment::EnvironmentPlan,
     spec: &factory_native::planning::environment::EnvironmentSpec,
+    workspace: Option<&std::path::Path>,
 ) -> Result<Option<factory_native::planning::environment::EnvironmentBuildReceipt>, Response> {
     use factory_native::planning::environment::EnvironmentBuilderStatus;
     let builder = app.environment_builder();
@@ -11488,16 +11485,19 @@ async fn build_environment_before_freeze(
     if !descriptor.is_available() || descriptor.status == EnvironmentBuilderStatus::Unavailable {
         return Ok(None);
     }
-    let receipt = builder.build(spec, plan).await.map_err(|error| {
-        (
-            StatusCode::CONFLICT,
-            Json(json!({
-                "error": error.message,
-                "code": error.code_str(),
-            })),
-        )
-            .into_response()
-    })?;
+    let receipt = builder
+        .build(spec, plan, workspace)
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": error.message,
+                    "code": error.code_str(),
+                })),
+            )
+                .into_response()
+        })?;
     receipt.validate_for(spec).map_err(|error| {
         (
             StatusCode::CONFLICT,
@@ -11769,7 +11769,19 @@ async fn freeze_reviewed_environment(
     if spec.status != EnvironmentSpecStatus::Frozen {
         return Err(StatusCode::CONFLICT.into_response());
     }
-    let build_receipt = build_environment_before_freeze(app, &plan, &spec).await?;
+    // The frozen spec was constructed from the Lead-approved plan. Execution
+    // evidence is bound to a FROZEN plan, so mark the in-memory status before
+    // the builder call; the durable status transition happens only after the
+    // build receipt and spec are persisted.
+    plan.status = EnvironmentPlanStatus::Frozen;
+    let repository = app
+        .db
+        .project_config(&record.project_id)
+        .await
+        .ok()
+        .map(|config| std::path::PathBuf::from(config.repository));
+    let build_receipt =
+        build_environment_before_freeze(app, &plan, &spec, repository.as_deref()).await?;
     if plan.source == factory_native::planning::environment::EnvironmentPlanSource::Generated
         && build_receipt.is_none()
     {
@@ -27982,10 +27994,11 @@ mod tests {
 
             fn resolve<'a>(
                 &'a self,
-                _plan: &'a factory_native::planning::environment::EnvironmentPlan,
+                plan: &'a factory_native::planning::environment::EnvironmentPlan,
+                _workspace: Option<&'a std::path::Path>,
             ) -> factory_native::planning::environment::EnvironmentResolutionFuture<'a>
             {
-                Box::pin(async {
+                Box::pin(async move {
                     use factory_native::planning::environment::{
                         ENVIRONMENT_SCHEMA_VERSION, EnvironmentFile, EnvironmentFileOrigin,
                         EnvironmentResolution,
@@ -27994,6 +28007,7 @@ mod tests {
                         .to_string();
                     Ok(EnvironmentResolution {
                         schema_version: ENVIRONMENT_SCHEMA_VERSION,
+                        plan_sha256: plan.plan_sha256.clone(),
                         files: vec![EnvironmentFile {
                             path: "flake.lock".into(),
                             sha256: factory_native::planning::environment::sha256_hex(
@@ -28012,6 +28026,7 @@ mod tests {
                 &'a self,
                 spec: &'a factory_native::planning::environment::EnvironmentSpec,
                 _plan: &'a factory_native::planning::environment::EnvironmentPlan,
+                _workspace: Option<&'a std::path::Path>,
             ) -> factory_native::planning::environment::EnvironmentBuilderFuture<'a> {
                 Box::pin(async move {
                     use factory_native::planning::environment::{
@@ -28120,7 +28135,7 @@ mod tests {
             })
             .unwrap();
             assert_eq!(plan.source, EnvironmentPlanSource::Generated);
-            let resolved = resolve_generated_environment(&fixture.app, &plan)
+            let resolved = resolve_generated_environment(&fixture.app, &plan, None)
                 .await
                 .unwrap();
             assert!(
@@ -28183,7 +28198,7 @@ mod tests {
             assert!(!spec.flake_lock_sha256.is_empty());
             assert_eq!(spec.builder_image, "factory/environment-builder");
             assert!(!spec.builder_image_digest.is_empty());
-            let receipt = build_environment_before_freeze(&fixture.app, &resolved, &spec)
+            let receipt = build_environment_before_freeze(&fixture.app, &resolved, &spec, None)
                 .await
                 .unwrap()
                 .expect("the fake builder must produce a receipt");

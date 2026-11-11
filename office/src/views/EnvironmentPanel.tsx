@@ -311,7 +311,7 @@ export function EnvironmentPanel({
               <dd>
                 {t("environment.selected.resourceValue", {
                   cpu: plan.resources.cpu,
-                  memory: plan.resources.memoryMib,
+                  memory: plan.resources.memoryMiB,
                   timeout: plan.resources.timeoutSecs,
                 })}
               </dd>

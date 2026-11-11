@@ -108,13 +108,20 @@ Factory configuration:
 | --- | --- |
 | `FACTORY_ENVIRONMENT_BUILDER_IMAGE` | Builder image reference (no tag credentials). |
 | `FACTORY_ENVIRONMENT_BUILDER_DIGEST` | `sha256:` image digest. |
+| `FACTORY_ENVIRONMENT_BUILDER_DIGEST_FILE` | Compose: `/bundles/environment-builder.digest`; used when `_DIGEST` is absent. |
 | `FACTORY_ENVIRONMENT_BUILDER_PLATFORM` | Builder platform; defaults to `x86_64-linux`. |
+| `FACTORY_RUNTIME_BROKER_URL` | Runtime broker origin used by the Core builder client. |
+| `FACTORY_RUNTIME_BROKER_TOKEN_FILE` | Distinct environment-owner broker token (`/config/runtime-broker-environment.token`). |
 | `FACTORY_ENVIRONMENT_NIX_VERSION` | Pinned Nix version recorded in a frozen spec. |
 | `FACTORY_ENVIRONMENT_DEVENV_VERSION` | Pinned devenv version recorded in a frozen spec. |
 
 An absent image/digest is `ENVIRONMENT_BUILDER_UNAVAILABLE` at resolution and
 check selection; it does not select a Rust or generic image. A generated
-environment without builder resolution cannot freeze.
+environment without builder resolution cannot freeze. WP1-C installs the
+`RuntimeBrokerEnvironmentBuilder` when the broker health projection reports the
+exact configured image/digest as `READY`; otherwise the descriptor stays
+truthfully `UNAVAILABLE`. See the
+[environment runtime broker integration](environment-runtime-broker.md).
 
 ## 4.1 Owner unfree-licence override
 

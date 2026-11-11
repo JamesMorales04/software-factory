@@ -4,14 +4,21 @@
 //! containers in the dedicated nested Podman engine. Callers supply typed
 //! operations, never Podman flags, images outside the allowlist or host paths.
 
-use std::{collections::BTreeMap, time::Duration};
+use std::{collections::BTreeMap, path::Path, time::Duration};
 
 use serde::{Deserialize, Serialize};
 
 use crate::execution::{BoundedOutput, ExecutionError};
+use crate::planning::environment::{
+    EnvironmentBuildReceipt, EnvironmentPlan, EnvironmentResolution, EnvironmentSpec,
+};
 
 const MAX_ERROR_BYTES: usize = 4096;
 const MAX_ARCHIVE_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_ENVIRONMENT_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_ENVIRONMENT_WORKSPACE_FILES: usize = 128;
+pub const MAX_ENVIRONMENT_WORKSPACE_FILE_BYTES: usize = 512 * 1024;
+pub const MAX_ENVIRONMENT_WORKSPACE_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_RESOURCE_INVENTORY_BYTES: usize = 4 * 1024 * 1024;
 const MAX_MANAGED_RESOURCES: usize = 4096;
 const MAX_LABEL_BYTES: usize = 128;
@@ -28,6 +35,7 @@ pub enum ResourceOwner {
     Supervisor,
     Verifier,
     Provider,
+    Environment,
 }
 
 impl ResourceOwner {
@@ -36,6 +44,7 @@ impl ResourceOwner {
             Self::Supervisor => "supervisor",
             Self::Verifier => "verifier",
             Self::Provider => "provider",
+            Self::Environment => "environment",
         }
     }
 
@@ -44,6 +53,7 @@ impl ResourceOwner {
             "supervisor" => Some(Self::Supervisor),
             "verifier" => Some(Self::Verifier),
             "provider" => Some(Self::Provider),
+            "environment" => Some(Self::Environment),
             _ => None,
         }
     }
@@ -95,6 +105,16 @@ pub fn is_valid_dependency_container_name(name: &str) -> bool {
 pub fn is_valid_container_name(name: &str) -> bool {
     is_valid_exec_container_name(name) || is_valid_provider_container_name(name)
 }
+
+pub fn is_valid_environment_volume_name(name: &str) -> bool {
+    valid_prefixed_uuid(name, "factory-env-")
+}
+
+pub fn is_valid_environment_container_name(name: &str) -> bool {
+    valid_prefixed_uuid(name, "factory-env-")
+}
+
+pub const ENVIRONMENT_CACHE_VOLUME: &str = "factory-env-cache";
 
 fn valid_prefixed_uuid(name: &str, prefix: &str) -> bool {
     let Some(rest) = name.strip_prefix(prefix) else {
@@ -318,12 +338,20 @@ const MAX_DEPENDENCY_RESPONSE_BYTES: usize = 256 * 1024;
 pub enum BrokerError {
     #[error("runtime broker configuration is invalid: {0}")]
     Invalid(String),
+    #[error("runtime broker configuration is invalid: {0}")]
+    InvalidConfiguration(String),
     #[error("runtime broker I/O failed: {0}")]
     Io(#[from] std::io::Error),
     #[error("runtime broker request failed: {0}")]
     Request(#[from] reqwest::Error),
     #[error("runtime broker refused the operation: {0}")]
     Refused(String),
+    #[error("runtime broker refused the operation ({status} {code}): {message}")]
+    RefusedCode {
+        status: u16,
+        code: String,
+        message: String,
+    },
     #[error("runtime broker returned an invalid response: {0}")]
     InvalidResponse(String),
 }
@@ -391,6 +419,175 @@ pub struct ContainerStatus {
     pub exit_code: i32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum EnvironmentBrokerOperation {
+    Resolve,
+    Build,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum EnvironmentBuildPhase {
+    Resolve,
+    Fetch,
+    Build,
+}
+
+/// One project environment file sent by Core. Generated files are carried in
+/// the plan itself; this list carries only bounded project files that the
+/// builder must stage without a host mount.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct EnvironmentWorkspaceFile {
+    pub path: String,
+    pub sha256: String,
+    pub content: String,
+}
+
+/// One narrow environment-builder request. It contains no argv, Podman flags,
+/// host path, socket, network name or environment variable. The broker derives
+/// the builder command, network, proxy and mounts from this typed document.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct EnvironmentBrokerRequest {
+    pub schema_version: u32,
+    pub operation: EnvironmentBrokerOperation,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<EnvironmentBuildPhase>,
+    pub image: String,
+    pub digest: String,
+    pub plan: EnvironmentPlan,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec: Option<EnvironmentSpec>,
+    #[serde(default)]
+    pub workspace_files: Vec<EnvironmentWorkspaceFile>,
+}
+
+impl EnvironmentBrokerRequest {
+    pub fn validate_shape(&self) -> Result<(), String> {
+        if self.schema_version != crate::planning::environment::ENVIRONMENT_SCHEMA_VERSION {
+            return Err("unsupported environment broker schema version".into());
+        }
+        if self.workspace_files.len() > MAX_ENVIRONMENT_WORKSPACE_FILES {
+            return Err("environment workspace has too many files".into());
+        }
+        let mut total = 0usize;
+        for file in &self.workspace_files {
+            if file.path.is_empty()
+                || file.path.len() > 512
+                || file.path.starts_with('/')
+                || file.path.split('/').any(|part| {
+                    part.is_empty() || part == "." || part == ".." || part.contains('\\')
+                })
+            {
+                return Err("environment workspace path is unsafe".into());
+            }
+            if file.sha256.len() != 64
+                || !file
+                    .sha256
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            {
+                return Err("environment workspace file hash is not lowercase SHA-256".into());
+            }
+            if file.content.len() > MAX_ENVIRONMENT_WORKSPACE_FILE_BYTES {
+                return Err("environment workspace file exceeds its bound".into());
+            }
+            if crate::planning::environment::sha256_hex(file.content.as_bytes()) != file.sha256 {
+                return Err("environment workspace file does not match its hash".into());
+            }
+            total = total.saturating_add(file.content.len());
+        }
+        if total > MAX_ENVIRONMENT_WORKSPACE_BYTES {
+            return Err("environment workspace exceeds its byte bound".into());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct EnvironmentBrokerResult {
+    pub schema_version: u32,
+    pub operation: EnvironmentBrokerOperation,
+    pub phase: EnvironmentBuildPhase,
+    #[serde(default)]
+    pub spec_sha256: String,
+    #[serde(default)]
+    pub resolution: Option<EnvironmentResolution>,
+    #[serde(default)]
+    pub receipt: Option<EnvironmentBuildReceipt>,
+    #[serde(default)]
+    pub logs: String,
+    #[serde(default)]
+    pub logs_truncated: bool,
+    pub cleanup_confirmed: bool,
+    pub duration_ms: u64,
+}
+
+/// Absolute workspace root used to read project environment files. Core passes
+/// it only to the client implementation; it is never sent to the broker and the
+/// broker never receives a host path.
+pub fn environment_workspace_files(
+    plan: &EnvironmentPlan,
+    workspace: Option<&Path>,
+) -> Result<Vec<EnvironmentWorkspaceFile>, String> {
+    let mut files = Vec::new();
+    let mut total = 0usize;
+    for file in &plan.files {
+        let content = match (&file.content, workspace) {
+            (Some(content), _) => content.clone(),
+            (None, Some(root)) => {
+                let path = root.join(&file.path);
+                let bytes = std::fs::read(&path).map_err(|_| {
+                    format!("project environment file {} is unavailable", file.path)
+                })?;
+                if bytes.len() > MAX_ENVIRONMENT_WORKSPACE_FILE_BYTES {
+                    return Err(format!(
+                        "project environment file {} exceeds its bound",
+                        file.path
+                    ));
+                }
+                String::from_utf8(bytes).map_err(|_| {
+                    format!("project environment file {} is not UTF-8 text", file.path)
+                })?
+            }
+            (None, None) => {
+                return Err(format!(
+                    "project environment file {} requires an explicit workspace",
+                    file.path
+                ));
+            }
+        };
+        if file.content.is_none()
+            && crate::planning::environment::sha256_hex(content.as_bytes()) != file.sha256
+        {
+            return Err(format!(
+                "project environment file {} does not match the frozen plan hash",
+                file.path
+            ));
+        }
+        total = total.saturating_add(content.len());
+        if total > MAX_ENVIRONMENT_WORKSPACE_BYTES {
+            return Err("environment workspace exceeds its byte bound".into());
+        }
+        files.push(EnvironmentWorkspaceFile {
+            path: file.path.clone(),
+            sha256: file.sha256.clone(),
+            content,
+        });
+        if files.len() > MAX_ENVIRONMENT_WORKSPACE_FILES {
+            return Err("environment workspace has too many files".into());
+        }
+    }
+    Ok(files)
+}
+
+pub const ENVIRONMENT_BUILD_ROUTE: &str = "v1/environments/build";
+pub const ENVIRONMENT_RESOLVE_ROUTE: &str = "v1/environments/resolve";
+
+pub const MAX_ENVIRONMENT_REQUEST_BYTES: usize = 16 * 1024 * 1024;
 impl RuntimeBrokerClient {
     pub fn new(base: &str, token: String, owner: ResourceOwner) -> Result<Self, BrokerError> {
         let base = reqwest::Url::parse(base)
@@ -447,6 +644,35 @@ impl RuntimeBrokerClient {
             ));
         }
         Ok(())
+    }
+
+    /// Read the broker's authenticated-free health projection. It contains no
+    /// token or credential, only capability availability.
+    pub async fn health(&self) -> Result<serde_json::Value, BrokerError> {
+        let response = self
+            .client
+            .get(self.join("health")?)
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await?;
+        if !response.status().is_success() {
+            return Err(self.refusal(response).await);
+        }
+        if let Some(length) = response.content_length()
+            && length as usize > MAX_RESOURCE_INVENTORY_BYTES
+        {
+            return Err(BrokerError::InvalidResponse(
+                "runtime broker health exceeds the broker bound".into(),
+            ));
+        }
+        let bytes = response.bytes().await?;
+        if bytes.len() > MAX_RESOURCE_INVENTORY_BYTES {
+            return Err(BrokerError::InvalidResponse(
+                "runtime broker health exceeds the broker bound".into(),
+            ));
+        }
+        serde_json::from_slice(&bytes)
+            .map_err(|_| BrokerError::InvalidResponse("runtime broker health is invalid".into()))
     }
 
     pub async fn create_volume(&self, input: &NewVolume) -> Result<(), BrokerError> {
@@ -556,6 +782,68 @@ impl RuntimeBrokerClient {
             ));
         }
         Ok(resources)
+    }
+
+    /// Invoke exactly one typed environment resolve/build phase. The broker
+    /// validates the builder image/digest, plan resources, network policy and
+    /// staged workspace; Core never supplies a command, mount or proxy.
+    pub async fn environment_build(
+        &self,
+        input: &EnvironmentBrokerRequest,
+        timeout: Duration,
+    ) -> Result<EnvironmentBrokerResult, BrokerError> {
+        if self.owner != ResourceOwner::Environment {
+            return Err(BrokerError::Invalid(
+                "environment operations require the environment owner token".into(),
+            ));
+        }
+        input.validate_shape().map_err(BrokerError::Invalid)?;
+        let route = match input.operation {
+            EnvironmentBrokerOperation::Resolve => ENVIRONMENT_RESOLVE_ROUTE,
+            EnvironmentBrokerOperation::Build => ENVIRONMENT_BUILD_ROUTE,
+        };
+        let response = self
+            .client
+            .post(self.join(route)?)
+            .bearer_auth(&self.token)
+            .json(input)
+            .timeout(timeout)
+            .send()
+            .await?;
+        if !response.status().is_success() {
+            return Err(self.refusal(response).await);
+        }
+        if let Some(length) = response.content_length()
+            && length as usize > MAX_ENVIRONMENT_RESPONSE_BYTES
+        {
+            return Err(BrokerError::InvalidResponse(
+                "environment builder response exceeds the broker bound".into(),
+            ));
+        }
+        let bytes = response.bytes().await?;
+        if bytes.len() > MAX_ENVIRONMENT_RESPONSE_BYTES {
+            return Err(BrokerError::InvalidResponse(
+                "environment builder response exceeds the broker bound".into(),
+            ));
+        }
+        let result: EnvironmentBrokerResult = serde_json::from_slice(&bytes).map_err(|_| {
+            BrokerError::InvalidResponse("environment builder response is invalid".into())
+        })?;
+        let expected_phase = match input.operation {
+            EnvironmentBrokerOperation::Resolve => EnvironmentBuildPhase::Resolve,
+            EnvironmentBrokerOperation::Build => {
+                input.phase.unwrap_or(EnvironmentBuildPhase::Build)
+            }
+        };
+        if result.operation != input.operation
+            || result.phase != expected_phase
+            || !result.cleanup_confirmed
+        {
+            return Err(BrokerError::InvalidResponse(
+                "environment builder response does not bind the requested operation".into(),
+            ));
+        }
+        Ok(result)
     }
 
     pub async fn run_container(
@@ -686,8 +974,20 @@ impl RuntimeBrokerClient {
     async fn refusal(&self, response: reqwest::Response) -> BrokerError {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        let body: String = body.chars().take(MAX_ERROR_BYTES).collect();
-        BrokerError::Refused(format!("HTTP {status}: {body}"))
+        let bounded: String = body.chars().take(MAX_ERROR_BYTES).collect();
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&bounded)
+            && let (Some(code), Some(message)) = (
+                value.get("code").and_then(serde_json::Value::as_str),
+                value.get("error").and_then(serde_json::Value::as_str),
+            )
+        {
+            return BrokerError::RefusedCode {
+                status: status.as_u16(),
+                code: code.chars().take(128).collect(),
+                message: message.chars().take(MAX_ERROR_BYTES).collect(),
+            };
+        }
+        BrokerError::Refused(format!("HTTP {status}: {bounded}"))
     }
 }
 

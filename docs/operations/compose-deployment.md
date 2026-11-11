@@ -78,7 +78,7 @@ Set `FACTORY_PORT` to change the host port. No other service publishes a port.
 
 ### Runtime-broker owner credentials
 
-`factory-compose-init` generates three distinct runtime-broker tokens and
+`factory-compose-init` generates four distinct runtime-broker tokens and
 places each caller's token in its own config volume:
 
 | Caller | Token file |
@@ -86,9 +86,12 @@ places each caller's token in its own config volume:
 | Supervisor | `runtime-broker-supervisor.token` |
 | Verifier | `runtime-broker-verifier.token` |
 | Worker/provider | `runtime-broker-provider.token` |
+| Core/environment | `runtime-broker-environment.token` |
 
-The runtime service receives all three files under `/config` and derives the
-caller's `ResourceOwner` from the bearer token. The broker rejects a missing or
+The Core environment token is stored in Core's own config volume and is used
+only by `RuntimeBrokerEnvironmentBuilder`. The runtime service receives all four
+files under `/config` and derives the caller's `ResourceOwner` from the bearer
+token. The broker rejects a missing or
 unknown token and applies the derived owner to create, import, export, execute,
 delete, reset and inspect operations. Never replace these with one shared
 token, and never accept an owner from the request body or query string. Tokens
@@ -150,6 +153,23 @@ checks/finalization. A failed acquisition, a missing plan or invalid evidence
 blocks the candidate and is persisted as a terminal blocker reason.
 Vendor-cache plans are enforced by the offline checks. The check container
 remains `--network=none` and `--offline`.
+
+## Environment builder bundle
+
+The `environment-builder-bundle` one-shot service exports the generic
+Nix/devenv builder rootfs and a SHA-256 content digest to the shared
+`factory-image-bundle` volume. The runtime entrypoint waits for
+`environment-builder-rootfs.tar.ready`; the broker imports the rootfs into the
+private nested engine under the dedicated image/digest label and runs it only by
+immutable image ID. Core reads the same digest file and installs the runtime
+broker environment builder when its image/digest, broker URL and environment
+owner token are present. An absent or failed bundle keeps the builder
+`UNAVAILABLE`; generated environments stay blocked.
+
+The builder bundle is large (the Nix/devenv image is several GiB), so the first
+Compose build/start is slower than later starts. The builder joins no
+credential network; its fetch phase gets a per-operation internal network and
+the plan's allowlist proxy. Build runs with network disabled.
 
 ## OpenSpec validation job (profile-gated)
 

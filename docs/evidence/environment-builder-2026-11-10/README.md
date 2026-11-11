@@ -31,8 +31,8 @@ inventory.
 
 ## 2. Positive Node+Playwright and Rust acceptance
 
-Spec hash: `c10481f8acdfacc19711a8b0b5b20c4a8704f748f2396cd2a3b08bf93a42677e`.
-Builder image: `localhost/software-factory-environment-builder:dev@sha256:c1f26ceccd45451ce6085fc7df9811bfdaef3e002300b14a71c5f93594815824`.
+Spec hash: `0630003b7be75e3b54ce9cbf0d3099f284abd093b874c80588bb5c3db236bdff`.
+Builder image: `localhost/software-factory-environment-builder:dev@sha256:3407adf8c56cf090fe18fc3801388a603adfdaa45d347e841063f886cfc6d1da`.
 Store path: `/nix/store/wyrgjl56z5nyq18clgnj1fkqr6vlvbzj-devenv-shell-env`.
 Closure entries: 483.
 
@@ -40,13 +40,13 @@ Closure entries: 483.
 |---|---|
 | Final image build | `PASS`; 6.44 GB; Nix 2.28.3, devenv 1.11.2, Node 22.20.0, Chromium 143.0.7499.169 |
 | Descriptor / self-test | `PASS`; `READY`; exact image digest |
-| Offline build receipt | `SUCCEEDED`; `outputSha256=4e79552f01aaac949d60cf1037ab7c0c7c63c66be2561f3655337cd1a1ba02d1`; 7 354 ms |
-| Warm repeat build | `SUCCEEDED`; same spec and same `outputSha256`; 4 936 ms |
-| Node + Playwright check (`npm test`, real Chromium) | `PASSED`; exit 0; 8 683 ms |
-| Rust check (`cargo test --offline`) | `PASSED`; exit 0; 5 224 ms |
+| Offline build receipt | `SUCCEEDED`; `outputSha256=43cf7804da91ec0c09360d11b0af40bc730c734520e7c46c7e24259f1704ebb1`; 4 749 ms |
+| Warm repeat build | `SUCCEEDED`; same spec and same `outputSha256`; 4 733 ms |
+| Node + Playwright check (`npm test`, real Chromium) | `PASSED`; exit 0; 6 425 ms |
+| Rust check (`cargo test --offline`) | `PASSED`; exit 0; 5 697 ms |
 | Sandbox attestation | complete: non-root, no secrets, no host network/socket/mount, Nix sandbox, pure, bounded resources |
 | Frozen SBOM hash | `5f2a9b5b3ec0d7dbfea7c890af8fbb0f1ef267b3f26bf6b0c0a195fb3521539e` |
-| CycloneDX document hash | `b2a0f3903c05c5487d4ef6c6cadee32b11afea27b7a29d18c8569aff1a9d8402` |
+| CycloneDX document hash | `33f74497c4edc09d6a6c4132b6922a6c02693268352760cfe2e328787e7b8eb5` |
 | SBOM matches frozen spec | `true` |
 
 The Node check log contains a real Playwright run: `1 passed` for
@@ -61,7 +61,17 @@ check phases ran with `--network none`.
 
 The persistent store cache (`/nix` cache mount) was seeded from the verified
 image once. This is why the warm build reuses the exact derivations and
-`devenv-tasks`/source inputs without re-downloading.
+`devenv-tasks`/source inputs without re-downloading. Nix signature
+verification stayed enabled with the pinned `cache.nixos.org` and
+`devenv.cachix.org` keys; there is no global `require-sigs=false` and no
+unsigned local closure import.
+
+Writable host paths are confined to the cache root: the run directory and the
+Nix store cache must resolve inside it, and the read-only workspace is rejected
+if it is `/`, `$HOME`, the repository root, the container engine store or
+another protected host path. Disk is a post-hoc `du` bound against the frozen
+`diskMiB`; `disk.exact=false` and the enforcement is recorded in
+`disk-usage.json`. It is not claimed as an exact quota.
 
 ## 3. Typed failure evidence
 
@@ -76,6 +86,7 @@ CPU/memory/PIDs, no host socket and a read-only project mount.
 | plan build network `BROKER` | `ENVIRONMENT_NETWORK_DENIED`, exit 2 |
 | fetch network `host` | `ENVIRONMENT_NETWORK_DENIED`, exit 2 |
 | non-`none` fetch network without proxy | `ENVIRONMENT_NETWORK_DENIED`, exit 2 |
+| non-internal fetch network (e.g. `factory-egress`) | `ENVIRONMENT_NETWORK_DENIED`, exit 2 |
 | CPU bound 64 | `ENVIRONMENT_RESOURCE_LIMIT`, exit 2 |
 | offline build with an empty store cache | `ENVIRONMENT_NETWORK_DENIED`, exit 2 |
 
@@ -112,6 +123,14 @@ invoke the same image through the runtime broker, not the wrapper.
 ## 7. Artifacts
 
 `summary.json` records the observed commands and statuses in machine-readable
-form. `build-receipt.json`, `builder-evidence.json`, `node-check-result.json`,
-`rust-check-result.json` and `sbom-digest.json` are the bounded artifacts from
-the final-image run. Raw container logs are bounded and were not committed.
+form. The directory also contains the exact `spec-plan-request.json` and
+`run-request.json`, the CycloneDX `sbom.cdx.json`, closure manifest, license
+inventory, final and warm-repeat receipts/evidence, `disk-usage.json`, raw
+Node/Rust `check.log` files and the in-tree `egress-proxy.py` used for the run
+(`sha256 66d31ec13fdf23ae35ba3eb75b31f1986104d47c037a1c1405f68329027d353d`).
+`descriptor.json`, `self-test.json`, `image-inspect.json` and
+`signature-config.txt` record the verified image identity and Nix signature
+configuration. `build.log`, `node-check.log`, `rust-check.log` and
+`egress-proxy.log` are bounded. These files allow the receipt hashes and
+durations to be recomputed from the candidate. `MANIFEST.sha256` hashes every
+evidence file except itself.
