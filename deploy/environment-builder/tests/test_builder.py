@@ -40,6 +40,7 @@ from environment_builder.policy import (  # noqa: E402
 )
 from environment_builder.nix import BuildLog, closure_manifest_sha256, run_check  # noqa: E402
 from environment_builder.receipt import (  # noqa: E402
+    _mount_attestation,
     _mounts_authorized,
     build_receipt,
     limits_within_plan,
@@ -506,6 +507,22 @@ class AttestationTests(unittest.TestCase):
             ),
         ]
         self.assertTrue(_mounts_authorized(mounts))
+        self.assertTrue(_mount_attestation(mounts, True))
+
+    def test_missing_or_incomplete_mountinfo_is_not_attested(self) -> None:
+        self.assertFalse(_mount_attestation([], False))
+        self.assertFalse(_mount_attestation([], True))
+        self.assertFalse(
+            _mount_attestation([self.mount("overlay", "/", "overlay")], False)
+        )
+
+    def test_overlay_at_proc_is_rejected(self) -> None:
+        self.assertFalse(
+            _mounts_authorized([self.mount("overlay", "/proc", "overlay")])
+        )
+        self.assertFalse(
+            _mounts_authorized([self.mount("overlay", "/proc/sys", "overlay")])
+        )
 
     def test_forbidden_root_source_at_each_allowed_target_is_rejected(self) -> None:
         for target in ("/inputs/workspace", "/cache", "/nix"):
@@ -622,6 +639,8 @@ class CheckExecutionTests(unittest.TestCase):
             (build_workspace / "stale.txt").write_text("build\n", encoding="utf-8")
             output = root / "output"
             output.mkdir()
+            nix_store = root / "nix"
+            nix_store.mkdir()
             digest = "sha256:" + "1" * 64
             spec = {
                 "specSha256": SHA,
@@ -717,7 +736,11 @@ class CheckExecutionTests(unittest.TestCase):
                 ),
                 mock.patch.object(cli, "run_check", side_effect=fake_run_check),
                 mock.patch.dict(
-                    os.environ, {"FACTORY_ENVIRONMENT_BUILDER_SHARED_STORE": "1"}
+                    os.environ,
+                    {
+                        "FACTORY_ENVIRONMENT_BUILDER_SHARED_STORE": "1",
+                        "FACTORY_ENVIRONMENT_NIX_STORE": str(nix_store),
+                    },
                 ),
             ):
                 self.assertEqual(cli.check(args), 0)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import gc
 import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -29,6 +30,10 @@ RESOURCES = {"cpu": 2, "memoryMiB": 4096, "diskMiB": 1, "pids": 512, "timeoutSec
 
 
 class DiskBudgetTests(unittest.TestCase):
+    @staticmethod
+    def fake_du(stdout: str, returncode: int = 0) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(["du"], returncode, stdout=stdout, stderr="")
+
     def test_bounded_usage_and_over_budget_rejection(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -37,12 +42,7 @@ class DiskBudgetTests(unittest.TestCase):
             used, complete = directory_usage_bytes([root])
             self.assertGreaterEqual(used, 2 * 1024 * 1024)
             self.assertTrue(complete)
-            limited, complete = directory_usage_bytes(
-                [root], max_entries=0, max_seconds=0.1
-            )
-            self.assertFalse(complete)
-            self.assertLessEqual(limited, used)
-            budget = DiskBudget(1, [root], max_entries=100, max_seconds=1.0)
+            budget = DiskBudget(1, [root])
             with self.assertRaises(BuilderError) as raised:
                 budget.check()
             self.assertEqual(raised.exception.code, "ENVIRONMENT_RESOURCE_LIMIT")
@@ -50,26 +50,59 @@ class DiskBudgetTests(unittest.TestCase):
             self.assertFalse(record["exact"])
             self.assertTrue(record["exceeded"])
 
+    def test_du_over_budget_error_and_invalid_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            budget = DiskBudget(1, [root])
+            with mock.patch(
+                "environment_builder.disk.subprocess.run",
+                return_value=self.fake_du("2048\t/cache\n2048\ttotal\n"),
+            ):
+                used, complete = budget.usage()
+            self.assertEqual(used, 2 * 1024 * 1024)
+            self.assertTrue(complete)
+            with mock.patch(
+                "environment_builder.disk.subprocess.run",
+                return_value=self.fake_du("1\t/cache\n", returncode=1),
+            ):
+                used, complete = budget.usage()
+            self.assertFalse(complete)
+            self.assertEqual(used, 0)
+            with mock.patch(
+                "environment_builder.disk.subprocess.run",
+                return_value=self.fake_du("not-a-size\n"),
+            ):
+                used, complete = budget.usage()
+            self.assertFalse(complete)
+            self.assertEqual(used, 0)
+            with mock.patch(
+                "environment_builder.disk.subprocess.run",
+                return_value=self.fake_du(""),
+            ):
+                used, complete = budget.usage()
+            self.assertFalse(complete)
+            self.assertEqual(used, 0)
+
     def test_unreadable_scan_is_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / "payload.bin").write_bytes(b"x" * 4096)
+            budget = DiskBudget(10240, [root])
             with mock.patch(
-                "environment_builder.disk.os.scandir",
-                side_effect=PermissionError("denied"),
+                "environment_builder.disk.subprocess.run",
+                return_value=self.fake_du("1\t/cache\n", returncode=1),
             ):
                 used, complete = directory_usage_bytes([root])
             self.assertFalse(complete)
             self.assertEqual(used, 0)
-            budget = DiskBudget(10240, [root])
             with mock.patch(
-                "environment_builder.disk.os.scandir",
-                side_effect=PermissionError("denied"),
+                "environment_builder.disk.subprocess.run",
+                return_value=self.fake_du("1\t/cache\n", returncode=1),
             ):
                 with self.assertRaises(BuilderError) as raised:
                     budget.check()
             self.assertEqual(raised.exception.code, "ENVIRONMENT_RESOURCE_LIMIT")
-            self.assertIn("cannot complete", raised.exception.message)
+            self.assertIn("could not complete", raised.exception.message)
 
     @unittest.skipIf(os.geteuid() == 0, "root can read chmod 000 directories")
     def test_unreadable_directory_chmod_is_fail_closed(self) -> None:
@@ -97,8 +130,7 @@ class DiskBudgetTests(unittest.TestCase):
             budget = DiskBudget(
                 1,
                 [workspace, cache],
-                interval=0.05,
-                max_seconds=0.5,
+                interval=0.5,
             )
             started = time.monotonic()
             try:
@@ -136,8 +168,7 @@ class DiskBudgetTests(unittest.TestCase):
             budget = DiskBudget(
                 1,
                 [root],
-                interval=0.05,
-                max_seconds=0.5,
+                interval=0.5,
             )
             started = time.monotonic()
             try:

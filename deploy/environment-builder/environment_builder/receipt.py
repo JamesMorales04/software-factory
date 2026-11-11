@@ -30,55 +30,27 @@ AUTHORIZED_PROJECT_OR_CACHE_MOUNTS = ("/inputs/workspace", "/cache", "/nix")
 PODMAN_VOLUME_ROOT = "/var/lib/containers/storage/volumes/"
 CONTAINER_RUNTIME_FILE_PREFIX = "/var/lib/containers/storage/overlay-containers/"
 CONTAINER_RUNTIME_FILES = ("/etc/hosts", "/etc/hostname", "/etc/resolv.conf")
-SAFE_PSEUDO_FSTYPES = frozenset(
-    {
-        "cgroup",
-        "cgroup2",
-        "devpts",
-        "devtmpfs",
-        "mqueue",
-        "overlay",
-        "proc",
-        "ramfs",
-        "rootfs",
-        "shm",
-        "squashfs",
-        "sysfs",
-        "tmpfs",
-    }
-)
-SAFE_PSEUDO_SOURCES = frozenset(
-    {
-        "cgroup",
-        "cgroup2",
-        "devpts",
-        "devtmpfs",
-        "mqueue",
-        "none",
-        "overlay",
-        "proc",
-        "ramfs",
-        "rootfs",
-        "shm",
-        "sysfs",
-        "tmpfs",
-        "udev",
-    }
-)
 
 
-def _mountinfo() -> list[dict[str, str]]:
+def _mountinfo() -> tuple[list[dict[str, str]], bool]:
     entries: list[dict[str, str]] = []
     path = Path("/proc/self/mountinfo")
     if not path.exists():
-        return entries
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        return entries, False
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return entries, False
+    complete = bool(lines)
+    for line in lines:
         if " - " not in line:
+            complete = False
             continue
         before, after = line.split(" - ", 1)
         fields = before.split(" ")
         post = after.split(" ")
         if len(fields) < 5 or len(post) < 2:
+            complete = False
             continue
         entries.append(
             {
@@ -87,7 +59,7 @@ def _mountinfo() -> list[dict[str, str]]:
                 "fstype": post[0],
             }
         )
-    return entries
+    return entries, complete and bool(entries)
 
 
 def _authorized_volume_source(source: str) -> bool:
@@ -113,7 +85,42 @@ def _safe_system_mount(target: str, source: str, fstype: str) -> bool:
         return fstype in {"overlay", "rootfs", "squashfs"} and (
             source in {"overlay", "rootfs", "/dev/root"} or source.startswith("/dev/")
         )
-    return fstype in SAFE_PSEUDO_FSTYPES and source in SAFE_PSEUDO_SOURCES
+    if target == "/proc" or target.startswith("/proc/"):
+        return source == "proc" and fstype == "proc"
+    if target == "/sys/fs/cgroup":
+        return source in {"cgroup", "cgroup2"} and fstype in {"cgroup", "cgroup2"}
+    if target == "/sys" or target.startswith("/sys/"):
+        return source == "sysfs" and fstype == "sysfs"
+    if target == "/dev":
+        return source in {"tmpfs", "devtmpfs", "udev"} and fstype in {
+            "tmpfs",
+            "devtmpfs",
+        }
+    if target == "/dev/pts":
+        return source == "devpts" and fstype == "devpts"
+    if target == "/dev/shm":
+        return source in {"shm", "tmpfs"} and fstype == "tmpfs"
+    if target == "/dev/mqueue":
+        return source == "mqueue" and fstype == "mqueue"
+    if target == "/run" or target.startswith("/run/"):
+        return source == "tmpfs" and fstype == "tmpfs"
+    if target == "/tmp" or target.startswith("/tmp/"):
+        return _authorized_volume_source(source) or (
+            source == "tmpfs" and fstype == "tmpfs"
+        )
+    if target == "/var/tmp" or target.startswith("/var/tmp/"):
+        return source == "tmpfs" and fstype == "tmpfs"
+    if target == "/home/factory" or target.startswith("/home/factory/"):
+        return source == "tmpfs" and fstype == "tmpfs"
+    if target == "/output" or target.startswith("/output/"):
+        return _authorized_volume_source(source) or (
+            source == "tmpfs" and fstype == "tmpfs"
+        )
+    return False
+
+
+def _mount_attestation(mounts: list[dict[str, str]], complete: bool) -> bool:
+    return complete and bool(mounts) and _mounts_authorized(mounts)
 
 
 def _mounts_authorized(mounts: list[dict[str, str]]) -> bool:
@@ -154,8 +161,8 @@ def observe_attestation(
     truthful booleans; a missing cgroup bound is not assumed to be safe.
     """
     uid = os.geteuid()
-    mounts = _mountinfo()
-    no_host_mount = _mounts_authorized(mounts)
+    mounts, mountinfo_complete = _mountinfo()
+    no_host_mount = _mount_attestation(mounts, mountinfo_complete)
     no_host_socket = not any(
         Path(socket).exists()
         for socket in (

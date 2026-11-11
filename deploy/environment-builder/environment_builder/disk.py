@@ -1,16 +1,17 @@
 """Runtime disk-budget enforcement for the environment builder.
 
 The builder runs inside a container whose ``/cache`` and ``/nix`` mounts may
-grow without an exact filesystem quota. This module provides a bounded,
-best-effort sampler: it stops a command when observed usage exceeds the frozen
-plan and reports ``ENVIRONMENT_RESOURCE_LIMIT``. It never claims an exact
-quota; ``disk.exact`` is always false.
+grow without an exact filesystem quota. Coreutils ``du -skc`` provides a
+complete, bounded-output disk accounting over the exact mounts. Any ``du``
+error, timeout or malformed output is treated as an incomplete scan and fails
+closed. ``disk.exact`` is always false; this is not an exact quota.
 """
 
 from __future__ import annotations
 
 import os
 import signal
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -18,70 +19,71 @@ from typing import Iterable
 
 from .errors import fail
 
-#: A scan stops after this many directory entries or this much wall-clock time.
-#: The result is a lower bound when the scan is incomplete; exceeding the limit
-#: is still decisive. An incomplete scan is fail-closed because the builder
-#: cannot prove the bound.
-MAX_SCAN_ENTRIES = 1_000_000
-MAX_SCAN_SECONDS = 5.0
-DEFAULT_SAMPLE_INTERVAL_SECONDS = 0.5
-FILESYSTEM_BLOCK_BYTES = 512
+DEFAULT_SAMPLE_INTERVAL_SECONDS = 3.0
+DU_TIMEOUT_SECONDS = 20.0
+MAX_DU_OUTPUT_BYTES = 64 * 1024
 
 
-def _allocated_bytes(stat: os.stat_result) -> int:
-    blocks = getattr(stat, "st_blocks", 0)
-    if blocks:
-        return int(blocks) * FILESYSTEM_BLOCK_BYTES
-    return int(stat.st_size)
+def _parse_du(output: str) -> tuple[int, bool]:
+    """Parse ``du -skc`` output and return ``(bytes, complete)``."""
+    total_kib: int | None = None
+    summed_kib = 0
+    lines = 0
+    for line in output.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split("\t", 1)
+        if len(parts) != 2:
+            return 0, False
+        try:
+            kib = int(parts[0])
+        except ValueError:
+            return 0, False
+        if kib < 0:
+            return 0, False
+        lines += 1
+        if parts[1].strip() == "total":
+            total_kib = kib
+        else:
+            summed_kib += kib
+    if lines == 0:
+        return 0, False
+    if total_kib is not None:
+        return total_kib * 1024, True
+    return summed_kib * 1024, True
 
 
 def directory_usage_bytes(
     paths: Iterable[Path | str],
     *,
-    max_entries: int = MAX_SCAN_ENTRIES,
-    max_seconds: float = MAX_SCAN_SECONDS,
+    timeout: float = DU_TIMEOUT_SECONDS,
 ) -> tuple[int, bool]:
-    """Return ``(observed_bytes, complete)`` for the supplied paths.
+    """Return ``(observed_bytes, complete)`` using complete ``du -skc``.
 
-    ``complete`` is false when the bounded scan hit its entry or time limit.
-    The byte count is still a valid lower bound and must never be presented as
-    an exact disk attestation.
+    ``complete`` is false for a missing path, non-zero exit, timeout, excessive
+    output or malformed output. The caller must treat an incomplete result as
+    fail-closed rather than as a zero-byte success.
     """
-    started = time.monotonic()
-    used = 0
-    entries = 0
-    complete = True
-    stack = [Path(path) for path in paths]
-    while stack:
-        if entries >= max_entries or time.monotonic() - started > max_seconds:
-            return used, False
-        path = stack.pop()
-        try:
-            if path.is_symlink():
-                used += _allocated_bytes(path.lstat())
-                entries += 1
-                continue
-            if path.is_file():
-                used += _allocated_bytes(path.stat())
-                entries += 1
-                continue
-            if not path.is_dir():
-                continue
-            with os.scandir(path) as entries_iter:
-                for entry in entries_iter:
-                    entries += 1
-                    if entries > max_entries or time.monotonic() - started > max_seconds:
-                        return used, False
-                    try:
-                        if entry.is_dir(follow_symlinks=False):
-                            stack.append(Path(entry.path))
-                        else:
-                            used += _allocated_bytes(entry.stat(follow_symlinks=False))
-                    except OSError:
-                        complete = False
-        except OSError:
-            complete = False
-    return used, complete
+    resolved = [str(Path(path)) for path in paths]
+    if not resolved:
+        return 0, False
+    try:
+        completed = subprocess.run(
+            ["du", "-skc", "--", *resolved],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=max(1.0, timeout),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return 0, False
+    if completed.returncode != 0:
+        return 0, False
+    stdout = completed.stdout
+    if len(stdout.encode("utf-8", errors="replace")) > MAX_DU_OUTPUT_BYTES:
+        return 0, False
+    return _parse_du(stdout)
 
 
 class DiskMonitor:
@@ -96,7 +98,7 @@ class DiskMonitor:
     ) -> None:
         self.budget = budget
         self.process = process
-        self.interval = max(0.05, interval)
+        self.interval = max(0.5, interval)
         self.exceeded = False
         self.incomplete = False
         self.observed_bytes = 0
@@ -125,7 +127,7 @@ class DiskMonitor:
 
     def stop(self) -> None:
         self._stop.set()
-        self._thread.join(self.interval + self.budget.max_seconds + 2.0)
+        self._thread.join(self.interval + DU_TIMEOUT_SECONDS + 2.0)
 
 
 class DiskBudget:
@@ -136,31 +138,25 @@ class DiskBudget:
         limit_mib: int,
         paths: Iterable[Path | str],
         *,
-        max_entries: int = MAX_SCAN_ENTRIES,
-        max_seconds: float = MAX_SCAN_SECONDS,
+        timeout: float = DU_TIMEOUT_SECONDS,
         interval: float = DEFAULT_SAMPLE_INTERVAL_SECONDS,
     ) -> None:
         self.limit_mib = max(0, int(limit_mib))
         self.limit_bytes = self.limit_mib * 1024 * 1024
         self.paths = tuple(Path(path) for path in paths)
-        self.max_entries = max_entries
-        self.max_seconds = max_seconds
+        self.timeout = timeout
         self.interval = interval
 
     def usage(self) -> tuple[int, bool]:
-        return directory_usage_bytes(
-            self.paths,
-            max_entries=self.max_entries,
-            max_seconds=self.max_seconds,
-        )
+        return directory_usage_bytes(self.paths, timeout=self.timeout)
 
     def check(self) -> None:
         used, complete = self.usage()
         if not complete:
             fail(
                 "ENVIRONMENT_RESOURCE_LIMIT",
-                f"cannot complete the builder disk scan after {used} bytes; the "
-                "frozen disk bound cannot be verified (exact=false)",
+                "the builder could not complete the du disk scan; the frozen "
+                "disk bound cannot be verified (exact=false)",
             )
         if used > self.limit_bytes:
             fail(
@@ -179,7 +175,7 @@ class DiskBudget:
             "planDiskMiB": self.limit_mib,
             "observedBytes": observed_bytes,
             "observedMiB": round(observed_bytes / (1024 * 1024), 3),
-            "enforcement": "BOUNDED_RUNTIME_SAMPLER",
+            "enforcement": "DU_SKC_RUNTIME_SAMPLER",
             "exact": False,
             "sampleComplete": complete,
             "exceeded": (not complete) or observed_bytes > self.limit_bytes,

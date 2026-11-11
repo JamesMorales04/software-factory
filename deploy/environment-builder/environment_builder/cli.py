@@ -217,7 +217,6 @@ def build(args: argparse.Namespace) -> int:
         validate_fetch_policy(request, plan, phase)
         build_workspace = run_dir / "workspace"
         disk_budget = builder_disk_budget(resources, run_dir, build_workspace)
-        disk_budget.check()
         prepare_workspace(source_workspace, build_workspace, reuse=phase == "build")
         write_environment_files(build_workspace, files)
         disk_budget.check()
@@ -391,7 +390,6 @@ def resolve(args: argparse.Namespace) -> int:
         proxy = request.get("fetchProxy")
         build_workspace = run_dir / "workspace"
         disk_budget = builder_disk_budget(resources, run_dir, build_workspace)
-        disk_budget.check()
         prepare_workspace(source_workspace, build_workspace, reuse=True)
         write_environment_files(build_workspace, files)
         disk_budget.check()
@@ -537,7 +535,6 @@ def check(args: argparse.Namespace) -> int:
         # check; only the Nix store and other cache state are preserved.
         check_workspace = run_dir / "check-workspace"
         disk_budget = builder_disk_budget(resources, run_dir, check_workspace)
-        disk_budget.check()
         prepare_workspace(source_workspace, check_workspace, reuse=False)
         write_environment_files(check_workspace, files)
         disk_budget.check()

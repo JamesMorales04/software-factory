@@ -395,17 +395,33 @@ impl EnvironmentBuilderRuntime {
 /// purge could not be confirmed. The ledger is the source of truth; an
 /// in-memory set makes the block effective immediately. If the ledger cannot
 /// be read or written, all cache reuse is denied until the broker restarts.
+const MAX_ENVIRONMENT_CACHE_QUARANTINE_ENTRIES: usize = 64;
+
 struct EnvironmentCacheQuarantine {
     path: PathBuf,
     blocked: std::sync::Mutex<BTreeSet<String>>,
     ledger_failed: AtomicBool,
+    max_entries: usize,
 }
 
 impl EnvironmentCacheQuarantine {
     fn load(path: PathBuf) -> Self {
+        Self::load_with_limit(path, MAX_ENVIRONMENT_CACHE_QUARANTINE_ENTRIES)
+    }
+
+    fn load_with_limit(path: PathBuf, max_entries: usize) -> Self {
         let mut ledger_failed = false;
         let blocked = match std::fs::read(&path) {
             Ok(bytes) => match serde_json::from_slice::<Vec<String>>(&bytes) {
+                Ok(entries) if entries.len() > max_entries => {
+                    tracing::error!(
+                        entries = entries.len(),
+                        max_entries,
+                        "environment cache quarantine ledger exceeds its bound"
+                    );
+                    ledger_failed = true;
+                    BTreeSet::new()
+                }
                 Ok(entries) => entries
                     .into_iter()
                     .filter(|name| name.starts_with("factory-env-cache-"))
@@ -427,6 +443,7 @@ impl EnvironmentCacheQuarantine {
             path,
             blocked: std::sync::Mutex::new(blocked),
             ledger_failed: AtomicBool::new(ledger_failed),
+            max_entries,
         }
     }
 
@@ -443,11 +460,19 @@ impl EnvironmentCacheQuarantine {
         self.ledger_failed.load(AtomicOrdering::SeqCst)
     }
 
+    fn deny_all(&self) {
+        self.ledger_failed.store(true, AtomicOrdering::SeqCst);
+    }
+
     fn block(&self, cache: &str) -> Result<(), String> {
         let mut blocked = self
             .blocked
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if blocked.len() >= self.max_entries && !blocked.contains(cache) {
+            self.ledger_failed.store(true, AtomicOrdering::SeqCst);
+            return Err("quarantine ledger is at capacity; all cache reuse is denied".into());
+        }
         blocked.insert(cache.to_owned());
         self.persist_locked(&blocked).map_err(|error| {
             self.ledger_failed.store(true, AtomicOrdering::SeqCst);
@@ -466,6 +491,18 @@ impl EnvironmentCacheQuarantine {
             self.ledger_failed.store(true, AtomicOrdering::SeqCst);
             tracing::error!(%cache, %error, "quarantine ledger clear failed; denying cache reuse");
         }
+    }
+
+    fn clear_all(&self) -> Result<(), String> {
+        let mut blocked = self
+            .blocked
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        blocked.clear();
+        self.persist_locked(&blocked).map_err(|error| {
+            self.ledger_failed.store(true, AtomicOrdering::SeqCst);
+            format!("quarantine ledger clear failed: {error}")
+        })
     }
 
     fn persist_locked(&self, blocked: &BTreeSet<String>) -> Result<(), String> {
@@ -616,6 +653,18 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     });
     app.preflight().await?;
     app.prepull_images().await?;
+    match app.sweep_environment_caches().await {
+        Ok(removed) => {
+            tracing::info!(removed, "environment cache epoch sweep finished");
+            if let Err(error) = app.environment_cache_quarantine.clear_all() {
+                tracing::error!(%error, "environment cache quarantine ledger could not be pruned");
+            }
+        }
+        Err(error) => {
+            tracing::error!(%error, "environment cache epoch sweep failed; denying cache reuse");
+            app.environment_cache_quarantine.deny_all();
+        }
+    }
     app.prepare_environment_builder().await;
 
     let dependency_setup = setup_dependency_acquisition(&app).await;
@@ -1130,6 +1179,66 @@ impl App {
             .dependency_acquisition
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = state;
+    }
+
+    async fn sweep_environment_caches(&self) -> Result<usize, String> {
+        let bytes = self
+            .run_bounded(
+                [
+                    "volume",
+                    "ls",
+                    "--filter",
+                    "label=io.software-factory.owner=environment",
+                    "--format",
+                    "json",
+                ],
+                "environment cache epoch sweep",
+                MAX_RESOURCE_INVENTORY_BYTES,
+            )
+            .await?;
+        let entries: Vec<Value> = serde_json::from_slice(&bytes)
+            .map_err(|error| format!("environment cache epoch inventory is invalid: {error}"))?;
+        let mut removed = 0usize;
+        let mut failures = 0usize;
+        for entry in entries {
+            let Some(name) = entry.get("Name").and_then(Value::as_str) else {
+                continue;
+            };
+            if !name.starts_with("factory-env-cache-") {
+                continue;
+            }
+            let labels = entry.get("Labels");
+            let managed = labels
+                .and_then(|labels| labels.get("io.software-factory.managed"))
+                .and_then(Value::as_str)
+                == Some("true");
+            let owner = labels
+                .and_then(|labels| labels.get(OWNER_LABEL))
+                .and_then(Value::as_str)
+                == Some("environment");
+            if !managed || !owner {
+                continue;
+            }
+            let lock = self.resource_lock(name);
+            let _guard = lock.lock().await;
+            let output = self.podman_output(["volume", "rm", "--force", name]).await;
+            if !output.is_ok_and(|output| output.status.success()) {
+                failures = failures.saturating_add(1);
+                continue;
+            }
+            match self.podman_output(["volume", "exists", name]).await {
+                Ok(output) if output.status.code() == Some(1) => {
+                    removed = removed.saturating_add(1);
+                }
+                _ => failures = failures.saturating_add(1),
+            }
+        }
+        if failures > 0 {
+            return Err(format!(
+                "environment cache epoch sweep could not remove {failures} volume(s)"
+            ));
+        }
+        Ok(removed)
     }
 
     async fn preflight(&self) -> Result<(), Box<dyn std::error::Error>> {
@@ -8805,6 +8914,149 @@ exit 0
         assert!(ledger.is_blocked(&cache));
         assert!(!ledger.is_blocked("unrelated"));
         assert!(!ledger.reuse_denied());
+    }
+
+    #[tokio::test]
+    async fn startup_epoch_sweep_evicts_previous_caches() {
+        let directory =
+            std::env::temp_dir().join(format!("factory-env-epoch-sweep-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let log_path = directory.join("podman.log");
+        let script = format!(
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> "{}"
+case "$1" in
+  volume)
+    case "$2" in
+      ls) printf '%s\n' '[{{"Name":"factory-env-cache-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"environment"}}}}]' ; exit 0 ;;
+      rm) exit 0 ;;
+      exists) exit 1 ;;
+    esac
+    ;;
+esac
+exit 0
+"#,
+            log_path.display()
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app(podman);
+        assert_eq!(app.sweep_environment_caches().await.unwrap(), 1);
+        let log = std::fs::read_to_string(log_path).unwrap();
+        assert!(
+            log.contains("volume rm --force factory-env-cache-"),
+            "{log}"
+        );
+    }
+
+    #[tokio::test]
+    async fn restart_epoch_sweep_prevents_reuse_after_ledger_write_failure() {
+        let directory = std::env::temp_dir().join(format!(
+            "factory-env-restart-quarantine-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let cache = format!("factory-env-cache-{}", "d".repeat(32));
+        let marker = directory.join("cache-volume");
+        let fail_rm = directory.join("fail-rm");
+        std::fs::write(&marker, b"present").unwrap();
+        std::fs::write(&fail_rm, b"fail").unwrap();
+        let log_path = directory.join("podman.log");
+        let script = format!(
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> "{}"
+case "$1" in
+  volume)
+    case "$2" in
+      ls)
+        if [ -f "{}" ]; then
+          printf '%s\n' '[{{"Name":"{}","Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"environment"}}}}]'
+        else
+          printf '%s\n' '[]'
+        fi
+        exit 0
+        ;;
+      rm)
+        if [ -f "{}" ]; then exit 1; fi
+        rm -f "{}"
+        exit 0
+        ;;
+      exists)
+        if [ -f "{}" ]; then exit 0; else exit 1; fi
+        ;;
+      inspect) exit 1 ;;
+      create) exit 0 ;;
+    esac
+    ;;
+esac
+exit 0
+"#,
+            log_path.display(),
+            marker.display(),
+            cache,
+            fail_rm.display(),
+            marker.display(),
+            marker.display()
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let mut first = Arc::try_unwrap(test_app(podman.clone())).ok().unwrap();
+        let blocker = directory.join("not-a-directory");
+        std::fs::write(&blocker, b"blocker").unwrap();
+        first.environment_cache_quarantine = Arc::new(EnvironmentCacheQuarantine::load(
+            blocker.join("ledger.json"),
+        ));
+        let first = Arc::new(first);
+        assert!(
+            purge_environment_cache(&first, &cache).await.is_err(),
+            "failed removal and ledger write must fail closed"
+        );
+        std::fs::remove_file(&fail_rm).unwrap();
+
+        // Simulate a broker restart with a fresh ledger and the same engine.
+        let second = test_app(podman);
+        assert_eq!(second.sweep_environment_caches().await.unwrap(), 1);
+        assert!(!marker.exists(), "previous-epoch cache must be evicted");
+        second.environment_cache_quarantine.clear_all().unwrap();
+        let ledger = std::fs::read_to_string(&second.environment_cache_quarantine.path).unwrap();
+        assert_eq!(ledger, "[]");
+        assert!(!second.environment_cache_quarantine.is_blocked(&cache));
+    }
+
+    #[test]
+    fn quarantine_ledger_is_bounded_and_pruned() {
+        let directory = std::env::temp_dir().join(format!(
+            "factory-env-quarantine-bound-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("ledger.json");
+        let ledger = EnvironmentCacheQuarantine::load_with_limit(path.clone(), 2);
+        assert!(
+            ledger
+                .block(&format!("factory-env-cache-{:032x}", 1))
+                .is_ok()
+        );
+        assert!(
+            ledger
+                .block(&format!("factory-env-cache-{:032x}", 2))
+                .is_ok()
+        );
+        let error = ledger
+            .block(&format!("factory-env-cache-{:032x}", 3))
+            .expect_err("ledger must have a hard entry bound");
+        assert!(error.contains("capacity"), "{error}");
+        assert!(ledger.reuse_denied());
+
+        let pruned = EnvironmentCacheQuarantine::load_with_limit(path.clone(), 2);
+        pruned.clear_all().unwrap();
+        assert!(
+            pruned
+                .block(&format!("factory-env-cache-{:032x}", 4))
+                .is_ok()
+        );
+        pruned.clear_all().unwrap();
+        assert!(!pruned.is_blocked(&format!("factory-env-cache-{:032x}", 4)));
+        let ledger = std::fs::read_to_string(path).unwrap();
+        assert_eq!(ledger, "[]");
     }
 
     #[tokio::test]

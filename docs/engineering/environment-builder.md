@@ -127,19 +127,18 @@ verification stays enabled with the pinned `cache.nixos.org` and
 `require-sigs=false` and does not import unsigned local closures.
 
 Disk is enforced against the frozen `diskMiB` in two layers. The Python builder
-reads the frozen `diskMiB`, samples `/cache`, `/nix` and the workspace with a
-bounded background sampler during build/resolve/check subprocesses, and kills
-the child with `ENVIRONMENT_RESOURCE_LIMIT` when observed usage exceeds the
-bound. An unreadable path/entry or an incomplete scan is also fail-closed: the
-builder cannot prove the bound and reports `ENVIRONMENT_RESOURCE_LIMIT` rather
-than treating the lower bound as success. The host/CI wrapper also checks before
-and after the run and removes success artifacts. An over-budget run fails
-`ENVIRONMENT_RESOURCE_LIMIT`, writes a typed `disk-failure.json` plus
-`disk-usage.json`, and the broker removes the per-spec cache volume (or
-quarantines it if removal cannot be confirmed) so it cannot be reused. This is a
-bounded runtime sample plus a post-hoc `du` bound (`disk.exact=false`), not an
-exact filesystem quota; the evidence records the observed usage and never claims
-exact disk attestation.
+reads the frozen `diskMiB`, samples `/cache`, `/nix` and the workspace with
+`du -skc` during build/resolve/check subprocesses (default 3 s interval), and
+kills the child with `ENVIRONMENT_RESOURCE_LIMIT` when the complete observed
+usage exceeds the bound. A `du` error, timeout, excessive/malformed output or
+missing path is an incomplete scan and also fails closed: the builder cannot
+prove the bound and never treats a lower bound as success. The host/CI wrapper
+also checks before and after the run and removes success artifacts. An
+over-budget run fails `ENVIRONMENT_RESOURCE_LIMIT`, writes a typed
+`disk-failure.json` plus `disk-usage.json`, and the broker removes the per-spec
+cache volume or quarantines it if removal cannot be confirmed. This is
+`disk.exact=false`, not an exact filesystem quota; the evidence records the
+observed usage and never claims exact disk attestation.
 
 The builder root filesystem is read-only; only `/cache` and `/nix` are
 writable mounts, with bounded tmpfs for `/tmp`, `/run` and the writable home
@@ -220,7 +219,7 @@ environment-check remains **NOT_TESTED** and is not claimed.
 exact cgroup limits, fetch-policy enforcement, protected path descendants,
 rootful-Podman rejection, wrapper nonzero-exit cleanup, runtime disk-budget
 enforcement, root/system mount-source attestation, bounded noisy-output capture
-and disk-overflow artifact purging (49 tests). The
+and disk-overflow artifact purging (52 tests). The
 final `deploy/environment-builder/Containerfile` image was built and exercised
 under the unique WP1-B evidence tag
 `localhost/software-factory-environment-builder:wp1b-340fa54-r3`
