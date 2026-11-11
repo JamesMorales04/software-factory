@@ -197,19 +197,19 @@ delivery binding with WP-E2's environment hash.
 | WP | Owns | Files (indicative, not exclusive) | Depends | Acceptance |
 | --- | --- | --- | --- | --- |
 | WP0 | ADRs, contracts, audit, index/reservations | `docs/architecture/decisions/ADR-0040..0042`, `docs/contracts/{environment-plan,delivery-policy,issue-lifecycle}.md`, this audit, `docs/evidence/nix-devenv-license.md` | — | docs-only; contracts reviewed; no code/parity change |
-| WP-E1 | Conventions + environment compiler + 0071 | `native/src/planning/environment*`, `native/src/project_import.rs` (conventions), `migrations/0071_environment_specs.sql` | WP0 | conventions precedence/conflict, plan/spec freeze, license gate |
+| WP-E1 | Conventions + environment compiler + 0076 | `native/src/planning/environment*`, `native/src/project_import.rs` (conventions), `migrations/0076_environment_specs.sql` | WP0 | conventions precedence/conflict, plan/spec freeze, license gate |
 | WP-E2 | Runtime/verifier/check environment binding | `native/src/bin/verifier.rs`, `native/src/bin/runtime_broker.rs`, `native/src/execution.rs`, `native/src/lead.rs` (`SpecCheck`), `deploy/Containerfile`, `compose.yaml` | WP0, WP-E1 | verifier runs the frozen spec; no global Rust image |
 | WP-E3 | Dependency/supply-chain generalization | `native/src/dependencies.rs`, `native/src/dependency_broker.rs`, `native/src/bin/dependency_acquire.rs`, `compose.yaml` deps | WP0, WP-E1 | non-Rust lockfile/adapter, SBOM/license/audit, broker |
 | WP-E4 | Planning/stack/quality generalization | `native/src/planning/stack.rs`, `native/src/planning/*`, `native/src/agentic.rs`, `native/src/bin/core.rs` planning handlers | WP0, WP-E1, WP-E2 | no hardcoded language default; environment artifact in plan |
-| WP-D1 | Delivery policy + 0073 | `native/src/db/delivery*`, `migrations/0073_delivery_policies.sql`, Core routes | WP0 | policy revisions, R0/R1/R2/R3 eligibility |
-| WP-D2 | Delivery execution/incidents + 0074/0075 | `native/src/bin/core.rs` delivery handlers, `native/src/db/delivery*`, `migrations/0074_delivery_attempts.sql`, `0075_candidate_final_source.sql` | WP0, WP-D1 | exact-head merge, idempotency, incident, manual revert, final-source binding for salvage |
-| WP-I1 | Issue links/lifecycle + 0072 | `native/src/issue_intake.rs`, `native/src/db/issue_intake.rs`, `native/src/github.rs`, `migrations/0072_issue_links.sql` | WP0 | links frozen, six states, comment/close receipts |
+| WP-D1 | Delivery policy + 0077 | `native/src/db/delivery*`, `migrations/0077_delivery_policies.sql`, Core routes | WP0 | policy revisions, R0/R1/R2/R3 eligibility |
+| WP-D2 | Delivery execution/incidents + 0078/0075 | `native/src/bin/core.rs` delivery handlers, `native/src/db/delivery*`, `migrations/0078_delivery_attempts.sql`, `0075_candidate_final_source.sql` | WP0, WP-D1 | exact-head merge, idempotency, incident, manual revert, final-source binding for salvage |
+| WP-I1 | Issue links/lifecycle + 0072/0073 | `native/src/issue_intake.rs`, `native/src/db/issue_intake.rs`, `native/src/github.rs`, `migrations/0072_issue_links.sql`, `0073_issue_delivery_claims.sql` | WP0 | links frozen, six states, comment/close receipts, retry fencing |
 | WP-O1 | Office surfaces | `office/src/views/*`, `office/src/coreApi.ts`, `docs/product/office-parity.json` | WP-E1, WP-D1, WP-D2, WP-I1 | per-option browser/a11y; parity updated |
 | WP-T1 | Tests/chaos/evidence | `native/tests/*`, `office/e2e-browser/*`, fixtures | all | deterministic + real Podman/browser evidence |
 
 **Cross-program salvage ownership:** WP5 / WP3 own the salvage/final-source
 policy (WP5 Worker salvage/finalization; WP3 planning/risk/Gate integration).
-WP-D2 implements the reserved `0075_candidate_final_source.sql` table and
+WP-D2 implements the applied `0075_candidate_final_source.sql` table and
 delivery binding; WP-E2 supplies the frozen environment hash. This is an
 explicit ownership assignment, not a claim that WP5/WP3 have implemented the
 policy.
