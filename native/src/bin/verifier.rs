@@ -1325,6 +1325,7 @@ mod tests {
                 implementer_id: "worker-1".into(),
                 integration: false,
                 lineage: Vec::new(),
+                final_source: factory_native::quality::CandidateFinalSource::ModelFinal,
                 created_at: "2026-11-10T12:00:00Z".into(),
             },
             action_id: "action-1".into(),

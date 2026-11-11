@@ -12,8 +12,7 @@ const base = process.env.FACTORY_OFFICE_URL || "http://127.0.0.1:8893";
 const projectId = process.env.FACTORY_DELIVERY_PROJECT_ID;
 const campaignId = process.env.FACTORY_DELIVERY_CAMPAIGN_ID;
 const enrollmentCode = process.env.FACTORY_BOOTSTRAP_CODE;
-const executablePath =
-  process.env.CHROMIUM_EXE || findChromium();
+const executablePath = process.env.CHROMIUM_EXE || findChromium();
 
 if (!projectId || !campaignId) {
   throw new Error(
