@@ -83,6 +83,7 @@ const ENVIRONMENT_MAX_LOG_BYTES: usize = 1024 * 1024;
 const ENVIRONMENT_EGRESS_PORT: u16 = 18081;
 const ENVIRONMENT_EGRESS_SLOTS: u8 = 64;
 const ENVIRONMENT_NETWORK_PREFIX: &str = "factory-env-egress-";
+const ENVIRONMENT_NIX_STORE_VOLUME: &str = "factory-env-nix-store";
 const ENVIRONMENT_BUILDER_LABEL: &str = "io.software-factory.environment-builder.source-digest";
 const ENVIRONMENT_CACHE_LABEL: &str = "io.software-factory.environment-cache";
 const MAX_ENVIRONMENT_CACHE_VOLUMES: usize = 8;
@@ -400,6 +401,7 @@ struct App {
     dependency_acquisition: Arc<RwLock<DependencyAcquisitionState>>,
     environment_builder: Arc<RwLock<EnvironmentBuilderRuntime>>,
     environment_egress_slots: Arc<tokio::sync::Mutex<BTreeSet<u8>>>,
+    environment_store_init: Arc<tokio::sync::Mutex<()>>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -491,6 +493,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         ))),
         environment_builder: Arc::new(RwLock::new(environment_builder)),
         environment_egress_slots: Arc::new(tokio::sync::Mutex::new(BTreeSet::new())),
+        environment_store_init: Arc::new(tokio::sync::Mutex::new(())),
     });
     app.preflight().await?;
     app.prepull_images().await?;
@@ -3776,6 +3779,7 @@ async fn execute_environment_inner(
     ),
     EnvironmentBrokerFailure,
 > {
+    ensure_environment_store(&app, &validated.image_id).await?;
     create_environment_volume(
         &app,
         &resources.workspace_volume,
@@ -4152,6 +4156,109 @@ async fn bound_environment_caches(
     Ok(())
 }
 
+async fn ensure_environment_store(
+    app: &Arc<App>,
+    image_id: &str,
+) -> Result<(), EnvironmentBrokerFailure> {
+    let _guard = app.environment_store_init.lock().await;
+    let volume = ENVIRONMENT_NIX_STORE_VOLUME;
+    match app.volume_labels(volume).await {
+        Ok(Some(labels)) => {
+            let managed =
+                labels.get("io.software-factory.managed").map(String::as_str) == Some("true");
+            let owner = labels.get(OWNER_LABEL).map(String::as_str) == Some("environment");
+            let workspace = labels.get(WORKSPACE_LABEL).map(String::as_str) == Some("nix-store");
+            if !(managed && owner && workspace) {
+                return Err(EnvironmentBrokerFailure::new(
+                    "ENVIRONMENT_BUILDER_UNAVAILABLE",
+                    "the environment Nix store volume is not owned by the environment broker",
+                ));
+            }
+        }
+        Ok(None) => {
+            create_environment_volume(app, volume, "nix-store", false).await?;
+        }
+        Err(error) => {
+            return Err(EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_BUILDER_UNAVAILABLE",
+                error,
+            ));
+        }
+    }
+    let mount = format!("--volume={volume}:/target:rw");
+    let probe = environment_store_command(
+        app,
+        &[
+            "run",
+            "--rm",
+            "--network=none",
+            "--read-only",
+            "--pull=never",
+            "--user=0:0",
+            "--cap-drop=all",
+            "--security-opt=no-new-privileges",
+            "--entrypoint=/bin/sh",
+            mount.as_str(),
+            image_id,
+            "-c",
+            "test -f /target/.factory-seeded",
+        ],
+        "environment store probe",
+        Duration::from_secs(60),
+    )
+    .await;
+    if probe.is_ok() {
+        return Ok(());
+    }
+    environment_store_command(
+        app,
+        &[
+            "run",
+            "--rm",
+            "--network=none",
+            "--read-only",
+            "--pull=never",
+            "--user=0:0",
+            "--cap-drop=all",
+            "--cap-add=DAC_OVERRIDE",
+            "--cap-add=CHOWN",
+            "--security-opt=no-new-privileges",
+            "--env=PATH=/home/factory/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/usr/bin:/bin",
+            "--entrypoint=/bin/sh",
+            mount.as_str(),
+            image_id,
+            "-c",
+            "tar --no-same-owner --no-same-permissions -C /nix -cf - . | tar --overwrite --no-same-owner --no-same-permissions -C /target -xf - && chown -R 10001:10001 /target && touch /target/.factory-seeded",
+        ],
+        "environment store seed",
+        Duration::from_secs(1_800),
+    )
+    .await
+    .map_err(|error| {
+        EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_BUILDER_UNAVAILABLE",
+            format!("the environment Nix store volume could not be seeded: {error}"),
+        )
+    })?;
+    Ok(())
+}
+
+async fn environment_store_command(
+    app: &Arc<App>,
+    args: &[&str],
+    operation: &str,
+    timeout: Duration,
+) -> Result<(), String> {
+    let output = time::timeout(timeout, app.podman_command(args.iter().copied()).output())
+        .await
+        .map_err(|_| format!("{operation} timed out"))?
+        .map_err(|error| format!("{operation} failed: {error}"))?;
+    if !output.status.success() {
+        return Err(format!("{operation} failed: {}", stderr(&output)));
+    }
+    Ok(())
+}
+
 async fn create_environment_volume(
     app: &Arc<App>,
     volume: &str,
@@ -4333,6 +4440,7 @@ async fn run_environment_container(
         ),
         format!("--volume={workspace_volume}:/inputs/workspace:ro"),
         format!("--volume={cache_volume}:/cache:rw"),
+        format!("--volume={ENVIRONMENT_NIX_STORE_VOLUME}:/nix:rw"),
     ];
     if let Some(proxy) = proxy {
         args.extend([
@@ -4439,8 +4547,8 @@ async fn run_environment_container(
             )
         })?;
     if !status.success() {
-        let parsed = failure_from_builder_output(&stdout)
-            .or_else(|| failure_from_builder_output(&stderr));
+        let parsed =
+            failure_from_builder_output(&stdout).or_else(|| failure_from_builder_output(&stderr));
         let (code, mut message) = match parsed {
             Some(value) => value,
             None => (
@@ -4458,7 +4566,7 @@ async fn run_environment_container(
             {
                 let log = String::from_utf8_lossy(&log);
                 if !log.trim().is_empty() {
-                    message.push_str("\n");
+                    message.push('\n');
                     message.push_str(&log);
                     break;
                 }
@@ -4951,6 +5059,7 @@ mod tests {
                 "test environment builder is not configured",
             ))),
             environment_egress_slots: Arc::new(tokio::sync::Mutex::new(BTreeSet::new())),
+            environment_store_init: Arc::new(tokio::sync::Mutex::new(())),
             dependency_acquisition: Arc::new(RwLock::new(DependencyAcquisitionState::disabled(
                 DEPENDENCY_RUNTIME_UNAVAILABLE,
                 "test configuration",
