@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => ({
   getOverview: vi.fn(),
   createIntakeRequest: vi.fn(),
   enableExecutionPolicy: vi.fn(),
+  newIdempotencyKey: vi.fn(() => "idem-test"),
 }));
 
 vi.mock("../coreApi", () => ({
@@ -52,7 +53,7 @@ vi.mock("../coreApi", () => ({
           : this.code;
     }
   },
-  newIdempotencyKey: () => "idem-test",
+  newIdempotencyKey: mocks.newIdempotencyKey,
 }));
 
 const project: Project = {
@@ -545,6 +546,7 @@ describe("Home", () => {
     await userEvent.click(
       screen.getByText("Environment constraints (optional)"),
     );
+    mocks.newIdempotencyKey.mockReturnValueOnce("idem-after-constraints");
     await userEvent.click(
       screen.getByLabelText("Environment constraints JSON"),
     );
@@ -557,7 +559,7 @@ describe("Home", () => {
       project_id: "project-1",
       objective: "Create a pinned Python environment.",
       mode: "REVIEW_PLAN",
-      idempotency_key: "idem-test",
+      idempotency_key: "idem-after-constraints",
       environment_constraints: {
         nixpkgs:
           "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d",
