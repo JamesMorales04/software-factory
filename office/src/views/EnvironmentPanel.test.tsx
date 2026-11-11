@@ -204,10 +204,10 @@ describe("EnvironmentPanel", () => {
     expect(screen.getByText(/nixpkgs=github:NixOS/)).toBeTruthy();
     expect(screen.getByText("MIT")).toBeTruthy();
     expect(screen.getByText(plan.planSha256)).toBeTruthy();
-    expect(screen.getByText("CORE_VALIDATED")).toBeTruthy();
+    expect(screen.getByText("Core validated")).toBeTruthy();
   });
 
-  it("requires a rationale and records the exact Lead planning decision", async () => {
+  it("triggers the frozen Lead review without letting the operator choose a decision", async () => {
     const user = userEvent.setup();
     const approved = state({
       status: "FROZEN",
@@ -215,40 +215,48 @@ describe("EnvironmentPanel", () => {
         schemaVersion: 1,
         reviewId: "review-1",
         requestId: "request-1",
+        actionId: "action-1",
         planId: plan.planId,
         planSha256: plan.planSha256,
         planRevision: 1,
+        riskClass: "R0",
         reviewerRole: "LEAD",
         principalId: "lead:lead-request-1",
-        recordedBy: "operator",
+        recordedBy: "core:lead-environment-review",
         decision: "APPROVED",
         rationale: "The plan matches the committed conventions.",
+        constraints: [],
         decidedAt: "2026-11-10T12:01:00Z",
         evidenceRefs: [],
+        modelCall: {
+          mechanism: "MODEL",
+          provider: "opencode-go",
+          model: "deepseek-v4.1-flash",
+          reservationId: "reservation-1",
+          requestSha256: "d".repeat(64),
+          inputTokens: 10,
+          outputTokens: 5,
+          totalTokens: 15,
+          costMicros: 1,
+          usageKnown: true,
+        },
       },
     });
     mocks.reviewAgenticEnvironment.mockResolvedValue(approved);
     renderPanel(state());
-    const approve = screen.getByRole("button", {
-      name: "Approve environment plan",
+    const trigger = screen.getByRole("button", {
+      name: "Request Lead environment review",
     });
-    expect((approve as HTMLButtonElement).disabled).toBe(true);
-    await user.type(
-      screen.getByLabelText("Lead review rationale"),
-      "The plan matches the committed conventions.",
-    );
-    expect((approve as HTMLButtonElement).disabled).toBe(false);
-    await user.click(approve);
+    expect((trigger as HTMLButtonElement).disabled).toBe(false);
+    await user.click(trigger);
     await waitFor(() =>
       expect(mocks.reviewAgenticEnvironment).toHaveBeenCalledWith("request-1", {
         planSha256: plan.planSha256,
         planRevision: 1,
-        decision: "APPROVE",
-        rationale: "The plan matches the committed conventions.",
       }),
     );
     expect(
-      await screen.findByText("The Lead environment decision was recorded."),
+      await screen.findByText("The Lead environment review completed."),
     ).toBeTruthy();
   });
 

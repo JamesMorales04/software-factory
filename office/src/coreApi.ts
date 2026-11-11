@@ -1652,20 +1652,37 @@ export interface EnvironmentBuildReceiptView {
   createdAt: string;
 }
 
+export interface EnvironmentReviewModelCallView {
+  mechanism: string;
+  provider: string;
+  model: string;
+  reservationId: string;
+  requestSha256: string;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  costMicros: number;
+  usageKnown: boolean;
+}
+
 export interface EnvironmentPlanReviewView {
   schemaVersion: number;
   reviewId: string;
   requestId: string;
+  actionId: string;
   planId: string;
   planSha256: string;
   planRevision: number;
+  riskClass: string;
   reviewerRole: string;
   principalId: string;
   recordedBy: string;
   decision: string;
   rationale: string;
+  constraints: string[];
   decidedAt: string;
   evidenceRefs: string[];
+  modelCall: EnvironmentReviewModelCallView;
 }
 
 export interface EnvironmentPlanView {
@@ -3928,8 +3945,6 @@ export const coreApi = {
     input: {
       planSha256: string;
       planRevision: number;
-      decision: "APPROVE" | "CHANGES_REQUESTED" | "REJECT";
-      rationale: string;
     },
   ) =>
     request<EnvironmentStateView>(

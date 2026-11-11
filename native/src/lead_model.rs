@@ -209,3 +209,85 @@ pub async fn assess(
     }
     Ok((assessment, proposal))
 }
+
+pub struct EnvironmentReviewRequest<'a> {
+    pub request_id: &'a str,
+    pub objective_id: &'a str,
+    pub project: &'a ProjectConfig,
+    pub plan: &'a crate::planning::environment::EnvironmentPlan,
+    pub grant: &'a StandingDelegationV2,
+    pub now: chrono::DateTime<chrono::Utc>,
+}
+
+/// Ask the frozen Lead route to review one exact EnvironmentPlan. The model
+/// output is schema-validated and must echo the plan identity and risk; Core
+/// still validates the plan, licenses and freeze. The returned model-call
+/// result is the provenance recorded with the Lead decision.
+pub async fn review_environment(
+    gateway: &ModelGateway,
+    database: &Database,
+    request: EnvironmentReviewRequest<'_>,
+) -> Result<
+    (
+        crate::planning::environment::EnvironmentLeadReviewModel,
+        crate::db::ModelCallResult,
+    ),
+    LeadError,
+> {
+    let schema = serde_json::to_string(&crate::model_output::environment_lead_review_schema())
+        .map_err(|error| {
+            LeadError::Assessment(format!("cannot encode environment review schema: {error}"))
+        })?;
+    let plan_json = serde_json::to_string(request.plan).map_err(|error| {
+        LeadError::Assessment(format!("cannot encode environment plan: {error}"))
+    })?;
+    let prompt = format!(
+        "You are the bounded Intelligent Lead. Review exactly one frozen Candidate EnvironmentPlan \
+and return ONLY one JSON object that validates against the JSON Schema below. Do not add prose, \
+markdown, comments or unknown fields. Approve only when the conventions evidence, pinned nixpkgs, \
+licences (allowUnfree must remain false), resources, network policy and builder identity are \
+sufficient for execution. Any unknown or denied licence, missing pin, conflicting convention, \
+unsafe sandbox/network policy or unresolved blocker requires CHANGES_REQUESTED or REJECT. You may \
+not approve an unfree package without an exact owner override and you may not waive a Core \
+validation. Echo requestId, actionId, planSha256, planRevision and riskClass exactly. Rationale \
+must be 8..4000 characters. Constraints are bounded follow-up conditions for the Planner; they do \
+not grant authority. The EnvironmentPlan JSON and JSON Schema follow.\n\nEnvironmentPlan:\n{}\
+\n\nJSON Schema:\n{}",
+        plan_json.chars().take(300_000).collect::<String>(),
+        schema
+    );
+    let result = gateway
+        .call(
+            database,
+            ModelCallRequest {
+                role: ModelCallRole::Lead,
+                principal_id: &request.grant.principal_id,
+                project_id: &request.project.project_id,
+                objective_id: request.objective_id,
+                scope_id: &request.grant.id,
+                purpose: "lead_environment_review",
+                system_prompt:
+                    "Return strict JSON only. A Lead review is a recorded planning decision, not execution authority.",
+                user_prompt: &prompt,
+                max_output_tokens: 0,
+            },
+        )
+        .await
+        .map_err(|error| match error {
+            ModelGatewayError::Ambiguous(_)
+            | ModelGatewayError::Upstream(_)
+            | ModelGatewayError::Usage(_) => {
+                LeadError::TransientAssessment(error.to_string())
+            }
+            ModelGatewayError::Database(
+                crate::db::Error::Forbidden(_) | crate::db::Error::Conflict(_),
+            ) => LeadError::TransientAssessment(error.to_string()),
+            other => LeadError::Assessment(other.to_string()),
+        })?;
+    let review = crate::model_output::decode_environment_lead_review(result.content.as_bytes())
+        .map_err(|error| LeadError::Assessment(error.to_string()))?;
+    review
+        .validate_for(request.plan, request.now)
+        .map_err(|error| LeadError::Assessment(error.message))?;
+    Ok((review, result))
+}

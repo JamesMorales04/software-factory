@@ -556,18 +556,21 @@ export const en = {
   "environment.review.principal": "Lead principal",
   "environment.review.recordedBy": "Recorded by",
   "environment.review.decidedAt": "Decided",
+  "environment.review.model": "Lead model",
+  "environment.review.reservation": "Model reservation",
   "environment.review.notAuthority":
     "The Lead planning decision is recorded evidence. Core validation, licensing and freeze remain authoritative, and this decision grants no execution, credential or delivery authority.",
   "environment.review.pending": "No Lead planning decision is recorded yet.",
   "environment.review.rationale": "Lead review rationale",
   "environment.review.rationaleHelp":
     "At least 8 characters. The decision binds the exact plan hash and revision shown above.",
+  "environment.review.trigger": "Request Lead environment review",
   "environment.review.approve": "Approve environment plan",
   "environment.review.requestChanges": "Request changes",
   "environment.review.reject": "Reject environment plan",
   "environment.review.actionHelp":
-    "This records a Lead-role planning decision for the exact revision. Core still validates and freezes; a failed check remains blocked.",
-  "environment.review.success": "The Lead environment decision was recorded.",
+    "Core asks the frozen Lead route to review this exact plan revision. The operator triggers the call but does not choose the decision; the Lead model's typed decision is recorded, and Core still validates and freezes.",
+  "environment.review.success": "The Lead environment review completed.",
   "environment.review.error": "The environment decision could not be recorded.",
   "environment.review.rationaleRequired": "Enter a bounded rationale first.",
   "environment.spec.title": "Frozen environment spec",

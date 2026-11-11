@@ -329,8 +329,22 @@ async fn sandboxed_checks(
     inspection: &CandidateInspection,
     workspace_root: &Path,
 ) -> Result<(), VerificationError> {
-    let image = env::var("FACTORY_VERIFIER_IMAGE")
-        .map_err(|_| VerificationError::Infrastructure("FACTORY_VERIFIER_IMAGE required".into()))?;
+    let execution = require_environment_execution(inspection)?;
+    execution.validate().map_err(|error| {
+        VerificationError::Infrastructure(format!("{}: {}", error.code_str(), error.message))
+    })?;
+    if execution.spec.builder_image.is_empty()
+        || !execution.spec.builder_image_digest.starts_with("sha256:")
+    {
+        return Err(VerificationError::Infrastructure(
+            "ENVIRONMENT_BUILDER_UNAVAILABLE: the frozen environment has no digest-pinned builder image"
+                .into(),
+        ));
+    }
+    let image = format!(
+        "{}@{}",
+        execution.spec.builder_image, execution.spec.builder_image_digest
+    );
     let test_backend = env::var("FACTORY_VERIFIER_TEST_BACKEND").ok().as_deref() == Some("local");
     if test_backend && !cfg!(debug_assertions) {
         return Err(VerificationError::Infrastructure(
@@ -407,12 +421,48 @@ async fn sandboxed_checks(
     let result = run_sandboxed_checks(
         &backend,
         workspace.path(),
-        &image,
+        execution,
         &inspection.action_spec.checks,
     )
     .await;
     let _ = workspace.cleanup();
     result
+}
+
+struct VerifierCheckTarget {
+    image: String,
+    argv: Vec<String>,
+    timeout_secs: u32,
+}
+
+/// Resolve the exact environment target for one verifier check. Missing,
+/// stale or mismatched plan/spec/receipt identity is a typed infrastructure
+/// refusal; there is no global verifier image fallback.
+fn select_verifier_check(
+    check: &SpecCheck,
+    execution: &factory_native::planning::environment::EnvironmentExecutionBinding,
+) -> Result<VerifierCheckTarget, VerificationError> {
+    require_complete_environment_binding(check)?;
+    let target = factory_native::planning::environment::select_check_execution(
+        check,
+        &execution.plan,
+        &execution.spec,
+        &execution.receipt,
+    )
+    .map_err(|error| {
+        VerificationError::Infrastructure(format!("{}: {}", error.code_str(), error.message))
+    })?;
+    if target.builder_image.is_empty() || !target.builder_image_digest.starts_with("sha256:") {
+        return Err(VerificationError::Infrastructure(
+            "ENVIRONMENT_BUILDER_UNAVAILABLE: the frozen environment has no digest-pinned builder image"
+                .into(),
+        ));
+    }
+    Ok(VerifierCheckTarget {
+        image: format!("{}@{}", target.builder_image, target.builder_image_digest),
+        argv: target.argv,
+        timeout_secs: target.timeout_secs,
+    })
 }
 
 /// A partial environment binding is refused. The exact plan/spec execution
@@ -431,10 +481,22 @@ fn require_complete_environment_binding(check: &SpecCheck) -> Result<(), Verific
     }
 }
 
+fn require_environment_execution(
+    inspection: &CandidateInspection,
+) -> Result<&factory_native::planning::environment::EnvironmentExecutionBinding, VerificationError>
+{
+    inspection.environment_execution.as_ref().ok_or_else(|| {
+        VerificationError::Infrastructure(
+            "ENVIRONMENT_PLAN_REQUIRED: the verifier refuses to run checks without the Campaign's frozen environment plan/spec/receipt"
+                .into(),
+        )
+    })
+}
+
 async fn run_sandboxed_checks<B: VolumeBackend>(
     backend: &B,
     worktree: &Path,
-    image: &str,
+    execution: &factory_native::planning::environment::EnvironmentExecutionBinding,
     checks: &[SpecCheck],
 ) -> Result<(), VerificationError> {
     let snapshot = workspace_archive::snapshot(worktree).map_err(|error| {
@@ -455,22 +517,15 @@ async fn run_sandboxed_checks<B: VolumeBackend>(
                 VerificationError::Infrastructure(format!("verifier volume import failed: {error}"))
             })?;
         for check in checks {
-            require_complete_environment_binding(check)?;
-            let Some(executable) = check.command.first() else {
-                return Err(VerificationError::Infrastructure(format!(
-                    "check {} has no executable",
-                    check.id
-                )));
-            };
-            let _ = executable;
+            let target = select_verifier_check(check, execution)?;
             let container = format!("factory-exec-{}", Uuid::new_v4());
             let output: BoundedOutput = backend
                 .run(
                     &volume,
                     &container,
-                    image,
-                    &check.command,
-                    Duration::from_secs(u64::from(check.timeout_secs)),
+                    &target.image,
+                    &target.argv,
+                    Duration::from_secs(u64::from(target.timeout_secs)),
                 )
                 .await
                 .map_err(|error| {
@@ -1256,6 +1311,52 @@ mod tests {
         assert!(require_complete_environment_binding(&bound).is_err());
         bound.environment_spec_sha256 = Some("a".repeat(64));
         assert!(require_complete_environment_binding(&bound).is_ok());
+    }
+
+    #[test]
+    fn verifier_requires_a_campaign_environment_before_selecting_a_check_image() {
+        let inspection = CandidateInspection {
+            candidate: factory_native::db::CandidateRecord {
+                id: "candidate-1".into(),
+                attempt_id: "attempt-1".into(),
+                action_spec_sha256: "a".repeat(64),
+                commit_sha: "b".repeat(40),
+                tree_sha: "c".repeat(40),
+                implementer_id: "worker-1".into(),
+                integration: false,
+                lineage: Vec::new(),
+                created_at: "2026-11-10T12:00:00Z".into(),
+            },
+            action_id: "action-1".into(),
+            action_spec: factory_native::db::ActionSpec {
+                schema_version: 1,
+                project_id: "project-1".into(),
+                repository: "/tmp/repo".into(),
+                base_commit: "d".repeat(40),
+                objective: "test".into(),
+                objective_sha256: "e".repeat(64),
+                provider: "opencode-go".into(),
+                model: "deepseek-v4.1-flash".into(),
+                allowed_paths: vec!["src".into()],
+                checks: Vec::new(),
+                dependency_plan: None,
+                dependencies_required: false,
+                environment_plan_id: None,
+                environment_plan_sha256: None,
+                environment_spec_sha256: None,
+                environment_builder_image: None,
+                environment_builder_image_digest: None,
+                environment_required: true,
+            },
+            action_spec_sha256: "a".repeat(64),
+            repository: "/tmp/repo".into(),
+            base_commit: "d".repeat(40),
+            integration: false,
+            lineage: Vec::new(),
+            environment_execution: None,
+        };
+        let error = require_environment_execution(&inspection).unwrap_err();
+        assert!(error.to_string().contains("ENVIRONMENT_PLAN_REQUIRED"));
     }
 
     fn modes(path: &str, old_mode: &str, new_mode: &str) -> ChangedPathModes {

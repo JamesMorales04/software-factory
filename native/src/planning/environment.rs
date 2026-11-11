@@ -46,6 +46,7 @@ pub const MAX_ARG_CHARS: usize = 2_000;
 pub const MAX_FILE_BYTES: usize = 512 * 1024;
 pub const MAX_REVIEW_RATIONALE_CHARS: usize = 4_000;
 pub const MAX_PRINCIPAL_CHARS: usize = 200;
+const MAX_SHORT_CHARS: usize = 500;
 pub const LEAD_PRINCIPAL_PREFIX: &str = "lead:";
 
 const MIN_CPU: u16 = 1;
@@ -217,6 +218,16 @@ fn bounded_text(name: &str, value: &str, max: usize) -> Result<(), EnvironmentEr
         return Err(invalid(format!(
             "{name} is required, bounded and control-free"
         )));
+    }
+    Ok(())
+}
+
+fn bounded_list(name: &str, values: &[String], max: usize) -> Result<(), EnvironmentError> {
+    if values.len() > max {
+        return Err(invalid(format!("{name} exceeds its bound")));
+    }
+    for value in values {
+        bounded_text(name, value, MAX_SHORT_CHARS)?;
     }
     Ok(())
 }
@@ -1105,22 +1116,6 @@ pub struct UnfreeOverride {
     pub expires_at: String,
 }
 
-/// Persisted owner override record. The authenticated principal and decision
-/// identity are recorded by Core; a model cannot create one.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct EnvironmentLicenseOverrideRecord {
-    pub id: String,
-    pub package_name: String,
-    pub version: String,
-    pub license: String,
-    pub plan_sha256: String,
-    pub reason: String,
-    pub decision_id: String,
-    pub principal_id: String,
-    pub expires_at: String,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct EnvironmentRequirements {
@@ -1455,6 +1450,8 @@ pub struct EnvironmentPlan {
     #[serde(default)]
     pub builder: EnvironmentBuilderDescriptor,
     #[serde(default)]
+    pub resolution: Option<EnvironmentResolution>,
+    #[serde(default)]
     pub lead_review: Option<EnvironmentPlanReview>,
     #[serde(default)]
     pub blockers: Vec<EnvironmentBlocker>,
@@ -1485,23 +1482,138 @@ pub enum EnvironmentReviewerRole {
     Lead,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum EnvironmentLeadReviewModelDecision {
+    Approve,
+    ChangesRequested,
+    Reject,
+}
+
+impl EnvironmentLeadReviewModelDecision {
+    pub const fn as_lead_review(self) -> LeadReviewDecision {
+        match self {
+            Self::Approve => LeadReviewDecision::Approved,
+            Self::ChangesRequested => LeadReviewDecision::ChangesRequested,
+            Self::Reject => LeadReviewDecision::Rejected,
+        }
+    }
+}
+
+/// Typed Lead model decision for one exact EnvironmentPlan. The model may not
+/// add fields, change the plan identity or approve a blocked plan; Core maps
+/// the decision into the recorded planning review.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct EnvironmentLeadReviewModel {
+    pub schema_version: u32,
+    pub request_id: String,
+    pub action_id: String,
+    pub plan_sha256: String,
+    pub plan_revision: u32,
+    pub risk_class: String,
+    pub decision: EnvironmentLeadReviewModelDecision,
+    pub rationale: String,
+    #[serde(default)]
+    pub constraints: Vec<String>,
+}
+
+impl EnvironmentLeadReviewModel {
+    pub fn validate_for(
+        &self,
+        plan: &EnvironmentPlan,
+        now: DateTime<Utc>,
+    ) -> Result<(), EnvironmentError> {
+        if self.schema_version != ENVIRONMENT_SCHEMA_VERSION {
+            return Err(invalid(
+                "unsupported Lead environment review schema version",
+            ));
+        }
+        if self.request_id != plan.request_id
+            || self.action_id != plan.action_id
+            || self.plan_sha256 != plan.plan_sha256
+            || self.plan_revision != plan.revision
+            || self.risk_class != plan.risk_class
+        {
+            return Err(hash_mismatch(
+                "the Lead environment review does not bind the exact plan identity and risk",
+            ));
+        }
+        bounded_text(
+            "Lead environment review rationale",
+            &self.rationale,
+            MAX_REVIEW_RATIONALE_CHARS,
+        )?;
+        bounded_list("Lead environment constraints", &self.constraints, 16)?;
+        if self.rationale.trim().len() < 8 {
+            return Err(invalid(
+                "the Lead environment review requires a bounded rationale",
+            ));
+        }
+        let _ = now;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct EnvironmentReviewModelCall {
+    pub mechanism: String,
+    pub provider: String,
+    pub model: String,
+    pub reservation_id: String,
+    pub request_sha256: String,
+    #[serde(default)]
+    pub input_tokens: u64,
+    #[serde(default)]
+    pub output_tokens: u64,
+    #[serde(default)]
+    pub total_tokens: u64,
+    #[serde(default)]
+    pub cost_micros: u64,
+    #[serde(default)]
+    pub usage_known: bool,
+}
+
+impl EnvironmentReviewModelCall {
+    fn validate(&self) -> Result<(), EnvironmentError> {
+        if self.mechanism != "MODEL" {
+            return Err(lead_approval_required(
+                "an environment Lead decision must be a recorded Lead model call",
+            ));
+        }
+        bounded_text("Lead model provider", &self.provider, 128)?;
+        bounded_text("Lead model name", &self.model, 128)?;
+        bounded_text("Lead model reservation", &self.reservation_id, 128)?;
+        if !is_sha256(&self.request_sha256) {
+            return Err(invalid("Lead model call request digest must be SHA-256"));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct EnvironmentPlanReview {
     pub schema_version: u32,
     pub review_id: String,
     pub request_id: String,
+    pub action_id: String,
     pub plan_id: String,
     pub plan_sha256: String,
     pub plan_revision: u32,
+    pub risk_class: String,
     pub reviewer_role: EnvironmentReviewerRole,
     pub principal_id: String,
     pub recorded_by: String,
     pub decision: LeadReviewDecision,
     pub rationale: String,
+    #[serde(default)]
+    pub constraints: Vec<String>,
     pub decided_at: String,
     #[serde(default)]
     pub evidence_refs: Vec<String>,
+    pub model_call: EnvironmentReviewModelCall,
 }
 
 #[derive(Serialize)]
@@ -1527,6 +1639,7 @@ struct PlanContent<'a> {
     resources: ResourceLimits,
     network: &'a NetworkPolicy,
     license_inventory: &'a LicenseInventory,
+    resolution: &'a Option<EnvironmentResolution>,
 }
 
 impl EnvironmentPlan {
@@ -1564,6 +1677,7 @@ impl EnvironmentPlan {
             resources: self.resources,
             network: &self.network,
             license_inventory: &inventory,
+            resolution: &self.resolution,
         })
     }
 
@@ -2553,6 +2667,7 @@ pub fn compile_environment_plan(
         license_inventory: LicenseInventory::default(),
         license_inventory_sha256: String::new(),
         builder: input.builder,
+        resolution: None,
         lead_review: None,
         blockers: Vec::new(),
         commands_rationale: if explicit.commands.is_empty() {
@@ -2665,19 +2780,22 @@ impl EnvironmentPlanReview {
         }
         bounded_text("environment review id", &self.review_id, 64)?;
         bounded_text("environment review request id", &self.request_id, 200)?;
-        if self.request_id != plan.request_id {
+        if self.request_id != plan.request_id || self.action_id != plan.action_id {
             return Err(hash_mismatch(
-                "the environment review belongs to a different request",
+                "the environment review belongs to a different request or Action",
             ));
         }
         if self.plan_id != plan.plan_id
             || self.plan_sha256 != plan.plan_sha256
             || self.plan_revision != plan.revision
+            || self.risk_class != plan.risk_class
         {
             return Err(hash_mismatch(
-                "the environment review does not bind the current plan revision and hash",
+                "the environment review does not bind the current plan revision, hash and risk",
             ));
         }
+        self.model_call.validate()?;
+        bounded_list("environment review constraints", &self.constraints, 16)?;
         if self.reviewer_role != EnvironmentReviewerRole::Lead {
             return Err(lead_approval_required(
                 "only a LEAD planning decision can approve an environment plan",
@@ -2718,7 +2836,9 @@ pub struct RecordLeadReviewInput<'a> {
     pub recorded_by: &'a str,
     pub decision: LeadReviewDecision,
     pub rationale: &'a str,
+    pub constraints: Vec<String>,
     pub evidence_refs: Vec<String>,
+    pub model_call: EnvironmentReviewModelCall,
     pub now: DateTime<Utc>,
 }
 
@@ -2737,16 +2857,20 @@ pub fn record_lead_review(
         schema_version: ENVIRONMENT_SCHEMA_VERSION,
         review_id: input.review_id,
         request_id: plan.request_id.clone(),
+        action_id: plan.action_id.clone(),
         plan_id: plan.plan_id.clone(),
         plan_sha256: plan.plan_sha256.clone(),
         plan_revision: plan.revision,
+        risk_class: plan.risk_class.clone(),
         reviewer_role: EnvironmentReviewerRole::Lead,
         principal_id: input.principal_id.into(),
         recorded_by: input.recorded_by.into(),
         decision: input.decision,
         rationale: input.rationale.into(),
+        constraints: input.constraints,
         decided_at: input.now.to_rfc3339(),
         evidence_refs: input.evidence_refs,
+        model_call: input.model_call,
     };
     review.validate_for(plan, input.now)?;
     plan.lead_review = Some(review.clone());
@@ -3002,6 +3126,14 @@ pub type EnvironmentBuilderFuture<'a> = Pin<
     >,
 >;
 
+pub type EnvironmentResolutionFuture<'a> = Pin<
+    Box<
+        dyn std::future::Future<Output = Result<EnvironmentResolution, EnvironmentError>>
+            + Send
+            + 'a,
+    >,
+>;
+
 /// Builder port for the Nix/devenv image and Node/Playwright runtime. The
 /// builder runs outside Core with no Factory/provider/GitHub credentials, no
 /// host network and no host socket. It receives an already frozen spec and must
@@ -3009,11 +3141,126 @@ pub type EnvironmentBuilderFuture<'a> = Pin<
 pub trait EnvironmentBuilder {
     fn descriptor(&self) -> EnvironmentBuilderDescriptor;
 
+    /// Resolve and pin a generated environment's lock data before freeze.
+    /// Existing committed environments with a lock may skip this step.
+    fn resolve<'a>(&'a self, plan: &'a EnvironmentPlan) -> EnvironmentResolutionFuture<'a>;
+
     fn build<'a>(
         &'a self,
         spec: &'a EnvironmentSpec,
         plan: &'a EnvironmentPlan,
     ) -> EnvironmentBuilderFuture<'a>;
+}
+
+pub type SharedEnvironmentBuilder = std::sync::Arc<dyn EnvironmentBuilder + Send + Sync>;
+
+/// The default Core builder is truthful: until WP1-B supplies a digest-pinned
+/// builder, generated environments cannot resolve locks or produce a receipt.
+pub struct UnavailableEnvironmentBuilder;
+
+impl EnvironmentBuilder for UnavailableEnvironmentBuilder {
+    fn descriptor(&self) -> EnvironmentBuilderDescriptor {
+        EnvironmentBuilderDescriptor::default()
+    }
+
+    fn resolve<'a>(&'a self, _plan: &'a EnvironmentPlan) -> EnvironmentResolutionFuture<'a> {
+        Box::pin(async {
+            Err(EnvironmentError::new(
+                EnvironmentBlockerCode::EnvironmentBuilderUnavailable,
+                "no environment builder is configured; the generated environment cannot be resolved or frozen",
+            ))
+        })
+    }
+
+    fn build<'a>(
+        &'a self,
+        _spec: &'a EnvironmentSpec,
+        _plan: &'a EnvironmentPlan,
+    ) -> EnvironmentBuilderFuture<'a> {
+        Box::pin(async {
+            Err(EnvironmentError::new(
+                EnvironmentBlockerCode::EnvironmentBuilderUnavailable,
+                "no environment builder is configured; no build receipt can be produced",
+            ))
+        })
+    }
+}
+
+pub fn unavailable_environment_builder() -> SharedEnvironmentBuilder {
+    std::sync::Arc::new(UnavailableEnvironmentBuilder)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct EnvironmentResolution {
+    pub schema_version: u32,
+    #[serde(default)]
+    pub files: Vec<EnvironmentFile>,
+    pub nix_version: String,
+    pub devenv_version: String,
+}
+
+impl EnvironmentResolution {
+    pub fn validate(&self) -> Result<(), EnvironmentError> {
+        if self.schema_version != ENVIRONMENT_SCHEMA_VERSION {
+            return Err(invalid("unsupported environment resolution schema version"));
+        }
+        bounded_text("resolved Nix version", &self.nix_version, 64)?;
+        bounded_text("resolved devenv version", &self.devenv_version, 64)?;
+        if self.files.is_empty() {
+            return Err(pin_missing(
+                "the environment builder returned no lock files",
+            ));
+        }
+        for file in &self.files {
+            if !matches!(file.path.as_str(), "flake.lock" | "devenv.lock") {
+                return Err(invalid(
+                    "the environment builder may only resolve flake.lock or devenv.lock",
+                ));
+            }
+            if !is_sha256(&file.sha256) {
+                return Err(invalid("resolved lock hash must be SHA-256"));
+            }
+            if let Some(content) = &file.content
+                && sha256_hex(content.as_bytes()) != file.sha256
+            {
+                return Err(hash_mismatch(
+                    "resolved lock content does not match its hash",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Exact plan/spec/receipt set used by a Worker assignment or verifier
+/// inspection. It is loaded from the Campaign binding, never from check text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct EnvironmentExecutionBinding {
+    pub plan: EnvironmentPlan,
+    pub spec: EnvironmentSpec,
+    pub receipt: EnvironmentBuildReceipt,
+}
+
+impl EnvironmentExecutionBinding {
+    pub fn validate(&self) -> Result<(), EnvironmentError> {
+        self.plan.validate(Utc::now())?;
+        self.spec.validate()?;
+        self.receipt.validate_for(&self.spec)?;
+        if self.spec.plan_sha256 != self.plan.plan_sha256 {
+            return Err(hash_mismatch(
+                "the execution spec does not belong to the execution plan",
+            ));
+        }
+        if self.spec.builder_image.is_empty() || !is_digest(&self.spec.builder_image_digest) {
+            return Err(EnvironmentError::new(
+                EnvironmentBlockerCode::EnvironmentBuilderUnavailable,
+                "the frozen environment has no digest-pinned builder image",
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -3031,6 +3278,8 @@ pub struct EnvironmentBuildReceipt {
     pub store_path: String,
     #[serde(default)]
     pub output_sha256: String,
+    #[serde(default)]
+    pub sbom_sha256: String,
     #[serde(default)]
     pub log_ref: String,
     #[serde(default)]
@@ -3107,6 +3356,11 @@ impl EnvironmentBuildReceipt {
             return Err(EnvironmentError::new(
                 EnvironmentBlockerCode::EnvironmentBuildFailed,
                 "the build receipt has no content-addressed output hash",
+            ));
+        }
+        if self.sbom_sha256 != spec.sbom_sha256 {
+            return Err(hash_mismatch(
+                "the build receipt SBOM hash does not match the frozen environment spec",
             ));
         }
         Ok(())
@@ -3345,16 +3599,34 @@ mod tests {
         .unwrap()
     }
 
+    fn model_call() -> EnvironmentReviewModelCall {
+        EnvironmentReviewModelCall {
+            mechanism: "MODEL".into(),
+            provider: "opencode-go".into(),
+            model: "deepseek-v4.1-flash".into(),
+            reservation_id: "reservation-1".into(),
+            request_sha256: "d".repeat(64),
+            input_tokens: 100,
+            output_tokens: 20,
+            total_tokens: 120,
+            cost_micros: 1,
+            usage_known: true,
+        }
+    }
+
     fn approve(plan: &mut EnvironmentPlan) -> EnvironmentPlanReview {
         record_lead_review(
             plan,
             RecordLeadReviewInput {
                 review_id: "review-1".into(),
                 principal_id: "lead:session-1",
-                recorded_by: "operator",
+                recorded_by: "core:lead-environment-review",
                 decision: LeadReviewDecision::Approved,
-                rationale: "The plan matches the committed conventions and contains no unfree package.",
+                rationale:
+                    "The plan matches the committed conventions and contains no unfree package.",
+                constraints: Vec::new(),
                 evidence_refs: vec!["plan-review:env".into()],
+                model_call: model_call(),
                 now: now(),
             },
         )
@@ -3368,7 +3640,7 @@ mod tests {
             FreezeEnvironmentInput {
                 spec_id: "spec-1".into(),
                 nix_version: "2.28.3",
-                devenv_version: "1.10.0",
+                devenv_version: "1.11.2",
                 now: now(),
             },
         )
@@ -3389,6 +3661,7 @@ mod tests {
             status: EnvironmentBuilderStatus::Succeeded,
             store_path: "/nix/store/environment".into(),
             output_sha256: "b".repeat(64),
+            sbom_sha256: spec.sbom_sha256.clone(),
             log_ref: "evidence/build.log".into(),
             sandbox_attestation: SandboxAttestation {
                 non_root: true,
@@ -3611,21 +3884,25 @@ mod tests {
                 schema_version: ENVIRONMENT_SCHEMA_VERSION,
                 review_id: "review-1".into(),
                 request_id: "request-1".into(),
+                action_id: "action-1".into(),
                 plan_id: "plan-1".into(),
                 plan_sha256: plan.plan_sha256.clone(),
                 plan_revision: 1,
+                risk_class: "R0".into(),
                 reviewer_role: EnvironmentReviewerRole::Lead,
                 principal_id: "lead:session-1".into(),
-                recorded_by: "operator".into(),
+                recorded_by: "core:lead-environment-review".into(),
                 decision: LeadReviewDecision::Approved,
                 rationale: "approved".into(),
+                constraints: Vec::new(),
                 decided_at: now().to_rfc3339(),
                 evidence_refs: Vec::new(),
+                model_call: model_call(),
             },
             FreezeEnvironmentInput {
                 spec_id: "spec-1".into(),
                 nix_version: "2.28.3",
-                devenv_version: "1.10.0",
+                devenv_version: "1.11.2",
                 now: now(),
             },
         )
@@ -3638,6 +3915,29 @@ mod tests {
         let spec = freeze(&mut plan, &review);
         assert_eq!(spec.plan_sha256, plan.plan_sha256);
         assert_eq!(spec.review_id, review.review_id);
+        let wrong_risk = EnvironmentLeadReviewModel {
+            schema_version: ENVIRONMENT_SCHEMA_VERSION,
+            request_id: plan.request_id.clone(),
+            action_id: plan.action_id.clone(),
+            plan_sha256: plan.plan_sha256.clone(),
+            plan_revision: plan.revision,
+            risk_class: "R1".into(),
+            decision: EnvironmentLeadReviewModelDecision::Approve,
+            rationale: "A different risk class must not approve this plan.".into(),
+            constraints: Vec::new(),
+        };
+        assert_eq!(
+            wrong_risk.validate_for(&plan, now()).unwrap_err().code,
+            EnvironmentBlockerCode::EnvironmentHashMismatch
+        );
+        let wrong_plan = EnvironmentLeadReviewModel {
+            plan_sha256: "f".repeat(64),
+            ..wrong_risk.clone()
+        };
+        assert_eq!(
+            wrong_plan.validate_for(&plan, now()).unwrap_err().code,
+            EnvironmentBlockerCode::EnvironmentHashMismatch
+        );
     }
 
     #[test]
@@ -3656,16 +3956,20 @@ mod tests {
             schema_version: ENVIRONMENT_SCHEMA_VERSION,
             review_id: "review-1".into(),
             request_id: "request-1".into(),
+            action_id: "action-1".into(),
             plan_id: "plan-1".into(),
             plan_sha256: plan.plan_sha256.clone(),
             plan_revision: 1,
+            risk_class: "R0".into(),
             reviewer_role: EnvironmentReviewerRole::Lead,
             principal_id: "lead:session-1".into(),
-            recorded_by: "operator".into(),
+            recorded_by: "core:lead-environment-review".into(),
             decision: LeadReviewDecision::Approved,
             rationale: "approved despite invalid resources".into(),
+            constraints: Vec::new(),
             decided_at: now().to_rfc3339(),
             evidence_refs: Vec::new(),
+            model_call: model_call(),
         };
         let error = record_lead_review(
             &mut plan,
@@ -3675,7 +3979,9 @@ mod tests {
                 recorded_by: &review.recorded_by,
                 decision: review.decision,
                 rationale: &review.rationale,
+                constraints: Vec::new(),
                 evidence_refs: Vec::new(),
+                model_call: model_call(),
                 now: now(),
             },
         )

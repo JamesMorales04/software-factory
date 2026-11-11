@@ -568,6 +568,8 @@ export const es: Catalog = {
   "environment.review.principal": "Principal del Lead",
   "environment.review.recordedBy": "Registrado por",
   "environment.review.decidedAt": "Decidido",
+  "environment.review.model": "Modelo Lead",
+  "environment.review.reservation": "Reserva del modelo",
   "environment.review.notAuthority":
     "La decisión de planificación del Lead es evidencia registrada. La validación, licencias y congelación de Core siguen siendo autoritativas, y esta decisión no concede autoridad de ejecución, credenciales ni entrega.",
   "environment.review.pending":
@@ -575,12 +577,13 @@ export const es: Catalog = {
   "environment.review.rationale": "Motivo de la revisión del Lead",
   "environment.review.rationaleHelp":
     "Al menos 8 caracteres. La decisión vincula el hash y la revisión exactos mostrados arriba.",
+  "environment.review.trigger": "Solicitar revisión del entorno al Lead",
   "environment.review.approve": "Aprobar plan de entorno",
   "environment.review.requestChanges": "Solicitar cambios",
   "environment.review.reject": "Rechazar plan de entorno",
   "environment.review.actionHelp":
-    "Esto registra una decisión de planificación con rol Lead para la revisión exacta. Core sigue validando y congelando; una comprobación fallida permanece bloqueada.",
-  "environment.review.success": "Se registró la decisión de entorno del Lead.",
+    "Core pide a la ruta Lead congelada que revise esta revisión exacta del plan. El operador desencadena la llamada pero no elige la decisión; se registra la decisión tipada del modelo Lead y Core sigue validando y congelando.",
+  "environment.review.success": "La revisión de entorno del Lead terminó.",
   "environment.review.error": "No se pudo registrar la decisión de entorno.",
   "environment.review.rationaleRequired":
     "Introduce primero un motivo acotado.",

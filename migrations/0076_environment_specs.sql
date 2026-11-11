@@ -51,15 +51,19 @@ CREATE INDEX environment_plans_status_idx
 CREATE TABLE environment_plan_reviews (
   id TEXT PRIMARY KEY,
   request_id TEXT NOT NULL REFERENCES intake_requests(id),
+  action_id TEXT NOT NULL REFERENCES actions(id),
   plan_id TEXT NOT NULL,
   plan_sha256 TEXT NOT NULL CHECK (length(plan_sha256) = 64),
   plan_revision INTEGER NOT NULL CHECK (plan_revision > 0),
+  risk_class TEXT NOT NULL CHECK (risk_class IN ('R0','R1','R2','R3')),
   reviewer_role TEXT NOT NULL CHECK (reviewer_role = 'LEAD'),
   principal_id TEXT NOT NULL CHECK (principal_id LIKE 'lead:%'),
   recorded_by TEXT NOT NULL,
   decision TEXT NOT NULL CHECK (decision IN ('APPROVED','CHANGES_REQUESTED','REJECTED')),
   rationale TEXT NOT NULL,
+  constraints_json TEXT NOT NULL DEFAULT '[]',
   evidence_json TEXT NOT NULL DEFAULT '[]',
+  model_call_json TEXT NOT NULL,
   decided_at TEXT NOT NULL,
   created_at TEXT NOT NULL,
   UNIQUE (plan_sha256, principal_id, decision, decided_at)
@@ -155,6 +159,8 @@ BEGIN
   SELECT RAISE(ABORT, 'License inventory is immutable');
 END;
 
+-- Reserved for a future protected Owner-only override action. No HTTP or
+-- database write path is enabled in this delivery; unfree packages fail closed.
 CREATE TABLE environment_license_overrides (
   id TEXT PRIMARY KEY,
   package_name TEXT NOT NULL,

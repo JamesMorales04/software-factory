@@ -13,8 +13,8 @@ use uuid::Uuid;
 
 use super::{Database, Error};
 use crate::planning::environment::{
-    EnvironmentBuildReceipt, EnvironmentLicenseOverrideRecord, EnvironmentPlan,
-    EnvironmentPlanReview, EnvironmentSpec, LicenseInventory,
+    EnvironmentBuildReceipt, EnvironmentPlan, EnvironmentPlanReview, EnvironmentSpec,
+    LicenseInventory,
 };
 use crate::planning::environment::{EnvironmentPlanStatus, EnvironmentSpecStatus};
 
@@ -37,7 +37,11 @@ type ReviewRow = (
     String,
     String,
     String,
+    String,
     i64,
+    String,
+    String,
+    String,
     String,
     String,
     String,
@@ -460,6 +464,10 @@ impl Database {
     ) -> Result<EnvironmentPlanReview, Error> {
         let content_json = serde_json::to_string(&review.evidence_refs)
             .map_err(|_| Error::Invalid("environment review evidence encoding"))?;
+        let constraints_json = serde_json::to_string(&review.constraints)
+            .map_err(|_| Error::Invalid("environment review constraints encoding"))?;
+        let model_call_json = serde_json::to_string(&review.model_call)
+            .map_err(|_| Error::Invalid("environment review model call encoding"))?;
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin().await?;
         let plan_row: Option<(String, i64, String)> = sqlx::query_as::query_as(
@@ -478,6 +486,53 @@ impl Database {
         review
             .validate_for(&plan, Utc::now())
             .map_err(|error| Error::Validation(error.message))?;
+        let call: Option<(
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+        )> = sqlx::query_as::query_as(
+            "SELECT role,provider,model,request_sha256,purpose,state,project_id,objective_id
+                 FROM model_call_reservations WHERE reservation_id=?1",
+        )
+        .bind(&review.model_call.reservation_id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let Some((role, provider, model, request_sha256, purpose, state, project_id, objective_id)) =
+            call
+        else {
+            return Err(Error::Validation(
+                "the Lead environment review has no recorded model call".into(),
+            ));
+        };
+        let expected_lead: Option<(String,)> =
+            sqlx::query_as::query_as("SELECT lead_request_id FROM intake_requests WHERE id=?1")
+                .bind(&plan.request_id)
+                .fetch_optional(&mut *transaction)
+                .await?;
+        let Some((expected_lead,)) = expected_lead else {
+            return Err(Error::Validation(
+                "the environment plan has no intake request to bind the Lead model call".into(),
+            ));
+        };
+        if role != "LEAD"
+            || purpose != "lead_environment_review"
+            || state != "SETTLED"
+            || provider != review.model_call.provider
+            || model != review.model_call.model
+            || request_sha256 != review.model_call.request_sha256
+            || project_id != plan.project_id
+            || objective_id != expected_lead
+        {
+            return Err(Error::Validation(
+                "the Lead environment review model call provenance does not match its reservation"
+                    .into(),
+            ));
+        }
         if plan_sha256 != review.plan_sha256 || revision != i64::from(review.plan_revision) {
             return Err(Error::Conflict(
                 "environment review does not bind the stored plan",
@@ -514,16 +569,18 @@ impl Database {
         let now = Utc::now().to_rfc3339();
         sqlx::query::query(
             "INSERT INTO environment_plan_reviews
-             (id,request_id,plan_id,plan_sha256,plan_revision,reviewer_role,
-              principal_id,recorded_by,decision,rationale,evidence_json,
-              decided_at,created_at)
-             VALUES (?1,?2,?3,?4,?5,'LEAD',?6,?7,?8,?9,?10,?11,?12)",
+             (id,request_id,action_id,plan_id,plan_sha256,plan_revision,risk_class,
+              reviewer_role,principal_id,recorded_by,decision,rationale,
+              constraints_json,evidence_json,model_call_json,decided_at,created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,'LEAD',?8,?9,?10,?11,?12,?13,?14,?15,?16)",
         )
         .bind(&review.review_id)
         .bind(&review.request_id)
+        .bind(&review.action_id)
         .bind(&review.plan_id)
         .bind(&review.plan_sha256)
         .bind(i64::from(review.plan_revision))
+        .bind(&review.risk_class)
         .bind(&review.principal_id)
         .bind(&review.recorded_by)
         .bind(match review.decision {
@@ -534,7 +591,9 @@ impl Database {
             crate::planning::environment::LeadReviewDecision::Rejected => "REJECTED",
         })
         .bind(&review.rationale)
+        .bind(&constraints_json)
         .bind(&content_json)
+        .bind(&model_call_json)
         .bind(&review.decided_at)
         .bind(&now)
         .execute(&mut *transaction)
@@ -548,8 +607,9 @@ impl Database {
         plan_sha256: &str,
     ) -> Result<EnvironmentPlanReview, Error> {
         let row: Option<ReviewRow> = sqlx::query_as::query_as(
-            "SELECT id,request_id,plan_id,plan_revision,principal_id,recorded_by,
-                        decision,rationale,decided_at,evidence_json
+            "SELECT id,request_id,action_id,plan_id,plan_revision,risk_class,
+                        principal_id,recorded_by,decision,rationale,constraints_json,
+                        decided_at,evidence_json,model_call_json
                  FROM environment_plan_reviews WHERE plan_sha256=?1
                  ORDER BY decided_at DESC,id DESC LIMIT 1",
         )
@@ -559,14 +619,18 @@ impl Database {
         let Some((
             id,
             request_id,
+            action_id,
             plan_id,
             plan_revision,
+            risk_class,
             principal_id,
             recorded_by,
             decision,
             rationale,
+            constraints_json,
             decided_at,
             evidence_json,
+            model_call_json,
         )) = row
         else {
             return Err(Error::NotFound);
@@ -575,10 +639,12 @@ impl Database {
             schema_version: crate::planning::environment::ENVIRONMENT_SCHEMA_VERSION,
             review_id: id,
             request_id,
+            action_id,
             plan_id,
             plan_sha256: plan_sha256.into(),
             plan_revision: u32::try_from(plan_revision)
                 .map_err(|_| Error::Invalid("stored environment review revision"))?,
+            risk_class,
             reviewer_role: crate::planning::environment::EnvironmentReviewerRole::Lead,
             principal_id,
             recorded_by,
@@ -595,8 +661,12 @@ impl Database {
                 }
             },
             rationale,
+            constraints: serde_json::from_str(&constraints_json).unwrap_or_default(),
             decided_at,
             evidence_refs: serde_json::from_str(&evidence_json).unwrap_or_default(),
+            model_call: serde_json::from_str(&model_call_json).map_err(|_| {
+                Error::Validation("stored environment review model call is not decodable".into())
+            })?,
         })
     }
 
@@ -605,8 +675,9 @@ impl Database {
         request_id: &str,
     ) -> Result<Vec<EnvironmentPlanReview>, Error> {
         let rows: Vec<ReviewRow> = sqlx::query_as::query_as(
-            "SELECT id,request_id,plan_id,plan_revision,principal_id,recorded_by,
-                        decision,rationale,decided_at,evidence_json
+            "SELECT id,request_id,action_id,plan_id,plan_revision,risk_class,
+                        principal_id,recorded_by,decision,rationale,constraints_json,
+                        decided_at,evidence_json,model_call_json
                  FROM environment_plan_reviews WHERE request_id=?1
                  ORDER BY decided_at,id",
         )
@@ -618,23 +689,29 @@ impl Database {
                 |(
                     id,
                     request_id,
+                    action_id,
                     plan_id,
                     plan_revision,
+                    risk_class,
                     principal_id,
                     recorded_by,
                     decision,
                     rationale,
+                    constraints_json,
                     decided_at,
                     evidence_json,
+                    model_call_json,
                 )| {
                     Ok(EnvironmentPlanReview {
                         schema_version: crate::planning::environment::ENVIRONMENT_SCHEMA_VERSION,
                         review_id: id,
                         request_id,
+                        action_id,
                         plan_id,
                         plan_sha256: String::new(),
                         plan_revision: u32::try_from(plan_revision)
                             .map_err(|_| Error::Invalid("stored environment review revision"))?,
+                        risk_class,
                         reviewer_role: crate::planning::environment::EnvironmentReviewerRole::Lead,
                         principal_id,
                         recorded_by,
@@ -655,8 +732,14 @@ impl Database {
                             }
                         },
                         rationale,
+                        constraints: serde_json::from_str(&constraints_json).unwrap_or_default(),
                         decided_at,
                         evidence_refs: serde_json::from_str(&evidence_json).unwrap_or_default(),
+                        model_call: serde_json::from_str(&model_call_json).map_err(|_| {
+                            Error::Validation(
+                                "stored environment review model call is not decodable".into(),
+                            )
+                        })?,
                     })
                 },
             )
@@ -837,51 +920,6 @@ impl Database {
         .execute(&self.pool)
         .await?;
         Ok(())
-    }
-
-    pub async fn save_environment_license_override(
-        &self,
-        record: &EnvironmentLicenseOverrideRecord,
-    ) -> Result<EnvironmentLicenseOverrideRecord, Error> {
-        if record.id.trim().is_empty()
-            || record.package_name.trim().is_empty()
-            || record.version.trim().is_empty()
-            || record.license.trim().is_empty()
-            || record.reason.trim().len() < 8
-            || record.decision_id.trim().is_empty()
-            || record.principal_id.trim().is_empty()
-            || record.plan_sha256.len() != 64
-        {
-            return Err(Error::Validation(
-                "an owner override requires an exact package, version, license, plan, reason and decision".into(),
-            ));
-        }
-        let expires = chrono::DateTime::parse_from_rfc3339(&record.expires_at)
-            .map_err(|_| Error::Validation("owner override expiry is not RFC3339".into()))?;
-        if expires.with_timezone(&Utc) <= Utc::now() {
-            return Err(Error::Validation("owner override is expired".into()));
-        }
-        let now = Utc::now().to_rfc3339();
-        let _write = self.write_lock.lock().await;
-        sqlx::query::query(
-            "INSERT OR IGNORE INTO environment_license_overrides
-             (id,package_name,version,license,plan_sha256,reason,decision_id,
-              principal_id,expires_at,created_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-        )
-        .bind(&record.id)
-        .bind(&record.package_name)
-        .bind(&record.version)
-        .bind(&record.license)
-        .bind(&record.plan_sha256)
-        .bind(&record.reason)
-        .bind(&record.decision_id)
-        .bind(&record.principal_id)
-        .bind(&record.expires_at)
-        .bind(&now)
-        .execute(&self.pool)
-        .await?;
-        Ok(record.clone())
     }
 
     pub async fn save_environment_build_receipt(
@@ -1073,6 +1111,44 @@ impl Database {
         .await?;
         transaction.commit().await?;
         Ok(())
+    }
+
+    /// Load the exact plan/spec/receipt set bound to a Campaign. A missing,
+    /// mismatched or unsuccessful build is a typed refusal, never a language
+    /// image fallback.
+    pub async fn environment_execution_for_campaign(
+        &self,
+        campaign_id: &str,
+    ) -> Result<Option<crate::planning::environment::EnvironmentExecutionBinding>, Error> {
+        let binding = match self.campaign_environment(campaign_id).await {
+            Ok(binding) => binding,
+            Err(Error::NotFound) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let spec = self.environment_spec_by_sha(&binding.spec_sha256).await?;
+        let plan = self.environment_plan_by_sha(&binding.plan_sha256).await?;
+        let receipt = self
+            .latest_environment_build_receipt(&binding.spec_sha256)
+            .await
+            .map_err(|error| match error {
+                Error::NotFound => Error::IntakeConflict {
+                    code: "ENVIRONMENT_BUILDER_UNAVAILABLE",
+                    message: "the Campaign environment has no successful build receipt".into(),
+                },
+                other => other,
+            })?;
+        let execution = crate::planning::environment::EnvironmentExecutionBinding {
+            plan: plan.plan,
+            spec: spec.spec,
+            receipt,
+        };
+        execution
+            .validate()
+            .map_err(|error| Error::IntakeConflict {
+                code: error.code_str(),
+                message: error.message,
+            })?;
+        Ok(Some(execution))
     }
 
     pub async fn campaign_environment(

@@ -489,6 +489,7 @@ Decision: `proposed`
 - Typed triage and StackProfile
 - Director, Operation Manager and portfolio concurrency
 - Planner, Spec Manager and frozen specs projected to issues and kanban
+- Agnostic environment compiler: conventions discovery, licensed Nix/devenv plan, Lead-model review, frozen EnvironmentSpec, Campaign/check binding and Office environment panel
 - Explorer, Librarian, Context7 and temporary skills
 - Dynamic participant composition and cheap operations interpreter
 - Bounded repair from the exact candidate
@@ -507,10 +508,11 @@ Decision: `proposed`
 - agent and skill sprawl without minimum-sufficient composition
 - issue/kanban drift from Core truth
 - repair scope creep or candidate identity loss
+- a generated environment drifting from its frozen lock, licence inventory or builder digest
 
 ### Deterministic acceptance
 
-- Triage floors, participant composition, owner charter, repair authorization, context handoff, spec issue projection and reviewer aggregation pass deterministic positive and negative tests.
+- Triage floors, participant composition, owner charter, repair authorization, context handoff, spec issue projection, environment compiler (conventions, licence gate, Lead model decision, builder resolution, plan/spec/check binding) and reviewer aggregation pass deterministic positive and negative tests.
 
 ### Real acceptance
 

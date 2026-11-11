@@ -321,7 +321,7 @@ impl Database {
         let mut connection = self.pool.acquire().await?;
         super::lead::validate_lead_attempt_lineage(&mut connection, &candidate.attempt_id).await?;
         let row = sqlx::query::query(
-            "SELECT COALESCE(aps.action_id,c.action_id) AS action_id,p.repository,
+            "SELECT COALESCE(aps.action_id,c.action_id) AS action_id,c.id AS campaign_id,p.repository,
                     COALESCE(aps.base_commit,p.base_commit) AS base_commit,
                     COALESCE(aps.spec_json,s.spec_json) AS spec_json,
                     COALESCE(aps.spec_sha256,s.spec_sha256) AS spec_sha256
@@ -340,6 +340,7 @@ impl Database {
         .await?;
         use sqlx::row::Row;
         let action_id: String = row.try_get("action_id")?;
+        let campaign_id: String = row.try_get("campaign_id")?;
         let repository: String = row.try_get("repository")?;
         let base_commit: String = row.try_get("base_commit")?;
         let spec_json: String = row.try_get("spec_json")?;
@@ -351,6 +352,16 @@ impl Database {
         }
         let action_spec: ActionSpec = serde_json::from_str(&spec_json)
             .map_err(|_| Error::Invalid("stored ActionSpec encoding"))?;
+        let environment_execution = self
+            .environment_execution_for_campaign(&campaign_id)
+            .await?;
+        if action_spec.environment_required && environment_execution.is_none() {
+            return Err(Error::IntakeConflict {
+                code: "ENVIRONMENT_PLAN_REQUIRED",
+                message: "the candidate Campaign has no frozen environment execution binding"
+                    .into(),
+            });
+        }
         Ok(CandidateInspection {
             integration: candidate.integration,
             lineage: candidate.lineage.clone(),
@@ -360,6 +371,7 @@ impl Database {
             action_spec_sha256: spec_sha256,
             repository,
             base_commit,
+            environment_execution,
         })
     }
 

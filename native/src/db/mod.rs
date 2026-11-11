@@ -298,6 +298,9 @@ pub struct WorkerAssignment {
     /// than substituting a language image.
     #[serde(default)]
     pub environment: Option<crate::db::CampaignEnvironmentBinding>,
+    /// Exact plan/spec/receipt used to select each check's builder image.
+    #[serde(default)]
+    pub environment_execution: Option<crate::planning::environment::EnvironmentExecutionBinding>,
 }
 
 #[derive(Clone, Debug)]
@@ -466,6 +469,10 @@ pub struct CandidateInspection {
     pub base_commit: String,
     pub integration: bool,
     pub lineage: Vec<String>,
+    /// Exact frozen environment bound to the Campaign. The verifier selects
+    /// every check's builder image from this record.
+    #[serde(default)]
+    pub environment_execution: Option<crate::planning::environment::EnvironmentExecutionBinding>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

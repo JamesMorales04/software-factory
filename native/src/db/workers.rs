@@ -381,10 +381,13 @@ impl Database {
         super::validate_dependency_requirement(&spec)?;
         super::validate_environment_requirement(&spec)?;
         let environment = self.campaign_environment(&campaign_id).await.ok();
-        if spec.environment_required && environment.is_none() {
+        let environment_execution = self
+            .environment_execution_for_campaign(&campaign_id)
+            .await?;
+        if spec.environment_required && environment_execution.is_none() {
             return Err(Error::IntakeConflict {
                 code: "ENVIRONMENT_PLAN_REQUIRED",
-                message: "the Campaign has no exact frozen environment binding".into(),
+                message: "the Campaign has no exact frozen environment execution binding".into(),
             });
         }
         let skills = self.adopted_skills_for_campaign(&campaign_id).await?;
@@ -412,6 +415,7 @@ impl Database {
             attempt_grant: String::new(),
             skills,
             environment,
+            environment_execution,
         })
     }
 

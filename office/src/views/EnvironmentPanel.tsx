@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { Badge, type BadgeTone } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
-import { Textarea } from "../components/ui/Field";
 import { EmptyState, Panel } from "../components/ui/Surface";
 import {
   CoreApiError,
@@ -67,8 +66,7 @@ export function EnvironmentPanel({
   onReviewed?: (next: EnvironmentStateView) => void;
 }) {
   const { t, formatDate } = useI18n();
-  const [rationale, setRationale] = useState("");
-  const [busy, setBusy] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -81,29 +79,22 @@ export function EnvironmentPanel({
       environment?.status === "DRAFT") &&
     !leadApproval;
 
-  async function submit(decision: "APPROVE" | "CHANGES_REQUESTED" | "REJECT") {
+  async function triggerReview() {
     if (!requestId || !plan) return;
-    if (rationale.trim().length < 8) {
-      setError(t("environment.review.rationaleRequired"));
-      return;
-    }
-    setBusy(decision);
+    setBusy(true);
     setError(null);
     setNotice(null);
     try {
       const next = await coreApi.reviewAgenticEnvironment(requestId, {
         planSha256: plan.planSha256,
         planRevision: plan.revision,
-        decision,
-        rationale: rationale.trim(),
       });
       setNotice(t("environment.review.success"));
-      setRationale("");
       onReviewed?.(next);
     } catch (cause) {
       setError(errorMessage(cause, t("environment.review.error")));
     } finally {
-      setBusy(null);
+      setBusy(false);
     }
   }
 
@@ -127,7 +118,7 @@ export function EnvironmentPanel({
       <div className="section-heading">
         <h2>{t("environment.title")}</h2>
         <Badge tone={statusTone(environment.status)}>
-          {environment.status}
+          {environmentStatusLabel(environment.status, t)}
         </Badge>
         {environment.required && (
           <Badge tone="info">{t("environment.required")}</Badge>
@@ -453,6 +444,23 @@ export function EnvironmentPanel({
                   <dt>{t("environment.review.decidedAt")}</dt>
                   <dd>{formatDate(leadApproval.decidedAt)}</dd>
                 </div>
+                <div>
+                  <dt>{t("environment.review.model")}</dt>
+                  <dd>
+                    <code>
+                      {leadApproval.modelCall.provider}/
+                      {leadApproval.modelCall.model}
+                    </code>
+                  </dd>
+                </div>
+                <div>
+                  <dt>{t("environment.review.reservation")}</dt>
+                  <dd>
+                    <code>
+                      {shortId(leadApproval.modelCall.reservationId, 16)}
+                    </code>
+                  </dd>
+                </div>
               </dl>
               <p className="muted">{leadApproval.rationale}</p>
               <p className="muted">{t("environment.review.notAuthority")}</p>
@@ -463,37 +471,14 @@ export function EnvironmentPanel({
 
           {canReview && (
             <div className="environment-review-form">
-              <Textarea
-                label={t("environment.review.rationale")}
-                value={rationale}
-                onChange={(event) => setRationale(event.target.value)}
-                help={t("environment.review.rationaleHelp")}
-                disabled={busy !== null}
-              />
               <div className="environment-review-actions">
                 <Button
                   variant="primary"
-                  busy={busy === "APPROVE"}
-                  disabled={busy !== null || rationale.trim().length < 8}
-                  onClick={() => void submit("APPROVE")}
+                  busy={busy}
+                  disabled={busy}
+                  onClick={() => void triggerReview()}
                 >
-                  {t("environment.review.approve")}
-                </Button>
-                <Button
-                  variant="secondary"
-                  busy={busy === "CHANGES_REQUESTED"}
-                  disabled={busy !== null || rationale.trim().length < 8}
-                  onClick={() => void submit("CHANGES_REQUESTED")}
-                >
-                  {t("environment.review.requestChanges")}
-                </Button>
-                <Button
-                  variant="danger"
-                  busy={busy === "REJECT"}
-                  disabled={busy !== null || rationale.trim().length < 8}
-                  onClick={() => void submit("REJECT")}
-                >
-                  {t("environment.review.reject")}
+                  {t("environment.review.trigger")}
                 </Button>
               </div>
               <p className="muted">{t("environment.review.actionHelp")}</p>

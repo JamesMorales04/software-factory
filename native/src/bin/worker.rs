@@ -88,6 +88,9 @@ struct Assignment {
     attempt_grant: String,
     #[serde(default)]
     skills: Vec<AssignmentSkill>,
+    #[serde(default)]
+    environment_execution:
+        Option<factory_native::planning::environment::EnvironmentExecutionBinding>,
 }
 
 #[derive(Debug, Deserialize, serde::Serialize)]
@@ -2815,10 +2818,26 @@ async fn run_provider_tool_loop(
                         )
                         .await?;
                         ensure_dependencies(context, &handle, &mut dependencies).await?;
+                        let check = context
+                            .assignment
+                            .action_spec
+                            .checks
+                            .iter()
+                            .find(|check| check.id == check_id)
+                            .ok_or_else(|| {
+                                format!(
+                                    "ENVIRONMENT_PLAN_REQUIRED: check {check_id} is not in the frozen ActionSpec"
+                                )
+                            })?;
+                        let target = check_execution_target(context, check)?;
+                        let image = target.as_ref().map(|target| {
+                            format!("{}@{}", target.builder_image, target.builder_image_digest)
+                        });
                         match supervisor_run(
                             context,
                             &handle.workspace_id,
                             &handle.capability,
+                            image.as_deref(),
                             &argv,
                             timeout_secs,
                         )
@@ -3167,12 +3186,28 @@ async fn execute_codex_tool(
             let timeout_secs = effective_timeout;
             post_tool_event(context, call_id, tool, "ALLOW", "frozen check authorized").await?;
             ensure_dependencies(context, handle, &mut tool_state.dependencies).await?;
+            let check = context
+                .assignment
+                .action_spec
+                .checks
+                .iter()
+                .find(|check| check.id == check_id)
+                .ok_or_else(|| {
+                    format!(
+                        "ENVIRONMENT_PLAN_REQUIRED: check {check_id} is not in the frozen ActionSpec"
+                    )
+                })?;
+            let target = check_execution_target(context, check)?;
+            let image = target
+                .as_ref()
+                .map(|target| format!("{}@{}", target.builder_image, target.builder_image_digest));
             let run = tokio::time::timeout_at(
                 deadline,
                 supervisor_run(
                     context,
                     &handle.workspace_id,
                     &handle.capability,
+                    image.as_deref(),
                     &argv,
                     timeout_secs,
                 ),
@@ -3911,6 +3946,39 @@ fn check_environment_binding_error(check: &factory_native::lead::SpecCheck) -> O
     }
 }
 
+fn check_execution_target(
+    context: &ProviderContext<'_>,
+    check: &factory_native::lead::SpecCheck,
+) -> Result<Option<factory_native::planning::environment::CheckExecutionTarget>, String> {
+    if check.environment_plan_id.is_none() && check.environment_spec_sha256.is_none() {
+        return Ok(None);
+    }
+    let execution = context
+        .assignment
+        .environment_execution
+        .as_ref()
+        .ok_or_else(|| {
+            format!(
+                "ENVIRONMENT_PLAN_REQUIRED: check {} requires the Campaign environment binding",
+                check.id
+            )
+        })?;
+    let target = factory_native::planning::environment::select_check_execution(
+        check,
+        &execution.plan,
+        &execution.spec,
+        &execution.receipt,
+    )
+    .map_err(|error| format!("{}: {}", error.code_str(), error.message))?;
+    if target.builder_image.is_empty() || !target.builder_image_digest.starts_with("sha256:") {
+        return Err(
+            "ENVIRONMENT_BUILDER_UNAVAILABLE: the environment has no digest-pinned builder image"
+                .into(),
+        );
+    }
+    Ok(Some(target))
+}
+
 fn effective_check_timeout(
     context: &ProviderContext<'_>,
     check: &factory_native::lead::SpecCheck,
@@ -3996,10 +4064,15 @@ async fn execute_missing_frozen_checks(
         )
         .await?;
         let timeout_secs = effective_check_timeout(context, check);
+        let target = check_execution_target(context, check)?;
+        let image = target
+            .as_ref()
+            .map(|target| format!("{}@{}", target.builder_image, target.builder_image_digest));
         let result = supervisor_run(
             context,
             &handle.workspace_id,
             &handle.capability,
+            image.as_deref(),
             &check.command,
             timeout_secs,
         )
@@ -4426,6 +4499,7 @@ async fn supervisor_run(
     context: &ProviderContext<'_>,
     workspace_id: &str,
     capability: &str,
+    image: Option<&str>,
     argv: &[String],
     timeout_secs: u64,
 ) -> Result<ExecutionResult, Box<dyn std::error::Error>> {
@@ -4454,7 +4528,9 @@ async fn supervisor_run(
         .bearer_auth(capability)
         .header("x-factory-operation-grant", operation)
         .json(&ToolRunRequest {
-            image: context.supervisor.image.clone(),
+            image: image
+                .map(str::to_owned)
+                .unwrap_or_else(|| context.supervisor.image.clone()),
             argv: argv.to_vec(),
             timeout_secs,
         })
@@ -5888,6 +5964,19 @@ mod tests {
         }
     }
 
+    #[test]
+    fn partial_environment_binding_is_refused_before_execution() {
+        let mut check = stagnation_check();
+        assert!(super::check_environment_binding_error(&check).is_none());
+        check.environment_plan_id = Some("plan-1".into());
+        assert!(
+            super::check_environment_binding_error(&check)
+                .is_some_and(|error| error.contains("ENVIRONMENT_PLAN_REQUIRED"))
+        );
+        check.environment_spec_sha256 = Some("a".repeat(64));
+        assert!(super::check_environment_binding_error(&check).is_none());
+    }
+
     #[tokio::test]
     async fn worker_salvages_a_changed_candidate_after_diagnose_when_all_frozen_checks_pass() {
         use std::sync::atomic::Ordering;
@@ -6349,6 +6438,7 @@ mod tests {
             allowed_tools: Vec::new(),
             attempt_grant: String::new(),
             skills: Vec::new(),
+            environment_execution: None,
         }
     }
 

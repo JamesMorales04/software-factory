@@ -24,7 +24,7 @@ untrusted project input; a container is not an isolation certification.
 | `EnvironmentSpec` | same | Immutable frozen hash over the plan, review, locks, license inventory, SBOM and builder identity. |
 | `EnvironmentBuildReceipt` / `EnvironmentBuilder` | same | Port implemented by WP1-B. Includes sandbox attestation and content-addressed output. |
 | `CheckExecutionTarget` / `select_check_execution` | same | A check must carry the exact plan/spec binding; no implicit language image. |
-| Persistence | `migrations/0076_environment_specs.sql`, `native/src/db/environment.rs` | Append-only plans/reviews; immutable specs, inventories, receipts, overrides and Campaign bindings. |
+| Persistence | `migrations/0076_environment_specs.sql`, `native/src/db/environment.rs` | Append-only plans/reviews; immutable specs, inventories, receipts and Campaign bindings. The licence-override table is reserved for a protected Owner action and has no write path in this slice. |
 
 The `environment_request_bindings` view reports
 `ENVIRONMENT_PLAN_REQUIRED` for existing requests with no real plan. It never
@@ -40,19 +40,33 @@ fabricates a plan or spec row.
    constructs, argv commands, sandbox/network/resource policy, services and the
    license inventory. The default is `allowUnfree=false`.
 4. The plan is persisted as `CORE_VALIDATED` with an exact `planSha256`.
-5. A `LEAD` review bound to that hash/revision is recorded. The Lead is a
-   bounded planning role; the review grants no execution, credential or
-   license authority.
-6. Core revalidates, freezes one `EnvironmentSpec`, persists the license
+5. Core asks the frozen Lead profile route to review the plan with a typed
+   `EnvironmentLeadReviewModel` schema (`APPROVE`, `CHANGES_REQUESTED`,
+   `REJECT`). The recorded `LEAD` review is bound to the exact plan hash,
+   revision, request, action and risk class and carries the provider/model,
+   reservation, request digest, usage and cost. The operator may trigger or
+   retry the review but cannot choose its decision; an Owner plan approval is
+   never mapped to a Lead environment approval.
+6. A generated environment is resolved by the `EnvironmentBuilder` port before
+   freeze. The resolver returns exact `flake.lock`/`devenv.lock` content, Nix
+   and devenv versions and a digest-pinned builder identity. A missing builder
+   or failed resolution blocks with `ENVIRONMENT_BUILDER_UNAVAILABLE` or the
+   typed builder error. The default production builder is explicitly
+   unavailable; WP1-B supplies the real builder.
+7. Core revalidates, freezes one `EnvironmentSpec`, persists the license
    inventory and binds the exact spec hash to the ActionSpec and every check.
-7. Campaign authorization inserts the immutable `campaign_environments` row and
+8. Campaign authorization inserts the immutable `campaign_environments` row and
    refuses a required ActionSpec without a frozen spec. The Worker assignment
-   carries the same binding.
+   and verifier inspection carry the exact plan/spec/receipt; every bound check
+   is selected with `select_check_execution` and executed with the selected
+   digest-pinned builder image. There is no global language image fallback.
 
-The existing overall plan review path records the Lead environment decision
-automatically only when the deterministic plan-review policy is
-`AUTO_APPROVED`; otherwise the Director/Request surface exposes the explicit
-Lead action. In both cases Core validation is authoritative.
+The automatic planning path may invoke the Lead model when the overall plan
+review is `AUTO_APPROVED`; if the model, inference authorization or frozen route
+is unavailable, the environment plan stays `CORE_VALIDATED` and execution is
+blocked. The Director/Request surface exposes a "Request Lead environment
+review" action that triggers the same model call. In every path Core validation
+remains authoritative.
 
 ## 3. Typed failures
 
@@ -76,6 +90,7 @@ It must implement `EnvironmentBuilder`:
 
 ```text
 descriptor() -> EnvironmentBuilderDescriptor
+resolve(plan) -> EnvironmentResolution
 build(spec, plan) -> EnvironmentBuildReceipt
 ```
 
@@ -97,8 +112,18 @@ Factory configuration:
 | `FACTORY_ENVIRONMENT_NIX_VERSION` | Pinned Nix version recorded in a frozen spec. |
 | `FACTORY_ENVIRONMENT_DEVENV_VERSION` | Pinned devenv version recorded in a frozen spec. |
 
-An absent image/digest is `ENVIRONMENT_BUILDER_UNAVAILABLE` at check selection;
-it does not select a Rust or generic image.
+An absent image/digest is `ENVIRONMENT_BUILDER_UNAVAILABLE` at resolution and
+check selection; it does not select a Rust or generic image. A generated
+environment without builder resolution cannot freeze.
+
+## 4.1 Owner unfree-licence override
+
+A real authenticated Owner-only unfree-licence override API is deferred. The
+compiler rejects `allowUnfree`, unknown/denied licences and any unfree package
+without an exact owner override record. The previous unauthenticated database
+write path was removed; there is no HTTP or database route that can create an
+override with an arbitrary principal. The reserved Owner action must be added
+under the protected approval path before any unfree package can be admitted.
 
 ## 5. Office
 
@@ -110,7 +135,8 @@ Campaign overview. It shows:
 - selected toolchains, packages, services, browsers, resources and network;
 - license inventory, unfree state, owner override and blockers;
 - builder image/digest/status and the latest receipt;
-- the Lead review record and an exact-rationale Lead action while pending;
+- the Lead review record, model-call provenance and a trigger/retry action while
+  pending. The operator does not choose the decision;
 - the frozen spec hashes and the immutability rule;
 - truthful missing/empty/blocked/error states.
 
@@ -122,11 +148,22 @@ acceptance.
 
 - `cargo fmt --all`
 - `cargo test -p factory-native --lib` — 872 passed, 4 ignored.
-- `cargo test -p factory-native --bin factory-core` — 58 passed; Worker 28 passed; verifier 8 passed.
+- `cargo test -p factory-native --bin factory-core` — 60 passed.
+- `cargo test -p factory-native --bin factory-core --features test-support` —
+  76 passed, including the model-driven Lead approval, operator-forgery,
+  Owner-approval-only, replay and stale-hash tests.
+- `cargo test -p factory-native --bin factory-worker` — 29 passed.
+- `cargo test -p factory-native --bin factory-verifier` — 9 passed.
 - `cargo clippy -p factory-native --lib --bins -- -D warnings` — clean.
 - Office: `npm ci`, `npm run typecheck`, `npm run lint`,
   `npm test -- --run` — 47 files / 331 tests passed.
 - `podman compose config --quiet` — exit 0.
+- `docs/product/office-parity.json` parses as valid JSON and includes the
+  environment states and endpoints. `docs/product/capabilities.yaml` parses as
+  YAML and CAP-060 now references the environment module, migration, tests and
+  limitations. `factory-architecture-check` reaches registry validation; it
+  still reports pre-existing evidence/status mismatches for CAP-011, CAP-049,
+  CAP-050, CAP-060 and CAP-063 that are unrelated to this candidate.
 
 **Not tested / not claimed:** a real Nix/devenv build, a real builder image, the
 Node/Playwright runtime, live Podman check execution, real Chromium acceptance
