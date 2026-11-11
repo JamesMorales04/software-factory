@@ -20549,6 +20549,153 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn model_call_resolution_endpoint_is_owner_only_reasoned_and_audited() {
+        use tower::ServiceExt;
+
+        let path = std::env::temp_dir().join(format!(
+            "factory-core-model-call-resolution-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let app = test_app(&path).await;
+        let pool = sqlx_sqlite::SqlitePool::connect_with(
+            sqlx_sqlite::SqliteConnectOptions::new()
+                .filename(&path)
+                .create_if_missing(false),
+        )
+        .await
+        .unwrap();
+        let now = chrono::Utc::now();
+        sqlx::query::query(
+            "INSERT INTO model_call_reservations
+             (reservation_id,role,principal_id,project_id,objective_id,scope_id,
+              provider,model,purpose,request_sha256,max_input_tokens,
+              max_output_tokens,max_total_tokens,max_cost_micros,input_tokens,
+              output_tokens,total_tokens,cost_micros,usage_known,response_text,
+              state,error,expires_at_ms,created_at,updated_at,ledger_reservation_id,
+              dispatched_at_ms,provider_request_id)
+             VALUES ('model-call-http','EVALUATION','evaluator','project-http',
+                     'objective-http','scope-http','opencode-go',
+                     'deepseek-v4.1-flash','evaluation',?1,100,100,200,200,0,0,0,
+                     0,0,NULL,'AMBIGUOUS','unresolved',?2,?3,?3,NULL,NULL,NULL)",
+        )
+        .bind("a".repeat(64))
+        .bind(now.timestamp_millis() + 60_000)
+        .bind(now.to_rfc3339())
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool.close().await;
+
+        let router = build_router(Arc::clone(&app));
+        async fn resolve(
+            router: &axum::Router,
+            authorization: Option<&str>,
+            reason: &str,
+        ) -> axum::response::Response {
+            let mut request = axum::http::Request::builder()
+                .method("POST")
+                .uri("/model/calls/model-call-http/resolve")
+                .header("content-type", "application/json");
+            if let Some(authorization) = authorization {
+                request = request.header("authorization", format!("Bearer {authorization}"));
+            }
+            router
+                .clone()
+                .oneshot(
+                    request
+                        .body(axum::body::Body::from(
+                            serde_json::json!({
+                                "actor": "operator",
+                                "reason": reason,
+                            })
+                            .to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+        }
+
+        assert_eq!(
+            resolve(&router, None, "owner reason").await.status(),
+            StatusCode::UNAUTHORIZED,
+            "an unauthenticated caller must not resolve a model reservation"
+        );
+        assert_eq!(
+            resolve(
+                &router,
+                Some("bootstrap-bootstrap-bootstrap-1234"),
+                "owner reason"
+            )
+            .await
+            .status(),
+            StatusCode::UNAUTHORIZED,
+            "a non-owner role token must not resolve a model reservation"
+        );
+        assert_eq!(
+            resolve(&router, Some("operator-token"), "  ")
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST,
+            "a blank reason must be refused"
+        );
+        let (count, bound) = app.db.unresolved_model_call_budget().await.unwrap();
+        assert_eq!((count, bound), (1, 200));
+        assert!(
+            !app.db
+                .events()
+                .await
+                .unwrap()
+                .iter()
+                .any(|event| event.kind == "model.call_resolved"),
+            "a refused request must not release the budget or emit an audit event"
+        );
+
+        assert_eq!(
+            resolve(
+                &router,
+                Some("operator-token"),
+                "provider aborted before usage"
+            )
+            .await
+            .status(),
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(app.db.unresolved_model_call_budget().await.unwrap(), (0, 0));
+        let records = app.db.model_calls(10).await.unwrap();
+        let record = records
+            .iter()
+            .find(|record| record.reservation_id == "model-call-http")
+            .expect("model call record");
+        assert_eq!(record.state, "RELEASED");
+        assert!(record.error.contains("operator"));
+        let audit = app
+            .db
+            .events()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|event| {
+                event.kind == "model.call_resolved"
+                    && event.subject_id == "objective-http"
+                    && event.detail.contains("model-call-http")
+            })
+            .expect("model call resolution audit event");
+        assert!(audit.detail.contains("actor=operator"));
+        assert!(audit.detail.contains("provider aborted before usage"));
+        assert_eq!(
+            resolve(&router, Some("operator-token"), "again")
+                .await
+                .status(),
+            StatusCode::CONFLICT
+        );
+
+        drop(router);
+        app.db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
     async fn project_files_api_browses_registered_repository_with_bounds() {
         use tower::ServiceExt;
 
