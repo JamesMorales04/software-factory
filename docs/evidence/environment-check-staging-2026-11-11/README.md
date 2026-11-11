@@ -100,10 +100,13 @@ contain no `.git`, matching the archive contract.
   cancellation, even when it has not registered a container yet. The check
   handler observes the tombstone under the volume lock before registering, and
   container creation holds the same lock across the tombstone/active check and
-  `podman run` spawn. If a container is active, the broker removes it, confirms
-  absence, and clears the active registration. A second concurrent check is
-  refused, and the handler returns `ENVIRONMENT_CHECK_CANCELLED` when the grant
-  is revoked. The bounded timeout and no-host/security rules are unchanged.
+  `podman run` spawn. The active registration stores the exact check token; a
+  delayed cancellation for finished check A returns `TOKEN_MISMATCH` and cannot
+  remove active check B, while a matching token removes its own container,
+  confirms absence, and clears the active registration. A second concurrent
+  check is refused without overwriting the first registration, and the handler
+  returns `ENVIRONMENT_CHECK_CANCELLED` when the grant is revoked. The bounded
+  timeout and no-host/security rules are unchanged.
 
 ## 5. Deterministic evidence
 
@@ -113,8 +116,10 @@ contain no `.git`, matching the archive contract.
   worktree, real archive/import, stale-file removal, fake broker returning
   npm's 254 when `package.json` is absent and PASS after staging) and
   `environment_check_fence_cancels_an_active_check_on_revocation`.
+  `concurrent_environment_check_registration_keeps_the_first_token` — 1 passed.
 - `cargo test -p factory-native --bin factory-runtime-broker environment_check`
   — 9 passed, including `environment_check_cancel_targets_only_an_active_owned_check`;
+  `delayed_cancellation_a_cannot_cancel_active_check_b` — 1 passed;
   `cancellation_tombstone_prevents_a_delayed_check_from_starting` — 1 passed,
   with broker validation delayed 3 s (beyond the old 2 s retry window) and no
   container `run` invocation. `check_diagnostic_is_description_first_and_bounded`

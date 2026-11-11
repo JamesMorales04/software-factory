@@ -184,10 +184,21 @@ struct ActiveExecutions {
     entries: std::sync::Mutex<ActiveEntries>,
 }
 
+struct ActiveEntry {
+    container: String,
+    check_token: Option<String>,
+}
+
 #[derive(Default)]
 struct ActiveEntries {
-    volumes: HashMap<String, String>,
+    volumes: HashMap<String, ActiveEntry>,
     containers: std::collections::HashSet<String>,
+}
+
+enum ActiveCheckLookup {
+    Matching(String),
+    OtherCheck,
+    NotCheck,
 }
 
 impl ActiveExecutions {
@@ -198,6 +209,14 @@ impl ActiveExecutions {
     }
 
     fn register(&self, volume: &str, container: &str) -> bool {
+        self.register_entry(volume, container, None)
+    }
+
+    fn register_check(&self, volume: &str, container: &str, check_token: &str) -> bool {
+        self.register_entry(volume, container, Some(check_token.to_owned()))
+    }
+
+    fn register_entry(&self, volume: &str, container: &str, check_token: Option<String>) -> bool {
         let mut entries = self.entries.lock().unwrap();
         if entries.volumes.len() >= MAX_ACTIVE_EXECUTIONS
             || entries.volumes.contains_key(volume)
@@ -205,16 +224,25 @@ impl ActiveExecutions {
         {
             return false;
         }
-        entries
-            .volumes
-            .insert(volume.to_owned(), container.to_owned());
+        entries.volumes.insert(
+            volume.to_owned(),
+            ActiveEntry {
+                container: container.to_owned(),
+                check_token,
+            },
+        );
         entries.containers.insert(container.to_owned());
         true
     }
 
     fn remove(&self, volume: &str, container: &str) {
         let mut entries = self.entries.lock().unwrap();
-        if entries.volumes.get(volume).map(String::as_str) == Some(container) {
+        if entries
+            .volumes
+            .get(volume)
+            .map(|entry| entry.container.as_str())
+            == Some(container)
+        {
             entries.volumes.remove(volume);
             entries.containers.remove(container);
         }
@@ -224,8 +252,21 @@ impl ActiveExecutions {
         self.entries.lock().unwrap().volumes.contains_key(volume)
     }
 
-    fn container_for(&self, volume: &str) -> Option<String> {
-        self.entries.lock().unwrap().volumes.get(volume).cloned()
+    /// Look up the active check for this exact volume and token. A token that
+    /// belongs to a different check must never select or remove this entry.
+    fn check_for(&self, volume: &str, check_token: &str) -> Option<ActiveCheckLookup> {
+        self.entries
+            .lock()
+            .unwrap()
+            .volumes
+            .get(volume)
+            .map(|entry| match entry.check_token.as_deref() {
+                Some(token) if token == check_token => {
+                    ActiveCheckLookup::Matching(entry.container.clone())
+                }
+                Some(_) => ActiveCheckLookup::OtherCheck,
+                None => ActiveCheckLookup::NotCheck,
+            })
     }
 }
 
@@ -3416,7 +3457,10 @@ async fn check_environment(
         )
             .into_response();
     }
-    if !app.active.register(&volume, &container) {
+    if !app
+        .active
+        .register_check(&volume, &container, &input.check_token)
+    {
         return conflict("workspace volume or check container is already active");
     }
     match app.container_present(&container).await {
@@ -3538,34 +3582,65 @@ async fn cancel_environment_check(
         Err(MutationError::Failed(_)) => {}
         Err(error) => return mutation_error(error),
     }
-    // Persist the cancellation before consulting the active registry. The
-    // check handler observes this tombstone under the same volume lock before
-    // registering or spawning, so a request still in validation cannot start
-    // after the cancel response.
-    if !app
-        .check_cancellations
-        .cancel(&input.check_token, &input.workspace_volume)
-    {
-        return operation_error(
-            "environment check cancellation table is full; refusing to claim cancellation",
-        );
+    let active = app
+        .active
+        .check_for(&input.workspace_volume, &input.check_token);
+    match active {
+        None => {
+            // The request is still validating or has not arrived. Record the
+            // tombstone so it cannot register or spawn later.
+            if !app
+                .check_cancellations
+                .cancel(&input.check_token, &input.workspace_volume)
+            {
+                return operation_error(
+                    "environment check cancellation table is full; refusing to claim cancellation",
+                );
+            }
+            Json(json!({"cancelled": true})).into_response()
+        }
+        Some(ActiveCheckLookup::Matching(container)) => {
+            if !app
+                .check_cancellations
+                .cancel(&input.check_token, &input.workspace_volume)
+            {
+                return operation_error(
+                    "environment check cancellation table is full; refusing to claim cancellation",
+                );
+            }
+            // Check containers are `factory-env-<uuid>` and are the only active
+            // environment-owned containers on a workspace volume. Generic exec
+            // and provider containers use distinct prefixes.
+            if !container.starts_with("factory-env-") || container.len() <= "factory-env-".len() {
+                return conflict("active resource is not an environment check container");
+            }
+            if !cleanup_environment_check_container(&app, &container).await {
+                return operation_error(
+                    "environment check cancellation cleanup could not be confirmed; volume remains blocked",
+                );
+            }
+            app.active.remove(&input.workspace_volume, &container);
+            Json(json!({"cancelled": true})).into_response()
+        }
+        Some(ActiveCheckLookup::OtherCheck) => (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "cancelled": false,
+                "state": "TOKEN_MISMATCH",
+                "error": "the active check belongs to a different token"
+            })),
+        )
+            .into_response(),
+        Some(ActiveCheckLookup::NotCheck) => (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "cancelled": false,
+                "state": "NOT_A_CHECK",
+                "error": "the active resource is not an environment check"
+            })),
+        )
+            .into_response(),
     }
-    let Some(container) = app.active.container_for(&input.workspace_volume) else {
-        return Json(json!({"cancelled": true})).into_response();
-    };
-    // Check containers are `factory-env-<uuid>` and are the only active
-    // environment-owned containers on a workspace volume. Generic exec and
-    // provider containers use distinct prefixes.
-    if !container.starts_with("factory-env-") || container.len() <= "factory-env-".len() {
-        return conflict("active resource is not an environment check container");
-    }
-    if !cleanup_environment_check_container(&app, &container).await {
-        return operation_error(
-            "environment check cancellation cleanup could not be confirmed; volume remains blocked",
-        );
-    }
-    app.active.remove(&input.workspace_volume, &container);
-    Json(json!({"cancelled": true})).into_response()
 }
 
 async fn validate_environment_check_request(
@@ -9188,7 +9263,10 @@ exit 0
         .await;
         let container = format!("factory-env-{}", uuid::Uuid::new_v4().simple());
         let check_token = uuid::Uuid::new_v4().to_string();
-        assert!(app.active.register(&workspace, &container));
+        assert!(
+            app.active
+                .register_check(&workspace, &container, &check_token)
+        );
 
         let cancelled = cancel_environment_check(
             State(Arc::clone(&app)),
@@ -9223,6 +9301,70 @@ exit 0
         .await;
         assert_eq!(empty.status(), StatusCode::OK);
         assert_eq!(environment_response_body(empty).await["cancelled"], true);
+    }
+
+    #[tokio::test]
+    async fn delayed_cancellation_a_cannot_cancel_active_check_b() {
+        let (_, spec, _) = valid_environment_execution();
+        let (app, workspace, log, _serial) = environment_check_test_app(
+            ResourceOwner::Supervisor,
+            0,
+            check_result_body(&spec.spec_sha256, "PASSED", 0, 0, "ok\n", ""),
+        )
+        .await;
+        let token_a = uuid::Uuid::new_v4().to_string();
+        let token_b = uuid::Uuid::new_v4().to_string();
+        let container_b = format!("factory-env-{}", uuid::Uuid::new_v4().simple());
+        assert!(
+            app.active
+                .register_check(&workspace, &container_b, &token_b)
+        );
+
+        let stale = cancel_environment_check(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Supervisor),
+            Json(EnvironmentCheckCancelRequest {
+                workspace_volume: workspace.clone(),
+                check_token: token_a.clone(),
+            }),
+        )
+        .await;
+        assert_eq!(stale.status(), StatusCode::CONFLICT);
+        let body = environment_response_body(stale).await;
+        assert_eq!(body["cancelled"], false);
+        assert_eq!(body["state"], "TOKEN_MISMATCH");
+        assert!(app.active.is_active(&workspace));
+        let invocations = std::fs::read_to_string(&log).unwrap();
+        assert!(
+            !invocations
+                .lines()
+                .any(|line| line.contains(&format!("rm --force --time=0 {container_b}"))),
+            "a stale token must not remove another check's container: {invocations}"
+        );
+        assert!(
+            !app.check_cancellations.is_cancelled(&token_a, &workspace),
+            "a stale mismatch must not record a tombstone"
+        );
+
+        let matching = cancel_environment_check(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Supervisor),
+            Json(EnvironmentCheckCancelRequest {
+                workspace_volume: workspace.clone(),
+                check_token: token_b.clone(),
+            }),
+        )
+        .await;
+        assert_eq!(matching.status(), StatusCode::OK);
+        assert_eq!(environment_response_body(matching).await["cancelled"], true);
+        assert!(!app.active.is_active(&workspace));
+        let invocations = std::fs::read_to_string(&log).unwrap();
+        assert!(
+            invocations
+                .lines()
+                .any(|line| line.contains(&format!("rm --force --time=0 {container_b}"))),
+            "the matching token must remove its own container: {invocations}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -2662,6 +2662,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn concurrent_environment_check_registration_keeps_the_first_token() {
+        let fixture = fixture();
+        let workspace_id = uuid::Uuid::new_v4().to_string();
+        let volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let first_token = uuid::Uuid::new_v4().to_string();
+        let second_token = uuid::Uuid::new_v4().to_string();
+        fixture
+            .app
+            .manager
+            .begin_environment_check(&workspace_id, &volume, &first_token)
+            .unwrap();
+        assert!(matches!(
+            fixture
+                .app
+                .manager
+                .begin_environment_check(&workspace_id, &volume, &second_token),
+            Err(ExecutionError::Conflict)
+        ));
+        assert!(
+            fixture
+                .app
+                .manager
+                .cancel_active(&workspace_id)
+                .await
+                .unwrap(),
+            "the first registration must remain cancellable"
+        );
+        let calls = fixture.cancel_calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert!(
+            calls[0].ends_with(&first_token),
+            "cancellation must use the first check token, got {}",
+            calls[0]
+        );
+        drop(calls);
+        fixture.app.manager.end_environment_check(&workspace_id);
+    }
+
+    #[tokio::test]
     async fn environment_check_fence_cancels_an_active_check_on_revocation() {
         let mut fixture = fixture();
         let digest_file = fixture.root.join("environment-builder.digest");

@@ -154,10 +154,15 @@ before it consults the active registry; this makes cancellation effective even
 while a check request is still in validation and has not registered yet. The
 check handler checks the tombstone under the volume lock before registering, and
 container creation holds the same volume lock across the tombstone/active check
-and `podman run` spawn. The cancel endpoint also resolves any already-active
-`factory-env-*` container for that volume, removes it, confirms absence, clears
-the active registration, and returns `cancelled`; the caller never guesses a
-container name. The Supervisor refuses a second concurrent check, rechecks the
+and `podman run` spawn. The active broker registration stores the exact check
+token as well as the volume and container. The cancel endpoint removes an
+already-active `factory-env-*` container only when the stored token matches the
+supplied token; a stale/unknown token returns a typed
+`TOKEN_MISMATCH`/`NOT_A_CHECK` result without removing anything or recording a
+tombstone. On a match it removes the container, confirms absence, clears the
+active registration, and returns `cancelled`; the caller never guesses a
+container name. The Supervisor refuses a second concurrent check without
+overwriting the first registration, rechecks the
 cancellation marker immediately before the broker call, and returns
 `ENVIRONMENT_CHECK_CANCELLED` instead of reporting a revoked check. The frozen
 check timeout, `--network=none`, read-only root and mount/capability rules are
@@ -279,19 +284,21 @@ fetch/resolve.
 - `cargo test -p factory-native --bin factory-verifier` — 11 passed, including
   the broker builder-check path, description binding, refusal, cleanup and
   missing binding.
-- `cargo test -p factory-native --bin factory-runtime-broker` — 74 passed,
+- `cargo test -p factory-native --bin factory-runtime-broker` — 75 passed,
   including environment-check owner separation, workspace ownership, exact
   builder identity, description binding, plan/spec/receipt mismatch,
   argv/timeout bounds, success/failure exit mapping, bounded diagnostics,
-  active-check cancellation/cleanup, cancellation tombstones that block a
-  check delayed in validation beyond the old retry window, fabricated-PASS
-  refusal, resource-limit cache purge/quarantine, bundle digest/cache bounds,
-  narrow container arguments and timeout cleanup.
-- `cargo test -p factory-native --bin factory-supervisor` — 13 passed, including
+  active-check cancellation/cleanup, exact-token active binding (a stale token
+  cannot remove another check), cancellation tombstones that block a check
+  delayed in validation beyond the old retry window, fabricated-PASS refusal,
+  resource-limit cache purge/quarantine, bundle digest/cache bounds, narrow
+  container arguments and timeout cleanup.
+- `cargo test -p factory-native --bin factory-supervisor` — 14 passed, including
   grant/image/workspace refusal, successful typed proxy, a real Git worktree
   check that fails with npm exit 254 when the workspace volume is empty and
-  passes after `stage_workspace_for_check`, stale-file replacement, and
-  operation-fence cancellation of an active check.
+  passes after `stage_workspace_for_check`, stale-file replacement,
+  operation-fence cancellation of an active check, and a refused concurrent
+  registration that preserves the first check token.
 - `FACTORY_REAL_PODMAN_TESTS=1 cargo test -p factory-native --test
   real_podman_environment_check_staging` — 1 passed: restaging a real rootless
   Podman volume removes a deleted file, applies a modified file, and preserves

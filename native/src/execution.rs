@@ -1149,15 +1149,13 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
             ));
         }
         let mut checks = self.active_checks.lock().unwrap();
-        if checks
-            .insert(
-                workspace_id.to_owned(),
-                (volume.to_owned(), check_token.to_owned()),
-            )
-            .is_some()
-        {
+        if checks.contains_key(workspace_id) {
             return Err(ExecutionError::Conflict);
         }
+        checks.insert(
+            workspace_id.to_owned(),
+            (volume.to_owned(), check_token.to_owned()),
+        );
         Ok(())
     }
 
