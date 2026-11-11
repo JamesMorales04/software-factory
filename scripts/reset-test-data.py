@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Backup, reset and restore the disposable Factory test database.
 
-This helper is only called by ``scripts/reset-test-data.sh``. It is a
+This helper is normally called by ``scripts/reset-test-data.sh``. It is a
 development/operator tool, not part of the installed Factory runtime, the Core
-HTTP API or any automatic cleanup path.
+HTTP API or any automatic cleanup path. When invoked directly it independently
+enforces the environment switch, project marker, exact confirmation, empty
+evidence directory and ``/data`` refusal.
 
 The reset deletes transactional rows while preserving the Project, execution
 profile, provider, GitHub, charter, policy and owner-enrolment configuration
@@ -18,6 +20,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import sqlite3
 import sys
@@ -192,9 +195,56 @@ COUNT_TABLES = (
     "events",
 )
 
+# A backup may contain only these exact names. Never derive a path from an
+# arbitrary checksum entry.
+ALLOWED_BACKUP_FILES = frozenset(
+    {"factory.sqlite", "factory.sqlite-wal", "factory.sqlite-shm"}
+)
+FORBIDDEN_PROJECTS = frozenset({"software-factory", "production", "prod", "default"})
+PROJECT_MARKER = re.compile(
+    r"(^|[-_.])(test|tests|dev|development|e2e|uat|wp[0-9]+)([-_.]|$)"
+)
+
 
 class ResetError(RuntimeError):
     pass
+
+
+class PostCommitFailure(ResetError):
+    """The reset committed but the post-commit health/integrity check failed."""
+
+
+def validate_guards(project: str, confirmed_project: str) -> None:
+    """Enforce the same destructive-action guards for direct helper use."""
+    if os.environ.get("FACTORY_TEST_DATA_RESET") != "1":
+        raise ResetError(
+            "set FACTORY_TEST_DATA_RESET=1 to acknowledge the destructive test-data reset"
+        )
+    if not project:
+        raise ResetError("--project is required")
+    if project in FORBIDDEN_PROJECTS:
+        raise ResetError(f"project '{project}' is not a disposable test/dev project")
+    if not PROJECT_MARKER.search(project):
+        raise ResetError(
+            f"project '{project}' must contain an explicit test/dev/e2e/uat/wp marker"
+        )
+    if confirmed_project != project:
+        raise ResetError("--confirmed-project must exactly match --project")
+
+
+def under_data(path: Path) -> bool:
+    resolved = path.resolve(strict=False)
+    return resolved == Path("/data") or Path("/data") in resolved.parents
+
+
+def validate_paths(database: Path, evidence: Path, restore_from: Path | None) -> None:
+    for label, path in (
+        ("--database", database),
+        ("--evidence-dir", evidence),
+        ("--restore-from", restore_from),
+    ):
+        if path is not None and under_data(path):
+            raise ResetError(f"{label} may not point inside the live /data volume")
 
 
 def quote_ident(name: str) -> str:
@@ -301,6 +351,8 @@ def write_json(path: Path, payload: dict[str, object]) -> None:
 
 
 def ensure_empty_directory(path: Path) -> None:
+    if path.is_symlink():
+        raise ResetError(f"evidence directory may not be a symlink: {path}")
     path.mkdir(parents=True, exist_ok=True)
     if any(path.iterdir()):
         raise ResetError(f"evidence directory must be empty: {path}")
@@ -346,11 +398,39 @@ def backup_database(
     return evidence
 
 
+def safe_backup_path(backup: Path, name: str) -> Path:
+    """Resolve one exact allowlisted backup file without path traversal."""
+    if name not in ALLOWED_BACKUP_FILES:
+        raise ResetError(f"invalid backup file name: {name!r}")
+    if (
+        name in {".", ".."}
+        or Path(name).is_absolute()
+        or Path(name).name != name
+        or "/" in name
+        or "\\" in name
+    ):
+        raise ResetError(f"unsafe backup file name: {name!r}")
+    candidate = backup / name
+    if candidate.is_symlink():
+        raise ResetError(f"backup file may not be a symlink: {name}")
+    if not candidate.is_file():
+        raise ResetError(f"backup file is missing: {candidate}")
+    candidate_resolved = candidate.resolve(strict=True)
+    backup_resolved = backup.resolve(strict=True)
+    if candidate_resolved.parent != backup_resolved:
+        raise ResetError(f"backup file escapes the evidence directory: {name}")
+    return candidate
+
+
 def verify_backup(backup: Path) -> dict[str, dict[str, object]]:
     manifest_path = backup / "manifest.json"
     sums_path = backup / "SHA256SUMS"
+    if manifest_path.is_symlink() or sums_path.is_symlink():
+        raise ResetError("backup manifest and SHA256SUMS may not be symlinks")
     if not manifest_path.is_file() or not sums_path.is_file():
         raise ResetError(f"backup is missing manifest.json or SHA256SUMS: {backup}")
+    if sums_path.stat().st_size > 64 * 1024:
+        raise ResetError("SHA256SUMS is unexpectedly large")
     entries: dict[str, dict[str, object]] = {}
     for line in sums_path.read_text().splitlines():
         if not line.strip():
@@ -359,9 +439,9 @@ def verify_backup(backup: Path) -> dict[str, dict[str, object]]:
         if len(parts) != 2 or len(parts[0]) != 64:
             raise ResetError(f"invalid SHA256SUMS line: {line!r}")
         digest, name = parts
-        path = backup / name
-        if not path.is_file():
-            raise ResetError(f"backup file is missing: {path}")
+        path = safe_backup_path(backup, name)
+        if name in entries:
+            raise ResetError(f"duplicate backup file entry: {name}")
         actual, size = sha256_file(path)
         if actual != digest:
             raise ResetError(f"backup checksum mismatch: {name}")
@@ -371,6 +451,11 @@ def verify_backup(backup: Path) -> dict[str, dict[str, object]]:
     manifest = json.loads(manifest_path.read_text())
     if not isinstance(manifest, dict) or manifest.get("kind") != "factory-test-data-reset":
         raise ResetError("backup manifest is not a Factory test-data backup")
+    manifest_files = manifest.get("files")
+    if not isinstance(manifest_files, dict) or any(
+        name not in ALLOWED_BACKUP_FILES for name in manifest_files
+    ):
+        raise ResetError("backup manifest contains an invalid file name")
     return entries
 
 
@@ -410,6 +495,11 @@ def trigger_names(connection: sqlite3.Connection) -> set[str]:
     }
 
 
+def integrity_ok(connection: sqlite3.Connection) -> bool:
+    row = connection.execute("PRAGMA integrity_check").fetchone()
+    return bool(row) and row[0] == "ok"
+
+
 def apply_reset(connection: sqlite3.Connection, dry_run: bool) -> dict[str, int]:
     order = delete_order(connection)
     before_triggers = trigger_names(connection)
@@ -427,31 +517,36 @@ def apply_reset(connection: sqlite3.Connection, dry_run: bool) -> dict[str, int]
             connection.execute("ROLLBACK")
             if trigger_names(connection) != before_triggers:
                 raise ResetError("dry-run did not restore the delete triggers")
-        else:
-            restore_delete_triggers(connection, triggers)
-            connection.execute("COMMIT")
-            integrity = connection.execute("PRAGMA integrity_check").fetchone()
-            if not integrity or integrity[0] != "ok":
-                raise ResetError(f"integrity check failed: {integrity}")
+            return after
+        restore_delete_triggers(connection, triggers)
+        # Check the whole transactional result before making it durable.
+        if not integrity_ok(connection):
+            raise ResetError("pre-commit integrity check failed")
+        connection.execute("COMMIT")
     except Exception:
         if connection.in_transaction:
             connection.execute("ROLLBACK")
         raise
+    # A post-commit failure is recoverable only by restoring the verified
+    # pre-reset backup. The test-only fault injection exercises that path.
+    if os.environ.get("FACTORY_TEST_DATA_RESET_FAIL_AFTER_COMMIT") == "1":
+        raise PostCommitFailure("injected post-commit integrity check failure")
+    if not integrity_ok(connection):
+        raise PostCommitFailure("post-commit integrity check failed")
     return after
 
 
 def restore_database(
     database: Path,
     backup: Path,
-    evidence: Path | None,
+    evidence: Path,
     project: str,
 ) -> None:
     entries = verify_backup(backup)
     database.parent.mkdir(parents=True, exist_ok=True)
-    if evidence is not None:
-        ensure_empty_directory(evidence)
-        if database.exists():
-            backup_database(database, evidence, project, "pre-restore", {})
+    ensure_empty_directory(evidence)
+    if database.exists():
+        backup_database(database, evidence, project, "pre-restore", {})
     for suffix in ("-wal", "-shm"):
         stale = Path(str(database) + suffix)
         if stale.exists():
@@ -459,13 +554,14 @@ def restore_database(
     for name in entries:
         if name == "factory.sqlite":
             destination = database
-        elif name.startswith("factory.sqlite-"):
-            suffix = name[len("factory.sqlite") :]
-            destination = Path(str(database) + suffix)
+        elif name == "factory.sqlite-wal":
+            destination = Path(str(database) + "-wal")
+        elif name == "factory.sqlite-shm":
+            destination = Path(str(database) + "-shm")
         else:
             raise ResetError(f"unexpected backup file: {name}")
         temporary = destination.with_name(destination.name + ".restore-tmp")
-        shutil.copy2(backup / name, temporary, follow_symlinks=False)
+        shutil.copy2(safe_backup_path(backup, name), temporary, follow_symlinks=False)
         os.chmod(temporary, 0o600)
         temporary.replace(destination)
     connection = connect(database)
@@ -503,12 +599,16 @@ def parse_owner(value: str) -> tuple[int, int]:
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--database", required=True, type=Path)
-    parser.add_argument("--evidence-dir", type=Path)
+    parser.add_argument("--evidence-dir", required=True, type=Path)
     parser.add_argument("--project", required=True)
+    parser.add_argument("--confirmed-project", required=True)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--restore-from", type=Path)
     parser.add_argument("--chown", type=parse_owner)
     args = parser.parse_args(argv)
+
+    validate_guards(args.project, args.confirmed_project)
+    validate_paths(args.database, args.evidence_dir, args.restore_from)
 
     if args.dry_run and args.restore_from:
         raise ResetError("--dry-run and --restore-from are mutually exclusive")
@@ -522,10 +622,8 @@ def main(argv: list[str]) -> int:
         print("integrity: ok")
         return 0
 
-    if args.evidence_dir is None:
-        raise ResetError("--evidence-dir is required for a reset")
-
     connection = connect(args.database)
+    post_commit_failure: PostCommitFailure | None = None
     try:
         validate_schema(connection)
         before = count_rows(connection)
@@ -536,9 +634,49 @@ def main(argv: list[str]) -> int:
             "dry-run" if args.dry_run else "reset",
             before,
         )
-        after = apply_reset(connection, args.dry_run)
+        try:
+            after = apply_reset(connection, args.dry_run)
+        except PostCommitFailure as failure:
+            post_commit_failure = failure
     finally:
         connection.close()
+
+    if post_commit_failure is not None:
+        recovery_evidence = args.evidence_dir / "recovery-before-restore"
+        try:
+            restore_database(
+                args.database,
+                args.evidence_dir,
+                recovery_evidence,
+                args.project,
+            )
+            chown_paths(args.database, args.chown)
+            write_json(
+                args.evidence_dir / "recovery-report.json",
+                {
+                    "outcome": "RESTORED_PRE_RESET",
+                    "failure": str(post_commit_failure),
+                    "created_at": utc_now(),
+                    "pre_restore_backup": str(recovery_evidence),
+                },
+            )
+        except Exception as recovery_error:
+            write_json(
+                args.evidence_dir / "recovery-report.json",
+                {
+                    "outcome": "RECOVERY_FAILED",
+                    "failure": str(post_commit_failure),
+                    "recovery_error": str(recovery_error),
+                    "created_at": utc_now(),
+                },
+            )
+            raise ResetError(
+                f"{post_commit_failure}; automatic recovery failed: {recovery_error}"
+            ) from recovery_error
+        raise ResetError(
+            f"{post_commit_failure}; pre-reset backup restored from {args.evidence_dir}"
+        )
+
     chown_paths(args.database, args.chown)
 
     report = {

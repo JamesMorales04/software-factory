@@ -41,6 +41,8 @@
 #                                          (default: software-factory-supervisor:dev)
 #   FACTORY_TEST_DATA_CHOWN                restored database owner in the
 #                                          helper container (default: 10001:10001)
+#   FACTORY_TEST_DATA_HEALTH_ATTEMPTS      Core health probe attempts (default: 180)
+#   FACTORY_TEST_DATA_HEALTH_INTERVAL      seconds between probes (default: 1)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -48,6 +50,8 @@ cd "$ROOT"
 HELPER="$ROOT/scripts/reset-test-data.py"
 HELPER_IMAGE="${FACTORY_TEST_DATA_HELPER_IMAGE:-software-factory-supervisor:dev}"
 CHOWN="${FACTORY_TEST_DATA_CHOWN:-10001:10001}"
+HEALTH_ATTEMPTS="${FACTORY_TEST_DATA_HEALTH_ATTEMPTS:-180}"
+HEALTH_INTERVAL="${FACTORY_TEST_DATA_HEALTH_INTERVAL:-1}"
 
 PROJECT="${COMPOSE_PROJECT_NAME:-}"
 DATABASE=""
@@ -126,6 +130,11 @@ esac
 if ! [[ "$PROJECT" =~ (^|[-_.])(test|tests|dev|development|e2e|uat|wp[0-9]+)([-_.]|$) ]]; then
   die "project '$PROJECT' must contain an explicit test/dev/e2e/uat/wp marker"
 fi
+
+[[ "$HEALTH_ATTEMPTS" =~ ^[1-9][0-9]*$ ]] ||
+  die "FACTORY_TEST_DATA_HEALTH_ATTEMPTS must be a positive integer"
+[[ "$HEALTH_INTERVAL" =~ ^[0-9]+$ ]] ||
+  die "FACTORY_TEST_DATA_HEALTH_INTERVAL must be a nonnegative integer"
 
 [[ -n "$EVIDENCE_DIR" ]] || die "--evidence-dir is required"
 [[ "$EVIDENCE_DIR" != "/" ]] || die "the evidence directory may not be /"
@@ -233,13 +242,14 @@ run_helper() {
   local volume="$1"
   shift
   local args=(
-    --database /data/factory.sqlite
+    --database /factory-data/factory.sqlite
     --evidence-dir /evidence
     --project "$PROJECT"
+    --confirmed-project "$PROJECT"
     --chown "$CHOWN"
   )
   local mounts=(
-    -v "$volume:/data:rw"
+    -v "$volume:/factory-data:rw"
     -v "$EVIDENCE_DIR:/evidence:rw"
     -v "$HELPER:/usr/local/bin/reset-test-data.py:ro"
   )
@@ -252,14 +262,34 @@ run_helper() {
   fi
   podman run --rm --network=none --user 0:0 \
     --security-opt no-new-privileges \
+    -e FACTORY_TEST_DATA_RESET=1 \
     "${mounts[@]}" \
     --entrypoint python3 "$HELPER_IMAGE" \
     /usr/local/bin/reset-test-data.py "${args[@]}" "$@"
 }
 
+run_restore_helper() {
+  local volume="$1" backup="$2" recovery_evidence="$3"
+  podman run --rm --network=none --user 0:0 \
+    --security-opt no-new-privileges \
+    -e FACTORY_TEST_DATA_RESET=1 \
+    -v "$volume:/factory-data:rw" \
+    -v "$recovery_evidence:/evidence:rw" \
+    -v "$backup:/backup:ro" \
+    -v "$HELPER:/usr/local/bin/reset-test-data.py:ro" \
+    --entrypoint python3 "$HELPER_IMAGE" \
+    /usr/local/bin/reset-test-data.py \
+    --database /factory-data/factory.sqlite \
+    --evidence-dir /evidence \
+    --project "$PROJECT" \
+    --confirmed-project "$PROJECT" \
+    --restore-from /backup \
+    --chown "$CHOWN"
+}
+
 wait_for_core_health() {
   local core attempt payload
-  for attempt in $(seq 1 180); do
+  for attempt in $(seq 1 "$HEALTH_ATTEMPTS"); do
     core="$(podman ps \
       --filter "label=com.docker.compose.project=$PROJECT" \
       --filter "label=com.docker.compose.service=core" \
@@ -270,9 +300,66 @@ wait_for_core_health() {
       printf 'Core health: %s\n' "$payload"
       return 0
     fi
-    sleep 1
+    sleep "$HEALTH_INTERVAL"
   done
   return 1
+}
+
+start_stack() {
+  log "starting init and Core, then the configured project services"
+  compose up -d init core
+  if ! compose up -d; then
+    log "warning: not every project service restarted; Core health is still checked"
+  fi
+}
+
+helper_restored_pre_reset() {
+  [[ -f "$EVIDENCE_DIR/recovery-report.json" ]] &&
+    grep -Fq '"outcome": "RESTORED_PRE_RESET"' "$EVIDENCE_DIR/recovery-report.json"
+}
+
+recover_pre_reset() {
+  local reason="$1"
+  local recovery_evidence helper_status=0
+  if [[ ! -f "$EVIDENCE_DIR/manifest.json" || ! -f "$EVIDENCE_DIR/SHA256SUMS" ]]; then
+    log "no verified pre-reset backup exists; cannot restore automatically"
+    return 1
+  fi
+  recovery_evidence="$(mktemp -d "${EVIDENCE_DIR%/}-recovery.XXXXXXXX")"
+  chmod 700 "$recovery_evidence"
+  log "reset failed ($reason); restoring the verified pre-reset backup"
+  if project_running; then
+    compose stop
+  fi
+  if project_running; then
+    log "cannot stop project '$PROJECT' for automatic recovery"
+    return 1
+  fi
+  run_restore_helper "$VOLUME" "$EVIDENCE_DIR" "$recovery_evidence" ||
+    helper_status=$?
+  if ((helper_status != 0)); then
+    log "automatic restore failed; pre-reset backup remains at $EVIDENCE_DIR and recovery evidence at $recovery_evidence"
+    return 1
+  fi
+  start_stack
+  if ! wait_for_core_health; then
+    log "Core did not become healthy after restoring the pre-reset backup; manual recovery is required"
+    return 1
+  fi
+  local timestamp
+  timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  if [[ -f "$EVIDENCE_DIR/reset-report.json" ]]; then
+    mv "$EVIDENCE_DIR/reset-report.json" "$EVIDENCE_DIR/reset-report.committed.json"
+  fi
+  cat >"$EVIDENCE_DIR/reset-report.json" <<EOF
+{"result":"ROLLED_BACK_AFTER_HEALTH_FAILURE","database_modified":false,"recovery_report":"recovery-report.json","created_at":"$timestamp"}
+EOF
+  cat >"$EVIDENCE_DIR/recovery-report.json" <<EOF
+{"outcome":"RESTORED_PRE_RESET","reason":"$reason","pre_restore_backup":"$recovery_evidence","created_at":"$timestamp"}
+EOF
+  chmod 600 "$EVIDENCE_DIR/reset-report.json" "$EVIDENCE_DIR/recovery-report.json"
+  log "pre-reset backup restored; Core is healthy. The reset is NOT complete."
+  return 0
 }
 
 if [[ -n "$DATABASE" ]]; then
@@ -282,6 +369,7 @@ if [[ -n "$DATABASE" ]]; then
     --database "$DATABASE"
     --evidence-dir "$EVIDENCE_DIR"
     --project "$PROJECT"
+    --confirmed-project "$PROJECT"
   )
   if [[ -n "$RESTORE_FROM" ]]; then
     args+=(--restore-from "$RESTORE_FROM")
@@ -313,17 +401,42 @@ fi
 status=0
 run_helper "$VOLUME" || status=$?
 
-log "restarting init and Core, then the configured project services"
-compose up -d init core
-if ! compose up -d; then
-  log "warning: not every project service restarted; Core health is still checked"
-fi
-if ! wait_for_core_health; then
-  log "Core did not become healthy after the reset; backup is in $EVIDENCE_DIR"
+if ((status == 0)); then
+  start_stack
+  if wait_for_core_health; then
+    log "reset complete; evidence and checksums: $EVIDENCE_DIR"
+    exit 0
+  fi
+  log "Core did not become healthy after the reset"
+  if recover_pre_reset "Core health failure"; then
+    exit 1
+  fi
+  log "reset failed and automatic recovery was not possible; backup is in $EVIDENCE_DIR"
   exit 1
 fi
-if ((status != 0)); then
-  log "database helper failed with status $status; the pre-reset backup is in $EVIDENCE_DIR"
+
+log "database helper failed with status $status"
+if helper_restored_pre_reset; then
+  start_stack
+  if wait_for_core_health; then
+    log "reset failed after commit; the verified pre-reset backup was restored. The reset is NOT complete."
+  else
+    log "reset failed after commit and Core is unhealthy; manual recovery is required"
+  fi
   exit "$status"
 fi
-log "reset complete; evidence and checksums: $EVIDENCE_DIR"
+
+start_stack
+if ! wait_for_core_health; then
+  log "Core did not become healthy after the failed reset attempt"
+  if recover_pre_reset "reset helper failure and Core health failure"; then
+    exit "$status"
+  fi
+  log "manual recovery is required; backup is in $EVIDENCE_DIR"
+  exit 1
+fi
+if recover_pre_reset "reset helper failure"; then
+  exit "$status"
+fi
+log "reset failed; automatic recovery was not possible; backup is in $EVIDENCE_DIR"
+exit 1

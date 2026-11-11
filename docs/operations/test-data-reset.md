@@ -52,6 +52,12 @@ The script refuses unless all of these are true:
 6. For Compose mode, every project service is stopped before the backup and
    SQL mutation. The script stops them after confirmation.
 
+The Python helper enforces the same environment, project-marker,
+`--confirmed-project`, empty-evidence and `/data` rules when invoked directly.
+It mounts the Compose volume at `/factory-data`, never `/data`, so its `/data`
+refusal also applies to the helper container path. Direct helper use without
+the exact confirmation argument fails.
+
 The script never runs automatically. It is not referenced by Compose, the
 Containerfiles, Core startup, the Worker, install scripts or normal runtime.
 
@@ -67,6 +73,9 @@ writes:
 | `SHA256SUMS` | `sha256sum -c` compatible checksums |
 | `manifest.json` | Project, source path, file hashes and before counts |
 | `reset-report.json` | Dry-run/reset result, before/after counts and table classes |
+| `recovery-before-restore/` | Backup of the failed reset database before automatic recovery |
+| `recovery-report.json` | `RESTORED_PRE_RESET` or `RECOVERY_FAILED` after a post-commit failure |
+| `reset-report.committed.json` | Preserved committed report when a later Core health failure rolls the reset back |
 
 The backup happens before any delete. A missing backup or checksum failure
 aborts the reset.
@@ -91,13 +100,18 @@ FACTORY_TEST_DATA_RESET=1 scripts/reset-test-data.sh \
 The script stops the project, copies the database and WAL into the
 evidence directory, drops only the `BEFORE DELETE` immutable guards inside one
 transaction, deletes children before parents in a schema-derived foreign-key
-order, verifies `PRAGMA foreign_key_check`, restores the triggers, commits and
-runs `PRAGMA integrity_check`. It then starts `init` and Core, starts the
-remaining configured services, waits for Core health and prints before/after
-counts.
+order, verifies `PRAGMA foreign_key_check`, restores the triggers, and runs
+`PRAGMA integrity_check` before commit. It commits only after that check, runs
+the integrity check again, then starts `init` and Core, starts the remaining
+configured services, waits for Core health and prints before/after counts.
 
-If the database helper fails, the transaction rolls back and the script still
-attempts to restart the project. The pre-reset evidence remains available.
+A pre-commit failure rolls back. A post-commit integrity failure, or a Core
+health failure after a successful commit, automatically restores the verified
+pre-reset backup after first backing up the failed reset database into
+`recovery-before-restore/`. The script then restarts Core, rechecks health and
+exits nonzero. It prints `The reset is NOT complete` and never prints the
+success line after a recovery. If automatic recovery itself fails, it reports
+the evidence location and exits nonzero; manual restore is required.
 
 ## Dry-run a copy
 
@@ -130,10 +144,12 @@ transaction, prints projected counts and rolls back. The report records
 
 ## Restore a backup
 
-The script verifies `SHA256SUMS`, backs up the current database into a new
-empty evidence directory, removes stale WAL/SHM files, restores the main
-database and any WAL from the backup, then runs integrity and foreign-key
-checks:
+The script verifies `SHA256SUMS`, accepts only the exact names
+`factory.sqlite`, `factory.sqlite-wal` and `factory.sqlite-shm`, rejects
+separators, `..`, absolute paths, symlinks and unknown sidecars, backs up the
+current database into a new empty evidence directory, removes stale WAL/SHM
+files, restores the main database and any WAL from the backup, then runs
+integrity and foreign-key checks:
 
 ```sh
 FACTORY_TEST_DATA_RESET=1 scripts/reset-test-data.sh \
@@ -161,10 +177,13 @@ scripts/reset-test-data.test.sh
 
 The shell test builds a real migrated SQLite database, seeds preserved and
 transactional rows (including immutable-delete triggers and an
-`AMBIGUOUS` model reservation), and asserts guards, dry-run rollback, backup
-checksums, reset cutover, trigger restoration, restored integrity and
-corrupt-backup refusal. It never starts Compose, reads `/data`, or calls a paid
-provider.
+`AMBIGUOUS` model reservation), and asserts wrapper and direct-helper guards,
+dry-run rollback, backup checksums, reset cutover, trigger restoration,
+restored integrity, corrupt-backup refusal, path-traversal refusal, automatic
+restore after an injected post-commit integrity failure, and automatic restore
+after a simulated Core health failure. The health-failure case uses a fake
+`podman` shim, a temporary database/volume directory and reduced health-probe
+attempts; it never starts Compose, reads `/data`, or calls a paid provider.
 
 The model-call release/reconcile action itself is covered by Core/Office
 regression tests; this script is not an alternative to the Decision Inbox
