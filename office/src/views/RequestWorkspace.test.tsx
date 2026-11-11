@@ -716,6 +716,64 @@ describe("RequestWorkspace", () => {
     expect(screen.getByRole("alert")).toBeDefined();
   });
 
+  it("explains a follow-up principal mismatch in English", async () => {
+    mocks.getIntakeRequest.mockResolvedValue(
+      makeProjection({ state: "COMPLETED" }),
+    );
+    mocks.messageIntakeRequest.mockRejectedValue(
+      new CoreApiError(409, "principal mismatch", {
+        code: "FOLLOW_UP_POLICY_PRINCIPAL_MISMATCH",
+        error: "principal mismatch",
+      }),
+    );
+    renderRequest();
+    await screen.findByLabelText("Start a follow-up request");
+    await userEvent.type(
+      screen.getByLabelText("Start a follow-up request"),
+      "Continue with another principal.",
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Start follow-up" }),
+    );
+    expect(
+      await screen.findByText(
+        /only the principal that confirmed the parent execution policy/,
+      ),
+    ).toBeDefined();
+    expect(screen.getByRole("alert")).toBeDefined();
+    expect(screen.getByLabelText("Start a follow-up request")).toBeDefined();
+  });
+
+  it("explains a follow-up principal mismatch in Spanish", async () => {
+    mocks.getIntakeRequest.mockResolvedValue(
+      makeProjection({ state: "COMPLETED" }),
+    );
+    mocks.messageIntakeRequest.mockRejectedValue(
+      new CoreApiError(409, "principal mismatch", {
+        code: "FOLLOW_UP_POLICY_PRINCIPAL_MISMATCH",
+        error: "principal mismatch",
+      }),
+    );
+    renderRequest("es");
+    await screen.findByLabelText("Iniciar una solicitud de seguimiento");
+    await userEvent.type(
+      screen.getByLabelText("Iniciar una solicitud de seguimiento"),
+      "Continúa con otro principal.",
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Iniciar seguimiento" }),
+    );
+    expect(
+      await screen.findByText(
+        /solo el principal que confirmó la política de ejecución del padre/,
+      ),
+    ).toBeDefined();
+    expect(screen.getByRole("alert")).toBeDefined();
+    expect(
+      screen.getByLabelText("Iniciar una solicitud de seguimiento"),
+    ).toBeDefined();
+  });
+
   it("shows the parent thread on a follow-up request", async () => {
     mocks.getIntakeRequest.mockResolvedValue(
       makeProjection({

@@ -493,6 +493,8 @@ export const es: Catalog = {
     "Core rechazó el seguimiento: la política de ejecución confirmada por el propietario del padre ya no coincide con este Proyecto, perfil o alcance. Vuelve a habilitar la política o inicia una nueva solicitud; Core no reutilizará la concesión de otro principal.",
   "request.followUp.exists":
     "Este hilo ya tiene una solicitud de seguimiento. Ábrela para continuar.",
+  "request.followUp.principalMismatch":
+    "Core rechazó el seguimiento: solo el principal que confirmó la política de ejecución del padre puede continuarlo. Core no reutilizará la concesión de otro principal; continúa con el principal original o inicia una nueva solicitud.",
   "request.conversation.followUpFrom": "Seguimiento de",
   "request.details.title": "Detalles de la solicitud",
   "request.details.request": "Solicitud",

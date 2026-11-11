@@ -482,6 +482,8 @@ export const en = {
     "Core refused the follow-up: the parent owner-confirmed execution policy no longer matches this Project, profile or scope. Re-enable execution policy or start a new request; Core will not reuse another principal's grant.",
   "request.followUp.exists":
     "This thread already has a follow-up request. Open it to continue.",
+  "request.followUp.principalMismatch":
+    "Core refused the follow-up: only the principal that confirmed the parent execution policy may continue it. Core will not reuse another principal's grant; continue with the original principal or start a new request.",
   "request.conversation.followUpFrom": "Follow-up from",
   "request.details.title": "Request details",
   "request.details.request": "Request",

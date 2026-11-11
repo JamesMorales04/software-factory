@@ -151,6 +151,13 @@ export function RequestWorkspace() {
       }
       if (
         cause instanceof CoreApiError &&
+        cause.code === "FOLLOW_UP_POLICY_PRINCIPAL_MISMATCH"
+      ) {
+        setActionError(t("request.followUp.principalMismatch"));
+        return false;
+      }
+      if (
+        cause instanceof CoreApiError &&
         cause.code === "INTAKE_FOLLOW_UP_EXISTS"
       ) {
         setActionError(t("request.followUp.exists"));
