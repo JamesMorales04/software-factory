@@ -45,14 +45,15 @@ use tokio::{
 };
 
 use factory_native::runtime_broker::{
-    ENVIRONMENT_BUILD_ROUTE, ENVIRONMENT_CHECK_ROUTE, ENVIRONMENT_RESOLVE_ROUTE,
-    EnvironmentBrokerOperation, EnvironmentBrokerRequest, EnvironmentCheckRequest,
-    EnvironmentCheckStatus, MAX_ENVIRONMENT_REQUEST_BYTES, MAX_ENVIRONMENT_WORKSPACE_BYTES,
-    MAX_ENVIRONMENT_WORKSPACE_FILE_BYTES, MAX_ENVIRONMENT_WORKSPACE_FILES,
-    MAX_RESOURCE_INVENTORY_BYTES, ManagedResources, ResourceOwner, is_valid_container_name,
-    is_valid_exec_container_name, is_valid_provider_container_name, is_valid_volume_name,
-    legacy_workspace_identity_matches, parse_container_inventory, parse_container_labels,
-    parse_volume_inventory, parse_volume_labels, resource_owner_matches, volume_identity_matches,
+    ENVIRONMENT_BUILD_ROUTE, ENVIRONMENT_CHECK_CANCEL_ROUTE, ENVIRONMENT_CHECK_ROUTE,
+    ENVIRONMENT_RESOLVE_ROUTE, EnvironmentBrokerOperation, EnvironmentBrokerRequest,
+    EnvironmentCheckRequest, EnvironmentCheckStatus, MAX_ENVIRONMENT_REQUEST_BYTES,
+    MAX_ENVIRONMENT_WORKSPACE_BYTES, MAX_ENVIRONMENT_WORKSPACE_FILE_BYTES,
+    MAX_ENVIRONMENT_WORKSPACE_FILES, MAX_RESOURCE_INVENTORY_BYTES, ManagedResources, ResourceOwner,
+    is_valid_container_name, is_valid_exec_container_name, is_valid_provider_container_name,
+    is_valid_volume_name, legacy_workspace_identity_matches, parse_container_inventory,
+    parse_container_labels, parse_volume_inventory, parse_volume_labels, resource_owner_matches,
+    volume_identity_matches,
 };
 
 const MAX_JSON_BYTES: usize = 2 * 1024 * 1024;
@@ -221,6 +222,10 @@ impl ActiveExecutions {
 
     fn is_active(&self, volume: &str) -> bool {
         self.entries.lock().unwrap().volumes.contains_key(volume)
+    }
+
+    fn container_for(&self, volume: &str) -> Option<String> {
+        self.entries.lock().unwrap().volumes.get(volume).cloned()
     }
 }
 
@@ -707,6 +712,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .route(
             &format!("/{ENVIRONMENT_CHECK_ROUTE}"),
             post(check_environment).layer(DefaultBodyLimit::max(MAX_ENVIRONMENT_REQUEST_BYTES)),
+        )
+        .route(
+            &format!("/{ENVIRONMENT_CHECK_CANCEL_ROUTE}"),
+            post(cancel_environment_check).layer(DefaultBodyLimit::max(MAX_JSON_BYTES)),
         );
     if dependency_setup.service.is_none() {
         base_router = base_router.route(
@@ -3417,6 +3426,60 @@ async fn check_environment(
             operation_error("environment check task failed; cleanup is being confirmed")
         }
     }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct EnvironmentCheckCancelRequest {
+    workspace_volume: String,
+}
+
+/// Cancel the builder check currently using one caller-owned workspace volume.
+/// The broker resolves its own check container; the caller never supplies or
+/// guesses a container name. Cleanup is confirmed before reporting success.
+async fn cancel_environment_check(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(input): Json<EnvironmentCheckCancelRequest>,
+) -> Response {
+    let Some(owner) = app.owner(&headers) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    if !matches!(
+        owner,
+        ResourceOwner::Environment | ResourceOwner::Supervisor | ResourceOwner::Verifier
+    ) {
+        return forbidden(
+            "environment check cancellation requires the environment, supervisor or verifier owner token",
+        );
+    }
+    if !is_valid_volume_name(&input.workspace_volume) {
+        return bad_request("invalid environment check workspace volume");
+    }
+    let lock = app.resource_lock(&input.workspace_volume);
+    let _guard = lock.lock().await;
+    if let Err(error) = app
+        .require_volume_owner(&input.workspace_volume, owner)
+        .await
+    {
+        return mutation_error(error);
+    }
+    let Some(container) = app.active.container_for(&input.workspace_volume) else {
+        return Json(json!({"cancelled": false})).into_response();
+    };
+    // Check containers are `factory-env-<uuid>` and are the only active
+    // environment-owned containers on a workspace volume. Generic exec and
+    // provider containers use distinct prefixes.
+    if !container.starts_with("factory-env-") || container.len() <= "factory-env-".len() {
+        return conflict("active resource is not an environment check container");
+    }
+    if !cleanup_environment_check_container(&app, &container).await {
+        return operation_error(
+            "environment check cancellation cleanup could not be confirmed; volume remains blocked",
+        );
+    }
+    app.active.remove(&input.workspace_volume, &container);
+    Json(json!({"cancelled": true})).into_response()
 }
 
 async fn validate_environment_check_request(
@@ -8967,6 +9030,49 @@ exit 0
         let long = bounded_check_diagnostic(&"d".repeat(5_000), 1, 0, &"e".repeat(5_000));
         assert!(long.chars().count() <= 1_400, "{}", long.chars().count());
         assert!(long.contains("exit 1"));
+    }
+
+    #[tokio::test]
+    async fn environment_check_cancel_targets_only_an_active_owned_check() {
+        let (_, spec, _) = valid_environment_execution();
+        let (app, workspace, log, _serial) = environment_check_test_app(
+            ResourceOwner::Supervisor,
+            0,
+            check_result_body(&spec.spec_sha256, "PASSED", 0, 0, "ok\n", ""),
+        )
+        .await;
+        let container = format!("factory-env-{}", uuid::Uuid::new_v4().simple());
+        assert!(app.active.register(&workspace, &container));
+
+        let cancelled = cancel_environment_check(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Supervisor),
+            Json(EnvironmentCheckCancelRequest {
+                workspace_volume: workspace.clone(),
+            }),
+        )
+        .await;
+        let cancelled_status = cancelled.status();
+        let body = environment_response_body(cancelled).await;
+        assert_eq!(cancelled_status, StatusCode::OK, "{body}");
+        assert_eq!(body["cancelled"], true);
+        assert!(!app.active.is_active(&workspace));
+        let log = std::fs::read_to_string(log).unwrap();
+        assert!(
+            log.contains(&format!("rm --force --time=0 {container}")),
+            "{log}"
+        );
+
+        let empty = cancel_environment_check(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Supervisor),
+            Json(EnvironmentCheckCancelRequest {
+                workspace_volume: workspace.clone(),
+            }),
+        )
+        .await;
+        assert_eq!(empty.status(), StatusCode::OK);
+        assert_eq!(environment_response_body(empty).await["cancelled"], false);
     }
 
     #[tokio::test]

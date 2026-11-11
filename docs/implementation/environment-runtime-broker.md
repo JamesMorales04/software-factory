@@ -128,8 +128,14 @@ operation ran in a check workspace containing only generated environment files.
 Real npm reported `ENOENT ... package.json` and exited 254; the same check
 against the plain project or a properly staged Git worktree passed. The route
 now calls `WorkspaceManager::stage_workspace_for_check`, which snapshots the
-exact worktree (excluding `.git`, matching the archive contract) into the
-volume under the manager lock before the broker call.
+exact worktree (excluding `.git`, matching the archive contract) under the
+manager lock before the broker call. Staging **removes and recreates** the
+workspace volume before importing the archive: Podman `volume import` merges
+into an existing volume, so importing alone would leave files that no longer
+exist in the worktree. Recreating through the backend re-applies the exact
+owner/workspace labels, and the worktree device/inode identity is verified
+before and after the snapshot. The same replacement helper is used by the
+generic run and dependency transfer paths.
 
 Second, a failing check could return an exit code with no stderr, leaving the
 Implementer unable to tell what failed. The check description is now part of
@@ -138,6 +144,17 @@ broker produces a bounded `diagnostic` containing the description, exit code,
 expected exit and at most one redacted stderr line. The Worker tool result,
 automatic-final summary and Verifier failure all surface it. Source bodies and
 full logs are never copied into the diagnostic.
+
+The environment-check handler now also runs the same operation fence as the
+generic run path. The manager keeps a check handle keyed by workspace and
+volume, so revocation/cancellation reaches `POST /v1/environments/check/cancel`.
+The broker resolves its own `factory-env-*` check container for that exact
+volume, removes it, confirms absence, clears the active registration, and
+returns `cancelled`; the caller never guesses a container name. The Supervisor
+refuses a second concurrent check, rechecks the cancellation marker immediately
+before the broker call, and returns `ENVIRONMENT_CHECK_CANCELLED` instead of
+reporting a revoked check. The frozen check timeout, `--network=none`, read-only
+root and mount/capability rules are unchanged.
 
 ## 2. Image identity and allowlist
 
@@ -255,16 +272,22 @@ fetch/resolve.
 - `cargo test -p factory-native --bin factory-verifier` — 11 passed, including
   the broker builder-check path, description binding, refusal, cleanup and
   missing binding.
-- `cargo test -p factory-native --bin factory-runtime-broker` — 72 passed,
+- `cargo test -p factory-native --bin factory-runtime-broker` — 73 passed,
   including environment-check owner separation, workspace ownership, exact
   builder identity, description binding, plan/spec/receipt mismatch,
   argv/timeout bounds, success/failure exit mapping, bounded diagnostics,
-  fabricated-PASS refusal, resource-limit cache purge/quarantine, bundle
-  digest/cache bounds, narrow container arguments and timeout cleanup.
-- `cargo test -p factory-native --bin factory-supervisor` — 12 passed, including
-  grant/image/workspace refusal, successful typed proxy, and a real Git
-  worktree check that fails with npm exit 254 when the workspace volume is
-  empty and passes after `stage_workspace_for_check`.
+  active-check cancellation/cleanup, fabricated-PASS refusal, resource-limit
+  cache purge/quarantine, bundle digest/cache bounds, narrow container
+  arguments and timeout cleanup.
+- `cargo test -p factory-native --bin factory-supervisor` — 13 passed, including
+  grant/image/workspace refusal, successful typed proxy, a real Git worktree
+  check that fails with npm exit 254 when the workspace volume is empty and
+  passes after `stage_workspace_for_check`, stale-file replacement, and
+  operation-fence cancellation of an active check.
+- `FACTORY_REAL_PODMAN_TESTS=1 cargo test -p factory-native --test
+  real_podman_environment_check_staging` — 1 passed: restaging a real rootless
+  Podman volume removes a deleted file, applies a modified file, and preserves
+  the volume identity/labels.
 - `python3 -W error::ResourceWarning -m unittest discover -s deploy/environment-builder/tests`
   — 69 passed, including description bounds, failed-check
   exit-code/stdout/stderr preservation, bounded redacted stderr tail,

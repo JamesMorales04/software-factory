@@ -265,6 +265,16 @@ pub trait VolumeBackend: Send + Sync {
         &self,
         name: &str,
     ) -> impl std::future::Future<Output = Result<(), ExecutionError>> + Send;
+
+    /// Cancel one in-flight frozen environment check for `volume`, if the
+    /// backend owns a builder-check route. The default is "no active check" so
+    /// local/direct backends keep their existing fail-closed behavior.
+    fn cancel_environment_check(
+        &self,
+        _volume: &str,
+    ) -> impl std::future::Future<Output = Result<bool, ExecutionError>> + Send {
+        async { Ok(false) }
+    }
     /// Read-only managed-resource inventory used by startup reconciliation.
     /// Backends that cannot enumerate return `None` and the sweep is skipped.
     fn list_managed(
@@ -570,6 +580,14 @@ impl VolumeBackend for BrokerVolumes {
         validate_volume_name(name)?;
         self.client
             .export_volume(name)
+            .await
+            .map_err(ExecutionError::from)
+    }
+
+    async fn cancel_environment_check(&self, volume: &str) -> Result<bool, ExecutionError> {
+        validate_volume_name(volume)?;
+        self.client
+            .cancel_environment_check(volume)
             .await
             .map_err(ExecutionError::from)
     }
@@ -954,6 +972,10 @@ pub struct WorkspaceManager<B: VolumeBackend> {
     operation_locks:
         Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
     active: Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
+    /// Workspace volume for an in-flight Supervisor-proxied environment check.
+    /// The broker owns the check container, so cancellation is addressed by the
+    /// volume rather than a guessed container name.
+    active_checks: Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
     cancelled: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
 }
 
@@ -988,6 +1010,7 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
             lock: Arc::new(tokio::sync::Mutex::new(())),
             operation_locks: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             active: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            active_checks: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             cancelled: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
         })
     }
@@ -1104,6 +1127,56 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
         Ok(record.handle())
     }
 
+    /// Register one in-flight environment check. A second check for the same
+    /// workspace conflicts instead of replacing the volume another builder
+    /// check is currently reading.
+    pub fn begin_environment_check(
+        &self,
+        workspace_id: &str,
+        volume: &str,
+    ) -> Result<(), ExecutionError> {
+        validate_workspace_id(workspace_id)?;
+        validate_volume_name(volume)?;
+        let mut checks = self.active_checks.lock().unwrap();
+        if checks
+            .insert(workspace_id.to_owned(), volume.to_owned())
+            .is_some()
+        {
+            return Err(ExecutionError::Conflict);
+        }
+        Ok(())
+    }
+
+    /// Unregister a finished environment check. Returns true when the check was
+    /// cancelled and clears the cancellation marker for that operation.
+    pub fn end_environment_check(&self, workspace_id: &str) -> bool {
+        self.active_checks.lock().unwrap().remove(workspace_id);
+        self.cancelled.lock().unwrap().remove(workspace_id)
+    }
+
+    /// True when the workspace cancellation marker is set.
+    pub fn environment_check_cancelled(&self, workspace_id: &str) -> bool {
+        self.cancelled.lock().unwrap().contains(workspace_id)
+    }
+
+    /// Replace a workspace volume with an exact snapshot. `podman volume
+    /// import` merges into an existing volume and leaves files that are absent
+    /// from the archive, so staging must remove and recreate the volume before
+    /// importing. The backend `create_volume` re-applies the owner/workspace
+    /// labels; the manager lock serializes this with allocation and runs.
+    async fn replace_workspace_volume(
+        &self,
+        workspace_id: &str,
+        volume: &str,
+        bytes: &[u8],
+    ) -> Result<(), ExecutionError> {
+        validate_workspace_id(workspace_id)?;
+        validate_volume_name(volume)?;
+        self.backend.remove_volume(volume).await?;
+        self.backend.create_volume(volume, workspace_id).await?;
+        self.backend.import_volume(volume, bytes).await
+    }
+
     /// Materialize the exact current host worktree into the workspace volume
     /// before a Supervisor-proxied frozen environment check.
     ///
@@ -1133,9 +1206,11 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
         })
         .await
         .map_err(|error| ExecutionError::Invalid(format!("snapshot task: {error}")))??;
-        self.backend
-            .import_volume(&record.volume, &snapshot.bytes)
+        self.replace_workspace_volume(&record.workspace_id, &record.volume, &snapshot.bytes)
             .await?;
+        if self.cancelled.lock().unwrap().contains(workspace_id) {
+            return Err(ExecutionError::Conflict);
+        }
         record.updated_at_ms = now_ms();
         self.write_record(&record)?;
         Ok(())
@@ -1170,8 +1245,7 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
         })
         .await
         .map_err(|error| ExecutionError::Invalid(format!("snapshot task: {error}")))??;
-        self.backend
-            .import_volume(&record.volume, &snapshot.bytes)
+        self.replace_workspace_volume(&record.workspace_id, &record.volume, &snapshot.bytes)
             .await?;
         let container = format!("{CONTAINER_PREFIX}{}", Uuid::new_v4());
         record.status = WorkspaceStatus::Running;
@@ -1322,7 +1396,8 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
             })
             .await
             .map_err(|error| ExecutionError::Invalid(format!("snapshot task: {error}")))??;
-            self.backend.import_volume(&volume, &snapshot.bytes).await?;
+            self.replace_workspace_volume(workspace_id, &volume, &snapshot.bytes)
+                .await?;
             let receipt = self
                 .backend
                 .acquire_dependencies(&volume, &container, input)
@@ -1674,6 +1749,15 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
             .lock()
             .unwrap()
             .insert(workspace_id.to_owned());
+        let check = self
+            .active_checks
+            .lock()
+            .unwrap()
+            .get(workspace_id)
+            .cloned();
+        if let Some(volume) = check {
+            return self.backend.cancel_environment_check(&volume).await;
+        }
         let container = self.active.lock().unwrap().get(workspace_id).cloned();
         if let Some(container) = container {
             self.backend.remove_container(&container).await?;

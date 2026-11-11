@@ -148,6 +148,15 @@ impl VolumeBackend for SupervisorBackend {
             Self::Local(backend) => backend.remove_container(name).await,
         }
     }
+
+    async fn cancel_environment_check(&self, volume: &str) -> Result<bool, ExecutionError> {
+        match self {
+            Self::Podman(backend) => backend.cancel_environment_check(volume).await,
+            Self::Broker(backend) => backend.cancel_environment_check(volume).await,
+            #[cfg(debug_assertions)]
+            Self::Local(backend) => backend.cancel_environment_check(volume).await,
+        }
+    }
     async fn list_managed(&self) -> Result<Option<ManagedResources>, ExecutionError> {
         match self {
             Self::Podman(backend) => backend.list_managed().await,
@@ -772,65 +781,108 @@ async fn environment_check<B: factory_native::execution::VolumeBackend + 'static
     if !grant.checks.iter().any(|check| check == &input.check.argv) {
         return StatusCode::FORBIDDEN.into_response();
     }
-    if Duration::from_secs(u64::from(input.check.timeout_secs)) > app.max_runtime {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error":"environment check timeout exceeds the supervisor bound"})),
-        )
-            .into_response();
-    }
-    let Some(builder) = &app.environment_builder else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({
-                "code": "ENVIRONMENT_BUILDER_UNAVAILABLE",
-                "error": "the supervisor has no configured environment builder"
-            })),
-        )
-            .into_response();
+    let Some(grant_token) = headers
+        .get("x-factory-operation-grant")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned)
+    else {
+        return StatusCode::FORBIDDEN.into_response();
     };
-    if let Err((status, code, message)) = builder.validate(&input.image, &input.digest) {
-        return (status, Json(json!({"code": code, "error": message}))).into_response();
-    }
-    let Some(broker) = &app.environment_broker else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({
-                "code": "ENVIRONMENT_BUILDER_UNAVAILABLE",
-                "error": "the supervisor has no runtime broker for environment checks"
-            })),
-        )
-            .into_response();
-    };
-    // Allocation creates an empty volume and only generic run/dependency
-    // operations refresh it. Stage the exact current worktree here so a frozen
-    // check that is the first operation (or that follows write_files) never
-    // runs against an empty or stale workspace.
-    if let Err(error) = app.manager.stage_workspace_for_check(&workspace_id).await {
-        return execution_error(error);
-    }
     let workspace_volume = match app.manager.workspace_volume(&workspace_id) {
         Ok(volume) => volume,
         Err(error) => return execution_error(error),
     };
-    let timeout_secs = u64::from(input.check.timeout_secs);
-    let request = EnvironmentCheckRequest {
-        schema_version: 1,
-        image: input.image,
-        digest: input.digest,
-        plan: input.plan,
-        spec: input.spec,
-        receipt: input.receipt,
-        check: input.check,
-        workspace_volume,
-    };
-    match broker
-        .environment_check(&request, Duration::from_secs(timeout_secs + 180))
-        .await
+    if let Err(error) = app
+        .manager
+        .begin_environment_check(&workspace_id, &workspace_volume)
     {
-        Ok(result) => (StatusCode::OK, Json(result)).into_response(),
-        Err(error) => broker_error_response(error),
+        return execution_error(error);
     }
+    // The fence revokes a builder check that outlives its operation grant.
+    // `cancel_active` addresses the broker-owned check container by workspace
+    // volume; the Supervisor never guesses a container name.
+    let fence = spawn_operation_fence(app.clone(), workspace_id.clone(), grant_token);
+    let response = async {
+        if Duration::from_secs(u64::from(input.check.timeout_secs)) > app.max_runtime {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error":"environment check timeout exceeds the supervisor bound"})),
+            )
+                .into_response();
+        }
+        let Some(builder) = &app.environment_builder else {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "code": "ENVIRONMENT_BUILDER_UNAVAILABLE",
+                    "error": "the supervisor has no configured environment builder"
+                })),
+            )
+                .into_response();
+        };
+        if let Err((status, code, message)) = builder.validate(&input.image, &input.digest) {
+            return (status, Json(json!({"code": code, "error": message}))).into_response();
+        }
+        let Some(broker) = &app.environment_broker else {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "code": "ENVIRONMENT_BUILDER_UNAVAILABLE",
+                    "error": "the supervisor has no runtime broker for environment checks"
+                })),
+            )
+                .into_response();
+        };
+        // Snapshot and replace the exact current worktree. `podman volume
+        // import` merges into an existing volume, so the manager removes and
+        // recreates it before importing; stale files cannot survive a check.
+        if let Err(error) = app.manager.stage_workspace_for_check(&workspace_id).await {
+            return execution_error(error);
+        }
+        if app.manager.environment_check_cancelled(&workspace_id) {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "code": "ENVIRONMENT_CHECK_CANCELLED",
+                    "error": "the environment check was cancelled before the broker call"
+                })),
+            )
+                .into_response();
+        }
+        let timeout_secs = u64::from(input.check.timeout_secs);
+        let request = EnvironmentCheckRequest {
+            schema_version: 1,
+            image: input.image,
+            digest: input.digest,
+            plan: input.plan,
+            spec: input.spec,
+            receipt: input.receipt,
+            check: input.check,
+            workspace_volume,
+        };
+        match broker
+            .environment_check(&request, Duration::from_secs(timeout_secs + 180))
+            .await
+        {
+            Ok(result) => (StatusCode::OK, Json(result)).into_response(),
+            Err(error) => broker_error_response(error),
+        }
+    }
+    .await;
+    fence.abort();
+    let _ = fence.await;
+    let cancelled = app.manager.end_environment_check(&workspace_id);
+    if cancelled {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "code": "ENVIRONMENT_CHECK_CANCELLED",
+                "error": "the environment check was cancelled or its operation grant was revoked"
+            })),
+        )
+            .into_response();
+    }
+    response
 }
 
 fn broker_error_response(error: BrokerError) -> Response {
@@ -1153,6 +1205,19 @@ fn spawn_operation_fence<B: factory_native::execution::VolumeBackend + 'static>(
             } else {
                 failures = failures.saturating_add(1);
                 if failures >= 2 {
+                    // Revocation can land between staging and the broker
+                    // registering the check container. Retry briefly so a
+                    // container that appears during that window is still
+                    // cancelled, then stop. The cancellation marker also makes
+                    // the handler refuse to start a later check.
+                    for _ in 0..20 {
+                        match app.manager.cancel_active(&workspace_id).await {
+                            Ok(true) => return,
+                            Ok(false) | Err(_) => {
+                                tokio::time::sleep(Duration::from_millis(100)).await;
+                            }
+                        }
+                    }
                     let _ = app.manager.cancel_active(&workspace_id).await;
                     return;
                 }
@@ -1317,14 +1382,28 @@ mod tests {
 
     type CapturedRequests = std::sync::Arc<Mutex<Vec<serde_json::Value>>>;
     type TestVolumes = std::sync::Arc<Mutex<HashMap<String, PathBuf>>>;
+    type StartedSignal = std::sync::Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>;
+    type CancelSignal = std::sync::Arc<Mutex<Option<tokio::sync::oneshot::Receiver<()>>>>;
 
     const TEST_TOKEN: &str = "supervisor-token-0123456789abcdef0123456789abcdef";
     const TEST_GRANT_KEY: &[u8] = b"attempt-grant-key-0123456789abcdef";
     const TEST_CAPABILITY_KEY: &[u8] = b"capability-key-0123456789abcdef0";
 
-    #[derive(Default, Clone)]
+    #[derive(Clone)]
     struct TestBackend {
         volumes: TestVolumes,
+        cancel_calls: std::sync::Arc<Mutex<Vec<String>>>,
+        cancel_tx: StartedSignal,
+    }
+
+    impl Default for TestBackend {
+        fn default() -> Self {
+            Self {
+                volumes: TestVolumes::default(),
+                cancel_calls: std::sync::Arc::new(Mutex::new(Vec::new())),
+                cancel_tx: std::sync::Arc::new(Mutex::new(None)),
+            }
+        }
     }
 
     impl TestBackend {
@@ -1451,6 +1530,13 @@ mod tests {
         async fn remove_container(&self, _name: &str) -> Result<(), ExecutionError> {
             Ok(())
         }
+        async fn cancel_environment_check(&self, volume: &str) -> Result<bool, ExecutionError> {
+            self.cancel_calls.lock().unwrap().push(volume.to_owned());
+            if let Some(tx) = self.cancel_tx.lock().unwrap().take() {
+                let _ = tx.send(());
+            }
+            Ok(true)
+        }
     }
 
     struct TestFixture {
@@ -1458,6 +1544,8 @@ mod tests {
         root: PathBuf,
         repository: PathBuf,
         volumes: TestVolumes,
+        cancel_calls: std::sync::Arc<Mutex<Vec<String>>>,
+        cancel_tx: StartedSignal,
     }
 
     impl Drop for TestFixture {
@@ -1493,6 +1581,8 @@ mod tests {
         let images: BTreeSet<String> = ["test/image:1".to_owned()].into();
         let backend = TestBackend::default();
         let volumes = std::sync::Arc::clone(&backend.volumes);
+        let cancel_calls = std::sync::Arc::clone(&backend.cancel_calls);
+        let cancel_tx = std::sync::Arc::clone(&backend.cancel_tx);
         let manager = WorkspaceManager::new(
             root.join("work"),
             root.join("state"),
@@ -1518,6 +1608,8 @@ mod tests {
             root,
             repository,
             volumes,
+            cancel_calls,
+            cancel_tx,
         }
     }
 
@@ -1900,6 +1992,61 @@ mod tests {
                             "cleanupConfirmed": true,
                             "durationMs": 3
                         }))
+                    },
+                ),
+            )
+            .with_state(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        (format!("http://{address}"), captured, server)
+    }
+
+    /// Fake broker that holds a check in flight until the Supervisor's
+    /// operation fence propagates cancellation. This models a revoked grant
+    /// while the builder is still running.
+    async fn fake_environment_broker_until_cancelled(
+        started_tx: tokio::sync::oneshot::Sender<()>,
+        cancel_rx: tokio::sync::oneshot::Receiver<()>,
+    ) -> (String, CapturedRequests, tokio::task::JoinHandle<()>) {
+        use axum::routing::post;
+        let captured = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let state = (
+            std::sync::Arc::clone(&captured),
+            std::sync::Arc::new(Mutex::new(Some(started_tx))),
+            std::sync::Arc::new(Mutex::new(Some(cancel_rx))),
+        );
+        let router = axum::Router::new()
+            .route(
+                "/v1/environments/check",
+                post(
+                    |axum::extract::State((captured, started, cancel)): axum::extract::State<(
+                        CapturedRequests,
+                        StartedSignal,
+                        CancelSignal,
+                    )>,
+                     axum::Json(body): axum::Json<serde_json::Value>| async move {
+                        captured.lock().unwrap().push(body);
+                        if let Some(tx) = started.lock().unwrap().take() {
+                            let _ = tx.send(());
+                        }
+                        let receiver = cancel.lock().unwrap().take();
+                        if let Some(receiver) = receiver {
+                            let _ = tokio::time::timeout(
+                                Duration::from_secs(15),
+                                receiver,
+                            )
+                            .await;
+                        }
+                        (
+                            StatusCode::CONFLICT,
+                            axum::Json(json!({
+                                "code": "ENVIRONMENT_CHECK_CANCELLED",
+                                "error": "the operation grant was revoked while the check was running"
+                            })),
+                        )
                     },
                 ),
             )
@@ -2434,7 +2581,7 @@ mod tests {
         let workspace_id = handle["workspaceId"].as_str().unwrap().to_owned();
         let capability = handle["capability"].as_str().unwrap().to_owned();
         let volume = fixture.app.manager.workspace_volume(&workspace_id).unwrap();
-        let volume_path = fixture
+        let mut volume_path = fixture
             .volumes
             .lock()
             .unwrap()
@@ -2445,6 +2592,7 @@ mod tests {
             !volume_path.join("package.json").is_file(),
             "allocation must start with an empty broker volume"
         );
+        fs::write(volume_path.join("stale.txt"), "must disappear\n").unwrap();
         // A write after allocation only changes the host worktree. The check
         // must see this exact content, not the empty or stale volume.
         fs::write(
@@ -2471,6 +2619,13 @@ mod tests {
         let result = body_json(response).await;
         assert_eq!(result["status"], "PASSED", "{result}");
         assert_eq!(result["description"], "fixture environment check");
+        volume_path = fixture
+            .volumes
+            .lock()
+            .unwrap()
+            .get(&volume)
+            .cloned()
+            .unwrap();
         assert!(
             fs::read_to_string(volume_path.join("package.json"))
                 .is_ok_and(|body| body.contains("\"fresh\"")),
@@ -2480,11 +2635,81 @@ mod tests {
             !volume_path.join(".git").exists(),
             "the workspace archive excludes Git metadata"
         );
+        assert!(
+            !volume_path.join("stale.txt").exists(),
+            "staging must replace the volume, not merge into it"
+        );
         let requests = captured.lock().unwrap();
         assert_eq!(requests.len(), 1);
         assert_eq!(
             requests[0]["check"]["description"],
             "fixture environment check"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn environment_check_fence_cancels_an_active_check_on_revocation() {
+        let mut fixture = fixture();
+        let digest_file = fixture.root.join("environment-builder.digest");
+        fs::write(&digest_file, format!("{TEST_ENV_BUILDER_DIGEST}\n")).unwrap();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+        *fixture.cancel_tx.lock().unwrap() = Some(cancel_tx);
+        let (broker_url, _captured, server) =
+            fake_environment_broker_until_cancelled(started_tx, cancel_rx).await;
+        {
+            let app = Arc::get_mut(&mut fixture.app).unwrap();
+            app.environment_broker = Some(
+                RuntimeBrokerClient::new(
+                    &broker_url,
+                    TEST_TOKEN.to_owned(),
+                    ResourceOwner::Supervisor,
+                )
+                .unwrap(),
+            );
+            app.environment_builder = Some(EnvironmentBuilderAllowlist {
+                image: TEST_ENV_BUILDER_IMAGE.into(),
+                digest_file,
+            });
+        }
+        let router = build_router(fixture.app.clone());
+        let allocate = allocation_body("environment-check-cancel", &fixture.repository);
+        let handle = body_json(
+            router
+                .clone()
+                .oneshot(json_request("/v1/workspaces", Some(TEST_TOKEN), &allocate))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let workspace_id = handle["workspaceId"].as_str().unwrap().to_owned();
+        let capability = handle["capability"].as_str().unwrap().to_owned();
+        let volume = fixture.app.manager.workspace_volume(&workspace_id).unwrap();
+        let body = environment_check_body();
+        let grant = operation_grant(&handle, "run", &body);
+        let request = operation_request(
+            &format!("/v1/workspaces/{workspace_id}/environment-check"),
+            &capability,
+            &grant,
+            &body,
+        );
+        let pending = tokio::spawn(async move { router.oneshot(request).await.unwrap() });
+        tokio::time::timeout(Duration::from_secs(10), started_rx)
+            .await
+            .expect("the broker must receive the active check")
+            .unwrap();
+        let response = tokio::time::timeout(Duration::from_secs(15), pending)
+            .await
+            .expect("the fence must cancel the active check")
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let result = body_json(response).await;
+        assert_eq!(result["code"], "ENVIRONMENT_CHECK_CANCELLED");
+        assert_eq!(
+            fixture.cancel_calls.lock().unwrap().as_slice(),
+            [volume],
+            "cancellation must target the broker-owned check by workspace volume"
         );
         server.abort();
     }

@@ -77,9 +77,12 @@ contain no `.git`, matching the archive contract.
 ## 4. Product fix
 
 - `WorkspaceManager::stage_workspace_for_check` snapshots the exact current
-  worktree and imports it into the recorded broker volume under the manager
-  lock, verifying the worktree device/inode identity. The Supervisor calls it
-  before resolving the volume and calling the broker.
+  worktree, **removes and recreates the recorded broker volume**, and imports
+  the archive under the manager lock, verifying the worktree device/inode
+  identity. Podman `volume import` merges into an existing volume, so import
+  alone leaves files that are no longer in the worktree; removal/recreation
+  prevents that. The backend `create_volume` re-applies the owner/workspace
+  labels. The Supervisor calls it before calling the broker.
 - `EnvironmentCheckSpec`, the builder `check-result.json`, and
   `EnvironmentCheckResult` now carry the frozen `SpecCheck` description.
 - The builder emits one redacted, bounded `stderrTail`; the broker builds a
@@ -88,16 +91,30 @@ contain no `.git`, matching the archive contract.
   1,400 characters. The Worker tool result, the automatic-final summary and the
   Verifier failure surface it even when the command writes nothing.
 - Source bodies and full stderr are never copied into the diagnostic.
+- Environment checks now run under the Supervisor operation fence. The manager
+  registers an active check by workspace/volume; `cancel_active` calls the
+  broker's `POST /v1/environments/check/cancel`, which resolves the broker-owned
+  `factory-env-*` check container, removes it, confirms absence, and clears the
+  active registration. A second concurrent check is refused, and the handler
+  returns `ENVIRONMENT_CHECK_CANCELLED` when the grant is revoked. The bounded
+  timeout and no-host/security rules are unchanged.
 
 ## 5. Deterministic evidence
 
 - `cargo test -p factory-native --bin factory-supervisor environment_check` —
-  3 passed, including
+  4 passed, including
   `environment_check_stages_the_git_worktree_before_the_broker` (real Git
-  worktree, real archive/import, fake broker returning npm's 254 when
-  `package.json` is absent and PASS after staging).
+  worktree, real archive/import, stale-file removal, fake broker returning
+  npm's 254 when `package.json` is absent and PASS after staging) and
+  `environment_check_fence_cancels_an_active_check_on_revocation`.
 - `cargo test -p factory-native --bin factory-runtime-broker environment_check`
-  — 8 passed; `check_diagnostic_is_description_first_and_bounded` — 1 passed.
+  — 9 passed, including `environment_check_cancel_targets_only_an_active_owned_check`;
+  `check_diagnostic_is_description_first_and_bounded` — 1 passed.
+- `FACTORY_REAL_PODMAN_TESTS=1 cargo test -p factory-native --test
+  real_podman_environment_check_staging -- --nocapture` — 1 passed. A real
+  rootless Podman volume is staged, `old.txt` is deleted from the worktree and
+  `modified.txt` changes; after restaging `old.txt` is gone and the modified
+  content is present.
 - `cargo test -p factory-native --bin factory-worker environment_check` — 1
   passed; frozen-check diagnostic unit test passed.
 - `cargo test -p factory-native --bin factory-verifier builder_check` — 1

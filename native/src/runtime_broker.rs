@@ -891,6 +891,7 @@ pub fn environment_workspace_files(
 pub const ENVIRONMENT_BUILD_ROUTE: &str = "v1/environments/build";
 pub const ENVIRONMENT_RESOLVE_ROUTE: &str = "v1/environments/resolve";
 pub const ENVIRONMENT_CHECK_ROUTE: &str = "v1/environments/check";
+pub const ENVIRONMENT_CHECK_CANCEL_ROUTE: &str = "v1/environments/check/cancel";
 
 pub const MAX_ENVIRONMENT_REQUEST_BYTES: usize = 16 * 1024 * 1024;
 const MAX_ENVIRONMENT_CHECK_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
@@ -1208,6 +1209,49 @@ impl RuntimeBrokerClient {
             .validate_for(input)
             .map_err(BrokerError::InvalidResponse)?;
         Ok(result)
+    }
+
+    /// Cancel an in-flight frozen check for one workspace volume. The broker
+    /// owns the check container name; the caller never supplies or guesses it.
+    /// `Ok(false)` means no check was active for that volume.
+    pub async fn cancel_environment_check(
+        &self,
+        workspace_volume: &str,
+    ) -> Result<bool, BrokerError> {
+        if !matches!(
+            self.owner,
+            ResourceOwner::Environment | ResourceOwner::Supervisor | ResourceOwner::Verifier
+        ) {
+            return Err(BrokerError::Invalid(
+                "environment check cancellation requires an environment, supervisor or verifier owner token"
+                    .into(),
+            ));
+        }
+        if !is_valid_volume_name(workspace_volume) {
+            return Err(BrokerError::Invalid(
+                "environment check workspace volume is invalid".into(),
+            ));
+        }
+        let response = self
+            .client
+            .post(self.join(ENVIRONMENT_CHECK_CANCEL_ROUTE)?)
+            .bearer_auth(&self.token)
+            .json(&serde_json::json!({"workspaceVolume": workspace_volume}))
+            .timeout(Duration::from_secs(30))
+            .send()
+            .await?;
+        if !response.status().is_success() {
+            return Err(self.refusal(response).await);
+        }
+        let value: serde_json::Value = response.json().await?;
+        value
+            .get("cancelled")
+            .and_then(serde_json::Value::as_bool)
+            .ok_or_else(|| {
+                BrokerError::InvalidResponse(
+                    "environment check cancellation response is invalid".into(),
+                )
+            })
     }
 
     pub async fn run_container(
