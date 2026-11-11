@@ -3072,6 +3072,12 @@ fn derive_root_action_spec(
         checks,
         dependency_plan: None,
         dependencies_required: false,
+        environment_plan_id: None,
+        environment_plan_sha256: None,
+        environment_spec_sha256: None,
+        environment_builder_image: None,
+        environment_builder_image_digest: None,
+        environment_required: false,
     })
 }
 
@@ -3336,6 +3342,12 @@ fn unit_action_spec(
         checks,
         dependency_plan: None,
         dependencies_required: false,
+        environment_plan_id: None,
+        environment_plan_sha256: None,
+        environment_spec_sha256: None,
+        environment_builder_image: None,
+        environment_builder_image_digest: None,
+        environment_required: false,
     })
 }
 
@@ -3817,6 +3829,12 @@ async fn ensure_integration(
         checks,
         dependency_plan: None,
         dependencies_required: false,
+        environment_plan_id: None,
+        environment_plan_sha256: None,
+        environment_spec_sha256: None,
+        environment_builder_image: None,
+        environment_builder_image_digest: None,
+        environment_required: false,
     };
     let spec_json = serde_json::to_string(&spec)
         .map_err(|_| Error::Invalid("integration ActionSpec encoding"))?;
@@ -5123,6 +5141,8 @@ mod tests {
                     command: vec!["cargo".into(), "fmt".into(), "--check".into()],
                     expect_exit: 0,
                     timeout_secs: 60,
+                    environment_plan_id: None,
+                    environment_spec_sha256: None,
                 },
                 SpecCheck {
                     id: "build".into(),
@@ -5131,6 +5151,8 @@ mod tests {
                     command: vec!["cargo".into(), "build".into()],
                     expect_exit: 0,
                     timeout_secs: 120,
+                    environment_plan_id: None,
+                    environment_spec_sha256: None,
                 },
                 SpecCheck {
                     id: "test".into(),
@@ -5139,6 +5161,8 @@ mod tests {
                     command: vec!["cargo".into(), "test".into()],
                     expect_exit: 0,
                     timeout_secs: 120,
+                    environment_plan_id: None,
+                    environment_spec_sha256: None,
                 },
                 SpecCheck {
                     id: "functional".into(),
@@ -5147,6 +5171,8 @@ mod tests {
                     command: vec!["cargo".into(), "run".into()],
                     expect_exit: 0,
                     timeout_secs: 120,
+                    environment_plan_id: None,
+                    environment_spec_sha256: None,
                 },
             ],
             vec![SpecCheck {
@@ -5156,6 +5182,8 @@ mod tests {
                 command: vec!["cargo".into(), "run".into(), "--invalid".into()],
                 expect_exit: 1,
                 timeout_secs: 60,
+                environment_plan_id: None,
+                environment_spec_sha256: None,
             }],
         )
     }
@@ -5443,6 +5471,12 @@ mod tests {
             checks: acceptance.into_iter().chain(negative).collect(),
             dependency_plan: None,
             dependencies_required: false,
+            environment_plan_id: None,
+            environment_plan_sha256: None,
+            environment_spec_sha256: None,
+            environment_builder_image: None,
+            environment_builder_image_digest: None,
+            environment_required: false,
         };
         let binding = ActionBinding {
             id: request.action_id.clone(),
@@ -8110,6 +8144,8 @@ mod tests {
             command: vec!["cargo".into(), "test".into()],
             expect_exit: 0,
             timeout_secs: 60,
+            environment_plan_id: None,
+            environment_spec_sha256: None,
         }];
         let action = db
             .create_action_with_spec(

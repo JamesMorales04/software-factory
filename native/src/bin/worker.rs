@@ -3898,6 +3898,19 @@ fn decide_tool(
     }
 }
 
+fn check_environment_binding_error(check: &factory_native::lead::SpecCheck) -> Option<String> {
+    match (
+        check.environment_plan_id.as_deref(),
+        check.environment_spec_sha256.as_deref(),
+    ) {
+        (None, None) | (Some(_), Some(_)) => None,
+        _ => Some(format!(
+            "ENVIRONMENT_PLAN_REQUIRED: check {} has a partial environment binding",
+            check.id
+        )),
+    }
+}
+
 fn effective_check_timeout(
     context: &ProviderContext<'_>,
     check: &factory_native::lead::SpecCheck,
@@ -3954,6 +3967,9 @@ async fn execute_missing_frozen_checks(
     ensure_dependencies(context, handle, dependencies).await?;
     let mut executions = Vec::with_capacity(missing.len());
     for (index, check) in missing.into_iter().enumerate() {
+        if let Some(error) = check_environment_binding_error(check) {
+            return Err(error.into());
+        }
         let call_id = format!(
             "worker-check-{}-{}-{}",
             progress.turn,
@@ -5830,6 +5846,8 @@ mod tests {
             command: vec!["cargo".into(), "build".into()],
             expect_exit: 0,
             timeout_secs: 120,
+            environment_plan_id: None,
+            environment_spec_sha256: None,
         };
         let harness = AutoCheckHarness::start(
             vec![auto_check_write_action(), auto_check_final_action()],
@@ -5865,6 +5883,8 @@ mod tests {
             command: vec!["cargo".into(), "build".into()],
             expect_exit: 0,
             timeout_secs: 120,
+            environment_plan_id: None,
+            environment_spec_sha256: None,
         }
     }
 
@@ -6049,6 +6069,8 @@ mod tests {
             command: vec!["cargo".into(), "build".into()],
             expect_exit: 0,
             timeout_secs: 120,
+            environment_plan_id: None,
+            environment_spec_sha256: None,
         };
         let harness = AutoCheckHarness::start(
             vec![
@@ -6090,6 +6112,8 @@ mod tests {
             command: vec!["cargo".into(), "build".into()],
             expect_exit: 0,
             timeout_secs: 120,
+            environment_plan_id: None,
+            environment_spec_sha256: None,
         };
         let harness = AutoCheckHarness::start(
             vec![
@@ -6144,6 +6168,8 @@ mod tests {
             command: vec!["cargo".into(), "test".into()],
             expect_exit: 0,
             timeout_secs: 60,
+            environment_plan_id: None,
+            environment_spec_sha256: None,
         };
         let noisy = "x".repeat(20_000);
         let harness = AutoCheckHarness::start(
@@ -6233,6 +6259,8 @@ mod tests {
                 command: vec!["cargo".into(), "build".into()],
                 expect_exit: 0,
                 timeout_secs: 120,
+                environment_plan_id: None,
+                environment_spec_sha256: None,
             },
             SpecCheck {
                 id: "negative".into(),
@@ -6241,6 +6269,8 @@ mod tests {
                 command: vec!["gym".into(), "member".into(), "add".into()],
                 expect_exit: 1,
                 timeout_secs: 30,
+                environment_plan_id: None,
+                environment_spec_sha256: None,
             },
         ];
         let tools = vec!["write_file".to_string(), "run_command".to_string()];
@@ -6299,6 +6329,12 @@ mod tests {
                 checks: Vec::new(),
                 dependency_plan: None,
                 dependencies_required: false,
+                environment_plan_id: None,
+                environment_plan_sha256: None,
+                environment_spec_sha256: None,
+                environment_builder_image: None,
+                environment_builder_image_digest: None,
+                environment_required: false,
             },
             action_spec_sha256: "c".repeat(64),
             repository: "/repo".into(),

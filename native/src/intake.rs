@@ -355,6 +355,8 @@ mod tests {
             command: vec!["cargo".into(), "test".into()],
             expect_exit,
             timeout_secs: 60,
+            environment_plan_id: None,
+            environment_spec_sha256: None,
         }
     }
 

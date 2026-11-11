@@ -545,6 +545,99 @@ pub(super) async fn authorize_campaign_in_tx(
     let action_spec: ActionSpec = serde_json::from_str(&spec_json)
         .map_err(|_| Error::Invalid("stored ActionSpec encoding"))?;
     super::validate_dependency_requirement(&action_spec)?;
+    super::validate_environment_requirement(&action_spec)?;
+    if action_spec.environment_required {
+        use crate::planning::environment::{
+            EnvironmentPlan, EnvironmentPlanStatus, EnvironmentSpec, EnvironmentSpecStatus,
+        };
+        let plan_sha256 = action_spec
+            .environment_plan_sha256
+            .as_deref()
+            .ok_or_else(|| Error::IntakeConflict {
+                code: "ENVIRONMENT_PLAN_REQUIRED",
+                message: "the campaign has no frozen environment plan hash".into(),
+            })?;
+        let spec_sha256 = action_spec
+            .environment_spec_sha256
+            .as_deref()
+            .ok_or_else(|| Error::IntakeConflict {
+                code: "ENVIRONMENT_PLAN_REQUIRED",
+                message: "the campaign has no frozen environment spec hash".into(),
+            })?;
+        let stored: Option<(String, String, String, String, String)> = sqlx::query_as::query_as(
+            "SELECT content_json,request_id,action_id,project_id,plan_sha256
+             FROM environment_specs
+             WHERE spec_sha256=?1 AND action_id=?2 AND project_id=?3 AND status='FROZEN'",
+        )
+        .bind(spec_sha256)
+        .bind(&action_id)
+        .bind(&project_id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let Some((spec_json, request_id, spec_action_id, spec_project_id, spec_plan_sha256)) =
+            stored
+        else {
+            return Err(Error::IntakeConflict {
+                code: "ENVIRONMENT_PLAN_REQUIRED",
+                message: "the ActionSpec environment spec is missing or not frozen".into(),
+            });
+        };
+        let spec: EnvironmentSpec = serde_json::from_str(&spec_json)
+            .map_err(|_| Error::Invalid("stored EnvironmentSpec encoding"))?;
+        spec.validate().map_err(|error| Error::IntakeConflict {
+            code: error.code_str(),
+            message: error.message,
+        })?;
+        if spec.status != EnvironmentSpecStatus::Frozen
+            || spec.action_id != spec_action_id
+            || spec.project_id != spec_project_id
+            || spec.plan_sha256 != spec_plan_sha256
+            || spec_plan_sha256 != plan_sha256
+        {
+            return Err(Error::IntakeConflict {
+                code: "ENVIRONMENT_HASH_MISMATCH",
+                message:
+                    "the frozen environment spec does not bind this Campaign action/project/plan"
+                        .into(),
+            });
+        }
+        let plan_json: Option<(String,)> = sqlx::query_as::query_as(
+            "SELECT content_json FROM environment_plans
+             WHERE plan_sha256=?1 AND status='FROZEN'",
+        )
+        .bind(plan_sha256)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let Some((plan_json,)) = plan_json else {
+            return Err(Error::IntakeConflict {
+                code: "ENVIRONMENT_PLAN_REQUIRED",
+                message: "the Campaign environment plan is missing or not frozen".into(),
+            });
+        };
+        let plan: EnvironmentPlan = serde_json::from_str(&plan_json)
+            .map_err(|_| Error::Invalid("stored EnvironmentPlan encoding"))?;
+        if plan.status != EnvironmentPlanStatus::Frozen
+            || plan.action_id != action_id
+            || plan.project_id != project_id
+            || plan.plan_sha256 != plan_sha256
+            || plan.risk_class != input.risk_class
+        {
+            return Err(Error::IntakeConflict {
+                code: "ENVIRONMENT_HASH_MISMATCH",
+                message:
+                    "the Campaign environment plan does not match its ActionSpec or risk binding"
+                        .into(),
+            });
+        }
+        super::environment::bind_campaign_environment_in_tx(
+            transaction,
+            campaign_id,
+            &request_id,
+            &action_id,
+            &spec,
+        )
+        .await?;
+    }
     if fixture && (action_spec.dependencies_required || action_spec.dependency_plan.is_some()) {
         return Err(Error::Forbidden(
             "FIXTURE execution cannot satisfy a frozen dependency plan; no candidate is authorized. Use TRUSTED_LOCAL_PROVIDER or remove the dependency plan".into(),
@@ -999,9 +1092,17 @@ mod tests {
                 command: vec!["cargo".into(), "test".into()],
                 expect_exit: 0,
                 timeout_secs: 60,
+                environment_plan_id: None,
+                environment_spec_sha256: None,
             }],
             dependency_plan: None,
             dependencies_required: false,
+            environment_plan_id: None,
+            environment_plan_sha256: None,
+            environment_spec_sha256: None,
+            environment_builder_image: None,
+            environment_builder_image_digest: None,
+            environment_required: false,
         };
         let _action = db
             .create_action_with_spec(

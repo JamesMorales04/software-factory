@@ -1107,6 +1107,14 @@ fn office_api_router(app: Arc<App>) -> Router {
             get(get_agentic_plan).post(plan_agentic_request),
         )
         .route("/agentic/requests/{id}/planning", get(get_agentic_planning))
+        .route(
+            "/agentic/requests/{id}/environment",
+            get(get_agentic_environment),
+        )
+        .route(
+            "/agentic/requests/{id}/environment/review",
+            post(review_agentic_environment),
+        )
         .route("/agentic/requests/{id}/openspec", get(get_agentic_openspec))
         .route(
             "/agentic/requests/{id}/openspec/archive",
@@ -1412,6 +1420,14 @@ fn api_router(app: Arc<App>) -> Router {
             get(get_agentic_plan).post(plan_agentic_request),
         )
         .route("/agentic/requests/{id}/planning", get(get_agentic_planning))
+        .route(
+            "/agentic/requests/{id}/environment",
+            get(get_agentic_environment),
+        )
+        .route(
+            "/agentic/requests/{id}/environment/review",
+            post(review_agentic_environment),
+        )
         .route("/agentic/requests/{id}/openspec", get(get_agentic_openspec))
         .route(
             "/agentic/requests/{id}/openspec/archive",
@@ -7643,9 +7659,41 @@ async fn campaign_detail_projection(app: &App, id: &str) -> Result<serde_json::V
         }
         None => Value::Null,
     };
+    let environment = match app.db.intake_request_for_campaign(id).await {
+        Ok(record) => environment_projection_for_request(app, &record).await?,
+        Err(Error::NotFound) => {
+            let required = app
+                .db
+                .action(&campaign.action_id)
+                .await
+                .map(|action| action.spec.environment_required)
+                .unwrap_or(false);
+            json!({
+                "required": required,
+                "status": "MISSING",
+                "plan": null,
+                "planId": null,
+                "planSha256": null,
+                "planRevision": null,
+                "conventions": null,
+                "reviews": [],
+                "leadApproval": null,
+                "spec": null,
+                "specSha256": null,
+                "builder": {"descriptor": environment_builder_descriptor(), "receipt": null},
+                "licenseInventory": null,
+                "blockers": [{
+                    "code": "ENVIRONMENT_PLAN_REQUIRED",
+                    "message": "No unified-intake environment plan is bound to this legacy Campaign. Execution and checks are refused until Core compiles and freezes one.",
+                }],
+            })
+        }
+        Err(error) => return Err(error),
+    };
     Ok(json!({
         "campaign": campaign,
         "authorization": authorization,
+        "environment": environment,
         "inference": inference,
         "tasks": tasks,
         "runs": runs,
@@ -9834,6 +9882,7 @@ async fn intake_request_value(
             "materialsReady": readiness.materials_ready,
             "ready": readiness.ready(),
         });
+        value["environment"] = environment_projection_for_request(app, record).await?;
         value["campaign"] = json!(campaign);
         value["messages"] = json!(
             messages
@@ -10548,6 +10597,7 @@ async fn agentic_projection_for_request(
             "review": plan_review,
             "workflow": workflow,
         },
+        "environment": environment_projection_for_request(app, record).await?,
         "findings": findings,
         "stack": stack,
         "participants": participants,
@@ -11103,6 +11153,520 @@ fn repository_file_sha256(
     Some(format!("{:x}", Sha256::digest(&output.stdout)))
 }
 
+/// The builder image is Factory infrastructure, not a project toolchain. WP1-B
+/// supplies the image/digest; an absent value is a truthful unavailable builder,
+/// not a language-image fallback.
+const DEFAULT_ENVIRONMENT_NIX_VERSION: &str = "2.28.3";
+const DEFAULT_ENVIRONMENT_DEVENV_VERSION: &str = "1.10.0";
+
+fn environment_builder_descriptor()
+-> factory_native::planning::environment::EnvironmentBuilderDescriptor {
+    use factory_native::planning::environment::{
+        DEFAULT_PLATFORM, ENVIRONMENT_POLICY_REVISION, EnvironmentBuilderDescriptor,
+        EnvironmentBuilderStatus,
+    };
+    let image = std::env::var("FACTORY_ENVIRONMENT_BUILDER_IMAGE").unwrap_or_default();
+    let digest = std::env::var("FACTORY_ENVIRONMENT_BUILDER_DIGEST").unwrap_or_default();
+    let platform = std::env::var("FACTORY_ENVIRONMENT_BUILDER_PLATFORM")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_PLATFORM.into());
+    let status = if image.trim().is_empty() || digest.trim().is_empty() {
+        EnvironmentBuilderStatus::Unavailable
+    } else {
+        EnvironmentBuilderStatus::Ready
+    };
+    EnvironmentBuilderDescriptor {
+        image: image.trim().to_owned(),
+        digest: digest.trim().to_owned(),
+        platform,
+        policy_revision: ENVIRONMENT_POLICY_REVISION.into(),
+        status,
+    }
+}
+
+fn empty_conventions(
+    project_id: &str,
+    base_commit: &str,
+    error: &factory_native::planning::environment::EnvironmentError,
+) -> factory_native::planning::environment::ProjectConventions {
+    use factory_native::planning::environment::{
+        ENVIRONMENT_SCHEMA_VERSION, ExistingEnvironmentKind, ProjectConventions,
+    };
+    let mut conventions = ProjectConventions {
+        schema_version: ENVIRONMENT_SCHEMA_VERSION,
+        project_id: project_id.into(),
+        base_commit: base_commit.into(),
+        conventions_sha256: String::new(),
+        scanned_at: chrono::Utc::now().to_rfc3339(),
+        files: Vec::new(),
+        commands: Vec::new(),
+        conflicts: Vec::new(),
+        truncated: false,
+        skipped_entries: 1,
+        provenance: format!("unavailable: {}", error.message),
+        existing_environment: ExistingEnvironmentKind::None,
+    };
+    conventions.conventions_sha256 = conventions.compute_sha256();
+    conventions
+}
+
+fn blocked_environment_plan(
+    record: &factory_native::db::IntakeRequestRecord,
+    revision: u32,
+    risk_class: &str,
+    conventions: &factory_native::planning::environment::ProjectConventions,
+    blocker: factory_native::planning::environment::EnvironmentBlocker,
+) -> factory_native::planning::environment::EnvironmentPlan {
+    use factory_native::planning::environment::{
+        ENVIRONMENT_SCHEMA_VERSION, EnvironmentBlockerCode, EnvironmentNixPolicy, EnvironmentPlan,
+        EnvironmentPlanSource, EnvironmentPlanStatus, LicenseInventory, NetworkPolicy,
+        ResourceLimits, SandboxPolicy,
+    };
+    let now = chrono::Utc::now();
+    let mut plan = EnvironmentPlan {
+        schema_version: ENVIRONMENT_SCHEMA_VERSION,
+        plan_id: uuid::Uuid::new_v4().simple().to_string(),
+        project_id: record.project_id.clone(),
+        request_id: record.id.clone(),
+        action_id: record.action_id.clone(),
+        campaign_id: None,
+        base_commit: conventions.base_commit.clone(),
+        conventions_sha256: conventions.conventions_sha256.clone(),
+        conventions: conventions.clone(),
+        risk_class: risk_class.to_owned(),
+        status: EnvironmentPlanStatus::Blocked,
+        revision,
+        source: EnvironmentPlanSource::ProjectCommitted,
+        toolchains: Vec::new(),
+        packages: Vec::new(),
+        services: Vec::new(),
+        commands: Default::default(),
+        browsers: Vec::new(),
+        files: Vec::new(),
+        nix: EnvironmentNixPolicy {
+            nixpkgs: String::new(),
+            inputs: Vec::new(),
+            allow_unfree: false,
+            sandbox: SandboxPolicy::default(),
+        },
+        resources: ResourceLimits::default(),
+        network: NetworkPolicy::default(),
+        license_inventory: LicenseInventory::default(),
+        license_inventory_sha256: String::new(),
+        builder: environment_builder_descriptor(),
+        lead_review: None,
+        blockers: vec![blocker],
+        commands_rationale: String::new(),
+        plan_sha256: String::new(),
+        created_at: now.to_rfc3339(),
+    };
+    plan.license_inventory.refresh_hashes(&plan.plan_id);
+    plan.license_inventory_sha256 = plan.license_inventory.inventory_sha256.clone();
+    plan.refresh_hash();
+    // A blocked plan is recorded truthfully but is never executable.
+    plan.blockers
+        .push(factory_native::planning::environment::EnvironmentBlocker {
+            code: EnvironmentBlockerCode::EnvironmentPlanRequired,
+            message: "no executable environment was frozen".into(),
+        });
+    plan
+}
+
+async fn compile_environment_for_request(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+    config: &factory_native::lead::ProjectConfig,
+    revision: u32,
+    risk_class: &str,
+) -> Result<factory_native::planning::environment::EnvironmentPlan, Response> {
+    use factory_native::planning::environment::{
+        CompileEnvironmentInput, EnvironmentBlocker, EnvironmentBlockerCode,
+        EnvironmentRequirements, compile_environment_plan, discover_project_conventions,
+    };
+    let repository = std::path::PathBuf::from(&config.repository);
+    let risk_class = risk_class.to_owned();
+    let now = chrono::Utc::now();
+    let conventions = match discover_project_conventions(
+        &record.project_id,
+        &repository,
+        &config.base_commit,
+        now,
+    ) {
+        Ok(conventions) => conventions,
+        Err(error) => {
+            let conventions = empty_conventions(&record.project_id, &config.base_commit, &error);
+            let plan = blocked_environment_plan(
+                record,
+                revision,
+                &risk_class,
+                &conventions,
+                EnvironmentBlocker {
+                    code: error.code,
+                    message: error.message,
+                },
+            );
+            app.db
+                .save_environment_plan(&plan)
+                .await
+                .map_err(api_error)?;
+            return Ok(plan);
+        }
+    };
+    if let Err(error) = conventions.validate() {
+        let plan = blocked_environment_plan(
+            record,
+            revision,
+            &risk_class,
+            &conventions,
+            EnvironmentBlocker {
+                code: error.code,
+                message: error.message,
+            },
+        );
+        app.db
+            .save_environment_plan(&plan)
+            .await
+            .map_err(api_error)?;
+        return Ok(plan);
+    }
+    let requirements = EnvironmentRequirements::default();
+    match compile_environment_plan(CompileEnvironmentInput {
+        plan_id: uuid::Uuid::new_v4().simple().to_string(),
+        project_id: &record.project_id,
+        request_id: &record.id,
+        action_id: &record.action_id,
+        campaign_id: None,
+        revision,
+        risk_class: &risk_class,
+        conventions: &conventions,
+        requirements: &requirements,
+        builder: environment_builder_descriptor(),
+        now,
+    }) {
+        Ok(plan) => {
+            app.db
+                .save_environment_plan(&plan)
+                .await
+                .map_err(api_error)?;
+            Ok(plan)
+        }
+        Err(error) => {
+            let plan = blocked_environment_plan(
+                record,
+                revision,
+                &risk_class,
+                &conventions,
+                EnvironmentBlocker {
+                    code: if matches!(
+                        error.code,
+                        EnvironmentBlockerCode::EnvironmentConventionsConflict
+                            | EnvironmentBlockerCode::EnvironmentConventionsMissing
+                    ) {
+                        error.code
+                    } else {
+                        EnvironmentBlockerCode::EnvironmentPlanInvalid
+                    },
+                    message: error.message,
+                },
+            );
+            app.db
+                .save_environment_plan(&plan)
+                .await
+                .map_err(api_error)?;
+            Ok(plan)
+        }
+    }
+}
+
+async fn approve_and_freeze_environment(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+    recorded_by: &str,
+    rationale: &str,
+    decision: factory_native::planning::environment::LeadReviewDecision,
+) -> Result<
+    Option<(
+        factory_native::planning::environment::EnvironmentPlanReview,
+        Option<factory_native::planning::environment::EnvironmentSpec>,
+    )>,
+    Response,
+> {
+    use factory_native::planning::environment::{
+        EnvironmentPlanStatus, EnvironmentSpecStatus, FreezeEnvironmentInput, LeadReviewDecision,
+        RecordLeadReviewInput, freeze_environment_spec, record_lead_review,
+    };
+    let stored = match app.db.latest_environment_plan(&record.id).await {
+        Ok(plan) => plan,
+        Err(Error::NotFound) => return Ok(None),
+        Err(error) => return Err(api_error(error)),
+    };
+    if stored.status == "FROZEN" {
+        let spec = app.db.environment_spec_for_request(&record.id).await.ok();
+        let review = app
+            .db
+            .latest_environment_plan_review(&stored.plan_sha256)
+            .await
+            .ok();
+        return Ok(review.map(|review| (review, spec.map(|value| value.spec))));
+    }
+    if stored.status == "BLOCKED" {
+        return Err(environment_plan_conflict(&stored.plan));
+    }
+    let mut plan = stored.plan;
+    let lead_principal = format!("lead:{}", record.lead_request_id);
+    let review = match record_lead_review(
+        &mut plan,
+        RecordLeadReviewInput {
+            review_id: uuid::Uuid::new_v4().to_string(),
+            principal_id: &lead_principal,
+            recorded_by,
+            decision,
+            rationale,
+            evidence_refs: vec![format!("request:{}", record.id)],
+            now: chrono::Utc::now(),
+        },
+    ) {
+        Ok(review) => review,
+        Err(error) => {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": error.message,
+                    "code": error.code_str(),
+                })),
+            )
+                .into_response());
+        }
+    };
+    app.db
+        .save_environment_plan_review(&review)
+        .await
+        .map_err(api_error)?;
+    if decision != LeadReviewDecision::Approved {
+        app.db
+            .mark_environment_plan_status(&plan.plan_sha256, EnvironmentPlanStatus::Blocked)
+            .await
+            .map_err(api_error)?;
+        return Ok(Some((review, None)));
+    }
+    let spec = match freeze_environment_spec(
+        &plan,
+        &review,
+        FreezeEnvironmentInput {
+            spec_id: uuid::Uuid::new_v4().to_string(),
+            nix_version: std::env::var("FACTORY_ENVIRONMENT_NIX_VERSION")
+                .unwrap_or_else(|_| DEFAULT_ENVIRONMENT_NIX_VERSION.into())
+                .as_str(),
+            devenv_version: std::env::var("FACTORY_ENVIRONMENT_DEVENV_VERSION")
+                .unwrap_or_else(|_| DEFAULT_ENVIRONMENT_DEVENV_VERSION.into())
+                .as_str(),
+            now: chrono::Utc::now(),
+        },
+    ) {
+        Ok(spec) => spec,
+        Err(error) => {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": error.message,
+                    "code": error.code_str(),
+                })),
+            )
+                .into_response());
+        }
+    };
+    if spec.status != EnvironmentSpecStatus::Frozen {
+        return Err(StatusCode::CONFLICT.into_response());
+    }
+    app.db
+        .save_environment_license_inventory(
+            &plan.plan_sha256,
+            Some(&spec.spec_sha256),
+            &plan.license_inventory,
+        )
+        .await
+        .map_err(api_error)?;
+    app.db
+        .save_environment_spec(&spec)
+        .await
+        .map_err(api_error)?;
+    app.db
+        .mark_environment_plan_status(&plan.plan_sha256, EnvironmentPlanStatus::Frozen)
+        .await
+        .map_err(api_error)?;
+    plan.status = EnvironmentPlanStatus::Frozen;
+    if let Err(error) = app
+        .db
+        .set_action_environment_binding(&record.action_id, &plan, &spec)
+        .await
+    {
+        return Err(api_error(error));
+    }
+    Ok(Some((review, Some(spec))))
+}
+
+fn environment_plan_conflict(
+    plan: &factory_native::planning::environment::EnvironmentPlan,
+) -> Response {
+    let blocker = plan
+        .blockers
+        .first()
+        .map(|blocker| (blocker.code.as_str(), blocker.message.clone()))
+        .unwrap_or((
+            factory_native::planning::environment::EnvironmentBlockerCode::EnvironmentPlanInvalid
+                .as_str(),
+            "the environment plan is not executable".into(),
+        ));
+    (
+        StatusCode::CONFLICT,
+        Json(json!({
+            "error": blocker.1,
+            "code": blocker.0,
+            "environment": {
+                "planId": plan.plan_id,
+                "planSha256": plan.plan_sha256,
+                "status": plan.status,
+                "blockers": plan.blockers,
+            }
+        })),
+    )
+        .into_response()
+}
+
+async fn environment_projection_for_request(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+) -> Result<Value, Error> {
+    let action_required = app
+        .db
+        .action(&record.action_id)
+        .await
+        .map(|action| action.spec.environment_required)
+        .unwrap_or(false);
+    let stored = match app.db.latest_environment_plan(&record.id).await {
+        Ok(plan) => Some(plan),
+        Err(Error::NotFound) => None,
+        Err(error) => return Err(error),
+    };
+    let reviews = app
+        .db
+        .environment_plan_reviews(&record.id)
+        .await
+        .unwrap_or_default();
+    let spec = app.db.environment_spec_for_request(&record.id).await.ok();
+    let receipt = match &spec {
+        Some(spec) => app
+            .db
+            .latest_environment_build_receipt(&spec.spec_sha256)
+            .await
+            .ok(),
+        None => None,
+    };
+    let (plan, status, blockers) = match &stored {
+        Some(stored) => {
+            let mut blockers = stored.plan.blockers.clone();
+            if stored.status != "FROZEN" && spec.is_none() {
+                blockers.push(factory_native::planning::environment::EnvironmentBlocker {
+                    code: factory_native::planning::environment::EnvironmentBlockerCode::EnvironmentPlanRequired,
+                    message: "Lead approval and Core freeze are required before execution or checks."
+                        .into(),
+                });
+            }
+            (Some(stored.plan.clone()), stored.status.clone(), blockers)
+        }
+        None => (
+            None,
+            "MISSING".into(),
+            vec![factory_native::planning::environment::EnvironmentBlocker {
+                code: factory_native::planning::environment::EnvironmentBlockerCode::EnvironmentPlanRequired,
+                message:
+                    "No environment plan is recorded for this request. Execution and checks are refused until Core compiles and freezes one."
+                        .into(),
+            }],
+        ),
+    };
+    let lead_approval = reviews
+        .iter()
+        .rev()
+        .find(|review| {
+            review.reviewer_role
+                == factory_native::planning::environment::EnvironmentReviewerRole::Lead
+        })
+        .cloned();
+    Ok(json!({
+        "required": action_required || stored.is_some(),
+        "status": status,
+        "plan": plan,
+        "planId": plan.as_ref().map(|plan| plan.plan_id.clone()),
+        "planSha256": plan.as_ref().map(|plan| plan.plan_sha256.clone()),
+        "planRevision": plan.as_ref().map(|plan| plan.revision),
+        "conventions": plan.as_ref().map(|plan| plan.conventions.clone()),
+        "reviews": reviews,
+        "leadApproval": lead_approval,
+        "spec": spec.as_ref().map(|spec| spec.spec.clone()),
+        "specSha256": spec.as_ref().map(|spec| spec.spec_sha256.clone()),
+        "builder": {
+            "descriptor": plan.as_ref().map(|plan| plan.builder.clone()).or_else(|| Some(environment_builder_descriptor())),
+            "receipt": receipt,
+        },
+        "licenseInventory": plan.as_ref().map(|plan| plan.license_inventory.clone()),
+        "blockers": blockers,
+    }))
+}
+
+async fn environment_ready_for_request(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+) -> Result<(), Response> {
+    match app.db.latest_environment_plan(&record.id).await {
+        Ok(plan) => {
+            if plan.status == "BLOCKED" || !plan.plan.blockers.is_empty() {
+                return Err(environment_plan_conflict(&plan.plan));
+            }
+            if plan.status != "FROZEN"
+                && app
+                    .db
+                    .environment_spec_for_request(&record.id)
+                    .await
+                    .is_err()
+            {
+                return Err((
+                    StatusCode::CONFLICT,
+                    Json(json!({
+                        "error": "the environment plan is not frozen; a Lead planning decision and Core freeze are required before execution.",
+                        "code": "ENVIRONMENT_PLAN_REQUIRED",
+                        "planId": plan.plan.plan_id,
+                        "planSha256": plan.plan_sha256,
+                        "status": plan.status,
+                    })),
+                )
+                    .into_response());
+            }
+            let action = app.db.action(&record.action_id).await.map_err(api_error)?;
+            if let Err(error) = factory_native::db::validate_environment_requirement(&action.spec) {
+                return Err(api_error(error));
+            }
+            Ok(())
+        }
+        Err(Error::NotFound) => {
+            let action = app.db.action(&record.action_id).await.map_err(api_error)?;
+            if action.spec.environment_required {
+                return Err((
+                    StatusCode::CONFLICT,
+                    Json(json!({
+                        "error": "the action requires a frozen environment plan but none is recorded",
+                        "code": "ENVIRONMENT_PLAN_REQUIRED",
+                    })),
+                )
+                    .into_response());
+            }
+            Ok(())
+        }
+        Err(error) => Err(api_error(error)),
+    }
+}
+
 #[derive(Debug, Clone)]
 struct PlanningCompileConflict {
     code: &'static str,
@@ -11602,6 +12166,9 @@ async fn persist_planning_plan(
         Err(Error::NotFound) => 1,
         Err(error) => return Err(api_error(error)),
     };
+    let environment_risk = format!("{:?}", context.risk);
+    let environment_plan =
+        compile_environment_for_request(app, record, &config, revision, &environment_risk).await?;
     let now = chrono::Utc::now().to_rfc3339();
     let plan_bundle = json!({
         "schemaVersion": factory_native::planning::SCHEMA_VERSION,
@@ -11705,6 +12272,20 @@ async fn persist_planning_plan(
         })
         .await
         .map_err(api_error)?;
+    if status == "AUTO_APPROVED"
+        && environment_plan.status
+            == factory_native::planning::environment::EnvironmentPlanStatus::CoreValidated
+        && let Err(response) = approve_and_freeze_environment(
+            app,
+            record,
+            "core:auto-plan-review",
+            "Core auto-approval recorded the Lead planning decision for this exact environment plan; Core validation, licensing and freeze remain authoritative.",
+            factory_native::planning::environment::LeadReviewDecision::Approved,
+        )
+        .await
+    {
+        return Err(response);
+    }
     let workflow_run_id = ensure_planning_workflow(app, &record.id, &plan_record.content_sha256)
         .await
         .map_err(api_error)?;
@@ -12919,6 +13500,7 @@ async fn ensure_planning_ready(
     if let Some(response) = planning_readiness_conflict(&readiness) {
         return Err(response);
     }
+    environment_ready_for_request(app, record).await?;
     Ok(readiness)
 }
 
@@ -12933,6 +13515,46 @@ async fn ensure_planning_ready_or_error(
     if let Some(conflict) = readiness.conflict() {
         return Err(conflict.into_error());
     }
+    let action = app.db.action(&record.action_id).await?;
+    match app.db.latest_environment_plan(&record.id).await {
+        Ok(plan) => {
+            if plan.status == "BLOCKED" || !plan.plan.blockers.is_empty() {
+                let blocker = plan.plan.blockers.first();
+                return Err(Error::IntakeConflict {
+                    code: blocker
+                        .map(|blocker| blocker.code.as_str())
+                        .unwrap_or("ENVIRONMENT_PLAN_REQUIRED"),
+                    message: blocker
+                        .map(|blocker| blocker.message.clone())
+                        .unwrap_or_else(|| {
+                            "the environment plan is blocked before execution".into()
+                        }),
+                });
+            }
+            if plan.status != "FROZEN"
+                && app
+                    .db
+                    .environment_spec_for_request(&record.id)
+                    .await
+                    .is_err()
+            {
+                return Err(Error::IntakeConflict {
+                    code: "ENVIRONMENT_PLAN_REQUIRED",
+                    message: "the environment plan is not frozen; a Lead decision and Core freeze are required".into(),
+                });
+            }
+        }
+        Err(Error::NotFound) if action.spec.environment_required => {
+            return Err(Error::IntakeConflict {
+                code: "ENVIRONMENT_PLAN_REQUIRED",
+                message: "the action requires a frozen environment plan but none is recorded"
+                    .into(),
+            });
+        }
+        Err(Error::NotFound) => {}
+        Err(error) => return Err(error),
+    }
+    factory_native::db::validate_environment_requirement(&action.spec)?;
     Ok(())
 }
 
@@ -13315,6 +13937,24 @@ async fn review_agentic_plan(
         Ok(review) => review,
         Err(error) => return api_error(error),
     };
+    let environment_decision = match status {
+        "OWNER_APPROVED" => {
+            Some(factory_native::planning::environment::LeadReviewDecision::Approved)
+        }
+        "CHANGES_REQUESTED" => {
+            Some(factory_native::planning::environment::LeadReviewDecision::ChangesRequested)
+        }
+        "REJECTED" => Some(factory_native::planning::environment::LeadReviewDecision::Rejected),
+        _ => None,
+    };
+    if let Some(decision) = environment_decision {
+        match approve_and_freeze_environment(&app, &record, &principal, &input.rationale, decision)
+            .await
+        {
+            Ok(_) => {}
+            Err(response) => return response,
+        }
+    }
     if let Some(target) = target {
         match app.db.workflow_run_for_request(&record.id).await {
             Ok(Some(run)) if run.state == WorkflowState::PlanReview => {
@@ -13342,6 +13982,96 @@ async fn review_agentic_plan(
         .ok()
         .flatten();
     Json(json!({"review": review, "workflow": workflow})).into_response()
+}
+
+async fn get_agentic_environment(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    match environment_projection_for_request(&app, &record).await {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct EnvironmentPlanReviewInput {
+    plan_sha256: String,
+    plan_revision: u32,
+    decision: String,
+    rationale: String,
+}
+
+async fn review_agentic_environment(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<EnvironmentPlanReviewInput>,
+) -> Response {
+    use factory_native::planning::environment::LeadReviewDecision;
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    let stored = match app.db.latest_environment_plan(&record.id).await {
+        Ok(stored) => stored,
+        Err(error) => return api_error(error),
+    };
+    if stored.plan_sha256 != input.plan_sha256 || stored.plan.revision != input.plan_revision {
+        return planning_conflict(
+            "ENVIRONMENT_HASH_MISMATCH",
+            "the environment review does not bind the current plan revision and hash",
+        );
+    }
+    if input.rationale.trim().len() < 8 || input.rationale.len() > 4_000 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "an environment review requires a bounded rationale",
+                "code": "RATIONALE_REQUIRED",
+            })),
+        )
+            .into_response();
+    }
+    let decision = match input.decision.as_str() {
+        "APPROVE" => LeadReviewDecision::Approved,
+        "CHANGES_REQUESTED" => LeadReviewDecision::ChangesRequested,
+        "REJECT" => LeadReviewDecision::Rejected,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "decision must be APPROVE, CHANGES_REQUESTED or REJECT",
+                    "code": "ENVIRONMENT_REVIEW_DECISION_INVALID",
+                })),
+            )
+                .into_response();
+        }
+    };
+    let principal = operator_principal(session.as_ref().map(|Extension(device)| device));
+    match approve_and_freeze_environment(&app, &record, &principal, &input.rationale, decision)
+        .await
+    {
+        Ok(_) => {}
+        Err(response) => return response,
+    }
+    match environment_projection_for_request(&app, &record).await {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => api_error(error),
+    }
 }
 
 async fn get_agentic_findings(
@@ -16829,6 +17559,27 @@ async fn authorize_campaign(
 ) -> Response {
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let campaign = match app.db.campaign(&id).await {
+        Ok(campaign) => campaign,
+        Err(error) => return api_error(error),
+    };
+    let action_spec = match app.db.action(&campaign.action_id).await {
+        Ok(action) => action.spec,
+        Err(error) => return api_error(error),
+    };
+    if action_spec.environment_spec_sha256.is_none() || !action_spec.environment_required {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "the Campaign ActionSpec has no frozen environment plan/spec; Core refuses to authorize execution rather than selecting a language image.",
+                "code": "ENVIRONMENT_PLAN_REQUIRED",
+            })),
+        )
+            .into_response();
+    }
+    if let Err(error) = factory_native::db::validate_environment_requirement(&action_spec) {
+        return api_error(error);
     }
     match app.db.intake_request_for_campaign(&id).await {
         Ok(record) => {
@@ -21248,6 +21999,8 @@ mod tests {
                 command: vec!["cargo".into(), "fmt".into(), "--check".into()],
                 expect_exit: 0,
                 timeout_secs: 60,
+                environment_plan_id: None,
+                environment_spec_sha256: None,
             },
             SpecCheck {
                 id: "build".into(),
@@ -21256,6 +22009,8 @@ mod tests {
                 command: vec!["cargo".into(), "build".into()],
                 expect_exit: 0,
                 timeout_secs: 120,
+                environment_plan_id: None,
+                environment_spec_sha256: None,
             },
             SpecCheck {
                 id: "test".into(),
@@ -21264,6 +22019,8 @@ mod tests {
                 command: vec!["cargo".into(), "test".into()],
                 expect_exit: 0,
                 timeout_secs: 120,
+                environment_plan_id: None,
+                environment_spec_sha256: None,
             },
             SpecCheck {
                 id: "functional".into(),
@@ -21272,6 +22029,8 @@ mod tests {
                 command: vec!["cargo".into(), "run".into()],
                 expect_exit: 0,
                 timeout_secs: 120,
+                environment_plan_id: None,
+                environment_spec_sha256: None,
             },
             SpecCheck {
                 id: "negative".into(),
@@ -21280,6 +22039,8 @@ mod tests {
                 command: vec!["cargo".into(), "run".into(), "--bad".into()],
                 expect_exit: 1,
                 timeout_secs: 60,
+                environment_plan_id: None,
+                environment_spec_sha256: None,
             },
         ]
     }
@@ -21981,6 +22742,8 @@ mod tests {
                     command: vec!["cargo".into(), "build".into()],
                     expect_exit: 0,
                     timeout_secs: 120,
+                    environment_plan_id: None,
+                    environment_spec_sha256: None,
                 },
                 SpecCheck {
                     id: "test".into(),
@@ -21989,6 +22752,8 @@ mod tests {
                     command: vec!["cargo".into(), "test".into()],
                     expect_exit: 0,
                     timeout_secs: 120,
+                    environment_plan_id: None,
+                    environment_spec_sha256: None,
                 },
                 SpecCheck {
                     id: "functional".into(),
@@ -21997,6 +22762,8 @@ mod tests {
                     command: vec!["cargo".into(), "test".into(), "intake".into()],
                     expect_exit: 0,
                     timeout_secs: 120,
+                    environment_plan_id: None,
+                    environment_spec_sha256: None,
                 },
                 SpecCheck {
                     id: "negative".into(),
@@ -22005,6 +22772,8 @@ mod tests {
                     command: vec!["cargo".into(), "test".into(), "--bad".into()],
                     expect_exit: 1,
                     timeout_secs: 60,
+                    environment_plan_id: None,
+                    environment_spec_sha256: None,
                 },
             ]
         }
@@ -22029,7 +22798,17 @@ mod tests {
                 );
             }
             std::fs::write(repository.join("seed.txt"), "seed\n").unwrap();
-            for arguments in [vec!["add", "seed.txt"], vec!["commit", "-qm", "seed"]] {
+            std::fs::write(
+                repository.join("devenv.nix"),
+                "{ pkgs, ... }: { packages = [ ]; }\n",
+            )
+            .unwrap();
+            std::fs::write(
+                repository.join("devenv.lock"),
+                "{\"nodes\":{\"nixpkgs\":{\"locked\":{\"owner\":\"NixOS\",\"repo\":\"nixpkgs\",\"rev\":\"1111111111111111111111111111111111111111\"}}}}\n",
+            )
+            .unwrap();
+            for arguments in [vec!["add", "--all"], vec!["commit", "-qm", "seed"]] {
                 assert!(
                     std::process::Command::new("git")
                         .arg("-C")
@@ -22366,6 +23145,12 @@ mod tests {
                 checks: checks(),
                 dependency_plan: None,
                 dependencies_required: false,
+                environment_plan_id: None,
+                environment_plan_sha256: None,
+                environment_spec_sha256: None,
+                environment_builder_image: None,
+                environment_builder_image_digest: None,
+                environment_required: false,
             };
             let (assessment, proposal) = factory_native::lead::fixture_lead_assessment(
                 &lead.id,
@@ -24152,6 +24937,12 @@ mod tests {
                 checks: checks(),
                 dependency_plan: None,
                 dependencies_required: false,
+                environment_plan_id: None,
+                environment_plan_sha256: None,
+                environment_spec_sha256: None,
+                environment_builder_image: None,
+                environment_builder_image_digest: None,
+                environment_required: false,
             };
             let (assessment, _) = factory_native::lead::fixture_lead_assessment(
                 &lead.id,
@@ -26667,6 +27458,223 @@ mod tests {
                     .len(),
                 1
             );
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
+        async fn environment_plan_is_compiled_reviewed_and_bound_before_execution() {
+            let fixture = setup().await;
+            let (status, _) = enable_policy(&fixture).await;
+            assert!(matches!(status, StatusCode::CREATED | StatusCode::OK));
+            let (status, intake) = create_intake(&fixture, "environment-request-1").await;
+            assert_eq!(status, StatusCode::CREATED, "{intake}");
+            let intake_id = intake["id"].as_str().unwrap().to_string();
+            let _ = fixture_plan(&fixture, &intake_id, "FIXTURE").await;
+            let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            let config = fixture
+                .app
+                .db
+                .project_config(&record.project_id)
+                .await
+                .unwrap();
+            let (status, missing) = send(
+                &fixture.router,
+                "GET",
+                &format!("/agentic/requests/{intake_id}/environment"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{missing}");
+            assert_eq!(missing["status"], "MISSING");
+            assert!(missing["plan"].is_null());
+            assert!(
+                missing["blockers"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|blocker| blocker["code"] == "ENVIRONMENT_PLAN_REQUIRED")
+            );
+
+            let plan = match compile_environment_for_request(
+                &fixture.app,
+                &record,
+                &config,
+                1,
+                "R0",
+            )
+            .await
+            {
+                Ok(plan) => plan,
+                Err(response) => {
+                    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                        .await
+                        .unwrap();
+                    panic!(
+                        "environment compile failed: {}",
+                        String::from_utf8_lossy(&bytes)
+                    );
+                }
+            };
+            assert_eq!(
+                plan.status,
+                factory_native::planning::environment::EnvironmentPlanStatus::CoreValidated
+            );
+            assert_eq!(
+                plan.conventions.existing_environment,
+                factory_native::planning::environment::ExistingEnvironmentKind::Devenv
+            );
+            let (status, projection) = send(
+                &fixture.router,
+                "GET",
+                &format!("/agentic/requests/{intake_id}/environment"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{projection}");
+            assert_eq!(projection["status"], "CORE_VALIDATED");
+            assert!(
+                projection["blockers"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|blocker| blocker["code"] == "ENVIRONMENT_PLAN_REQUIRED")
+            );
+
+            let (status, reviewed) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/environment/review"),
+                Some(json!({
+                    "planSha256": plan.plan_sha256,
+                    "planRevision": 1,
+                    "decision": "APPROVE",
+                    "rationale": "The committed devenv plan is exact and licensed.",
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{reviewed}");
+            assert_eq!(reviewed["status"], "FROZEN");
+            assert_eq!(
+                reviewed["leadApproval"]["principalId"],
+                format!("lead:{}", record.lead_request_id)
+            );
+            assert_eq!(reviewed["leadApproval"]["decision"], "APPROVED");
+            assert_eq!(
+                reviewed["specSha256"], reviewed["spec"]["specSha256"],
+                "{reviewed}"
+            );
+            let action = fixture.app.db.action(&record.action_id).await.unwrap();
+            assert!(action.spec.environment_required);
+            assert_eq!(
+                action.spec.environment_spec_sha256.as_deref(),
+                reviewed["specSha256"].as_str()
+            );
+            assert!(
+                action
+                    .spec
+                    .checks
+                    .iter()
+                    .all(|check| check.environment_plan_id.as_deref()
+                        == Some(plan.plan_id.as_str())
+                        && check.environment_spec_sha256.as_deref()
+                            == reviewed["specSha256"].as_str())
+            );
+
+            let (status, stale) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/environment/review"),
+                Some(json!({
+                    "planSha256": "f".repeat(64),
+                    "planRevision": 1,
+                    "decision": "APPROVE",
+                    "rationale": "A stale review must fail closed.",
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT);
+            assert_eq!(stale["code"], "ENVIRONMENT_HASH_MISMATCH");
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
+        async fn campaign_authorization_refuses_a_required_environment_without_a_plan() {
+            use sqlx::connection::Connection as SqlxConnection;
+            use sqlx_sqlite::{SqliteConnectOptions, SqliteConnection};
+
+            let fixture = setup().await;
+            let (status, action) = send(
+                &fixture.router,
+                "POST",
+                "/actions",
+                Some(json!({
+                    "project_id": fixture.project_id,
+                    "objective": "Implement the bounded endpoint.",
+                    "provider": "opencode-go",
+                    "model": "deepseek-v4.1-flash",
+                    "idempotency_key": "environment-missing-action",
+                    "allowed_paths": ["src"],
+                    "checks": [],
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{action}");
+            let action_id = action["id"].as_str().unwrap().to_string();
+            let db_action = fixture.app.db.action(&action_id).await.unwrap();
+
+            let options = SqliteConnectOptions::new().filename(&fixture.path);
+            let mut connection = SqliteConnection::connect_with(&options).await.unwrap();
+            let mut spec = db_action.spec.clone();
+            spec.environment_required = true;
+            let spec_json = serde_json::to_string(&spec).unwrap();
+            let spec_sha = factory_native::planning::environment::sha256_hex(spec_json.as_bytes());
+            sqlx::query::query(
+                "UPDATE action_specs SET spec_json=?1,spec_sha256=?2 WHERE action_id=?3",
+            )
+            .bind(&spec_json)
+            .bind(&spec_sha)
+            .bind(&action_id)
+            .execute(&mut connection)
+            .await
+            .unwrap();
+            drop(connection);
+
+            let (status, campaign) = send(
+                &fixture.router,
+                "POST",
+                "/campaigns",
+                Some(json!({
+                    "action_id": action_id,
+                    "idempotency_key": "environment-missing-campaign",
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{campaign}");
+            let campaign_id = campaign["id"].as_str().unwrap().to_string();
+            let (status, refusal) = send(
+                &fixture.router,
+                "POST",
+                &format!("/campaigns/{campaign_id}/authorize"),
+                Some(json!({
+                    "authorization_id": "environment-missing-auth",
+                    "risk_class": "R0",
+                    "execution_mode": "FIXTURE",
+                    "actor": "operator",
+                    "rationale": "Bind the exact environment before dispatch.",
+                    "authorized_paths": ["src"],
+                    "operations": operations(),
+                    "progress": progress(),
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{refusal}");
+            assert_eq!(refusal["code"], "ENVIRONMENT_PLAN_REQUIRED", "{refusal}");
+
             fixture.app.db.close().await;
             let _ = std::fs::remove_file(fixture.path);
             let _ = std::fs::remove_dir_all(fixture.repository);

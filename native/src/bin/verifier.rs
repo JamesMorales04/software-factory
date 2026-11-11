@@ -415,6 +415,22 @@ async fn sandboxed_checks(
     result
 }
 
+/// A partial environment binding is refused. The exact plan/spec execution
+/// target is selected by the environment runner (WP1-B); this process must
+/// never silently treat a partially bound check as an unbound legacy check.
+fn require_complete_environment_binding(check: &SpecCheck) -> Result<(), VerificationError> {
+    match (
+        check.environment_plan_id.as_deref(),
+        check.environment_spec_sha256.as_deref(),
+    ) {
+        (None, None) | (Some(_), Some(_)) => Ok(()),
+        _ => Err(VerificationError::Infrastructure(format!(
+            "ENVIRONMENT_PLAN_REQUIRED: check {} has a partial environment binding",
+            check.id
+        ))),
+    }
+}
+
 async fn run_sandboxed_checks<B: VolumeBackend>(
     backend: &B,
     worktree: &Path,
@@ -439,6 +455,7 @@ async fn run_sandboxed_checks<B: VolumeBackend>(
                 VerificationError::Infrastructure(format!("verifier volume import failed: {error}"))
             })?;
         for check in checks {
+            require_complete_environment_binding(check)?;
             let Some(executable) = check.command.first() else {
                 return Err(VerificationError::Infrastructure(format!(
                     "check {} has no executable",
@@ -761,6 +778,7 @@ async fn run_checks(
     check_home: &Path,
 ) -> Result<(), VerificationError> {
     for check in checks {
+        require_complete_environment_binding(check)?;
         let Some(executable) = check.command.first() else {
             return Err(VerificationError::Infrastructure(format!(
                 "check {} has no executable",
@@ -1226,7 +1244,18 @@ mod tests {
             command: command.into_iter().map(str::to_owned).collect(),
             expect_exit,
             timeout_secs: 30,
+            environment_plan_id: None,
+            environment_spec_sha256: None,
         }
+    }
+
+    #[test]
+    fn partial_environment_binding_is_refused() {
+        let mut bound = check("test", vec!["cargo", "test"], 0);
+        bound.environment_plan_id = Some("plan-1".into());
+        assert!(require_complete_environment_binding(&bound).is_err());
+        bound.environment_spec_sha256 = Some("a".repeat(64));
+        assert!(require_complete_environment_binding(&bound).is_ok());
     }
 
     fn modes(path: &str, old_mode: &str, new_mode: &str) -> ChangedPathModes {

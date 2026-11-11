@@ -341,6 +341,12 @@ impl Database {
             dependencies_required: dependency_plan.is_some_and(|plan| {
                 plan.acquisition != crate::dependencies::DependencyAcquisition::NotRequired
             }),
+            environment_plan_id: None,
+            environment_plan_sha256: None,
+            environment_spec_sha256: None,
+            environment_builder_image: None,
+            environment_builder_image_digest: None,
+            environment_required: false,
         };
         let spec_json = serde_json::to_string(&spec).expect("ActionSpec serializes");
         let spec_sha256 = sha256_hex(spec_json.as_bytes());

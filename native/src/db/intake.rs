@@ -288,6 +288,12 @@ impl Database {
             checks: Vec::new(),
             dependency_plan: None,
             dependencies_required: false,
+            environment_plan_id: None,
+            environment_plan_sha256: None,
+            environment_spec_sha256: None,
+            environment_builder_image: None,
+            environment_builder_image_digest: None,
+            environment_required: false,
         })
     }
 
@@ -2090,6 +2096,8 @@ mod tests {
                 command: vec!["cargo".into(), "build".into()],
                 expect_exit: 0,
                 timeout_secs: 120,
+                environment_plan_id: None,
+                environment_spec_sha256: None,
             },
             SpecCheck {
                 id: "test".into(),
@@ -2098,6 +2106,8 @@ mod tests {
                 command: vec!["cargo".into(), "test".into()],
                 expect_exit: 0,
                 timeout_secs: 120,
+                environment_plan_id: None,
+                environment_spec_sha256: None,
             },
             SpecCheck {
                 id: "functional".into(),
@@ -2106,6 +2116,8 @@ mod tests {
                 command: vec!["cargo".into(), "test".into(), "intake".into()],
                 expect_exit: 0,
                 timeout_secs: 120,
+                environment_plan_id: None,
+                environment_spec_sha256: None,
             },
             SpecCheck {
                 id: "negative".into(),
@@ -2114,6 +2126,8 @@ mod tests {
                 command: vec!["cargo".into(), "test".into(), "--bad".into()],
                 expect_exit: 1,
                 timeout_secs: 60,
+                environment_plan_id: None,
+                environment_spec_sha256: None,
             },
         ]
     }
@@ -2147,6 +2161,12 @@ mod tests {
             checks: checks(),
             dependency_plan: None,
             dependencies_required: false,
+            environment_plan_id: None,
+            environment_plan_sha256: None,
+            environment_spec_sha256: None,
+            environment_builder_image: None,
+            environment_builder_image_digest: None,
+            environment_required: false,
         };
         let (assessment, proposal) = crate::lead::fixture_lead_assessment(
             &lead.id,
@@ -3439,6 +3459,12 @@ mod tests {
             checks: checks(),
             dependency_plan: None,
             dependencies_required: false,
+            environment_plan_id: None,
+            environment_plan_sha256: None,
+            environment_spec_sha256: None,
+            environment_builder_image: None,
+            environment_builder_image_digest: None,
+            environment_required: false,
         };
         let (assessment, proposal) = crate::lead::fixture_lead_assessment(
             &lead.id,

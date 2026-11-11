@@ -22,6 +22,8 @@ fn check(
         command: command.iter().map(|value| (*value).to_string()).collect(),
         expect_exit: 0,
         timeout_secs,
+        environment_plan_id: None,
+        environment_spec_sha256: None,
     }
 }
 

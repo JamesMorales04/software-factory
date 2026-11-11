@@ -819,6 +819,7 @@ export interface CandidatePullRequestOpenResult {
 export interface CampaignDetail {
   campaign: Campaign;
   authorization: CampaignAuthorization | null;
+  environment?: EnvironmentStateView | null;
   tasks: LeadTask[];
   runs: Run[];
   attempts: Attempt[];
@@ -1461,6 +1462,293 @@ export interface ParticipantPlanReadinessView {
   problems: string[];
 }
 
+export type EnvironmentPlanStatus =
+  | "DRAFT"
+  | "CORE_VALIDATED"
+  | "LEAD_APPROVED"
+  | "FROZEN"
+  | "REJECTED"
+  | "BLOCKED"
+  | "MISSING";
+
+export interface EnvironmentBlockerView {
+  code: string;
+  message: string;
+}
+
+export interface EnvironmentConventionPinView {
+  name: string;
+  value: string;
+  source: string;
+}
+
+export interface EnvironmentConventionFileView {
+  path: string;
+  kind: string;
+  sha256: string;
+  precedence: string;
+  pins: EnvironmentConventionPinView[];
+}
+
+export interface EnvironmentConventionCommandView {
+  name: string;
+  argv: string[];
+  cwd: string;
+  source: string;
+}
+
+export interface EnvironmentConventionConflictView {
+  name: string;
+  detail: string;
+  sources: string[];
+  values: string[];
+}
+
+export interface EnvironmentConventionsView {
+  schemaVersion: number;
+  projectId: string;
+  baseCommit: string;
+  conventionsSha256: string;
+  scannedAt: string;
+  files: EnvironmentConventionFileView[];
+  commands: EnvironmentConventionCommandView[];
+  conflicts: EnvironmentConventionConflictView[];
+  truncated: boolean;
+  skippedEntries: number;
+  provenance: string;
+  existingEnvironment: string;
+}
+
+export interface EnvironmentToolchainView {
+  id: string;
+  version: string;
+  source: string;
+  evidence: string[];
+}
+
+export interface EnvironmentPackageView {
+  name: string;
+  version: string;
+  license: string;
+  source: string;
+  attr: string;
+  sha256: string;
+  unfree: boolean;
+  attribution: string;
+}
+
+export interface EnvironmentServiceView {
+  name: string;
+  version: string;
+  ephemeral: boolean;
+  network: string;
+  port: number | null;
+}
+
+export interface EnvironmentCommandView {
+  argv: string[];
+  cwd: string;
+  timeoutSecs: number;
+  expectExit: number;
+}
+
+export interface EnvironmentBrowserView {
+  name: string;
+  version: string;
+  source: string;
+}
+
+export interface EnvironmentFileView {
+  path: string;
+  sha256: string;
+  origin: string;
+  content?: string;
+}
+
+export interface EnvironmentNixView {
+  nixpkgs: string;
+  inputs: Array<{ name: string; url: string; sha256: string }>;
+  allowUnfree: boolean;
+  sandbox: {
+    sandbox: boolean;
+    impure: boolean;
+    hostMounts: string[];
+    privileged: boolean;
+    hostNetwork: boolean;
+    hostSockets: string[];
+  };
+}
+
+export interface EnvironmentResourceLimitsView {
+  cpu: number;
+  memoryMib: number;
+  diskMib: number;
+  pids: number;
+  timeoutSecs: number;
+}
+
+export interface EnvironmentNetworkView {
+  build: string;
+  fetch: string;
+  fetchAllowlist: string[];
+}
+
+export interface EnvironmentLicenseEntryView {
+  name: string;
+  version: string;
+  license: string;
+  source: string;
+  sha256: string;
+  unfree: boolean;
+  ownerOverrideId: string | null;
+  attribution: string;
+}
+
+export interface EnvironmentUnfreeOverrideView {
+  id: string;
+  package: string;
+  version: string;
+  license: string;
+  planSha256: string;
+  reason: string;
+  decisionId: string;
+  expiresAt: string;
+}
+
+export interface EnvironmentLicenseInventoryView {
+  schemaVersion: number;
+  policyRevision: string;
+  allowUnfree: boolean;
+  entries: EnvironmentLicenseEntryView[];
+  overrides: EnvironmentUnfreeOverrideView[];
+  blockers: EnvironmentBlockerView[];
+  inventorySha256: string;
+  sbomSha256: string;
+}
+
+export interface EnvironmentBuilderDescriptorView {
+  image: string;
+  digest: string;
+  platform: string;
+  policyRevision: string;
+  status: string;
+}
+
+export interface EnvironmentBuildReceiptView {
+  schemaVersion: number;
+  receiptId: string;
+  specSha256: string;
+  platform: string;
+  builderImage: string;
+  builderImageDigest: string;
+  builderPolicyRevision: string;
+  status: string;
+  storePath: string;
+  outputSha256: string;
+  logRef: string;
+  sandboxAttestation: Record<string, boolean>;
+  blockers: EnvironmentBlockerView[];
+  durationMs: number;
+  createdAt: string;
+}
+
+export interface EnvironmentPlanReviewView {
+  schemaVersion: number;
+  reviewId: string;
+  requestId: string;
+  planId: string;
+  planSha256: string;
+  planRevision: number;
+  reviewerRole: string;
+  principalId: string;
+  recordedBy: string;
+  decision: string;
+  rationale: string;
+  decidedAt: string;
+  evidenceRefs: string[];
+}
+
+export interface EnvironmentPlanView {
+  schemaVersion: number;
+  planId: string;
+  projectId: string;
+  requestId: string;
+  actionId: string;
+  campaignId: string | null;
+  baseCommit: string;
+  conventionsSha256: string;
+  conventions: EnvironmentConventionsView;
+  riskClass: string;
+  status: EnvironmentPlanStatus;
+  revision: number;
+  source: string;
+  toolchains: EnvironmentToolchainView[];
+  packages: EnvironmentPackageView[];
+  services: EnvironmentServiceView[];
+  commands: Record<string, EnvironmentCommandView>;
+  browsers: EnvironmentBrowserView[];
+  files: EnvironmentFileView[];
+  nix: EnvironmentNixView;
+  resources: EnvironmentResourceLimitsView;
+  network: EnvironmentNetworkView;
+  licenseInventory: EnvironmentLicenseInventoryView;
+  licenseInventorySha256: string;
+  builder: EnvironmentBuilderDescriptorView;
+  leadReview: EnvironmentPlanReviewView | null;
+  blockers: EnvironmentBlockerView[];
+  commandsRationale: string;
+  planSha256: string;
+  createdAt: string;
+}
+
+export interface EnvironmentSpecView {
+  schemaVersion: number;
+  specId: string;
+  specSha256: string;
+  projectId: string;
+  requestId: string;
+  actionId: string;
+  campaignId: string | null;
+  baseCommit: string;
+  planId: string;
+  planSha256: string;
+  conventionsSha256: string;
+  reviewId: string;
+  platform: string;
+  nixVersion: string;
+  devenvVersion: string;
+  flakeLockSha256: string;
+  devenvLockSha256: string;
+  licenseInventorySha256: string;
+  sbomSha256: string;
+  builderImage: string;
+  builderImageDigest: string;
+  resourcePolicy: EnvironmentResourceLimitsView;
+  networkPolicy: EnvironmentNetworkView;
+  status: string;
+  frozenAt: string;
+}
+
+export interface EnvironmentStateView {
+  required: boolean;
+  status: EnvironmentPlanStatus | string;
+  plan: EnvironmentPlanView | null;
+  planId: string | null;
+  planSha256: string | null;
+  planRevision: number | null;
+  conventions: EnvironmentConventionsView | null;
+  reviews: EnvironmentPlanReviewView[];
+  leadApproval: EnvironmentPlanReviewView | null;
+  spec: EnvironmentSpecView | null;
+  specSha256: string | null;
+  builder: {
+    descriptor: EnvironmentBuilderDescriptorView | null;
+    receipt: EnvironmentBuildReceiptView | null;
+  };
+  licenseInventory: EnvironmentLicenseInventoryView | null;
+  blockers: EnvironmentBlockerView[];
+}
+
 export interface PlanningReadinessView {
   lane: PlanningLane;
   artifacts: PlanningArtifactRecord[];
@@ -1479,6 +1767,7 @@ export interface IntakeRequestProjection extends IntakeRequestSummary {
   proposal: LeadPlanProposalView | null;
   plan: FrozenLeadPlanRecord | null;
   planning?: PlanningReadinessView;
+  environment?: EnvironmentStateView | null;
   campaign: CampaignDetail | null;
   messages: IntakeMessage[];
 }
@@ -2003,6 +2292,7 @@ export interface AgenticRequestDetail {
     review: PlanReviewRecord | null;
     workflow: PlanningWorkflowRun | null;
   };
+  environment?: EnvironmentStateView | null;
   findings: FindingDispositionRecord[];
   stack: AgenticStackProfile;
   participants: AgenticParticipantPlan;
@@ -3628,6 +3918,23 @@ export const coreApi = {
   getAgenticPlanning: (id: string) =>
     request<AgenticPlanningProjection>(
       `/agentic/requests/${encodeURIComponent(id)}/planning`,
+    ),
+  getAgenticEnvironment: (id: string) =>
+    request<EnvironmentStateView>(
+      `/agentic/requests/${encodeURIComponent(id)}/environment`,
+    ),
+  reviewAgenticEnvironment: (
+    id: string,
+    input: {
+      planSha256: string;
+      planRevision: number;
+      decision: "APPROVE" | "CHANGES_REQUESTED" | "REJECT";
+      rationale: string;
+    },
+  ) =>
+    request<EnvironmentStateView>(
+      `/agentic/requests/${encodeURIComponent(id)}/environment/review`,
+      { method: "POST", body: JSON.stringify(input) },
     ),
   getRequestTrace: (id: string, limit?: number) => {
     const params = new URLSearchParams();
