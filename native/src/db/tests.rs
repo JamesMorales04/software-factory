@@ -1539,6 +1539,8 @@ fn salvage_checks() -> Vec<crate::lead::SpecCheck> {
             command: vec!["cargo".into(), "build".into()],
             expect_exit: 0,
             timeout_secs: 120,
+            environment_plan_id: None,
+            environment_spec_sha256: None,
         },
         SpecCheck {
             id: "test".into(),
@@ -1547,6 +1549,8 @@ fn salvage_checks() -> Vec<crate::lead::SpecCheck> {
             command: vec!["cargo".into(), "test".into()],
             expect_exit: 0,
             timeout_secs: 120,
+            environment_plan_id: None,
+            environment_spec_sha256: None,
         },
     ]
 }
