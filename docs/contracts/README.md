@@ -13,6 +13,14 @@
 | Frozen candidate quality pipeline | `quality-pipeline-s4a.md` | S4-A | ActionSpec, immutable candidate, independent verifier/reviewer, deterministic gate, browser checks |
 | Native campaign orchestration | `campaign-orchestration-s4b.md` | S4-B | Core-owned Campaign/Task plan, native dispatch, repair, budgets, restart and Office projection |
 | Agent Office and interactive WorkGraph | `agent-office-s4.md` | S4 | participant/tool-event projections, redaction, filters, visual Office and dependency graph |
+| Environment plan and spec | `environment-plan.md` | WP0 / program | ProjectConventions, Nix/devenv plan, Lead approval, license gate, frozen EnvironmentSpec, builder sandbox and evidence |
+| Risk-tiered delivery | `delivery-policy.md` | WP0 / program | DeliveryPolicy, exact-head merge, R0/R1/R2/R3 eligibility, fresh checks, idempotency, incidents and manual revert |
+| Issue-linked delivery lifecycle | `issue-lifecycle.md` | WP0 / program | frozen issue links, six lifecycle states, PR comment, close-after-merge and partial-issue handling |
+
+The three WP0 program contracts are proposed and not implemented; they are
+interfaces for the [delivery and environment program](../implementation/delivery-environment-program.md)
+and its [language-agnostic audit](../implementation/language-agnostic-audit.md).
+They do not change capability or parity states.
 
 The remaining F0 rows below (Agent Session, Quality–Delivery beyond S4-A/S4-B) are still proposed. Legacy session-identity and recovery contracts are archived; their invariants must be re-expressed against direct provider adapters when provider execution is implemented.
 

@@ -1,0 +1,148 @@
+{
+  "schemaVersion": 1,
+  "candidateBranch": "feat/environment-builder",
+  "baseline": "05c78b2",
+  "coreInterfaceCommit": "e9be02c",
+  "security": "TRUSTED_LOCAL",
+  "paidInference": false,
+  "deterministic": {
+    "pyCompile": "PASS",
+    "bashSyntax": "PASS",
+    "gitDiffCheck": "PASS",
+    "unitTests": {
+      "status": "PASS",
+      "count": 20,
+      "command": "python3 -m unittest discover -s deploy/environment-builder/tests -v"
+    }
+  },
+  "finalImage": {
+    "containerfile": "deploy/environment-builder/Containerfile",
+    "image": "localhost/software-factory-environment-builder:dev",
+    "imageDigest": "sha256:c1f26ceccd45451ce6085fc7df9811bfdaef3e002300b14a71c5f93594815824",
+    "size": "6.44 GB",
+    "descriptor": {
+      "status": "PASS",
+      "builderStatus": "READY",
+      "platform": "x86_64-linux"
+    },
+    "selfTest": {
+      "status": "PASS",
+      "nixVersion": "2.28.3",
+      "devenvVersion": "1.11.2",
+      "nodeVersion": "22.20.0",
+      "chromiumVersion": "143.0.7499.169"
+    }
+  },
+  "positiveAcceptance": {
+    "builderImage": "localhost/software-factory-environment-builder:dev",
+    "builderImageDigest": "sha256:c1f26ceccd45451ce6085fc7df9811bfdaef3e002300b14a71c5f93594815824",
+    "specSha256": "c10481f8acdfacc19711a8b0b5b20c4a8704f748f2396cd2a3b08bf93a42677e",
+    "storePath": "/nix/store/wyrgjl56z5nyq18clgnj1fkqr6vlvbzj-devenv-shell-env",
+    "closureEntries": 483,
+    "build": {
+      "status": "SUCCEEDED",
+      "outputSha256": "4e79552f01aaac949d60cf1037ab7c0c7c63c66be2561f3655337cd1a1ba02d1",
+      "durationMs": 7354
+    },
+    "warmRepeat": {
+      "status": "SUCCEEDED",
+      "outputSha256": "4e79552f01aaac949d60cf1037ab7c0c7c63c66be2561f3655337cd1a1ba02d1",
+      "durationMs": 4936
+    },
+    "nodePlaywrightCheck": {
+      "status": "PASSED",
+      "exitCode": 0,
+      "durationMs": 8683,
+      "detail": "real Chromium launch; tests/smoke.spec.mjs passed"
+    },
+    "rustCheck": {
+      "status": "PASSED",
+      "exitCode": 0,
+      "durationMs": 5224,
+      "detail": "cargo test --offline; wp0_rust_spike unit test passed"
+    },
+    "sandboxAttestation": {
+      "nonRoot": true,
+      "noSecrets": true,
+      "noHostNetwork": true,
+      "noHostSocket": true,
+      "noHostMount": true,
+      "sandbox": true,
+      "impure": false,
+      "boundedResources": true
+    },
+    "sbom": {
+      "frozenSbomSha256": "5f2a9b5b3ec0d7dbfea7c890af8fbb0f1ef267b3f26bf6b0c0a195fb3521539e",
+      "cycloneDxDocumentSha256": "b2a0f3903c05c5487d4ef6c6cadee32b11afea27b7a29d18c8569aff1a9d8402",
+      "matchesFrozenSpec": true
+    },
+    "fetch": {
+      "network": "factory-egress-internal",
+      "proxyEnforced": true,
+      "buildNetwork": "none"
+    }
+  },
+  "typedFailures": [
+    {
+      "case": "missing image or digest",
+      "code": "ENVIRONMENT_BUILDER_UNAVAILABLE",
+      "exitCode": 2,
+      "status": "PASS"
+    },
+    {
+      "case": "configured digest does not match inspected image",
+      "code": "ENVIRONMENT_HASH_MISMATCH",
+      "exitCode": 2,
+      "status": "PASS"
+    },
+    {
+      "case": "denied license",
+      "code": "ENVIRONMENT_LICENSE_DENIED",
+      "exitCode": 2,
+      "status": "PASS"
+    },
+    {
+      "case": "build network not NONE",
+      "code": "ENVIRONMENT_NETWORK_DENIED",
+      "exitCode": 2,
+      "status": "PASS"
+    },
+    {
+      "case": "fetch network host",
+      "code": "ENVIRONMENT_NETWORK_DENIED",
+      "exitCode": 2,
+      "status": "PASS"
+    },
+    {
+      "case": "non-none fetch network without proxy",
+      "code": "ENVIRONMENT_NETWORK_DENIED",
+      "exitCode": 2,
+      "status": "PASS"
+    },
+    {
+      "case": "CPU bound outside policy",
+      "code": "ENVIRONMENT_RESOURCE_LIMIT",
+      "exitCode": 2,
+      "status": "PASS"
+    },
+    {
+      "case": "offline build with empty store cache",
+      "code": "ENVIRONMENT_NETWORK_DENIED",
+      "exitCode": 2,
+      "status": "PASS"
+    }
+  ],
+  "notTested": [
+    "deploy/factory-browser/Containerfile build and its Chromium launch",
+    "registry publication and registry-manifest digest pinning",
+    "Compose/runtime-broker invocation of the builder image",
+    "check under the product Core authorization/Gate path",
+    "independent verification or acceptance"
+  ],
+  "versionCoordination": {
+    "builderNixVersion": "2.28.3",
+    "builderDevenvVersion": "1.11.2",
+    "coreDefaultDevenvVersionAtE9be02c": "1.10.0",
+    "action": "Core must set FACTORY_ENVIRONMENT_DEVENV_VERSION=1.11.2 or the image must be rebuilt for 1.10.0; the builder fails ENVIRONMENT_HASH_MISMATCH on mismatch"
+  }
+}
