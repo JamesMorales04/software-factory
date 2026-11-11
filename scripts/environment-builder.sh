@@ -6,14 +6,18 @@
 # not gain a host toolchain, a host socket or a host bind beyond the explicit
 # read-only project and writable cache mount below.
 #
+# Fetch egress is deny-by-default. The only accepted networks are `none` and the
+# reviewed broker networks (`factory-egress` / `factory-deps-egress`, including
+# the Compose-prefixed form). `host`, `container`, `slirp4netns`, `pasta` and
+# arbitrary networks are rejected. A non-`none` network requires a
+# credential-free HTTP(S) proxy; the plan allowlist is passed to the broker and
+# the builder records it. Without a proxy the fetch phase fails closed.
+#
 # Usage:
 #   scripts/environment-builder.sh build --request REQUEST.json --workspace DIR --output DIR [--fetch]
 #   scripts/environment-builder.sh fetch --request REQUEST.json --workspace DIR --output DIR
-#   scripts/environment-builder.sh check --request CHECK.json --workspace DIR --output DIR
+#   scripts/environment-builder.sh check --request CHECK.json --workspace DIR --output DIR [--run-dir DIR]
 #   scripts/environment-builder.sh descriptor
-#
-# Request/check JSON uses the Core EnvironmentSpec/EnvironmentPlan shape plus
-# optional `workspace`, `runDir`, `fetchProxy` and `check` fields.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -22,52 +26,136 @@ DIGEST="${FACTORY_ENVIRONMENT_BUILDER_DIGEST:-}"
 PLATFORM="${FACTORY_ENVIRONMENT_BUILDER_PLATFORM:-x86_64-linux}"
 POLICY_REVISION="${FACTORY_ENVIRONMENT_BUILDER_POLICY_REVISION:-nix-devenv-environment-v1}"
 CACHE="${FACTORY_ENVIRONMENT_BUILDER_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/software-factory/environment-builder}"
-FETCH_NETWORK="${FACTORY_ENVIRONMENT_BUILDER_FETCH_NETWORK:-slirp4netns}"
+NIX_STORE_CACHE="${FACTORY_ENVIRONMENT_BUILDER_NIX_STORE:-$CACHE/nix-store}"
+FETCH_NETWORK="${FACTORY_ENVIRONMENT_BUILDER_FETCH_NETWORK:-none}"
 FETCH_PROXY="${FACTORY_ENVIRONMENT_BUILDER_FETCH_PROXY:-}"
+APPROVED_FETCH_NETWORKS=(
+  none
+  factory-egress
+  factory-deps-egress
+  factory-egress-internal
+  software-factory_factory-egress
+  software-factory_factory-deps-egress
+)
+
+RUN_REF=""
+VERIFIED_DIGEST=""
+VERIFIED_REPO_DIGEST=""
 
 log() { printf '%s\n' "$*" >&2; }
 
 typed_failure() {
   python3 - "$1" "$2" <<'PY'
 import json, sys
+from pathlib import Path
 print(json.dumps({"status": "FAILED", "blocker": {"code": sys.argv[1], "message": sys.argv[2]}}, sort_keys=True))
 PY
   exit 2
 }
 
-resolve_digest() {
-  local resolved="$DIGEST"
-  if [[ -z "$resolved" ]]; then
-    if ! podman image exists "$IMAGE" >/dev/null 2>&1; then
-      return 1
-    fi
-    resolved="$(podman image inspect --format '{{.Id}}' "$IMAGE")"
-  fi
-  case "$resolved" in
-    sha256:*) printf '%s\n' "$resolved" ;;
-    *) printf 'sha256:%s\n' "$resolved" ;;
+validate_fetch_network() {
+  local value="$1"
+  case "$value" in
+    host|container|slirp4netns|pasta|bridge|""|*/*|*' '*)
+      typed_failure ENVIRONMENT_NETWORK_DENIED \
+        "fetch network '${value}' is not an approved broker network; host/container/arbitrary networks are forbidden"
+      ;;
   esac
+  local approved
+  for approved in "${APPROVED_FETCH_NETWORKS[@]}"; do
+    [[ "$value" == "$approved" ]] && return 0
+  done
+  typed_failure ENVIRONMENT_NETWORK_DENIED \
+    "fetch network '${value}' is not an approved broker network"
 }
 
-request_field() {
-  python3 - "$1" "$2" <<'PY'
-import json, sys
-with open(sys.argv[1], encoding="utf-8") as handle:
-    value = json.load(handle)
-for part in sys.argv[2].split("."):
-    value = value[part]
-print(value)
-PY
+validate_fetch_proxy() {
+  local network="$1" proxy="$2"
+  if [[ "$network" == "none" ]]; then
+    return 0
+  fi
+  if [[ -z "$proxy" ]]; then
+    typed_failure ENVIRONMENT_NETWORK_DENIED \
+      "fetch network ${network} requires FACTORY_ENVIRONMENT_BUILDER_FETCH_PROXY: the allowlist cannot be enforced without the approved broker proxy"
+  fi
+  if [[ "$proxy" == *"@"* || ! "$proxy" =~ ^https?:// ]]; then
+    typed_failure ENVIRONMENT_NETWORK_DENIED "fetch proxy must be a credential-free HTTP(S) proxy"
+  fi
+}
+
+# Inspect the image and bind the supplied digest to an actual image identity.
+# The tag is never used for execution: a local image runs by its image ID and a
+# registry image runs by image@manifest-digest.
+verify_image() {
+  if ! podman image exists "$IMAGE" >/dev/null 2>&1; then
+    typed_failure ENVIRONMENT_BUILDER_UNAVAILABLE \
+      "builder image ${IMAGE} is not present"
+  fi
+  local image_id repo_digest
+  image_id="$(podman image inspect --format '{{.Id}}' "$IMAGE")"
+  repo_digest="$(podman image inspect --format '{{.Digest}}' "$IMAGE" 2>/dev/null || true)"
+  case "$image_id" in sha256:*) ;; *) image_id="sha256:${image_id}" ;; esac
+  if [[ -n "$DIGEST" ]]; then
+    if [[ "$DIGEST" != "$image_id" && "$DIGEST" != "$repo_digest" ]]; then
+      typed_failure ENVIRONMENT_HASH_MISMATCH \
+        "configured builder digest ${DIGEST} does not match the inspected image ${image_id} ${repo_digest}"
+    fi
+    VERIFIED_DIGEST="$DIGEST"
+  elif [[ -n "$repo_digest" ]]; then
+    VERIFIED_DIGEST="$repo_digest"
+  else
+    VERIFIED_DIGEST="$image_id"
+  fi
+  VERIFIED_REPO_DIGEST="$repo_digest"
+  if [[ "$VERIFIED_DIGEST" == "$repo_digest" && -n "$repo_digest" ]]; then
+    RUN_REF="${IMAGE}@${repo_digest}"
+  else
+    RUN_REF="$image_id"
+  fi
+  if ! podman image inspect --format '{{.Id}}' "$RUN_REF" >/dev/null 2>&1; then
+    typed_failure ENVIRONMENT_BUILDER_UNAVAILABLE \
+      "builder image reference ${RUN_REF} could not be resolved by digest"
+  fi
+}
+
+# A persistent store cache is a cache mount, not a host runtime dependency. It
+# lets the fetch and build phases share the exact fetched derivations/sources
+# without exporting/importing the whole store through a NAR. It is seeded once
+# from the verified image and remains under the cache directory.
+ensure_nix_store() {
+  mkdir -p "$NIX_STORE_CACHE"
+  if [[ -e "$NIX_STORE_CACHE/.seeded" ]]; then
+    return 0
+  fi
+  podman run --rm --entrypoint sh --user 10001:10001 \
+    --userns=keep-id:uid=10001,gid=10001 \
+    -v "${NIX_STORE_CACHE}:/seed:Z" \
+    "$RUN_REF" -c 'cp -r /nix/. /seed/ && touch /seed/.seeded'
 }
 
 merge_request() {
-  python3 - "$1" "$2" "$3" "$4" "$5" <<'PY'
+  python3 - "$1" "$2" "$3" "$4" "$5" "$6" "$7" <<'PY'
 import json, sys
-source, workspace, run_dir, extra, destination = sys.argv[1:6]
+from pathlib import Path
+source, workspace, run_dir, extra, destination, network, proxy = sys.argv[1:8]
 with open(source, encoding="utf-8") as handle:
     request = json.load(handle)
 request["workspace"] = workspace
 request["runDir"] = run_dir
+request["fetchNetwork"] = network
+if proxy:
+    request["fetchProxy"] = proxy
+plan = request.get("plan", {})
+allowlist = plan.get("network", {}).get("fetchAllowlist", [])
+request["fetchPolicy"] = {
+    "network": network,
+    "proxy": proxy or None,
+    "allowlist": allowlist,
+    "enforcedBy": "broker" if network != "none" else "offline",
+}
+receipt_path = Path(run_dir) / "result.json"
+if receipt_path.is_file():
+    request["receipt"] = json.loads(receipt_path.read_text(encoding="utf-8"))
 if extra != "-":
     with open(extra, encoding="utf-8") as handle:
         request["check"] = json.load(handle)
@@ -76,18 +164,33 @@ with open(destination, "w", encoding="utf-8") as handle:
 PY
 }
 
+prepare() {
+  local request="$1" workspace="$2" run_dir="$3" check="$4" network="$5" proxy="$6"
+  mkdir -p "$run_dir"
+  merge_request "$request" /inputs/workspace "$run_dir" "$check" "$run_dir/request.json" "$network" "$proxy"
+  python3 - "$run_dir/request.json" <<'PY'
+import json, sys
+from pathlib import Path
+with open(sys.argv[1], encoding="utf-8") as handle:
+    request = json.load(handle)
+plan_resources = request.get("plan", {}).get("resources", {})
+spec_resources = request.get("spec", {}).get("resourcePolicy", {})
+if plan_resources != spec_resources:
+    raise SystemExit("plan resources do not match the frozen spec resource policy")
+for key, default in (("cpu", 2), ("memoryMiB", 4096), ("pids", 512), ("timeoutSecs", 1800)):
+    value = plan_resources.get(key, default)
+    if not isinstance(value, int) or value <= 0:
+        raise SystemExit(f"invalid resource {key}")
+print(f"{plan_resources.get('cpu', 2)} {plan_resources.get('memoryMiB', 4096)} {plan_resources.get('pids', 512)} {plan_resources.get('timeoutSecs', 1800)}")
+PY
+}
+
 run_container() {
-  local phase="$1" request="$2" run_dir="$3" network="$4" timeout_secs="$5"
-  local cpu="$6" memory="$7" pids="$8" workspace="$9"
-  local digest
-  digest="$(resolve_digest)" || typed_failure ENVIRONMENT_BUILDER_UNAVAILABLE \
-    "builder image ${IMAGE} is not present or has no digest"
+  local phase="$1" run_dir="$2" network="$3" timeout_secs="$4"
+  local cpu="$5" memory="$6" pids="$7" workspace="$8"
 
   local -a proxy_env=()
-  if [[ -n "$FETCH_PROXY" ]]; then
-    if [[ "$FETCH_PROXY" == *"@"* || ! "$FETCH_PROXY" =~ ^https?:// ]]; then
-      typed_failure ENVIRONMENT_NETWORK_DENIED "FETCH_PROXY must be a credential-free HTTP(S) proxy"
-    fi
+  if [[ -n "$FETCH_PROXY" && "$network" != "none" ]]; then
     proxy_env=(
       -e "HTTP_PROXY=$FETCH_PROXY"
       -e "HTTPS_PROXY=$FETCH_PROXY"
@@ -112,22 +215,24 @@ run_container() {
     --memory "${memory}m"
     --pids-limit "$pids"
     --tmpfs /tmp:rw,noexec,nosuid,size=1g
-    --mount "type=bind,src=${workspace},dst=/inputs/workspace,ro=true,Z"
-    --mount "type=bind,src=${run_dir},dst=/cache,rw=true,Z"
+    --mount "type=bind,src=${workspace},dst=/inputs/workspace,ro=true"
+    --mount "type=bind,src=${run_dir},dst=/cache,rw=true"
+    --mount "type=bind,src=${NIX_STORE_CACHE},dst=/nix,rw=true"
     --env HOME=/home/factory
+    --env FACTORY_ENVIRONMENT_BUILDER_SHARED_STORE=1
     --env "FACTORY_ENVIRONMENT_BUILDER_IMAGE=${IMAGE}"
-    --env "FACTORY_ENVIRONMENT_BUILDER_DIGEST=${digest}"
+    --env "FACTORY_ENVIRONMENT_BUILDER_DIGEST=${VERIFIED_DIGEST}"
     --env "FACTORY_ENVIRONMENT_BUILDER_PLATFORM=${PLATFORM}"
     --env "FACTORY_ENVIRONMENT_BUILDER_POLICY_REVISION=${POLICY_REVISION}"
     --env "FACTORY_ENVIRONMENT_BUILDER_REQUEST_ID=$(basename "$run_dir")"
     "${proxy_env[@]}"
-    "$IMAGE"
+    "$RUN_REF"
     "$phase"
     --request "/cache/request.json"
     --workspace /inputs/workspace
     --output /cache
   )
-  timeout --signal=TERM --kill-after=10s "$((timeout_secs + 60))" "${command[@]}"
+  timeout --signal=TERM --kill-after=5s "$timeout_secs" "${command[@]}"
 }
 
 copy_outputs() {
@@ -135,44 +240,25 @@ copy_outputs() {
   mkdir -p "$output"
   local name
   for name in result.json builder-evidence.json build.log check.log check-result.json \
-              fetch-result.json sbom.cdx.json license-inventory.json closure.json; do
+              fetch-result.json sbom.cdx.json license-inventory.json closure.json sbom-digest.json; do
     if [[ -f "$run_dir/$name" ]]; then
       cp -f "$run_dir/$name" "$output/$name"
     fi
   done
 }
 
-prepare() {
-  local request="$1" workspace="$2" run_dir="$3" check="$4"
-  mkdir -p "$run_dir"
-  merge_request "$request" /inputs/workspace /cache "$check" "$run_dir/request.json"
-  # The project is read-only to the builder. Nix/devenv writes only into the
-  # ephemeral run workspace inside the cache mount.
-  python3 - "$run_dir/request.json" <<'PY'
-import json, sys
-with open(sys.argv[1], encoding="utf-8") as handle:
-    request = json.load(handle)
-resources = request.get("plan", {}).get("resources", {})
-for key, default in (("cpu", 2), ("memoryMiB", 4096), ("pids", 512), ("timeoutSecs", 1800)):
-    value = resources.get(key, default)
-    if not isinstance(value, int) or value <= 0:
-        raise SystemExit(f"invalid resource {key}")
-print(f"{resources.get('cpu', 2)} {resources.get('memoryMiB', 4096)} {resources.get('pids', 512)} {resources.get('timeoutSecs', 1800)}")
-PY
-}
-
 cmd="${1:-}"
 case "$cmd" in
   descriptor)
-    digest="$(resolve_digest)" || typed_failure ENVIRONMENT_BUILDER_UNAVAILABLE \
-      "builder image ${IMAGE} is not present or has no digest"
+    verify_image
     podman run --rm --network none --cap-drop ALL --security-opt unmask=ALL \
-      --security-opt no-new-privileges --user 10001:10001 --userns=keep-id:uid=10001,gid=10001 \
+      --security-opt no-new-privileges --user 10001:10001 \
+      --userns=keep-id:uid=10001,gid=10001 \
       -e "FACTORY_ENVIRONMENT_BUILDER_IMAGE=${IMAGE}" \
-      -e "FACTORY_ENVIRONMENT_BUILDER_DIGEST=${digest}" \
+      -e "FACTORY_ENVIRONMENT_BUILDER_DIGEST=${VERIFIED_DIGEST}" \
       -e "FACTORY_ENVIRONMENT_BUILDER_PLATFORM=${PLATFORM}" \
       -e "FACTORY_ENVIRONMENT_BUILDER_POLICY_REVISION=${POLICY_REVISION}" \
-      "$IMAGE" descriptor
+      "$RUN_REF" descriptor
     ;;
   build|fetch|check)
     shift
@@ -181,42 +267,73 @@ case "$cmd" in
     output=""
     check_doc="-"
     fetch_first="0"
+    run_dir_override=""
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --request) request="$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"; shift 2 ;;
         --workspace) workspace="$(cd "$2" && pwd)"; shift 2 ;;
         --output) output="$2"; shift 2 ;;
         --check) check_doc="$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"; shift 2 ;;
+        --run-dir) run_dir_override="$2"; shift 2 ;;
         --fetch) fetch_first="1"; shift ;;
+        --fetch-network) FETCH_NETWORK="$2"; shift 2 ;;
+        --fetch-proxy) FETCH_PROXY="$2"; shift 2 ;;
         *) log "unknown argument: $1"; exit 2 ;;
       esac
     done
     [[ -n "$request" && -f "$request" ]] || typed_failure ENVIRONMENT_SPEC_INVALID "a request JSON file is required"
     [[ -n "$workspace" && -d "$workspace" ]] || typed_failure ENVIRONMENT_PLAN_INVALID "a project workspace is required"
     [[ -n "$output" ]] || typed_failure ENVIRONMENT_SPEC_INVALID "--output is required"
+    validate_fetch_network "$FETCH_NETWORK"
+    validate_fetch_proxy "$FETCH_NETWORK" "$FETCH_PROXY"
+    verify_image
     mkdir -p "$CACHE"
-    run_id="$(python3 -c 'import uuid; print(uuid.uuid4().hex)')"
-    run_dir="$CACHE/runs/$run_id"
-    read -r cpu memory pids timeout_secs < <(prepare "$request" "$workspace" "$run_dir" "$check_doc")
+    ensure_nix_store
+    if [[ -n "$run_dir_override" ]]; then
+      run_dir="$run_dir_override"
+      mkdir -p "$run_dir"
+    else
+      run_id="$(python3 -c 'import uuid; print(uuid.uuid4().hex)')"
+      run_dir="$CACHE/runs/$run_id"
+    fi
+    read -r cpu memory pids timeout_secs < <(prepare "$request" "$workspace" "$run_dir" "$check_doc" "$FETCH_NETWORK" "$FETCH_PROXY")
 
     if [[ "$cmd" == "build" && "$fetch_first" == "1" ]]; then
-      if ! run_container fetch /cache/request.json "$run_dir" "$FETCH_NETWORK" "$timeout_secs" "$cpu" "$memory" "$pids" "$workspace"; then
+      if ! run_container fetch "$run_dir" "$FETCH_NETWORK" "$timeout_secs" "$cpu" "$memory" "$pids" "$workspace"; then
         copy_outputs "$run_dir" "$output"
         typed_failure ENVIRONMENT_BUILD_FAILED "the broker fetch phase failed"
+      fi
+      if [[ ! -f "$run_dir/fetch-result.json" ]]; then
+        copy_outputs "$run_dir" "$output"
+        typed_failure ENVIRONMENT_BUILD_FAILED "the broker fetch phase produced no fetch result"
       fi
     fi
 
     network="none"
-    if [[ "$cmd" == "fetch" || ( "$cmd" == "build" && "$fetch_first" == "1" ) ]]; then
+    if [[ "$cmd" == "fetch" ]]; then
       network="$FETCH_NETWORK"
     fi
-    phase="$cmd"
-    if ! run_container "$phase" /cache/request.json "$run_dir" "$network" "$timeout_secs" "$cpu" "$memory" "$pids" "$workspace"; then
+    if [[ "$cmd" == "build" ]]; then
+      python3 - "$run_dir/request.json" <<'PYREQUEST'
+import json, sys
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    request = json.load(handle)
+request["fetchNetwork"] = "none"
+request.pop("fetchProxy", None)
+policy = request.get("fetchPolicy")
+if isinstance(policy, dict):
+    policy["network"] = "none"
+    policy["proxy"] = None
+    policy["enforcedBy"] = "offline"
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(request, handle, sort_keys=True)
+PYREQUEST
+    fi
+    if ! run_container "$cmd" "$run_dir" "$network" "$timeout_secs" "$cpu" "$memory" "$pids" "$workspace"; then
       copy_outputs "$run_dir" "$output"
       typed_failure ENVIRONMENT_BUILD_FAILED "the builder container failed; see build.log/result.json"
     fi
-    # The requested check document is merged into /cache/request.json; the
-    # entrypoint writes its own check result there.
     copy_outputs "$run_dir" "$output"
     if [[ -f "$output/result.json" ]]; then
       cat "$output/result.json"
@@ -225,7 +342,7 @@ case "$cmd" in
     fi
     ;;
   *)
-    sed -n '2,25p' "$0" >&2
+    sed -n '2,26p' "$0" >&2
     exit 2
     ;;
 esac

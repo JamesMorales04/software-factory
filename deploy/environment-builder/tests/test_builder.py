@@ -18,16 +18,19 @@ from environment_builder import BUILDER_POLICY_REVISION, LICENSE_POLICY_REVISION
 from environment_builder.errors import BuilderError  # noqa: E402
 from environment_builder.policy import (  # noqa: E402
     EnvironmentFile,
+    core_entries_sha256,
     validate_check,
+    validate_fetch_policy,
     validate_license_expression,
     validate_license_inventory,
     validate_network,
     validate_nix_constructs,
     validate_resources,
     validate_sandbox,
+    validate_sbom_binding,
     validate_secrets,
 )
-from environment_builder.receipt import build_receipt  # noqa: E402
+from environment_builder.receipt import build_receipt, limits_within_plan  # noqa: E402
 from environment_builder.sbom import build_sbom, license_inventory_copy  # noqa: E402
 
 SHA = "a" * 64
@@ -234,6 +237,44 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(parsed["argv"], ["npm", "test"])
 
 
+    def test_fetch_policy_rejects_host_and_unenforced_proxy(self) -> None:
+        plan = {"network": {"fetchAllowlist": ["https://cache.nixos.org"]}}
+        with self.assertRaises(BuilderError) as raised:
+            validate_fetch_policy({"fetchNetwork": "host"}, plan, "fetch")
+        self.assertEqual(raised.exception.code, "ENVIRONMENT_NETWORK_DENIED")
+        with self.assertRaises(BuilderError):
+            validate_fetch_policy(
+                {"fetchNetwork": "factory-egress-internal"},
+                plan,
+                "fetch",
+            )
+        with self.assertRaises(BuilderError):
+            validate_fetch_policy(
+                {
+                    "fetchNetwork": "factory-egress-internal",
+                    "fetchProxy": "http://proxy:18080",
+                    "fetchPolicy": {"enforcedBy": "broker", "allowlist": ["https://other.invalid"]},
+                },
+                plan,
+                "fetch",
+            )
+        validate_fetch_policy(
+            {
+                "fetchNetwork": "factory-egress-internal",
+                "fetchProxy": "http://proxy:18080",
+                "fetchPolicy": {"enforcedBy": "broker", "allowlist": ["https://cache.nixos.org"]},
+            },
+            plan,
+            "fetch",
+        )
+        with self.assertRaises(BuilderError):
+            validate_fetch_policy(
+                {"fetchNetwork": "factory-egress-internal"},
+                plan,
+                "check",
+            )
+
+
 class ReceiptTests(unittest.TestCase):
     def test_receipt_binds_the_exact_spec_and_sandbox(self) -> None:
         receipt = build_receipt(
@@ -261,6 +302,45 @@ class ReceiptTests(unittest.TestCase):
         self.assertTrue(receipt["sandboxAttestation"]["sandbox"])
         self.assertFalse(receipt["sandboxAttestation"]["impure"])
         self.assertEqual(len(receipt["outputSha256"]), 64)
+
+    def test_cgroup_limits_must_not_exceed_plan(self) -> None:
+        resources = {"cpu": 2, "memoryMiB": 4096, "pids": 512}
+        self.assertTrue(
+            limits_within_plan(
+                cpu_quota=200_000,
+                cpu_period=100_000,
+                memory_limit=4096 * 1024 * 1024,
+                pids_limit=512,
+                resources=resources,
+            )
+        )
+        self.assertFalse(
+            limits_within_plan(
+                cpu_quota=800_000,
+                cpu_period=100_000,
+                memory_limit=4096 * 1024 * 1024,
+                pids_limit=512,
+                resources=resources,
+            )
+        )
+        self.assertFalse(
+            limits_within_plan(
+                cpu_quota=200_000,
+                cpu_period=100_000,
+                memory_limit=4097 * 1024 * 1024,
+                pids_limit=512,
+                resources=resources,
+            )
+        )
+        self.assertFalse(
+            limits_within_plan(
+                cpu_quota=200_000,
+                cpu_period=100_000,
+                memory_limit=4096 * 1024 * 1024,
+                pids_limit=513,
+                resources=resources,
+            )
+        )
 
     def test_failed_receipt_carries_a_typed_blocker(self) -> None:
         receipt = build_receipt(
@@ -300,6 +380,18 @@ class SbomTests(unittest.TestCase):
         self.assertEqual(transitive[0]["licenses"], [])
         selected = [component for component in first["components"] if component["name"] == "nodejs"]
         self.assertEqual(selected[0]["licenses"][0]["license"]["id"], "MIT")
+
+    def test_sbom_binding_requires_core_entry_hash(self) -> None:
+        plan = {"licenseInventory": license_inventory([])}
+        expected = core_entries_sha256(plan["licenseInventory"]["entries"])
+        frozen = dict(spec())
+        frozen["sbomSha256"] = expected
+        plan["licenseInventory"]["sbomSha256"] = expected
+        self.assertEqual(validate_sbom_binding(frozen, plan), expected)
+        frozen["sbomSha256"] = "0" * 64
+        with self.assertRaises(BuilderError) as raised:
+            validate_sbom_binding(frozen, plan)
+        self.assertEqual(raised.exception.code, "ENVIRONMENT_HASH_MISMATCH")
 
     def test_inventory_copy_keeps_the_core_shape(self) -> None:
         plan = {"licenseInventory": license_inventory([])}

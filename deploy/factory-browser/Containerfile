@@ -52,15 +52,9 @@ RUN nix profile install --profile /home/factory/.nix-profile \
       github:NixOS/nixpkgs/${NIXPKGS_REV}#coreutils \
       github:NixOS/nixpkgs/${NIXPKGS_REV}#findutils \
       github:NixOS/nixpkgs/${NIXPKGS_REV}#jq \
-    && node --version
-
-RUN BROWSERS="$(nix build --no-link --print-out-paths --impure --expr \
-      "let pkgs = import (builtins.getFlake \"github:NixOS/nixpkgs/${NIXPKGS_REV}\") {}; in pkgs.playwright-driver.browsers.override { withFirefox = false; withWebkit = false; }")" \
-    && test -n "$BROWSERS" \
-    && ln -s "$BROWSERS" /opt/playwright-browsers \
-    && CHROMIUM="$(find "$BROWSERS" -type f \( -name chrome -o -name headless_shell \) | head -n 1)" \
-    && test -n "$CHROMIUM" \
-    && ln -s "$CHROMIUM" /usr/local/bin/chromium
+      github:NixOS/nixpkgs/${NIXPKGS_REV}#chromium \
+    && node --version \
+    && chromium --version
 
 COPY --chown=10001:10001 office/e2e-browser/package.json office/e2e-browser/package-lock.json /opt/factory-browser/
 RUN cd /opt/factory-browser \
@@ -71,9 +65,7 @@ COPY --from=browser-builder /build/target/release/factory-browser /usr/local/bin
 COPY --chown=10001:10001 office/e2e-browser/browser-check-runner.mjs /opt/factory-browser/browser-check-runner.mjs
 
 ENV FACTORY_PLAYWRIGHT_CORE=/opt/factory-browser/node_modules/playwright-core \
-    PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers \
-    CHROMIUM_EXE=/usr/local/bin/chromium \
-    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+    CHROMIUM_EXE=/home/factory/.nix-profile/bin/chromium
 
 ENTRYPOINT ["/usr/local/bin/factory-browser"]
 STOPSIGNAL SIGTERM

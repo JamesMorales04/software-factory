@@ -189,6 +189,10 @@ def nix_config(offline: bool, resources: dict[str, int]) -> str:
         "warn-dirty = false",
         "keep-going = false",
         "http-connections = 8",
+        "trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw=",
+        # The local file cache is produced by the same builder run and is
+        # imported only into the same cache mount. Public caches stay signed.
+        "require-sigs = false",
     ]
     if offline:
         lines.extend(["substituters =", "connect-timeout = 1"])
@@ -227,13 +231,12 @@ def child_environment(
         "DEVENV_OFFLINE": "1" if offline else "0",
         "npm_config_cache": str(cache / "npm"),
         "npm_config_offline": "true" if offline else "false",
-        "PLAYWRIGHT_BROWSERS_PATH": "/opt/playwright-browsers",
-        "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD": "1",
     }
     for name in ("FACTORY_ENVIRONMENT_BUILDER_IMAGE", "FACTORY_ENVIRONMENT_BUILDER_DIGEST",
                  "FACTORY_ENVIRONMENT_BUILDER_PLATFORM", "FACTORY_ENVIRONMENT_BUILDER_POLICY_REVISION",
                  "FACTORY_ENVIRONMENT_NIX_VERSION", "FACTORY_ENVIRONMENT_DEVENV_VERSION",
-                 "FACTORY_ENVIRONMENT_BUILDER_REQUEST_ID"):
+                 "FACTORY_ENVIRONMENT_BUILDER_REQUEST_ID", "CHROMIUM_EXE",
+                 "FACTORY_PLAYWRIGHT_CORE"):
         if name in os.environ:
             env[name] = os.environ[name]
     if proxy:
@@ -248,24 +251,46 @@ def child_environment(
     return env
 
 
-def restore_closure(path: Path) -> None:
-    """Import a cached closure into this container's ephemeral store."""
-    if not path.is_file():
-        fail("ENVIRONMENT_BUILDER_UNAVAILABLE", "the cached environment closure is missing")
-    with path.open("rb") as handle:
-        completed = subprocess.run(
-            ["nix-store", "--import"],
-            stdin=handle,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            timeout=900,
-            env=environment_without_secrets(dict(os.environ)),
-        )
+def restore_store(cache_dir: Path) -> None:
+    """Restore the exact fetched store, including derivations and sources.
+
+    The runtime closure alone is not enough for an offline ``devenv``
+    re-evaluation: devenv-tasks and flake source derivations are build-time
+    inputs. The fetch phase therefore copies every valid store path into a
+    local binary cache and the build/check phase imports it.
+    """
+    if not cache_dir.is_dir():
+        fail("ENVIRONMENT_BUILDER_UNAVAILABLE", "the cached builder store is missing")
+    completed = subprocess.run(
+        ["nix", "copy", "--from", f"file://{cache_dir}", "--all"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        timeout=1_800,
+        env=environment_without_secrets(dict(os.environ)),
+    )
     if completed.returncode != 0:
         fail(
             "ENVIRONMENT_BUILD_FAILED",
-            f"cannot restore the cached environment closure: {tail(completed.stdout, 2_000)}",
+            f"cannot restore the cached builder store: {tail(completed.stdout, 2_000)}",
+        )
+
+
+def export_store(cache_dir: Path) -> None:
+    """Copy every valid store path into the local cache for offline reuse."""
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    completed = subprocess.run(
+        ["nix", "copy", "--to", f"file://{cache_dir}", "--all"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        timeout=1_800,
+        env=environment_without_secrets(dict(os.environ)),
+    )
+    if completed.returncode != 0:
+        fail(
+            "ENVIRONMENT_BUILD_FAILED",
+            f"cannot export the builder store: {tail(completed.stdout, 2_000)}",
         )
 
 
@@ -337,6 +362,7 @@ def environment_digest(
     platform: str,
     root: str,
     manifest: list[dict[str, Any]],
+    sbom_sha256: str = "",
 ) -> str:
     return sha256_text(
         canonical_json(
@@ -345,6 +371,7 @@ def environment_digest(
                 "platform": platform,
                 "storePath": root,
                 "closure": manifest,
+                "sbomSha256": sbom_sha256,
             }
         )
     )

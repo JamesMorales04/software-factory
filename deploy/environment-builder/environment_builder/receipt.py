@@ -18,10 +18,13 @@ ALLOWED_MOUNT_PREFIXES = (
     "/etc/hostname",
     "/etc/resolv.conf",
     "/tmp",
+    "/run",
     "/inputs/workspace",
     "/cache",
+    "/nix",
     "/output",
 )
+AUTHORIZED_PROJECT_OR_CACHE_MOUNTS = ("/inputs/workspace", "/cache", "/nix")
 FORBIDDEN_MOUNT_SOURCES = (
     "/run/user",
     "/var/run",
@@ -74,10 +77,16 @@ def observe_attestation(
     for mount in mounts:
         source = mount["source"]
         target = mount["mount_point"]
+        # The explicit read-only project and writable cache/store mounts are
+        # the only authorized host-backed mounts. Their source may live under
+        # a developer home directory; that is the cache contract, not a host
+        # credential mount.
+        if target in AUTHORIZED_PROJECT_OR_CACHE_MOUNTS or target.startswith("/inputs/workspace"):
+            continue
         if any(fragment in source for fragment in FORBIDDEN_MOUNT_SOURCES):
             no_host_mount = False
             break
-        if target.startswith("/inputs/workspace") or target == "/cache" or target == "/":
+        if target == "/":
             continue
         if any(target == prefix or target.startswith(prefix + "/") for prefix in ALLOWED_MOUNT_PREFIXES):
             continue
@@ -100,14 +109,25 @@ def observe_attestation(
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        if route.endswith("route") and any(
-            line.split() and line.split()[1] == "00000000" for line in text.splitlines()[1:]
-        ):
-            default_route = True
-        if "ipv6_route" in route and any(
-            line.split() and line.split()[0] == "00000000000000000000000000000000" for line in text.splitlines()
-        ):
-            default_route = True
+        lines = text.splitlines()
+        if route == "/proc/net/route":
+            for line in lines[1:]:
+                fields = line.split()
+                # Iface Destination ...; a default route on a non-loopback
+                # interface is host/network egress.
+                if len(fields) >= 2 and fields[1] == "00000000" and fields[0] != "lo":
+                    default_route = True
+        if route == "/proc/net/ipv6_route":
+            for line in lines:
+                fields = line.split()
+                # The last field is the interface. A default route on lo is
+                # the disabled-network loopback route, not egress.
+                if (
+                    len(fields) >= 10
+                    and fields[0] == "00000000000000000000000000000000"
+                    and fields[-1] != "lo"
+                ):
+                    default_route = True
     bounded = _bounded_cgroup(resources)
     attestation = {
         "nonRoot": uid != 0,
@@ -133,6 +153,21 @@ def _read_cgroup(name: str) -> str | None:
     return None
 
 
+def limits_within_plan(
+    cpu_quota: int,
+    cpu_period: int,
+    memory_limit: int,
+    pids_limit: int,
+    resources: dict[str, int],
+) -> bool:
+    """Return true only when every observed cgroup bound is at or below plan."""
+    memory_bound = 0 < memory_limit <= resources["memoryMiB"] * 1024 * 1024
+    pids_bound = 0 < pids_limit <= resources["pids"]
+    # Exact plan bound: no multiplier, no "close enough" tolerance.
+    cpu_bound = cpu_quota > 0 and cpu_period > 0 and (cpu_quota / cpu_period) <= resources["cpu"]
+    return memory_bound and pids_bound and cpu_bound
+
+
 def _bounded_cgroup(resources: dict[str, int]) -> bool:
     memory = _read_cgroup("memory.max")
     pids = _read_cgroup("pids.max")
@@ -145,10 +180,7 @@ def _bounded_cgroup(resources: dict[str, int]) -> bool:
         cpu_quota, cpu_period = (int(part) for part in cpu.split()[:2])
     except (TypeError, ValueError):
         return False
-    memory_bound = 0 < memory_limit <= resources["memoryMiB"] * 1024 * 1024
-    pids_bound = 0 < pids_limit <= resources["pids"]
-    cpu_bound = cpu_quota > 0 and cpu_period > 0 and cpu_quota / cpu_period <= resources["cpu"] * 4
-    return memory_bound and pids_bound and cpu_bound
+    return limits_within_plan(cpu_quota, cpu_period, memory_limit, pids_limit, resources)
 
 
 def build_receipt(

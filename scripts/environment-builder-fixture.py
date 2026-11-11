@@ -31,6 +31,34 @@ def sha256_json(value) -> str:
     return sha256_bytes(canonical(value).encode("utf-8"))
 
 
+def core_entries_sha256(entries) -> str:
+    """Match Core's serde_json LicenseEntry field order exactly."""
+    fields = (
+        "name",
+        "version",
+        "license",
+        "source",
+        "sha256",
+        "unfree",
+        "ownerOverrideId",
+        "attribution",
+    )
+    ordered = []
+    for entry in entries:
+        normalized = {}
+        for field in fields:
+            if field == "ownerOverrideId":
+                normalized[field] = entry.get(field)
+            elif field == "unfree":
+                normalized[field] = bool(entry.get(field, False))
+            else:
+                normalized[field] = str(entry.get(field, ""))
+        ordered.append(normalized)
+    return sha256_bytes(
+        json.dumps(ordered, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    )
+
+
 def substrate() -> list[dict]:
     return [
         {
@@ -158,7 +186,7 @@ def main() -> int:
             }
         )
     inventory_sha = sha256_json(entries)
-    sbom_sha = sha256_json(entries)
+    sbom_sha = core_entries_sha256(entries)
     inventory = {
         "schemaVersion": 1,
         "policyRevision": LICENSE_POLICY,
@@ -187,8 +215,18 @@ def main() -> int:
             "https://cache.nixos.org",
             "https://github.com",
             "https://codeload.github.com",
+            "https://objects.githubusercontent.com",
+            "https://raw.githubusercontent.com",
+            "https://api.github.com",
             "https://devenv.cachix.org",
+            "https://nix-community.cachix.org",
+            "https://tarballs.nixos.org",
+            "https://channels.nixos.org",
+            "https://releases.nixos.org",
             "https://registry.npmjs.org",
+            "https://index.crates.io",
+            "https://static.crates.io",
+            "https://static.rust-lang.org",
         ],
     }
     plan = {

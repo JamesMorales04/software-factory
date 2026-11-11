@@ -96,22 +96,30 @@ matches Core's default.
 `scripts/environment-builder.sh` runs two phases:
 
 1. **fetch** — network only through `FACTORY_ENVIRONMENT_BUILDER_FETCH_PROXY`
-   (credential-free HTTP(S) CONNECT proxy) on an explicitly selected network.
-   It realises the environment and exports the exact closure to
-   `/cache/closures/<specSha256>.nar`.
+   (credential-free HTTP(S) CONNECT proxy) on an explicitly selected broker
+   network. The only accepted values are `none`, `factory-egress`,
+   `factory-deps-egress`, `factory-egress-internal` and the Compose-prefixed
+   equivalents. `host`, `container`, `slirp4netns`, `pasta`, `bridge` and
+   arbitrary names are rejected. A non-`none` network requires the proxy; the
+   exact plan allowlist is passed as `fetchPolicy` and the builder refuses a
+   fetch whose broker policy is missing or differs from the plan. The fetch
+   phase realises the environment and copies every valid store path into the
+   persistent Nix store cache.
 2. **build** — `--network none`, `subprocess` timeout, Nix
    `sandbox = true`, `sandbox-fallback = false`, `substituters =` empty and
    `--offline`. A missing prefetched path is `ENVIRONMENT_NETWORK_DENIED`, not a
    reason to enable network.
 
-The wrapper mounts only the project at `/inputs/workspace:ro` and a
-writable cache at `/cache`. The build workspace, npm/devenv cache and closure
-live in the cache. Non-root execution uses
-`--userns=keep-id:uid=10001,gid=10001`, `--user 10001:10001`,
-`--cap-drop ALL --cap-add SYS_ADMIN --cap-add SYS_CHROOT` (Nix sandbox and
-chroot), `--security-opt unmask=ALL` (Nix's `/proc` remount test),
-`no-new-privileges`, bounded `--cpus/--memory/--pids-limit` and a wall-clock
-timeout. There is no host socket, HOME, Podman socket, provider secret or
+The wrapper mounts only the read-only project at `/inputs/workspace`, a
+writable run cache at `/cache`, and a persistent Nix store cache at `/nix`.
+The store cache is seeded from the verified image once and lets the offline
+build/check reuse the exact fetched derivations, sources and `devenv-tasks`
+inputs. Non-root execution uses `--userns=keep-id:uid=10001,gid=10001`,
+`--user 10001:10001`, `--cap-drop ALL --cap-add SYS_ADMIN --cap-add
+SYS_CHROOT` (Nix sandbox and chroot), `--security-opt unmask=ALL` (Nix's
+`/proc` remount test), `no-new-privileges`, bounded
+`--cpus/--memory/--pids-limit` and a wall-clock timeout exactly equal to the
+frozen plan. There is no host socket, HOME, Podman socket, provider secret or
 GitHub credential.
 
 ## 4. Typed failures
@@ -137,11 +145,17 @@ failed receipt/check result rather than a partial success:
 
 ## 5. Check execution
 
-`check` requires a successful receipt bound to the exact spec hash. It restores
-the cached closure, re-realises the environment offline, computes the closure
-digest and refuses execution if it differs from `receipt.outputSha256`. A check
-is refused without a plan/spec/receipt binding; there is no implicit Rust or
-generic verifier image.
+`check` requires a successful receipt bound to the exact spec hash. It reuses
+the persistent store cache, re-realises the environment offline, computes the
+closure digest and refuses execution if it differs from
+`receipt.outputSha256`. The output digest includes the frozen SBOM hash, so a
+different license inventory cannot silently run. A check is refused without a
+plan/spec/receipt binding; there is no implicit Rust or generic verifier image.
+
+The sandbox attestation compares the observed cgroup memory/PID limits and
+`cpu.max` quota/period directly against the frozen plan: there is no multiplier
+or tolerance. The wrapper also refuses a request whose plan resources do not
+equal the spec resource policy.
 
 The wrapper host side is a development/CI harness. Integration must place the
 same image behind the runtime broker or an equivalent narrow execution service,
@@ -152,9 +166,11 @@ this slice.
 ## 6. Evidence boundary
 
 `deploy/environment-builder/tests/test_builder.py` covers deterministic policy,
-receipt and SBOM behavior. The containerized descriptor, self-test and typed
-failure paths were exercised against a locally derived builder image; the full
-cold Node+Playwright/Rust environment build and browser launch are **NOT_TESTED**
-in this slice because the closure fetch was interrupted by the time box. Do not
-present the partial spike measurement as a builder receipt. See the evidence
-record.
+receipt and SBOM behavior, exact cgroup limits and fetch-policy enforcement. The
+final `deploy/environment-builder/Containerfile` image was built and exercised:
+descriptor/self-test, typed failures, a real Node+Playwright build/check, a real
+Rust build/check, a warm repeat with the same output digest and a real-closure
+SBOM. The receipt is bound to the exact final image digest. The separate
+`deploy/factory-browser/Containerfile` Chromium launch, registry publication,
+Compose/runtime-broker invocation and independent acceptance remain
+**NOT_TESTED**. See the evidence record for exact hashes and durations.

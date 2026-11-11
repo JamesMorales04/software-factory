@@ -211,6 +211,50 @@ def validate_network(network: Any) -> dict[str, Any]:
     return {"build": build, "fetch": fetch, "fetchAllowlist": cleaned}
 
 
+APPROVED_FETCH_NETWORKS: Final[frozenset[str]] = frozenset(
+    {
+        "none",
+        "factory-egress",
+        "factory-deps-egress",
+        "factory-egress-internal",
+        "software-factory_factory-egress",
+        "software-factory_factory-deps-egress",
+    }
+)
+
+
+def validate_fetch_policy(request: dict[str, Any], plan: dict[str, Any], phase: str) -> None:
+    """Defence in depth for the wrapper/broker fetch contract.
+
+    A fetch run may use only an approved broker network and must carry a
+    credential-free proxy plus the exact plan allowlist with broker
+    enforcement. Build/check runs may not carry a network at all.
+    """
+    network = request.get("fetchNetwork", "none")
+    if not isinstance(network, str) or network not in APPROVED_FETCH_NETWORKS:
+        fail("ENVIRONMENT_NETWORK_DENIED", f"fetch network {network!r} is not approved")
+    if phase != "fetch":
+        if network != "none":
+            fail("ENVIRONMENT_NETWORK_DENIED", f"{phase} must run with network none")
+        return
+    if network == "none":
+        return
+    proxy = request.get("fetchProxy")
+    if (
+        not isinstance(proxy, str)
+        or not re.fullmatch(r"https?://[^@\s]+", proxy)
+        or "@" in proxy
+    ):
+        fail("ENVIRONMENT_NETWORK_DENIED", "fetch requires a credential-free HTTP(S) broker proxy")
+    policy = request.get("fetchPolicy")
+    if not isinstance(policy, dict) or policy.get("enforcedBy") != "broker":
+        fail("ENVIRONMENT_NETWORK_DENIED", "the fetch proxy is not backed by broker allowlist enforcement")
+    expected = sorted(_require_list(plan.get("network", {}).get("fetchAllowlist", []), "plan.network.fetchAllowlist"))
+    actual = policy.get("allowlist")
+    if not isinstance(actual, list) or sorted(str(entry) for entry in actual) != expected:
+        fail("ENVIRONMENT_NETWORK_DENIED", "the broker allowlist does not match the frozen plan allowlist")
+
+
 def validate_sandbox(sandbox: Any) -> None:
     sandbox = _require_mapping(sandbox, "nix.sandbox")
     if (
@@ -327,8 +371,14 @@ def validate_spec_and_plan(
             fail("ENVIRONMENT_PLAN_INVALID", "a Nix input name is not a safe identifier")
         validate_pinned_url(url, "plan.nix.inputs.url", allow_follows=False)
 
-    validate_resources(plan.get("resources"))
-    validate_network(plan.get("network"))
+    plan_resources = validate_resources(plan.get("resources"))
+    spec_resources = validate_resources(spec.get("resourcePolicy"))
+    if plan_resources != spec_resources:
+        fail("ENVIRONMENT_RESOURCE_LIMIT", "plan resources do not match the frozen spec resource policy")
+    plan_network = validate_network(plan.get("network"))
+    spec_network = validate_network(spec.get("networkPolicy"))
+    if plan_network != spec_network:
+        fail("ENVIRONMENT_NETWORK_DENIED", "plan network policy does not match the frozen spec network policy")
     packages = _require_list(plan.get("packages", []), "plan.packages")
     if len(packages) > MAX_PACKAGES:
         fail("ENVIRONMENT_PLAN_INVALID", "plan.packages exceeds its bound")
@@ -540,6 +590,71 @@ def _validate_lock_document(file: EnvironmentFile, plan: dict[str, Any], label: 
     # project-selected package. It still must be a GitHub revision.
 
 
+CORE_LICENSE_ENTRY_FIELDS: Final[tuple[str, ...]] = (
+    "name",
+    "version",
+    "license",
+    "source",
+    "sha256",
+    "unfree",
+    "ownerOverrideId",
+    "attribution",
+)
+
+
+def core_entries_sha256(entries: list[Any]) -> str:
+    """Match Core's ``LicenseInventory::compute_sbom_sha256``.
+
+    Core hashes the serde_json serialization of the ordered ``LicenseEntry``
+    structs. Field order matters; sorting keys would produce a different hash
+    from the frozen spec.
+    """
+    ordered: list[dict[str, Any]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            fail("ENVIRONMENT_LICENSE_UNKNOWN", "a license inventory entry is not an object")
+        normalized: dict[str, Any] = {}
+        for field in CORE_LICENSE_ENTRY_FIELDS:
+            if field == "ownerOverrideId":
+                normalized[field] = entry.get(field)
+            elif field == "unfree":
+                normalized[field] = bool(entry.get(field, False))
+            elif field in ("sha256", "attribution"):
+                normalized[field] = str(entry.get(field, ""))
+            else:
+                normalized[field] = str(entry.get(field, ""))
+        ordered.append(normalized)
+    return sha256_text(
+        json.dumps(ordered, ensure_ascii=False, separators=(",", ":"), sort_keys=False)
+    )
+
+
+def validate_sbom_binding(spec: dict[str, Any], plan: dict[str, Any]) -> str:
+    """Require the frozen SBOM hash to match the exact inventory entries.
+
+    A missing expectation or a generated hash that differs from the frozen
+    ``spec.sbomSha256`` is a blocker. The builder never reports SUCCEEDED for a
+    different SBOM.
+    """
+    expected = spec.get("sbomSha256")
+    if not is_sha256(expected):
+        fail("ENVIRONMENT_HASH_MISMATCH", "the frozen spec has no valid SBOM hash")
+    inventory = _require_mapping(plan.get("licenseInventory"), "plan.licenseInventory")
+    entries = _require_list(inventory.get("entries"), "plan.licenseInventory.entries")
+    computed = core_entries_sha256(entries)
+    if expected != computed:
+        fail(
+            "ENVIRONMENT_HASH_MISMATCH",
+            "the generated SBOM does not match the frozen spec SBOM hash",
+        )
+    if inventory.get("sbomSha256") != expected:
+        fail("ENVIRONMENT_HASH_MISMATCH", "the license inventory SBOM hash is inconsistent")
+    expected_inventory = spec.get("licenseInventorySha256")
+    if not is_sha256(expected_inventory) or inventory.get("inventorySha256") != expected_inventory:
+        fail("ENVIRONMENT_HASH_MISMATCH", "the frozen license inventory hash is inconsistent")
+    return computed
+
+
 def validate_license_expression(value: str) -> None:
     if not isinstance(value, str):
         fail("ENVIRONMENT_LICENSE_UNKNOWN", "a selected package has no license expression")
@@ -700,6 +815,8 @@ def validate_secrets(files: Iterable[EnvironmentFile], environ: dict[str, str]) 
         "npm_config_https_proxy",
         "PLAYWRIGHT_BROWSERS_PATH",
         "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD",
+        "CHROMIUM_EXE",
+        "FACTORY_PLAYWRIGHT_CORE",
         "FACTORY_ENVIRONMENT_BUILDER_IMAGE",
         "FACTORY_ENVIRONMENT_BUILDER_DIGEST",
         "FACTORY_ENVIRONMENT_BUILDER_PLATFORM",
@@ -853,6 +970,8 @@ def environment_without_secrets(environ: dict[str, str]) -> dict[str, str]:
         "npm_config_https_proxy",
         "PLAYWRIGHT_BROWSERS_PATH",
         "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD",
+        "CHROMIUM_EXE",
+        "FACTORY_PLAYWRIGHT_CORE",
         "FACTORY_ENVIRONMENT_BUILDER_IMAGE",
         "FACTORY_ENVIRONMENT_BUILDER_DIGEST",
         "FACTORY_ENVIRONMENT_BUILDER_PLATFORM",

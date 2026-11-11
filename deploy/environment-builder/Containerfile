@@ -28,8 +28,8 @@ LABEL org.opencontainers.image.title="software-factory-environment-builder" \
 
 RUN printf 'factory:x:10001:10001:Factory Builder:/home/factory:/bin/sh\n' >> /etc/passwd \
     && printf 'factory:x:10001:\n' >> /etc/group \
-    && mkdir -p /home/factory \
-    && chown -R 10001:10001 /nix /home/factory
+    && mkdir -p /home/factory /opt \
+    && chown -R 10001:10001 /nix /home/factory /opt
 
 USER 10001:10001
 ENV HOME=/home/factory \
@@ -64,6 +64,7 @@ RUN nix profile install --profile /home/factory/.nix-profile \
       github:NixOS/nixpkgs/${NIXPKGS_REV}#zstd \
       github:NixOS/nixpkgs/${NIXPKGS_REV}#jq \
       github:NixOS/nixpkgs/${NIXPKGS_REV}#cacert \
+      github:NixOS/nixpkgs/${NIXPKGS_REV}#chromium \
       github:NixOS/nixpkgs/${NIXPKGS_REV}#sbomnix \
     && devenv --version \
     && node --version \
@@ -71,15 +72,11 @@ RUN nix profile install --profile /home/factory/.nix-profile \
     && cargo --version \
     && python3 --version
 
-# Chromium from the same pinned nixpkgs as the Playwright driver. Firefox and
-# WebKit are intentionally excluded: the generic browser contract is Chromium.
-RUN BROWSERS="$(nix build --no-link --print-out-paths --impure --expr \
-      "let pkgs = import (builtins.getFlake \"github:NixOS/nixpkgs/${NIXPKGS_REV}\") {}; in pkgs.playwright-driver.browsers.override { withFirefox = false; withWebkit = false; }")" \
-    && test -n "$BROWSERS" \
-    && ln -s "$BROWSERS" /opt/playwright-browsers \
-    && CHROMIUM="$(find "$BROWSERS" -type f \( -name chrome -o -name headless_shell \) | head -n 1)" \
-    && test -n "$CHROMIUM" \
-    && ln -s "$CHROMIUM" /usr/local/bin/chromium
+# Chromium is the generic browser runtime. Project Playwright environments
+# still provide their own matching playwright-driver browsers from the frozen
+# plan; this binary is only the Factory-owned runner target.
+RUN test -x /home/factory/.nix-profile/bin/chromium \
+    && chromium --version
 
 # Fixed Factory browser runner. The project's own Playwright/Node dependencies
 # are still provided by the frozen EnvironmentPlan; this copy is only the
@@ -90,9 +87,7 @@ RUN cd /opt/factory-browser \
     && test -d /opt/factory-browser/node_modules/playwright-core
 
 ENV FACTORY_PLAYWRIGHT_CORE=/opt/factory-browser/node_modules/playwright-core \
-    PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers \
-    CHROMIUM_EXE=/usr/local/bin/chromium \
-    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
+    CHROMIUM_EXE=/home/factory/.nix-profile/bin/chromium \
     PYTHONDONTWRITEBYTECODE=1
 
 COPY --chown=10001:10001 deploy/environment-builder /opt/factory-environment-builder

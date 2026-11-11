@@ -5,6 +5,8 @@ docs
 office/node_modules
 office/dist
 office/e2e-browser
+!office/e2e-browser/package.json
+!office/e2e-browser/package-lock.json
 native/tests
 *.sqlite
 *.sqlite-*

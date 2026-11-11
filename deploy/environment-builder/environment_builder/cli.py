@@ -24,23 +24,25 @@ from .nix import (
     closure_manifest,
     devenv_version,
     environment_digest,
-    export_closure,
+    export_store,
     nix_version,
     prepare_workspace,
     realize_environment,
-    restore_closure,
+    restore_store,
     run_check,
     write_environment_files,
 )
 from .policy import (
     validate_check,
     validate_environment_digest,
+    validate_fetch_policy,
     validate_environment_files,
     validate_license_inventory,
     validate_lock_pins,
     validate_nix_constructs,
     validate_resources,
     validate_sandbox,
+    validate_sbom_binding,
     validate_secrets,
     validate_spec_and_plan,
     validate_workspace_environment_overrides,
@@ -135,10 +137,11 @@ def _validate_request(
     validate_lock_pins(files, plan, spec)
     validate_secrets(files, dict(os.environ))
     validate_license_inventory(spec, plan)
+    frozen_sbom_sha256 = validate_sbom_binding(spec, plan)
     validate_sandbox(plan.get("nix", {}).get("sandbox"))
     resources = validate_resources(plan.get("resources"))
     digest = validate_environment_digest(spec, plan, os.environ.get("FACTORY_ENVIRONMENT_BUILDER_REQUEST_ID", ""))
-    return spec, plan, files, resources, actual_nix, digest
+    return spec, plan, files, resources, actual_nix, digest, frozen_sbom_sha256
 
 
 def _write_failure(
@@ -189,10 +192,13 @@ def build(args: argparse.Namespace) -> int:
     spec: dict[str, Any] | None = None
     resources: dict[str, int] | None = None
     try:
-        spec, plan, files, resources, actual_nix, digest = _validate_request(request, source_workspace)
+        spec, plan, files, resources, actual_nix, digest, frozen_sbom_sha256 = _validate_request(
+            request, source_workspace
+        )
         phase = args.phase
         if phase not in ("fetch", "build"):
             fail("ENVIRONMENT_SPEC_INVALID", "phase must be fetch or build")
+        validate_fetch_policy(request, plan, phase)
         build_workspace = run_dir / "workspace"
         prepare_workspace(source_workspace, build_workspace, reuse=phase == "build")
         write_environment_files(build_workspace, files)
@@ -200,9 +206,10 @@ def build(args: argparse.Namespace) -> int:
         if proxy is not None:
             if not isinstance(proxy, str) or not proxy.startswith(("http://", "https://")) or "@" in proxy:
                 fail("ENVIRONMENT_NETWORK_DENIED", "fetchProxy must be a credential-free HTTP(S) proxy")
-        closure_path = CLOSURE_DIR / f"{spec['specSha256']}.nar"
-        if phase == "build" and closure_path.is_file():
-            restore_closure(closure_path)
+        shared_store = os.environ.get("FACTORY_ENVIRONMENT_BUILDER_SHARED_STORE") == "1"
+        store_cache = CLOSURE_DIR / spec["specSha256"]
+        if phase == "build" and not shared_store and store_cache.is_dir():
+            restore_store(store_cache)
         log = BuildLog(run_dir / "build.log")
         try:
             root = realize_environment(
@@ -215,9 +222,11 @@ def build(args: argparse.Namespace) -> int:
                 proxy=proxy if phase == "fetch" else None,
             )
             manifest = closure_manifest(root)
-            output_sha = environment_digest(spec["specSha256"], spec["platform"], root, manifest)
-            closure_path = CLOSURE_DIR / f"{spec['specSha256']}.nar"
-            export_closure(root, closure_path)
+            output_sha = environment_digest(
+                spec["specSha256"], spec["platform"], root, manifest, frozen_sbom_sha256
+            )
+            if not shared_store:
+                export_store(store_cache)
             if phase == "fetch":
                 write_json(
                     run_dir / "fetch-result.json",
@@ -246,6 +255,17 @@ def build(args: argparse.Namespace) -> int:
         sbom_path = run_dir / "sbom.cdx.json"
         sbom_path.write_text(sbom_text(sbom), encoding="utf-8")
         sbom_path.chmod(0o600)
+        sbom_document_sha = sbom_sha256(sbom)
+        write_json(
+            run_dir / "sbom-digest.json",
+            {
+                "schemaVersion": SCHEMA_VERSION,
+                "frozenSbomSha256": frozen_sbom_sha256,
+                "licenseInventoryEntriesSha256": frozen_sbom_sha256,
+                "cycloneDxDocumentSha256": sbom_document_sha,
+                "matchesFrozenSpec": frozen_sbom_sha256 == spec.get("sbomSha256"),
+            },
+        )
         inventory = license_inventory_copy(plan)
         write_json(run_dir / "license-inventory.json", inventory)
         write_json(run_dir / "closure.json", {"entries": manifest, "count": len(manifest)})
@@ -276,7 +296,8 @@ def build(args: argparse.Namespace) -> int:
                 "outputSha256": output_sha,
                 "storePath": root,
                 "closureEntries": len(manifest),
-                "sbomSha256": sbom_sha256(sbom),
+                "frozenSbomSha256": frozen_sbom_sha256,
+                "sbomDocumentSha256": sbom_document_sha,
                 "licenseInventorySha256": inventory.get("inventorySha256"),
                 "nixVersion": actual_nix,
                 "devenvVersion": _actual_versions()[1],
@@ -334,13 +355,18 @@ def check(args: argparse.Namespace) -> int:
     if not (run_dir / "check.json").exists():
         (run_dir / "check.json").parent.mkdir(parents=True, exist_ok=True)
     try:
-        spec, plan, files, resources, _actual_nix, _digest = _validate_request(request, source_workspace)
+        spec, plan, files, resources, _actual_nix, _digest, frozen_sbom_sha256 = _validate_request(
+            request, source_workspace
+        )
+        validate_fetch_policy(request, plan, "check")
         receipt = _validate_receipt(spec, request.get("receipt"))
         check_spec = validate_check(request.get("check"))
         if check_spec["checkId"] != args.check_id and args.check_id:
             fail("ENVIRONMENT_SPEC_INVALID", "the requested check id does not match the check document")
-        closure_path = CLOSURE_DIR / f"{spec['specSha256']}.nar"
-        restore_closure(closure_path)
+        shared_store = os.environ.get("FACTORY_ENVIRONMENT_BUILDER_SHARED_STORE") == "1"
+        store_cache = CLOSURE_DIR / spec["specSha256"]
+        if not shared_store:
+            restore_store(store_cache)
         build_workspace = run_dir / "workspace"
         prepare_workspace(source_workspace, build_workspace, reuse=build_workspace.is_dir())
         write_environment_files(build_workspace, files)
@@ -356,7 +382,9 @@ def check(args: argparse.Namespace) -> int:
                 proxy=None,
             )
             manifest = closure_manifest(root)
-            output_sha = environment_digest(spec["specSha256"], spec["platform"], root, manifest)
+            output_sha = environment_digest(
+                spec["specSha256"], spec["platform"], root, manifest, frozen_sbom_sha256
+            )
             if output_sha != receipt.get("outputSha256"):
                 fail(
                     "ENVIRONMENT_HASH_MISMATCH",
@@ -434,6 +462,12 @@ def main(argv: list[str] | None = None) -> int:
     build_parser.add_argument("--output", default=None)
     build_parser.add_argument("--phase", choices=("fetch", "build"), default="build")
     build_parser.set_defaults(handler=build)
+
+    fetch_parser = subparsers.add_parser("fetch")
+    fetch_parser.add_argument("--request", required=True)
+    fetch_parser.add_argument("--workspace", default=None)
+    fetch_parser.add_argument("--output", default=None)
+    fetch_parser.set_defaults(handler=build, phase="fetch")
 
     check_parser = subparsers.add_parser("check")
     check_parser.add_argument("--request", required=True)
