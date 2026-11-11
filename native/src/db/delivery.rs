@@ -21,6 +21,13 @@ use sqlx::row::Row;
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
+pub struct DeliveryAttemptReservation {
+    pub attempt: DeliveryAttemptRecord,
+    pub created: bool,
+    pub base_conflict: bool,
+}
+
+#[derive(Debug, Clone)]
 pub struct NewDeliveryAttempt {
     pub idempotency_key: String,
     pub operation: &'static str,
@@ -521,7 +528,7 @@ impl Database {
     pub async fn create_delivery_attempt(
         &self,
         input: NewDeliveryAttempt,
-    ) -> Result<(DeliveryAttemptRecord, bool), Error> {
+    ) -> Result<DeliveryAttemptReservation, Error> {
         let attempt_id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
         let _write = self.write_lock.lock().await;
@@ -548,12 +555,19 @@ impl Database {
         if let Some(row) = existing_row {
             let attempt = attempt_from_row(&row)?;
             if attempt.base_branch != input.base_branch {
-                return Err(Error::Conflict(
-                    "delivery attempt is already bound to a different base branch",
-                ));
+                transaction.commit().await?;
+                return Ok(DeliveryAttemptReservation {
+                    attempt,
+                    created: false,
+                    base_conflict: true,
+                });
             }
             transaction.commit().await?;
-            return Ok((attempt, false));
+            return Ok(DeliveryAttemptReservation {
+                attempt,
+                created: false,
+                base_conflict: false,
+            });
         }
         let inserted = sqlx::query::query(
             "INSERT INTO delivery_attempts
@@ -628,60 +642,13 @@ impl Database {
             .execute(&mut *transaction)
             .await?;
         }
+        let base_conflict = attempt.base_branch != input.base_branch;
         transaction.commit().await?;
-        Ok((attempt, created))
-    }
-
-    /// Resolve the durable attempt identity that excludes the idempotency hash
-    /// suffix: one candidate, policy revision, expected head and operation.
-    /// A different base branch is never allowed to reuse this attempt.
-    pub async fn delivery_attempt_for_merge_binding(
-        &self,
-        candidate_id: &str,
-        policy_revision: u32,
-        expected_head_sha: &str,
-        operation: &str,
-    ) -> Result<Option<DeliveryAttemptRecord>, Error> {
-        let row = sqlx::query::query(
-            "SELECT attempt_id,idempotency_key,schema_version,operation,project_id,campaign_id,
-                    candidate_id,candidate_sha,candidate_tree_sha,content_digest,gate_revision,
-                    gate_outcome,policy_revision,policy_sha256,risk_class,authorization,
-                    charter_grant_id,pull_request_number,base_branch,expected_head_sha,
-                    observed_head_sha,observed_base_sha,merge_method,state,merge_commit_sha,
-                    incident_id,post_merge_check_id,blocker_code,blocker_detail,created_at,
-                    updated_at,merged_at
-             FROM delivery_attempts
-             WHERE candidate_id=?1 AND policy_revision=?2 AND expected_head_sha=?3
-               AND operation=?4
-             ORDER BY created_at,attempt_id LIMIT 1",
-        )
-        .bind(candidate_id)
-        .bind(policy_revision as i64)
-        .bind(expected_head_sha)
-        .bind(operation)
-        .fetch_optional(&self.pool)
-        .await?;
-        row.as_ref().map(attempt_from_row).transpose()
-    }
-
-    pub async fn delivery_attempt_by_key(
-        &self,
-        idempotency_key: &str,
-    ) -> Result<Option<DeliveryAttemptRecord>, Error> {
-        let row = sqlx::query::query(
-            "SELECT attempt_id,idempotency_key,schema_version,operation,project_id,campaign_id,
-                    candidate_id,candidate_sha,candidate_tree_sha,content_digest,gate_revision,
-                    gate_outcome,policy_revision,policy_sha256,risk_class,authorization,
-                    charter_grant_id,pull_request_number,base_branch,expected_head_sha,
-                    observed_head_sha,observed_base_sha,merge_method,state,merge_commit_sha,
-                    incident_id,post_merge_check_id,blocker_code,blocker_detail,created_at,
-                    updated_at,merged_at
-             FROM delivery_attempts WHERE idempotency_key=?1",
-        )
-        .bind(idempotency_key)
-        .fetch_optional(&self.pool)
-        .await?;
-        row.as_ref().map(attempt_from_row).transpose()
+        Ok(DeliveryAttemptReservation {
+            attempt,
+            created,
+            base_conflict,
+        })
     }
 
     pub async fn delivery_attempt(&self, attempt_id: &str) -> Result<DeliveryAttemptRecord, Error> {

@@ -1969,6 +1969,12 @@ impl<'a, H: DeliveryIssueHook> DeliveryService<'a, H> {
                 "the policy auto-merge base no longer matches the Project default branch",
             ));
         }
+        if request.operation != DeliveryOperation::Merge {
+            return Err(DeliveryError::blocked(
+                "OPERATION_MISMATCH",
+                "open-pull-request operation cannot record a merge attempt",
+            ));
+        }
         let expected_head_sha = context.candidate.commit_sha.clone();
         let key = idempotency_key(
             &context.project.id,
@@ -1977,84 +1983,104 @@ impl<'a, H: DeliveryIssueHook> DeliveryService<'a, H> {
             &expected_head_sha,
             DeliveryOperation::Merge.as_str(),
         );
-        if let Some(bound) = self
-            .db
-            .delivery_attempt_for_merge_binding(
-                &context.candidate.id,
-                policy.revision,
-                &expected_head_sha,
-                DeliveryOperation::Merge.as_str(),
-            )
-            .await?
-            && bound.base_branch != context.base_branch
-        {
+        let digest = content_digest(
+            &context.project.id,
+            &context.campaign.id,
+            &context.candidate,
+        );
+        let new_attempt = NewDeliveryAttempt {
+            idempotency_key: key,
+            operation: "MERGE",
+            project_id: context.project.id.clone(),
+            campaign_id: context.campaign.id.clone(),
+            candidate_id: context.candidate.id.clone(),
+            candidate_sha: context.candidate.commit_sha.clone(),
+            candidate_tree_sha: context.candidate.tree_sha.clone(),
+            content_digest: digest,
+            gate_revision: gate.gate_revision.clone(),
+            gate_outcome: gate_outcome_str(gate.outcome).into(),
+            policy_revision: policy.revision,
+            policy_sha256: policy.policy_sha256.clone(),
+            risk_class: context.risk.as_str().into(),
+            base_branch: context.base_branch.clone(),
+            expected_head_sha: expected_head_sha.clone(),
+            merge_method: MERGE_METHOD.into(),
+        };
+        // The durable attempt reservation is atomic and happens before any
+        // GitHub push, PR or issue-hook side effect. A different base loses
+        // here with zero external effects.
+        let reservation = self.db.create_delivery_attempt(new_attempt).await?;
+        if reservation.base_conflict {
             return Err(DeliveryError::blocked(
                 "BASE_MISMATCH",
                 format!(
                     "the durable delivery attempt is bound to base {}; changing to {} requires an explicit new delivery decision",
-                    bound.base_branch, context.base_branch
+                    reservation.attempt.base_branch, context.base_branch
                 ),
             )
-            .with_attempt(bound.attempt_id));
+            .with_attempt(reservation.attempt.attempt_id));
         }
-        // Replay is resolved before any GitHub write, comment or merge. A
-        // durable merged attempt returns its recorded evidence unchanged.
-        if let Some(existing) = self.db.delivery_attempt_by_key(&key).await? {
-            if existing.state == DeliveryAttemptState::Merged {
-                let replay_policy = self
-                    .db
-                    .delivery_policy_revision(&context.project.id, existing.policy_revision)
-                    .await
-                    .unwrap_or_else(|_| policy.clone());
-                let decision = match self
-                    .db
-                    .latest_delivery_decision(&existing.attempt_id)
+        let attempt = reservation.attempt;
+        let attempt_id = attempt.attempt_id.clone();
+        if attempt.state == DeliveryAttemptState::Merged {
+            let _receipts = self.db.delivery_issue_receipts(&attempt_id).await?;
+            let replay_policy = self
+                .db
+                .delivery_policy_revision(&context.project.id, attempt.policy_revision)
+                .await
+                .unwrap_or_else(|_| policy.clone());
+            let decision = match self.db.latest_delivery_decision(&attempt_id).await? {
+                Some(decision) => decision,
+                None => {
+                    self.record_allow_decision(
+                        &attempt,
+                        &policy,
+                        &context,
+                        None,
+                        now_utc(),
+                        now_utc(),
+                    )
                     .await?
-                {
-                    Some(decision) => decision,
-                    None => {
-                        self.record_allow_decision(
-                            &existing,
-                            &policy,
-                            &context,
-                            None,
-                            now_utc(),
-                            now_utc(),
-                        )
-                        .await?
-                    }
-                };
-                return Ok(DeliveryRun {
-                    attempt: existing,
-                    policy: replay_policy,
-                    decision,
-                    pull_request: None,
-                    checks: None,
-                    protection: None,
-                    issue_outcome: None,
-                    replayed: true,
-                });
-            }
-            if existing.state == DeliveryAttemptState::NeedsAttention {
-                return Err(DeliveryError::blocked(
-                    "DELIVERY_INCIDENT_OPEN",
-                    "delivery needs owner attention before another merge",
-                )
-                .with_attempt(existing.attempt_id));
-            }
-            if existing.state == DeliveryAttemptState::Reverted {
-                return Err(DeliveryError::blocked(
-                    "DELIVERY_REVERTED",
-                    "the delivery attempt was reverted; a new reviewed change is required",
-                )
-                .with_attempt(existing.attempt_id));
-            }
+                }
+            };
+            return Ok(DeliveryRun {
+                attempt,
+                policy: replay_policy,
+                decision,
+                pull_request: None,
+                checks: None,
+                protection: None,
+                issue_outcome: None,
+                replayed: true,
+            });
         }
-        if request.operation == DeliveryOperation::OpenPullRequest {
+        if attempt.state == DeliveryAttemptState::NeedsAttention {
             return Err(DeliveryError::blocked(
-                "OPERATION_MISMATCH",
-                "open-pull-request operation cannot record a merge attempt",
-            ));
+                "DELIVERY_INCIDENT_OPEN",
+                "delivery needs owner attention",
+            )
+            .with_attempt(attempt_id));
+        }
+        if attempt.state == DeliveryAttemptState::Reverted {
+            return Err(DeliveryError::blocked(
+                "DELIVERY_REVERTED",
+                "the delivery attempt was reverted; a new reviewed change is required",
+            )
+            .with_attempt(attempt_id));
+        }
+        if !reservation.created && attempt.gate_revision != gate.gate_revision {
+            return Err(DeliveryError::blocked(
+                "GATE_NOT_ACCEPTED",
+                "the attempt is bound to a different Quality Gate revision",
+            )
+            .with_attempt(attempt_id));
+        }
+        if !reservation.created && attempt.policy_revision != policy.revision {
+            return Err(DeliveryError::blocked(
+                "DELIVERY_POLICY_STALE",
+                "the attempt used another policy revision",
+            )
+            .with_attempt(attempt_id));
         }
         self.ensure_credential_and_permission(&context).await?;
         let branch = delivery_branch_name(&context.campaign.id, &context.candidate.commit_sha)?;
@@ -2083,32 +2109,6 @@ impl<'a, H: DeliveryIssueHook> DeliveryService<'a, H> {
                 .await;
             return Err(DeliveryError::from(error));
         }
-
-        let digest = content_digest(
-            &context.project.id,
-            &context.campaign.id,
-            &context.candidate,
-        );
-        let new_attempt = NewDeliveryAttempt {
-            idempotency_key: key,
-            operation: "MERGE",
-            project_id: context.project.id.clone(),
-            campaign_id: context.campaign.id.clone(),
-            candidate_id: context.candidate.id.clone(),
-            candidate_sha: context.candidate.commit_sha.clone(),
-            candidate_tree_sha: context.candidate.tree_sha.clone(),
-            content_digest: digest,
-            gate_revision: gate.gate_revision.clone(),
-            gate_outcome: gate_outcome_str(gate.outcome).into(),
-            policy_revision: policy.revision,
-            policy_sha256: policy.policy_sha256.clone(),
-            risk_class: context.risk.as_str().into(),
-            base_branch: context.base_branch.clone(),
-            expected_head_sha: expected_head_sha.clone(),
-            merge_method: MERGE_METHOD.into(),
-        };
-        let (attempt, created) = self.db.create_delivery_attempt(new_attempt).await?;
-        let attempt_id = attempt.attempt_id.clone();
         let attempt = if attempt.pull_request_number.is_none() {
             self.db
                 .update_delivery_attempt(
@@ -2122,7 +2122,6 @@ impl<'a, H: DeliveryIssueHook> DeliveryService<'a, H> {
         } else {
             attempt
         };
-
         if attempt.state == DeliveryAttemptState::Merged {
             let _receipts = self.db.delivery_issue_receipts(&attempt_id).await?;
             let replay_policy = self
@@ -2154,34 +2153,6 @@ impl<'a, H: DeliveryIssueHook> DeliveryService<'a, H> {
                 issue_outcome: None,
                 replayed: true,
             });
-        }
-        if !created && attempt.state == DeliveryAttemptState::NeedsAttention {
-            return Err(DeliveryError::blocked(
-                "DELIVERY_INCIDENT_OPEN",
-                "delivery needs owner attention",
-            )
-            .with_attempt(attempt_id));
-        }
-        if !created && attempt.state == DeliveryAttemptState::Reverted {
-            return Err(DeliveryError::blocked(
-                "DELIVERY_REVERTED",
-                "the delivery attempt was reverted; a new reviewed change is required",
-            )
-            .with_attempt(attempt_id));
-        }
-        if !created && attempt.gate_revision != gate.gate_revision {
-            return Err(DeliveryError::blocked(
-                "GATE_NOT_ACCEPTED",
-                "the attempt is bound to a different Quality Gate revision",
-            )
-            .with_attempt(attempt_id));
-        }
-        if !created && attempt.policy_revision != policy.revision {
-            return Err(DeliveryError::blocked(
-                "DELIVERY_POLICY_STALE",
-                "the attempt used another policy revision",
-            )
-            .with_attempt(attempt_id));
         }
 
         let pull_request = match self

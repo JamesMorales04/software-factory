@@ -112,6 +112,8 @@ struct FakeState {
     merge_sha: String,
     candidate_branch_sha: String,
     default_branch_sha: String,
+    release_branch_sha: String,
+    pr_base_ref: String,
     pr_open: bool,
     pr_merged: bool,
     pr_state: String,
@@ -147,6 +149,8 @@ impl FakeState {
             merge_sha: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".into(),
             candidate_branch_sha: repo.candidate.clone(),
             default_branch_sha: repo.base.clone(),
+            release_branch_sha: repo.base.clone(),
+            pr_base_ref: "main".into(),
             pr_open: false,
             pr_merged: false,
             pr_state: "open".into(),
@@ -192,7 +196,7 @@ fn pull_request_payload(state: &FakeState) -> serde_json::Value {
         "mergeable": state.mergeable,
         "mergeable_state": state.mergeable_state,
         "head": {"ref": format!("factory/campaign-campaign-1/candidate-{}", state.candidate_sha), "sha": state.pr_head_sha},
-        "base": {"ref": "main", "sha": state.pr_base_sha},
+        "base": {"ref": state.pr_base_ref, "sha": state.pr_base_sha},
         "user": {"id": 1, "login": "octo"},
         "html_url": "https://github.com/acme/widgets/pull/42",
         "changed_files": 1,
@@ -235,6 +239,8 @@ async fn branch_or_protection_handler(
     let state = fake.state.lock().unwrap();
     let sha = if branch == "main" {
         state.default_branch_sha.clone()
+    } else if branch == "release" {
+        state.release_branch_sha.clone()
     } else {
         state.candidate_branch_sha.clone()
     };
@@ -279,7 +285,10 @@ async fn list_pulls_handler(
     Json(serde_json::json!([])).into_response()
 }
 
-async fn create_pull_handler(State(fake): State<Fake>) -> Response {
+async fn create_pull_handler(
+    State(fake): State<Fake>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
     let mut state = fake.state.lock().unwrap();
     state.create_calls.fetch_add(1, Ordering::SeqCst);
     state.pr_open = true;
@@ -289,7 +298,16 @@ async fn create_pull_handler(State(fake): State<Fake>) -> Response {
         .create_head_sha
         .clone()
         .unwrap_or_else(|| state.candidate_sha.clone());
-    state.pr_base_sha = state.default_branch_sha.clone();
+    state.pr_base_ref = body
+        .get("base")
+        .and_then(|value| value.as_str())
+        .unwrap_or("main")
+        .to_owned();
+    state.pr_base_sha = if state.pr_base_ref == "release" {
+        state.release_branch_sha.clone()
+    } else {
+        state.default_branch_sha.clone()
+    };
     Json(pull_request_payload(&state)).into_response()
 }
 
@@ -1286,6 +1304,86 @@ async fn changing_base_for_a_blocked_attempt_is_a_typed_conflict() {
 }
 
 #[tokio::test]
+async fn concurrent_different_base_delivery_has_one_side_effect_set() {
+    let fixture = setup_fixture("R2").await;
+    let input = DeliveryPolicyInput {
+        enabled: true,
+        r1_enabled: false,
+        auto_merge_base_branch: "main".into(),
+        manual_base_branches: vec!["main".into(), "release".into()],
+        required_checks: vec!["ci".into()],
+        merge_method: "squash".into(),
+        post_merge_check_id: "post-merge".into(),
+        post_merge_timeout_secs: 3,
+        kill_switch: false,
+        expires_at: None,
+    };
+    fixture
+        .db
+        .append_delivery_policy("project", "main", &input, "owner")
+        .await
+        .unwrap();
+    let client_main = GitHubClient::with_base_url(&fixture.base_url, true).unwrap();
+    let client_release = GitHubClient::with_base_url(&fixture.base_url, true).unwrap();
+    let credential_main = credential();
+    let credential_release = credential();
+    let hook = RecordingHook::default();
+    let service_main = DeliveryService::new(&fixture.db, &client_main, &credential_main, &hook);
+    let service_release =
+        DeliveryService::new(&fixture.db, &client_release, &credential_release, &hook);
+    let mut main_request = request(
+        &fixture.campaign_id,
+        &fixture.candidate_id,
+        DeliveryOperation::Merge,
+        true,
+    );
+    main_request.base_branch = Some("main");
+    let mut release_request = request(
+        &fixture.campaign_id,
+        &fixture.candidate_id,
+        DeliveryOperation::Merge,
+        true,
+    );
+    release_request.base_branch = Some("release");
+
+    let (main_result, release_result) = tokio::join!(
+        service_main.deliver(&main_request),
+        service_release.deliver(&release_request)
+    );
+    let mut successes = Vec::new();
+    let mut base_conflicts = 0;
+    for result in [main_result, release_result] {
+        match result {
+            Ok(run) => successes.push(run),
+            Err(error) => {
+                assert_eq!(error.kind(), "BASE_MISMATCH");
+                base_conflicts += 1;
+            }
+        }
+    }
+    assert_eq!(successes.len(), 1, "exactly one base may own the attempt");
+    assert_eq!(base_conflicts, 1);
+    let fake = fixture.fake.lock().unwrap();
+    assert_eq!(fake.create_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(fake.merge_calls.load(Ordering::SeqCst), 1);
+    drop(fake);
+    assert_eq!(hook.calls(), vec!["pr_opened", "merge_succeeded"]);
+    let attempts = fixture
+        .db
+        .delivery_projection(&fixture.campaign_id, &fixture.candidate_id)
+        .await
+        .unwrap()
+        .attempts;
+    assert_eq!(attempts.len(), 1);
+    assert_eq!(attempts[0].state, DeliveryAttemptState::Merged);
+    assert!(matches!(
+        attempts[0].base_branch.as_str(),
+        "main" | "release"
+    ));
+    assert_eq!(successes[0].attempt.base_branch, attempts[0].base_branch);
+}
+
+#[tokio::test]
 async fn r1_with_opt_in_charter_and_post_merge_check_merges() {
     let fixture = setup_fixture("R1").await;
     let input = DeliveryPolicyInput {
@@ -1799,7 +1897,7 @@ async fn policy_revisions_are_append_only_and_attempt_identity_is_immutable() {
         "delivery policies must reject updates"
     );
 
-    let (attempt, _) = fixture
+    let reservation = fixture
         .db
         .create_delivery_attempt(NewDeliveryAttempt {
             idempotency_key: "immutable-key".into(),
@@ -1821,6 +1919,7 @@ async fn policy_revisions_are_append_only_and_attempt_identity_is_immutable() {
         })
         .await
         .unwrap();
+    let attempt = reservation.attempt;
     assert!(
         sqlx::query::query("UPDATE delivery_attempts SET candidate_sha=?1 WHERE attempt_id=?2")
             .bind("f".repeat(40))
@@ -1853,24 +1952,26 @@ async fn duplicate_attempt_creation_is_idempotent() {
         expected_head_sha: fixture.candidate_sha.clone(),
         merge_method: "squash".into(),
     };
-    let (first, created) = fixture
+    let first = fixture
         .db
         .create_delivery_attempt(input.clone())
         .await
         .unwrap();
-    assert!(created);
-    let (second, created) = fixture.db.create_delivery_attempt(input).await.unwrap();
-    assert!(!created);
-    assert_eq!(first.attempt_id, second.attempt_id);
+    assert!(first.created);
+    assert!(!first.base_conflict);
+    let second = fixture.db.create_delivery_attempt(input).await.unwrap();
+    assert!(!second.created);
+    assert!(!second.base_conflict);
+    assert_eq!(first.attempt.attempt_id, second.attempt.attempt_id);
     let (claimed, _) = fixture
         .db
-        .claim_delivery_attempt(&first.attempt_id)
+        .claim_delivery_attempt(&first.attempt.attempt_id)
         .await
         .unwrap();
     assert!(claimed);
     let (claimed, attempt) = fixture
         .db
-        .claim_delivery_attempt(&first.attempt_id)
+        .claim_delivery_attempt(&first.attempt.attempt_id)
         .await
         .unwrap();
     assert!(!claimed);
@@ -1878,7 +1979,7 @@ async fn duplicate_attempt_creation_is_idempotent() {
     fixture
         .db
         .record_delivery_attempt_event(NewDeliveryAttemptEvent {
-            attempt_id: &first.attempt_id,
+            attempt_id: &first.attempt.attempt_id,
             kind: "TEST",
             detail: "event",
         })
