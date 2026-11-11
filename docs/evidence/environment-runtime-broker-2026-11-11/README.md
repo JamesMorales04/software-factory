@@ -1,6 +1,6 @@
 # WP1-C environment runtime broker — Compose observation
 
-**Candidate source commit:** `e72d362498fb0aa2a19282418d26de27b8b4220f`
+**Implementation candidate:** `5f98daec2b92e3adaee0b4f12720ed56a8d6ef58` (the docs-only commit that adds this record is reported in the handoff)
 **Observation source commit:** `4bc082f98e6898643e0379e4086107c962a55db1`
 **Integration merge base:** `61ff424` (WP1-A `19e2723`, WP1-B `3325831`)
 **Date:** 2026-11-11. **Status:** implementer self-test observation, not
