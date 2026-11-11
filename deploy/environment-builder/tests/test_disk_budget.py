@@ -18,6 +18,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
 from environment_builder.disk import (  # noqa: E402
+    DU_TIMEOUT_SECONDS,
     MAX_DU_STDERR_BYTES,
     DiskBudget,
     _parse_du,
@@ -104,11 +105,141 @@ class DiskBudgetTests(unittest.TestCase):
             self.assertTrue(process.stdout.closed)
             self.assertTrue(process.stderr.closed)
 
+    def test_slow_du_within_timeout_succeeds(self) -> None:
+        class SlowDu:
+            returncode = 0
+            pid = 4246
+
+            def __init__(self, stdout: bytes) -> None:
+                self.stdout = io.BytesIO(stdout)
+                self.stderr = io.BytesIO(b"")
+                self.timeout_seen: float | None = None
+
+            def wait(self, timeout: float | None = None) -> int:
+                self.timeout_seen = timeout
+                time.sleep(0.05)
+                return 0
+
+            def poll(self) -> int:
+                return 0
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = str(Path(temporary))
+            process = SlowDu(f"1\t{root}\n1\ttotal\n".encode())
+            with mock.patch(
+                "environment_builder.disk.subprocess.Popen",
+                return_value=process,
+            ):
+                used, complete = directory_usage_bytes([root])
+            self.assertEqual(used, 1024)
+            self.assertTrue(complete)
+            self.assertGreaterEqual(process.timeout_seen or 0, DU_TIMEOUT_SECONDS)
+
+    def test_du_timeout_beyond_bound_fails_closed(self) -> None:
+        class TimeoutDu:
+            returncode = None
+            pid = 4247
+
+            def __init__(self) -> None:
+                self.stdout = io.BytesIO(b"")
+                self.stderr = io.BytesIO(b"")
+
+            def wait(self, timeout: float | None = None) -> int:
+                raise subprocess.TimeoutExpired("du", timeout or 0)
+
+            def poll(self) -> None:
+                return None
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = str(Path(temporary))
+            with (
+                mock.patch(
+                    "environment_builder.disk.subprocess.Popen",
+                    return_value=TimeoutDu(),
+                ),
+                mock.patch("environment_builder.disk.os.killpg"),
+            ):
+                used, complete = directory_usage_bytes([root])
+            self.assertEqual(used, 0)
+            self.assertFalse(complete)
+
+    def test_check_retries_transient_incomplete_then_succeeds(self) -> None:
+        budget = DiskBudget(1024, [], retry_backoff=0)
+        calls = [(0, False), (0, False), (1024, True)]
+        with mock.patch.object(budget, "usage", side_effect=calls):
+            budget.check()
+
+    def test_check_fails_after_three_incomplete_attempts(self) -> None:
+        budget = DiskBudget(1024, [], retry_backoff=0)
+        with mock.patch.object(
+            budget, "usage", side_effect=[(0, False), (0, False), (0, False)]
+        ) as usage:
+            with self.assertRaises(BuilderError) as raised:
+                budget.check()
+        self.assertEqual(usage.call_count, 3)
+        self.assertEqual(raised.exception.code, "ENVIRONMENT_RESOURCE_LIMIT")
+        self.assertIn("3 attempts", raised.exception.message)
+
+    def test_monitor_requires_three_consecutive_incomplete_samples(self) -> None:
+        class Process:
+            pid = 4248
+
+            def poll(self) -> None:
+                return None
+
+        budget = DiskBudget(1, [], interval=0.05, timeout=0.1)
+        process = Process()
+        killed: list[int] = []
+        with (
+            mock.patch.object(budget, "usage", return_value=(0, False)),
+            mock.patch(
+                "environment_builder.disk.os.killpg",
+                side_effect=lambda pid, _sig: killed.append(pid),
+            ),
+        ):
+            monitor = budget.monitor(process)
+            monitor.start()
+            time.sleep(0.35)
+            monitor.stop()
+        self.assertTrue(monitor.exceeded)
+        self.assertTrue(monitor.incomplete)
+        self.assertEqual(killed, [process.pid])
+
+    def test_monitor_transient_failures_do_not_kill(self) -> None:
+        class Process:
+            pid = 4249
+
+            def poll(self) -> None:
+                return None
+
+        budget = DiskBudget(1, [], interval=0.05, timeout=0.1)
+        process = Process()
+        calls = [(0, False), (0, False), (1024, True)]
+
+        def usage() -> tuple[int, bool]:
+            return calls.pop(0) if calls else (1024, True)
+
+        killed: list[int] = []
+        with (
+            mock.patch.object(budget, "usage", side_effect=usage),
+            mock.patch(
+                "environment_builder.disk.os.killpg",
+                side_effect=lambda pid, _sig: killed.append(pid),
+            ),
+        ):
+            monitor = budget.monitor(process)
+            monitor.start()
+            time.sleep(0.35)
+            monitor.stop()
+        self.assertFalse(monitor.exceeded)
+        self.assertFalse(monitor.incomplete)
+        self.assertEqual(killed, [])
+
     def test_unreadable_scan_is_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             missing = root / "missing"
-            budget = DiskBudget(10240, [missing])
+            budget = DiskBudget(10240, [missing], retry_backoff=0)
             used, complete = directory_usage_bytes([missing])
             self.assertFalse(complete)
             self.assertEqual(used, 0)
