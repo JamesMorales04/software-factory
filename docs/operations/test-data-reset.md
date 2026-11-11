@@ -56,7 +56,9 @@ The Python helper enforces the same environment, project-marker,
 `--confirmed-project`, empty-evidence and `/data` rules when invoked directly.
 It mounts the Compose volume at `/factory-data`, never `/data`, so its `/data`
 refusal also applies to the helper container path. Direct helper use without
-the exact confirmation argument fails.
+the exact confirmation argument fails. The database and its WAL/SHM sidecars
+must be regular files; symlinked inputs are refused before opening or copying,
+and backups are created as regular files with no symlink target.
 
 The script never runs automatically. It is not referenced by Compose, the
 Containerfiles, Core startup, the Worker, install scripts or normal runtime.
@@ -178,12 +180,14 @@ scripts/reset-test-data.test.sh
 The shell test builds a real migrated SQLite database, seeds preserved and
 transactional rows (including immutable-delete triggers and an
 `AMBIGUOUS` model reservation), and asserts wrapper and direct-helper guards,
-dry-run rollback, backup checksums, reset cutover, trigger restoration,
-restored integrity, corrupt-backup refusal, path-traversal refusal, automatic
-restore after an injected post-commit integrity failure, and automatic restore
-after a simulated Core health failure. The health-failure case uses a fake
-`podman` shim, a temporary database/volume directory and reduced health-probe
-attempts; it never starts Compose, reads `/data`, or calls a paid provider.
+symlinked database/sidecar refusal, dry-run rollback, backup checksums, reset
+cutover, trigger restoration, restored integrity, corrupt-backup refusal,
+duplicate-checksum and path-traversal refusal, symlinked backup refusal,
+automatic restore after an injected post-commit integrity failure, and
+automatic restore after a simulated Core health failure. The health-failure
+case uses a fake `podman` shim, a temporary database/volume directory and
+reduced health-probe attempts; it never starts Compose, reads `/data`, or calls
+a paid provider.
 
 The model-call release/reconcile action itself is covered by Core/Office
 regression tests; this script is not an alternative to the Decision Inbox

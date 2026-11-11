@@ -181,6 +181,33 @@ assert_helper_failure "evidence directory must be empty" \
   --database "$MASTER" --evidence-dir "$TMP/nonempty" \
   --project wp6-test --confirmed-project wp6-test
 
+# A symlinked database or sidecar must not become a symlinked backup.
+SYMLINK_REAL="$TMP/symlink-real.sqlite"
+SYMLINK_DB="$TMP/symlink-db.sqlite"
+cp "$MASTER" "$SYMLINK_REAL"
+ln -s "$SYMLINK_REAL" "$SYMLINK_DB"
+assert_helper_failure "database may not be a symlink" \
+  env FACTORY_TEST_DATA_RESET=1 python3 "$HELPER" \
+  --database "$SYMLINK_DB" --evidence-dir "$TMP/symlink-db-evidence" \
+  --project wp6-test --confirmed-project wp6-test
+assert_count "$SYMLINK_REAL" campaigns 1
+[[ ! -f "$TMP/symlink-db-evidence/factory.sqlite" ]] ||
+  fail "symlinked database produced a backup"
+
+SIDECAR_DB="$TMP/sidecar.sqlite"
+SIDECAR_TARGET="$TMP/sidecar-wal-target"
+cp "$MASTER" "$SIDECAR_DB"
+printf 'not a wal\n' >"$SIDECAR_TARGET"
+ln -s "$SIDECAR_TARGET" "$SIDECAR_DB-wal"
+assert_helper_failure "database sidecar -wal may not be a symlink" \
+  env FACTORY_TEST_DATA_RESET=1 python3 "$HELPER" \
+  --database "$SIDECAR_DB" --evidence-dir "$TMP/sidecar-evidence" \
+  --project wp6-test --confirmed-project wp6-test
+rm "$SIDECAR_DB-wal"
+assert_count "$SIDECAR_DB" campaigns 1
+[[ ! -f "$TMP/sidecar-evidence/factory.sqlite" ]] ||
+  fail "symlinked database sidecar produced a backup"
+
 # --- dry-run ----------------------------------------------------------------
 DRY="$TMP/dry.sqlite"
 cp "$MASTER" "$DRY"
@@ -241,6 +268,32 @@ for entry in "../escape" "/tmp/absolute-escape" "factory.sqlite-extra"; do
   [[ ! -e "$TMP/traversal-target-$label.sqlite" ]] ||
     fail "path traversal created a target database: $entry"
 done
+
+# Duplicate checksum entries and symlinked backup files are refused too.
+DUPLICATE="$TMP/duplicate-evidence"
+cp -a "$RUN_EVIDENCE" "$DUPLICATE"
+cat "$RUN_EVIDENCE/SHA256SUMS" >>"$DUPLICATE/SHA256SUMS"
+assert_helper_failure "duplicate backup file entry" \
+  env FACTORY_TEST_DATA_RESET=1 python3 "$HELPER" \
+  --database "$TMP/duplicate-target.sqlite" \
+  --evidence-dir "$TMP/duplicate-restore-evidence" \
+  --project wp6-test --confirmed-project wp6-test \
+  --restore-from "$DUPLICATE"
+[[ ! -e "$TMP/duplicate-target.sqlite" ]] ||
+  fail "duplicate checksum entry created a target database"
+
+SYMLINK_BACKUP="$TMP/symlink-backup-evidence"
+cp -a "$RUN_EVIDENCE" "$SYMLINK_BACKUP"
+mv "$SYMLINK_BACKUP/factory.sqlite" "$SYMLINK_BACKUP/factory-real.sqlite"
+ln -s factory-real.sqlite "$SYMLINK_BACKUP/factory.sqlite"
+assert_helper_failure "backup file may not be a symlink" \
+  env FACTORY_TEST_DATA_RESET=1 python3 "$HELPER" \
+  --database "$TMP/symlink-backup-target.sqlite" \
+  --evidence-dir "$TMP/symlink-backup-restore-evidence" \
+  --project wp6-test --confirmed-project wp6-test \
+  --restore-from "$SYMLINK_BACKUP"
+[[ ! -e "$TMP/symlink-backup-target.sqlite" ]] ||
+  fail "symlinked backup entry created a target database"
 
 # --- post-commit integrity failure auto-restores ---------------------------
 INTEGRITY="$TMP/integrity.sqlite"

@@ -23,6 +23,7 @@ import os
 import re
 import shutil
 import sqlite3
+import stat
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -326,7 +327,31 @@ def delete_order(connection: sqlite3.Connection) -> list[str]:
     return ordered
 
 
+def validate_regular_file(path: Path, label: str, required: bool) -> None:
+    """Reject symlinks/non-regular files so a backup has a stable target."""
+    if path.is_symlink():
+        raise ResetError(f"{label} may not be a symlink: {path}")
+    if not path.exists():
+        if required:
+            raise ResetError(f"{label} does not exist: {path}")
+        return
+    if not stat.S_ISREG(path.stat().st_mode):
+        raise ResetError(f"{label} must be a regular file: {path}")
+
+
+def validate_database_inputs(database: Path, required: bool) -> None:
+    validate_regular_file(database, "database", required)
+    for suffix in ("-wal", "-shm"):
+        validate_regular_file(
+            Path(str(database) + suffix),
+            f"database sidecar {suffix}",
+            required=False,
+        )
+
+
 def sha256_file(path: Path) -> tuple[str, int]:
+    if path.is_symlink():
+        raise ResetError(f"refusing to hash a symlink: {path}")
     digest = hashlib.sha256()
     size = 0
     with path.open("rb") as handle:
@@ -337,7 +362,26 @@ def sha256_file(path: Path) -> tuple[str, int]:
 
 
 def copy_and_hash(source: Path, destination: Path) -> dict[str, object]:
-    shutil.copy2(source, destination, follow_symlinks=False)
+    validate_regular_file(source, "backup source", required=True)
+    source_fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        if not stat.S_ISREG(os.fstat(source_fd).st_mode):
+            raise ResetError(f"backup source is not a regular file: {source}")
+        source_handle = os.fdopen(source_fd, "rb")
+        source_fd = -1
+        with source_handle:
+            destination_fd = os.open(
+                destination,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+            )
+            with os.fdopen(destination_fd, "wb") as destination_handle:
+                shutil.copyfileobj(source_handle, destination_handle)
+    finally:
+        if source_fd != -1:
+            os.close(source_fd)
+    if destination.is_symlink() or not stat.S_ISREG(destination.lstat().st_mode):
+        raise ResetError(f"backup destination is not a regular file: {destination}")
     os.chmod(destination, 0o600)
     digest, size = sha256_file(destination)
     return {"sha256": digest, "bytes": size}
@@ -365,6 +409,7 @@ def backup_database(
     mode: str,
     before: dict[str, int],
 ) -> Path:
+    validate_database_inputs(database, required=True)
     ensure_empty_directory(evidence)
     files: dict[str, dict[str, object]] = {}
     for suffix in ("", "-wal"):
@@ -543,6 +588,7 @@ def restore_database(
     project: str,
 ) -> None:
     entries = verify_backup(backup)
+    validate_database_inputs(database, required=False)
     database.parent.mkdir(parents=True, exist_ok=True)
     ensure_empty_directory(evidence)
     if database.exists():
@@ -612,8 +658,10 @@ def main(argv: list[str]) -> int:
 
     if args.dry_run and args.restore_from:
         raise ResetError("--dry-run and --restore-from are mutually exclusive")
-    if not args.restore_from and not args.database.is_file():
-        raise ResetError(f"database file does not exist: {args.database}")
+    if args.restore_from:
+        validate_database_inputs(args.database, required=False)
+    else:
+        validate_database_inputs(args.database, required=True)
 
     if args.restore_from:
         restore_database(args.database, args.restore_from, args.evidence_dir, args.project)
