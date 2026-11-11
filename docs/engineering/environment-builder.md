@@ -130,12 +130,15 @@ Disk is enforced against the frozen `diskMiB` in two layers. The Python builder
 reads the frozen `diskMiB`, samples `/cache`, `/nix` and the workspace with a
 bounded background sampler during build/resolve/check subprocesses, and kills
 the child with `ENVIRONMENT_RESOURCE_LIMIT` when observed usage exceeds the
-bound. The host/CI wrapper also checks before and after the run and removes
-success artifacts. An over-budget run fails `ENVIRONMENT_RESOURCE_LIMIT`,
-writes a typed `disk-failure.json` plus `disk-usage.json`, and the broker
-removes the per-spec cache volume so it cannot be reused. This is a bounded
-runtime sample plus a post-hoc `du` bound (`disk.exact=false`), not an exact
-filesystem quota; the evidence records the observed usage and never claims
+bound. An unreadable path/entry or an incomplete scan is also fail-closed: the
+builder cannot prove the bound and reports `ENVIRONMENT_RESOURCE_LIMIT` rather
+than treating the lower bound as success. The host/CI wrapper also checks before
+and after the run and removes success artifacts. An over-budget run fails
+`ENVIRONMENT_RESOURCE_LIMIT`, writes a typed `disk-failure.json` plus
+`disk-usage.json`, and the broker removes the per-spec cache volume (or
+quarantines it if removal cannot be confirmed) so it cannot be reused. This is a
+bounded runtime sample plus a post-hoc `du` bound (`disk.exact=false`), not an
+exact filesystem quota; the evidence records the observed usage and never claims
 exact disk attestation.
 
 The builder root filesystem is read-only; only `/cache` and `/nix` are
@@ -149,7 +152,10 @@ SYS_CHROOT` (Nix sandbox and chroot), `--security-opt unmask=ALL` (Nix's
 `/proc` remount test), `no-new-privileges`, bounded
 `--cpus/--memory/--pids-limit` and a wall-clock timeout exactly equal to the
 frozen plan. There is no host socket, HOME, Podman socket, provider secret or
-GitHub credential.
+GitHub credential. Mount attestation validates the source before the target:
+`/cache`, `/nix` and `/inputs/workspace` must be Podman-managed named-volume
+sources, so a forbidden host path at an allowed target cannot produce
+`noHostMount=true`.
 
 ## 4. Typed failures
 
@@ -211,8 +217,8 @@ environment-check remains **NOT_TESTED** and is not claimed.
 `deploy/environment-builder/tests/` covers deterministic policy, receipt, SBOM,
 exact cgroup limits, fetch-policy enforcement, protected path descendants,
 rootful-Podman rejection, wrapper nonzero-exit cleanup, runtime disk-budget
-enforcement, bounded noisy-output capture and disk-overflow
-artifact purging (40 tests). The
+enforcement, mount-source attestation, bounded noisy-output capture and
+disk-overflow artifact purging (46 tests). The
 final `deploy/environment-builder/Containerfile` image was built and exercised
 under the unique WP1-B evidence tag
 `localhost/software-factory-environment-builder:wp1b-340fa54-r3`

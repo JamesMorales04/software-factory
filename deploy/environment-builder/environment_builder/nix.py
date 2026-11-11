@@ -104,6 +104,18 @@ def _terminate_process(process: subprocess.Popen[Any]) -> None:
         pass
 
 
+def _close_process_pipes(process: subprocess.Popen[Any]) -> None:
+    """Close both capture pipes on every exit path, including budget kills."""
+    for name in ("stdout", "stderr"):
+        stream = getattr(process, name, None)
+        if stream is None:
+            continue
+        try:
+            stream.close()
+        except (OSError, ValueError):
+            pass
+
+
 def _run_bounded_capture(
     argv: list[str],
     *,
@@ -151,6 +163,7 @@ def _run_bounded_capture(
         _terminate_process(process)
     stdout_thread.join(10)
     stderr_thread.join(10)
+    _close_process_pipes(process)
     if timed_out:
         fail(failure_code, "environment command exceeded its wall-clock bound")
     stdout, stdout_truncated = results.get("stdout", (b"", False))
@@ -286,7 +299,14 @@ def run_logged(
         if monitor:
             monitor.stop()
         reader.join(10)
+        _close_process_pipes(process)
     if monitor and monitor.exceeded:
+        if monitor.incomplete:
+            fail(
+                "ENVIRONMENT_RESOURCE_LIMIT",
+                "the builder could not complete the disk scan; the frozen disk bound "
+                "cannot be verified (exact=false)",
+            )
         fail(
             "ENVIRONMENT_RESOURCE_LIMIT",
             f"observed builder disk usage {monitor.observed_bytes} bytes exceeds the frozen "
@@ -582,7 +602,14 @@ def run_check(
             monitor.stop()
         stdout_thread.join(10)
         stderr_thread.join(10)
+        _close_process_pipes(process)
     if monitor and monitor.exceeded:
+        if monitor.incomplete:
+            fail(
+                "ENVIRONMENT_RESOURCE_LIMIT",
+                "the builder could not complete the disk scan; the frozen disk bound "
+                "cannot be verified (exact=false)",
+            )
         fail(
             "ENVIRONMENT_RESOURCE_LIMIT",
             f"observed builder disk usage {monitor.observed_bytes} bytes exceeds the frozen "

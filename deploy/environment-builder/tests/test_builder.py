@@ -39,7 +39,11 @@ from environment_builder.policy import (  # noqa: E402
     validate_secrets,
 )
 from environment_builder.nix import BuildLog, closure_manifest_sha256, run_check  # noqa: E402
-from environment_builder.receipt import build_receipt, limits_within_plan  # noqa: E402
+from environment_builder.receipt import (  # noqa: E402
+    _mounts_authorized,
+    build_receipt,
+    limits_within_plan,
+)
 from environment_builder.sbom import build_sbom, license_inventory_copy  # noqa: E402
 
 SHA = "a" * 64
@@ -466,6 +470,42 @@ class SbomTests(unittest.TestCase):
                 "inventorySha256",
                 "sbomSha256",
             },
+        )
+
+
+class AttestationTests(unittest.TestCase):
+    VOLUME = "/var/lib/containers/storage/volumes/factory-env-test/_data"
+
+    @staticmethod
+    def mount(source: str, target: str) -> dict[str, str]:
+        return {"source": source, "mount_point": target, "fstype": "ext4"}
+
+    def test_expected_volume_source_is_authorized_at_each_target(self) -> None:
+        for target in ("/inputs/workspace", "/cache", "/nix"):
+            self.assertTrue(
+                _mounts_authorized([self.mount(self.VOLUME, target)]), target
+            )
+
+    def test_forbidden_root_source_at_each_allowed_target_is_rejected(self) -> None:
+        for target in ("/inputs/workspace", "/cache", "/nix"):
+            self.assertFalse(_mounts_authorized([self.mount("/root", target)]), target)
+
+    def test_host_bind_at_an_allowed_target_is_rejected(self) -> None:
+        for target in ("/inputs/workspace", "/cache", "/nix"):
+            self.assertFalse(
+                _mounts_authorized([self.mount("/tmp/factory-cache", target)]), target
+            )
+
+    def test_path_traversal_volume_source_is_rejected(self) -> None:
+        self.assertFalse(
+            _mounts_authorized(
+                [
+                    self.mount(
+                        "/var/lib/containers/storage/volumes/../root/_data",
+                        "/cache",
+                    )
+                ]
+            )
         )
 
 

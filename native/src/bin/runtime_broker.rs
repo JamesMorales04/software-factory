@@ -87,6 +87,7 @@ const ENVIRONMENT_NETWORK_PREFIX: &str = "factory-env-egress-";
 const ENVIRONMENT_NIX_STORE_VOLUME: &str = "factory-env-nix-store";
 const ENVIRONMENT_BUILDER_LABEL: &str = "io.software-factory.environment-builder.source-digest";
 const ENVIRONMENT_CACHE_LABEL: &str = "io.software-factory.environment-cache";
+const ENVIRONMENT_CACHE_QUARANTINE_SUFFIX: &str = "-quarantine";
 const MAX_ENVIRONMENT_CACHE_VOLUMES: usize = 8;
 const MAX_ENVIRONMENT_DISK_MIB: u32 = 262_144;
 const ENVIRONMENT_BUILDER_POLICY_LABEL: &str =
@@ -3290,12 +3291,14 @@ async fn execute_environment_check(
         &cache_volume,
     )
     .await;
-    if outcome
-        .as_ref()
-        .err()
-        .is_some_and(|failure| failure.code == "ENVIRONMENT_RESOURCE_LIMIT")
+    if let Err(failure) = &outcome
+        && failure.code == "ENVIRONMENT_RESOURCE_LIMIT"
+        && let Err(purge_error) = purge_environment_cache(&app, &cache_volume).await
     {
-        purge_environment_cache(&app, &cache_volume).await;
+        return Err(EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_RESOURCE_LIMIT",
+            format!("{}; cache quarantine: {purge_error}", failure.message),
+        ));
     }
     outcome
 }
@@ -3468,11 +3471,11 @@ async fn cleanup_environment_check_container(app: &Arc<App>, container: &str) ->
 
 /// Remove a per-spec cache whose operation exceeded the frozen disk bound. An
 /// over-budget cache must never be reused by a later check/build, even if the
-/// original container is gone. Removal is best-effort but logged and verified.
-async fn purge_environment_cache(app: &Arc<App>, volume: &str) {
+/// original container is gone. If removal cannot be confirmed, create a durable
+/// quarantine volume that the cache creation path checks before reuse.
+async fn purge_environment_cache(app: &Arc<App>, volume: &str) -> Result<(), String> {
     if !volume.starts_with("factory-env-cache-") {
-        tracing::error!(%volume, "refusing to purge an unexpected cache volume name");
-        return;
+        return Err("refusing to purge an unexpected cache volume name".into());
     }
     let lock = app.resource_lock(volume);
     let _guard = lock.lock().await;
@@ -3480,14 +3483,62 @@ async fn purge_environment_cache(app: &Arc<App>, volume: &str) {
     match app.podman_output(["volume", "exists", volume]).await {
         Ok(output) if output.status.code() == Some(1) => {
             tracing::warn!(%volume, "purged over-budget environment cache");
+            Ok(())
         }
         Ok(_) => {
             tracing::error!(%volume, "over-budget environment cache is still present");
+            quarantine_environment_cache(app, volume).await?;
+            Err("the over-budget environment cache could not be removed and is quarantined".into())
         }
         Err(error) => {
             tracing::error!(%volume, %error, "over-budget environment cache cleanup could not be confirmed");
+            quarantine_environment_cache(app, volume).await?;
+            Err(
+                "the over-budget environment cache cleanup is unconfirmed and is quarantined"
+                    .into(),
+            )
         }
     }
+}
+
+async fn quarantine_environment_cache(app: &Arc<App>, cache: &str) -> Result<(), String> {
+    let quarantine = environment_cache_is_quarantined(cache);
+    let owner = format!("{OWNER_LABEL}=environment");
+    let workspace = format!("{WORKSPACE_LABEL}=quarantine");
+    let output = app
+        .podman_output([
+            "volume",
+            "create",
+            "--ignore",
+            "--label",
+            MANAGED_LABEL,
+            "--label",
+            owner.as_str(),
+            "--label",
+            workspace.as_str(),
+            quarantine.as_str(),
+        ])
+        .await
+        .map_err(|error| format!("quarantine volume creation failed: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "quarantine volume creation failed: {}",
+            stderr(&output)
+        ));
+    }
+    let exists = app
+        .podman_output(["volume", "exists", quarantine.as_str()])
+        .await
+        .map_err(|error| format!("quarantine volume verification failed: {error}"))?;
+    if !exists.status.success() {
+        return Err("quarantine volume is not present after creation".into());
+    }
+    tracing::error!(%cache, %quarantine, "environment cache quarantined");
+    Ok(())
+}
+
+fn environment_cache_is_quarantined(volume: &str) -> String {
+    format!("{volume}{ENVIRONMENT_CACHE_QUARANTINE_SUFFIX}")
 }
 
 async fn environment_operation(
@@ -4230,9 +4281,11 @@ async fn execute_environment_operation(
     let cache_volume = resources.cache_volume.clone();
     let cache_persistent = resources.cache_persistent;
     let cleanup_confirmed = resources.cleanup().await;
-    if resource_limit && cache_persistent {
-        purge_environment_cache(&app, &cache_volume).await;
-    }
+    let purge_error = if resource_limit && cache_persistent {
+        purge_environment_cache(&app, &cache_volume).await.err()
+    } else {
+        None
+    };
     let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     match result {
         Ok((phase, resolution, receipt, logs, logs_truncated)) => {
@@ -4253,7 +4306,16 @@ async fn execute_environment_operation(
                 duration_ms,
             })
         }
-        Err(failure) => Err(failure),
+        Err(failure) => {
+            if let Some(purge_error) = purge_error {
+                Err(EnvironmentBrokerFailure::new(
+                    "ENVIRONMENT_RESOURCE_LIMIT",
+                    format!("{}; cache quarantine: {purge_error}", failure.message),
+                ))
+            } else {
+                Err(failure)
+            }
+        }
     }
 }
 
@@ -4766,6 +4828,25 @@ async fn create_environment_volume(
     reuse: bool,
 ) -> Result<(), EnvironmentBrokerFailure> {
     if reuse {
+        let quarantine = environment_cache_is_quarantined(volume);
+        match app
+            .podman_output(["volume", "exists", quarantine.as_str()])
+            .await
+        {
+            Ok(output) if output.status.success() => {
+                return Err(EnvironmentBrokerFailure::new(
+                    "ENVIRONMENT_BUILDER_UNAVAILABLE",
+                    "the environment cache is quarantined after an unconfirmed resource-limit purge",
+                ));
+            }
+            Ok(_) => {}
+            Err(error) => {
+                return Err(EnvironmentBrokerFailure::new(
+                    "ENVIRONMENT_BUILDER_UNAVAILABLE",
+                    format!("the environment cache quarantine state is unreadable: {error}"),
+                ));
+            }
+        }
         match app.volume_labels(volume).await {
             Ok(Some(labels)) => {
                 let managed = labels
@@ -8438,6 +8519,46 @@ exit 0
             log.contains("volume rm --force factory-env-cache-"),
             "{log}"
         );
+    }
+
+    #[tokio::test]
+    async fn failed_cache_purge_quarantines_the_cache_and_refuses_reuse() {
+        let directory =
+            std::env::temp_dir().join(format!("factory-env-quarantine-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let log_path = directory.join("podman.log");
+        let script = format!(
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> "{}"
+case "$1" in
+  volume)
+    case "$2" in
+      rm) exit 1 ;;
+      exists) exit 0 ;;
+      create) exit 0 ;;
+      inspect) printf '%s\n' '[{{"Name":"cache","Labels":{{"io.software-factory.managed":"true","io.software-factory.owner":"environment","io.software-factory.workspace":"spec"}}}}]' ;;
+    esac
+    ;;
+esac
+exit 0
+"#,
+            log_path.display()
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app(podman);
+        let cache = format!("factory-env-cache-{}", "a".repeat(32));
+        let error = purge_environment_cache(&app, &cache)
+            .await
+            .expect_err("failed removal must be quarantined and returned");
+        assert!(error.contains("quarantined"), "{error}");
+        let refusal = create_environment_volume(&app, &cache, "spec", true)
+            .await
+            .expect_err("a quarantined cache must not be reused");
+        assert_eq!(refusal.code, "ENVIRONMENT_BUILDER_UNAVAILABLE");
+        let log = std::fs::read_to_string(log_path).unwrap();
+        assert!(log.contains("volume rm --force"), "{log}");
+        assert!(log.contains("volume create --ignore"), "{log}");
+        assert!(log.contains("-quarantine"), "{log}");
     }
 
     #[tokio::test]

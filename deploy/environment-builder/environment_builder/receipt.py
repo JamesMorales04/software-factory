@@ -27,15 +27,7 @@ ALLOWED_MOUNT_PREFIXES = (
     "/output",
 )
 AUTHORIZED_PROJECT_OR_CACHE_MOUNTS = ("/inputs/workspace", "/cache", "/nix")
-FORBIDDEN_MOUNT_SOURCES = (
-    "/run/user",
-    "/var/run",
-    "/var/lib/containers",
-    "podman.sock",
-    "docker.sock",
-    "/home/james",
-    "/root",
-)
+PODMAN_VOLUME_ROOT = "/var/lib/containers/storage/volumes/"
 
 
 def _mountinfo() -> list[dict[str, str]]:
@@ -61,6 +53,46 @@ def _mountinfo() -> list[dict[str, str]]:
     return entries
 
 
+def _authorized_volume_source(source: str) -> bool:
+    """True only for a Podman-managed named-volume source path.
+
+    A host bind path at ``/cache``, ``/nix`` or ``/inputs/workspace`` is not
+    attested as a no-host-mount builder. The brokered product path always uses
+    named volumes; the host wrapper is a development harness.
+    """
+    if not source.startswith(PODMAN_VOLUME_ROOT):
+        return False
+    parts = source[len(PODMAN_VOLUME_ROOT) :].strip("/").split("/")
+    if len(parts) not in (1, 2) or (len(parts) == 2 and parts[1] != "_data"):
+        return False
+    name = parts[0]
+    return bool(name) and name not in (".", "..") and "\\" not in name and "\0" not in name
+
+
+def _mounts_authorized(mounts: list[dict[str, str]]) -> bool:
+    for mount in mounts:
+        source = mount["source"]
+        target = mount["mount_point"]
+        # Validate the source before accepting an allowed target. A forbidden
+        # host path mounted at /cache, /nix or /inputs/workspace must never
+        # produce noHostMount=true.
+        if target in AUTHORIZED_PROJECT_OR_CACHE_MOUNTS or target.startswith(
+            "/inputs/workspace/"
+        ):
+            if not _authorized_volume_source(source):
+                return False
+            continue
+        if target == "/":
+            continue
+        if any(
+            target == prefix or target.startswith(prefix + "/")
+            for prefix in ALLOWED_MOUNT_PREFIXES
+        ):
+            continue
+        return False
+    return True
+
+
 def observe_attestation(
     *,
     resources: dict[str, int],
@@ -75,25 +107,7 @@ def observe_attestation(
     """
     uid = os.geteuid()
     mounts = _mountinfo()
-    no_host_mount = True
-    for mount in mounts:
-        source = mount["source"]
-        target = mount["mount_point"]
-        # The explicit read-only project and writable cache/store mounts are
-        # the only authorized host-backed mounts. Their source may live under
-        # a developer home directory; that is the cache contract, not a host
-        # credential mount.
-        if target in AUTHORIZED_PROJECT_OR_CACHE_MOUNTS or target.startswith("/inputs/workspace"):
-            continue
-        if target == "/":
-            continue
-        if any(target == prefix or target.startswith(prefix + "/") for prefix in ALLOWED_MOUNT_PREFIXES):
-            continue
-        if any(fragment in source for fragment in FORBIDDEN_MOUNT_SOURCES):
-            no_host_mount = False
-            break
-        no_host_mount = False
-        break
+    no_host_mount = _mounts_authorized(mounts)
     no_host_socket = not any(
         Path(socket).exists()
         for socket in (

@@ -137,9 +137,12 @@ and client cancellation; cleanup confirmation is required before the response
 reports success. The per-spec cache is the only persistent broker resource and
 is owner-labelled, never a host path. If the builder reports
 `ENVIRONMENT_RESOURCE_LIMIT`, the broker removes that per-spec cache volume
-after container cleanup so an over-budget cache cannot be reused. Disk
+after container cleanup so an over-budget cache cannot be reused. If removal
+cannot be confirmed, the broker creates a durable quarantine volume and every
+later build/check for that cache fails closed until an operator clears it. Disk
 enforcement is a bounded runtime sample plus `disk.exact=false`; it is not an
-exact filesystem quota.
+exact filesystem quota, and an unreadable or incomplete scan fails closed
+rather than claiming the bound is satisfied.
 
 ## 4. Core client
 
@@ -199,18 +202,19 @@ fetch/resolve.
   exit-code mapping, timeout refusal and exact request binding.
 - `cargo test -p factory-native --bin factory-verifier` — 11 passed, including
   the broker builder-check path, refusal, cleanup and missing binding.
-- `cargo test -p factory-native --bin factory-runtime-broker` — 62 passed,
+- `cargo test -p factory-native --bin factory-runtime-broker` — 63 passed,
   including environment-check owner separation, workspace ownership, exact
   builder identity, plan/spec/receipt mismatch, argv/timeout bounds,
   success/failure exit mapping, fabricated-PASS refusal, resource-limit cache
-  purge, bundle digest/cache bounds, narrow container arguments and timeout
-  cleanup.
+  purge/quarantine, bundle digest/cache bounds, narrow container arguments and
+  timeout cleanup.
 - `cargo test -p factory-native --bin factory-supervisor` — 11 passed, including
   grant/image/workspace refusal and successful typed proxy.
-- `python3 -m unittest discover -s deploy/environment-builder/tests` — 40
-  passed, including failed-check exit-code/stdout/stderr preservation, proof
-  that a check uses the candidate workspace rather than the build cache,
-  over-budget build/check termination, bounded noisy-output capture and disk
+- `python3 -W error::ResourceWarning -m unittest discover -s deploy/environment-builder/tests`
+  — 46 passed, including failed-check exit-code/stdout/stderr preservation,
+  proof that a check uses the candidate workspace rather than the build cache,
+  over-budget build/check termination, unreadable-scan fail-closed behavior,
+  mount-source attestation, bounded noisy-output capture, pipe cleanup and disk
   failure evidence.
 - `podman compose -f compose.yaml config --quiet` — exit 0.
 - `factory-architecture-check --root .` — PASS.

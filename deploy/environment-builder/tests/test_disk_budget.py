@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import io
+import gc
+import os
 import sys
 import tempfile
 import time
 import unittest
+import warnings
 from pathlib import Path
 from unittest import mock
 
@@ -46,6 +49,42 @@ class DiskBudgetTests(unittest.TestCase):
             record = budget.failure_record("check", used, complete)
             self.assertFalse(record["exact"])
             self.assertTrue(record["exceeded"])
+
+    def test_unreadable_scan_is_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "payload.bin").write_bytes(b"x" * 4096)
+            with mock.patch(
+                "environment_builder.disk.os.scandir",
+                side_effect=PermissionError("denied"),
+            ):
+                used, complete = directory_usage_bytes([root])
+            self.assertFalse(complete)
+            self.assertEqual(used, 0)
+            budget = DiskBudget(10240, [root])
+            with mock.patch(
+                "environment_builder.disk.os.scandir",
+                side_effect=PermissionError("denied"),
+            ):
+                with self.assertRaises(BuilderError) as raised:
+                    budget.check()
+            self.assertEqual(raised.exception.code, "ENVIRONMENT_RESOURCE_LIMIT")
+            self.assertIn("cannot complete", raised.exception.message)
+
+    @unittest.skipIf(os.geteuid() == 0, "root can read chmod 000 directories")
+    def test_unreadable_directory_chmod_is_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            blocked = root / "blocked"
+            blocked.mkdir()
+            (blocked / "payload.bin").write_bytes(b"x" * 4096)
+            os.chmod(blocked, 0)
+            try:
+                used, complete = directory_usage_bytes([root])
+            finally:
+                os.chmod(blocked, 0o700)
+        self.assertFalse(complete)
+        self.assertEqual(used, 0)
 
     def test_run_check_kills_an_over_budget_child(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -142,6 +181,7 @@ class DiskBudgetTests(unittest.TestCase):
             workspace.mkdir()
             cache.mkdir()
             log = BuildLog(cache / "check.log")
+            process = NoisyProcess()
             try:
                 with (
                     mock.patch(
@@ -150,7 +190,7 @@ class DiskBudgetTests(unittest.TestCase):
                     ),
                     mock.patch(
                         "environment_builder.nix.subprocess.Popen",
-                        return_value=NoisyProcess(),
+                        return_value=process,
                     ),
                 ):
                     _code, stdout, stderr, out_trunc, err_trunc = run_check(
@@ -169,6 +209,14 @@ class DiskBudgetTests(unittest.TestCase):
         self.assertEqual(len(stderr), MAX_CHECK_STREAM_BYTES)
         self.assertTrue(out_trunc)
         self.assertTrue(err_trunc)
+        self.assertTrue(process.stdout.closed)
+        self.assertTrue(process.stderr.closed)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            gc.collect()
+        self.assertFalse(
+            [warning for warning in caught if issubclass(warning.category, ResourceWarning)]
+        )
 
 
 if __name__ == "__main__":

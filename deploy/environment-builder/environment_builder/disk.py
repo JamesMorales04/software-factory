@@ -20,9 +20,10 @@ from .errors import fail
 
 #: A scan stops after this many directory entries or this much wall-clock time.
 #: The result is a lower bound when the scan is incomplete; exceeding the limit
-#: is still decisive.
-MAX_SCAN_ENTRIES = 200_000
-MAX_SCAN_SECONDS = 2.0
+#: is still decisive. An incomplete scan is fail-closed because the builder
+#: cannot prove the bound.
+MAX_SCAN_ENTRIES = 1_000_000
+MAX_SCAN_SECONDS = 5.0
 DEFAULT_SAMPLE_INTERVAL_SECONDS = 0.5
 FILESYSTEM_BLOCK_BYTES = 512
 
@@ -49,6 +50,7 @@ def directory_usage_bytes(
     started = time.monotonic()
     used = 0
     entries = 0
+    complete = True
     stack = [Path(path) for path in paths]
     while stack:
         if entries >= max_entries or time.monotonic() - started > max_seconds:
@@ -76,10 +78,10 @@ def directory_usage_bytes(
                         else:
                             used += _allocated_bytes(entry.stat(follow_symlinks=False))
                     except OSError:
-                        continue
+                        complete = False
         except OSError:
-            continue
-    return used, True
+            complete = False
+    return used, complete
 
 
 class DiskMonitor:
@@ -96,6 +98,7 @@ class DiskMonitor:
         self.process = process
         self.interval = max(0.05, interval)
         self.exceeded = False
+        self.incomplete = False
         self.observed_bytes = 0
         self.complete = True
         self._stop = threading.Event()
@@ -109,9 +112,10 @@ class DiskMonitor:
             used, complete = self.budget.usage()
             self.observed_bytes = used
             self.complete = complete
-            if used <= self.budget.limit_bytes:
+            if complete and used <= self.budget.limit_bytes:
                 continue
             self.exceeded = True
+            self.incomplete = not complete
             try:
                 if getattr(self.process, "poll")() is None:
                     os.killpg(getattr(self.process, "pid"), signal.SIGKILL)
@@ -152,12 +156,17 @@ class DiskBudget:
 
     def check(self) -> None:
         used, complete = self.usage()
+        if not complete:
+            fail(
+                "ENVIRONMENT_RESOURCE_LIMIT",
+                f"cannot complete the builder disk scan after {used} bytes; the "
+                "frozen disk bound cannot be verified (exact=false)",
+            )
         if used > self.limit_bytes:
-            suffix = "" if complete else " (bounded lower-bound sample)"
             fail(
                 "ENVIRONMENT_RESOURCE_LIMIT",
                 f"observed builder disk usage {used} bytes exceeds the frozen "
-                f"{self.limit_mib} MiB bound{suffix}; exact=false",
+                f"{self.limit_mib} MiB bound; exact=false",
             )
 
     def monitor(self, process: object) -> DiskMonitor:
@@ -173,7 +182,7 @@ class DiskBudget:
             "enforcement": "BOUNDED_RUNTIME_SAMPLER",
             "exact": False,
             "sampleComplete": complete,
-            "exceeded": observed_bytes > self.limit_bytes,
+            "exceeded": (not complete) or observed_bytes > self.limit_bytes,
         }
 
 
