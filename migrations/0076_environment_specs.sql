@@ -50,7 +50,7 @@ CREATE INDEX environment_plans_status_idx
 
 CREATE TABLE environment_plan_reviews (
   id TEXT PRIMARY KEY,
-  request_id TEXT NOT NULL REFERENCES intake_requests(id),
+  request_id TEXT REFERENCES intake_requests(id),
   action_id TEXT NOT NULL REFERENCES actions(id),
   plan_id TEXT NOT NULL,
   plan_sha256 TEXT NOT NULL CHECK (length(plan_sha256) = 64),
@@ -78,7 +78,7 @@ CREATE TABLE environment_specs (
   spec_id TEXT NOT NULL,
   spec_sha256 TEXT NOT NULL CHECK (length(spec_sha256) = 64),
   project_id TEXT NOT NULL REFERENCES projects(id),
-  request_id TEXT NOT NULL REFERENCES intake_requests(id),
+  request_id TEXT REFERENCES intake_requests(id),
   action_id TEXT NOT NULL REFERENCES actions(id),
   campaign_id TEXT REFERENCES campaigns(id),
   base_commit TEXT NOT NULL CHECK (length(base_commit) IN (40, 64)),
@@ -226,7 +226,7 @@ END;
 -- cannot have two different environment bindings.
 CREATE TABLE campaign_environments (
   campaign_id TEXT PRIMARY KEY REFERENCES campaigns(id),
-  request_id TEXT NOT NULL REFERENCES intake_requests(id),
+  request_id TEXT REFERENCES intake_requests(id),
   action_id TEXT NOT NULL REFERENCES actions(id),
   spec_id TEXT NOT NULL,
   spec_sha256 TEXT NOT NULL CHECK (length(spec_sha256) = 64),

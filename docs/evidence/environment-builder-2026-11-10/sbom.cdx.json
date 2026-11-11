@@ -1856,28 +1856,6 @@
       "version": "4.10.0"
     },
     {
-      "bom-ref": "pkg:flock@0.4.0",
-      "licenses": [],
-      "name": "flock",
-      "properties": [
-        {
-          "name": "factory:license-attribution",
-          "value": "Transitive Nix closure entry recorded for SBOM provenance; not a License Gate approval."
-        },
-        {
-          "name": "factory:source",
-          "value": ""
-        },
-        {
-          "name": "factory:license-status",
-          "value": "NOASSERTION"
-        }
-      ],
-      "scope": "excluded",
-      "type": "library",
-      "version": "0.4.0"
-    },
-    {
       "bom-ref": "pkg:fontconfig@2.16.0",
       "licenses": [],
       "name": "fontconfig",
@@ -3108,28 +3086,6 @@
       "scope": "excluded",
       "type": "library",
       "version": "76.1-dev"
-    },
-    {
-      "bom-ref": "pkg:init-npm.sh@unknown",
-      "licenses": [],
-      "name": "init-npm.sh",
-      "properties": [
-        {
-          "name": "factory:license-attribution",
-          "value": "Transitive Nix closure entry recorded for SBOM provenance; not a License Gate approval."
-        },
-        {
-          "name": "factory:source",
-          "value": ""
-        },
-        {
-          "name": "factory:license-status",
-          "value": "NOASSERTION"
-        }
-      ],
-      "scope": "excluded",
-      "type": "library",
-      "version": "unknown"
     },
     {
       "bom-ref": "pkg:iptables@1.8.11",
@@ -10822,16 +10778,16 @@
   ],
   "metadata": {
     "component": {
-      "bom-ref": "spec:0630003b7be75e3b54ce9cbf0d3099f284abd093b874c80588bb5c3db236bdff",
+      "bom-ref": "spec:cb365859f1f8bcb7cadedfe8f3188d7aa57e0dd8768cfbcfbc82e79a7add7d85",
       "name": "factory-environment",
       "properties": [
         {
           "name": "factory:spec-sha256",
-          "value": "0630003b7be75e3b54ce9cbf0d3099f284abd093b874c80588bb5c3db236bdff"
+          "value": "cb365859f1f8bcb7cadedfe8f3188d7aa57e0dd8768cfbcfbc82e79a7add7d85"
         },
         {
           "name": "factory:plan-sha256",
-          "value": "57d2d0999c9b2fb6026df80e155e18ce6131752c5c1c10864e53b9adb885dfc4"
+          "value": "694f8cdc14adddca30e8ac3d5ce4aa2f387515bf0e90571e121cf678bbbec93d"
         },
         {
           "name": "factory:nix-version",
@@ -10851,7 +10807,7 @@
         }
       ],
       "type": "application",
-      "version": "0630003b7be7"
+      "version": "cb365859f1f8"
     },
     "timestamp": "2026-11-10T00:00:00Z",
     "tools": {
@@ -10864,7 +10820,7 @@
       ]
     }
   },
-  "serialNumber": "urn:uuid:1f9cd61b-0bce-5572-b4d2-a0849456ef3f",
+  "serialNumber": "urn:uuid:fe9689b7-b903-57a1-b24c-ead57f399086",
   "specVersion": "1.5",
   "version": 1
 }

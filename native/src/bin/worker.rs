@@ -272,6 +272,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &supervisor,
             )
             .await
+            .map(FinalizedCandidate::model_final)
         } else if assignment.execution_mode == "TRUSTED_LOCAL_PROVIDER" {
             execute_provider_assignment(
                 &client,
@@ -292,26 +293,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &supervisor,
             )
             .await
+            .map(FinalizedCandidate::model_final)
         };
         heartbeat.abort();
         match execution {
-            Ok(candidate) => {
+            Ok(finalized) => {
                 let endpoint = if assignment.kind == "INTEGRATION" {
                     "worker/integrated_candidate"
                 } else {
                     "worker/candidate"
                 };
+                let mut payload = json!({
+                    "attempt_id": assignment.lease.attempt_id,
+                    "worker_id": worker_id,
+                    "generation": assignment.lease.generation,
+                    "action_spec_sha256": assignment.action_spec_sha256,
+                    "commit_sha": finalized.candidate.commit_sha,
+                    "tree_sha": finalized.candidate.tree_sha
+                });
+                if assignment.kind != "INTEGRATION" {
+                    payload["final_source"] = json!(finalized.final_source);
+                    if let Some(salvage) = &finalized.salvage {
+                        payload["salvage"] = json!(salvage);
+                    }
+                }
                 let response = client
                     .post(core.join(endpoint)?)
                     .bearer_auth(&session_token)
-                    .json(&json!({
-                        "attempt_id": assignment.lease.attempt_id,
-                        "worker_id": worker_id,
-                        "generation": assignment.lease.generation,
-                        "action_spec_sha256": assignment.action_spec_sha256,
-                        "commit_sha": candidate.commit_sha,
-                        "tree_sha": candidate.tree_sha
-                    }))
+                    .json(&payload)
                     .send()
                     .await?;
                 if !response.status().is_success() {
@@ -676,6 +685,27 @@ struct ProviderRun {
     provider_session_id: String,
     turn_id: String,
     usage: ProviderUsage,
+    final_source: factory_native::quality::CandidateFinalSource,
+    salvage: Option<factory_native::db::CandidateSalvageClaim>,
+}
+
+/// The exact Candidate submission plus its durable provenance. The normal
+/// provider final path carries `MODEL_FINAL`; only the deterministic stagnation
+/// helper carries salvage evidence.
+struct FinalizedCandidate {
+    candidate: factory_native::workspace::CandidateRevision,
+    final_source: factory_native::quality::CandidateFinalSource,
+    salvage: Option<factory_native::db::CandidateSalvageClaim>,
+}
+
+impl FinalizedCandidate {
+    fn model_final(candidate: factory_native::workspace::CandidateRevision) -> Self {
+        Self {
+            candidate,
+            final_source: factory_native::quality::CandidateFinalSource::ModelFinal,
+            salvage: None,
+        }
+    }
 }
 
 struct ProviderContext<'a> {
@@ -866,7 +896,7 @@ async fn execute_provider_assignment(
     worker_id: &str,
     assignment: &Assignment,
     supervisor: &Supervisor,
-) -> Result<factory_native::workspace::CandidateRevision, Box<dyn std::error::Error>> {
+) -> Result<FinalizedCandidate, Box<dyn std::error::Error>> {
     validate_provider_tools(&assignment.allowed_tools)
         .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
     if !assignment.action_spec.checks.is_empty()
@@ -1205,7 +1235,11 @@ async fn execute_provider_assignment(
                 error: String::new(),
             };
             post_provider_terminal(client, core, session_token, &terminal).await?;
-            Ok(run.candidate)
+            Ok(FinalizedCandidate {
+                candidate: run.candidate,
+                final_source: run.final_source,
+                salvage: run.salvage,
+            })
         }
         Err(error) => {
             let tracked_usage = usage_tracker.lock().map(|usage| *usage).unwrap_or_default();
@@ -1881,6 +1915,7 @@ struct TurnProgress {
     operation_prefix: String,
     run_identity: String,
     turn: u64,
+    final_nudges: u64,
     sequence: u64,
     evidence: Vec<ProgressEvidence>,
     last_content: std::collections::BTreeMap<String, String>,
@@ -1916,6 +1951,7 @@ impl TurnProgress {
             operation_prefix,
             run_identity,
             turn: 0,
+            final_nudges: 0,
             sequence: initial_sequence,
             evidence: Vec::new(),
             last_content: std::collections::BTreeMap::new(),
@@ -1927,9 +1963,13 @@ impl TurnProgress {
         self.turn += 1;
     }
 
-    /// Monotonic across Worker restarts: epoch milliseconds in the high bits
-    /// and a small in-process counter in the low three digits. A clock that
-    /// moves backwards inside one run is clamped to the last value.
+    /// A deterministic final-specific nudge is proof that the Worker asked the
+    /// model to finish before Core diagnosed stagnation. Salvage requires at
+    /// least one; unrelated structured-output repair prompts do not count.
+    fn observe_final_nudge(&mut self) {
+        self.final_nudges = self.final_nudges.saturating_add(1);
+    }
+
     fn next_sequence(&mut self) -> u64 {
         // Epoch microseconds plus a durable seed from Core's last accepted
         // sequence: later runs and restarts cannot fall below prior evidence.
@@ -2006,37 +2046,17 @@ impl TurnProgress {
     /// Build the checkpoint for the completed turn. The evidence is cleared so
     /// each terminal operation is submitted exactly once.
     fn checkpoint_request(&mut self) -> Option<ProgressCheckpointRequest> {
-        self.checkpoint_request_with_phase(None)
-    }
-
-    /// Build the terminal checkpoint after a Diagnose halt. It must not reuse
-    /// the stagnation checkpoint identity: Core rejects a repeated id with
-    /// different content, which would discard the salvage check receipts.
-    fn salvage_checkpoint_request(&mut self) -> Option<ProgressCheckpointRequest> {
-        self.checkpoint_request_with_phase(Some("salvage"))
-    }
-
-    fn checkpoint_request_with_phase(
-        &mut self,
-        phase: Option<&str>,
-    ) -> Option<ProgressCheckpointRequest> {
         if self.turn == 0 {
             return None;
         }
-        let checkpoint_id = match phase {
-            Some(phase) => format!("{}-turn-{}-{phase}", self.operation_prefix, self.turn),
-            None => format!("{}-turn-{}", self.operation_prefix, self.turn),
-        };
+        let checkpoint_id = format!("{}-turn-{}", self.operation_prefix, self.turn);
         let operation_id = checkpoint_id.clone();
-        let mut outcome = serde_json::json!({
+        let outcome = serde_json::json!({
             "workItemId": self.work_item_id,
             "operation": self.operation_prefix,
             "turn": self.turn,
             "evidence": self.evidence.iter().map(|item| item.evidence_id.clone()).collect::<Vec<_>>(),
         });
-        if let Some(phase) = phase {
-            outcome["phase"] = serde_json::Value::String(phase.to_owned());
-        }
         let outcome_sha256 = sha256_hex(serde_json::to_string(&outcome).ok()?.as_bytes());
         let checkpoint = ProgressCheckpoint {
             checkpoint_id,
@@ -2175,15 +2195,6 @@ async fn persist_final_progress_checkpoint(
     persist_progress_checkpoint(context, progress.checkpoint_request()).await
 }
 
-/// Persist the post-diagnosis salvage operation under its own checkpoint
-/// identity so Core keeps the check receipts instead of rejecting a reused id.
-async fn persist_salvage_progress_checkpoint(
-    context: &ProviderContext<'_>,
-    progress: &mut TurnProgress,
-) -> Result<(), Box<dyn std::error::Error>> {
-    persist_progress_checkpoint(context, progress.salvage_checkpoint_request()).await
-}
-
 enum ProviderSessionCleanup<'a> {
     OpenCode {
         http: &'a reqwest::Client,
@@ -2227,16 +2238,18 @@ impl ProviderSessionCleanup<'_> {
 }
 
 enum StagnationSalvage {
-    Finalized(ProviderRun),
+    Finalized(Box<ProviderRun>),
     Halted(WorkerProgressHalt),
 }
 
 /// Deterministically finish an Implementer that Core diagnosed as stagnant
-/// only when it already changed the candidate and every remaining frozen check
-/// passes. The model loop has already stopped: this submits the same workspace
-/// the normal final path would submit, with the same frozen checks, budgets and
-/// independent Quality Gate. Any other decision, a missing write or a failing
-/// check returns the original progress halt unchanged.
+/// only when it already changed the candidate, the Worker already asked the
+/// model to finalize at least once, and every remaining frozen check passes.
+/// The model loop has already stopped: this submits the same workspace the
+/// normal final path would submit, with the same frozen checks, budgets and
+/// independent Quality Gate. Any other decision, a missing write, a missing
+/// final nudge, an empty diff or a failing check returns the original progress
+/// halt unchanged.
 #[allow(clippy::too_many_arguments)]
 async fn finalize_stagnant_candidate(
     context: &ProviderContext<'_>,
@@ -2251,41 +2264,61 @@ async fn finalize_stagnant_candidate(
     turn_id: String,
     session: ProviderSessionCleanup<'_>,
 ) -> Result<StagnationSalvage, Box<dyn std::error::Error>> {
-    if halt.decision != ContinuationDecision::Diagnose || !written {
+    if halt.decision != ContinuationDecision::Diagnose || !written || progress.final_nudges == 0 {
         return Ok(StagnationSalvage::Halted(halt));
-    }
-    let executions =
-        execute_missing_frozen_checks(context, handle, dependencies, progress, passed_checks)
-            .await?;
-    if frozen_check_failure_summary(&executions).is_some() {
-        return Ok(StagnationSalvage::Halted(halt));
-    }
-    let executed_checks = executions.len();
-    if let Err(error) = persist_salvage_progress_checkpoint(context, progress).await {
-        eprintln!("worker: salvage progress checkpoint was not persisted: {error}");
     }
     session.close().await?;
     let candidate = finalize_candidate(context, handle, dependencies).await?;
+    let changed = match factory_native::workspace::changed_paths(
+        std::path::Path::new(&context.assignment.repository),
+        &context.assignment.action_spec.base_commit,
+        &candidate.commit_sha,
+    ) {
+        Ok(changed) if !changed.is_empty() => changed,
+        _ => {
+            cleanup(context.supervisor, &handle.workspace_id, &handle.capability).await?;
+            return Ok(StagnationSalvage::Halted(halt));
+        }
+    };
+    let executions = execute_all_frozen_checks_for_candidate(
+        context,
+        handle,
+        dependencies,
+        progress,
+        passed_checks,
+        &candidate,
+    )
+    .await?;
+    if frozen_check_failure_summary(&executions).is_some() {
+        cleanup(context.supervisor, &handle.workspace_id, &handle.capability).await?;
+        return Ok(StagnationSalvage::Halted(halt));
+    }
+    let executed_checks = executions.len();
     cleanup(context.supervisor, &handle.workspace_id, &handle.capability).await?;
     eprintln!(
         "{}",
         json!({
             "event": "worker.stagnation_finalized",
-            "work_item_id": context.assignment.work_item_id,
-            "attempt_id": context.assignment.lease.attempt_id,
-            "decision": "Diagnose",
-            "check_receipts": passed_checks.len(),
+            "work_item_id": progress.work_item_id,
+            "attempt_id": progress.attempt_id,
+            "decision": "DIAGNOSE",
+            "final_nudges": progress.final_nudges,
             "executed_checks": executed_checks,
             "frozen_checks": context.assignment.action_spec.checks.len(),
+            "changed_files": changed.len(),
             "candidate_commit": candidate.commit_sha.as_str(),
         })
     );
-    Ok(StagnationSalvage::Finalized(ProviderRun {
+    Ok(StagnationSalvage::Finalized(Box::new(ProviderRun {
         candidate,
         provider_session_id,
         turn_id,
         usage,
-    }))
+        final_source: factory_native::quality::CandidateFinalSource::StagnationSalvage,
+        salvage: Some(factory_native::db::CandidateSalvageClaim {
+            work_item_id: progress.work_item_id.clone(),
+        }),
+    })))
 }
 
 type ProviderEventStream = factory_native::provider_stream::BoxEventStream;
@@ -2475,7 +2508,7 @@ async fn run_provider_tool_loop(
                 )
                 .await?
                 {
-                    StagnationSalvage::Finalized(run) => return Ok(run),
+                    StagnationSalvage::Finalized(run) => return Ok(*run),
                     StagnationSalvage::Halted(halt) => return Err(Box::new(halt)),
                 }
             }
@@ -2608,14 +2641,13 @@ async fn run_provider_tool_loop(
         match action {
             ProviderAction::Final { files, explanation } => {
                 if !written && files.is_empty() {
-                    post_tool_event(
+                    post_final_nudge(
                         context,
                         "empty-final",
-                        "final",
-                        "ERROR",
                         "no file has been written; an empty final response cannot create a candidate",
                     )
                     .await?;
+                    progress.observe_final_nudge();
                     prompt = json!({
                         "model": {"providerID": context.assignment.provider, "modelID": context.assignment.model},
                         "parts": [{"type": "text", "text": "You have not written any file, so no candidate can be created. Use a write_file tool_request now with the complete corrected file content. Do not return a final response until at least one file has been written."}]
@@ -2670,14 +2702,13 @@ async fn run_provider_tool_loop(
                     eprintln!(
                         "worker: deterministic frozen check failed; feeding the failure back to the provider"
                     );
-                    post_tool_event(
+                    post_final_nudge(
                         context,
                         "incomplete-final",
-                        "final",
-                        "ERROR",
                         "frozen acceptance checks failed; the Worker executed them automatically",
                     )
                     .await?;
+                    progress.observe_final_nudge();
                     let instructions = missing_check_instructions(
                         &context.assignment.action_spec.checks,
                         &context.assignment.allowed_tools,
@@ -2718,6 +2749,8 @@ async fn run_provider_tool_loop(
                     provider_session_id: session_id,
                     turn_id: last_message_id,
                     usage,
+                    final_source: factory_native::quality::CandidateFinalSource::ModelFinal,
+                    salvage: None,
                 });
             }
             ProviderAction::ToolRequest {
@@ -2853,6 +2886,7 @@ async fn run_provider_tool_loop(
                                     &argv,
                                     &progress.candidate_digest(),
                                     result.exit_code,
+                                    None,
                                 )
                                 .await?;
                                 progress.observe_check(&receipt);
@@ -3221,6 +3255,7 @@ async fn execute_codex_tool(
                         &argv,
                         &progress.candidate_digest(),
                         result.exit_code,
+                        None,
                     )
                     .await?;
                     progress.observe_check(&receipt);
@@ -3440,7 +3475,7 @@ async fn run_codex_tool_loop(
                     )
                     .await?
                     {
-                        StagnationSalvage::Finalized(run) => return Ok(run),
+                        StagnationSalvage::Finalized(run) => return Ok(*run),
                         StagnationSalvage::Halted(halt) => {
                             return Err(Box::new(halt) as Box<dyn std::error::Error>);
                         }
@@ -3716,20 +3751,26 @@ async fn run_codex_tool_loop(
                 *tracker = usage;
             }
             let Some(text) = final_text else {
+                post_final_nudge(
+                    context,
+                    "missing-codex-final",
+                    "Codex returned no final JSON object",
+                )
+                .await?;
+                progress.observe_final_nudge();
                 prompt = "Return exactly the required final JSON object now. If you have not written a file, use write_file first.".into();
                 continue;
             };
             let action = match extract_action_text(&text) {
                 Ok(action) => action,
                 Err(error) => {
-                    post_tool_event(
+                    post_final_nudge(
                         context,
-                        "invalid-codex-action",
-                        "final",
-                        "ERROR",
-                        &format!("invalid Codex action: {error}"),
+                        "invalid-codex-final",
+                        &format!("invalid Codex final action: {error}"),
                     )
                     .await?;
+                    progress.observe_final_nudge();
                     prompt = format!(
                         "Your previous final response was rejected: {error}. Return exactly one JSON object with type final."
                     );
@@ -3739,6 +3780,13 @@ async fn run_codex_tool_loop(
             match action {
                 ProviderAction::Final { files, explanation } => {
                     if !tool_state.written && files.is_empty() {
+                        post_final_nudge(
+                            context,
+                            "empty-codex-final",
+                            "no file has been written; an empty final response cannot create a candidate",
+                        )
+                        .await?;
+                        progress.observe_final_nudge();
                         prompt = "No file has been written. Use write_file now, then return the final JSON object.".into();
                         continue;
                     }
@@ -3791,14 +3839,13 @@ async fn run_codex_tool_loop(
                         )
                         .await?
                     {
-                        post_tool_event(
+                        post_final_nudge(
                             context,
                             "incomplete-final",
-                            "final",
-                            "ERROR",
                             "frozen acceptance checks failed; the Worker executed them automatically",
                         )
                         .await?;
+                        progress.observe_final_nudge();
                         let instructions = missing_check_instructions(
                             &context.assignment.action_spec.checks,
                             &context.assignment.allowed_tools,
@@ -3826,6 +3873,8 @@ async fn run_codex_tool_loop(
                         provider_session_id: thread_id,
                         turn_id: last_turn_id.clone(),
                         usage,
+                        final_source: factory_native::quality::CandidateFinalSource::ModelFinal,
+                        salvage: None,
                     });
                 }
                 ProviderAction::ToolRequest {
@@ -4027,14 +4076,67 @@ async fn execute_missing_frozen_checks(
         return Ok(Vec::new());
     }
     let missing = missing_frozen_checks(&context.assignment.action_spec.checks, passed_checks);
-    if missing.is_empty() {
+    execute_frozen_checks(
+        context,
+        handle,
+        dependencies,
+        progress,
+        passed_checks,
+        missing,
+        None,
+    )
+    .await
+}
+
+/// Re-execute every frozen check against the exact finalized candidate. Core
+/// requires one PASS receipt per check bound to that commit/tree before it will
+/// accept a stagnation salvage.
+async fn execute_all_frozen_checks_for_candidate(
+    context: &ProviderContext<'_>,
+    handle: &WorkspaceHandle,
+    dependencies: &mut DependencyAcquisitionState,
+    progress: &mut TurnProgress,
+    passed_checks: &mut std::collections::BTreeSet<String>,
+    candidate: &factory_native::workspace::CandidateRevision,
+) -> Result<Vec<FrozenCheckExecution>, Box<dyn std::error::Error>> {
+    if !context.enforce_check_completion {
+        return Ok(Vec::new());
+    }
+    let checks = context
+        .assignment
+        .action_spec
+        .checks
+        .iter()
+        .collect::<Vec<_>>();
+    execute_frozen_checks(
+        context,
+        handle,
+        dependencies,
+        progress,
+        passed_checks,
+        checks,
+        Some((candidate.commit_sha.as_str(), candidate.tree_sha.as_str())),
+    )
+    .await
+}
+
+async fn execute_frozen_checks(
+    context: &ProviderContext<'_>,
+    handle: &WorkspaceHandle,
+    dependencies: &mut DependencyAcquisitionState,
+    progress: &mut TurnProgress,
+    passed_checks: &mut std::collections::BTreeSet<String>,
+    checks: Vec<&factory_native::lead::SpecCheck>,
+    candidate: Option<(&str, &str)>,
+) -> Result<Vec<FrozenCheckExecution>, Box<dyn std::error::Error>> {
+    if checks.is_empty() {
         return Ok(Vec::new());
     }
     // Dependency acquisition is a prerequisite for offline checks and stays
     // attempt-scoped; it runs at most once before the first check or finalize.
     ensure_dependencies(context, handle, dependencies).await?;
-    let mut executions = Vec::with_capacity(missing.len());
-    for (index, check) in missing.into_iter().enumerate() {
+    let mut executions = Vec::with_capacity(checks.len());
+    for (index, check) in checks.into_iter().enumerate() {
         if let Some(error) = check_environment_binding_error(check) {
             return Err(error.into());
         }
@@ -4089,6 +4191,7 @@ async fn execute_missing_frozen_checks(
             &check.command,
             &progress.candidate_digest(),
             result.exit_code,
+            candidate,
         )
         .await?;
         progress.observe_check(&receipt);
@@ -4259,13 +4362,31 @@ async fn post_tool_event(
     Ok(())
 }
 
+async fn post_final_nudge(
+    context: &ProviderContext<'_>,
+    call_id: &str,
+    detail: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    post_tool_event(context, call_id, "final_nudge", "ERROR", detail).await
+}
+
 async fn post_check_result(
     context: &ProviderContext<'_>,
     call_id: &str,
     command: &[String],
     candidate_sha256: &str,
     exit_code: Option<i32>,
+    candidate: Option<(&str, &str)>,
 ) -> Result<ExecutionCheckReceiptRecord, Box<dyn std::error::Error>> {
+    let mut check = json!({
+        "command": command,
+        "candidate_sha256": candidate_sha256,
+        "exit_code": exit_code
+    });
+    if let Some((commit_sha, tree_sha)) = candidate {
+        check["candidate_commit_sha"] = json!(commit_sha);
+        check["candidate_tree_sha"] = json!(tree_sha);
+    }
     let response = context
         .client
         .post(context.core.join("worker/provider_tool_event")?)
@@ -4278,11 +4399,7 @@ async fn post_check_result(
             "tool": "run_command",
             "decision": "RESULT",
             "detail": format!("exit={exit_code:?}"),
-            "check": {
-                "command": command,
-                "candidate_sha256": candidate_sha256,
-                "exit_code": exit_code
-            }
+            "check": check
         }))
         .send()
         .await?;
@@ -4931,6 +5048,8 @@ async fn run_provider_patch(
             provider_session_id: session_id,
             turn_id,
             usage,
+            final_source: factory_native::quality::CandidateFinalSource::ModelFinal,
+            salvage: None,
         });
     }
     let write = WriteFilesRequest {
@@ -5019,6 +5138,8 @@ async fn run_provider_patch(
         provider_session_id: session_id,
         turn_id,
         usage,
+        final_source: factory_native::quality::CandidateFinalSource::ModelFinal,
+        salvage: None,
     })
 }
 
@@ -5456,6 +5577,7 @@ mod tests {
     #[derive(Clone)]
     struct AutoCheckBackendState {
         base: String,
+        root: std::path::PathBuf,
         checks: Vec<SpecCheck>,
         runs: AutoCheckRuns,
         run_results: AutoCheckRunResults,
@@ -5486,12 +5608,12 @@ mod tests {
     ) -> axum::Json<factory_native::db::ProviderToolEventRecord> {
         use std::sync::atomic::Ordering;
         let execution_check = input.check.as_ref().map(|check| {
-            let expected_exit = state
+            let frozen = state
                 .checks
                 .iter()
-                .find(|frozen| frozen.command == check.command)
-                .map(|frozen| frozen.expect_exit)
-                .unwrap_or(0);
+                .find(|frozen| frozen.command == check.command);
+            let expected_exit = frozen.map(|frozen| frozen.expect_exit).unwrap_or(0);
+            let check_id = frozen.map(|frozen| frozen.id.clone()).unwrap_or_default();
             let outcome = if check.exit_code == Some(expected_exit) {
                 "PASS"
             } else {
@@ -5506,8 +5628,11 @@ mod tests {
                 session_record_id: input.session_record_id.clone(),
                 sequence,
                 call_id: input.call_id.clone(),
+                check_id,
                 suite: format!("check:{}", check.command.join("\u{0}")),
                 candidate_sha256: check.candidate_sha256.clone(),
+                candidate_commit_sha: check.candidate_commit_sha.clone().unwrap_or_default(),
+                candidate_tree_sha: check.candidate_tree_sha.clone().unwrap_or_default(),
                 exit_code: check.exit_code,
                 expected_exit,
                 outcome: outcome.into(),
@@ -5628,10 +5753,18 @@ mod tests {
 
     async fn auto_check_write(
         axum::extract::State(state): axum::extract::State<AutoCheckBackendState>,
+        axum::Json(request): axum::Json<factory_native::execution::WriteFilesRequest>,
     ) -> axum::http::StatusCode {
         state
             .write_calls
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        for file in request.files {
+            let path = state.root.join(&file.path);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(path, &file.content).unwrap();
+        }
         axum::http::StatusCode::NO_CONTENT
     }
 
@@ -5686,9 +5819,30 @@ mod tests {
         state
             .finalize_calls
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let git = |arguments: &[&str]| {
+            let output = std::process::Command::new("git")
+                .current_dir(&state.root)
+                .args(arguments)
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.invalid")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.invalid")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {arguments:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8_lossy(&output.stdout).trim().to_owned()
+        };
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "candidate"]);
+        let commit = git(&["rev-parse", "HEAD"]);
+        let tree = git(&["rev-parse", "HEAD^{tree}"]);
         axum::Json(serde_json::json!({
-            "commitSha": "c".repeat(40),
-            "treeSha": "d".repeat(40)
+            "commitSha": commit,
+            "treeSha": tree
         }))
     }
 
@@ -5808,6 +5962,7 @@ mod tests {
             let receipts = Arc::new(Mutex::new(Vec::new()));
             let backend_state = AutoCheckBackendState {
                 base: base.clone(),
+                root: root.clone(),
                 checks: checks.clone(),
                 runs: Arc::clone(&runs),
                 run_results: Arc::new(Mutex::new(run_results.into())),
@@ -5891,6 +6046,12 @@ mod tests {
             &self,
         ) -> Result<factory_native::workspace::CandidateRevision, Box<dyn std::error::Error>>
         {
+            Ok(self.run_with_provenance().await?.candidate)
+        }
+
+        async fn run_with_provenance(
+            &self,
+        ) -> Result<super::ProviderRun, Box<dyn std::error::Error>> {
             let context = ProviderContext {
                 client: &self.client,
                 core: &self.core,
@@ -5909,7 +6070,7 @@ mod tests {
                 supervisor: &self.supervisor,
                 enforce_check_completion: true,
             };
-            Ok(super::run_provider_tool_loop(&context).await?.candidate)
+            super::run_provider_tool_loop(&context).await
         }
     }
 
@@ -5931,8 +6092,20 @@ mod tests {
             vec![check.clone()],
         )
         .await;
-        let candidate = harness.run().await.expect("candidate was finalized");
-        assert_eq!(candidate.commit_sha, "c".repeat(40));
+        let run = harness
+            .run_with_provenance()
+            .await
+            .expect("candidate was finalized");
+        assert_eq!(run.candidate.commit_sha.len(), 40);
+        assert_eq!(
+            run.final_source,
+            factory_native::quality::CandidateFinalSource::ModelFinal,
+            "a normal provider final is never relabelled as salvage"
+        );
+        assert!(
+            run.salvage.is_none(),
+            "a normal model final must not emit stagnation evidence"
+        );
         assert_eq!(
             harness.prompts.lock().unwrap().len(),
             2,
@@ -5983,21 +6156,33 @@ mod tests {
 
         let check = stagnation_check();
         let harness = AutoCheckHarness::start_with_decisions(
-            vec![auto_check_write_action()],
+            vec![auto_check_final_action(), auto_check_write_action()],
             vec![(Some(0), "built\n".into(), String::new())],
             vec![check.clone()],
-            vec![ContinuationDecision::Diagnose],
+            vec![
+                ContinuationDecision::Continue,
+                ContinuationDecision::Diagnose,
+            ],
         )
         .await;
-        let candidate = harness
-            .run()
+        let run = harness
+            .run_with_provenance()
             .await
             .expect("a changed candidate with passing frozen checks is salvageable");
-        assert_eq!(candidate.commit_sha, "c".repeat(40));
+        assert_eq!(run.candidate.commit_sha.len(), 40);
+        assert_eq!(
+            run.final_source,
+            factory_native::quality::CandidateFinalSource::StagnationSalvage
+        );
+        let salvage = run
+            .salvage
+            .as_ref()
+            .expect("salvage must carry the work-item claim");
+        assert_eq!(salvage.work_item_id, "unit-1");
         assert_eq!(
             harness.prompts.lock().unwrap().len(),
-            1,
-            "stagnation salvage must not request another model turn"
+            2,
+            "the salvage itself must not request another model turn"
         );
         assert_eq!(
             harness.finalize_calls.load(Ordering::SeqCst),
@@ -6015,43 +6200,51 @@ mod tests {
         assert_eq!(
             harness.checkpoint_calls.load(Ordering::SeqCst),
             2,
-            "the stagnation checkpoint and the salvage checkpoint must both be submitted"
+            "the provisional and Diagnose checkpoints are submitted; salvage must not add a later progress decision"
         );
         assert_eq!(
             harness.progress_rejections.load(Ordering::SeqCst),
             0,
-            "the salvage checkpoint must not reuse the stagnation checkpoint id"
+            "checkpoint ids must not be reused with different content"
         );
         let requests = harness.progress_requests.lock().unwrap();
         assert_eq!(requests.len(), 2);
-        let stagnation_id = requests[0]
+        let diagnose_id = requests[1]
             .pointer("/checkpoint/checkpointId")
             .and_then(serde_json::Value::as_str)
-            .expect("stagnation checkpoint id");
-        let salvage_id = requests[1]
-            .pointer("/checkpoint/checkpointId")
-            .and_then(serde_json::Value::as_str)
-            .expect("salvage checkpoint id");
-        assert_ne!(stagnation_id, salvage_id);
+            .expect("diagnose checkpoint id");
         assert!(
-            salvage_id.ends_with("-salvage"),
-            "salvage checkpoint id should be distinct: {salvage_id}"
+            !diagnose_id.ends_with("-salvage"),
+            "salvage must not submit a later checkpoint that supersedes the Diagnose decision: {diagnose_id}"
         );
-        let evidence_ids = requests[1]
-            .pointer("/checkpoint/evidenceIds")
-            .and_then(serde_json::Value::as_array)
-            .expect("declared salvage evidence ids");
-        assert!(!evidence_ids.is_empty());
-        let evidence = requests[1]
-            .get("evidence")
-            .and_then(serde_json::Value::as_array)
-            .expect("salvage evidence");
+    }
+
+    #[tokio::test]
+    async fn worker_diagnose_without_a_final_nudge_returns_the_original_halt() {
+        use std::sync::atomic::Ordering;
+
+        let harness = AutoCheckHarness::start_with_decisions(
+            vec![auto_check_write_action()],
+            vec![(Some(0), "built\n".into(), String::new())],
+            vec![stagnation_check()],
+            vec![ContinuationDecision::Diagnose],
+        )
+        .await;
+        let error = harness
+            .run()
+            .await
+            .expect_err("salvage requires at least one deterministic final nudge");
+        let halt = error
+            .downcast_ref::<WorkerProgressHalt>()
+            .expect("the original progress halt must be returned");
+        assert_eq!(halt.decision, ContinuationDecision::Diagnose);
         assert!(
-            evidence.iter().any(|item| {
-                item.get("kind").and_then(serde_json::Value::as_str) == Some("TESTS_IMPROVED")
-            }),
-            "the salvage checkpoint must persist the frozen-check receipt: {evidence:?}"
+            harness.runs.lock().unwrap().is_empty(),
+            "no frozen check may run before the final-nudge prerequisite is met"
         );
+        assert!(harness.receipts.lock().unwrap().is_empty());
+        assert_eq!(harness.finalize_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(harness.checkpoint_calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -6060,16 +6253,19 @@ mod tests {
 
         let check = stagnation_check();
         let harness = AutoCheckHarness::start_with_decisions(
-            vec![auto_check_write_action()],
+            vec![auto_check_final_action(), auto_check_write_action()],
             vec![(Some(1), String::new(), "compile error\n".into())],
             vec![check.clone()],
-            vec![ContinuationDecision::Diagnose],
+            vec![
+                ContinuationDecision::Continue,
+                ContinuationDecision::Diagnose,
+            ],
         )
         .await;
         let error = harness
             .run()
             .await
-            .expect_err("a failing frozen check must not finalize");
+            .expect_err("a failing frozen check must not produce a candidate");
         let halt = error
             .downcast_ref::<WorkerProgressHalt>()
             .expect("the original progress halt must be returned");
@@ -6077,18 +6273,18 @@ mod tests {
         assert_eq!(halt.work_item_id, "unit-1");
         assert_eq!(
             harness.finalize_calls.load(Ordering::SeqCst),
-            0,
-            "no candidate may be submitted while a frozen check fails"
+            1,
+            "the workspace is finalized only to bind exact-candidate check receipts; no candidate is submitted after a failed check"
         );
         assert_eq!(
             *harness.runs.lock().unwrap(),
             vec![(check.command.clone(), check.timeout_secs as u64)]
         );
-        assert_eq!(harness.prompts.lock().unwrap().len(), 1);
+        assert_eq!(harness.prompts.lock().unwrap().len(), 2);
         let receipts = harness.receipts.lock().unwrap();
         assert_eq!(receipts.len(), 1);
         assert_eq!(receipts[0].outcome, "FAIL");
-        assert_eq!(harness.checkpoint_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(harness.checkpoint_calls.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
@@ -6178,7 +6374,7 @@ mod tests {
         )
         .await;
         let candidate = harness.run().await.expect("candidate was finalized");
-        assert_eq!(candidate.commit_sha, "c".repeat(40));
+        assert_eq!(candidate.commit_sha.len(), 40);
         assert_eq!(
             *harness.runs.lock().unwrap(),
             vec![(check.command.clone(), check.timeout_secs as u64)],
@@ -6231,7 +6427,7 @@ mod tests {
         )
         .await;
         let candidate = harness.run().await.expect("candidate was finalized");
-        assert_eq!(candidate.commit_sha, "c".repeat(40));
+        assert_eq!(candidate.commit_sha.len(), 40);
         assert_eq!(
             *harness.runs.lock().unwrap(),
             vec![
@@ -6317,8 +6513,11 @@ mod tests {
             session_record_id: "session".into(),
             sequence: 1,
             call_id: call_id.into(),
+            check_id: "build".into(),
             suite: "check:cargo\u{0}test".into(),
             candidate_sha256: "c".repeat(64),
+            candidate_commit_sha: String::new(),
+            candidate_tree_sha: String::new(),
             exit_code: Some(if outcome == "PASS" { 0 } else { 1 }),
             expected_exit: 0,
             outcome: outcome.into(),
@@ -6424,6 +6623,8 @@ mod tests {
                 environment_builder_image: None,
                 environment_builder_image_digest: None,
                 environment_required: false,
+
+                environment_spec_id: None,
             },
             action_spec_sha256: "c".repeat(64),
             repository: "/repo".into(),
@@ -6474,44 +6675,6 @@ mod tests {
         }
         assert_eq!(progress.turn, 12);
         assert!(progress.checkpoint_request().is_none() || progress.evidence.is_empty());
-    }
-
-    #[test]
-    fn salvage_checkpoint_identity_differs_from_the_stagnation_checkpoint() {
-        let mut progress = TurnProgress::from_identity(
-            "campaign".into(),
-            "unit-1".into(),
-            "attempt-1".into(),
-            1,
-            "run-1".into(),
-            0,
-        );
-        progress.begin_turn();
-        progress.observe_write("src/lib.rs", "changed");
-        let stagnation = progress
-            .checkpoint_request()
-            .expect("stagnation checkpoint");
-        progress.observe_check(&check_receipt("call-salvage", "PASS", "pass", true));
-        let salvage = progress
-            .salvage_checkpoint_request()
-            .expect("salvage checkpoint");
-        assert_eq!(
-            stagnation.checkpoint.checkpoint_id, "unit-1/attempt-1-g1-run-1-turn-1",
-            "the normal terminal checkpoint identity must not change"
-        );
-        assert_eq!(
-            salvage.checkpoint.checkpoint_id,
-            "unit-1/attempt-1-g1-run-1-turn-1-salvage"
-        );
-        assert_ne!(
-            stagnation.checkpoint.outcome_sha256, salvage.checkpoint.outcome_sha256,
-            "a distinct phase must produce a distinct replay digest"
-        );
-        assert_eq!(salvage.evidence.len(), 1);
-        assert_eq!(
-            salvage.checkpoint.evidence_ids,
-            vec![salvage.evidence[0].evidence_id.clone()]
-        );
     }
 
     #[test]

@@ -52,6 +52,7 @@ const detail: CampaignDetailData = {
       tree_sha: "d".repeat(40),
       implementer_id: "implementer-1",
       created_at: "2026-11-06T09:45:00Z",
+      final_source: "MODEL_FINAL",
     },
   ],
   events: [

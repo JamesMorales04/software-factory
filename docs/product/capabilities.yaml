@@ -120,6 +120,7 @@ milestones:
   - CAP-024
   - CAP-025
   - CAP-026
+  - CAP-067
   exclusions:
   - Unconditional merge
   - controller binary promotion
@@ -700,6 +701,15 @@ capabilities:
     isolation: []
   limitations:
   - Gate acceptance is candidate-specific and is not deployment or security certification.
+  - Candidates now record `final_source` as `MODEL_FINAL` or `STAGNATION_SALVAGE`. Deterministic stagnation salvage is
+    allowed only when the latest durable progress decision is `Diagnose` satisfying the frozen progress counts, the
+    ActionSpec has at least one frozen check, at least one Core-recorded final nudge exists, the exact candidate diff
+    is non-empty and exactly one PASS execution receipt per frozen check is bound to the exact
+    check id, candidate commit/tree, Attempt, Campaign and work item. Core derives these values from durable records,
+    records `worker.stagnation_finalized` and permits one salvage per work item. R0 salvage remains eligible for the
+    ordinary Gate; R1-R3 salvage can never be accepted automatically and carries `SALVAGE_HUMAN_REVIEW_REQUIRED`.
+    R1-R3 authorization itself remains disabled in the current product, so the R1+ branch is domain-tested but not
+    reachable through the authorization route.
   blockers: []
 - id: CAP-008
   name: Scoped capability grants
@@ -875,10 +885,14 @@ capabilities:
     - office/src/components/office/ParticipantInspector.tsx
     - office/src/views/Issues.tsx
     - office/src/views/issues.css
+    - office/src/components/office/LinkedIssues.tsx
     - native/src/db/participants.rs
     - native/src/db/github.rs
+    - native/src/db/issue_links.rs
     - native/src/github.rs
     - native/src/github_sync.rs
+    - native/src/issues/mod.rs
+    - native/src/issues/delivery.rs
     test:
     - office/src/views/Campaigns.tsx
     - office/src/views/AgentOffice.test.tsx
@@ -886,10 +900,12 @@ capabilities:
     - office/src/components/office/officeAvatarAppearance.test.ts
     - office/src/components/office/officeSceneLayout.test.ts
     - office/src/views/Issues.board.test.tsx
+    - office/src/components/office/LinkedIssues.test.tsx
     - native/src/db/participants.rs
     - native/src/github.rs
     - native/src/github_sync.rs
     - native/src/bin/core.rs
+    - native/src/issues/delivery_tests.rs
   acceptance:
     deterministic: The Office typechecks, lints, passes component tests and builds; participant and tool-event routes require operator authentication, validate filters, bound pagination and redact provider detail.
     real: An authenticated Chromium journey opens Agent Office, inspects recorded participants and follows links to Campaign, WorkGraph, execution and quality evidence without invented activity.
@@ -905,11 +921,11 @@ capabilities:
   limitations:
   - Office recovery and cleanup projections remain incomplete.
   - Campaign and Lead labels can remain AUTHORIZED/RUNNING after an ACCEPTED Run; the gate and Run states are authoritative.
-  - The 2026-11-10 vlog run exercised the read-only Issues board in real Chromium at 1440/768/390, including five target issues under Needs Attention with automatic intake off and the `No issue synchronization recorded` state; it is recorded in docs/evidence/live-vlog-acceptance-2026-11-10.md as implementer/orchestrator evidence, not independent certification. Issue-to-Campaign execution, completed sync and issue write/comment paths remain NOT_TESTED.
+  - The 2026-11-10 vlog run exercised the read-only Issues board in real Chromium at 1440/768/390, including five target issues under Needs Attention with automatic intake off and the `No issue synchronization recorded` state; it is recorded in docs/evidence/live-vlog-acceptance-2026-11-10.md as implementer/orchestrator evidence, not independent certification. Issue-to-Campaign execution, completed sync and issue write/comment paths remain NOT_TESTED. WP2 now implements frozen issue links, Core-derived delivery state, idempotent issue comment/close receipts and an operator retry. The delivery hooks are available in `native/src/issues/` for WP3, but WP2 does not call them from PR-open or merge handlers; no real authorized GitHub write journey, WP3 auto-merge integration or independent acceptance has been run.
   - Agent Office is read-only; it does not expose stop, model switching, budget changes or tool invocation.
   - Provider-session liveness is represented by recorded lease state only; external provider state is not independently verified.
   - Agent Office V3 covers deterministic layouts and unique avatar appearances through the current 200-participant projection. Renderer fixture captures are not live Core or inspector acceptance; the original vector scene remains less painterly and spatially rich than the approved reference. Product Owner visual approval and authenticated Agent Office browser acceptance remain pending.
-  - GitHub issue synchronization is read-only and bounded; governed intake/board ordering, issue writing, comments, Action/Campaign relationships and a real authorized GitHub call remain not tested. The Issues view is wired at /issues; real browser acceptance is pending.
+  - GitHub issue synchronization is read-only and bounded; issue comment/close effects are now Core-only and ledgered, but a real authorized GitHub write, board ordering, WP3 auto-merge integration and browser acceptance remain not tested. The Issues view is wired at /issues; real browser acceptance is pending.
   blockers: []
 - id: CAP-012
   name: Durable events and telemetry
@@ -1467,14 +1483,14 @@ capabilities:
   blockers:
   - Live GitHub repository, checks and protection rules are required for real acceptance.
 - id: CAP-026
-  name: Conditional R0 merge
+  name: Risk-tiered delivery and auto-merge
   category: Delivery
-  purpose: Merge eligible low-risk changes only after protected recheck
+  purpose: Merge an exact accepted candidate only under a versioned Project delivery policy, fresh protection/check evidence and an explicit risk tier
   product_objective: Governed delivery
   decision_status: proposed
-  implementation_status: not_implemented
+  implementation_status: in_progress
   verification:
-    deterministic: not_tested
+    deterministic: verified
     live_agent: not_tested
     uat: not_tested
     deployment: not_tested
@@ -1485,22 +1501,39 @@ capabilities:
   - CAP-025
   target_milestone: F1-S5
   refs:
-    adr: []
-    contract: []
-    source: []
-    test: []
+    adr:
+    - docs/architecture/decisions/ADR-0040-risk-tiered-delivery-and-auto-merge.md
+    contract:
+    - docs/contracts/delivery-policy.md
+    source:
+    - native/src/delivery.rs
+    - native/src/db/delivery.rs
+    - native/src/github.rs
+    - native/src/bin/core.rs
+    - office/src/components/office/CampaignDelivery.tsx
+    - office/src/components/office/DeliveryPolicyEditor.tsx
+    test:
+    - native/src/delivery_tests.rs
+    - office/src/components/office/CampaignDelivery.test.tsx
+    - office/src/components/office/DeliveryPolicyEditor.test.tsx
   acceptance:
-    deterministic: Applicable conditional r0 merge contract, negative and regression checks pass on an exact candidate.
-    real: Exercise conditional r0 merge in a genuine authorized project journey and independently verify the outcome.
+    deterministic: R0 auto-merges only under an enabled RISK_TIERED policy; R1 requires opt-in, a matching Owner Charter delivery grant and a post-merge check; every R1 merge, including an owner-confirmed manual merge, runs the post-merge check; R2/R3/unknown stay manual; the exact candidate/head/base, Gate, policy revision, checks, branch protection and final_source/salvage evidence are re-read immediately before the merge; R1/R2/R3 STAGNATION_SALVAGE requires authenticated human review and is never auto-merged; missing or mismatched R0 salvage evidence is surfaced as a status blocker and blocks delivery; a blocked attempt cannot silently change base branch; the durable attempt is reserved atomically before any push/PR/issue side effect so concurrent different-base requests have exactly one winner and the loser gets BASE_MISMATCH with no external effects; duplicate attempts replay without a second write; a failed post-merge check opens an incident and never auto-reverts.
+    real: Exercise an authorized disposable GitHub repository through policy configuration, exact-candidate push, PR open, protected merge, issue close and a manual revert.
   evidence:
-    deterministic: []
+    deterministic:
+    - docs/evidence/delivery-policy-deterministic-2026-11-11.json
     live_agent: []
     uat: []
     deployment: []
     isolation: []
-  limitations: []
+  limitations:
+  - The deterministic fake-GitHub and local bare-remote journey does not certify real GitHub branch protection, permissions or merge behavior.
+  - R0 auto-merge defaults to disabled because a Project must append a RISK_TIERED policy and configure required checks.
+  - A post-merge failure freezes auto-merge and requires a manual, reviewed revert; Factory does not auto-revert.
+  - No authenticated human-review record exists yet for R1/R2/R3 salvage, so delivery blocks it with SALVAGE_HUMAN_REVIEW_REQUIRED rather than inventing approval.
+  - Real authorized GitHub delivery remains NOT_TESTED.
   blockers:
-  - Protected delivery authority requires separate Product Owner approval.
+  - Authorized disposable GitHub repository, write credential and protected branch are required for real acceptance.
 - id: CAP-027
   name: Persistent maintenance objectives
   category: Maintenance
@@ -2990,8 +3023,10 @@ capabilities:
   - A real-model browser self-test planned and froze revisions 1 and 2, and the full E2E campaign consumed the frozen plan, but independent live certification is pending.
   - Wave 12 integration evidence and exact command results are recorded in docs/implementation/wave12-integration-evidence.md; it is implementer evidence, not acceptance.
   - WP12 records a reproducible deterministic chaos/cross-workstream matrix and repeat-run acceptance script in docs/implementation/wp12-chaos-matrix.md and scripts/quality-wave12-acceptance.sh. The final integrated run passed 20/20. It is implementer evidence only; live provider, real-Podman dependency, real Compose Campaign/browser and independent acceptance paths remain NOT_TESTED.
-  - The 2026-11-10 vlog evidence is implementer/orchestrator evidence; independent acceptance remains pending.
+  - The 2026-11-10 vlog evidence in docs/evidence/live-vlog-acceptance-2026-11-10.md is implementer/orchestrator evidence; independent acceptance remains pending.
+
   - The agnostic environment compiler is implemented at the Core/domain/persistence/Office layer with deterministic conventions, plan/spec/licence and Lead-model-review tests. The real Nix/devenv builder image, lock resolution and Node/Playwright check execution are WP1-B and remain NOT_TESTED; no real Nix build or independent browser acceptance is claimed. The environment builder is injected through a typed port; the default Core builder is UNAVAILABLE and fails closed.
+  - WP1-C wires the WP1-B builder image through the runtime broker with a distinct environment-owner token, exact bundle digest/allowlist, bounded staging, broker fetch egress and `network=none` builds. An isolated Compose observation reached broker/Core `READY` with the exact bundle digest; a real project resolve/build receipt, warm repeat, Worker/Verifier `builder check` execution and independent acceptance remain NOT_TESTED. See docs/implementation/environment-runtime-broker.md.
   - A real authenticated Owner unfree-licence override API is deferred. The compiler rejects `allowUnfree`, unknown/denied licences and unfree packages without an exact owner override record; there is no unauthenticated database or HTTP path that can create an override. The reserved owner action must be added before any unfree package can be admitted.
   blockers:
   - Per-WorkUnit execution state for multi-unit plans remains pending; the 2026-11-10 single-unit live run completed the planned-specified-frozen-approved-executed journey.
@@ -3201,7 +3236,7 @@ capabilities:
     deployment: []
     isolation: []
   limitations:
-  - Delivery autonomy and delivery effects are not implemented; delivery remains reserved.
+  - Delivery autonomy is recorded and WP3 consumes it for R1 eligibility; a real live R1 auto-merge under a charter remains NOT_TESTED.
   - R2/R3 autonomous execution stays owner-controlled. R1 autonomy is delegated only when explicit and no reserved matter triggers.
   - The full E2E exercised charter creation and a reserved decision, not routine R1/R2 execution under the charter.
   - Charter budgets are not yet part of the durable record; budget enforcement remains pending.
@@ -3246,3 +3281,50 @@ capabilities:
   - Usage counts are telemetry, not productivity caps.
   blockers:
   - Participant/context projections and Office views remain pending.
+
+- id: CAP-067
+  name: Delivery policy editor and incident control
+  category: Delivery
+  purpose: Expose append-only delivery policy configuration, exact-candidate delivery state, blockers, issue receipts and manual revert evidence in Office
+  product_objective: Governed delivery
+  decision_status: proposed
+  implementation_status: in_progress
+  verification:
+    deterministic: verified
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Office
+  dependencies:
+  - CAP-011
+  - CAP-026
+  target_milestone: F1-S5
+  refs:
+    adr:
+    - docs/architecture/decisions/ADR-0040-risk-tiered-delivery-and-auto-merge.md
+    contract:
+    - docs/contracts/delivery-policy.md
+    source:
+    - office/src/components/office/CampaignDelivery.tsx
+    - office/src/components/office/DeliveryPolicyEditor.tsx
+    - office/src/views/CampaignDetail.tsx
+    - office/src/views/ProjectDetail.tsx
+    test:
+    - office/src/components/office/CampaignDelivery.test.tsx
+    - office/src/components/office/DeliveryPolicyEditor.test.tsx
+  acceptance:
+    deterministic: Office shows the policy revision, risk tier, PR, checks, blockers, auto/manual status, merge SHA, issue receipts and incident/revert state from Core; every control invokes an authenticated Core operation; no token or invented merge state reaches the browser.
+    real: A browser journey appends a policy with supported manual bases, selects a manual base, opens a PR, delivers an eligible candidate and records a manual revert after a post-merge incident at desktop, tablet and 320 px in EN and ES.
+  evidence:
+    deterministic:
+    - docs/evidence/delivery-policy-deterministic-2026-11-11.json
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations:
+  - Real Chromium acceptance at desktop, tablet and 320 px remains pending.
+  - The panel does not offer an automatic revert or a branch-protection bypass.
+  blockers:
+  - A running Core with an authorized GitHub connection is required for real browser acceptance.

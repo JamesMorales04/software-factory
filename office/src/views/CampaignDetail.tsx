@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { CancelCampaign } from "../CancelCampaign";
+import { CampaignDelivery } from "../components/office/CampaignDelivery";
 import { CampaignPulse } from "../components/office/CampaignPulse";
 import { CandidateDiff } from "../components/office/CandidateDiff";
 import {
+  CandidateFinalSourceBadge,
   CandidateIdentity,
   QualityGatePanel,
   ReceiptEvidenceTable,
@@ -12,6 +14,7 @@ import {
 } from "../components/office/CandidateEvidence";
 import { CandidatePullRequest } from "../components/office/CandidatePullRequest";
 import { CheapOpsPanel } from "../components/office/CheapOpsPanel";
+import { LinkedIssues } from "../components/office/LinkedIssues";
 import { ParticipantSessionList } from "../components/office/ParticipantSessionList";
 import { StatusBadge } from "../components/office/StatusBadge";
 import { WorkGraphPanel } from "../components/office/WorkGraph";
@@ -593,6 +596,11 @@ export function CampaignDetail() {
       )}
       {notice && <p className="notice">{notice}</p>}
 
+      <LinkedIssues
+        links={detail.linked_issues}
+        onRetried={() => void load()}
+      />
+
       <div className="campaign-detail-layout">
         <div className="campaign-detail-main">
           <Panel className="campaign-summary">
@@ -1013,6 +1021,10 @@ export function CampaignDetail() {
                           candidateCommitSha={candidate.commit_sha}
                         />
                       )}
+                      <CampaignDelivery
+                        campaignId={campaign.id}
+                        candidateId={candidate.id}
+                      />
                       <div className="campaign-actions">
                         <Button size="sm" onClick={() => selectTab("evidence")}>
                           {t("campaignDetail.candidates.viewEvidence")}
@@ -1050,6 +1062,11 @@ export function CampaignDetail() {
                           {t("campaignDetail.evidence.independent")}
                         </span>
                       </div>
+                      <p>
+                        <CandidateFinalSourceBadge
+                          source={candidate.final_source}
+                        />
+                      </p>
                       <ReceiptEvidenceTable receipts={candidateReceipts} />
                       <ReceiptModelProvenance receipts={candidateReceipts} />
                       <h3>{t("campaignDetail.evidence.reviewFindings")}</h3>
@@ -1084,6 +1101,7 @@ export function CampaignDetail() {
                     <QualityGatePanel
                       gate={gates[candidate.id] ?? null}
                       candidateId={candidate.id}
+                      finalSource={candidate.final_source}
                     />
                     <CheapOpsPanel candidateId={candidate.id} />
                   </Panel>

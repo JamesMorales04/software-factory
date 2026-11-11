@@ -148,6 +148,12 @@ export const en = {
   "home.projectFallback": "Project {id}",
   "home.project.label": "Project",
   "home.project.select": "Select a Project",
+  "home.environmentConstraints.summary": "Environment constraints (optional)",
+  "home.environmentConstraints.help":
+    "Optional JSON for the generated Nix/devenv environment: nixpkgs, toolchains, packages, services, browsers and resources. Core validates it; unknown fields are rejected. Committed conventions take precedence.",
+  "home.environmentConstraints.label": "Environment constraints JSON",
+  "home.environmentConstraints.invalid":
+    "Enter a JSON object with supported environment constraint fields.",
   "home.objective.label": "Your instruction to the Lead",
   "home.objective.placeholder":
     "Describe what you want to build, fix or improve…",
@@ -511,6 +517,8 @@ export const en = {
   "environment.baseCommit": "Base commit",
   "environment.conventionsHash": "Conventions SHA-256",
   "environment.blockers.title": "Environment blockers",
+  "environment.constraints.action":
+    "Add explicit environment constraints (nixpkgs, packages, services, browsers or resources) to a new request, or commit a pinned project environment.",
   "environment.yes": "Yes",
   "environment.no": "No",
   "environment.detection.title": "Detection evidence",
@@ -1253,6 +1261,7 @@ export const en = {
   "issues.board.ready": "Ready",
   "issues.board.queued": "Queued",
   "issues.board.working": "In progress",
+  "issues.board.review": "In review",
   "issues.board.attention": "Needs attention",
   "issues.board.done": "Done",
   "issues.board.empty": "Nothing here.",
@@ -2985,7 +2994,15 @@ export const en = {
   "evidence.identity.tree": "Tree",
   "evidence.identity.attempt": "Attempt",
   "evidence.identity.implementer": "Implementer",
+  "evidence.identity.finalSource": "Final source",
   "evidence.identity.recorded": "Recorded",
+  "evidence.finalSource.model": "Model final",
+  "evidence.finalSource.modelDetail":
+    "The provider returned a normal final response.",
+  "evidence.finalSource.salvage": "Stagnation salvage",
+  "evidence.finalSource.salvageDetail":
+    "Deterministic completion after Core diagnosed stagnation; the model loop had stopped.",
+  "evidence.gate.finalSource": "Candidate final source:",
 
   "projectFiles.title": "Project files",
   "projectFiles.description":
@@ -3921,6 +3938,144 @@ export const en = {
   "home.thread.state.ASSESSED":
     "The assessment is complete; no execution plan is required.",
   "charter.decisions.choose": "Select an owner option",
+  "issues.delivery.state": "Delivery: {state}",
+  "issues.delivery.pullRequest": "PR #{number}",
+  "issues.delivery.merge": "Merge {sha}",
+  "issues.delivery.retry": "Retry issue effect",
+  "issues.delivery.retrying": "Retrying…",
+  "issues.delivery.retried": "Core retried the issue effect for #{number}.",
+  "issues.delivery.retryError": "The issue effect could not be retried.",
+  "linkedIssues.title": "Linked issues",
+  "linkedIssues.description":
+    "Frozen at request creation. State and delivery receipts come from Core; a merge is the only fact that can complete an issue.",
+  "linkedIssues.empty":
+    "This request did not select a GitHub issue, so there is no delivery mapping.",
+  "linkedIssues.count": "{count} linked issue(s)",
+  "linkedIssues.rolePrimary": "Primary",
+  "linkedIssues.roleRelated": "Related",
+  "linkedIssues.delivery": "Delivery",
+  "linkedIssues.workUnit": "Work unit",
+  "linkedIssues.pullRequest": "Pull request",
+  "linkedIssues.merge": "Merge",
+  "linkedIssues.receipts": "Delivery receipts ({count})",
+  "linkedIssues.noReceipts": "No GitHub issue effect has been recorded.",
+  "linkedIssues.event": "Event",
+  "linkedIssues.attempts": "attempts {count}",
+  "linkedIssues.retry": "Retry",
+  "linkedIssues.retrying": "Retrying…",
+  "linkedIssues.retryError": "Core could not retry this issue delivery event.",
+  "delivery.title": "Delivery",
+  "delivery.description":
+    "Risk-tiered delivery owned by Core. Gate ACCEPTED is necessary, never sufficient: the exact candidate, head, policy, checks and branch protection are re-read immediately before any merge.",
+  "delivery.loading": "Reading delivery state…",
+  "delivery.error": "Core could not read delivery state.",
+  "delivery.retry": "Retry",
+  "delivery.empty": "No delivery attempt has been recorded for this candidate.",
+  "delivery.policy": "Delivery policy",
+  "delivery.policyMissing":
+    "No delivery policy is configured. Append one in the Project settings before delivery.",
+  "delivery.policyDisabled": "Manual delivery only",
+  "delivery.policyEnabled": "Risk-tiered auto-merge enabled",
+  "delivery.policyRevision": "Revision {revision}",
+  "delivery.risk": "Risk tier",
+  "delivery.autoMerge": "Auto-merge",
+  "delivery.autoMergeR0": "R0 automatic",
+  "delivery.autoMergeR1":
+    "R1 automatic with opt-in, charter and post-merge check",
+  "delivery.manualOnly": "R2, R3 and unknown risk are manual only",
+  "delivery.mergeMethod": "Merge method",
+  "delivery.postMergeCheck": "Post-merge check",
+  "delivery.postMergeNotConfigured": "not configured",
+  "delivery.pullRequest": "Pull request",
+  "delivery.noPullRequest": "No pull request has been opened.",
+  "delivery.checks": "Checks",
+  "delivery.noChecks": "No live check read is available.",
+  "delivery.protection": "Branch protection",
+  "delivery.protectionVerified":
+    "Protection verified with required checks and no force-push or deletion.",
+  "delivery.protectionUnverified": "Protection has not been verified.",
+  "delivery.blockers": "Blockers",
+  "delivery.noBlockers": "No blocker is recorded.",
+  "delivery.state": "Delivery state",
+  "delivery.authorization": "Authorization",
+  "delivery.mergeCommit": "Merge commit",
+  "delivery.mergedAt": "Merged at",
+  "delivery.openPullRequest": "Open pull request",
+  "delivery.deliver": "Deliver candidate",
+  "delivery.delivering": "Delivering…",
+  "delivery.manualConfirm": "I am the owner and approve this exact merge",
+  "delivery.manualConfirmHint":
+    "Manual delivery still re-reads the candidate, Gate, policy, checks and branch protection before writing.",
+  "delivery.openHint":
+    "Core pushes the exact candidate to its deterministic branch, reuses an open pull request, and never force-pushes.",
+  "delivery.issueReceipts": "Issue receipts",
+  "delivery.noIssueReceipts":
+    "No issue receipt has been recorded for this attempt.",
+  "delivery.incident": "Delivery incident",
+  "delivery.noIncident": "No delivery incident is open.",
+  "delivery.incidentOpen":
+    "Auto-merge is frozen until the owner resolves this incident.",
+  "delivery.manualRevertRequired":
+    "Factory does not auto-revert. Open a reviewed revert PR, merge it through the normal protected path, then record it here.",
+  "delivery.revertPr": "Revert pull request number",
+  "delivery.revertSha": "Revert merge commit SHA",
+  "delivery.revertRationale": "Revert rationale",
+  "delivery.recordRevert": "Record manual revert",
+  "delivery.recordingRevert": "Recording…",
+  "delivery.revertRecorded": "Manual revert evidence recorded.",
+  "delivery.reverts": "Manual reverts",
+  "delivery.noReverts": "No manual revert has been recorded.",
+  "delivery.liveUnavailable": "Live GitHub read is unavailable: {detail}",
+  "delivery.refresh": "Refresh delivery",
+  "delivery.gate": "Gate",
+  "delivery.base": "Base",
+  "delivery.expectedHead": "Expected head",
+  "delivery.candidate": "Candidate",
+  "delivery.actionError": "Core blocked or failed the delivery operation.",
+  "delivery.opened": "Pull request opened or reused.",
+  "delivery.mergedNotice":
+    "Core recorded the merge. Refresh to see the final issue receipts.",
+  "delivery.freeze": "Delivery freeze",
+  "delivery.freezeDetail":
+    "An open incident or kill switch blocks every auto-merge for this Project.",
+  "deliveryPolicy.title": "Delivery policy",
+  "deliveryPolicy.description":
+    "Append-only Project policy. R0 may auto-merge only when risk-tiered delivery is enabled; R1 also requires the explicit opt-in, a current Owner Charter delivery grant and a post-merge check. R2/R3 and unknown risk remain manual.",
+  "deliveryPolicy.loading": "Reading delivery policy…",
+  "deliveryPolicy.error": "Core could not read the Project delivery policy.",
+  "deliveryPolicy.unbound":
+    "Bind this Project to a GitHub repository before configuring delivery.",
+  "deliveryPolicy.enabled": "Enable risk-tiered delivery",
+  "deliveryPolicy.r1":
+    "Allow R1 auto-merge with a matching Owner Charter grant",
+  "deliveryPolicy.mergeMethod": "Merge method",
+  "deliveryPolicy.squash": "Squash (required)",
+  "deliveryPolicy.checks": "Required checks",
+  "deliveryPolicy.checksHint":
+    "Comma-separated check names required by branch protection.",
+  "deliveryPolicy.postMerge": "Post-merge check",
+  "deliveryPolicy.postMergeHint":
+    "Required for R1. Core runs it against the merge commit before marking delivery complete.",
+  "deliveryPolicy.timeout": "Post-merge timeout (seconds)",
+  "deliveryPolicy.killSwitch": "Activate the Project delivery kill switch",
+  "deliveryPolicy.save": "Append policy revision",
+  "deliveryPolicy.saving": "Saving…",
+  "deliveryPolicy.saved": "Delivery policy revision appended.",
+  "deliveryPolicy.currentRevision": "Current revision {revision}",
+  "deliveryPolicy.noPolicy": "No policy revision exists yet.",
+  "deliveryPolicy.manualBase": "Manual bases",
+  "deliveryPolicy.expiresAt": "Expiry (RFC3339, optional)",
+  "deliveryPolicy.ownerOnly":
+    "Only an authenticated owner operation can append a policy revision.",
+  "deliveryPolicy.manualBases": "Manual base branches",
+  "deliveryPolicy.manualBasesHint":
+    "Comma-separated protected branches allowed for manual delivery. The protected default branch is always available.",
+  "delivery.baseBranch": "Base branch",
+  "delivery.salvage": "Salvage final source",
+  "delivery.salvageR0":
+    "R0 stagnation salvage is eligible for the ordinary Gate and R0 policy.",
+  "delivery.salvageReviewRequired":
+    "R1/R2/R3 stagnation salvage requires authenticated human review of the final-source and salvage evidence. It is never auto-merged.",
 } as const;
 
 export type MessageKey = keyof typeof en;

@@ -73,7 +73,7 @@ files, pins, licenses, sandbox, network, resources and secrets, and writes:
 | `sbom.cdx.json` | deterministic CycloneDX 1.5 SBOM |
 | `license-inventory.json` | Core-shaped `LicenseInventory` |
 | `closure.json` | exact Nix closure paths, NAR hashes and sizes |
-| `fetch-result.json` | fetch-phase store path and closure digest |
+| `fetch-result.json` | fetch-phase store path, environment digest and closure manifest hash |
 | `check-result.json` | one check result |
 
 `descriptor` reads `FACTORY_ENVIRONMENT_BUILDER_IMAGE`,
@@ -113,9 +113,13 @@ matches Core's default.
 
 The wrapper mounts only the read-only project at `/inputs/workspace`, a
 writable run cache at `/cache`, and a persistent Nix store cache at `/nix`.
-Run directories and the store cache must canonicalize inside the builder cache
-root; symlinks, `..` escapes, `/`, `$HOME`, the repository root, the container
-engine store and protected host paths are rejected. The store cache is seeded
+Run directories and the store cache must canonicalize inside an explicit
+cache base (`FACTORY_ENVIRONMENT_BUILDER_CACHE_BASE`, default
+`$HOME/.cache/software-factory`). `$HOME/.ssh`, `$HOME/.gnupg`,
+`$HOME/.config`, container engine paths, `.git` segments, `..`/symlink escapes,
+repository-root descendants and protected host paths are rejected for cache,
+store, run and workspace paths. The store cache is seeded
+
 from the verified image once and lets the offline build/check reuse the exact
 fetched derivations, sources and `devenv-tasks` inputs. Nix signature
 verification stays enabled with the pinned `cache.nixos.org` and
@@ -123,10 +127,16 @@ verification stays enabled with the pinned `cache.nixos.org` and
 `require-sigs=false` and does not import unsigned local closures.
 
 Disk is checked before and after the run against the frozen `diskMiB`; an
-over-budget run fails `ENVIRONMENT_RESOURCE_LIMIT` and is not issued a
-successful receipt. This is a post-hoc `du` bound (`disk.exact=false`), not an
-exact filesystem quota; the evidence records the observed usage and does not
-claim exact disk attestation.
+over-budget run fails `ENVIRONMENT_RESOURCE_LIMIT`, removes every success
+artifact and PASSED check result from both run and output directories, and
+writes only a typed `disk-failure.json` plus `disk-usage.json`. This is a
+post-hoc `du` bound (`disk.exact=false`), not an exact filesystem quota; the
+evidence records the observed usage and does not claim exact disk attestation.
+
+The builder root filesystem is read-only; only `/cache` and `/nix` are
+writable mounts, with bounded tmpfs for `/tmp`, `/run` and the writable home
+subdirectories. There is no writable container layer for build state.
+
 
 Non-root execution uses `--userns=keep-id:uid=10001,gid=10001`,
 `--user 10001:10001`, `--cap-drop ALL --cap-add SYS_ADMIN --cap-add
@@ -182,12 +192,19 @@ WP1-D gap and is not claimed as wired.
 
 ## 6. Evidence boundary
 
-`deploy/environment-builder/tests/test_builder.py` covers deterministic policy,
-receipt and SBOM behavior, exact cgroup limits and fetch-policy enforcement. The
-final `deploy/environment-builder/Containerfile` image was built and exercised:
-descriptor/self-test, typed failures, a real Node+Playwright build/check, a real
-Rust build/check, a warm repeat with the same output digest and a real-closure
-SBOM. The receipt is bound to the exact final image digest. The separate
+`deploy/environment-builder/tests/` covers deterministic policy, receipt, SBOM,
+exact cgroup limits, fetch-policy enforcement, protected path descendants,
+rootful-Podman rejection, wrapper nonzero-exit cleanup and disk-overflow
+artifact purging (32 tests). The
+final `deploy/environment-builder/Containerfile` image was built and exercised
+under the unique WP1-B evidence tag
+`localhost/software-factory-environment-builder:wp1b-340fa54-r3`
+(`sha256:8f7693fc…`): descriptor/self-test, typed failures, a real
+Node+Playwright build/check, a real Rust build/check, a warm repeat with the
+same output digest and a real-closure SBOM. The receipt is bound to the exact
+image digest. The shared `:dev` tag is owned by the WP1-C Compose bundle; the
+final Compose rebuild of the same Containerfile must be validated under its own
+digest. The separate
 `deploy/factory-browser/Containerfile` Chromium launch, registry publication,
 Compose/runtime-broker invocation and independent acceptance remain
 **NOT_TESTED**. See the evidence record for exact hashes and durations.

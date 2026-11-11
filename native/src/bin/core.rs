@@ -402,6 +402,51 @@ struct NewIntakeRequest {
     /// reserved before the first billable Lead assessment.
     #[serde(default)]
     authorized_micros: Option<u64>,
+    /// Optional production constraints for the generated Nix/devenv
+    /// environment. Committed conventions still take precedence; missing pins
+    /// fall back to the builder's documented default pin and otherwise block.
+    #[serde(default)]
+    environment_constraints:
+        Option<factory_native::planning::environment::RequestEnvironmentConstraints>,
+    /// Optional exact GitHub issue selection. Links are frozen with the
+    /// request; omitted or empty means the request has no issue mapping.
+    #[serde(default)]
+    issue_keys: Vec<IssueKeyRequest>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IssueKeyRequest {
+    owner: String,
+    repo: String,
+    number: u64,
+    #[serde(default)]
+    role: Option<String>,
+}
+
+impl NewIntakeRequest {
+    fn issue_selection(&self) -> Result<Vec<factory_native::issues::NewIssueSelection>, Error> {
+        self.issue_keys
+            .iter()
+            .map(|key| {
+                let role = match key.role.as_deref().unwrap_or("PRIMARY") {
+                    "PRIMARY" => factory_native::issues::IssueRole::Primary,
+                    "RELATED" => factory_native::issues::IssueRole::Related,
+                    _ => {
+                        return Err(Error::Validation(
+                            "issue role must be PRIMARY or RELATED".into(),
+                        ));
+                    }
+                };
+                Ok(factory_native::issues::NewIssueSelection {
+                    owner: key.owner.trim().to_owned(),
+                    repo: key.repo.trim().to_owned(),
+                    number: key.number,
+                    role,
+                })
+            })
+            .collect()
+    }
 }
 
 #[cfg(feature = "test-support")]
@@ -3641,6 +3686,22 @@ fn github_integration_routes() -> Router<Arc<App>> {
         .route("/projects/{id}/issues", get(project_issues))
         .route("/projects/{id}/issues/{number}", get(project_issue))
         .route(
+            "/issue-links/{link_id}/delivery/{event_id}/retry",
+            post(retry_issue_delivery),
+        )
+        .route(
+            "/projects/{id}/delivery-policy",
+            get(get_delivery_policy).put(put_delivery_policy),
+        )
+        .route(
+            "/campaigns/{id}/candidates/{candidate_id}/delivery",
+            get(candidate_delivery).post(deliver_candidate),
+        )
+        .route(
+            "/delivery/incidents/{id}/revert",
+            post(record_delivery_manual_revert),
+        )
+        .route(
             "/campaigns/{id}/candidates/{candidate_id}/pull-request",
             get(candidate_pull_request).post(open_candidate_pull_request),
         )
@@ -3761,6 +3822,112 @@ async fn github_connection_state(app: &App) -> Result<serde_json::Value, Respons
         "connection": github_connection_view(record.as_ref()),
         "audit": audit,
     }))
+}
+
+fn issue_delivery_error_response(error: factory_native::issues::IssueDeliveryError) -> Response {
+    use factory_native::issues::IssueDeliveryError;
+    match error {
+        IssueDeliveryError::Database(error) => api_error(error),
+        IssueDeliveryError::NotFound => StatusCode::NOT_FOUND.into_response(),
+        IssueDeliveryError::Conflict(message) => (
+            StatusCode::CONFLICT,
+            Json(json!({"error": message, "kind": "DELIVERY_CONFLICT"})),
+        )
+            .into_response(),
+        error => {
+            let status = match error.kind() {
+                "GITHUB_UNAUTHORIZED" => StatusCode::UNAUTHORIZED,
+                "GITHUB_FORBIDDEN" | "GITHUB_WRITE_PERMISSION_REQUIRED" => StatusCode::FORBIDDEN,
+                "GITHUB_NOT_FOUND" => StatusCode::NOT_FOUND,
+                "GITHUB_RATE_LIMITED" => StatusCode::TOO_MANY_REQUESTS,
+                "GITHUB_REJECTED" | "GITHUB_BLOCKED" => StatusCode::CONFLICT,
+                "ISSUE_DELIVERY_IN_PROGRESS" | "ISSUE_DELIVERY_ATTEMPTS_EXHAUSTED" => {
+                    StatusCode::CONFLICT
+                }
+                _ => StatusCode::BAD_GATEWAY,
+            };
+            (
+                status,
+                Json(json!({
+                    "error": error.detail(),
+                    "kind": error.kind(),
+                    "retryable": error.retryable(),
+                })),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn retry_issue_delivery(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath((link_id, event_id)): AxumPath<(String, String)>,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let event = match app.db.issue_delivery_event(&event_id).await {
+        Ok(event) => event,
+        Err(error) => return api_error(error),
+    };
+    if event.issue_link_id != link_id {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let credential = match load_github_credential(&app).await {
+        Ok(credential) => credential,
+        Err(response) => return response,
+    };
+    let (principal_id, _) =
+        authenticated_operator(session.as_ref().map(|Extension(device)| device));
+    let service =
+        match factory_native::issues::IssueDeliveryService::new(&app.db, &app.github, &credential)
+            .await
+        {
+            Ok(service) => service,
+            Err(error) => return issue_delivery_error_response(error),
+        };
+    match service.retry_event(&event_id, &principal_id).await {
+        Ok(outcome) => {
+            let event = app.db.issue_delivery_event(&event_id).await.ok();
+            let (status, body) = issue_delivery_retry_result(event, outcome);
+            (status, Json(body)).into_response()
+        }
+        Err(error) => issue_delivery_error_response(error),
+    }
+}
+
+fn issue_delivery_retry_result(
+    event: Option<factory_native::issues::IssueDeliveryEventRecord>,
+    outcome: factory_native::issues::IssueDeliveryOutcome,
+) -> (StatusCode, serde_json::Value) {
+    if outcome.failed > 0 || !outcome.failures.is_empty() {
+        let retryable = outcome.failures.iter().any(|failure| failure.retryable);
+        let (status, kind) = if retryable {
+            (StatusCode::BAD_GATEWAY, "DELIVERY_RETRY_FAILED")
+        } else {
+            (StatusCode::CONFLICT, "DELIVERY_RETRY_BLOCKED")
+        };
+        return (
+            status,
+            json!({
+                "error": "issue delivery retry did not complete every issue effect",
+                "kind": kind,
+                "retryable": retryable,
+                "failures": outcome.failures,
+                "event": event,
+                "delivery": outcome,
+            }),
+        );
+    }
+    (
+        StatusCode::OK,
+        json!({
+            "event": event,
+            "delivery": outcome,
+        }),
+    )
 }
 
 fn github_upstream_error(error: factory_native::github::GitHubError) -> Response {
@@ -4574,6 +4741,293 @@ async fn get_project_github(
         Err(error) => return api_error(error),
     };
     Json(json!({"binding": binding, "sync_state": sync_state})).into_response()
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeliveryPolicyBody {
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    r1_enabled: bool,
+    #[serde(default = "default_delivery_merge_method")]
+    merge_method: String,
+    #[serde(default)]
+    required_checks: Vec<String>,
+    #[serde(default)]
+    post_merge_check_id: String,
+    #[serde(default = "default_delivery_post_merge_timeout")]
+    post_merge_timeout_secs: u64,
+    #[serde(default)]
+    kill_switch: bool,
+    #[serde(default)]
+    expires_at: Option<String>,
+    #[serde(default)]
+    manual_base_branches: Vec<String>,
+}
+
+fn default_delivery_merge_method() -> String {
+    "squash".into()
+}
+
+fn default_delivery_post_merge_timeout() -> u64 {
+    900
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CandidateDeliveryInput {
+    operation: String,
+    #[serde(default)]
+    manual_confirmed: bool,
+    #[serde(default)]
+    base_branch: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeliveryRevertInput {
+    revert_pr_number: u64,
+    revert_merge_sha: String,
+    rationale: String,
+}
+
+async fn get_delivery_policy(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.project_exists(&id).await {
+        Ok(true) => {}
+        Ok(false) => return api_error(Error::NotFound),
+        Err(error) => return api_error(error),
+    }
+    let policy = match app.db.delivery_policy(&id).await {
+        Ok(policy) => policy,
+        Err(error) => return api_error(error),
+    };
+    let revisions = match app.db.delivery_policies(&id).await {
+        Ok(revisions) => revisions,
+        Err(error) => return api_error(error),
+    };
+    let binding = match app.db.project_github_binding(&id).await {
+        Ok(binding) => Some(binding),
+        Err(Error::NotFound) => None,
+        Err(error) => return api_error(error),
+    };
+    Json(json!({
+        "policy": policy,
+        "revisions": revisions,
+        "binding": binding,
+        "default_branch": binding.as_ref().map(|binding| binding.default_branch.clone()),
+        "merge_method": "squash",
+        "source": "Project delivery policy revisions are append-only Core records",
+    }))
+    .into_response()
+}
+
+async fn put_delivery_policy(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<DeliveryPolicyBody>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let binding = match app.db.project_github_binding(&id).await {
+        Ok(binding) => binding,
+        Err(Error::NotFound) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": "Project is not bound to a GitHub repository",
+                    "kind": "NOT_BOUND",
+                })),
+            )
+                .into_response();
+        }
+        Err(error) => return api_error(error),
+    };
+    let manual_base_branches = if body.manual_base_branches.is_empty() {
+        vec![binding.default_branch.clone()]
+    } else {
+        body.manual_base_branches.clone()
+    };
+    let input = factory_native::delivery::DeliveryPolicyInput {
+        enabled: body.enabled,
+        r1_enabled: body.r1_enabled,
+        auto_merge_base_branch: binding.default_branch.clone(),
+        manual_base_branches,
+        required_checks: body.required_checks,
+        merge_method: body.merge_method,
+        post_merge_check_id: body.post_merge_check_id,
+        post_merge_timeout_secs: body.post_merge_timeout_secs,
+        kill_switch: body.kill_switch,
+        expires_at: body.expires_at,
+    };
+    match app
+        .db
+        .append_delivery_policy(&id, &binding.default_branch, &input, "office-operator")
+        .await
+    {
+        Ok((policy, created)) => Json(json!({
+            "policy": policy,
+            "created": created,
+            "binding": binding,
+            "source": "delivery policy revision appended by an authenticated Core operation",
+        }))
+        .into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn candidate_delivery(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath((campaign_id, candidate_id)): AxumPath<(String, String)>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let credential = load_github_credential(&app).await.ok();
+    match factory_native::delivery::load_delivery_status(
+        &app.db,
+        Some(&app.github),
+        credential.as_ref(),
+        &campaign_id,
+        &candidate_id,
+    )
+    .await
+    {
+        Ok(status) => Json(status).into_response(),
+        Err(error) => delivery_error_response(error),
+    }
+}
+
+async fn deliver_candidate(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath((campaign_id, candidate_id)): AxumPath<(String, String)>,
+    Json(body): Json<CandidateDeliveryInput>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let operation = match body.operation.as_str() {
+        "OPEN_PR" | "OPEN_PULL_REQUEST" => {
+            factory_native::delivery::DeliveryOperation::OpenPullRequest
+        }
+        "MERGE" | "DELIVER" => factory_native::delivery::DeliveryOperation::Merge,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "delivery operation must be OPEN_PR or MERGE",
+                    "kind": "INVALID_REQUEST",
+                })),
+            )
+                .into_response();
+        }
+    };
+    let credential = match load_github_credential(&app).await {
+        Ok(credential) => credential,
+        Err(response) => return response,
+    };
+    let hook = match factory_native::delivery::LiveIssueDeliveryHook::new(
+        &app.db,
+        &app.github,
+        &credential,
+    )
+    .await
+    {
+        Ok(hook) => hook,
+        Err(error) => {
+            return delivery_error_response(factory_native::delivery::DeliveryError::from(error));
+        }
+    };
+    let service =
+        factory_native::delivery::DeliveryService::new(&app.db, &app.github, &credential, &hook);
+    let request = factory_native::delivery::DeliveryRequest {
+        campaign_id: &campaign_id,
+        candidate_id: &candidate_id,
+        base_branch: body.base_branch.as_deref(),
+        operation,
+        manual_confirmed: body.manual_confirmed,
+        actor: "office-operator",
+    };
+    if operation == factory_native::delivery::DeliveryOperation::OpenPullRequest {
+        return match service.open_pull_request(&request).await {
+            Ok(opened) => Json(json!({
+                "campaign_id": campaign_id,
+                "candidate_id": candidate_id,
+                "operation": "OPEN_PR",
+                "pull_request": opened.pull_request,
+                "created": opened.created,
+                "issue_delivery": opened.issue_outcome,
+                "source": "Core pushed the exact candidate, verified the PR head/base and reused an idempotent PR when present",
+            }))
+            .into_response(),
+            Err(error) => delivery_error_response(error),
+        };
+    }
+    match service.deliver(&request).await {
+        Ok(run) => Json(run).into_response(),
+        Err(error) => delivery_error_response(error),
+    }
+}
+
+async fn record_delivery_manual_revert(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<DeliveryRevertInput>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app
+        .db
+        .record_delivery_revert(
+            &id,
+            body.revert_pr_number,
+            &body.revert_merge_sha,
+            "operator-token",
+            &body.rationale,
+        )
+        .await
+    {
+        Ok(record) => Json(json!({
+            "revert": record,
+            "source": "manual revert evidence recorded by an authenticated Core operation; Factory did not revert automatically",
+        }))
+        .into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+fn delivery_error_response(error: factory_native::delivery::DeliveryError) -> Response {
+    let status = match error.code() {
+        "DELIVERY_PERMISSION_REQUIRED" => StatusCode::FORBIDDEN,
+        "NOT_FOUND" => StatusCode::NOT_FOUND,
+        "INVALID_BRANCH" | "INVALID_REMOTE" => StatusCode::BAD_REQUEST,
+        "GITHUB_UNAVAILABLE" | "DATABASE" => StatusCode::BAD_GATEWAY,
+        _ => StatusCode::CONFLICT,
+    };
+    let mut body = json!({
+        "error": error.detail(),
+        "kind": error.kind(),
+        "code": error.code(),
+        "retryable": error.retryable(),
+        "blockers": error.blockers(),
+    });
+    if let Some(attempt_id) = error.attempt_id() {
+        body["attempt_id"] = json!(attempt_id);
+    }
+    (status, Json(body)).into_response()
 }
 
 #[derive(Deserialize)]
@@ -7678,6 +8132,7 @@ async fn campaign_detail_projection(app: &App, id: &str) -> Result<serde_json::V
         .into_iter()
         .filter(|event| related_subjects.contains(&event.subject_id))
         .collect::<Vec<_>>();
+    let linked_issues = app.db.issue_link_projections_for_campaign(id).await?;
     let inference = match app.db.inference_envelope_for_campaign(id).await? {
         Some(envelope) => {
             let status = app
@@ -7732,7 +8187,8 @@ async fn campaign_detail_projection(app: &App, id: &str) -> Result<serde_json::V
         "runs": runs,
         "attempts": attempts,
         "candidates": candidates,
-        "events": events
+        "events": events,
+        "linked_issues": linked_issues
     }))
 }
 
@@ -8166,6 +8622,7 @@ async fn repair_campaign(
             factory_native::intake::IntakeMode::Autonomous,
             &request_key,
             &principal_id,
+            &[],
         )
         .await
     {
@@ -9863,6 +10320,10 @@ async fn intake_request_value(
         "updatedAt": record.updated_at,
     });
     if detail {
+        let linked_issues = app
+            .db
+            .issue_link_projections_for_request(&record.id)
+            .await?;
         let assessment = match app.db.lead_assessment(&lead.id).await {
             Ok(record) => Some(
                 serde_json::from_str::<serde_json::Value>(&record.assessment_json)
@@ -9889,6 +10350,8 @@ async fn intake_request_value(
             None => None,
         };
         let messages = app.db.intake_messages(&record.id).await?;
+        value["linked_issues"] = serde_json::to_value(linked_issues)
+            .map_err(|_| Error::Invalid("linked issue encoding"))?;
         let planning_artifacts = app.db.planning_artifacts(&record.id).await?;
         let plan_review = match app.db.latest_plan_review(&record.id).await {
             Ok(review) => Some(review),
@@ -11290,8 +11753,8 @@ async fn compile_environment_for_request(
     risk_class: &str,
 ) -> Result<factory_native::planning::environment::EnvironmentPlan, Response> {
     use factory_native::planning::environment::{
-        CompileEnvironmentInput, EnvironmentBlocker, EnvironmentBlockerCode,
-        EnvironmentRequirements, compile_environment_plan, discover_project_conventions,
+        CompileEnvironmentInput, EnvironmentBlocker, compile_environment_plan,
+        discover_project_conventions,
     };
     let repository = std::path::PathBuf::from(&config.repository);
     let risk_class = risk_class.to_owned();
@@ -11341,7 +11804,58 @@ async fn compile_environment_for_request(
             .map_err(api_error)?;
         return Ok(plan);
     }
-    let mut requirements = EnvironmentRequirements::default();
+    let mut requirements = match serde_json::from_str::<serde_json::Value>(&record.submission_json)
+    {
+        Ok(submission) => match submission.get("environmentConstraints") {
+            None | Some(serde_json::Value::Null) => {
+                factory_native::planning::environment::EnvironmentRequirements::default()
+            }
+            Some(value) => match serde_json::from_value::<
+                factory_native::planning::environment::RequestEnvironmentConstraints,
+            >(value.clone())
+            {
+                Ok(constraints) => constraints.into_requirements(),
+                Err(error) => {
+                    let blocked = blocked_environment_plan(
+                        record,
+                        revision,
+                        &risk_class,
+                        &conventions,
+                        EnvironmentBlocker {
+                            code: factory_native::planning::environment::EnvironmentBlockerCode::EnvironmentPlanInvalid,
+                            message: format!(
+                                "the stored environmentConstraints are malformed: {error}"
+                            ),
+                        },
+                        app.environment_builder().descriptor(),
+                    );
+                    app.db
+                        .save_environment_plan(&blocked)
+                        .await
+                        .map_err(api_error)?;
+                    return Ok(blocked);
+                }
+            },
+        },
+        Err(error) => {
+            let blocked = blocked_environment_plan(
+                record,
+                revision,
+                &risk_class,
+                &conventions,
+                EnvironmentBlocker {
+                    code: factory_native::planning::environment::EnvironmentBlockerCode::EnvironmentPlanInvalid,
+                    message: format!("the stored intake submission is malformed: {error}"),
+                },
+                app.environment_builder().descriptor(),
+            );
+            app.db
+                .save_environment_plan(&blocked)
+                .await
+                .map_err(api_error)?;
+            return Ok(blocked);
+        }
+    };
     if let Ok(raw) = std::env::var("FACTORY_ENVIRONMENT_FETCH_ALLOWLIST") {
         requirements.network.fetch_allowlist = raw
             .split(',')
@@ -11349,6 +11863,14 @@ async fn compile_environment_for_request(
             .filter(|entry| !entry.is_empty())
             .map(str::to_owned)
             .collect();
+    }
+    if requirements.explicit_constraints.nixpkgs.is_none()
+        && conventions.pins_named("nixpkgs").is_empty()
+    {
+        let descriptor = app.environment_builder().descriptor();
+        if !descriptor.default_nixpkgs.trim().is_empty() {
+            requirements.explicit_constraints.nixpkgs = Some(descriptor.default_nixpkgs);
+        }
     }
     match compile_environment_plan(CompileEnvironmentInput {
         plan_id: uuid::Uuid::new_v4().simple().to_string(),
@@ -11404,15 +11926,7 @@ async fn compile_environment_for_request(
                 &risk_class,
                 &conventions,
                 EnvironmentBlocker {
-                    code: if matches!(
-                        error.code,
-                        EnvironmentBlockerCode::EnvironmentConventionsConflict
-                            | EnvironmentBlockerCode::EnvironmentConventionsMissing
-                    ) {
-                        error.code
-                    } else {
-                        EnvironmentBlockerCode::EnvironmentPlanInvalid
-                    },
+                    code: error.code,
                     message: error.message,
                 },
                 app.environment_builder().descriptor(),
@@ -11973,16 +12487,8 @@ async fn environment_ready_for_request(
         }
         Err(Error::NotFound) => {
             let action = app.db.action(&record.action_id).await.map_err(api_error)?;
-            if action.spec.environment_required {
-                return Err((
-                    StatusCode::CONFLICT,
-                    Json(json!({
-                        "error": "the action requires a frozen environment plan but none is recorded",
-                        "code": "ENVIRONMENT_PLAN_REQUIRED",
-                    })),
-                )
-                    .into_response());
-            }
+            factory_native::db::validate_environment_requirement(&action.spec)
+                .map_err(api_error)?;
             Ok(())
         }
         Err(error) => Err(api_error(error)),
@@ -13852,14 +14358,9 @@ async fn ensure_planning_ready_or_error(
                 });
             }
         }
-        Err(Error::NotFound) if action.spec.environment_required => {
-            return Err(Error::IntakeConflict {
-                code: "ENVIRONMENT_PLAN_REQUIRED",
-                message: "the action requires a frozen environment plan but none is recorded"
-                    .into(),
-            });
+        Err(Error::NotFound) => {
+            factory_native::db::validate_environment_requirement(&action.spec)?;
         }
-        Err(Error::NotFound) => {}
         Err(error) => return Err(error),
     }
     factory_native::db::validate_environment_requirement(&action.spec)?;
@@ -16930,15 +17431,21 @@ async fn create_intake_request(
     }
     let (principal_id, _) =
         authenticated_operator(session.as_ref().map(|Extension(device)| device));
+    let selected_issues = match input.issue_selection() {
+        Ok(selection) => selection,
+        Err(error) => return api_error(error),
+    };
     match app
         .db
-        .create_intake_request(
+        .create_intake_request_with_environment(
             &input.project_id,
             &input.objective,
             input.execution_profile_id.as_deref(),
             input.mode,
             &input.idempotency_key,
             &principal_id,
+            &selected_issues,
+            input.environment_constraints.as_ref(),
         )
         .await
     {
@@ -18006,7 +18513,17 @@ async fn quality_gate(
     }
     match app.db.gate_for_candidate(&id).await {
         Ok(Some(gate)) => {
+            let candidate = match app.db.candidate(&id).await {
+                Ok(candidate) => candidate,
+                Err(error) => return api_error(error),
+            };
             let mut body = serde_json::to_value(&gate).unwrap_or_else(|_| serde_json::json!({}));
+            if let Some(object) = body.as_object_mut() {
+                object.insert(
+                    "final_source".into(),
+                    serde_json::to_value(candidate.final_source).unwrap_or(serde_json::Value::Null),
+                );
+            }
             if let Some(repair) = app
                 .db
                 .repair_authorization_for_candidate(&id)
@@ -21427,6 +21944,153 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn model_call_resolution_endpoint_is_owner_only_reasoned_and_audited() {
+        use tower::ServiceExt;
+
+        let path = std::env::temp_dir().join(format!(
+            "factory-core-model-call-resolution-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let app = test_app(&path).await;
+        let pool = sqlx_sqlite::SqlitePool::connect_with(
+            sqlx_sqlite::SqliteConnectOptions::new()
+                .filename(&path)
+                .create_if_missing(false),
+        )
+        .await
+        .unwrap();
+        let now = chrono::Utc::now();
+        sqlx::query::query(
+            "INSERT INTO model_call_reservations
+             (reservation_id,role,principal_id,project_id,objective_id,scope_id,
+              provider,model,purpose,request_sha256,max_input_tokens,
+              max_output_tokens,max_total_tokens,max_cost_micros,input_tokens,
+              output_tokens,total_tokens,cost_micros,usage_known,response_text,
+              state,error,expires_at_ms,created_at,updated_at,ledger_reservation_id,
+              dispatched_at_ms,provider_request_id)
+             VALUES ('model-call-http','EVALUATION','evaluator','project-http',
+                     'objective-http','scope-http','opencode-go',
+                     'deepseek-v4.1-flash','evaluation',?1,100,100,200,200,0,0,0,
+                     0,0,NULL,'AMBIGUOUS','unresolved',?2,?3,?3,NULL,NULL,NULL)",
+        )
+        .bind("a".repeat(64))
+        .bind(now.timestamp_millis() + 60_000)
+        .bind(now.to_rfc3339())
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool.close().await;
+
+        let router = build_router(Arc::clone(&app));
+        async fn resolve(
+            router: &axum::Router,
+            authorization: Option<&str>,
+            reason: &str,
+        ) -> axum::response::Response {
+            let mut request = axum::http::Request::builder()
+                .method("POST")
+                .uri("/model/calls/model-call-http/resolve")
+                .header("content-type", "application/json");
+            if let Some(authorization) = authorization {
+                request = request.header("authorization", format!("Bearer {authorization}"));
+            }
+            router
+                .clone()
+                .oneshot(
+                    request
+                        .body(axum::body::Body::from(
+                            serde_json::json!({
+                                "actor": "operator",
+                                "reason": reason,
+                            })
+                            .to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+        }
+
+        assert_eq!(
+            resolve(&router, None, "owner reason").await.status(),
+            StatusCode::UNAUTHORIZED,
+            "an unauthenticated caller must not resolve a model reservation"
+        );
+        assert_eq!(
+            resolve(
+                &router,
+                Some("bootstrap-bootstrap-bootstrap-1234"),
+                "owner reason"
+            )
+            .await
+            .status(),
+            StatusCode::UNAUTHORIZED,
+            "a non-owner role token must not resolve a model reservation"
+        );
+        assert_eq!(
+            resolve(&router, Some("operator-token"), "  ")
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST,
+            "a blank reason must be refused"
+        );
+        let (count, bound) = app.db.unresolved_model_call_budget().await.unwrap();
+        assert_eq!((count, bound), (1, 200));
+        assert!(
+            !app.db
+                .events()
+                .await
+                .unwrap()
+                .iter()
+                .any(|event| event.kind == "model.call_resolved"),
+            "a refused request must not release the budget or emit an audit event"
+        );
+
+        assert_eq!(
+            resolve(
+                &router,
+                Some("operator-token"),
+                "provider aborted before usage"
+            )
+            .await
+            .status(),
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(app.db.unresolved_model_call_budget().await.unwrap(), (0, 0));
+        let records = app.db.model_calls(10).await.unwrap();
+        let record = records
+            .iter()
+            .find(|record| record.reservation_id == "model-call-http")
+            .expect("model call record");
+        assert_eq!(record.state, "RELEASED");
+        assert!(record.error.contains("operator"));
+        let audit = app
+            .db
+            .events()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|event| {
+                event.kind == "model.call_resolved"
+                    && event.subject_id == "objective-http"
+                    && event.detail.contains("model-call-http")
+            })
+            .expect("model call resolution audit event");
+        assert!(audit.detail.contains("actor=operator"));
+        assert!(audit.detail.contains("provider aborted before usage"));
+        assert_eq!(
+            resolve(&router, Some("operator-token"), "again")
+                .await
+                .status(),
+            StatusCode::CONFLICT
+        );
+
+        drop(router);
+        app.db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
     async fn project_files_api_browses_registered_repository_with_bounds() {
         use tower::ServiceExt;
 
@@ -22370,6 +23034,7 @@ mod tests {
 
     async fn create_ready_approval_lead(
         db: &Database,
+        path: &std::path::Path,
         project_id: &str,
         config_hash: &str,
         grant: &factory_native::lead::StandingDelegationV2,
@@ -22392,6 +23057,19 @@ mod tests {
             )
             .await
             .unwrap();
+        let config = db.project_config(project_id).await.unwrap();
+        seed_core_test_environment(
+            db,
+            path,
+            &action.id,
+            project_id,
+            &config.base_commit,
+            "R0",
+            None,
+        )
+        .await
+        .unwrap();
+        let action = db.action(&action.id).await.unwrap();
         let (request, _) = db
             .create_lead_request(
                 project_id,
@@ -22554,12 +23232,24 @@ mod tests {
         db.create_standing_delegation_v2(&grant, "approval-grant-key")
             .await
             .unwrap();
-        let (request_id, expected) =
-            create_ready_approval_lead(&db, &project.id, &config.config_hash, &grant, "first")
-                .await;
-        let (withdrawn_request, _) =
-            create_ready_approval_lead(&db, &project.id, &config.config_hash, &grant, "second")
-                .await;
+        let (request_id, expected) = create_ready_approval_lead(
+            &db,
+            &path,
+            &project.id,
+            &config.config_hash,
+            &grant,
+            "first",
+        )
+        .await;
+        let (withdrawn_request, _) = create_ready_approval_lead(
+            &db,
+            &path,
+            &project.id,
+            &config.config_hash,
+            &grant,
+            "second",
+        )
+        .await;
         let app = Arc::new(App {
             db,
             operator_token: "operator-token".into(),
@@ -22977,6 +23667,209 @@ mod tests {
 
         app.db.close().await;
         let _ = std::fs::remove_file(path);
+    }
+
+    #[derive(Clone)]
+    struct CoreTestEnvironmentBinding {
+        plan_id: String,
+        spec_id: String,
+        builder_image: String,
+        builder_image_digest: String,
+    }
+
+    fn core_test_environment_binding(action_id: &str) -> CoreTestEnvironmentBinding {
+        CoreTestEnvironmentBinding {
+            plan_id: format!("test-plan-{action_id}"),
+            spec_id: format!("test-spec-{action_id}"),
+            builder_image: "fixture/environment-builder".into(),
+            builder_image_digest: format!("sha256:{}", "a".repeat(64)),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn seed_core_test_environment(
+        db: &Database,
+        path: &std::path::Path,
+        action_id: &str,
+        project_id: &str,
+        base_commit: &str,
+        risk_class: &str,
+        request_id: Option<&str>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use factory_native::planning::environment::{
+            ENVIRONMENT_POLICY_REVISION, ENVIRONMENT_SCHEMA_VERSION, EnvironmentBuildReceipt,
+            EnvironmentBuilderDescriptor, EnvironmentBuilderStatus, EnvironmentFile,
+            EnvironmentFileOrigin, EnvironmentNixPolicy, EnvironmentPlan, EnvironmentPlanSource,
+            EnvironmentPlanStatus, EnvironmentSpec, EnvironmentSpecStatus, ExistingEnvironmentKind,
+            LicenseInventory, NetworkPolicy, ProjectConventions, ResourceLimits,
+            SandboxAttestation, SandboxPolicy, sha256_hex,
+        };
+        if db.action(action_id).await.is_err()
+            || db.environment_spec_for_action(action_id).await.is_ok()
+        {
+            return Ok(());
+        }
+        let binding = core_test_environment_binding(action_id);
+        let mut conventions = ProjectConventions {
+            schema_version: ENVIRONMENT_SCHEMA_VERSION,
+            project_id: project_id.into(),
+            base_commit: base_commit.into(),
+            conventions_sha256: String::new(),
+            scanned_at: chrono::Utc::now().to_rfc3339(),
+            files: Vec::new(),
+            commands: Vec::new(),
+            conflicts: Vec::new(),
+            truncated: false,
+            skipped_entries: 0,
+            provenance: "test-fixture".into(),
+            existing_environment: ExistingEnvironmentKind::None,
+        };
+        conventions.conventions_sha256 = conventions.compute_sha256();
+        let mut inventory = LicenseInventory::default();
+        inventory.refresh_hashes(&binding.plan_id);
+        let builder = EnvironmentBuilderDescriptor {
+            image: binding.builder_image.clone(),
+            digest: binding.builder_image_digest.clone(),
+            platform: "x86_64-linux".into(),
+            policy_revision: ENVIRONMENT_POLICY_REVISION.into(),
+            default_nixpkgs: "github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into(),
+            status: EnvironmentBuilderStatus::Ready,
+        };
+        let mut plan = EnvironmentPlan {
+            schema_version: ENVIRONMENT_SCHEMA_VERSION,
+            plan_id: binding.plan_id.clone(),
+            project_id: project_id.into(),
+            request_id: request_id.unwrap_or(action_id).into(),
+            action_id: action_id.into(),
+            campaign_id: None,
+            base_commit: base_commit.into(),
+            conventions_sha256: conventions.conventions_sha256.clone(),
+            conventions,
+            risk_class: risk_class.into(),
+            status: EnvironmentPlanStatus::Frozen,
+            revision: 1,
+            source: EnvironmentPlanSource::ProjectCommitted,
+            toolchains: Vec::new(),
+            packages: Vec::new(),
+            services: Vec::new(),
+            commands: Default::default(),
+            browsers: Vec::new(),
+            files: vec![EnvironmentFile {
+                path: "flake.lock".into(),
+                sha256: "a".repeat(64),
+                origin: EnvironmentFileOrigin::Project,
+                content: None,
+            }],
+            nix: EnvironmentNixPolicy {
+                nixpkgs: "github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into(),
+                inputs: Vec::new(),
+                allow_unfree: false,
+                sandbox: SandboxPolicy::default(),
+            },
+            resources: ResourceLimits::default(),
+            network: NetworkPolicy::default(),
+            license_inventory: inventory,
+            license_inventory_sha256: String::new(),
+            builder,
+            resolution: None,
+            lead_review: None,
+            blockers: Vec::new(),
+            commands_rationale: "test fixture".into(),
+            plan_sha256: String::new(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+        plan.license_inventory_sha256 = plan.license_inventory.inventory_sha256.clone();
+        plan.refresh_hash();
+        db.save_environment_plan(&plan).await?;
+        // Insert a test review row directly; it is fixture provenance, not a
+        // production Lead model decision.
+        use sqlx::connection::Connection as SqlxConnection;
+        use sqlx_sqlite::{SqliteConnectOptions, SqliteConnection};
+        let options = SqliteConnectOptions::new().filename(path);
+        let mut connection = SqliteConnection::connect_with(&options).await?;
+        let review_id = format!("test-review-{action_id}");
+        let now = chrono::Utc::now().to_rfc3339();
+        sqlx::query::query(
+            "INSERT INTO environment_plan_reviews
+             (id,request_id,action_id,plan_id,plan_sha256,plan_revision,risk_class,
+              reviewer_role,principal_id,recorded_by,decision,rationale,
+              constraints_json,evidence_json,model_call_json,decided_at,created_at)
+             VALUES (?1,?2,?3,?4,?5,1,?6,'LEAD',?7,'test-fixture','APPROVED',
+                     'fixture review','[]','[]',?8,?9,?9)",
+        )
+        .bind(&review_id)
+        .bind(request_id)
+        .bind(action_id)
+        .bind(&plan.plan_id)
+        .bind(&plan.plan_sha256)
+        .bind(risk_class)
+        .bind(format!("lead:test-{action_id}"))
+        .bind(r#"{"mechanism":"MODEL","provider":"fixture","model":"fixture","reservationId":"test-reservation","requestSha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","inputTokens":0,"outputTokens":0,"totalTokens":0,"costMicros":0,"usageKnown":false}"#)
+        .bind(&now)
+        .execute(&mut connection)
+        .await?;
+        drop(connection);
+        let mut spec = EnvironmentSpec {
+            schema_version: ENVIRONMENT_SCHEMA_VERSION,
+            spec_id: binding.spec_id,
+            spec_sha256: String::new(),
+            project_id: project_id.into(),
+            request_id: request_id.unwrap_or(action_id).into(),
+            action_id: action_id.into(),
+            campaign_id: None,
+            base_commit: base_commit.into(),
+            plan_id: plan.plan_id.clone(),
+            plan_sha256: plan.plan_sha256.clone(),
+            conventions_sha256: plan.conventions_sha256.clone(),
+            review_id,
+            platform: "x86_64-linux".into(),
+            nix_version: "2.28.3".into(),
+            devenv_version: "1.11.2".into(),
+            flake_lock_sha256: "a".repeat(64),
+            devenv_lock_sha256: String::new(),
+            license_inventory_sha256: plan.license_inventory.inventory_sha256.clone(),
+            sbom_sha256: plan.license_inventory.sbom_sha256.clone(),
+            builder_image: plan.builder.image.clone(),
+            builder_image_digest: plan.builder.digest.clone(),
+            resource_policy: plan.resources,
+            network_policy: plan.network.clone(),
+            status: EnvironmentSpecStatus::Frozen,
+            frozen_at: now.clone(),
+        };
+        spec.spec_sha256 = spec.compute_sha256();
+        db.save_environment_spec(&spec).await?;
+        let receipt = EnvironmentBuildReceipt {
+            schema_version: ENVIRONMENT_SCHEMA_VERSION,
+            receipt_id: format!("test-receipt-{action_id}"),
+            spec_sha256: spec.spec_sha256.clone(),
+            platform: spec.platform.clone(),
+            builder_image: spec.builder_image.clone(),
+            builder_image_digest: spec.builder_image_digest.clone(),
+            builder_policy_revision: ENVIRONMENT_POLICY_REVISION.into(),
+            status: EnvironmentBuilderStatus::Succeeded,
+            store_path: "/nix/store/test".into(),
+            output_sha256: "b".repeat(64),
+            sbom_sha256: spec.sbom_sha256.clone(),
+            log_ref: "test-fixture".into(),
+            sandbox_attestation: SandboxAttestation {
+                non_root: true,
+                no_secrets: true,
+                no_host_network: true,
+                no_host_socket: true,
+                no_host_mount: true,
+                sandbox: true,
+                impure: false,
+                bounded_resources: true,
+            },
+            blockers: Vec::new(),
+            duration_ms: 0,
+            created_at: now,
+        };
+        db.save_environment_build_receipt(&receipt).await?;
+        db.set_action_environment_binding(action_id, &plan, &spec)
+            .await?;
+        let _ = sha256_hex(b"");
+        Ok(())
     }
 
     mod intake_api {
@@ -23408,6 +24301,24 @@ mod tests {
             intake_id: &str,
             mechanism: &str,
         ) -> factory_native::db::IntakeApprovalContext {
+            fixture_plan_with_seed(fixture, intake_id, mechanism, true).await
+        }
+
+        #[cfg(feature = "test-support")]
+        async fn fixture_plan_unseeded(
+            fixture: &Fixture,
+            intake_id: &str,
+            mechanism: &str,
+        ) -> factory_native::db::IntakeApprovalContext {
+            fixture_plan_with_seed(fixture, intake_id, mechanism, false).await
+        }
+
+        async fn fixture_plan_with_seed(
+            fixture: &Fixture,
+            intake_id: &str,
+            mechanism: &str,
+            seed_environment: bool,
+        ) -> factory_native::db::IntakeApprovalContext {
             let request = fixture.app.db.intake_request(intake_id).await.unwrap();
             let lead = fixture
                 .app
@@ -23453,6 +24364,7 @@ mod tests {
                 dependencies_required: false,
                 environment_plan_id: None,
                 environment_plan_sha256: None,
+                environment_spec_id: None,
                 environment_spec_sha256: None,
                 environment_builder_image: None,
                 environment_builder_image_digest: None,
@@ -23495,6 +24407,19 @@ mod tests {
                 .freeze_lead_plan_to_ready(&lead.id, "api-fixture-f")
                 .await
                 .unwrap();
+            if seed_environment {
+                seed_core_test_environment(
+                    &fixture.app.db,
+                    &fixture.path,
+                    &lead.action_id,
+                    &lead.project_id,
+                    &config.base_commit,
+                    "R0",
+                    Some(&request.id),
+                )
+                .await
+                .unwrap();
+            }
             fixture
                 .app
                 .db
@@ -23540,6 +24465,31 @@ mod tests {
             review_seed: PlanReviewSeed,
         ) -> factory_native::agentic::ValidatedWorkGraph {
             let request = fixture.app.db.intake_request(intake_id).await.unwrap();
+            if fixture
+                .app
+                .db
+                .environment_spec_for_action(&request.action_id)
+                .await
+                .is_err()
+            {
+                let config = fixture
+                    .app
+                    .db
+                    .project_config(&request.project_id)
+                    .await
+                    .unwrap();
+                seed_core_test_environment(
+                    &fixture.app.db,
+                    &fixture.path,
+                    &request.action_id,
+                    &request.project_id,
+                    &config.base_commit,
+                    "R0",
+                    Some(&request.id),
+                )
+                .await
+                .unwrap();
+            }
             let digest = "a".repeat(64);
             let graph = match fixture.app.db.agentic_work_graph(&request.id).await {
                 Ok(record) => serde_json::from_str::<factory_native::agentic::ValidatedWorkGraph>(
@@ -24056,7 +25006,7 @@ mod tests {
                     .unwrap();
             }
             if assess {
-                fixture_plan(&fixture, &intake_id, "FIXTURE").await;
+                fixture_plan_unseeded(&fixture, &intake_id, "FIXTURE").await;
             }
             (fixture, calls)
         }
@@ -24240,7 +25190,7 @@ mod tests {
                     .is_empty()
             );
 
-            fixture_plan(&fixture, &intake_id, "FIXTURE").await;
+            fixture_plan_unseeded(&fixture, &intake_id, "FIXTURE").await;
             let (status, detail) = send(
                 &fixture.router,
                 "GET",
@@ -25249,6 +26199,8 @@ mod tests {
                 environment_builder_image: None,
                 environment_builder_image_digest: None,
                 environment_required: false,
+
+                environment_spec_id: None,
             };
             let (assessment, _) = factory_native::lead::fixture_lead_assessment(
                 &lead.id,
@@ -26257,6 +27209,7 @@ mod tests {
                     factory_native::intake::IntakeMode::Autonomous,
                     "request-api-autopilot-readiness",
                     "operator-token",
+                    &[],
                 )
                 .await
                 .unwrap();
@@ -27045,6 +27998,7 @@ mod tests {
                     factory_native::intake::IntakeMode::Autonomous,
                     "request-api-autopilot-side-effects",
                     "operator-token",
+                    &[],
                 )
                 .await
                 .unwrap();
@@ -27769,6 +28723,197 @@ mod tests {
             let _ = std::fs::remove_dir_all(fixture.repository);
         }
 
+        #[tokio::test]
+        async fn issue_keys_freeze_links_and_retry_route_is_operator_only() {
+            use factory_native::github::{GitHubIssue, GitHubLabel};
+
+            let fixture = setup().await;
+            let (status, policy) = enable_policy(&fixture).await;
+            assert_eq!(status, StatusCode::CREATED, "{policy}");
+
+            let mut body = json!({
+                "project_id": fixture.project_id,
+                "objective": "Deliver issue 5.",
+                "execution_profile_id": fixture.profile.id,
+                "mode": "REVIEW_PLAN",
+                "idempotency_key": "issue-links-api-foreign",
+                "issue_keys": [{"owner": "other", "repo": "widgets", "number": 5}],
+            });
+            let (status, error) = send(
+                &fixture.router,
+                "POST",
+                "/intake/requests",
+                Some(body.clone()),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{error}");
+            assert_eq!(error["code"], "ISSUE_REPOSITORY_NOT_BOUND");
+
+            fixture
+                .app
+                .db
+                .bind_project_github(
+                    &fixture.project_id,
+                    factory_native::db::NewProjectGitHubBinding {
+                        owner: "acme",
+                        repo: "widgets",
+                        default_branch: "main",
+                        repository_github_id: Some(42),
+                    },
+                    "test-operator",
+                )
+                .await
+                .unwrap();
+            fixture
+                .app
+                .db
+                .save_github_connection(
+                    &factory_native::provider_secrets::EncryptedCredential {
+                        ciphertext: "ciphertext".into(),
+                        nonce: "nonce".into(),
+                        fingerprint: "fingerprint".into(),
+                    },
+                    "octo",
+                    &[],
+                    false,
+                    "test-operator",
+                )
+                .await
+                .unwrap();
+            let issue = GitHubIssue {
+                number: 5,
+                github_id: 55,
+                title: "Bounded issue".into(),
+                body: "Do a bounded task.".into(),
+                body_truncated: false,
+                state: "open".into(),
+                state_reason: None,
+                labels: vec![GitHubLabel {
+                    name: "factory:r0".into(),
+                    color: None,
+                }],
+                author: Some("octo".into()),
+                author_id: Some(7),
+                author_association: Some("MEMBER".into()),
+                html_url: "https://github.com/acme/widgets/issues/5".into(),
+                comments: 0,
+                created_at: "2026-10-01T00:00:00Z".into(),
+                updated_at: "2026-10-02T00:00:00Z".into(),
+                closed_at: None,
+            };
+            fixture
+                .app
+                .db
+                .record_github_sync_result(factory_native::db::GitHubSyncResultWrite {
+                    project_id: &fixture.project_id,
+                    repo_full_name: "acme/widgets",
+                    issues: std::slice::from_ref(&issue),
+                    page_etags: &[],
+                    etag: None,
+                    truncated: false,
+                    connection_revision: 1,
+                })
+                .await
+                .unwrap();
+
+            body["idempotency_key"] = json!("issue-links-api-duplicate");
+            body["issue_keys"] = json!([
+                {"owner": "acme", "repo": "widgets", "number": 5},
+                {"owner": "acme", "repo": "widgets", "number": 5}
+            ]);
+            let (status, error) = send(
+                &fixture.router,
+                "POST",
+                "/intake/requests",
+                Some(body.clone()),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{error}");
+            assert_eq!(error["code"], "ISSUE_DUPLICATE");
+
+            body["idempotency_key"] = json!("issue-links-api-valid");
+            body["issue_keys"] = json!([{"owner": "acme", "repo": "widgets", "number": 5}]);
+            let (status, created) = send(
+                &fixture.router,
+                "POST",
+                "/intake/requests",
+                Some(body.clone()),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{created}");
+            assert_eq!(created["linked_issues"][0]["issueNumber"], 5);
+            assert_eq!(created["linked_issues"][0]["role"], "PRIMARY");
+            assert_eq!(created["linked_issues"][0]["state"], "READY");
+            let request_id = created["id"].as_str().unwrap().to_owned();
+            let (status, detail) = send(
+                &fixture.router,
+                "GET",
+                &format!("/intake/requests/{request_id}"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(
+                detail["linked_issues"][0]["repositoryFullName"],
+                "acme/widgets"
+            );
+
+            let mut closed_issue = issue.clone();
+            closed_issue.state = "closed".into();
+            closed_issue.state_reason = Some("completed".into());
+            closed_issue.closed_at = Some("2026-10-03T00:00:00Z".into());
+            closed_issue.updated_at = "2026-10-03T00:00:00Z".into();
+            fixture
+                .app
+                .db
+                .record_github_sync_result(factory_native::db::GitHubSyncResultWrite {
+                    project_id: &fixture.project_id,
+                    repo_full_name: "acme/widgets",
+                    issues: std::slice::from_ref(&closed_issue),
+                    page_etags: &[],
+                    etag: None,
+                    truncated: false,
+                    connection_revision: 1,
+                })
+                .await
+                .unwrap();
+            body["idempotency_key"] = json!("issue-links-api-closed");
+            let (status, error) =
+                send(&fixture.router, "POST", "/intake/requests", Some(body)).await;
+            assert_eq!(status, StatusCode::CONFLICT, "{error}");
+            assert_eq!(error["code"], "ISSUE_CLOSED");
+
+            let retry_uri = "/issue-links/link-1/delivery/event-1/retry";
+            let response = fixture
+                .router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri(retry_uri)
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            let (status, _) = send(&fixture.router, "POST", retry_uri, None).await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
+
+            let links = fixture
+                .app
+                .db
+                .issue_links_for_request(&request_id)
+                .await
+                .unwrap();
+            assert_eq!(links.len(), 1);
+            assert_eq!(links[0].github_issue_id, Some(55));
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
         #[cfg(feature = "test-support")]
         #[derive(Clone)]
         struct EnvironmentReviewUpstreamState {
@@ -27846,7 +28991,7 @@ mod tests {
                     .await;
             assert_eq!(status, StatusCode::CREATED, "{intake}");
             let intake_id = intake["id"].as_str().unwrap().to_string();
-            let _ = fixture_plan(&fixture, &intake_id, "FIXTURE").await;
+            let _ = fixture_plan_unseeded(&fixture, &intake_id, "FIXTURE").await;
             let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
             fixture
                 .app
@@ -27988,6 +29133,8 @@ mod tests {
                     digest: format!("sha256:{}", "a".repeat(64)),
                     platform: "x86_64-linux".into(),
                     policy_revision: ENVIRONMENT_POLICY_REVISION.into(),
+                    default_nixpkgs:
+                        "github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into(),
                     status: EnvironmentBuilderStatus::Ready,
                 }
             }
@@ -28217,7 +29364,6 @@ mod tests {
             let (status, intake) = create_intake(&fixture, "environment-request-1").await;
             assert_eq!(status, StatusCode::CREATED, "{intake}");
             let intake_id = intake["id"].as_str().unwrap().to_string();
-            let _ = fixture_plan(&fixture, &intake_id, "FIXTURE").await;
             let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
             let config = fixture
                 .app
@@ -28323,14 +29469,14 @@ mod tests {
             assert_eq!(status, StatusCode::OK, "{still_pending}");
             assert_eq!(still_pending["status"], "CORE_VALIDATED");
             assert!(still_pending["leadApproval"].is_null());
-            let action = fixture.app.db.action(&record.action_id).await.unwrap();
-            assert!(!action.spec.environment_required);
             assert!(
-                action
-                    .spec
-                    .checks
-                    .iter()
-                    .all(|check| check.environment_plan_id.is_none())
+                fixture
+                    .app
+                    .db
+                    .environment_plan_reviews(&intake_id)
+                    .await
+                    .unwrap()
+                    .is_empty()
             );
 
             let (status, stale) = send(
@@ -28352,6 +29498,76 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn environment_compile_preserves_typed_license_blocker() {
+            let fixture = setup().await;
+            let (status, _) = enable_policy(&fixture).await;
+            assert!(matches!(status, StatusCode::CREATED | StatusCode::OK));
+            let (status, intake) = send(
+                &fixture.router,
+                "POST",
+                "/intake/requests",
+                Some(json!({
+                    "project_id": fixture.project_id,
+                    "objective": "Use a package with an unknown licence.",
+                    "execution_profile_id": fixture.profile.id,
+                    "mode": "REVIEW_PLAN",
+                    "idempotency_key": "environment-license-blocker",
+                    "environment_constraints": {
+                        "packages": [{
+                            "name": "mystery",
+                            "version": "1.0.0",
+                            "license": "Unknown",
+                            "source": "nixpkgs",
+                            "attr": "mystery",
+                            "sha256": "c".repeat(64),
+                            "unfree": false,
+                            "attribution": ""
+                        }]
+                    }
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{intake}");
+            let intake_id = intake["id"].as_str().unwrap().to_string();
+            let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            let config = fixture
+                .app
+                .db
+                .project_config(&record.project_id)
+                .await
+                .unwrap();
+            let plan = compile_environment_for_request(&fixture.app, &record, &config, 1, "R0")
+                .await
+                .unwrap();
+            assert_eq!(
+                plan.status,
+                factory_native::planning::environment::EnvironmentPlanStatus::Blocked
+            );
+            assert!(plan.blockers.iter().any(|blocker| {
+                blocker.code
+                    == factory_native::planning::environment::EnvironmentBlockerCode::EnvironmentLicenseBlocked
+            }));
+            let (status, projection) = send(
+                &fixture.router,
+                "GET",
+                &format!("/agentic/requests/{intake_id}/environment"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{projection}");
+            assert!(
+                projection["blockers"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|blocker| blocker["code"] == "ENVIRONMENT_LICENSE_BLOCKED")
+            );
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
         async fn owner_plan_approval_does_not_record_a_lead_environment_review() {
             let fixture = setup().await;
             let (status, _) = enable_policy(&fixture).await;
@@ -28359,7 +29575,6 @@ mod tests {
             let (status, intake) = create_intake(&fixture, "environment-owner-only").await;
             assert_eq!(status, StatusCode::CREATED, "{intake}");
             let intake_id = intake["id"].as_str().unwrap().to_string();
-            let _ = fixture_plan(&fixture, &intake_id, "FIXTURE").await;
             let _ = seed_complete_planning(&fixture, &intake_id, ParticipantSeed::None).await;
             let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
             let config = fixture
@@ -28507,6 +29722,49 @@ mod tests {
         }
 
         #[test]
+        fn issue_delivery_retry_is_not_success_when_failures_remain() {
+            use factory_native::issues::{IssueDeliveryFailure, IssueDeliveryOutcome};
+
+            let outcome = |retryable| IssueDeliveryOutcome {
+                campaign_id: "campaign-1".into(),
+                candidate_id: "candidate-1".into(),
+                attempted: 1,
+                applied: 0,
+                partial: 0,
+                failed: 1,
+                failures: vec![IssueDeliveryFailure {
+                    kind: "GITHUB_UPSTREAM".into(),
+                    detail: "GitHub is unreachable".into(),
+                    retryable,
+                }],
+                links: Vec::new(),
+            };
+            let (status, body) = issue_delivery_retry_result(None, outcome(true));
+            assert_eq!(status, StatusCode::BAD_GATEWAY);
+            assert_eq!(body["kind"], "DELIVERY_RETRY_FAILED");
+            assert_eq!(body["retryable"], true);
+            assert_eq!(body["failures"][0]["kind"], "GITHUB_UPSTREAM");
+
+            let (status, body) = issue_delivery_retry_result(None, outcome(false));
+            assert_eq!(status, StatusCode::CONFLICT);
+            assert_eq!(body["kind"], "DELIVERY_RETRY_BLOCKED");
+
+            let clean = IssueDeliveryOutcome {
+                campaign_id: "campaign-1".into(),
+                candidate_id: "candidate-1".into(),
+                attempted: 1,
+                applied: 1,
+                partial: 0,
+                failed: 0,
+                failures: Vec::new(),
+                links: Vec::new(),
+            };
+            let (status, body) = issue_delivery_retry_result(None, clean);
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body["delivery"]["applied"], 1);
+        }
+
+        #[test]
         fn pull_request_merge_requires_an_accepted_core_gate() {
             use factory_native::db::GateRecord;
             use factory_native::quality::GateOutcome;
@@ -28532,6 +29790,52 @@ mod tests {
             let (status, body) = merge_gate_denial(None).expect("missing gate must be denied");
             assert_eq!(status, StatusCode::CONFLICT);
             assert_eq!(body["kind"], "GATE_NOT_ACCEPTED");
+        }
+    }
+
+    #[tokio::test]
+    async fn delivery_routes_require_the_operator_credential() {
+        use tower::ServiceExt;
+        let path = std::env::temp_dir().join(format!(
+            "factory-core-delivery-routes-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let router = build_router(test_app(&path).await);
+        let routes = [
+            ("GET", "/projects/missing/delivery-policy", "{}".to_string()),
+            (
+                "PUT",
+                "/projects/missing/delivery-policy",
+                r#"{"enabled":true,"r1_enabled":false,"merge_method":"squash","required_checks":["ci"],"post_merge_check_id":"post-merge","post_merge_timeout_secs":900}"#.to_string(),
+            ),
+            (
+                "GET",
+                "/campaigns/missing/candidates/missing/delivery",
+                "{}".to_string(),
+            ),
+            (
+                "POST",
+                "/campaigns/missing/candidates/missing/delivery",
+                r#"{"operation":"MERGE","manual_confirmed":false}"#.to_string(),
+            ),
+            (
+                "POST",
+                "/delivery/incidents/missing/revert",
+                r#"{"revert_pr_number":1,"revert_merge_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","rationale":"test"}"#.to_string(),
+            ),
+        ];
+        for (method, uri, body) in routes {
+            let request = axum::http::Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(body))
+                .unwrap();
+            assert_eq!(
+                router.clone().oneshot(request).await.unwrap().status(),
+                StatusCode::UNAUTHORIZED,
+                "{method} {uri} must require the operator credential"
+            );
         }
     }
 }

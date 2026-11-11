@@ -121,6 +121,9 @@ pub struct GitHubIssueSummary {
     pub closed_at: Option<String>,
     pub synced_at: String,
     pub content_hash: String,
+    /// Core-derived delivery link for this issue, when a request selected it.
+    #[serde(rename = "issueLink", skip_serializing_if = "Option::is_none")]
+    pub issue_link: Option<crate::issues::IssueLinkSummary>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -143,6 +146,8 @@ pub struct GitHubIssueDetail {
     pub closed_at: Option<String>,
     pub synced_at: String,
     pub content_hash: String,
+    #[serde(rename = "issueLink", skip_serializing_if = "Option::is_none")]
+    pub issue_link: Option<crate::issues::IssueLinkSummary>,
 }
 
 #[derive(Debug, Clone)]
@@ -945,10 +950,16 @@ impl super::Database {
             .fetch_all(&self.pool)
             .await?;
         let total: i64 = count_query.fetch_one(&self.pool).await?;
-        let items = rows
+        let mut items = rows
             .iter()
             .map(issue_summary_from_row)
             .collect::<Result<Vec<_>, Error>>()?;
+        let links = self.issue_link_summaries_for_project(project_id).await?;
+        for item in &mut items {
+            item.issue_link = links
+                .get(&(binding.repo_full_name.to_ascii_lowercase(), item.number))
+                .cloned();
+        }
         Ok(GitHubIssueList {
             items,
             total: total.max(0) as u64,
@@ -994,7 +1005,13 @@ impl super::Database {
         .fetch_optional(&self.pool)
         .await?
         .ok_or(Error::NotFound)?;
-        issue_detail_from_row(&row)
+        let mut detail = issue_detail_from_row(&row)?;
+        detail.issue_link = self
+            .issue_link_summaries_for_project(project_id)
+            .await?
+            .get(&(binding.repo_full_name.to_ascii_lowercase(), detail.number))
+            .cloned();
+        Ok(detail)
     }
 }
 
@@ -1241,6 +1258,7 @@ fn issue_summary_from_row(row: &SqliteRow) -> Result<GitHubIssueSummary, Error> 
         closed_at: row.try_get("closed_at")?,
         synced_at: row.try_get("synced_at")?,
         content_hash: row.try_get("content_hash")?,
+        issue_link: None,
     })
 }
 
@@ -1264,6 +1282,7 @@ fn issue_detail_from_row(row: &SqliteRow) -> Result<GitHubIssueDetail, Error> {
         closed_at: row.try_get("closed_at")?,
         synced_at: row.try_get("synced_at")?,
         content_hash: row.try_get("content_hash")?,
+        issue_link: None,
     })
 }
 

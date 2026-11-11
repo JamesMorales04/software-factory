@@ -437,6 +437,38 @@ describe("Decision Inbox", () => {
     );
   });
 
+  it("refuses a whitespace-only release reason and surfaces a Core refusal", async () => {
+    const user = userEvent.setup();
+    mocks.getDecisions.mockResolvedValue({
+      items: [modelCallDecision()],
+      as_of: "2026-10-28T10:00:01Z",
+    });
+    mocks.resolveModelCall.mockRejectedValue(
+      new CoreApiError(400, "a release reason is required"),
+    );
+    renderInbox();
+    await screen.findByRole("heading", { name: "Decision Inbox" });
+
+    const reason = screen.getByLabelText("Release reason");
+    const release = screen.getByRole("button", { name: "Release reservation" });
+    await user.type(reason, "   ");
+    expect(release.hasAttribute("disabled")).toBe(true);
+    expect(mocks.resolveModelCall).not.toHaveBeenCalled();
+
+    await user.clear(reason);
+    await user.type(reason, "Provider aborted before usage was reported.");
+    await user.click(release);
+
+    expect(
+      await screen.findByText("a release reason is required"),
+    ).toBeDefined();
+    expect(mocks.resolveModelCall).toHaveBeenCalledWith(
+      "reservation-1",
+      "office-operator",
+      "Provider aborted before usage was reported.",
+    );
+  });
+
   it("requires a reason and confirmation for an authoritative Lead withdrawal", async () => {
     const user = userEvent.setup();
     const lead: DecisionItem = {

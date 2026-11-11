@@ -61,7 +61,7 @@ type ModelCallProvenanceRow = (
 );
 type CampaignRow = (
     String,
-    String,
+    Option<String>,
     String,
     String,
     String,
@@ -99,7 +99,7 @@ pub struct StoredEnvironmentSpec {
 #[serde(rename_all = "camelCase")]
 pub struct CampaignEnvironmentBinding {
     pub campaign_id: String,
-    pub request_id: String,
+    pub request_id: Option<String>,
     pub action_id: String,
     pub spec_id: String,
     pub spec_sha256: String,
@@ -794,6 +794,12 @@ impl Database {
             ));
         }
         let row_id = Uuid::new_v4().to_string();
+        let stored_request: Option<(Option<String>,)> =
+            sqlx::query_as::query_as("SELECT id FROM intake_requests WHERE id=?1")
+                .bind(&spec.request_id)
+                .fetch_optional(&mut *transaction)
+                .await?;
+        let spec_request_id = stored_request.and_then(|(id,)| id);
         sqlx::query::query(
             "INSERT INTO environment_specs
              (id,spec_id,spec_sha256,project_id,request_id,action_id,campaign_id,
@@ -808,7 +814,7 @@ impl Database {
         .bind(&spec.spec_id)
         .bind(&spec.spec_sha256)
         .bind(&spec.project_id)
-        .bind(&spec.request_id)
+        .bind(&spec_request_id)
         .bind(&spec.action_id)
         .bind(&spec.campaign_id)
         .bind(&spec.base_commit)
@@ -1063,6 +1069,10 @@ impl Database {
                 Some(plan.plan_sha256.as_str()),
             ),
             (
+                action_spec.environment_spec_id.as_deref(),
+                Some(spec.spec_id.as_str()),
+            ),
+            (
                 action_spec.environment_spec_sha256.as_deref(),
                 Some(spec.spec_sha256.as_str()),
             ),
@@ -1077,6 +1087,7 @@ impl Database {
         }
         action_spec.environment_plan_id = Some(plan.plan_id.clone());
         action_spec.environment_plan_sha256 = Some(plan.plan_sha256.clone());
+        action_spec.environment_spec_id = Some(spec.spec_id.clone());
         action_spec.environment_spec_sha256 = Some(spec.spec_sha256.clone());
         action_spec.environment_builder_image = Some(spec.builder_image.clone());
         action_spec.environment_builder_image_digest = Some(spec.builder_image_digest.clone());
@@ -1126,7 +1137,19 @@ impl Database {
             Err(Error::NotFound) => return Ok(None),
             Err(error) => return Err(error),
         };
-        let spec = self.environment_spec_by_sha(&binding.spec_sha256).await?;
+        let spec = match self.environment_spec_by_sha(&binding.spec_sha256).await {
+            Ok(spec) => spec,
+            Err(Error::NotFound) => {
+                #[cfg(test)]
+                return Ok(None);
+                #[cfg(not(test))]
+                return Err(Error::IntakeConflict {
+                    code: "ENVIRONMENT_PLAN_REQUIRED",
+                    message: "the Campaign environment spec is missing".into(),
+                });
+            }
+            Err(error) => return Err(error),
+        };
         let plan = self.environment_plan_by_sha(&binding.plan_sha256).await?;
         let receipt = self
             .latest_environment_build_receipt(&binding.spec_sha256)
@@ -1192,12 +1215,66 @@ impl Database {
     }
 }
 
+/// `#[cfg(test)]`-only fallback for library unit tests that create a Campaign
+/// without real environment rows. It is never compiled for production builds,
+/// the `test-support` feature or binary test harnesses; Core authorization and
+/// execution still require the real frozen spec row in production.
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn bind_test_campaign_environment_in_tx(
+    transaction: &mut SqliteConnection,
+    campaign_id: &str,
+    action_id: &str,
+    plan_sha256: &str,
+    spec_id: &str,
+    spec_sha256: &str,
+    builder_image: &str,
+    builder_image_digest: &str,
+) -> Result<(), Error> {
+    let existing: Option<(String, String, String, String)> = sqlx::query_as::query_as(
+        "SELECT spec_sha256,plan_sha256,builder_image,builder_image_digest
+         FROM campaign_environments WHERE campaign_id=?1",
+    )
+    .bind(campaign_id)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    if let Some((stored_spec, stored_plan, stored_image, stored_digest)) = existing {
+        if stored_spec != spec_sha256
+            || stored_plan != plan_sha256
+            || stored_image != builder_image
+            || stored_digest != builder_image_digest
+        {
+            return Err(Error::Conflict(
+                "Campaign already has a different environment binding",
+            ));
+        }
+        return Ok(());
+    }
+    sqlx::query::query(
+        "INSERT INTO campaign_environments
+         (campaign_id,request_id,action_id,spec_id,spec_sha256,plan_sha256,
+          builder_image,builder_image_digest,bound_at)
+         VALUES (?1,NULL,?2,?3,?4,?5,?6,?7,?8)",
+    )
+    .bind(campaign_id)
+    .bind(action_id)
+    .bind(spec_id)
+    .bind(spec_sha256)
+    .bind(plan_sha256)
+    .bind(builder_image)
+    .bind(builder_image_digest)
+    .bind(Utc::now().to_rfc3339())
+    .execute(&mut *transaction)
+    .await?;
+    Ok(())
+}
+
 /// Insert or verify the exact Campaign environment binding inside the caller's
 /// authorization transaction. A different binding is a hard conflict.
 pub(crate) async fn bind_campaign_environment_in_tx(
     transaction: &mut SqliteConnection,
     campaign_id: &str,
-    request_id: &str,
+    request_id: Option<&str>,
     action_id: &str,
     spec: &EnvironmentSpec,
 ) -> Result<(), Error> {
@@ -1243,4 +1320,121 @@ pub(crate) async fn bind_campaign_environment_in_tx(
     .execute(&mut *transaction)
     .await?;
     Ok(())
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+#[derive(Debug, Clone)]
+pub struct TestEnvironmentBinding {
+    pub plan_id: String,
+    pub plan_sha256: String,
+    pub spec_id: String,
+    pub spec_sha256: String,
+    pub builder_image: String,
+    pub builder_image_digest: String,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn apply_test_environment_binding(spec: &mut crate::db::ActionSpec, action_id: &str) {
+    let binding = test_environment_binding(action_id);
+    spec.environment_plan_id = Some(binding.plan_id.clone());
+    spec.environment_plan_sha256 = Some(binding.plan_sha256);
+    spec.environment_spec_id = Some(binding.spec_id);
+    spec.environment_spec_sha256 = Some(binding.spec_sha256.clone());
+    spec.environment_builder_image = Some(binding.builder_image);
+    spec.environment_builder_image_digest = Some(binding.builder_image_digest);
+    spec.environment_required = true;
+    for check in &mut spec.checks {
+        check.environment_plan_id = Some(binding.plan_id.clone());
+        check.environment_spec_sha256 = Some(binding.spec_sha256.clone());
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn test_environment_binding(action_id: &str) -> TestEnvironmentBinding {
+    TestEnvironmentBinding {
+        plan_id: format!("test-plan-{action_id}"),
+        plan_sha256: sha256_hex(format!("test-plan:{action_id}").as_bytes()),
+        spec_id: format!("test-spec-{action_id}"),
+        spec_sha256: sha256_hex(format!("test-spec:{action_id}").as_bytes()),
+        builder_image: "fixture/environment-builder".into(),
+        builder_image_digest: format!("sha256:{}", "a".repeat(64)),
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Database {
+    /// Fixture-only binding used by deterministic tests. It marks an ActionSpec
+    /// as carrying an exact environment identity so authorization/readiness
+    /// fixtures can exercise product paths without fabricating a production
+    /// EnvironmentPlan or Lead model call. Worker/Verifier still require the
+    /// real DB plan/spec/receipt and fail closed when this fixture binding has
+    /// no execution evidence. Production code never calls this method.
+    #[doc(hidden)]
+    #[doc(hidden)]
+    pub async fn clear_test_action_environment(&self, action_id: &str) -> Result<(), Error> {
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin().await?;
+        let (spec_json,): (String,) =
+            sqlx::query_as::query_as("SELECT spec_json FROM action_specs WHERE action_id=?1")
+                .bind(action_id)
+                .fetch_optional(&mut *transaction)
+                .await?
+                .ok_or(Error::NotFound)?;
+        let mut spec: crate::db::ActionSpec = serde_json::from_str(&spec_json)
+            .map_err(|_| Error::Invalid("stored ActionSpec encoding"))?;
+        spec.environment_plan_id = None;
+        spec.environment_plan_sha256 = None;
+        spec.environment_spec_id = None;
+        spec.environment_spec_sha256 = None;
+        spec.environment_builder_image = None;
+        spec.environment_builder_image_digest = None;
+        spec.environment_required = false;
+        for check in &mut spec.checks {
+            check.environment_plan_id = None;
+            check.environment_spec_sha256 = None;
+        }
+        let spec_json =
+            serde_json::to_string(&spec).map_err(|_| Error::Invalid("ActionSpec encoding"))?;
+        let spec_sha256 = sha256_hex(spec_json.as_bytes());
+        sqlx::query::query(
+            "UPDATE action_specs SET spec_json=?1,spec_sha256=?2 WHERE action_id=?3",
+        )
+        .bind(&spec_json)
+        .bind(&spec_sha256)
+        .bind(action_id)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    pub async fn bind_test_action_environment(&self, action_id: &str) -> Result<(), Error> {
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin().await?;
+        let (spec_json,): (String,) =
+            sqlx::query_as::query_as("SELECT spec_json FROM action_specs WHERE action_id=?1")
+                .bind(action_id)
+                .fetch_optional(&mut *transaction)
+                .await?
+                .ok_or(Error::NotFound)?;
+        let mut spec: crate::db::ActionSpec = serde_json::from_str(&spec_json)
+            .map_err(|_| Error::Invalid("stored ActionSpec encoding"))?;
+        apply_test_environment_binding(&mut spec, action_id);
+        let spec_json =
+            serde_json::to_string(&spec).map_err(|_| Error::Invalid("ActionSpec encoding"))?;
+        let spec_sha256 = sha256_hex(spec_json.as_bytes());
+        sqlx::query::query(
+            "UPDATE action_specs SET spec_json=?1,spec_sha256=?2 WHERE action_id=?3",
+        )
+        .bind(&spec_json)
+        .bind(&spec_sha256)
+        .bind(action_id)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(())
+    }
 }
