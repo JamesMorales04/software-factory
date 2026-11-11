@@ -1,4 +1,6 @@
-/tmp/opencode/node-cold-sbom.cdx.json: 158 components, 30 without license
+evidence/sbom/node.cdx.json: 158 components
+  no license entry:        30
+  entry without SPDX id:   2
     33  MIT
     17  GPL-2.0-or-later
     16  BSD-3-Clause
@@ -43,7 +45,13 @@
      1  cronyx
      1  hyphenBulgarian
      1  Zlib
-/tmp/opencode/rust-cold-sbom.cdx.json: 61 components, 26 without license
+evidence/sbom/node.csv: 159 rows
+  no nixpkgs license short name: 31
+  no SPDX identifier:            31
+  short name but no SPDX id:     0
+evidence/sbom/rust.cdx.json: 61 components
+  no license entry:        26
+  entry without SPDX id:   0
     14  GPL-3.0-or-later
      7  GPL-2.0-or-later
      4  LGPL-2.1-or-later
@@ -53,3 +61,7 @@
      2  LGPL-3.0-or-later
      1  bzip2-1.0.6
      1  Zlib
+evidence/sbom/rust.csv: 62 rows
+  no nixpkgs license short name: 27
+  no SPDX identifier:            27
+  short name but no SPDX id:     0

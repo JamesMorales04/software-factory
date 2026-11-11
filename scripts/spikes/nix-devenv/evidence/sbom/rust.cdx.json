@@ -1,0 +1,2805 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.4",
+  "version": 1,
+  "serialNumber": "urn:uuid:1fc74ada-19ea-4c13-bfb2-635d1d2313c9",
+  "metadata": {
+    "timestamp": "2026-11-11T03:26:16.833178+00:00",
+    "properties": [
+      {
+        "name": "sbom_type",
+        "value": "runtime_only"
+      },
+      {
+        "name": "nixpkgs:metadata_source_method",
+        "value": "flakeref-lock+package-meta-nix"
+      },
+      {
+        "name": "nixpkgs:path",
+        "value": "/nix/store/22wgynxys0wkin1s3g38y9fghidikm0w-source"
+      },
+      {
+        "name": "nixpkgs:flakeref",
+        "value": ".#devShells.x86_64-linux.rust"
+      },
+      {
+        "name": "nixpkgs:version",
+        "value": "26.11"
+      }
+    ],
+    "tools": [
+      {
+        "vendor": "TII",
+        "name": "sbomnix",
+        "version": "1.9.0"
+      }
+    ],
+    "component": {
+      "type": "library",
+      "bom-ref": "/nix/store/1kg4kchfjd5wfnmwipncgp70hvin7272-nix-shell.drv",
+      "name": "nix-shell",
+      "version": "",
+      "purl": "pkg:nix/nix-shell",
+      "cpe": "cpe:2.3:a:nix-shell:nix-shell::*:*:*:*:*:*:*",
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/3hsi67zl1l0gyhhd305dhh5jz99d5z8x-nix-shell"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/1kg4kchfjd5wfnmwipncgp70hvin7272-nix-shell.drv"
+        }
+      ]
+    }
+  },
+  "components": [
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/0vrysras6pr7v4sd2q9b4ylkvwvn2lak-acl-2.4.0.drv",
+      "name": "acl",
+      "version": "2.4.0",
+      "purl": "pkg:nix/acl@2.4.0",
+      "cpe": "cpe:2.3:a:acl_project:acl:2.4.0:*:*:*:*:*:*:*",
+      "description": "Library and tools for manipulating access control lists",
+      "licenses": [
+        {
+          "license": {
+            "id": "GPL-2.0-or-later"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://savannah.nongnu.org/projects/acl"
+        }
+      ],
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/3hk1ngk4hsk4s53v2s7sg096irdania4-acl-2.4.0"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/c9prrgx21qrlx3f0cahkyy0lgzs0h4f8-acl-2.4.0-doc"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/nvwlpckyq7siijcjlc74d9hvclyg6nsj-acl-2.4.0-dev"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/rszbxwc5p9kgiyb4n2rz5b5dn58qlg4m-acl-2.4.0-bin"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/v6mv7b7im0l5ja4cv23a9c5h82z8j1xv-acl-2.4.0-man"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/0vrysras6pr7v4sd2q9b4ylkvwvn2lak-acl-2.4.0.drv"
+        },
+        {
+          "name": "nix:position",
+          "value": "/nix/store/22wgynxys0wkin1s3g38y9fghidikm0w-source/pkgs/development/libraries/acl/default.nix:45"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/6dbs2kp6a90nzr2xh3ar5x817izdy77z-attr-2.6.0.drv",
+      "name": "attr",
+      "version": "2.6.0",
+      "purl": "pkg:nix/attr@2.6.0",
+      "cpe": "cpe:2.3:a:attr_project:attr:2.6.0:*:*:*:*:*:*:*",
+      "description": "Library and tools for manipulating extended attributes",
+      "licenses": [
+        {
+          "license": {
+            "id": "GPL-2.0-or-later"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://savannah.nongnu.org/projects/attr/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/avzfy3qprjzabsl0nww9wndwm3j8fbhm-attr-2.6.0-doc"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/kmfpv2awfanxkx5qnwwk4q73vlm2wg12-attr-2.6.0-man"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/lw3jn2nfx9kl9dnc5cjm2580d2a643xw-attr-2.6.0-bin"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/pnwvsvwppd1lsamcxmiw6g7fp1k1g2j0-attr-2.6.0"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/qa0f3az6nzvci3d0qvkhqypy5l3mg3vs-attr-2.6.0-dev"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/6dbs2kp6a90nzr2xh3ar5x817izdy77z-attr-2.6.0.drv"
+        },
+        {
+          "name": "nix:position",
+          "value": "/nix/store/22wgynxys0wkin1s3g38y9fghidikm0w-source/pkgs/development/libraries/attr/default.nix:47"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/30hr2syjmfvflwi68acggp3w870ikw5c-bash-5.3p20.drv",
+      "name": "bash",
+      "version": "5.3p20",
+      "purl": "pkg:nix/bash@5.3p20",
+      "cpe": "cpe:2.3:a:gnu:bash:5.3:20:*:*:*:*:*:*",
+      "description": "GNU Bourne-Again Shell, the de facto standard shell on Linux",
+      "licenses": [
+        {
+          "license": {
+            "id": "GPL-3.0-or-later"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://www.gnu.org/software/bash/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/2aimjx9b6cm4pmjdfdjnwz49h8mjsnn2-bash-5.3p20-doc"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/6p4ik3i8qaipiyb05hjpirsw8rybsxas-bash-5.3p20-info"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/b5rilb1d66qd5xmikql84k3p31wcmpqv-bash-5.3p20-dev"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/kgah67i9sql17wak2psj0pwh5ias77zi-bash-5.3p20-man"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/lxfa5zazy3zpsjqjfqzym8hjgdw6qw72-bash-5.3p20-debug"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/nnm9gdr70ihc6zc9298mzz8jpcgaciql-bash-5.3p20"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/30hr2syjmfvflwi68acggp3w870ikw5c-bash-5.3p20.drv"
+        },
+        {
+          "name": "nix:position",
+          "value": "/nix/store/22wgynxys0wkin1s3g38y9fghidikm0w-source/pkgs/shells/bash/5.nix:268"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/krzz0znidbvk7mi32cigir69hxsmxi67-binutils-2.46.drv",
+      "name": "binutils",
+      "version": "2.46",
+      "purl": "pkg:nix/binutils@2.46",
+      "cpe": "cpe:2.3:a:gnu:binutils:2.46:*:*:*:*:*:*:*",
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/2jqfzb7bxvyrgw344js7hwbz4fvp7cbb-binutils-2.46-info"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/fz59ampfz5c0fs05rm757nkiciz2fmvy-binutils-2.46-man"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/nrlcj9nncvchvk481zb3pg6df8gsj0pn-binutils-2.46-lib"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/r9xvy69qh6vchzcsb1r3qrm0zbqry0cw-binutils-2.46-dev"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/y6ri2r743ckh5kk160r461czl9n2f2wf-binutils-2.46"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/krzz0znidbvk7mi32cigir69hxsmxi67-binutils-2.46.drv"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/lqfpvvm2ia1vkxdsp62g08qdh0pbapf8-binutils-wrapper-2.46.drv",
+      "name": "binutils-wrapper",
+      "version": "2.46",
+      "purl": "pkg:nix/binutils-wrapper@2.46",
+      "cpe": "cpe:2.3:a:binutils-wrapper:binutils-wrapper:2.46:*:*:*:*:*:*:*",
+      "description": "Tools for manipulating binaries (linker, assembler, etc.) (wrapper script)",
+      "licenses": [
+        {
+          "license": {
+            "id": "GPL-3.0-or-later"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://www.gnu.org/software/binutils/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/fi98g122a3kzbschgvbvsqvpyxrmqvvl-binutils-wrapper-2.46"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/rr8r8v00gy7kq186bbckc8fh7jcvn1y1-binutils-wrapper-2.46-info"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/sx4zr5kxj97ayc46camnzk5azfkir62q-binutils-wrapper-2.46-man"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/lqfpvvm2ia1vkxdsp62g08qdh0pbapf8-binutils-wrapper-2.46.drv"
+        },
+        {
+          "name": "nix:position",
+          "value": "/nix/store/22wgynxys0wkin1s3g38y9fghidikm0w-source/pkgs/build-support/bintools-wrapper/default.nix:489"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/kb42c6zs8bydibh5hbvzv561h676sl4n-bzip2-1.0.8.drv",
+      "name": "bzip2",
+      "version": "1.0.8",
+      "purl": "pkg:nix/bzip2@1.0.8",
+      "cpe": "cpe:2.3:a:bzip2:bzip2:1.0.8:*:*:*:*:*:*:*",
+      "description": "High-quality data compression program",
+      "licenses": [
+        {
+          "license": {
+            "id": "bzip2-1.0.6"
+          }
+        }
+      ],
+      "pedigree": {
+        "patches": [
+          {
+            "type": "unofficial",
+            "resolves": [
+              {
+                "type": "security",
+                "id": "CVE-2026-42250",
+                "references": [
+                  "file:///nix/store/xv9nsfdcadbj9965lkwf4b2cqyv2j4hp-CVE-2026-42250.patch"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://www.sourceware.org/bzip2"
+        }
+      ],
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/7crm5d4562ix9l2kbgphm98cl78abl8b-bzip2-1.0.8-man"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/ai2km55ba8bxrn64xx7p9lgvrrzdzv43-bzip2-1.0.8-bin"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/spahkc8n306pyh52fzfp5chzrcsaibhx-bzip2-1.0.8-dev"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/zx4ag3v11v9rl0iqvg6vzbpflzlg0dk2-bzip2-1.0.8"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/kb42c6zs8bydibh5hbvzv561h676sl4n-bzip2-1.0.8.drv"
+        },
+        {
+          "name": "nix:position",
+          "value": "/nix/store/22wgynxys0wkin1s3g38y9fghidikm0w-source/pkgs/by-name/bz/bzip2/package.nix:80"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/6hjnybxwcj7dq8diy5r5flfzbahkz5nw-cargo-1.90.0-x86_64-unknown-linux-gnu.drv",
+      "name": "cargo",
+      "version": "1.90.0",
+      "purl": "pkg:nix/cargo@1.90.0",
+      "cpe": "cpe:2.3:a:cargo:cargo:1.90.0:*:*:*:*:*:*:*",
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/vk9c24i5wy52z3ydcp167cldvkcr0ypj-cargo-1.90.0-x86_64-unknown-linux-gnu"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/6hjnybxwcj7dq8diy5r5flfzbahkz5nw-cargo-1.90.0-x86_64-unknown-linux-gnu.drv"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/bq1fp5559kxpzzla9hzl0f65dd6k7fk4-clippy-preview-1.90.0-x86_64-unknown-linux-gnu.drv",
+      "name": "clippy-preview",
+      "version": "1.90.0",
+      "purl": "pkg:nix/clippy-preview@1.90.0",
+      "cpe": "cpe:2.3:a:clippy-preview:clippy-preview:1.90.0:*:*:*:*:*:*:*",
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/93dqdq8q37l0dbr0hsl68s67psvbhiz8-clippy-preview-1.90.0-x86_64-unknown-linux-gnu"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/bq1fp5559kxpzzla9hzl0f65dd6k7fk4-clippy-preview-1.90.0-x86_64-unknown-linux-gnu.drv"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/m7bmd2qz1zcnk4k25y5cg6wbb3y9qwcb-coreutils-9.12.drv",
+      "name": "coreutils",
+      "version": "9.12",
+      "purl": "pkg:nix/coreutils@9.12",
+      "cpe": "cpe:2.3:a:gnu:coreutils:9.12:*:*:*:*:*:*:*",
+      "description": "GNU Core Utilities",
+      "licenses": [
+        {
+          "license": {
+            "id": "GPL-3.0-or-later"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://www.gnu.org/software/coreutils/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/2jpg29pwjk6f92a8nkw2zkf7pvg393w4-coreutils-9.12-info"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/cb987zkxvsv0490753ilrvn5yk7ylgxi-coreutils-9.12"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/fvhgvzw9919axd99yswrm2m34gpazkmp-coreutils-9.12-debug"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/m7bmd2qz1zcnk4k25y5cg6wbb3y9qwcb-coreutils-9.12.drv"
+        },
+        {
+          "name": "nix:position",
+          "value": "/nix/store/22wgynxys0wkin1s3g38y9fghidikm0w-source/pkgs/by-name/co/coreutils/package.nix:280"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/8n8g8gff4p9mmf762081rpzhg2imgk2x-diffutils-3.12.drv",
+      "name": "diffutils",
+      "version": "3.12",
+      "purl": "pkg:nix/diffutils@3.12",
+      "cpe": "cpe:2.3:a:diffutils:diffutils:3.12:*:*:*:*:*:*:*",
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/9mpja553cbkr2rc37kzdg8zbbg2dyyvl-diffutils-3.12"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/9pnsymqjr3vykhdnrw58z7i35983j7lp-diffutils-3.12-info"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/8n8g8gff4p9mmf762081rpzhg2imgk2x-diffutils-3.12.drv"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/5hahxqpsszigmlkvax2r5rnqjp7aa0zs-dns-root-data-2025-04-14.drv",
+      "name": "dns-root-data",
+      "version": "2025-04-14",
+      "purl": "pkg:nix/dns-root-data@2025-04-14",
+      "cpe": "cpe:2.3:a:dns-root-data:dns-root-data:2025-04-14:*:*:*:*:*:*:*",
+      "description": "DNS root data including root hints and DNSSEC root trust anchor + key",
+      "licenses": [
+        {
+          "license": {
+            "id": "GPL-3.0-or-later"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://www.iana.org/domains/root/files"
+        }
+      ],
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/nh6v5wa41gapkbzkg7nh32f0l6a95s26-dns-root-data-2025-04-14"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/5hahxqpsszigmlkvax2r5rnqjp7aa0zs-dns-root-data-2025-04-14.drv"
+        },
+        {
+          "name": "nix:position",
+          "value": "/nix/store/22wgynxys0wkin1s3g38y9fghidikm0w-source/pkgs/by-name/dn/dns-root-data/package.nix:35"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/xv890h8jbp0z265rs00xb98i3jang0c4-ed-1.22.6.drv",
+      "name": "ed",
+      "version": "1.22.6",
+      "purl": "pkg:nix/ed@1.22.6",
+      "cpe": "cpe:2.3:a:ed:ed:1.22.6:*:*:*:*:*:*:*",
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/77d0rlxs1c4sx71ss06vnmfpjcd5mm22-ed-1.22.6"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/xv890h8jbp0z265rs00xb98i3jang0c4-ed-1.22.6.drv"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/b41858x7aj97gn5xjvbnz7m5ggk45md0-expand-response-params.drv",
+      "name": "expand-response-params",
+      "version": "",
+      "purl": "pkg:nix/expand-response-params",
+      "cpe": "cpe:2.3:a:expand-response-params:expand-response-params::*:*:*:*:*:*:*",
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/jkz7a5kgwa1h16d8hkhjqlgm0xy5bkhw-expand-response-params"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/b41858x7aj97gn5xjvbnz7m5ggk45md0-expand-response-params.drv"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/gvyn6gs5f81h4fvf7ffjxgz0751pcz7v-expand-response-params.drv",
+      "name": "expand-response-params",
+      "version": "",
+      "purl": "pkg:nix/expand-response-params",
+      "cpe": "cpe:2.3:a:expand-response-params:expand-response-params::*:*:*:*:*:*:*",
+      "description": "Internal tool used by the nixpkgs wrapper scripts for processing response files",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/vl4bvv35nbwmmsd7xlkdw0zixpl7yq29-expand-response-params"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/gvyn6gs5f81h4fvf7ffjxgz0751pcz7v-expand-response-params.drv"
+        },
+        {
+          "name": "nix:position",
+          "value": "/nix/store/22wgynxys0wkin1s3g38y9fghidikm0w-source/pkgs/by-name/ex/expand-response-params/package.nix:32"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/8knxaxg4r1201bkmg5j3n219178s1g37-file-5.48.drv",
+      "name": "file",
+      "version": "5.48",
+      "purl": "pkg:nix/file@5.48",
+      "cpe": "cpe:2.3:a:file:file:5.48:*:*:*:*:*:*:*",
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/2qpmak7162vhqxjwfik4aqs9lff6sn7w-file-5.48"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/q8w6701wl7pnrblja8d920nw46xpdyfy-file-5.48-dev"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/sq1xfjvrfjrzy3cngb4grfw952qanyqx-file-5.48-man"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/8knxaxg4r1201bkmg5j3n219178s1g37-file-5.48.drv"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/cdx1vkr2vsmjy173558b33bdxildi7pw-findutils-4.11.0.drv",
+      "name": "findutils",
+      "version": "4.11.0",
+      "purl": "pkg:nix/findutils@4.11.0",
+      "cpe": "cpe:2.3:a:gnu:findutils:4.11.0:*:*:*:*:*:*:*",
+      "description": "GNU Find Utilities, the basic directory searching utilities of the GNU operating system",
+      "licenses": [
+        {
+          "license": {
+            "id": "GPL-3.0-or-later"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://www.gnu.org/software/findutils/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/99v13ig4382mngi6ggf0csqi7rfa04j5-findutils-4.11.0"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/ggzdkz8mcv0x6sv3m9xhybxmsg0gfb4n-findutils-4.11.0-locate"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/s2rk30lyd7r3sxpnmpw6vycwn3pg02pp-findutils-4.11.0-info"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/cdx1vkr2vsmjy173558b33bdxildi7pw-findutils-4.11.0.drv"
+        },
+        {
+          "name": "nix:position",
+          "value": "/nix/store/22wgynxys0wkin1s3g38y9fghidikm0w-source/pkgs/by-name/fi/findutils/package.nix:89"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/xmkywhcm19x46mxrc1ii56bfmg27nbkx-gawk-5.4.1.drv",
+      "name": "gawk",
+      "version": "5.4.1",
+      "purl": "pkg:nix/gawk@5.4.1",
+      "cpe": "cpe:2.3:a:fossies:gawk:5.4.1:*:*:*:*:*:*:*",
+      "description": "GNU implementation of the Awk programming language",
+      "licenses": [
+        {
+          "license": {
+            "id": "GPL-3.0-or-later"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://www.gnu.org/software/gawk/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/3pgxif5iwg2hj626fyjpa2i2sn4x3i8v-gawk-5.4.1-info"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/66ffb3i60j03sw09fnfspimd54i9r6ib-gawk-5.4.1-man"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/h96s16mjssibkvk62pvmfm3lwfc3wnwp-gawk-5.4.1"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/xmkywhcm19x46mxrc1ii56bfmg27nbkx-gawk-5.4.1.drv"
+        },
+        {
+          "name": "nix:position",
+          "value": "/nix/store/22wgynxys0wkin1s3g38y9fghidikm0w-source/pkgs/tools/text/gawk/default.nix:111"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/zwiwmjr7hfk6vh8lhyg01g5mdyk2wl9i-gcc-16.2.0.drv",
+      "name": "gcc",
+      "version": "16.2.0",
+      "purl": "pkg:nix/gcc@16.2.0",
+      "cpe": "cpe:2.3:a:gnu:gcc:16.2.0:*:*:*:*:*:*:*",
+      "description": "GNU Compiler Collection, version 16.2.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "GPL-3.0-or-later"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://gcc.gnu.org/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/3sj8msrsym648f35mk3gb3pp385hhk8r-gcc-16.2.0-libgcc"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/7a2cjhcgzyym5zaz6m4fksw47qvm150w-gcc-16.2.0-lib"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/psjwfz0sv8j6nlibf8dlknq8g0jyi5h1-gcc-16.2.0-checksum"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/vvsb7b3ra3z82ayay5wlp7wn10ggj98w-gcc-16.2.0-man"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/xj5g6k1qxb4ny74kdsylm0cpq6ql8v1b-gcc-16.2.0-info"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/xpaz3fi6ibqxb9sla4gjlp0c82v566y8-gcc-16.2.0"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/zwiwmjr7hfk6vh8lhyg01g5mdyk2wl9i-gcc-16.2.0.drv"
+        },
+        {
+          "name": "nix:position",
+          "value": "/nix/store/22wgynxys0wkin1s3g38y9fghidikm0w-source/pkgs/development/compilers/gcc/default.nix:426"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/hjzzl7y4qy90800c8zk92z9w07l37x2a-gcc-wrapper-16.2.0.drv",
+      "name": "gcc-wrapper",
+      "version": "16.2.0",
+      "purl": "pkg:nix/gcc-wrapper@16.2.0",
+      "cpe": "cpe:2.3:a:gnu:gcc:16.2.0:*:*:*:*:*:*:*",
+      "description": "GNU Compiler Collection, version 16.2.0 (wrapper script)",
+      "licenses": [
+        {
+          "license": {
+            "id": "GPL-3.0-or-later"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://gcc.gnu.org/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/6j71j4f4knh1kl65y1y0gq8378addngh-gcc-wrapper-16.2.0-man"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/q28p8i2c42j09y0sffi6v5fhg0l4nis8-gcc-wrapper-16.2.0-info"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/r5ri78axx1qggkjq3vawywlzglg70b5w-gcc-wrapper-16.2.0"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/hjzzl7y4qy90800c8zk92z9w07l37x2a-gcc-wrapper-16.2.0.drv"
+        },
+        {
+          "name": "nix:position",
+          "value": "/nix/store/22wgynxys0wkin1s3g38y9fghidikm0w-source/pkgs/build-support/cc-wrapper/default.nix:1064"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/fvpkp0mykql6qbsnhrn2wy7i9zipjxx5-glib-2.88.3.drv",
+      "name": "glib",
+      "version": "2.88.3",
+      "purl": "pkg:nix/glib@2.88.3",
+      "cpe": "cpe:2.3:a:gnome:glib:2.88.3:*:*:*:*:*:*:*",
+      "description": "C library of programming buildings blocks",
+      "licenses": [
+        {
+          "license": {
+            "id": "LGPL-2.1-or-later"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://gitlab.gnome.org/GNOME/glib"
+        }
+      ],
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/83xd689yld0y8lgk0fc06f542yid4yh7-glib-2.88.3-dev"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/bap1xfql0wv1sv46khr6lw4pv56xw4m3-glib-2.88.3-debug"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/cmzn9jsqdrm1y9ff9b2j65iy1dqzk7if-glib-2.88.3-bin"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/ddqbzpn77xmi900rj1a7wy8b5lbwm4ay-glib-2.88.3"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/k4c18ij95wvdznl4jcw5zy1c0hh4zm28-glib-2.88.3-devdoc"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/fvpkp0mykql6qbsnhrn2wy7i9zipjxx5-glib-2.88.3.drv"
+        },
+        {
+          "name": "nix:position",
+          "value": "/nix/store/22wgynxys0wkin1s3g38y9fghidikm0w-source/pkgs/by-name/gl/glib/package.nix:363"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv",
+      "name": "glibc",
+      "version": "2.44-57",
+      "purl": "pkg:nix/glibc@2.44-57",
+      "cpe": "cpe:2.3:a:gnu:glibc:2.44:*:*:*:*:*:*:*",
+      "description": "GNU C Library",
+      "licenses": [
+        {
+          "license": {
+            "id": "LGPL-2.0-or-later"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://www.gnu.org/software/libc/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/3zlgjcfm8j3nscrldjv8izxciybg0nh3-glibc-2.44-57-dev"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/6cz4wzbi3x34ii46hgfk3mvs7nal1c5l-glibc-2.44-57-getent"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/j64r0mf0yy7pvcbavlqidfnpsdnrldj2-glibc-2.44-57-bin"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/pqyiidz5mi73wv5f91d48s9plcqyj5bz-glibc-2.44-57"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/v2d3x3nah3fja4mlhmzfw44r0brgi0rx-glibc-2.44-57-debug"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/z49jwydvhdkyiahji56zppsif4i7gs5x-glibc-2.44-57-static"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv"
+        },
+        {
+          "name": "nix:position",
+          "value": "/nix/store/22wgynxys0wkin1s3g38y9fghidikm0w-source/pkgs/development/libraries/glibc/default.nix:218"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/qjc4zrx1dl75axg20mqg7fz6anc1npg9-gmp-6.3.0.drv",
+      "name": "gmp",
+      "version": "6.3.0",
+      "purl": "pkg:nix/gmp@6.3.0",
+      "cpe": "cpe:2.3:a:gmplib:gmp:6.3.0:*:*:*:*:*:*:*",
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/g0jpmhhjlawpdl4qb2wgx9gvmqmw44v6-gmp-6.3.0-dev"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/sl93hyrfd6czyvivbfx7f58hgnlc2xp6-gmp-6.3.0-info"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/v730lk2kw7kwbvlvq60zjbznd462mgrq-gmp-6.3.0"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/qjc4zrx1dl75axg20mqg7fz6anc1npg9-gmp-6.3.0.drv"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/048jrfy773c83qfxwpv9m2kjnhx13789-gmp-with-cxx-6.3.0.drv",
+      "name": "gmp-with-cxx",
+      "version": "6.3.0",
+      "purl": "pkg:nix/gmp-with-cxx@6.3.0",
+      "cpe": "cpe:2.3:a:gmp-with-cxx:gmp-with-cxx:6.3.0:*:*:*:*:*:*:*",
+      "description": "GNU multiple precision arithmetic library",
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://gmplib.org/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/58cds16cp7zyiywadnfih6x99vd7f9fq-gmp-with-cxx-6.3.0-dev"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/7whfqxz5vs4kn8jiybvdj5k7ib6h4442-gmp-with-cxx-6.3.0"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/lgb373bqmgf0v2l2njhpy1d16gcb9wva-gmp-with-cxx-6.3.0-info"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/048jrfy773c83qfxwpv9m2kjnhx13789-gmp-with-cxx-6.3.0.drv"
+        },
+        {
+          "name": "nix:position",
+          "value": "/nix/store/22wgynxys0wkin1s3g38y9fghidikm0w-source/pkgs/by-name/gm/gmp6/package.nix:91"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/15f6svqz6mdi0gf5qxkvd14s1nf8kyak-gmp-with-cxx-6.3.0.drv",
+      "name": "gmp-with-cxx",
+      "version": "6.3.0",
+      "purl": "pkg:nix/gmp-with-cxx@6.3.0",
+      "cpe": "cpe:2.3:a:gmp-with-cxx:gmp-with-cxx:6.3.0:*:*:*:*:*:*:*",
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/hi9hfhvrjimn42yxj503cd69bs47q80m-gmp-with-cxx-6.3.0-info"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/plzxw045w1vdw3b9df9lg21drxarbw3m-gmp-with-cxx-6.3.0-dev"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/vs4bjcgq2r93adg875isf55hyn29dk09-gmp-with-cxx-6.3.0"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/15f6svqz6mdi0gf5qxkvd14s1nf8kyak-gmp-with-cxx-6.3.0.drv"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/bdfrym97c81x3rp939w4janm8dmm39ih-gnu-config-2024-01-01.drv",
+      "name": "gnu-config",
+      "version": "2024-01-01",
+      "purl": "pkg:nix/gnu-config@2024-01-01",
+      "cpe": "cpe:2.3:a:gnu-config:gnu-config:2024-01-01:*:*:*:*:*:*:*",
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/b01kc8kdswrnfzlqpq0y3q9akijvn620-gnu-config-2024-01-01"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/bdfrym97c81x3rp939w4janm8dmm39ih-gnu-config-2024-01-01.drv"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/1142izpla409fzbfwncwmmbs8y9ndc0k-gnugrep-3.12.drv",
+      "name": "gnugrep",
+      "version": "3.12",
+      "purl": "pkg:nix/gnugrep@3.12",
+      "cpe": "cpe:2.3:a:gnu:grep:3.12:*:*:*:*:*:*:*",
+      "description": "GNU implementation of the Unix grep command",
+      "licenses": [
+        {
+          "license": {
+            "id": "GPL-3.0-or-later"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://www.gnu.org/software/grep/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/c3f45pxlb81gzz4w1nym7lpznfypva7s-gnugrep-3.12"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/hraks5bpks1q3aan8h1d6yiww5z70iyb-gnugrep-3.12-info"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/1142izpla409fzbfwncwmmbs8y9ndc0k-gnugrep-3.12.drv"
+        },
+        {
+          "name": "nix:position",
+          "value": "/nix/store/22wgynxys0wkin1s3g38y9fghidikm0w-source/pkgs/by-name/gn/gnugrep/package.nix:98"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/z9708spym39m3f5ycvy17sh1bqcvhpmk-gnumake-4.4.1.drv",
+      "name": "gnumake",
+      "version": "4.4.1",
+      "purl": "pkg:nix/gnumake@4.4.1",
+      "cpe": "cpe:2.3:a:gnumake:gnumake:4.4.1:*:*:*:*:*:*:*",
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/80311jy063g42zvg1w9kr1hd3wy0578d-gnumake-4.4.1-man"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/8xz4d9wp4jy49mhl306wyg55096wis3p-gnumake-4.4.1"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/drl4vh7ng0538k1gw8p9gha45555m0n7-gnumake-4.4.1-doc"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/jflbnh94ivbd5p8f9x3fn46i60j5ryq7-gnumake-4.4.1-info"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/qrs2vj28arfppdm8cmypris6k34xhc70-gnumake-4.4.1-debug"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/z9708spym39m3f5ycvy17sh1bqcvhpmk-gnumake-4.4.1.drv"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/4fw9ksqs3knbrsfjr3g47i16vzr5v30a-gnused-4.10.drv",
+      "name": "gnused",
+      "version": "4.10",
+      "purl": "pkg:nix/gnused@4.10",
+      "cpe": "cpe:2.3:a:gnused:gnused:4.10:*:*:*:*:*:*:*",
+      "description": "GNU sed, a batch stream editor",
+      "licenses": [
+        {
+          "license": {
+            "id": "GPL-3.0-or-later"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://www.gnu.org/software/sed/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/4gfax7m36hw70wn2cqy0dh3dr1r3rlr3-gnused-4.10-info"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/9wc73n5izv0m7ppjbibi4hbr68rba1lj-gnused-4.10"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/4fw9ksqs3knbrsfjr3g47i16vzr5v30a-gnused-4.10.drv"
+        },
+        {
+          "name": "nix:position",
+          "value": "/nix/store/22wgynxys0wkin1s3g38y9fghidikm0w-source/pkgs/by-name/gn/gnused/package.nix:40"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/f3m5yjhiwrn5yl0xlvvnp06gapha12vq-gnutar-1.35.drv",
+      "name": "gnutar",
+      "version": "1.35",
+      "purl": "pkg:nix/gnutar@1.35",
+      "cpe": "cpe:2.3:a:gnutar:gnutar:1.35:*:*:*:*:*:*:*",
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/n318yf1q5vysgh2qn6fd1q8yjy9vmwvh-gnutar-1.35"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/sy59xfa8vlzi1m3mq6i5mfzagbb4pr09-gnutar-1.35-info"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/f3m5yjhiwrn5yl0xlvvnp06gapha12vq-gnutar-1.35.drv"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/hk24x69jlhc0srv8zb0qjvmd96hlwwwv-gnutls-3.8.13.drv",
+      "name": "gnutls",
+      "version": "3.8.13",
+      "purl": "pkg:nix/gnutls@3.8.13",
+      "cpe": "cpe:2.3:a:gnu:gnutls:3.8.13:*:*:*:*:*:*:*",
+      "description": "GNU Transport Layer Security Library",
+      "licenses": [
+        {
+          "license": {
+            "id": "LGPL-2.1-or-later"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://gnutls.org/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/68pjzdzhxgzv4g262c5dhy4pxmxwy7zy-gnutls-3.8.13-dev"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/mwxnqh0i108np2qk6sbak06v48kvcbhq-gnutls-3.8.13-devdoc"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/wj12aprggq4q95sh3b6m4cj1pc2yrkgv-gnutls-3.8.13"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/wnaz55jv4da7x4b0b2ia731mw5v98ciw-gnutls-3.8.13-man"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/xjkdqj2ldy9dnn3iz1g5smil61p2kbw5-gnutls-3.8.13-bin"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/hk24x69jlhc0srv8zb0qjvmd96hlwwwv-gnutls-3.8.13.drv"
+        },
+        {
+          "name": "nix:position",
+          "value": "/nix/store/22wgynxys0wkin1s3g38y9fghidikm0w-source/pkgs/by-name/gn/gnutls/package.nix:223"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/i2kqy3dvhmcaxmrcx4651gpw2njld2g5-gzip-1.15.drv",
+      "name": "gzip",
+      "version": "1.15",
+      "purl": "pkg:nix/gzip@1.15",
+      "cpe": "cpe:2.3:a:gnu:gzip:1.15:*:*:*:*:*:*:*",
+      "description": "GNU zip compression program",
+      "licenses": [
+        {
+          "license": {
+            "id": "GPL-3.0-or-later"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://www.gnu.org/software/gzip/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/cr43dyn9yv5kr0f24bw3w3risfpsr3jk-gzip-1.15-info"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/gn8dcx7mpq3vpnkzi4da23ny1ngwk2va-gzip-1.15-man"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/rpswfv0ff4wap9anx7k1224x2m94pfcc-gzip-1.15"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/i2kqy3dvhmcaxmrcx4651gpw2njld2g5-gzip-1.15.drv"
+        },
+        {
+          "name": "nix:position",
+          "value": "/nix/store/22wgynxys0wkin1s3g38y9fghidikm0w-source/pkgs/by-name/gz/gzip/package.nix:86"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/3b9lpcik4v6dv9dlhal1sbjxf5yas3j9-isl-0.20.drv",
+      "name": "isl",
+      "version": "0.20",
+      "purl": "pkg:nix/isl@0.20",
+      "cpe": "cpe:2.3:a:isl:isl:0.20:*:*:*:*:*:*:*",
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/yi5d8g9kma5bhskfjllrjypd5d2xhvl1-isl-0.20"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/3b9lpcik4v6dv9dlhal1sbjxf5yas3j9-isl-0.20.drv"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/b9id6ga07h0w2fk9yaz5pbb3144afcn5-libevent-2.1.13.drv",
+      "name": "libevent",
+      "version": "2.1.13",
+      "purl": "pkg:nix/libevent@2.1.13",
+      "cpe": "cpe:2.3:a:libevent:libevent:2.1.13:*:*:*:*:*:*:*",
+      "description": "Event notification library",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://libevent.org/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/948295m8ri703xssyanzzm0a00gcqp1f-libevent-2.1.13-openssl"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/irdalsbs99v3gyc8wr0imfx4c449rhf2-libevent-2.1.13"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/myy7xhwi6dhkydcad3nlwwlclihz8h54-libevent-2.1.13-dev"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/b9id6ga07h0w2fk9yaz5pbb3144afcn5-libevent-2.1.13.drv"
+        },
+        {
+          "name": "nix:position",
+          "value": "/nix/store/22wgynxys0wkin1s3g38y9fghidikm0w-source/pkgs/by-name/li/libevent/package.nix:78"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/wf096bzvryjnhbb6vi68m4h3qj00954v-libffi-3.8.0.drv",
+      "name": "libffi",
+      "version": "3.8.0",
+      "purl": "pkg:nix/libffi@3.8.0",
+      "cpe": "cpe:2.3:a:libffi_project:libffi:3.8.0:*:*:*:*:*:*:*",
+      "description": "Foreign function call interface library",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "http://sourceware.org/libffi/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/ib60pprjdnvdk781c6k51nbziaac92qw-libffi-3.8.0-man"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/pfds9zw10xksh0zr7qplqg1lj9avs2gz-libffi-3.8.0"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/wnxdlarkcwmmf8q010ld0ai7b2gp2d7z-libffi-3.8.0-info"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/y8ynp6qk78snj13vnvx3bd03jnqw6mf6-libffi-3.8.0-dev"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/wf096bzvryjnhbb6vi68m4h3qj00954v-libffi-3.8.0.drv"
+        },
+        {
+          "name": "nix:position",
+          "value": "/nix/store/22wgynxys0wkin1s3g38y9fghidikm0w-source/pkgs/by-name/li/libffiReal/package.nix:79"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/44b6pcrk4wdy1yz5qdnpks5kdrmsmgyk-libidn2-2.3.8.drv",
+      "name": "libidn2",
+      "version": "2.3.8",
+      "purl": "pkg:nix/libidn2@2.3.8",
+      "cpe": "cpe:2.3:a:gnu:libidn2:2.3.8:*:*:*:*:*:*:*",
+      "description": "Free software implementation of IDNA2008 and TR46",
+      "licenses": [
+        {
+          "license": {
+            "id": "LGPL-3.0-or-later"
+          }
+        },
+        {
+          "license": {
+            "id": "GPL-2.0-or-later"
+          }
+        },
+        {
+          "license": {
+            "id": "GPL-3.0-or-later"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://www.gnu.org/software/libidn/#libidn2"
+        }
+      ],
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/00fs4zz9c0jjcvs62wg39b91dydz7zqb-libidn2-2.3.8"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/3yhdxmmdrv2k3rasrnhj3lyd87g7d4a2-libidn2-2.3.8-devdoc"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/6qf8wwyqgib712hs28pzaz962w9g2b5r-libidn2-2.3.8-bin"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/imnfc4dwnscn0qmwxlyzpqw5plisjly8-libidn2-2.3.8-info"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/sydqsfly6c7j7ngw84gn01234qwpkq28-libidn2-2.3.8-dev"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/44b6pcrk4wdy1yz5qdnpks5kdrmsmgyk-libidn2-2.3.8.drv"
+        },
+        {
+          "name": "nix:position",
+          "value": "/nix/store/22wgynxys0wkin1s3g38y9fghidikm0w-source/pkgs/development/libraries/libidn2/default.nix:51"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/ymgl6yy2pbr2kamf6rma53mlvn3v96zh-libmpc-1.4.1.drv",
+      "name": "libmpc",
+      "version": "1.4.1",
+      "purl": "pkg:nix/libmpc@1.4.1",
+      "cpe": "cpe:2.3:a:libmpc:libmpc:1.4.1:*:*:*:*:*:*:*",
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/2l15gqrda27bvdh82bxrzipcsl68dnwk-libmpc-1.4.1"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/ymgl6yy2pbr2kamf6rma53mlvn3v96zh-libmpc-1.4.1.drv"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/vy4ybaf76hp1zvrdj07y8fj2bl61536a-libsecret-0.21.7.drv",
+      "name": "libsecret",
+      "version": "0.21.7",
+      "purl": "pkg:nix/libsecret@0.21.7",
+      "cpe": "cpe:2.3:a:libsecret:libsecret:0.21.7:*:*:*:*:*:*:*",
+      "description": "Library for storing and retrieving passwords and other secrets",
+      "licenses": [
+        {
+          "license": {
+            "id": "LGPL-2.1-or-later"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://gitlab.gnome.org/GNOME/libsecret"
+        }
+      ],
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/7km66b7savmk626jgwfaca35kck4jvwm-libsecret-0.21.7"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/g59n2ckhg7m913xvzvdmkwqyja71fn7g-libsecret-0.21.7-devdoc"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/jy7dr42y0xxhzvvrk7p56zgvn4z2x5xi-libsecret-0.21.7-debug"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/sw7grjplsgbrn881pdxhcl05mijsfj93-libsecret-0.21.7-dev"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/vy4ybaf76hp1zvrdj07y8fj2bl61536a-libsecret-0.21.7.drv"
+        },
+        {
+          "name": "nix:position",
+          "value": "/nix/store/22wgynxys0wkin1s3g38y9fghidikm0w-source/pkgs/by-name/li/libsecret/package.nix:214"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/sp8iyz418hnz8agv077y38549scj3w1k-libselinux-3.11.drv",
+      "name": "libselinux",
+      "version": "3.11",
+      "purl": "pkg:nix/libselinux@3.11",
+      "cpe": "cpe:2.3:a:libselinux:libselinux:3.11:*:*:*:*:*:*:*",
+      "description": "SELinux core library",
+      "licenses": [
+        {
+          "license": {
+            "id": "GPL-2.0-or-later"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/SELinuxProject/selinux"
+        }
+      ],
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/0h9ma7q0zx70hil9wvzga03f154jhz5i-libselinux-3.11-man"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/f9jais29jrd7sf5pvbnnrwgr5yvkhzf2-libselinux-3.11-dev"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/slq0bpajkf5n95nhc0lm7a8f8vha8dw5-libselinux-3.11"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/vfgvsbnj4ddfwq4cjydq2a4mpx9lyf3w-libselinux-3.11-bin"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/sp8iyz418hnz8agv077y38549scj3w1k-libselinux-3.11.drv"
+        },
+        {
+          "name": "nix:position",
+          "value": "/nix/store/22wgynxys0wkin1s3g38y9fghidikm0w-source/pkgs/by-name/li/libselinux/package.nix:129"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/lhw5acwflq13fzd7kkd488vmfgwfgi5f-libtasn1-4.21.0.drv",
+      "name": "libtasn1",
+      "version": "4.21.0",
+      "purl": "pkg:nix/libtasn1@4.21.0",
+      "cpe": "cpe:2.3:a:libtasn1:libtasn1:4.21.0:*:*:*:*:*:*:*",
+      "description": "ASN.1 library",
+      "licenses": [
+        {
+          "license": {
+            "id": "LGPL-2.0-or-later"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://www.gnu.org/software/libtasn1/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/1imbrrc9cknszx9xfg1ivfaz0h3saprf-libtasn1-4.21.0"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/7frrq7dm35ny01rgfx4x2ik51m07pp2g-libtasn1-4.21.0-devdoc"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/hvyq2q7r6yv5q1falkc74lkjg9g563ar-libtasn1-4.21.0-dev"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/lhw5acwflq13fzd7kkd488vmfgwfgi5f-libtasn1-4.21.0.drv"
+        },
+        {
+          "name": "nix:position",
+          "value": "/nix/store/22wgynxys0wkin1s3g38y9fghidikm0w-source/pkgs/by-name/li/libtasn1/package.nix:50"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/zg59zylhdh57zyv104n9a61zgbxiibvb-libunistring-1.4.2.drv",
+      "name": "libunistring",
+      "version": "1.4.2",
+      "purl": "pkg:nix/libunistring@1.4.2",
+      "cpe": "cpe:2.3:a:libunistring:libunistring:1.4.2:*:*:*:*:*:*:*",
+      "description": "Unicode string library",
+      "licenses": [
+        {
+          "license": {
+            "id": "LGPL-3.0-or-later"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://www.gnu.org/software/libunistring/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/7897wf0w7sl0dg0sh4bi8f3cqhgjmj3b-libunistring-1.4.2-info"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/8hnchsnv8nm7h7948zp7dxqzr9zx55lf-libunistring-1.4.2-doc"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/bx7jdvkba26sy20ryr4l617qqmzj9hff-libunistring-1.4.2"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/y9xzk7smf2m8jfqhgyfkyng44ywy1qcx-libunistring-1.4.2-dev"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/zg59zylhdh57zyv104n9a61zgbxiibvb-libunistring-1.4.2.drv"
+        },
+        {
+          "name": "nix:position",
+          "value": "/nix/store/22wgynxys0wkin1s3g38y9fghidikm0w-source/pkgs/development/libraries/libunistring/default.nix:67"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/nirjz88zwzli7vhngqgc28j26vzdq18q-linux-headers-7.2.drv",
+      "name": "linux-headers",
+      "version": "7.2",
+      "purl": "pkg:nix/linux-headers@7.2",
+      "cpe": "cpe:2.3:a:linux-headers:linux-headers:7.2:*:*:*:*:*:*:*",
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/d2pxlphy1s0qcjafl9r23rwr73g8zpyj-linux-headers-7.2"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/nirjz88zwzli7vhngqgc28j26vzdq18q-linux-headers-7.2.drv"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/yqrqb20pzyrxyc952zyn4h3ancfbzm88-mpfr-4.2.2.drv",
+      "name": "mpfr",
+      "version": "4.2.2",
+      "purl": "pkg:nix/mpfr@4.2.2",
+      "cpe": "cpe:2.3:a:mpfr:mpfr:4.2.2:*:*:*:*:*:*:*",
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/17215c0jn632z03h33fbwql4pdjb8bfi-mpfr-4.2.2"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/8q69zrjr0acghc58g7fm5g6i5b5xid7f-mpfr-4.2.2-info"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/a8jdqhzafx8k30j60z00gpf89mr3zk6x-mpfr-4.2.2-doc"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/f01ncb0mrl4970qpjz516z3ghb56pz5r-mpfr-4.2.2-dev"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/yqrqb20pzyrxyc952zyn4h3ancfbzm88-mpfr-4.2.2.drv"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/b8kay749g955h2b3qd237kj379031454-nettle-3.10.2.drv",
+      "name": "nettle",
+      "version": "3.10.2",
+      "purl": "pkg:nix/nettle@3.10.2",
+      "cpe": "cpe:2.3:a:nettle_project:nettle:3.10.2:*:*:*:*:*:*:*",
+      "description": "Cryptographic library",
+      "licenses": [
+        {
+          "license": {
+            "id": "GPL-2.0-or-later"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://www.lysator.liu.se/~nisse/nettle/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/ffk5f7hpjjdd51vynphc766vnv6a161h-nettle-3.10.2"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/x8f6qllqxgyjll711mj4ppziy9n3xy59-nettle-3.10.2-dev"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/b8kay749g955h2b3qd237kj379031454-nettle-3.10.2.drv"
+        },
+        {
+          "name": "nix:position",
+          "value": "/nix/store/22wgynxys0wkin1s3g38y9fghidikm0w-source/pkgs/development/libraries/nettle/generic.nix:48"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/hzz45k1z0s2zazcy794cdynh3q0685mz-p11-kit-0.26.5.drv",
+      "name": "p11-kit",
+      "version": "0.26.5",
+      "purl": "pkg:nix/p11-kit@0.26.5",
+      "cpe": "cpe:2.3:a:p11-kit_project:p11-kit:0.26.5:*:*:*:*:*:*:*",
+      "description": "Library for loading and sharing PKCS#11 modules",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://p11-glue.github.io/p11-glue/p11-kit.html"
+        }
+      ],
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/5ff4xwxd1fcr0m0c8w3dnfi3wvzy9mjv-p11-kit-0.26.5"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/a0znmy6cri7m8335bf44q1wkmd5x51f6-p11-kit-0.26.5-bin"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/kk5mxgwzr3y9yyj9zgngmqixvk45713n-p11-kit-0.26.5-dev"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/hzz45k1z0s2zazcy794cdynh3q0685mz-p11-kit-0.26.5.drv"
+        },
+        {
+          "name": "nix:position",
+          "value": "/nix/store/22wgynxys0wkin1s3g38y9fghidikm0w-source/pkgs/by-name/p1/p11-kit/package.nix:88"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/kj458pihwp1pyny0m1j53bwvyhs6fp8p-patch-2.8.drv",
+      "name": "patch",
+      "version": "2.8",
+      "purl": "pkg:nix/patch@2.8",
+      "cpe": "cpe:2.3:a:gnu:patch:2.8:*:*:*:*:*:*:*",
+      "description": "GNU Patch, a program to apply differences to files",
+      "licenses": [
+        {
+          "license": {
+            "id": "GPL-3.0-or-later"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://savannah.gnu.org/projects/patch"
+        }
+      ],
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/d5jz315vxbphknfawsrjs192ci9bc6df-patch-2.8"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/kj458pihwp1pyny0m1j53bwvyhs6fp8p-patch-2.8.drv"
+        },
+        {
+          "name": "nix:position",
+          "value": "/nix/store/22wgynxys0wkin1s3g38y9fghidikm0w-source/pkgs/by-name/gn/gnupatch/package.nix:39"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/bk8kfz114yvjhda87kss7qc89mv0kw0m-patchelf-0.19.2.drv",
+      "name": "patchelf",
+      "version": "0.19.2",
+      "purl": "pkg:nix/patchelf@0.19.2",
+      "cpe": "cpe:2.3:a:patchelf_project:patchelf:0.19.2:*:*:*:*:*:*:*",
+      "description": "Small utility to modify the dynamic linker and RPATH of ELF executables",
+      "licenses": [
+        {
+          "license": {
+            "id": "GPL-3.0-or-later"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/NixOS/patchelf"
+        }
+      ],
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/dl38pix4jvabi5smb9wywhp6pimmpva6-patchelf-0.19.2"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/bk8kfz114yvjhda87kss7qc89mv0kw0m-patchelf-0.19.2.drv"
+        },
+        {
+          "name": "nix:position",
+          "value": "/nix/store/22wgynxys0wkin1s3g38y9fghidikm0w-source/pkgs/development/tools/misc/patchelf/default.nix:34"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/2ka55f5g4rcb38rncyzbdaz4bi7r5qxm-pcre2-10.49.drv",
+      "name": "pcre2",
+      "version": "10.49",
+      "purl": "pkg:nix/pcre2@10.49",
+      "cpe": "cpe:2.3:a:pcre:pcre2:10.49:*:*:*:*:*:*:*",
+      "description": "Perl Compatible Regular Expressions",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://www.pcre.org/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/0h25d7bcnw8rms4hghnd3yj0p3qpk3ij-pcre2-10.49-man"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/9iqk4l5nf7ld7jfnxcmffyhiq5w6gkqx-pcre2-10.49-bin"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/fz5vz4d4dhiq8v89q85a6lc018skbpkj-pcre2-10.49-doc"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/ir81clyh96ribjk07srpwbp8igwd0lr2-pcre2-10.49-dev"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/p5dwcn4wpyjmhnnzj6iwwwjynyc6yif0-pcre2-10.49"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/y0m37qq6pqyfl7nf2nylcv8xpl5ka8f0-pcre2-10.49-devdoc"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/2ka55f5g4rcb38rncyzbdaz4bi7r5qxm-pcre2-10.49.drv"
+        },
+        {
+          "name": "nix:position",
+          "value": "/nix/store/22wgynxys0wkin1s3g38y9fghidikm0w-source/pkgs/by-name/pc/pcre2/package.nix:46"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/4g2fy4w8qmgyav1rkw1hs43nzbik9851-pkg-config-0.29.2.drv",
+      "name": "pkg-config",
+      "version": "0.29.2",
+      "purl": "pkg:nix/pkg-config@0.29.2",
+      "cpe": "cpe:2.3:a:pkg-config:pkg-config:0.29.2:*:*:*:*:*:*:*",
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/47vdpjziqhnn9hhm3pgflm49agscm9bq-pkg-config-0.29.2"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/8z27clcq139k96hsa6d4576041na6qpp-pkg-config-0.29.2-doc"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/qyqwjd1i7r6jchpb5k5b4g2ihpqiw3nd-pkg-config-0.29.2-man"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/4g2fy4w8qmgyav1rkw1hs43nzbik9851-pkg-config-0.29.2.drv"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/9jvbzysv4jwcjg99z3rdxl213bsz11ba-pkg-config-wrapper-0.29.2.drv",
+      "name": "pkg-config-wrapper",
+      "version": "0.29.2",
+      "purl": "pkg:nix/pkg-config-wrapper@0.29.2",
+      "cpe": "cpe:2.3:a:pkg-config-wrapper:pkg-config-wrapper:0.29.2:*:*:*:*:*:*:*",
+      "description": "Tool that allows packages to find out information about other packages (wrapper script)",
+      "licenses": [
+        {
+          "license": {
+            "id": "GPL-2.0-or-later"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "http://pkg-config.freedesktop.org/wiki/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/gcblgmyk7vdigvn3rp29cb1qd1yk5917-pkg-config-wrapper-0.29.2-man"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/k9a5q1lnaf6qpdklsbdl0bz7b97b660l-pkg-config-wrapper-0.29.2-doc"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/s70gz6bvz74c36xigh5m2ab2cqli08cv-pkg-config-wrapper-0.29.2"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/9jvbzysv4jwcjg99z3rdxl213bsz11ba-pkg-config-wrapper-0.29.2.drv"
+        },
+        {
+          "name": "nix:position",
+          "value": "/nix/store/22wgynxys0wkin1s3g38y9fghidikm0w-source/pkgs/build-support/pkg-config-wrapper/default.nix:196"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/n6j2m9f0xdiaxdpx9f0nhqyahfav5rrn-rust-default-1.90.0.drv",
+      "name": "rust-default",
+      "version": "1.90.0",
+      "purl": "pkg:nix/rust-default@1.90.0",
+      "cpe": "cpe:2.3:a:rust-default:rust-default:1.90.0:*:*:*:*:*:*:*",
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/4f2378jrqj7j4y4wrp94v22nwkp17dfs-rust-default-1.90.0"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/n6j2m9f0xdiaxdpx9f0nhqyahfav5rrn-rust-default-1.90.0.drv"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/ad4ld6smljaa7q9rjqrz5p92hanxir1q-rust-docs-1.90.0-x86_64-unknown-linux-gnu.drv",
+      "name": "rust-docs",
+      "version": "1.90.0",
+      "purl": "pkg:nix/rust-docs@1.90.0",
+      "cpe": "cpe:2.3:a:rust-docs:rust-docs:1.90.0:*:*:*:*:*:*:*",
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/5bvpxv0jd5r5v9fv4wha6fxvq7yszp8q-rust-docs-1.90.0-x86_64-unknown-linux-gnu"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/ad4ld6smljaa7q9rjqrz5p92hanxir1q-rust-docs-1.90.0-x86_64-unknown-linux-gnu.drv"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/x544dnfcmqspjg0f9qkjxvylq4g1n4c6-rust-std-1.90.0-x86_64-unknown-linux-gnu.drv",
+      "name": "rust-std",
+      "version": "1.90.0",
+      "purl": "pkg:nix/rust-std@1.90.0",
+      "cpe": "cpe:2.3:a:rust-std:rust-std:1.90.0:*:*:*:*:*:*:*",
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/5pyi503x0yk2m40b5km3r1kzwkqmjf5l-rust-std-1.90.0-x86_64-unknown-linux-gnu"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/x544dnfcmqspjg0f9qkjxvylq4g1n4c6-rust-std-1.90.0-x86_64-unknown-linux-gnu.drv"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/cvwcbj84vd4z7gk85lvlcgdmzppsxsf2-rustc-1.90.0-x86_64-unknown-linux-gnu.drv",
+      "name": "rustc",
+      "version": "1.90.0",
+      "purl": "pkg:nix/rustc@1.90.0",
+      "cpe": "cpe:2.3:a:rustc:rustc:1.90.0:*:*:*:*:*:*:*",
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/g7aqzdm6q6bpia6xq79iajwdlp8jcwms-rustc-1.90.0-x86_64-unknown-linux-gnu"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/cvwcbj84vd4z7gk85lvlcgdmzppsxsf2-rustc-1.90.0-x86_64-unknown-linux-gnu.drv"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/iwlkp00d5pqldkwyiymnasrfmaz6gp6h-rustfmt-preview-1.90.0-x86_64-unknown-linux-gnu.drv",
+      "name": "rustfmt-preview",
+      "version": "1.90.0",
+      "purl": "pkg:nix/rustfmt-preview@1.90.0",
+      "cpe": "cpe:2.3:a:rustfmt-preview:rustfmt-preview:1.90.0:*:*:*:*:*:*:*",
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/gx192rr8wjzlqx06jnibhhdvinrqxjx8-rustfmt-preview-1.90.0-x86_64-unknown-linux-gnu"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/iwlkp00d5pqldkwyiymnasrfmaz6gp6h-rustfmt-preview-1.90.0-x86_64-unknown-linux-gnu.drv"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/xdrsvc2g7gy2b6bf1qryl1nkdwz5zqgm-stdenv-linux.drv",
+      "name": "stdenv-linux",
+      "version": "26.05pre-git",
+      "purl": "pkg:nix/stdenv-linux@26.05pre-git",
+      "cpe": "cpe:2.3:a:stdenv-linux:stdenv-linux:26.05pre-git:*:*:*:*:*:*:*",
+      "description": "The default build environment for Unix packages in Nixpkgs",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/an9g93vg5b02j74y38zfajswa0f10p2z-stdenv-linux"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/xdrsvc2g7gy2b6bf1qryl1nkdwz5zqgm-stdenv-linux.drv"
+        },
+        {
+          "name": "nix:position",
+          "value": "/nix/store/22wgynxys0wkin1s3g38y9fghidikm0w-source/pkgs/stdenv/linux/default.nix:693"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/j6s8q4fqx1k2k84ibxlnx48gp7mvxm94-unbound-1.26.1.drv",
+      "name": "unbound",
+      "version": "1.26.1",
+      "purl": "pkg:nix/unbound@1.26.1",
+      "cpe": "cpe:2.3:a:nlnetlabs:unbound:1.26.1:*:*:*:*:*:*:*",
+      "description": "Validating, recursive, and caching DNS resolver",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://www.unbound.net"
+        }
+      ],
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/2krg092h47m80m6bmbpvgh799cm0mnl4-unbound-1.26.1-man"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/90fzdviqb2ynp46v7yx2ml1sx5z93kjh-unbound-1.26.1"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/pm0iwmyzwhnlkb92knzwj58avriy7i7q-unbound-1.26.1-lib"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/j6s8q4fqx1k2k84ibxlnx48gp7mvxm94-unbound-1.26.1.drv"
+        },
+        {
+          "name": "nix:position",
+          "value": "/nix/store/22wgynxys0wkin1s3g38y9fghidikm0w-source/pkgs/by-name/un/unbound/package.nix:246"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/yxcvd42401iraplfjf7llwxsvb5i2sgn-update-autotools-gnu-config-scripts-hook.drv",
+      "name": "update-autotools-gnu-config-scripts-hook",
+      "version": "26.05pre-git",
+      "purl": "pkg:nix/update-autotools-gnu-config-scripts-hook@26.05pre-git",
+      "cpe": "cpe:2.3:a:update-autotools-gnu-config-scripts-hook:update-autotools-gnu-config-scripts-hook:26.05pre-git:*:*:*:*:*:*:*",
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/yj2m2q5r6ncrb0hnm5w2xagvd7fvrhsj-update-autotools-gnu-config-scripts-hook"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/yxcvd42401iraplfjf7llwxsvb5i2sgn-update-autotools-gnu-config-scripts-hook.drv"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/v5qbzr7yjk7kfz05818j6j29q0lajyn5-util-linux-minimal-2.42.4.drv",
+      "name": "util-linux-minimal",
+      "version": "2.42.4",
+      "purl": "pkg:nix/util-linux-minimal@2.42.4",
+      "cpe": "cpe:2.3:a:kernel:util-linux-minimal:2.42.4:*:*:*:*:*:*:*",
+      "description": "Set of system utilities for Linux",
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://www.kernel.org/pub/linux/utils/util-linux/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/137igadkfsysybin41lwq0ixq77c3i4x-util-linux-minimal-2.42.4-man"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/1x8434x2fhwdlkxh1anmmhdsfg2mghxf-util-linux-minimal-2.42.4-dev"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/3yr53grpp9cfny1ybqsbwd9qgsl9yvlc-util-linux-minimal-2.42.4-bin"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/9b21b18iq20d67isg1bwhik42rifzpvs-util-linux-minimal-2.42.4-login"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/a8krd7rbsr88cxpf92rz9lr9hkyh408b-util-linux-minimal-2.42.4-debug"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/j20m4sdmz5ryk8bnh151i6gw2ncq42bb-util-linux-minimal-2.42.4"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/qqwfnfl9mxbq498b3nwg68id0f8izrja-util-linux-minimal-2.42.4-mount"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/zrr9acf2m60fkzdhrk434wf69sfgavl6-util-linux-minimal-2.42.4-swap"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/zsvigijjqf64yym31xg8y8ab37q1bdkg-util-linux-minimal-2.42.4-lib"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/v5qbzr7yjk7kfz05818j6j29q0lajyn5-util-linux-minimal-2.42.4.drv"
+        },
+        {
+          "name": "nix:position",
+          "value": "/nix/store/22wgynxys0wkin1s3g38y9fghidikm0w-source/pkgs/by-name/ut/util-linux/package.nix:234"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/yajpbk8q2hdvf7b8zkcz4vzk5fzn732b-xgcc-16.2.0.drv",
+      "name": "xgcc",
+      "version": "16.2.0",
+      "purl": "pkg:nix/xgcc@16.2.0",
+      "cpe": "cpe:2.3:a:xgcc:xgcc:16.2.0:*:*:*:*:*:*:*",
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/81rpgp3d5hhw44d9fzd54gjbcziw1b40-xgcc-16.2.0-info"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/n3218lp94fd1jicxn3ljcph1032n67v4-xgcc-16.2.0"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/pkkjnyk4z46n18fkyqwlg24p272apb69-xgcc-16.2.0-libgcc"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/vvccka2hkl3y4rldhq7g589afklgaqiw-xgcc-16.2.0-lib"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/wqi89ncx70wnixvxnhywlwasrf5h8ca1-xgcc-16.2.0-man"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/zx3yh13x9qjrp5q8h7y1adnkld3nnss2-xgcc-16.2.0-checksum"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/yajpbk8q2hdvf7b8zkcz4vzk5fzn732b-xgcc-16.2.0.drv"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/jn56c1r6y0490pb6i0h9bjhmbmp4ips8-xz-5.8.4.drv",
+      "name": "xz",
+      "version": "5.8.4",
+      "purl": "pkg:nix/xz@5.8.4",
+      "cpe": "cpe:2.3:a:tukaani:xz:5.8.4:*:*:*:*:*:*:*",
+      "description": "General-purpose data compression software, successor of LZMA",
+      "licenses": [
+        {
+          "license": {
+            "id": "GPL-2.0-or-later"
+          }
+        },
+        {
+          "license": {
+            "id": "LGPL-2.1-or-later"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://tukaani.org/xz/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/271fw3z40c0f24x0nlknhyi4hdy0wwm1-xz-5.8.4-doc"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/3xaspbv6nwvihmc3ybmlv0wjjksvpamq-xz-5.8.4"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/jap556ak4j04r0r74a9z7bybv29z2d7r-xz-5.8.4-dev"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/mjl9zilz8asw9abyjkrmz76srii74q3r-xz-5.8.4-man"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/nflpm51il93hxh2rba6dvz59kaff0i7v-xz-5.8.4-bin"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/jn56c1r6y0490pb6i0h9bjhmbmp4ips8-xz-5.8.4.drv"
+        },
+        {
+          "name": "nix:position",
+          "value": "/nix/store/22wgynxys0wkin1s3g38y9fghidikm0w-source/pkgs/by-name/xz/xz/package.nix:84"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "/nix/store/vvpr99sq55csykmgpsihqczi68q4g2xc-zlib-1.3.2.drv",
+      "name": "zlib",
+      "version": "1.3.2",
+      "purl": "pkg:nix/zlib@1.3.2",
+      "cpe": "cpe:2.3:a:zlib:zlib:1.3.2:*:*:*:*:*:*:*",
+      "description": "Lossless data-compression library",
+      "licenses": [
+        {
+          "license": {
+            "id": "Zlib"
+          }
+        }
+      ],
+      "pedigree": {
+        "patches": [
+          {
+            "type": "unofficial",
+            "resolves": [
+              {
+                "type": "security",
+                "id": "CVE-2026-85091",
+                "references": [
+                  "file:///nix/store/g1zsx66259am5yg3bypr5ini6jpqvgsh-cve-2026-85091.patch"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://zlib.net"
+        }
+      ],
+      "properties": [
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/a76rmqrp6l3w6h9pppfwzb3s6dzi0y4g-zlib-1.3.2-dev"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/hka7hr5qp0n92dmfv6gdigcabx9dai9r-zlib-1.3.2-static"
+        },
+        {
+          "name": "nix:output_path",
+          "value": "/nix/store/ji36842higmp6b06hbbpmzbd59g1c07c-zlib-1.3.2"
+        },
+        {
+          "name": "nix:drv_path",
+          "value": "/nix/store/vvpr99sq55csykmgpsihqczi68q4g2xc-zlib-1.3.2.drv"
+        },
+        {
+          "name": "nix:position",
+          "value": "/nix/store/22wgynxys0wkin1s3g38y9fghidikm0w-source/pkgs/development/libraries/zlib/default.nix:162"
+        }
+      ]
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "/nix/store/0vrysras6pr7v4sd2q9b4ylkvwvn2lak-acl-2.4.0.drv",
+      "dependsOn": [
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/6dbs2kp6a90nzr2xh3ar5x817izdy77z-attr-2.6.0.drv",
+      "dependsOn": [
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/30hr2syjmfvflwi68acggp3w870ikw5c-bash-5.3p20.drv",
+      "dependsOn": [
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/krzz0znidbvk7mi32cigir69hxsmxi67-binutils-2.46.drv",
+      "dependsOn": [
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv",
+        "/nix/store/vvpr99sq55csykmgpsihqczi68q4g2xc-zlib-1.3.2.drv",
+        "/nix/store/zwiwmjr7hfk6vh8lhyg01g5mdyk2wl9i-gcc-16.2.0.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/lqfpvvm2ia1vkxdsp62g08qdh0pbapf8-binutils-wrapper-2.46.drv",
+      "dependsOn": [
+        "/nix/store/30hr2syjmfvflwi68acggp3w870ikw5c-bash-5.3p20.drv",
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv",
+        "/nix/store/b41858x7aj97gn5xjvbnz7m5ggk45md0-expand-response-params.drv",
+        "/nix/store/krzz0znidbvk7mi32cigir69hxsmxi67-binutils-2.46.drv",
+        "/nix/store/m7bmd2qz1zcnk4k25y5cg6wbb3y9qwcb-coreutils-9.12.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/kb42c6zs8bydibh5hbvzv561h676sl4n-bzip2-1.0.8.drv",
+      "dependsOn": [
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/6hjnybxwcj7dq8diy5r5flfzbahkz5nw-cargo-1.90.0-x86_64-unknown-linux-gnu.drv",
+      "dependsOn": [
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv",
+        "/nix/store/zwiwmjr7hfk6vh8lhyg01g5mdyk2wl9i-gcc-16.2.0.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/bq1fp5559kxpzzla9hzl0f65dd6k7fk4-clippy-preview-1.90.0-x86_64-unknown-linux-gnu.drv",
+      "dependsOn": [
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv",
+        "/nix/store/cvwcbj84vd4z7gk85lvlcgdmzppsxsf2-rustc-1.90.0-x86_64-unknown-linux-gnu.drv",
+        "/nix/store/zwiwmjr7hfk6vh8lhyg01g5mdyk2wl9i-gcc-16.2.0.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/m7bmd2qz1zcnk4k25y5cg6wbb3y9qwcb-coreutils-9.12.drv",
+      "dependsOn": [
+        "/nix/store/0vrysras6pr7v4sd2q9b4ylkvwvn2lak-acl-2.4.0.drv",
+        "/nix/store/15f6svqz6mdi0gf5qxkvd14s1nf8kyak-gmp-with-cxx-6.3.0.drv",
+        "/nix/store/6dbs2kp6a90nzr2xh3ar5x817izdy77z-attr-2.6.0.drv",
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/8n8g8gff4p9mmf762081rpzhg2imgk2x-diffutils-3.12.drv",
+      "dependsOn": [
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv",
+        "/nix/store/m7bmd2qz1zcnk4k25y5cg6wbb3y9qwcb-coreutils-9.12.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/5hahxqpsszigmlkvax2r5rnqjp7aa0zs-dns-root-data-2025-04-14.drv"
+    },
+    {
+      "ref": "/nix/store/xv890h8jbp0z265rs00xb98i3jang0c4-ed-1.22.6.drv",
+      "dependsOn": [
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/b41858x7aj97gn5xjvbnz7m5ggk45md0-expand-response-params.drv",
+      "dependsOn": [
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/gvyn6gs5f81h4fvf7ffjxgz0751pcz7v-expand-response-params.drv",
+      "dependsOn": [
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/8knxaxg4r1201bkmg5j3n219178s1g37-file-5.48.drv",
+      "dependsOn": [
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv",
+        "/nix/store/vvpr99sq55csykmgpsihqczi68q4g2xc-zlib-1.3.2.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/cdx1vkr2vsmjy173558b33bdxildi7pw-findutils-4.11.0.drv",
+      "dependsOn": [
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv",
+        "/nix/store/m7bmd2qz1zcnk4k25y5cg6wbb3y9qwcb-coreutils-9.12.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/xmkywhcm19x46mxrc1ii56bfmg27nbkx-gawk-5.4.1.drv",
+      "dependsOn": [
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/zwiwmjr7hfk6vh8lhyg01g5mdyk2wl9i-gcc-16.2.0.drv",
+      "dependsOn": [
+        "/nix/store/3b9lpcik4v6dv9dlhal1sbjxf5yas3j9-isl-0.20.drv",
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv",
+        "/nix/store/qjc4zrx1dl75axg20mqg7fz6anc1npg9-gmp-6.3.0.drv",
+        "/nix/store/vvpr99sq55csykmgpsihqczi68q4g2xc-zlib-1.3.2.drv",
+        "/nix/store/ymgl6yy2pbr2kamf6rma53mlvn3v96zh-libmpc-1.4.1.drv",
+        "/nix/store/yqrqb20pzyrxyc952zyn4h3ancfbzm88-mpfr-4.2.2.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/hjzzl7y4qy90800c8zk92z9w07l37x2a-gcc-wrapper-16.2.0.drv",
+      "dependsOn": [
+        "/nix/store/1142izpla409fzbfwncwmmbs8y9ndc0k-gnugrep-3.12.drv",
+        "/nix/store/30hr2syjmfvflwi68acggp3w870ikw5c-bash-5.3p20.drv",
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv",
+        "/nix/store/b41858x7aj97gn5xjvbnz7m5ggk45md0-expand-response-params.drv",
+        "/nix/store/lqfpvvm2ia1vkxdsp62g08qdh0pbapf8-binutils-wrapper-2.46.drv",
+        "/nix/store/m7bmd2qz1zcnk4k25y5cg6wbb3y9qwcb-coreutils-9.12.drv",
+        "/nix/store/zwiwmjr7hfk6vh8lhyg01g5mdyk2wl9i-gcc-16.2.0.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/fvpkp0mykql6qbsnhrn2wy7i9zipjxx5-glib-2.88.3.drv",
+      "dependsOn": [
+        "/nix/store/2ka55f5g4rcb38rncyzbdaz4bi7r5qxm-pcre2-10.49.drv",
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv",
+        "/nix/store/sp8iyz418hnz8agv077y38549scj3w1k-libselinux-3.11.drv",
+        "/nix/store/v5qbzr7yjk7kfz05818j6j29q0lajyn5-util-linux-minimal-2.42.4.drv",
+        "/nix/store/wf096bzvryjnhbb6vi68m4h3qj00954v-libffi-3.8.0.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv",
+      "dependsOn": [
+        "/nix/store/44b6pcrk4wdy1yz5qdnpks5kdrmsmgyk-libidn2-2.3.8.drv",
+        "/nix/store/nirjz88zwzli7vhngqgc28j26vzdq18q-linux-headers-7.2.drv",
+        "/nix/store/yajpbk8q2hdvf7b8zkcz4vzk5fzn732b-xgcc-16.2.0.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/qjc4zrx1dl75axg20mqg7fz6anc1npg9-gmp-6.3.0.drv",
+      "dependsOn": [
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/048jrfy773c83qfxwpv9m2kjnhx13789-gmp-with-cxx-6.3.0.drv",
+      "dependsOn": [
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv",
+        "/nix/store/zwiwmjr7hfk6vh8lhyg01g5mdyk2wl9i-gcc-16.2.0.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/15f6svqz6mdi0gf5qxkvd14s1nf8kyak-gmp-with-cxx-6.3.0.drv",
+      "dependsOn": [
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv",
+        "/nix/store/zwiwmjr7hfk6vh8lhyg01g5mdyk2wl9i-gcc-16.2.0.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/bdfrym97c81x3rp939w4janm8dmm39ih-gnu-config-2024-01-01.drv"
+    },
+    {
+      "ref": "/nix/store/1142izpla409fzbfwncwmmbs8y9ndc0k-gnugrep-3.12.drv",
+      "dependsOn": [
+        "/nix/store/2ka55f5g4rcb38rncyzbdaz4bi7r5qxm-pcre2-10.49.drv",
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/z9708spym39m3f5ycvy17sh1bqcvhpmk-gnumake-4.4.1.drv",
+      "dependsOn": [
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/4fw9ksqs3knbrsfjr3g47i16vzr5v30a-gnused-4.10.drv",
+      "dependsOn": [
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/f3m5yjhiwrn5yl0xlvvnp06gapha12vq-gnutar-1.35.drv",
+      "dependsOn": [
+        "/nix/store/0vrysras6pr7v4sd2q9b4ylkvwvn2lak-acl-2.4.0.drv",
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/hk24x69jlhc0srv8zb0qjvmd96hlwwwv-gnutls-3.8.13.drv",
+      "dependsOn": [
+        "/nix/store/048jrfy773c83qfxwpv9m2kjnhx13789-gmp-with-cxx-6.3.0.drv",
+        "/nix/store/44b6pcrk4wdy1yz5qdnpks5kdrmsmgyk-libidn2-2.3.8.drv",
+        "/nix/store/5hahxqpsszigmlkvax2r5rnqjp7aa0zs-dns-root-data-2025-04-14.drv",
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv",
+        "/nix/store/b8kay749g955h2b3qd237kj379031454-nettle-3.10.2.drv",
+        "/nix/store/hzz45k1z0s2zazcy794cdynh3q0685mz-p11-kit-0.26.5.drv",
+        "/nix/store/j6s8q4fqx1k2k84ibxlnx48gp7mvxm94-unbound-1.26.1.drv",
+        "/nix/store/lhw5acwflq13fzd7kkd488vmfgwfgi5f-libtasn1-4.21.0.drv",
+        "/nix/store/zg59zylhdh57zyv104n9a61zgbxiibvb-libunistring-1.4.2.drv",
+        "/nix/store/zwiwmjr7hfk6vh8lhyg01g5mdyk2wl9i-gcc-16.2.0.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/i2kqy3dvhmcaxmrcx4651gpw2njld2g5-gzip-1.15.drv",
+      "dependsOn": [
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/3b9lpcik4v6dv9dlhal1sbjxf5yas3j9-isl-0.20.drv",
+      "dependsOn": [
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv",
+        "/nix/store/qjc4zrx1dl75axg20mqg7fz6anc1npg9-gmp-6.3.0.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/b9id6ga07h0w2fk9yaz5pbb3144afcn5-libevent-2.1.13.drv",
+      "dependsOn": [
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/wf096bzvryjnhbb6vi68m4h3qj00954v-libffi-3.8.0.drv",
+      "dependsOn": [
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/44b6pcrk4wdy1yz5qdnpks5kdrmsmgyk-libidn2-2.3.8.drv",
+      "dependsOn": [
+        "/nix/store/zg59zylhdh57zyv104n9a61zgbxiibvb-libunistring-1.4.2.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/ymgl6yy2pbr2kamf6rma53mlvn3v96zh-libmpc-1.4.1.drv",
+      "dependsOn": [
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv",
+        "/nix/store/qjc4zrx1dl75axg20mqg7fz6anc1npg9-gmp-6.3.0.drv",
+        "/nix/store/yqrqb20pzyrxyc952zyn4h3ancfbzm88-mpfr-4.2.2.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/vy4ybaf76hp1zvrdj07y8fj2bl61536a-libsecret-0.21.7.drv",
+      "dependsOn": [
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv",
+        "/nix/store/fvpkp0mykql6qbsnhrn2wy7i9zipjxx5-glib-2.88.3.drv",
+        "/nix/store/hk24x69jlhc0srv8zb0qjvmd96hlwwwv-gnutls-3.8.13.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/sp8iyz418hnz8agv077y38549scj3w1k-libselinux-3.11.drv",
+      "dependsOn": [
+        "/nix/store/2ka55f5g4rcb38rncyzbdaz4bi7r5qxm-pcre2-10.49.drv",
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv",
+        "/nix/store/zwiwmjr7hfk6vh8lhyg01g5mdyk2wl9i-gcc-16.2.0.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/lhw5acwflq13fzd7kkd488vmfgwfgi5f-libtasn1-4.21.0.drv",
+      "dependsOn": [
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/zg59zylhdh57zyv104n9a61zgbxiibvb-libunistring-1.4.2.drv"
+    },
+    {
+      "ref": "/nix/store/nirjz88zwzli7vhngqgc28j26vzdq18q-linux-headers-7.2.drv"
+    },
+    {
+      "ref": "/nix/store/yqrqb20pzyrxyc952zyn4h3ancfbzm88-mpfr-4.2.2.drv",
+      "dependsOn": [
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv",
+        "/nix/store/qjc4zrx1dl75axg20mqg7fz6anc1npg9-gmp-6.3.0.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/b8kay749g955h2b3qd237kj379031454-nettle-3.10.2.drv",
+      "dependsOn": [
+        "/nix/store/048jrfy773c83qfxwpv9m2kjnhx13789-gmp-with-cxx-6.3.0.drv",
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/1kg4kchfjd5wfnmwipncgp70hvin7272-nix-shell.drv",
+      "dependsOn": [
+        "/nix/store/1142izpla409fzbfwncwmmbs8y9ndc0k-gnugrep-3.12.drv",
+        "/nix/store/30hr2syjmfvflwi68acggp3w870ikw5c-bash-5.3p20.drv",
+        "/nix/store/4fw9ksqs3knbrsfjr3g47i16vzr5v30a-gnused-4.10.drv",
+        "/nix/store/8knxaxg4r1201bkmg5j3n219178s1g37-file-5.48.drv",
+        "/nix/store/8n8g8gff4p9mmf762081rpzhg2imgk2x-diffutils-3.12.drv",
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv",
+        "/nix/store/9jvbzysv4jwcjg99z3rdxl213bsz11ba-pkg-config-wrapper-0.29.2.drv",
+        "/nix/store/bk8kfz114yvjhda87kss7qc89mv0kw0m-patchelf-0.19.2.drv",
+        "/nix/store/cdx1vkr2vsmjy173558b33bdxildi7pw-findutils-4.11.0.drv",
+        "/nix/store/f3m5yjhiwrn5yl0xlvvnp06gapha12vq-gnutar-1.35.drv",
+        "/nix/store/hjzzl7y4qy90800c8zk92z9w07l37x2a-gcc-wrapper-16.2.0.drv",
+        "/nix/store/i2kqy3dvhmcaxmrcx4651gpw2njld2g5-gzip-1.15.drv",
+        "/nix/store/jn56c1r6y0490pb6i0h9bjhmbmp4ips8-xz-5.8.4.drv",
+        "/nix/store/kb42c6zs8bydibh5hbvzv561h676sl4n-bzip2-1.0.8.drv",
+        "/nix/store/kj458pihwp1pyny0m1j53bwvyhs6fp8p-patch-2.8.drv",
+        "/nix/store/krzz0znidbvk7mi32cigir69hxsmxi67-binutils-2.46.drv",
+        "/nix/store/lqfpvvm2ia1vkxdsp62g08qdh0pbapf8-binutils-wrapper-2.46.drv",
+        "/nix/store/m7bmd2qz1zcnk4k25y5cg6wbb3y9qwcb-coreutils-9.12.drv",
+        "/nix/store/n6j2m9f0xdiaxdpx9f0nhqyahfav5rrn-rust-default-1.90.0.drv",
+        "/nix/store/xdrsvc2g7gy2b6bf1qryl1nkdwz5zqgm-stdenv-linux.drv",
+        "/nix/store/xmkywhcm19x46mxrc1ii56bfmg27nbkx-gawk-5.4.1.drv",
+        "/nix/store/z9708spym39m3f5ycvy17sh1bqcvhpmk-gnumake-4.4.1.drv",
+        "/nix/store/zwiwmjr7hfk6vh8lhyg01g5mdyk2wl9i-gcc-16.2.0.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/hzz45k1z0s2zazcy794cdynh3q0685mz-p11-kit-0.26.5.drv",
+      "dependsOn": [
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv",
+        "/nix/store/lhw5acwflq13fzd7kkd488vmfgwfgi5f-libtasn1-4.21.0.drv",
+        "/nix/store/wf096bzvryjnhbb6vi68m4h3qj00954v-libffi-3.8.0.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/kj458pihwp1pyny0m1j53bwvyhs6fp8p-patch-2.8.drv",
+      "dependsOn": [
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv",
+        "/nix/store/xv890h8jbp0z265rs00xb98i3jang0c4-ed-1.22.6.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/bk8kfz114yvjhda87kss7qc89mv0kw0m-patchelf-0.19.2.drv",
+      "dependsOn": [
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv",
+        "/nix/store/zwiwmjr7hfk6vh8lhyg01g5mdyk2wl9i-gcc-16.2.0.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/2ka55f5g4rcb38rncyzbdaz4bi7r5qxm-pcre2-10.49.drv",
+      "dependsOn": [
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/4g2fy4w8qmgyav1rkw1hs43nzbik9851-pkg-config-0.29.2.drv",
+      "dependsOn": [
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/9jvbzysv4jwcjg99z3rdxl213bsz11ba-pkg-config-wrapper-0.29.2.drv",
+      "dependsOn": [
+        "/nix/store/30hr2syjmfvflwi68acggp3w870ikw5c-bash-5.3p20.drv",
+        "/nix/store/4g2fy4w8qmgyav1rkw1hs43nzbik9851-pkg-config-0.29.2.drv",
+        "/nix/store/gvyn6gs5f81h4fvf7ffjxgz0751pcz7v-expand-response-params.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/n6j2m9f0xdiaxdpx9f0nhqyahfav5rrn-rust-default-1.90.0.drv",
+      "dependsOn": [
+        "/nix/store/30hr2syjmfvflwi68acggp3w870ikw5c-bash-5.3p20.drv",
+        "/nix/store/6hjnybxwcj7dq8diy5r5flfzbahkz5nw-cargo-1.90.0-x86_64-unknown-linux-gnu.drv",
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv",
+        "/nix/store/ad4ld6smljaa7q9rjqrz5p92hanxir1q-rust-docs-1.90.0-x86_64-unknown-linux-gnu.drv",
+        "/nix/store/bq1fp5559kxpzzla9hzl0f65dd6k7fk4-clippy-preview-1.90.0-x86_64-unknown-linux-gnu.drv",
+        "/nix/store/cvwcbj84vd4z7gk85lvlcgdmzppsxsf2-rustc-1.90.0-x86_64-unknown-linux-gnu.drv",
+        "/nix/store/hjzzl7y4qy90800c8zk92z9w07l37x2a-gcc-wrapper-16.2.0.drv",
+        "/nix/store/iwlkp00d5pqldkwyiymnasrfmaz6gp6h-rustfmt-preview-1.90.0-x86_64-unknown-linux-gnu.drv",
+        "/nix/store/vy4ybaf76hp1zvrdj07y8fj2bl61536a-libsecret-0.21.7.drv",
+        "/nix/store/x544dnfcmqspjg0f9qkjxvylq4g1n4c6-rust-std-1.90.0-x86_64-unknown-linux-gnu.drv",
+        "/nix/store/zwiwmjr7hfk6vh8lhyg01g5mdyk2wl9i-gcc-16.2.0.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/ad4ld6smljaa7q9rjqrz5p92hanxir1q-rust-docs-1.90.0-x86_64-unknown-linux-gnu.drv"
+    },
+    {
+      "ref": "/nix/store/x544dnfcmqspjg0f9qkjxvylq4g1n4c6-rust-std-1.90.0-x86_64-unknown-linux-gnu.drv",
+      "dependsOn": [
+        "/nix/store/zwiwmjr7hfk6vh8lhyg01g5mdyk2wl9i-gcc-16.2.0.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/cvwcbj84vd4z7gk85lvlcgdmzppsxsf2-rustc-1.90.0-x86_64-unknown-linux-gnu.drv",
+      "dependsOn": [
+        "/nix/store/30hr2syjmfvflwi68acggp3w870ikw5c-bash-5.3p20.drv",
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv",
+        "/nix/store/b41858x7aj97gn5xjvbnz7m5ggk45md0-expand-response-params.drv",
+        "/nix/store/m7bmd2qz1zcnk4k25y5cg6wbb3y9qwcb-coreutils-9.12.drv",
+        "/nix/store/vvpr99sq55csykmgpsihqczi68q4g2xc-zlib-1.3.2.drv",
+        "/nix/store/zwiwmjr7hfk6vh8lhyg01g5mdyk2wl9i-gcc-16.2.0.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/iwlkp00d5pqldkwyiymnasrfmaz6gp6h-rustfmt-preview-1.90.0-x86_64-unknown-linux-gnu.drv",
+      "dependsOn": [
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv",
+        "/nix/store/cvwcbj84vd4z7gk85lvlcgdmzppsxsf2-rustc-1.90.0-x86_64-unknown-linux-gnu.drv",
+        "/nix/store/zwiwmjr7hfk6vh8lhyg01g5mdyk2wl9i-gcc-16.2.0.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/xdrsvc2g7gy2b6bf1qryl1nkdwz5zqgm-stdenv-linux.drv",
+      "dependsOn": [
+        "/nix/store/1142izpla409fzbfwncwmmbs8y9ndc0k-gnugrep-3.12.drv",
+        "/nix/store/30hr2syjmfvflwi68acggp3w870ikw5c-bash-5.3p20.drv",
+        "/nix/store/4fw9ksqs3knbrsfjr3g47i16vzr5v30a-gnused-4.10.drv",
+        "/nix/store/8knxaxg4r1201bkmg5j3n219178s1g37-file-5.48.drv",
+        "/nix/store/8n8g8gff4p9mmf762081rpzhg2imgk2x-diffutils-3.12.drv",
+        "/nix/store/bk8kfz114yvjhda87kss7qc89mv0kw0m-patchelf-0.19.2.drv",
+        "/nix/store/cdx1vkr2vsmjy173558b33bdxildi7pw-findutils-4.11.0.drv",
+        "/nix/store/f3m5yjhiwrn5yl0xlvvnp06gapha12vq-gnutar-1.35.drv",
+        "/nix/store/hjzzl7y4qy90800c8zk92z9w07l37x2a-gcc-wrapper-16.2.0.drv",
+        "/nix/store/i2kqy3dvhmcaxmrcx4651gpw2njld2g5-gzip-1.15.drv",
+        "/nix/store/jn56c1r6y0490pb6i0h9bjhmbmp4ips8-xz-5.8.4.drv",
+        "/nix/store/kb42c6zs8bydibh5hbvzv561h676sl4n-bzip2-1.0.8.drv",
+        "/nix/store/kj458pihwp1pyny0m1j53bwvyhs6fp8p-patch-2.8.drv",
+        "/nix/store/m7bmd2qz1zcnk4k25y5cg6wbb3y9qwcb-coreutils-9.12.drv",
+        "/nix/store/xmkywhcm19x46mxrc1ii56bfmg27nbkx-gawk-5.4.1.drv",
+        "/nix/store/yxcvd42401iraplfjf7llwxsvb5i2sgn-update-autotools-gnu-config-scripts-hook.drv",
+        "/nix/store/z9708spym39m3f5ycvy17sh1bqcvhpmk-gnumake-4.4.1.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/j6s8q4fqx1k2k84ibxlnx48gp7mvxm94-unbound-1.26.1.drv",
+      "dependsOn": [
+        "/nix/store/048jrfy773c83qfxwpv9m2kjnhx13789-gmp-with-cxx-6.3.0.drv",
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv",
+        "/nix/store/b8kay749g955h2b3qd237kj379031454-nettle-3.10.2.drv",
+        "/nix/store/b9id6ga07h0w2fk9yaz5pbb3144afcn5-libevent-2.1.13.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/yxcvd42401iraplfjf7llwxsvb5i2sgn-update-autotools-gnu-config-scripts-hook.drv",
+      "dependsOn": [
+        "/nix/store/bdfrym97c81x3rp939w4janm8dmm39ih-gnu-config-2024-01-01.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/v5qbzr7yjk7kfz05818j6j29q0lajyn5-util-linux-minimal-2.42.4.drv",
+      "dependsOn": [
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/yajpbk8q2hdvf7b8zkcz4vzk5fzn732b-xgcc-16.2.0.drv"
+    },
+    {
+      "ref": "/nix/store/jn56c1r6y0490pb6i0h9bjhmbmp4ips8-xz-5.8.4.drv",
+      "dependsOn": [
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv"
+      ]
+    },
+    {
+      "ref": "/nix/store/vvpr99sq55csykmgpsihqczi68q4g2xc-zlib-1.3.2.drv",
+      "dependsOn": [
+        "/nix/store/9914bijg139hajpnv60z66b8sdv9ac3s-glibc-2.44-57.drv"
+      ]
+    }
+  ]
+}

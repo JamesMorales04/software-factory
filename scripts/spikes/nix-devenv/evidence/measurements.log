@@ -1,0 +1,19 @@
+timestamp_utc=2026-11-11T03:39:45Z
+image=localhost/wp0-nix-devenv-spike:2026-11-10
+nix_volume=wp0-spike-nix
+cache_volume=wp0-spike-cache
+image_size_bytes=769664520
+image_size_human=735MiB
+nix_store_du_bytes=5289178057
+nix_store_du_human=5,8G
+cache_du_bytes=51981029
+cache_du_human=51M
+closure_measurements:
+warning: you don't have Internet access; disabling some network-dependent features
+warning: you don't have Internet access; disabling some network-dependent features
+warning: you don't have Internet access; disabling some network-dependent features
+/nix/store/lnanxsr24dnpkazxh0kl6cbxyxqybfzk-nix-shell	   1.4 GiB
+warning: you don't have Internet access; disabling some network-dependent features
+/nix/store/3hsi67zl1l0gyhhd305dhh5jz99d5z8x-nix-shell	   1.8 GiB
+closure_measurements_end
+cached_image_rebuild_ms=4410

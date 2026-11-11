@@ -94,7 +94,12 @@ OFFLINE=1 NETWORK=none ./run.sh all   # offline warm, after a cold run
 
 No host Nix, Node, npm, Cargo, Playwright or devenv command is used. `run.sh`
 builds the image, creates two named volumes and runs the container. The
-projects are copied into the image; there is no source bind mount.
+projects are copied into the image; there is no source bind mount. `run.sh`
+enforces the documented boundary: it fails unless Podman reports rootless
+mode, accepts only `NETWORK=bridge` or `NETWORK=none`, and rejects
+`NIX_VOLUME`/`CACHE_VOLUME` values that contain `/` or start with `.` so a host
+path cannot become a bind mount. `CHECK_ONLY=1 ./run.sh` validates those checks
+without building or running.
 
 ## 4. Results
 
@@ -154,25 +159,24 @@ Factory workspace's SQLx/OpenSSL/SQLite/bubblewrap dependencies.
 | Cold `./run.sh all` with fresh `/nix` and `/cache` | 1,422,745 ms (23 m 42.7 s), exit 0 |
 | Warm `./run.sh all` with reused volumes | 18,214 ms (18.2 s), exit 0 |
 | Offline warm, `OFFLINE=1 NETWORK=none` | 18,944 ms (18.9 s), exit 0 |
-| Spike image size | 770 MB (769,664,520 bytes; Nix 2.28.3 base plus sources) |
-| Cached image rebuild | 19.5 s |
-| Nix store after cold Node+Rust | 4.8 GB |
-| Nix store after adding `sbomnix`/tools | 5.8 GB |
-| Cache volume after cold + SBOM | 51 MB |
-| Node devShell closure | 1.4 GiB |
-| Rust devShell closure | 1.8 GiB |
-| `flake.lock` evaluation (warm) | ~3.7 s for `.#node`; ~4.4 s for `.#rust` |
-| Cold Rust shell first materialization (separate earlier run) | 12 m 41 s |
-| `sbomnix` on the cold image, both devShells | 970,078 ms (16 m 10 s) |
-| `sbomnix` on `.#devShells...node` (warm dev volume) | 11.6 s |
-| `sbomnix` on `.#devShells...rust` (warm dev volume) | 10.4 s |
+| Spike image size | 769,664,520 bytes / 770 MB (audited) |
+| Cached image rebuild | 4,410 ms (audited) |
+| Nix store after cold Node+Rust | `NOT_RECORDED` (an earlier unretained `du` showed ~4.8 GB) |
+| Nix store after adding `sbomnix`/tools | 5,289,178,057 bytes / 5.8 GB (audited) |
+| Cache volume after cold + SBOM | 51,981,029 bytes / 51 MB (audited) |
+| Node devShell closure | 1.4 GiB (audited) |
+| Rust devShell closure | 1.8 GiB (audited) |
+| `sbomnix` on the cold image, both devShells | 970,078 ms (16 m 10 s, audited) |
 
-The cold run starts with an already-pulled base image and a cached Containerfile
-build; its 23 m 43 s is dominated by `cache.nixos.org` downloads and Rust
-toolchain materialization. Warm and offline runs re-use the same `/nix` and
-`/cache` volumes and do not re-download the same store paths. The 12 m 41 s
-Rust-shell number is an earlier isolated measurement; the combined cold run is
-the authoritative end-to-end result.
+Image, volume, closure and cached-rebuild figures are recorded in
+`evidence/measurements.log`. Cold/warm/offline timings are recorded in the
+corresponding `evidence/*.time` files. The pre-SBOM 4.8 GB store observation is
+explicitly `NOT_RECORDED`; the audited store measurement is 5.8 GB after the
+SBOM tools were added. The cold run starts with an already-pulled base image
+and a cached Containerfile build; its 23 m 43 s is dominated by
+`cache.nixos.org` downloads and Rust toolchain materialization. Warm and
+offline runs re-use the same `/nix` and `/cache` volumes and do not re-download
+the same store paths.
 
 ### 4.4 Devenv evaluation
 
@@ -217,21 +221,40 @@ shell test.
 The target must be a **flake reference**; a bare Nix store path produces an
 SBOM without nixpkgs license metadata. The recorded warm runs produced:
 
-| Target | Components | Components without license | Time |
-|---|---:|---:|---:|
-| `.#devShells.x86_64-linux.node` | 158 | 30 | 11.6 s |
-| `.#devShells.x86_64-linux.rust` | 61 | 26 | 10.4 s |
+| Target | CycloneDX components | No license entry | Entry without SPDX ID | CSV rows | CSV rows without SPDX ID |
+|---|---:|---:|---:|---:|---:|
+| `.#devShells.x86_64-linux.node` | 158 | 30 | 2 | 159 | 31 |
+| `.#devShells.x86_64-linux.rust` | 61 | 26 | 0 | 62 | 27 |
+
+The CSV has one more row than CycloneDX because it includes the `nix-shell`
+wrapper row; the package-level no-SPDX count is therefore 30/26, matching the
+number of components with no license entry. The two Node components with a
+license entry but no SPDX ID are `libx11` and `xkeyboard-config`; the CSV
+retains their SPDX mapping even though the CycloneDX license entries use
+nixpkgs short names. A normalizer must not treat "has a license entry" as
+"has a valid SPDX identifier".
+
+The raw artifacts are committed under `evidence/sbom/`:
+
+- `node.cdx.json` (`sha256:3e1572c5ffc72a6f6fe894f611d23a8e9b5951fc7caa115c8a993595e397a44f`)
+- `node.csv` (`sha256:354bab1d690bde0d7663562abbfe6ad6a0b5f131ac0410b1ddae6e1c5e03d8a2`)
+- `rust.cdx.json` (`sha256:6022bcf29aaa472de7e7a287a6c3008786988dcc1dd7663c7f2a486ed0319cb3`)
+- `rust.csv` (`sha256:96e66c40ec8369495e5623bff0e56ccce2d77ce7cbdcf4b1f9b46c9e30b67ef0`)
+
+The same hashes are in `evidence/sbom-sha256.txt`; the counts and per-license
+tallies are in `evidence/sbom-summary.txt` and are reproducible with
+`summarize-sbom.py`.
 
 A cold-image `./run.sh sbom` on the same volumes took 970,078 ms (16 m 10 s),
-including the first download of `sbomnix` and its tools. It produced a
-280,410-byte Node CycloneDX file and a 94,695-byte Rust CycloneDX file with the
-same component/license counts.
+including the first download of `sbomnix` and its tools. It produced the
+280,410-byte Node CycloneDX and 94,695-byte Rust CycloneDX files committed
+above.
 
 Top license families in the Node closure included MIT (33), GPL-2.0-or-later
 (17), BSD-3-Clause (16), GPL-3.0-or-later (15), LGPL-2.1-or-later (14),
 Apache-2.0 (7), and MPL-2.0 (3). The Rust closure included GPL-3.0-or-later
 (14), GPL-2.0-or-later (7), LGPL-2.1-or-later (4), BSD-3-Clause (4), MIT (3),
-and Zlib (1). The full summary is `evidence/sbom-summary.txt`.
+and Zlib (1).
 
 License findings for the compiler inputs themselves:
 
@@ -262,6 +285,30 @@ recorded from the upstream MIT/Apache-2.0 terms (or an explicit overlay
 metadata patch); the Chromium/Playwright browser licenses must be recorded from
 the upstream distribution terms. `sbomnix` alone does not close that gap.
 
+The EnvironmentPlan should therefore support an explicit, owner-approved
+override path for missing or non-SPDX metadata:
+
+```json
+{
+  "license_overrides": [
+    {
+      "component": "rustc",
+      "version": "1.90.0",
+      "declared_license": "MIT OR Apache-2.0",
+      "spdx_id": "MIT OR Apache-2.0",
+      "owner_approval_id": "owner-approval-uuid",
+      "rationale": "upstream Rust license; rust-overlay omits meta.license",
+      "evidence": "url-or-digest",
+      "candidate": "sha256:..."
+    }
+  ]
+}
+```
+
+An override is valid only with a recorded owner approval bound to the component,
+version and candidate. Unknown metadata fails closed by default. Model output
+cannot create or approve an override.
+
 No paid service was used. Devenv's default public `devenv.cachix.org` binary
 cache is optional; it is not Devenv Cloud and no account was created. The flake
 path uses only `cache.nixos.org`, GitHub, `registry.npmjs.org` and `crates.io`.
@@ -271,6 +318,7 @@ path uses only `cache.nixos.org`, GitHub, `registry.npmjs.org` and `crates.io`.
 | Failure mode | Observed/expected | Mitigation |
 |---|---|---|
 | `NIX_CONFIG` with a literal `\n` | Disabled `flakes`; run failed before evaluation | Use a single-line value or `/etc/nix/nix.conf` |
+| Host path or host network override | `run.sh` rejects volume values containing `/`/leading `.` and accepts only `bridge`/`none`; it also fails when Podman is not rootless | Use named volumes and `bridge`/`none`; run `CHECK_ONLY=1 ./run.sh` |
 | Full Playwright browser set | Pulls Chromium, headless shell, Firefox, WebKit and a large media closure | `browsers.override { withFirefox = false; withWebkit = false; }` |
 | Chromium as mapped root | Needs `--no-sandbox` | Run as non-root with a working browser sandbox before claiming browser isolation |
 | Cold cache throughput | Some `cache.nixos.org` NARs took hundreds of seconds; the combined cold Node+Rust run took 23 m 43 s | Budget cold materialization, mirror/cache, or pre-bake the store |
@@ -463,14 +511,17 @@ Raw logs and timings:
 - [`evidence/container-offline.time`](../../scripts/spikes/nix-devenv/evidence/container-offline.time)
 - [`evidence/container-sbom.log`](../../scripts/spikes/nix-devenv/evidence/container-sbom.log)
 - [`evidence/container-sbom.time`](../../scripts/spikes/nix-devenv/evidence/container-sbom.time)
+- [`evidence/measurements.log`](../../scripts/spikes/nix-devenv/evidence/measurements.log)
 - [`evidence/devenv-info.log`](../../scripts/spikes/nix-devenv/evidence/devenv-info.log)
 - [`evidence/sbom-summary.txt`](../../scripts/spikes/nix-devenv/evidence/sbom-summary.txt)
+- [`evidence/sbom-sha256.txt`](../../scripts/spikes/nix-devenv/evidence/sbom-sha256.txt)
+- [`evidence/sbom/`](../../scripts/spikes/nix-devenv/evidence/sbom/) — raw CycloneDX and CSV artifacts
 
 The cold run was executed on 2026-11-10 with `RESET=1 ./run.sh all`. The
 `container-cold.time` file records the elapsed wall time and exit status. Warm
 and offline runs were executed with `./run.sh all` and
 `OFFLINE=1 NETWORK=none ./run.sh all` after the cold run. The SBOM run used
-`./run.sh sbom`; the raw CycloneDX/CSV files remain in the named cache volume
-(`wp0-spike-cache`) because they are machine-generated artifacts, while
+`./run.sh sbom`; the raw CycloneDX/CSV files are committed under
+`evidence/sbom/` with hashes in `evidence/sbom-sha256.txt`, and
 `evidence/sbom-summary.txt` records the counts. Commands are reproducible from
 the spike README; they do not use host language toolchains.

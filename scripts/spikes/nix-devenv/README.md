@@ -17,13 +17,18 @@ the fully executed path in the recorded evidence.
 
 ## Prerequisites
 
-- Rootless Podman with a working user namespace.
+- Rootless Podman with a working user namespace. `run.sh` verifies
+  `podman info --format '{{.Host.Security.Rootless}}'` is `true` and fails
+  otherwise.
 - Network access for the first (cold) run. The first run fetches the pinned
   flake inputs and binary cache paths.
 - No host Nix, Node, npm, Cargo, Playwright, `mise`, `asdf` or `devenv`.
 
-The container uses Podman named volumes for `/nix` and `/cache`. It uses no host
-bind mount, host networking, host Podman socket, privileged mode or added Linux
+The container uses Podman named volumes for `/nix` and `/cache`. `run.sh`
+rejects `NIX_VOLUME`/`CACHE_VOLUME` values that contain `/` or start with `.`,
+so a host path cannot be passed as a bind mount. `NETWORK` accepts only
+`bridge` or `none`; `host`, `container:` and custom networks are rejected. The
+container uses no host Podman socket, privileged mode or added Linux
 capability.
 
 ## Commands
@@ -48,11 +53,18 @@ OFFLINE=1 NETWORK=none ./run.sh all
 ./run.sh sbom
 podman volume inspect wp0-spike-cache \
   --format '{{.Mountpoint}}/sbom'
+
+# Validate the wrapper's boundary checks without building or running.
+CHECK_ONLY=1 ./run.sh
+
+# Record image, volume, closure and cached-rebuild measurements.
+./measure.sh
 ```
 
 The wrapper builds `localhost/wp0-nix-devenv-spike:2026-11-10` from the local
 `Containerfile`. Override `IMAGE`, `NIX_VOLUME`, `CACHE_VOLUME`, `NETWORK`,
-`OFFLINE` or `RESET` with environment variables if needed.
+`OFFLINE` or `RESET` with environment variables if needed. Volume overrides
+must be named Podman volumes; network overrides must be `bridge` or `none`.
 
 ## Layout
 
@@ -64,8 +76,9 @@ The wrapper builds `localhost/wp0-nix-devenv-spike:2026-11-10` from the local
 | `projects/node` | Node 22 + npm + Playwright/Chromium trivial test and browser timing |
 | `projects/rust` | Rust 1.90 trivial library test with a crates.io dependency |
 | `run-spike.sh` | In-container entrypoint (`versions`, `node`, `rust`, `sbom`, `all`) |
-| `run.sh` | Host wrapper using rootless Podman and named volumes |
-| `evidence` | Recorded cold-run log and timing |
+| `run.sh` | Host wrapper using rootless Podman and named volumes, with boundary checks |
+| `measure.sh` | Quick image/volume/closure/cached-rebuild measurement log |
+| `evidence` | Cold/warm/offline logs, measurements, SBOMs, devenv info and summaries |
 
 ## Pins
 
@@ -90,9 +103,12 @@ The wrapper builds `localhost/wp0-nix-devenv-spike:2026-11-10` from the local
   requires a matching nixpkgs revision or a custom package/overlay.
 - The devenv path was evaluated and locked, but a cold `devenv shell` activation
   did not finish within the spike budget; see the evidence document.
-- Nix, nixpkgs and devenv licenses are compatible with the stated use, but the
-  generated SBOMs show GPL/LGPL components in the Linux userland and tool
-  closures. Distribution obligations need a separate Factory license review.
+- License metadata was recorded for Nix, nixpkgs and devenv, but this spike
+  does not determine legal compatibility. The generated SBOMs show GPL/LGPL
+  components in the Linux userland and tool closures, and some components lack
+  license entries or SPDX identifiers. Distribution obligations need a separate
+  Factory license review and owner-approved overrides where metadata is
+  missing.
 - No paid service, Devenv Cloud account, Cachix account or paid inference was
   used. `devenv` uses the public `devenv.cachix.org` binary cache by default;
   that cache is optional and not a paid service.
