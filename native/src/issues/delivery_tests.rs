@@ -346,6 +346,8 @@ struct FakeState {
     successful_comments: u32,
     fail_next_comment_after_store: bool,
     truncated_comments: bool,
+    comment_started: Option<Arc<tokio::sync::Notify>>,
+    comment_release: Option<Arc<tokio::sync::Notify>>,
     fail_close: bool,
     close_patch_calls: u32,
     successful_closes: u32,
@@ -455,10 +457,20 @@ async fn create_comment_handler(
     Path((_owner, _repo, number)): Path<(String, String, u64)>,
     Json(body): Json<serde_json::Value>,
 ) -> Response {
-    let mut state = fake.state.lock().unwrap();
-    if !state.issue_closed.contains_key(&number) {
-        return StatusCode::NOT_FOUND.into_response();
+    let (started, release) = {
+        let state = fake.state.lock().unwrap();
+        if !state.issue_closed.contains_key(&number) {
+            return StatusCode::NOT_FOUND.into_response();
+        }
+        (state.comment_started.clone(), state.comment_release.clone())
+    };
+    if let Some(started) = started {
+        started.notify_one();
     }
+    if let Some(release) = release {
+        release.notified().await;
+    }
+    let mut state = fake.state.lock().unwrap();
     state.next_id += 1;
     let id = state.next_id;
     let text = body["body"].as_str().unwrap_or_default().to_owned();
@@ -985,6 +997,141 @@ async fn truncated_comment_window_blocks_without_posting() {
         .find(|event| event.action == IssueDeliveryAction::Comment)
         .unwrap();
     assert_eq!(comment.status, IssueDeliveryEventStatus::Blocked);
+
+    fixture.db.close().await;
+    let _ = std::fs::remove_file(fixture.path);
+}
+
+#[tokio::test]
+async fn concurrent_retries_claim_before_writing_and_create_one_comment() {
+    let fixture = fixture().await;
+    let request_id =
+        create_request(&fixture, "delivery-concurrent", &[(7, IssueRole::Primary)]).await;
+    let campaign = seed_campaign(&fixture.db, &request_id, "concurrent").await;
+    let link = link_for_request(&fixture.db, &request_id, 7).await;
+    let (url, fake) = start_fake(true).await;
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    {
+        let mut state = fake.state.lock().unwrap();
+        state.comment_started = Some(started.clone());
+        state.comment_release = Some(release.clone());
+    }
+    let marker = delivery_marker(&link.id, "OPENED", "candidate-concurrent:42");
+    let body = delivery_comment(
+        "OPENED",
+        &marker,
+        &link,
+        &campaign.campaign_id,
+        &campaign.candidate_id,
+        Some("https://github.com/acme/widgets/pull/42"),
+        None,
+    );
+    let (event, _) = fixture
+        .db
+        .record_issue_delivery_event(crate::db::NewIssueDeliveryEvent {
+            issue_link_id: &link.id,
+            campaign_id: Some(&campaign.campaign_id),
+            candidate_id: Some(&campaign.candidate_id),
+            action: IssueDeliveryAction::Comment,
+            event_key: "comment:opened:concurrent:42",
+            marker: Some(&marker),
+            body: Some(&body),
+            label_name: None,
+        })
+        .await
+        .unwrap();
+    let github = GitHubClient::with_base_url(&url, true).unwrap();
+    let credential = credential();
+    let service = IssueDeliveryService::new(&fixture.db, &github, &credential)
+        .await
+        .unwrap();
+
+    let started_wait = started.notified();
+    tokio::pin!(started_wait);
+    let first = service.retry_event(&event.id, "owner-a");
+    let second = async {
+        started_wait.as_mut().await;
+        let result = service.retry_event(&event.id, "owner-b").await;
+        release.notify_one();
+        result
+    };
+    let (first, second) = tokio::join!(first, second);
+    assert!(first.is_ok(), "first retry should win: {first:?}");
+    match second {
+        Err(error) => assert_eq!(error.kind(), "ISSUE_DELIVERY_IN_PROGRESS"),
+        Ok(outcome) => panic!("the losing retry must not report success: {outcome:?}"),
+    }
+    {
+        let state = fake.state.lock().unwrap();
+        assert_eq!(state.comment_create_calls, 1);
+        assert_eq!(state.successful_comments, 1);
+        assert_eq!(state.comments.len(), 1);
+    }
+    let stored = fixture.db.issue_delivery_event(&event.id).await.unwrap();
+    assert_eq!(stored.status, IssueDeliveryEventStatus::Applied);
+
+    fixture.db.close().await;
+    let _ = std::fs::remove_file(fixture.path);
+}
+
+#[tokio::test]
+async fn expired_delivery_claim_can_be_reacquired() {
+    let fixture = fixture().await;
+    let request_id = create_request(&fixture, "delivery-lease", &[(7, IssueRole::Primary)]).await;
+    let link = link_for_request(&fixture.db, &request_id, 7).await;
+    let marker = delivery_marker(&link.id, "OPENED", "lease:42");
+    let body = delivery_comment(
+        "OPENED",
+        &marker,
+        &link,
+        "campaign-lease",
+        "candidate-lease",
+        None,
+        None,
+    );
+    let (event, _) = fixture
+        .db
+        .record_issue_delivery_event(crate::db::NewIssueDeliveryEvent {
+            issue_link_id: &link.id,
+            campaign_id: None,
+            candidate_id: None,
+            action: IssueDeliveryAction::Comment,
+            event_key: "comment:lease",
+            marker: Some(&marker),
+            body: Some(&body),
+            label_name: None,
+        })
+        .await
+        .unwrap();
+    let first = fixture
+        .db
+        .claim_issue_delivery_attempt(&event.id, 1)
+        .await
+        .unwrap();
+    assert!(matches!(
+        first,
+        crate::db::IssueDeliveryClaimOutcome::Acquired(_)
+    ));
+    let second = fixture
+        .db
+        .claim_issue_delivery_attempt(&event.id, 1)
+        .await
+        .unwrap();
+    assert!(matches!(
+        second,
+        crate::db::IssueDeliveryClaimOutcome::InProgress { .. }
+    ));
+    tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+    let third = fixture
+        .db
+        .claim_issue_delivery_attempt(&event.id, 1)
+        .await
+        .unwrap();
+    assert!(matches!(
+        third,
+        crate::db::IssueDeliveryClaimOutcome::Acquired(_)
+    ));
 
     fixture.db.close().await;
     let _ = std::fs::remove_file(fixture.path);

@@ -39,6 +39,21 @@ pub struct IssueDeliveryEventCompletion<'a> {
     pub error_detail: Option<&'a str>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ClaimedIssueDeliveryAttempt {
+    pub event: IssueDeliveryEventRecord,
+    pub claim_token: String,
+    pub lease_expires_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub enum IssueDeliveryClaimOutcome {
+    Acquired(ClaimedIssueDeliveryAttempt),
+    AlreadyApplied(IssueDeliveryEventRecord),
+    InProgress { retry_at: Option<String> },
+    Exhausted,
+}
+
 struct LinkFacts {
     lead_state: Option<String>,
     campaign_status: Option<String>,
@@ -570,55 +585,119 @@ impl Database {
         rows.iter().map(event_from_row).collect()
     }
 
-    pub async fn start_issue_delivery_attempt(
+    /// Atomically claim one delivery event before any GitHub write. A live
+    /// claim held by another writer is returned as `InProgress`; an expired
+    /// claim can be taken over. The claim token fences completion.
+    pub async fn claim_issue_delivery_attempt(
         &self,
         event_id: &str,
-    ) -> Result<IssueDeliveryEventRecord, Error> {
+        lease_secs: i64,
+    ) -> Result<IssueDeliveryClaimOutcome, Error> {
+        if !(1..=300).contains(&lease_secs) {
+            return Err(Error::Invalid("issue delivery claim lease"));
+        }
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let event = load_event(&mut transaction, event_id).await?;
         if event.status == IssueDeliveryEventStatus::Applied {
             transaction.commit().await?;
-            return Ok(event);
+            return Ok(IssueDeliveryClaimOutcome::AlreadyApplied(event));
         }
         if event.attempts >= 10 {
-            return Err(Error::Conflict("issue delivery attempt limit reached"));
+            transaction.commit().await?;
+            return Ok(IssueDeliveryClaimOutcome::Exhausted);
         }
-        let now = Utc::now().to_rfc3339();
-        sqlx::query::query(
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let lease_expires_at = (Utc::now() + chrono::Duration::seconds(lease_secs))
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let claim_token = Uuid::new_v4().to_string();
+        let updated = sqlx::query::query(
             "UPDATE issue_delivery_events
-             SET attempts=attempts+1,last_attempt_at=?1,status='PENDING',updated_at=?1
-             WHERE id=?2 AND status<>'APPLIED'",
+             SET claim_token=?1,claim_expires_at=?2,attempts=attempts+1,
+                 last_attempt_at=?3,updated_at=?3
+             WHERE id=?4 AND status<>'APPLIED' AND attempts < 10
+               AND (claim_token IS NULL OR claim_expires_at IS NULL
+                    OR claim_expires_at <= ?3)",
         )
+        .bind(&claim_token)
+        .bind(&lease_expires_at)
         .bind(&now)
         .bind(event_id)
         .execute(&mut *transaction)
-        .await?;
+        .await?
+        .rows_affected();
+        if updated == 1 {
+            let event = load_event(&mut transaction, event_id).await?;
+            transaction.commit().await?;
+            return Ok(IssueDeliveryClaimOutcome::Acquired(
+                ClaimedIssueDeliveryAttempt {
+                    event,
+                    claim_token,
+                    lease_expires_at,
+                },
+            ));
+        }
         let event = load_event(&mut transaction, event_id).await?;
         transaction.commit().await?;
-        Ok(event)
+        if event.status == IssueDeliveryEventStatus::Applied {
+            return Ok(IssueDeliveryClaimOutcome::AlreadyApplied(event));
+        }
+        if event.attempts >= 10 {
+            return Ok(IssueDeliveryClaimOutcome::Exhausted);
+        }
+        let retry_at: Option<String> = sqlx::query_scalar::query_scalar(
+            "SELECT claim_expires_at FROM issue_delivery_events WHERE id=?1",
+        )
+        .bind(event_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .flatten();
+        Ok(IssueDeliveryClaimOutcome::InProgress { retry_at })
+    }
+
+    /// Release a claim without deciding the event outcome. Used between bounded
+    /// internal retries; the next loop iteration must claim again.
+    pub async fn release_issue_delivery_claim(
+        &self,
+        event_id: &str,
+        claim_token: &str,
+    ) -> Result<(), Error> {
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        sqlx::query::query(
+            "UPDATE issue_delivery_events
+             SET claim_token=NULL,claim_expires_at=NULL,updated_at=?1
+             WHERE id=?2 AND claim_token=?3 AND status<>'APPLIED'",
+        )
+        .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+        .bind(event_id)
+        .bind(claim_token)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(())
     }
 
     pub async fn complete_issue_delivery_event(
         &self,
         event_id: &str,
+        claim_token: &str,
         completion: IssueDeliveryEventCompletion<'_>,
     ) -> Result<IssueDeliveryEventRecord, Error> {
+        if claim_token.trim().is_empty() {
+            return Err(Error::Invalid("issue delivery claim token"));
+        }
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let event = load_event(&mut transaction, event_id).await?;
-        if event.status == IssueDeliveryEventStatus::Applied {
-            transaction.commit().await?;
-            return Ok(event);
-        }
         let now = Utc::now().to_rfc3339();
         let applied_at =
             (completion.status == IssueDeliveryEventStatus::Applied).then(|| now.clone());
-        sqlx::query::query(
+        let updated = sqlx::query::query(
             "UPDATE issue_delivery_events
              SET status=?1,external_id=?2,error_kind=?3,error_detail=?4,applied_at=?5,
-                 updated_at=?6
-             WHERE id=?7",
+                 claim_token=NULL,claim_expires_at=NULL,updated_at=?6
+             WHERE id=?7 AND claim_token=?8 AND status<>'APPLIED'",
         )
         .bind(completion.status.as_str())
         .bind(completion.external_id)
@@ -627,8 +706,15 @@ impl Database {
         .bind(applied_at)
         .bind(&now)
         .bind(event_id)
+        .bind(claim_token)
         .execute(&mut *transaction)
-        .await?;
+        .await?
+        .rows_affected();
+        if updated != 1 {
+            return Err(Error::Conflict(
+                "issue delivery claim was lost before completion",
+            ));
+        }
         if completion.status == IssueDeliveryEventStatus::Applied {
             record_event(
                 &mut transaction,
