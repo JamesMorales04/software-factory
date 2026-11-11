@@ -27,6 +27,7 @@ from .nix import (
     closure_manifest_sha256,
     devenv_version,
     environment_digest,
+    nix_eval_json,
     nix_version,
     prepare_workspace,
     realize_environment,
@@ -43,6 +44,7 @@ from .policy import (
     validate_license_inventory,
     validate_lock_pins,
     validate_nix_constructs,
+    validate_package_source,
     validate_resolution_plan,
     validate_resources,
     validate_sandbox,
@@ -369,6 +371,132 @@ def _resolution_file(workspace: Path, name: str, origin: str) -> dict[str, Any]:
     }
 
 
+def _package_metadata_expression(workspace: Path, entries: list[dict[str, str]]) -> str:
+    """Build a pure Nix expression that reads exact package metadata.
+
+    Package names and attributes are JSON data, never interpolated as Nix
+    source. `builtins.getFlake` reads the already-locked local flake and its
+    pinned nixpkgs input; no host path or unpinned fetch is introduced.
+    """
+    workspace_ref = json.dumps(f"path:{workspace}")
+    platform = json.dumps(DEFAULT_PLATFORM)
+    packages_json = json.dumps(entries)
+    return f"""let
+  flake = builtins.getFlake {workspace_ref};
+  pkgs = import flake.inputs.nixpkgs {{ system = {platform}; }};
+  lib = pkgs.lib;
+  packages = builtins.fromJSON {json.dumps(packages_json)};
+  licenseOf = p:
+    if (p ? meta) && (p.meta ? license) then
+      (if builtins.isList p.meta.license then
+        builtins.concatStringsSep " AND " (map (l: if builtins.isAttrs l then (l.spdxId or l.shortName or "") else "") p.meta.license)
+       else if builtins.isAttrs p.meta.license then (p.meta.license.spdxId or p.meta.license.shortName or "")
+       else "")
+    else "";
+  unfreeOf = p:
+    if (p ? meta) && (p.meta ? unfree) then p.meta.unfree
+    else if (p ? meta) && (p.meta ? license) then
+      (if builtins.isList p.meta.license then
+        !(lib.all (l: if builtins.isAttrs l then (l.free or true) else true) p.meta.license)
+       else if builtins.isAttrs p.meta.license then !(p.meta.license.free or true)
+       else false)
+    else false;
+in map (entry:
+  let pkg = lib.attrByPath (lib.splitString "." entry.attr) (throw "unknown package attribute") pkgs;
+  in {{
+    name = entry.name;
+    attr = entry.attr;
+    version = pkg.version or "";
+    license = licenseOf pkg;
+    unfree = unfreeOf pkg;
+  }}) packages
+"""
+
+
+def _package_metadata(
+    workspace: Path,
+    plan: dict[str, Any],
+    environment: dict[str, str],
+    timeout: int,
+    log: BuildLog,
+) -> list[dict[str, Any]]:
+    selected = plan.get("packages", [])
+    if not selected:
+        return []
+    entries: list[dict[str, str]] = []
+    claims: list[dict[str, Any]] = []
+    for package in selected:
+        if not isinstance(package, dict):
+            fail("ENVIRONMENT_PLAN_INVALID", "a package entry is not an object")
+        validate_package_source(package)
+        name = str(package.get("name", "")).strip()
+        attr = str(package.get("attr", "")).strip() or name
+        entries.append({"name": name, "attr": attr})
+        claims.append(
+            {
+                "version": str(package.get("version", "")),
+                "license": str(package.get("license", "")),
+                "unfree": bool(package.get("unfree", False)),
+            }
+        )
+    observed = nix_eval_json(
+        _package_metadata_expression(workspace, entries),
+        env=environment,
+        timeout=timeout,
+        log=log,
+        failure_code="ENVIRONMENT_PIN_MISSING",
+    )
+    if not isinstance(observed, list) or len(observed) != len(entries):
+        fail(
+            "ENVIRONMENT_PLAN_INVALID",
+            "the package metadata evaluation did not return every selected package",
+        )
+    result: list[dict[str, Any]] = []
+    for raw, expected, claim in zip(observed, entries, claims, strict=True):
+        if not isinstance(raw, dict):
+            fail("ENVIRONMENT_PLAN_INVALID", "package metadata is not an object")
+        name = raw.get("name")
+        attr = raw.get("attr")
+        version = raw.get("version")
+        license_value = raw.get("license")
+        unfree = raw.get("unfree")
+        if (
+            not isinstance(name, str)
+            or not isinstance(attr, str)
+            or not isinstance(version, str)
+            or not isinstance(license_value, str)
+            or not isinstance(unfree, bool)
+        ):
+            fail("ENVIRONMENT_PLAN_INVALID", "package metadata has an invalid shape")
+        if name != expected["name"] or attr != expected["attr"]:
+            fail("ENVIRONMENT_PLAN_INVALID", "package metadata identity does not match the plan")
+        if version != claim["version"]:
+            fail(
+                "ENVIRONMENT_PIN_MISSING",
+                f"package {name} version does not match the independently observed metadata",
+            )
+        if license_value != claim["license"]:
+            fail(
+                "ENVIRONMENT_LICENSE_UNKNOWN",
+                f"package {name} license does not match the independently observed metadata",
+            )
+        if unfree != claim["unfree"]:
+            fail(
+                "ENVIRONMENT_UNFREE_REQUIRES_OWNER",
+                f"package {name} unfree state does not match the independently observed metadata",
+            )
+        result.append(
+            {
+                "name": name,
+                "attr": attr,
+                "version": version,
+                "license": license_value,
+                "unfree": unfree,
+            }
+        )
+    return result
+
+
 def resolve(args: argparse.Namespace) -> int:
     request = _load_request(args.request)
     source_workspace = _workspace(request, args.workspace)
@@ -452,6 +580,9 @@ def resolve(args: argparse.Namespace) -> int:
             "files": resolution_files,
             "nixVersion": actual_nix,
             "devenvVersion": actual_devenv,
+            "packages": _package_metadata(
+                build_workspace, plan, environment, timeout, log
+            ),
         }
         write_json(run_dir / "resolution.json", resolution)
         print(json.dumps(resolution, sort_keys=True))

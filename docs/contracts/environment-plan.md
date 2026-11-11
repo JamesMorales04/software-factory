@@ -164,11 +164,22 @@ Rules:
   only missing fields after explicit request constraints and committed
   conventions; it never enables `allowUnfree`, chooses a language by default,
   grants capabilities or bypasses Core validation and the Lead review.
+- A model proposal may not supply Nix/devenv files. Core generates the
+  environment files from validated toolchains, packages and commands. A
+  non-empty proposal `files` map is `ENVIRONMENT_SANDBOX_DENIED`.
+- A selected package `source` is exactly `nixpkgs` or
+  `nixpkgs:<the exact validated dotted attr>`; any other suffix is
+  `ENVIRONMENT_PIN_MISSING`.
+- Before freeze, the builder independently evaluates every selected package's
+  exact pinned nixpkgs attribute and returns version, SPDX licence and unfree
+  metadata. Core requires exact coverage and rejects missing or mismatched
+  claims; a package plan without verified metadata cannot freeze.
 - When semantic triage and deterministic detection leave the stack empty, one
   bounded Lead-route model call selects an exact deterministic stack option;
   Core validates the option and its required project capability and records a
   `MODEL` stack decision. Unknown, empty or unauthorized selections fail closed
-  with a typed `STACK_SELECTION_*` planning failure.
+  with a typed `STACK_SELECTION_*` planning failure. The selected stack profile
+  drives the architecture, skill and Definition of Done artifacts.
 
 ## 5. Lead approval and Core freeze
 

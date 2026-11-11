@@ -195,6 +195,40 @@ def _tool_version(argv: list[str], pattern: re.Pattern[str], label: str) -> str:
     return match.group(1)
 
 
+def nix_eval_json(
+    expression: str,
+    *,
+    env: dict[str, str],
+    timeout: int,
+    log: BuildLog,
+    failure_code: str = "ENVIRONMENT_PIN_MISSING",
+) -> Any:
+    """Evaluate one bounded pure Nix expression and return decoded JSON."""
+    argv = ["nix", "eval", "--json", "--expr", expression]
+    returncode, stdout, stderr, stdout_truncated, stderr_truncated = _run_bounded_capture(
+        argv,
+        timeout=timeout,
+        env=env,
+        failure_code=failure_code,
+        stdout_limit=MAX_CLOSURE_OUTPUT_BYTES,
+        stderr_limit=MAX_TOOL_OUTPUT_BYTES,
+    )
+    rendered = stdout.decode("utf-8", errors="replace")
+    diagnostics = stderr.decode("utf-8", errors="replace")
+    log.write(f"$ nix eval --json --expr <package metadata>\n{rendered}{diagnostics}")
+    if stdout_truncated or stderr_truncated:
+        fail(failure_code, "package metadata evaluation output exceeds its bound")
+    if returncode != 0:
+        fail(
+            failure_code,
+            f"package metadata evaluation failed: {tail(diagnostics) or tail(rendered)}",
+        )
+    try:
+        return json.loads(rendered)
+    except json.JSONDecodeError as error:
+        fail(failure_code, f"package metadata evaluation returned invalid JSON: {error}")
+
+
 def nix_version() -> str:
     return _tool_version(["nix", "--version"], NIX_VERSION, "Nix")
 

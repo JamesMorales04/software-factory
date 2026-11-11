@@ -397,6 +397,35 @@ pub fn build_model_stack_decision(
     Ok(decision)
 }
 
+/// Project the selected stack decision into the `StackProfile` consumed by the
+/// architecture, skill and Definition of Done artifacts. Detected evidence is
+/// preserved; the selected language/framework is added from the exact catalog.
+pub fn selected_stack_profile(
+    detected: &StackProfile,
+    decision: &StackDecision,
+    objective: &str,
+) -> StackProfile {
+    let mut profile = detected.clone();
+    let Some(selected) = selection_options(objective)
+        .into_iter()
+        .find(|option| option.id == decision.selected)
+    else {
+        return profile;
+    };
+    for (target, value) in [
+        (&mut profile.languages, selected.language.as_str()),
+        (&mut profile.frameworks, selected.framework.as_str()),
+    ] {
+        if !value.is_empty() && !target.iter().any(|item| item.eq_ignore_ascii_case(value)) {
+            target.push(value.to_owned());
+        }
+    }
+    if profile.confidence.trim().is_empty() || profile.confidence == "low" {
+        profile.confidence = "model-selected".into();
+    }
+    profile
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -536,6 +565,32 @@ mod tests {
                 .iter()
                 .any(|value| value == "rust")
         );
+    }
+
+    #[test]
+    fn selected_stack_profile_carries_the_model_choice() {
+        let options = selection_options("Build a calculator application. You choose the stack.");
+        let selected = options
+            .iter()
+            .find(|option| option.id == "python-service")
+            .unwrap()
+            .clone();
+        let decision = build_model_stack_decision(
+            PlanningLane::FormalSpec,
+            &StackProfile::default(),
+            &selected,
+            &options,
+            "Build a calculator application. You choose the stack.",
+        )
+        .unwrap();
+        let profile = selected_stack_profile(
+            &StackProfile::default(),
+            &decision,
+            "Build a calculator application. You choose the stack.",
+        );
+        assert!(profile.languages.iter().any(|value| value == "python"));
+        assert!(profile.frameworks.iter().any(|value| value == "fastapi"));
+        assert_eq!(profile.confidence, "model-selected");
     }
 
     #[test]

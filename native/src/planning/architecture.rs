@@ -81,6 +81,13 @@ pub fn build_architecture_plan(
         .take(MAX_ITEMS)
         .map(|value| format!("Observed deployment technology: {value}"))
         .collect::<Vec<_>>();
+    let selected_stack = stack
+        .languages
+        .iter()
+        .chain(stack.frameworks.iter())
+        .take(MAX_ITEMS)
+        .cloned()
+        .collect::<Vec<_>>();
     let quality_attributes = vec![
         "Deterministic checks must pass before a candidate is accepted.".into(),
         "Every finding blocks the Quality Gate until resolved or refuted with evidence.".into(),
@@ -96,6 +103,7 @@ pub fn build_architecture_plan(
     };
     ArchitecturePlan {
         context: normalized_context(objective),
+        stack: selected_stack,
         components,
         boundaries,
         interfaces,
@@ -143,6 +151,21 @@ mod tests {
             "Build a Pokemon calculator. ## Requirements - add and subtract - no tabs"
         );
         assert!(!plan.context.chars().any(char::is_control));
+    }
+
+    #[test]
+    fn architecture_records_the_selected_stack_projection() {
+        let stack = StackProfile {
+            languages: vec!["python".into()],
+            frameworks: vec!["fastapi".into()],
+            ..StackProfile::default()
+        };
+        let plan = build_architecture_plan("Build a calculator.", &graph(), &stack);
+        plan.validate().unwrap();
+        assert_eq!(
+            plan.stack,
+            vec!["python".to_string(), "fastapi".to_string()]
+        );
     }
 
     #[test]

@@ -11923,9 +11923,13 @@ async fn compile_environment_for_request(
                 file.path.eq_ignore_ascii_case("flake.lock")
                     || file.path.eq_ignore_ascii_case("devenv.lock")
             });
-            if plan.source
+            // A plan with selected packages always requires builder resolution:
+            // lock files alone do not prove the package version/licence claims.
+            let requires_package_verification = !plan.packages.is_empty();
+            if (plan.source
                 == factory_native::planning::environment::EnvironmentPlanSource::Generated
-                && !has_lock
+                && !has_lock)
+                || requires_package_verification
             {
                 match resolve_generated_environment(app, &plan, Some(repository.as_path())).await {
                     Ok(resolved) => plan = resolved,
@@ -12554,6 +12558,9 @@ enum PlanningCompileFailure {
 #[derive(Debug)]
 struct CompiledStackDecision {
     decision: factory_native::planning::StackDecision,
+    /// Profile consumed by architecture, skills and DoD. It preserves the raw
+    /// triage evidence and adds the selected language/framework.
+    stack_profile: factory_native::agentic::StackProfile,
     environment_proposal: Option<factory_native::planning::environment::EnvironmentProposal>,
 }
 
@@ -12805,7 +12812,7 @@ async fn compile_stack_decision(
 ) -> Result<CompiledStackDecision, PlanningCompileFailure> {
     use factory_native::planning::DependencyStrategy;
     let repository = std::path::PathBuf::from(&config.repository);
-    let (mut stack, environment_proposal) = if detected.languages.is_empty() {
+    let (mut stack, stack_profile, environment_proposal) = if detected.languages.is_empty() {
         let options = factory_native::planning::stack::selection_options(&record.objective);
         if options.is_empty() {
             return Err(PlanningCompileFailure::Conflict(PlanningCompileConflict {
@@ -12824,7 +12831,12 @@ async fn compile_stack_decision(
             &record.objective,
         )
         .map_err(|error| PlanningCompileFailure::Internal(Error::Validation(error.to_string())))?;
-        (decision, environment_proposal)
+        let stack_profile = factory_native::planning::stack::selected_stack_profile(
+            detected,
+            &decision,
+            &record.objective,
+        );
+        (decision, stack_profile, environment_proposal)
     } else {
         let stack = match factory_native::planning::stack::build_stack_decision(
             lane,
@@ -12850,7 +12862,7 @@ async fn compile_stack_decision(
                 )));
             }
         };
-        (stack, None)
+        (stack, detected.clone(), None)
     };
     let lockfile_sha256 = repository_file_sha256(&repository, &config.base_commit, "Cargo.lock");
     if stack.dependency_plan.strategy == DependencyStrategy::VendorCache
@@ -12867,6 +12879,7 @@ async fn compile_stack_decision(
     attach_dependency_plan(app, record, &stack, &repository, &config.base_commit).await?;
     Ok(CompiledStackDecision {
         decision: stack,
+        stack_profile,
         environment_proposal,
     })
 }
@@ -13030,6 +13043,16 @@ async fn repair_planning_artifacts(
         }
         Some(stack)
     };
+    let artifact_stack = stack_decision
+        .as_ref()
+        .map(|decision| {
+            factory_native::planning::stack::selected_stack_profile(
+                &context.stack,
+                decision,
+                &record.objective,
+            )
+        })
+        .unwrap_or_else(|| context.stack.clone());
 
     let documentation = if missing_set.contains("DOCUMENTATION") {
         let documentation =
@@ -13083,7 +13106,7 @@ async fn repair_planning_artifacts(
         let architecture = factory_native::planning::architecture::build_architecture_plan(
             &record.objective,
             graph,
-            &context.stack,
+            &artifact_stack,
         );
         architecture
             .validate()
@@ -13094,7 +13117,7 @@ async fn repair_planning_artifacts(
     };
 
     let skill_plan = if missing_set.contains("SKILL") {
-        match compile_skill_plan(app, record, &context.stack).await {
+        match compile_skill_plan(app, record, &artifact_stack).await {
             Ok(plan) => Some(plan),
             Err(PlanningCompileFailure::Conflict(conflict)) => {
                 return Err(planning_compile_conflict_response(conflict, missing));
@@ -13122,7 +13145,7 @@ async fn repair_planning_artifacts(
             .map_err(|error| api_error(Error::Validation(error)))?;
         let definition = factory_native::planning::dod::build_definition_of_done(
             lane,
-            &context.stack,
+            &artifact_stack,
             documentation.clone(),
             reviewer_plan,
         );
@@ -13189,7 +13212,7 @@ async fn persist_planning_plan(
     let architecture = factory_native::planning::architecture::build_architecture_plan(
         &record.objective,
         graph,
-        &context.stack,
+        &stack.stack_profile,
     );
     architecture
         .validate()
@@ -13198,7 +13221,7 @@ async fn persist_planning_plan(
     documentation
         .validate()
         .map_err(|error| api_error(Error::Validation(error)))?;
-    let skill_plan = match compile_skill_plan(app, record, &context.stack).await {
+    let skill_plan = match compile_skill_plan(app, record, &stack.stack_profile).await {
         Ok(plan) => plan,
         Err(PlanningCompileFailure::Conflict(conflict)) => {
             return Ok(planning_compile_conflict_value(conflict));
@@ -13211,7 +13234,7 @@ async fn persist_planning_plan(
         .map_err(|error| api_error(Error::Validation(error)))?;
     let dod = factory_native::planning::dod::build_definition_of_done(
         lane,
-        &context.stack,
+        &stack.stack_profile,
         documentation.clone(),
         reviewer_plan.clone(),
     );
@@ -29219,12 +29242,14 @@ mod tests {
             let _ = std::fs::remove_dir_all(fixture.repository);
         }
 
+        #[cfg(feature = "test-support")]
         #[derive(Clone)]
         struct StackSelectionUpstreamState {
             content: Arc<Mutex<String>>,
             hits: Arc<Mutex<usize>>,
         }
 
+        #[cfg(feature = "test-support")]
         async fn stack_selection_upstream(
             content: Arc<Mutex<String>>,
         ) -> (String, Arc<Mutex<usize>>) {
@@ -29252,6 +29277,7 @@ mod tests {
             (url, hits)
         }
 
+        #[cfg(feature = "test-support")]
         fn empty_git_repository() -> (PathBuf, String) {
             let repository = std::env::temp_dir().join(format!(
                 "factory-core-greenfield-repo-{}",
@@ -29297,6 +29323,7 @@ mod tests {
             )
         }
 
+        #[cfg(feature = "test-support")]
         fn stack_selection_content(
             option_id: &str,
             language: &str,
@@ -29313,28 +29340,29 @@ mod tests {
             .unwrap()
         }
 
+        #[cfg(feature = "test-support")]
         fn calculator_environment_proposal() -> Value {
             json!({
                 "nixpkgs": "github:NixOS/nixpkgs/2222222222222222222222222222222222222222",
                 "toolchains": [{
-                    "id": "python",
-                    "version": "3.12.7",
+                    "id": "rust",
+                    "version": "1.90.0",
                     "source": "lead-proposal",
                     "evidence": ["planner-stack-selection"]
                 }],
                 "packages": [{
-                    "name": "python3",
-                    "version": "3.12.7",
+                    "name": "rustc",
+                    "version": "1.90.0",
                     "license": "MIT",
                     "source": "nixpkgs",
-                    "attr": "python312",
+                    "attr": "rustc",
                     "sha256": "",
                     "unfree": false,
-                    "attribution": "Python is MIT licensed."
+                    "attribution": "Rust is MIT licensed."
                 }],
                 "commands": {
                     "test": {
-                        "argv": ["python3", "-m", "unittest"],
+                        "argv": ["cargo", "test"],
                         "cwd": ".",
                         "timeoutSecs": 300,
                         "expectExit": 0
@@ -29343,6 +29371,7 @@ mod tests {
             })
         }
 
+        #[cfg(feature = "test-support")]
         async fn create_calculator_intake(fixture: &Fixture, key: &str) -> String {
             let (status, intake) = send(
                 &fixture.router,
@@ -29362,6 +29391,7 @@ mod tests {
             intake["id"].as_str().unwrap().to_string()
         }
 
+        #[cfg(feature = "test-support")]
         async fn project_config_with_capabilities(
             fixture: &Fixture,
             capabilities: Vec<factory_native::lead::Capability>,
@@ -29394,9 +29424,9 @@ mod tests {
         async fn greenfield_calculator_selects_and_uses_a_model_stack_without_operator_input() {
             unsafe { std::env::set_var("FACTORY_ALLOW_TEST_UPSTREAM", "1") };
             let content = Arc::new(Mutex::new(stack_selection_content(
-                "python-service",
-                "python",
-                "fastapi",
+                "rust-service",
+                "rust",
+                "axum",
                 Some(calculator_environment_proposal()),
             )));
             let (url, hits) = stack_selection_upstream(content).await;
@@ -29440,17 +29470,68 @@ mod tests {
                 compiled.decision.source,
                 factory_native::planning::StackSource::Model
             );
-            assert_eq!(compiled.decision.selected, "python-service");
+            assert_eq!(compiled.decision.selected, "rust-service");
             assert!(compiled.decision.options.len() >= 2);
             assert!(
                 compiled
                     .decision
                     .required_capabilities
                     .iter()
-                    .any(|value| value == "python")
+                    .any(|value| value == "rust")
             );
             assert!(compiled.environment_proposal.is_some());
             assert_eq!(*hits.lock().unwrap(), 1);
+
+            // The selected stack must drive the other planning artifacts, not
+            // the empty triage profile.
+            let graph = factory_native::agentic::ValidatedWorkGraph {
+                units: vec![factory_native::agentic::PlannedWorkUnit {
+                    id: "calculator".into(),
+                    title: "Calculator".into(),
+                    objective: "Implement the calculator.".into(),
+                    depends_on: Vec::new(),
+                    paths: vec!["src".into()],
+                    acceptance: vec!["The calculator adds two numbers.".into()],
+                }],
+                assumptions: Vec::new(),
+                risks: Vec::new(),
+                topological_order: vec!["calculator".into()],
+                graph_sha256: "a".repeat(64),
+            };
+            let architecture = factory_native::planning::architecture::build_architecture_plan(
+                &record.objective,
+                &graph,
+                &compiled.stack_profile,
+            );
+            architecture.validate().unwrap();
+            assert!(
+                architecture.stack.iter().any(|value| value == "rust"),
+                "{architecture:?}"
+            );
+            let skill_plan = factory_native::planning::skills::build_skill_plan(
+                &compiled.stack_profile,
+                &[],
+                &chrono::Utc::now().to_rfc3339(),
+            )
+            .unwrap();
+            assert!(skill_plan.needs.iter().any(|value| value == "rust"));
+            let reviewer_plan = factory_native::planning::ReviewerPlan::for_lane(
+                factory_native::planning::PlanningLane::FormalSpec,
+                true,
+            );
+            let dod = factory_native::planning::dod::build_definition_of_done(
+                factory_native::planning::PlanningLane::FormalSpec,
+                &compiled.stack_profile,
+                factory_native::planning::DocumentationPlan::default(),
+                reviewer_plan,
+            );
+            dod.validate().unwrap();
+            assert!(
+                dod.project_checks
+                    .iter()
+                    .any(|check| check.id == "rust-test"),
+                "{dod:?}"
+            );
 
             // The selected stack's proposal is the environment fallback when
             // the recorded Lead plan has none. A generated greenfield plan is
@@ -29480,12 +29561,12 @@ mod tests {
             assert!(
                 plan.toolchains
                     .iter()
-                    .any(|toolchain| { toolchain.id == "python" && toolchain.version == "3.12.7" })
+                    .any(|toolchain| { toolchain.id == "rust" && toolchain.version == "1.90.0" })
             );
             assert!(
                 plan.packages
                     .iter()
-                    .any(|package| package.name == "python3" && package.license == "MIT")
+                    .any(|package| package.name == "rustc" && package.license == "MIT")
             );
             assert!(plan.files.iter().any(|file| file.path == "flake.nix"));
             assert_eq!(
@@ -29651,6 +29732,7 @@ mod tests {
             (url, hits)
         }
 
+        #[cfg(feature = "test-support")]
         fn environment_master_key() -> factory_native::provider_secrets::ProviderSecretKey {
             use std::io::Write;
             let path = std::env::temp_dir().join(format!(
@@ -29850,10 +29932,28 @@ mod tests {
                 Box::pin(async move {
                     use factory_native::planning::environment::{
                         ENVIRONMENT_SCHEMA_VERSION, EnvironmentFile, EnvironmentFileOrigin,
-                        EnvironmentResolution,
+                        EnvironmentResolution, VerifiedPackage,
                     };
                     let content = "{\"nodes\":{\"nixpkgs\":{\"locked\":{\"owner\":\"NixOS\",\"repo\":\"nixpkgs\",\"rev\":\"2222222222222222222222222222222222222222\"}}}}"
                         .to_string();
+                    let packages = plan
+                        .packages
+                        .iter()
+                        .map(|package| {
+                            let attr = if package.attr.trim().is_empty() {
+                                package.name.trim().to_owned()
+                            } else {
+                                package.attr.trim().to_owned()
+                            };
+                            VerifiedPackage {
+                                name: package.name.clone(),
+                                attr,
+                                version: package.version.clone(),
+                                license: package.license.clone(),
+                                unfree: package.unfree,
+                            }
+                        })
+                        .collect();
                     Ok(EnvironmentResolution {
                         schema_version: ENVIRONMENT_SCHEMA_VERSION,
                         plan_sha256: plan.plan_sha256.clone(),
@@ -29867,6 +29967,7 @@ mod tests {
                         }],
                         nix_version: "2.28.3".into(),
                         devenv_version: "1.11.2".into(),
+                        packages,
                     })
                 })
             }

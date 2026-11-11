@@ -33,6 +33,7 @@ from environment_builder.policy import (  # noqa: E402
     validate_license_inventory,
     validate_network,
     validate_nix_constructs,
+    validate_package_source,
     validate_resources,
     validate_sandbox,
     validate_sbom_binding,
@@ -159,6 +160,81 @@ class PolicyTests(unittest.TestCase):
             )
         self.assertEqual(raised.exception.code, "ENVIRONMENT_PIN_MISSING")
 
+    def test_every_unfree_policy_form_is_rejected(self) -> None:
+        for content in [
+            "config.allowUnfree = true;",
+            "allowUnfree = (true);",
+            "allowUnfreePredicate = _: true;",
+            "permittedUnfreePackages = [ \"nixpkgs.hello\" ];",
+            "nixpkgs.config.allowUnfree = true;",
+            "config.${builtins.getAttr (\"allow\" + \"Unfree\") { allowUnfree = true; }} = true;",
+        ]:
+            with self.assertRaises(BuilderError) as raised:
+                validate_nix_constructs([env_file("flake.nix", content)])
+            self.assertEqual(
+                raised.exception.code, "ENVIRONMENT_LICENSE_DENIED", content
+            )
+
+    def test_builder_metadata_rejects_licence_or_version_lies(self) -> None:
+        plan = {
+            "packages": [
+                {
+                    "name": "ripgrep",
+                    "version": "14.1.1",
+                    "license": "MIT",
+                    "source": "nixpkgs",
+                    "attr": "ripgrep",
+                    "unfree": False,
+                }
+            ]
+        }
+        workspace = Path(tempfile.mkdtemp())
+        log = BuildLog(workspace / "resolve.log")
+        try:
+            for observed, expected_code in [
+                (
+                    {
+                        "name": "ripgrep",
+                        "attr": "ripgrep",
+                        "version": "14.1.1",
+                        "license": "Apache-2.0",
+                        "unfree": False,
+                    },
+                    "ENVIRONMENT_LICENSE_UNKNOWN",
+                ),
+                (
+                    {
+                        "name": "ripgrep",
+                        "attr": "ripgrep",
+                        "version": "0.0.1",
+                        "license": "MIT",
+                        "unfree": False,
+                    },
+                    "ENVIRONMENT_PIN_MISSING",
+                ),
+            ]:
+                with mock.patch(
+                    "environment_builder.cli.nix_eval_json", return_value=[observed]
+                ):
+                    with self.assertRaises(BuilderError) as raised:
+                        cli._package_metadata(workspace, plan, {}, 30, log)
+                self.assertEqual(raised.exception.code, expected_code)
+        finally:
+            log.close()
+
+    def test_package_source_must_name_the_exact_validated_attribute(self) -> None:
+        validate_package_source(
+            {"name": "nodejs", "attr": "nodejs_22", "source": "nixpkgs:nodejs_22"}
+        )
+        validate_package_source({"name": "ripgrep", "source": "nixpkgs"})
+        for package in [
+            {"name": "nodejs", "attr": "nodejs_22", "source": "nixpkgs:other"},
+            {"name": "nodejs", "attr": "nodejs_22", "source": "cargo"},
+            {"name": "nodejs", "attr": "bad attr", "source": "nixpkgs"},
+        ]:
+            with self.assertRaises(BuilderError):
+                validate_package_source(package)
+
     def test_pinned_fetch_is_allowed(self) -> None:
         validate_nix_constructs(
             [
@@ -183,7 +259,13 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "ENVIRONMENT_LICENSE_DENIED")
 
     def test_unfree_without_override_is_rejected(self) -> None:
-        package = {"name": "proprietary", "version": "1.0", "license": "MIT", "unfree": True}
+        package = {
+            "name": "proprietary",
+            "version": "1.0",
+            "license": "MIT",
+            "source": "nixpkgs",
+            "unfree": True,
+        }
         plan = {
             "packages": [package],
             "licenseInventory": license_inventory([package]),
@@ -193,7 +275,13 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "ENVIRONMENT_UNFREE_REQUIRES_OWNER")
 
     def test_unfree_with_exact_override_is_allowed(self) -> None:
-        package = {"name": "proprietary", "version": "1.0", "license": "MIT", "unfree": True}
+        package = {
+            "name": "proprietary",
+            "version": "1.0",
+            "license": "MIT",
+            "source": "nixpkgs",
+            "unfree": True,
+        }
         override = {
             "id": "override-1",
             "package": "proprietary",

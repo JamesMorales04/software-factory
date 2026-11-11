@@ -93,7 +93,11 @@ FORBIDDEN_NIX_PATTERNS: Final[tuple[tuple[re.Pattern[str], str, str], ...]] = (
     (re.compile(r"\b--impure\b"), "ENVIRONMENT_SANDBOX_DENIED", "--impure"),
     (re.compile(r"\bimpure\s*[=:]\s*true\b", re.IGNORECASE), "ENVIRONMENT_SANDBOX_DENIED", "impure=true"),
     (re.compile(r"\bimport\s+<nixpkgs>"), "ENVIRONMENT_PIN_MISSING", "import <nixpkgs>"),
-    (re.compile(r"\ballowUnfree\s*=\s*true\b"), "ENVIRONMENT_LICENSE_DENIED", "allowUnfree=true"),
+    # Reject every unfree-policy identifier, not just `allowUnfree = true`.
+    # This covers allowUnfreePredicate, permittedUnfreePackages,
+    # config.allowUnfree, nixpkgs.config.allowUnfree and equivalent forms.
+    (re.compile(r"unfree", re.IGNORECASE), "ENVIRONMENT_LICENSE_DENIED", "unfree policy"),
+    (re.compile(r"\bbuiltins\.getAttr\b", re.IGNORECASE), "ENVIRONMENT_SANDBOX_DENIED", "builtins.getAttr"),
     (re.compile(r"\bsandbox\s*=\s*false\b"), "ENVIRONMENT_SANDBOX_DENIED", "sandbox=false"),
     (re.compile(r"\bnixConfig\s*=\b"), "ENVIRONMENT_SANDBOX_DENIED", "flake nixConfig"),
     (re.compile(r"\bextra-substituters\b"), "ENVIRONMENT_NETWORK_DENIED", "extra substituter"),
@@ -327,6 +331,10 @@ def validate_resolution_plan(
     validate_sandbox(nix.get("sandbox"))
     resources = validate_resources(plan.get("resources"))
     validate_network(plan.get("network"))
+    for package in plan.get("packages", []):
+        if not isinstance(package, dict):
+            fail("ENVIRONMENT_PLAN_INVALID", "a package entry is not an object")
+        validate_package_source(package)
     files = validate_environment_files(plan, source_workspace)
     validate_workspace_environment_overrides(source_workspace)
     validate_workspace_paths(source_workspace)
@@ -744,6 +752,23 @@ def validate_license_expression(value: str) -> None:
     fail("ENVIRONMENT_LICENSE_UNKNOWN", f"the license expression {value} is unknown")
 
 
+PACKAGE_ATTR = re.compile(r"^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$")
+
+
+def validate_package_source(package: dict[str, Any]) -> None:
+    """Require the exact pinned nixpkgs attribute, not an opaque suffix."""
+    name = str(package.get("name", "")).strip()
+    attr = str(package.get("attr", "")).strip() or name
+    if not name or len(attr) > 128 or not PACKAGE_ATTR.fullmatch(attr):
+        fail("ENVIRONMENT_PLAN_INVALID", "a package nix attribute is not a bounded dotted identifier")
+    source = str(package.get("source", ""))
+    if source not in ("nixpkgs", f"nixpkgs:{attr}"):
+        fail(
+            "ENVIRONMENT_PIN_MISSING",
+            f"package {name} source must be exactly nixpkgs or nixpkgs:{attr}",
+        )
+
+
 def validate_license_inventory(
     spec: dict[str, Any],
     plan: dict[str, Any],
@@ -787,6 +812,7 @@ def validate_license_inventory(
         name = str(package.get("name", ""))
         version = str(package.get("version", ""))
         license_value = str(package.get("license", ""))
+        validate_package_source(package)
         validate_license_expression(license_value)
         if package.get("unfree"):
             matching = [

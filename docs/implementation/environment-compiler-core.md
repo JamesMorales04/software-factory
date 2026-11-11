@@ -99,14 +99,31 @@ per-language table. Instead:
    and argv commands. A greenfield assessment prompt requires one; the
    stack-selection call may also return a fallback proposal when an older
    recorded Lead plan has none.
-5. Precedence remains: explicit request `environmentConstraints`; committed
+5. A model proposal may **not** supply Nix/devenv files. `EnvironmentProposal`
+   with a non-empty `files` map is rejected with
+   `ENVIRONMENT_SANDBOX_DENIED`; Core generates `flake.nix` from the validated
+   toolchains/packages/commands. Authenticated explicit request files and
+   committed project files remain supported, and the generated-file validator
+   rejects every `unfree` policy identifier, `builtins.getAttr`, impure
+   evaluation, unpinned fetches, secrets and unsafe sandbox/network constructs.
+6. Precedence remains: explicit request `environmentConstraints`; committed
    conventions; CI/version evidence; the model proposal, which only fills
    missing toolchains, packages and commands. `EnvironmentProposal::validate`
    rejects unsafe `allowUnfree`, unknown licences, unpinned/unknown package
-   sources, unsafe generated files and out-of-bound commands before any field is
-   merged. `compile_environment_plan` then re-pins, licenses, validates the
-   sandbox/resources and freezes the exact plan; the Lead environment review is
-   still required before freeze.
+   sources, mismatched `nixpkgs:<attr>` suffixes, unsafe generated files and
+   out-of-bound commands before any field is merged.
+7. `compile_environment_plan` re-pins, licenses, validates the sandbox/resources
+   and records package claims. Before freeze, Core requires builder resolution
+   for every plan with selected packages. The builder evaluates
+   `meta.version`/`meta.license`/`meta.unfree` for each exact pinned nixpkgs
+   attribute in a bounded pure `nix eval`; `EnvironmentResolution.packages`
+   carries the observed metadata. Core requires exact coverage and rejects a
+   missing, mismatched or unknown version, licence or unfree state. A plan with
+   packages and no verified metadata cannot freeze.
+8. The model-selected stack profile is the input to the architecture, skill and
+   Definition of Done artifacts. The raw triage profile remains audit context;
+   the architecture artifact records the selected stack explicitly. The Lead
+   environment review is still required before freeze.
 
 ## 3. Typed failures
 
@@ -220,10 +237,12 @@ before any assignment.
 ## 6. Verification performed
 
 - `cargo fmt --all -- --check` — clean.
-- `cargo test -p factory-native --lib` — 958 passed, 4 ignored. Includes the
-  greenfield Node/Python environment proposal, explicit-constraint precedence,
-  unknown licence/pin/source rejection, model stack selection, schema
-  round-trip and multi-line architecture-context tests.
+- `cargo test -p factory-native --lib` — 963 passed, 4 ignored. Includes the
+  greenfield Node/Rust environment proposal, explicit-constraint precedence,
+  unknown licence/pin/source rejection, model-file rejection, every unfree
+  policy form, independently observed package metadata mismatch, model stack
+  selection, schema round-trip, selected-stack artifact flow and multi-line
+  architecture-context tests.
 - `cargo test -p factory-native --bin factory-core` — 65 passed.
 - `cargo test -p factory-native --bin factory-core --features test-support` —
   84 passed, including the model-driven stack selection, invalid-selection,
@@ -233,6 +252,8 @@ before any assignment.
 - `cargo test -p factory-native --bin factory-verifier` — 11 passed.
 - `cargo test -p factory-native --bin factory-runtime-broker` — 71 passed.
 - `cargo test -p factory-native --bin factory-supervisor` — 11 passed.
+- `python3 -W error::ResourceWarning -m unittest discover -s
+  deploy/environment-builder/tests` — 68 tests OK.
 - `cargo clippy -p factory-native --all-targets --all-features -- -D warnings`
   — clean.
 - Office: `npm ci`, `npm run typecheck`, `npm run lint`,
@@ -248,7 +269,9 @@ before any assignment.
   does not add a repository-hygiene finding.
 
 **Not tested / not claimed:** a real Nix/devenv build, a real builder image, the
-Node/Playwright runtime, live Podman check execution, real Chromium acceptance
-of the new panel, a live provider stack-selection call for the calculator
-request, a live re-plan of that request, and independent acceptance.
-`TRUSTED_LOCAL` remains not isolated.
+real bounded `nix eval` that observes package metadata, the Node/Playwright
+runtime, live Podman check execution, real Chromium acceptance of the new panel,
+a live provider stack-selection call for the calculator request, a live re-plan
+of that request, and independent acceptance. The metadata comparison and the
+expression-generation/policy path are deterministic/unit tested; a real Nix
+evaluation remains NOT_TESTED. `TRUSTED_LOCAL` remains not isolated.

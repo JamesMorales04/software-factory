@@ -1203,6 +1203,12 @@ impl EnvironmentProposal {
     /// never becomes authority; compile_environment_plan still validates and
     /// re-pins the resulting plan.
     pub fn validate(&self) -> Result<(), EnvironmentError> {
+        if !self.files.is_empty() {
+            return Err(EnvironmentError::new(
+                EnvironmentBlockerCode::EnvironmentSandboxDenied,
+                "a model proposal cannot supply generated Nix/devenv files; Core generates the environment files from validated toolchains, packages and commands",
+            ));
+        }
         if self.allow_unfree {
             return Err(license_blocked(
                 "a model proposal cannot enable allowUnfree; an unfree package requires an exact owner override",
@@ -1241,17 +1247,7 @@ impl EnvironmentProposal {
             exact_version("proposal package version", &package.version)?;
             bounded_text("proposal package license", &package.license, 200)?;
             validate_license_expression(&package.license)?;
-            if !package.source.is_empty()
-                && package.source != "nixpkgs"
-                && package
-                    .source
-                    .strip_prefix("nixpkgs:")
-                    .is_none_or(|attr| attr.trim().is_empty())
-            {
-                return Err(pin_missing(
-                    "proposal packages must come from the pinned nixpkgs input",
-                ));
-            }
+            validate_package_source(package)?;
             if !package.sha256.is_empty() && !is_sha256(&package.sha256) {
                 return Err(pin_missing("proposal package hash must be SHA-256"));
             }
@@ -1318,21 +1314,6 @@ impl EnvironmentProposal {
             if command.expect_exit < 0 || command.expect_exit > 255 {
                 return Err(invalid("expected exit status must be between 0 and 255"));
             }
-        }
-        for (path, content) in &self.files {
-            bounded_text("proposal environment file path", path, 256)?;
-            if path.starts_with('/')
-                || path.contains('\\')
-                || path.split('/').any(|part| part == "..")
-            {
-                return Err(invalid(
-                    "proposal environment file path must stay inside the project",
-                ));
-            }
-            if content.len() > MAX_FILE_BYTES {
-                return Err(invalid("proposal environment file exceeds its byte bound"));
-            }
-            validate_generated_nix(path, content)?;
         }
         Ok(())
     }
@@ -2092,17 +2073,7 @@ impl EnvironmentPlan {
             bounded_text("package name", &package.name, 200)?;
             exact_version("package version", &package.version)?;
             bounded_text("package license", &package.license, 200)?;
-            if !package.source.is_empty()
-                && package.source != "nixpkgs"
-                && package
-                    .source
-                    .strip_prefix("nixpkgs:")
-                    .is_none_or(|attr| attr.trim().is_empty())
-            {
-                return Err(pin_missing(
-                    "selected packages must come from the pinned nixpkgs input",
-                ));
-            }
+            validate_package_source(package)?;
             if !package.sha256.is_empty() && !is_sha256(&package.sha256) {
                 return Err(pin_missing("package hash must be SHA-256"));
             }
@@ -2259,6 +2230,48 @@ fn validate_argv(argv: &[String]) -> Result<(), EnvironmentError> {
     Ok(())
 }
 
+fn package_attr(package: &PackageRequirement) -> &str {
+    let attr = package.attr.trim();
+    if attr.is_empty() {
+        package.name.trim()
+    } else {
+        attr
+    }
+}
+
+fn validate_nix_attr_path(attr: &str) -> Result<(), EnvironmentError> {
+    if attr.is_empty()
+        || attr.len() > 128
+        || attr.split('.').any(|part| {
+            part.is_empty()
+                || part.len() > 64
+                || !part.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
+                })
+        })
+    {
+        return Err(invalid(
+            "a package nix attribute must be a bounded dotted Nix identifier",
+        ));
+    }
+    Ok(())
+}
+
+/// A selected package must name the exact pinned nixpkgs attribute. An opaque
+/// or mismatched `nixpkgs:` suffix is not independent pin evidence.
+fn validate_package_source(package: &PackageRequirement) -> Result<(), EnvironmentError> {
+    let attr = package_attr(package);
+    validate_nix_attr_path(attr)?;
+    let source = package.source.as_str();
+    if source != "nixpkgs" && source != format!("nixpkgs:{attr}") {
+        return Err(pin_missing(format!(
+            "package {} source must be exactly nixpkgs or nixpkgs:{attr}",
+            package.name
+        )));
+    }
+    Ok(())
+}
+
 fn validate_nixpkgs_pin(value: &str) -> Result<(), EnvironmentError> {
     let value = value.trim();
     if value.is_empty() {
@@ -2306,8 +2319,13 @@ fn validate_generated_nix(path: &str, content: &str) -> Result<(), EnvironmentEr
         "builtins.exec",
         "--impure",
         "import <nixpkgs>",
-        "allowunfree = true",
-        "allowunfree=true",
+        // No generated file may mention unfree policy at all. This covers
+        // allowUnfree, allowUnfreePredicate, permittedUnfreePackages,
+        // config.allowUnfree and any equivalent assignment.
+        "unfree",
+        // A computed attribute name is another way to reach an unfree policy
+        // without the literal identifier.
+        "builtins.getattr",
         "sandbox = false",
         "sandbox=false",
         "builtins.getenv",
@@ -2685,7 +2703,7 @@ pub fn derive_environment_requirements(
     let mut services = explicit.services.clone();
     let mut inputs = explicit.inputs.clone();
     let mut browsers = explicit.browsers.clone();
-    let mut generated_files = explicit.files.clone();
+    let generated_files = explicit.files.clone();
 
     for toolchain in &explicit.toolchains {
         toolchains.insert(toolchain.id.to_ascii_lowercase(), toolchain.clone());
@@ -2794,9 +2812,6 @@ pub fn derive_environment_requirements(
         }
         if browsers.is_empty() {
             browsers = proposal.browsers.clone();
-        }
-        if generated_files.is_empty() {
-            generated_files = proposal.files.clone();
         }
         for (name, command) in &proposal.commands {
             commands
@@ -3045,7 +3060,7 @@ fn generate_environment_files(
         .collect::<Vec<_>>()
         .join(" ");
     let flake = format!(
-        "{{\n  description = \"Factory frozen environment\";\n  inputs.nixpkgs.url = \"{nixpkgs}\";\n  outputs = {{ self, nixpkgs }}:\n    let\n      system = \"{DEFAULT_PLATFORM}\";\n      pkgs = import nixpkgs {{ inherit system; config.allowUnfree = false; }};\n    in {{\n      devShells.${{system}}.default = pkgs.mkShell {{ buildInputs = [ {build_inputs} ]; }};\n    }};\n}}\n"
+        "{{\n  description = \"Factory frozen environment\";\n  inputs.nixpkgs.url = \"{nixpkgs}\";\n  outputs = {{ self, nixpkgs }}:\n    let\n      system = \"{DEFAULT_PLATFORM}\";\n      pkgs = import nixpkgs {{ inherit system; }};\n    in {{\n      devShells.${{system}}.default = pkgs.mkShell {{ buildInputs = [ {build_inputs} ]; }};\n    }};\n}}\n"
     );
     // Generated environments are flake-only. A generated devenv.nix without a
     // matching pinned devenv input (and a devenv.yaml) would resolve a second,
@@ -3335,6 +3350,14 @@ pub fn freeze_environment_spec(
 ) -> Result<EnvironmentSpec, EnvironmentError> {
     plan.validate(input.now)?;
     plan.require_core_validated()?;
+    if !plan.packages.is_empty() {
+        let resolution = plan.resolution.as_ref().ok_or_else(|| {
+            pin_missing(
+                "the environment has selected packages but no independently verified nixpkgs metadata; the builder must resolve exact versions and licenses before freeze",
+            )
+        })?;
+        resolution.validate_for(plan)?;
+    }
     if plan.status != EnvironmentPlanStatus::LeadApproved {
         return Err(lead_approval_required(
             "Core cannot freeze an environment plan without a bound Lead APPROVED review",
@@ -3807,6 +3830,20 @@ pub fn environment_error_from_broker(
     }
 }
 
+/// Independent package metadata returned by the builder after it evaluates the
+/// exact pinned nixpkgs attribute. Core compares this evidence with the plan's
+/// package claims before freeze; the model proposal is never trusted as the
+/// source of licence or version facts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct VerifiedPackage {
+    pub name: String,
+    pub attr: String,
+    pub version: String,
+    pub license: String,
+    pub unfree: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct EnvironmentResolution {
@@ -3819,6 +3856,10 @@ pub struct EnvironmentResolution {
     pub files: Vec<EnvironmentFile>,
     pub nix_version: String,
     pub devenv_version: String,
+    /// Independently observed metadata for every selected package. A plan with
+    /// packages cannot freeze without complete, matching evidence.
+    #[serde(default)]
+    pub packages: Vec<VerifiedPackage>,
 }
 
 impl EnvironmentResolution {
@@ -3864,6 +3905,66 @@ impl EnvironmentResolution {
             return Err(hash_mismatch(
                 "the environment resolution is bound to a different plan",
             ));
+        }
+        let mut observed = BTreeMap::new();
+        for package in &self.packages {
+            bounded_text("verified package name", &package.name, 200)?;
+            validate_nix_attr_path(&package.attr)?;
+            exact_version("verified package version", &package.version)?;
+            bounded_text("verified package license", &package.license, 200)?;
+            if observed
+                .insert((package.name.as_str(), package.attr.as_str()), package)
+                .is_some()
+            {
+                return Err(invalid("duplicate verified package metadata"));
+            }
+        }
+        if plan.packages.is_empty() {
+            if !self.packages.is_empty() {
+                return Err(invalid(
+                    "the builder returned package metadata for a plan with no packages",
+                ));
+            }
+            return Ok(());
+        }
+        if self.packages.len() != plan.packages.len() {
+            return Err(EnvironmentError::new(
+                EnvironmentBlockerCode::EnvironmentLicenseUnknown,
+                "the builder did not return exact metadata for every selected package",
+            ));
+        }
+        for package in &plan.packages {
+            let attr = package_attr(package);
+            let Some(reported) = observed.get(&(package.name.as_str(), attr)) else {
+                return Err(EnvironmentError::new(
+                    EnvironmentBlockerCode::EnvironmentLicenseUnknown,
+                    format!(
+                        "package {} ({attr}) has no independently verified nixpkgs metadata",
+                        package.name
+                    ),
+                ));
+            };
+            if reported.version != package.version {
+                return Err(pin_missing(format!(
+                    "package {} version {} does not match the independently observed {}",
+                    package.name, package.version, reported.version
+                )));
+            }
+            if reported.license != package.license {
+                return Err(EnvironmentError::new(
+                    EnvironmentBlockerCode::EnvironmentLicenseUnknown,
+                    format!(
+                        "package {} license {} does not match the independently observed {}",
+                        package.name, package.license, reported.license
+                    ),
+                ));
+            }
+            if reported.unfree != package.unfree {
+                return Err(license_blocked(format!(
+                    "package {} unfree state does not match the independently observed metadata",
+                    package.name
+                )));
+            }
         }
         Ok(())
     }
@@ -4697,6 +4798,21 @@ mod tests {
             EnvironmentBlockerCode::EnvironmentPinMissing
         );
 
+        let mut mismatched_source = node_proposal();
+        mismatched_source.packages[0].source = "nixpkgs:other".into();
+        assert_eq!(
+            mismatched_source.validate().unwrap_err().code,
+            EnvironmentBlockerCode::EnvironmentPinMissing
+        );
+
+        let mut exact_source = node_proposal();
+        exact_source.packages[0].source = "nixpkgs:nodejs_22".into();
+        exact_source.validate().unwrap();
+
+        let mut invalid_attr = node_proposal();
+        invalid_attr.packages[0].attr = "bad attr".into();
+        assert!(invalid_attr.validate().is_err());
+
         let mut unfree = node_proposal();
         unfree.allow_unfree = true;
         assert_eq!(
@@ -4724,6 +4840,7 @@ mod tests {
             }],
             nix_version: "2.28.3".into(),
             devenv_version: "1.11.2".into(),
+            packages: Vec::new(),
         });
         plan.refresh_hash();
         plan.resolution.as_mut().expect("resolution").plan_sha256 = plan.plan_sha256.clone();
@@ -4732,6 +4849,90 @@ mod tests {
         plan.resolution.as_mut().expect("resolution").plan_sha256 = "0".repeat(64);
         let error = plan.validate(now()).unwrap_err();
         assert_eq!(error.code, EnvironmentBlockerCode::EnvironmentHashMismatch);
+    }
+
+    #[test]
+    fn independently_observed_package_metadata_must_match_the_plan_claims() {
+        use crate::planning::environment::VerifiedPackage;
+        let (repository, base) = repository(&[("README.md", "# Empty\n")]);
+        let mut values = requirements();
+        values.explicit_constraints.nixpkgs =
+            Some("github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into());
+        values.explicit_constraints.packages = vec![PackageRequirement {
+            name: "ripgrep".into(),
+            version: "14.1.1".into(),
+            license: "MIT".into(),
+            source: "nixpkgs".into(),
+            attr: "ripgrep".into(),
+            sha256: String::new(),
+            unfree: false,
+            attribution: "MIT ripgrep".into(),
+        }];
+        let mut plan = compile(&repository, &base, &values);
+        let content = "{\"nodes\":{}}".to_string();
+        plan.resolution = Some(EnvironmentResolution {
+            schema_version: ENVIRONMENT_SCHEMA_VERSION,
+            plan_sha256: String::new(),
+            files: vec![EnvironmentFile {
+                path: "flake.lock".into(),
+                sha256: sha256_hex(content.as_bytes()),
+                origin: EnvironmentFileOrigin::Generated,
+                content: Some(content),
+            }],
+            nix_version: "2.28.3".into(),
+            devenv_version: "1.11.2".into(),
+            packages: vec![VerifiedPackage {
+                name: "ripgrep".into(),
+                attr: "ripgrep".into(),
+                version: "14.1.1".into(),
+                license: "MIT".into(),
+                unfree: false,
+            }],
+        });
+        plan.refresh_hash();
+        plan.resolution.as_mut().unwrap().plan_sha256 = plan.plan_sha256.clone();
+        plan.validate(now()).unwrap();
+
+        plan.resolution.as_mut().unwrap().packages[0].license = "Apache-2.0".into();
+        plan.refresh_hash();
+        plan.resolution.as_mut().unwrap().plan_sha256 = plan.plan_sha256.clone();
+        let error = plan.validate(now()).unwrap_err();
+        assert_eq!(
+            error.code,
+            EnvironmentBlockerCode::EnvironmentLicenseUnknown
+        );
+
+        plan.resolution.as_mut().unwrap().packages[0].license = "MIT".into();
+        plan.resolution.as_mut().unwrap().packages[0].version = "0.0.1".into();
+        plan.refresh_hash();
+        plan.resolution.as_mut().unwrap().plan_sha256 = plan.plan_sha256.clone();
+        let error = plan.validate(now()).unwrap_err();
+        assert_eq!(error.code, EnvironmentBlockerCode::EnvironmentPinMissing);
+
+        plan.resolution.as_mut().unwrap().packages.clear();
+        plan.refresh_hash();
+        plan.resolution.as_mut().unwrap().plan_sha256 = plan.plan_sha256.clone();
+        let error = plan.validate(now()).unwrap_err();
+        assert_eq!(
+            error.code,
+            EnvironmentBlockerCode::EnvironmentLicenseUnknown
+        );
+
+        // Freeze refuses a package plan with no builder-verified metadata.
+        let mut unverified = compile(&repository, &base, &values);
+        let review = approve(&mut unverified);
+        let error = freeze_environment_spec(
+            &unverified,
+            &review,
+            FreezeEnvironmentInput {
+                spec_id: "spec-1".into(),
+                nix_version: "2.28.3",
+                devenv_version: "1.11.2",
+                now: now(),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.code, EnvironmentBlockerCode::EnvironmentPinMissing);
     }
 
     #[test]
@@ -4753,6 +4954,7 @@ mod tests {
             }],
             nix_version: "2.28.3".into(),
             devenv_version: "1.11.2".into(),
+            packages: Vec::new(),
         });
         plan.files.push(EnvironmentFile {
             path: "flake.lock".into(),
@@ -5163,11 +5365,10 @@ mod tests {
         let conventions =
             discover_project_conventions("project-1", &repository, &base, now()).unwrap();
         let mut values = requirements();
-        values.proposal = Some(EnvironmentProposal {
-            nixpkgs: Some("github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into()),
-            files: BTreeMap::from([("flake.nix".into(), "import <nixpkgs> { }".into())]),
-            ..EnvironmentProposal::default()
-        });
+        values.explicit_constraints.nixpkgs =
+            Some("github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into());
+        values.explicit_constraints.files =
+            BTreeMap::from([("flake.nix".into(), "import <nixpkgs> { }".into())]);
         values.explicit_constraints.toolchains = vec![ToolchainRequirement {
             id: "rust".into(),
             version: "1.90.0".into(),
@@ -5198,6 +5399,45 @@ mod tests {
         })
         .unwrap_err();
         assert_eq!(error.code, EnvironmentBlockerCode::EnvironmentSandboxDenied);
+    }
+
+    #[test]
+    fn model_proposal_files_are_rejected_before_generation() {
+        let mut values = requirements();
+        values.proposal = Some(EnvironmentProposal {
+            nixpkgs: Some("github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into()),
+            files: BTreeMap::from([(
+                "flake.nix".into(),
+                "{ config.allowUnfreePredicate = _: true; }\n".into(),
+            )]),
+            ..EnvironmentProposal::default()
+        });
+        let error = values.proposal.as_ref().unwrap().validate().unwrap_err();
+        assert_eq!(error.code, EnvironmentBlockerCode::EnvironmentSandboxDenied);
+        assert!(
+            error
+                .message
+                .contains("cannot supply generated Nix/devenv files")
+        );
+    }
+
+    #[test]
+    fn generated_files_reject_every_unfree_policy_form() {
+        for content in [
+            "config.allowUnfree = true;",
+            "allowUnfree = (true);",
+            "allowUnfreePredicate = _: true;",
+            "permittedUnfreePackages = [ \"nixpkgs.hello\" ];",
+            "nixpkgs.config.allowUnfree = true;",
+            "config.${builtins.getAttr (\"allow\" + \"Unfree\") { allowUnfree = true; }} = true;",
+        ] {
+            let error = validate_generated_nix("flake.nix", content).unwrap_err();
+            assert_eq!(
+                error.code,
+                EnvironmentBlockerCode::EnvironmentSandboxDenied,
+                "{content}"
+            );
+        }
     }
 
     #[test]
