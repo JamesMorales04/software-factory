@@ -1995,6 +1995,7 @@ export interface AgenticRequestDetail {
   };
   assessmentReady: boolean;
   leadPlanReady: boolean;
+  actionSpecReady: boolean;
   triage: AgenticTriage;
   planningLane: PlanningLane;
   planning: {

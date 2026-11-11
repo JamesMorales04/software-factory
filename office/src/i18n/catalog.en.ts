@@ -3522,6 +3522,10 @@ export const en = {
   "director.plan.error": "The Planner WorkGraph could not be compiled.",
   "director.plan.assessmentRequired":
     "Lead assessment is required before Core can compile a Planner WorkGraph. Run the assessment so Core records the frozen Lead plan and ActionSpec.",
+  "director.plan.leadPlanRequired":
+    "The Lead assessment is recorded but its frozen Lead plan is not available. Run the assessment so Core freezes the plan and ActionSpec.",
+  "director.plan.actionSpecRequired":
+    "The Lead plan is frozen but its executable ActionSpec is missing. Core will not compile a Planner WorkGraph until that prerequisite is repaired.",
   "director.plan.runAssessment": "Run assessment",
   "director.plan.assessing": "Assessing…",
   "director.plan.assessmentSuccess":

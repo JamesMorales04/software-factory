@@ -71,6 +71,7 @@ const detail: AgenticRequestDetail = {
   lead: { state: "Running", campaignId: "campaign-1", failureReason: null },
   assessmentReady: true,
   leadPlanReady: true,
+  actionSpecReady: true,
   triage: {
     requestKind: "CHANGE",
     route: "FORMAL_SPEC",
@@ -419,12 +420,14 @@ describe("Director", () => {
       lead: { state: "SUBMITTED", campaignId: null, failureReason: null },
       assessmentReady: false,
       leadPlanReady: false,
+      actionSpecReady: false,
     };
     const assessed: AgenticRequestDetail = {
       ...detail,
       lead: { state: "READY", campaignId: null, failureReason: null },
       assessmentReady: true,
       leadPlanReady: true,
+      actionSpecReady: true,
     };
     mocks.getAgenticRequest
       .mockReset()
@@ -453,6 +456,22 @@ describe("Director", () => {
         }) as HTMLButtonElement
       ).disabled,
     ).toBe(false);
+  });
+
+  it("keeps Compile plan disabled when the executable ActionSpec is missing", async () => {
+    mocks.getAgenticRequest.mockResolvedValue({
+      ...detail,
+      assessmentReady: true,
+      leadPlanReady: true,
+      actionSpecReady: false,
+    });
+    renderDirector();
+    await screen.findByRole("heading", { name: "Add an ICS export endpoint" });
+
+    const compile = screen.getByRole("button", { name: "Compile plan" });
+    expect((compile as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(/executable ActionSpec is missing/)).toBeDefined();
+    expect(screen.queryByRole("button", { name: "Run assessment" })).toBeNull();
   });
 
   it("shows required reviewer roles, assigned principals and independent receipts", async () => {

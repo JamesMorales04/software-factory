@@ -10540,6 +10540,7 @@ async fn agentic_projection_for_request(
         },
         "assessmentReady": prerequisites.assessment_ready,
         "leadPlanReady": prerequisites.lead_plan_ready,
+        "actionSpecReady": prerequisites.action_spec_ready,
         "triage": triage,
         "planningLane": planning_lane_code(context.planning_lane),
         "planning": {
@@ -11044,6 +11045,7 @@ fn assessment_required_response(prerequisites: LeadPlanningPrerequisites) -> Res
             "action": "Run assessment",
             "assessmentReady": prerequisites.assessment_ready,
             "leadPlanReady": prerequisites.lead_plan_ready,
+            "actionSpecReady": prerequisites.action_spec_ready,
             "missingPrerequisites": prerequisites.missing(),
         })),
     )
@@ -11838,6 +11840,29 @@ async fn plan_agentic_request(
         Err(Error::NotFound) => None,
         Err(error) => return api_error(error),
     };
+    // Both gates run before the persisted-PLAN branch so a stored plan cannot
+    // bypass the Lead prerequisite or turn an informational request into a
+    // planning/repair path.
+    if matches!(
+        context.triage.route,
+        factory_native::agentic::ChangeRoute::NoAgent
+    ) {
+        return agentic_conflict(
+            "PLANNER_NOT_APPLICABLE",
+            "informational requests do not compile a Planner WorkGraph",
+        );
+    }
+    // Check before reviewer validation, model reservations, repair or any
+    // WorkGraph write. A missing Lead assessment is an operator-actionable
+    // prerequisite, not an internal dependency-plan failure discovered after
+    // the model call.
+    let prerequisites = match lead_planning_prerequisites(&app, &record).await {
+        Ok(prerequisites) => prerequisites,
+        Err(error) => return api_error(error),
+    };
+    if !prerequisites.ready() {
+        return assessment_required_response(prerequisites);
+    }
     if let Some(plan) = latest_plan {
         let review = match app.db.latest_plan_review(&record.id).await {
             Ok(review) => Some(review),
@@ -12010,25 +12035,6 @@ async fn plan_agentic_request(
             "ready": readiness.ready(),
         }))
         .into_response();
-    }
-    if matches!(
-        context.triage.route,
-        factory_native::agentic::ChangeRoute::NoAgent
-    ) {
-        return agentic_conflict(
-            "PLANNER_NOT_APPLICABLE",
-            "informational requests do not compile a Planner WorkGraph",
-        );
-    }
-    // Check before reviewer validation, model reservations or any WorkGraph
-    // write. A missing Lead assessment is an operator-actionable prerequisite,
-    // not an internal dependency-plan failure discovered after the model call.
-    let prerequisites = match lead_planning_prerequisites(&app, &record).await {
-        Ok(prerequisites) => prerequisites,
-        Err(error) => return api_error(error),
-    };
-    if !prerequisites.ready() {
-        return assessment_required_response(prerequisites);
     }
     let reviewer_plan = factory_native::planning::route::required_reviewers(
         context.planning_lane,
@@ -23097,6 +23103,7 @@ mod tests {
             assert_eq!(status, StatusCode::OK, "{detail}");
             assert_eq!(detail["assessmentReady"], false);
             assert_eq!(detail["leadPlanReady"], false);
+            assert_eq!(detail["actionSpecReady"], false);
 
             let (status, refused) = send(
                 &fixture.router,
@@ -23110,6 +23117,7 @@ mod tests {
             assert_eq!(refused["action"], "Run assessment");
             assert_eq!(refused["assessmentReady"], false);
             assert_eq!(refused["leadPlanReady"], false);
+            assert_eq!(refused["actionSpecReady"], false);
             let missing = refused["missingPrerequisites"].as_array().unwrap();
             assert!(missing.contains(&json!("LEAD_ASSESSMENT")), "{missing:?}");
             assert!(missing.contains(&json!("FROZEN_LEAD_PLAN")), "{missing:?}");
@@ -23152,6 +23160,7 @@ mod tests {
             assert_eq!(status, StatusCode::OK, "{detail}");
             assert_eq!(detail["assessmentReady"], true);
             assert_eq!(detail["leadPlanReady"], true);
+            assert_eq!(detail["actionSpecReady"], true);
 
             let (status, planned) = send(
                 &fixture.router,
@@ -25234,6 +25243,7 @@ mod tests {
             assert_eq!(refused["action"], "Run assessment");
             assert_eq!(refused["assessmentReady"], false);
             assert_eq!(refused["leadPlanReady"], false);
+            assert_eq!(refused["actionSpecReady"], false);
             assert!(
                 fixture
                     .app
@@ -25257,6 +25267,234 @@ mod tests {
                     .unwrap()
                     .is_empty()
             );
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
+        async fn compile_plan_guard_precedes_the_existing_plan_and_repair_path() {
+            let fixture = setup().await;
+            let (status, _) = enable_policy(&fixture).await;
+            assert_eq!(status, StatusCode::CREATED);
+            let (status, created) =
+                create_intake(&fixture, "request-api-stored-plan-assessment").await;
+            assert_eq!(status, StatusCode::CREATED, "{created}");
+            let intake_id = created["id"].as_str().unwrap().to_owned();
+            let request = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            seed_complete_planning(&fixture, &intake_id, ParticipantSeed::Matching).await;
+            let plan_before = fixture
+                .app
+                .db
+                .latest_planning_artifact(&intake_id, "PLAN")
+                .await
+                .unwrap();
+            let pool = sqlx_sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx_sqlite::SqliteConnectOptions::new()
+                        .filename(&fixture.path)
+                        .create_if_missing(false),
+                )
+                .await
+                .unwrap();
+            sqlx::query::query("DELETE FROM planning_artifacts WHERE request_id=?1 AND kind='DOD'")
+                .bind(&intake_id)
+                .execute(&pool)
+                .await
+                .unwrap();
+            pool.close().await;
+
+            let (status, refused) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+            assert_eq!(refused["code"], "ASSESSMENT_REQUIRED");
+            assert!(
+                fixture
+                    .app
+                    .db
+                    .lead_model_calls(&request.lead_request_id)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            let plan_after_refusal = fixture
+                .app
+                .db
+                .latest_planning_artifact(&intake_id, "PLAN")
+                .await
+                .unwrap();
+            assert_eq!(plan_after_refusal.revision, plan_before.revision);
+            assert_eq!(
+                plan_after_refusal.content_sha256,
+                plan_before.content_sha256
+            );
+            assert!(matches!(
+                fixture.app.db.planning_artifact(&intake_id, "DOD", 1).await,
+                Err(Error::NotFound)
+            ));
+
+            fixture_plan(&fixture, &intake_id, "FIXTURE").await;
+            let (status, repaired) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{repaired}");
+            assert_eq!(repaired["repaired"], true);
+            assert_eq!(repaired["missingArtifacts"], json!([]));
+            assert!(
+                fixture
+                    .app
+                    .db
+                    .planning_artifact(&intake_id, "DOD", 1)
+                    .await
+                    .is_ok()
+            );
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
+        async fn compile_plan_guard_keeps_no_agent_requests_out_of_planning() {
+            use factory_native::lead::{Complexity, EffortEstimate, EffortStatus, Intent};
+            let fixture = setup_with_projects_root(
+                None,
+                "https://provider.example/v1",
+                "https://provider.example/v1",
+                profile_content(),
+                Some(std::env::temp_dir()),
+            )
+            .await;
+            std::fs::write(
+                fixture.repository.join("README.md"),
+                "# No-agent planning fixture\n",
+            )
+            .unwrap();
+            std::fs::write(
+                fixture.repository.join("AGENTS.md"),
+                "# No-agent planning fixture\n",
+            )
+            .unwrap();
+            std::fs::write(
+                fixture.repository.join("Cargo.toml"),
+                "[package]\nname = \"no-agent-fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+            )
+            .unwrap();
+            std::fs::create_dir_all(fixture.repository.join("src")).unwrap();
+            std::fs::write(
+                fixture.repository.join("src/lib.rs"),
+                "pub fn no_agent_fixture() {}\n",
+            )
+            .unwrap();
+            let (status, _) = enable_policy(&fixture).await;
+            assert_eq!(status, StatusCode::CREATED);
+            let (status, created) =
+                create_intake(&fixture, "request-api-no-agent-stored-plan").await;
+            assert_eq!(status, StatusCode::CREATED, "{created}");
+            let intake_id = created["id"].as_str().unwrap().to_owned();
+            let request = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            fixture
+                .app
+                .db
+                .begin_lead_assessment(&request.lead_request_id)
+                .await
+                .unwrap();
+            let assessment = factory_native::lead::LeadAssessment {
+                schema_revision: 1,
+                project_id: request.project_id.clone(),
+                action_id: request.action_id.clone(),
+                request_id: request.lead_request_id.clone(),
+                evidence_refs: vec!["repository-files".into()],
+                intent: Intent::Informational,
+                complexity: Complexity::Small,
+                effort_estimate: EffortEstimate {
+                    status: EffortStatus::NotRequested,
+                    unit: String::new(),
+                    min_person_hours: 0,
+                    max_person_hours: 0,
+                    assumptions: Vec::new(),
+                    unknown_reason: String::new(),
+                },
+                knowledge_gaps: Vec::new(),
+                change_impact: Vec::new(),
+                validation_needs: Vec::new(),
+                assumptions: Vec::new(),
+                uncertainty: Vec::new(),
+                suggested_next_action:
+                    "No execution plan is required for this informational request.".into(),
+                proposal: None,
+            };
+            let input = AssessmentInput {
+                project_id: request.project_id.clone(),
+                action_id: request.action_id.clone(),
+                request_id: request.lead_request_id.clone(),
+                objective: request.objective.clone(),
+                allowed_evidence_refs: std::collections::BTreeSet::from(
+                    ["repository-files".into()],
+                ),
+            };
+            fixture
+                .app
+                .db
+                .record_lead_assessment(
+                    &request.lead_request_id,
+                    "FIXTURE",
+                    &assessment,
+                    &input,
+                    "no-agent-assessment",
+                )
+                .await
+                .unwrap();
+            seed_complete_planning(&fixture, &intake_id, ParticipantSeed::Matching).await;
+            let pool = sqlx_sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx_sqlite::SqliteConnectOptions::new()
+                        .filename(&fixture.path)
+                        .create_if_missing(false),
+                )
+                .await
+                .unwrap();
+            sqlx::query::query("DELETE FROM planning_artifacts WHERE request_id=?1 AND kind='DOD'")
+                .bind(&intake_id)
+                .execute(&pool)
+                .await
+                .unwrap();
+            pool.close().await;
+
+            let (status, refused) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+            assert_eq!(refused["code"], "PLANNER_NOT_APPLICABLE");
+            assert!(
+                fixture
+                    .app
+                    .db
+                    .lead_model_calls(&request.lead_request_id)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(matches!(
+                fixture.app.db.planning_artifact(&intake_id, "DOD", 1).await,
+                Err(Error::NotFound)
+            ));
 
             fixture.app.db.close().await;
             let _ = std::fs::remove_file(fixture.path);

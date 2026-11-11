@@ -977,23 +977,33 @@ export function Director() {
                     </p>
                   )}
                   {detail.triage.route !== "NO_AGENT" &&
-                    (!detail.assessmentReady || !detail.leadPlanReady) && (
+                    (!detail.assessmentReady ||
+                      !detail.leadPlanReady ||
+                      !detail.actionSpecReady) && (
                       <div
                         className="ui-callout ui-callout--attention"
                         role="status"
                       >
-                        <p>{t("director.plan.assessmentRequired")}</p>
-                        <Button
-                          variant="primary"
-                          size="sm"
-                          busy={assessmentBusy}
-                          disabled={assessmentBusy}
-                          onClick={() => void runLeadAssessment()}
-                        >
-                          {assessmentBusy
-                            ? t("director.plan.assessing")
-                            : t("director.plan.runAssessment")}
-                        </Button>
+                        <p>
+                          {!detail.assessmentReady
+                            ? t("director.plan.assessmentRequired")
+                            : !detail.leadPlanReady
+                              ? t("director.plan.leadPlanRequired")
+                              : t("director.plan.actionSpecRequired")}
+                        </p>
+                        {(!detail.assessmentReady || !detail.leadPlanReady) && (
+                          <Button
+                            variant="primary"
+                            size="sm"
+                            busy={assessmentBusy}
+                            disabled={assessmentBusy}
+                            onClick={() => void runLeadAssessment()}
+                          >
+                            {assessmentBusy
+                              ? t("director.plan.assessing")
+                              : t("director.plan.runAssessment")}
+                          </Button>
+                        )}
                       </div>
                     )}
                   <div className="director-priority">
@@ -1005,6 +1015,7 @@ export function Director() {
                         planBusy ||
                         !detail.assessmentReady ||
                         !detail.leadPlanReady ||
+                        !detail.actionSpecReady ||
                         detail.triage.route === "NO_AGENT" ||
                         Boolean(spec?.frozen || spec?.draft)
                       }
