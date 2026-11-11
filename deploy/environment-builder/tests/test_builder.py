@@ -478,8 +478,15 @@ class AttestationTests(unittest.TestCase):
     VOLUME = "/var/lib/containers/storage/volumes/factory-env-test/_data"
 
     @staticmethod
-    def mount(source: str, target: str, fstype: str = "ext4") -> dict[str, str]:
-        return {"source": source, "mount_point": target, "fstype": fstype}
+    def mount(
+        source: str, target: str, fstype: str = "ext4", root: str = ""
+    ) -> dict[str, str]:
+        return {
+            "root": root,
+            "source": source,
+            "mount_point": target,
+            "fstype": fstype,
+        }
 
     def test_expected_volume_source_is_authorized_at_each_target(self) -> None:
         for target in ("/inputs/workspace", "/cache", "/nix"):
@@ -548,6 +555,75 @@ class AttestationTests(unittest.TestCase):
                     )
                 ]
             )
+        )
+
+    def test_nested_vfs_named_volume_root_is_authorized(self) -> None:
+        root = (
+            "/@home/dev/.local/share/containers/storage/volumes/engine/_data"
+            "/storage/volumes/factory-env-test/_data"
+        )
+        for target in ("/inputs/workspace", "/cache", "/nix"):
+            self.assertTrue(
+                _mounts_authorized(
+                    [self.mount("/dev/nvme0n1p2", target, "btrfs", root)]
+                ),
+                target,
+            )
+        self.assertFalse(
+            _mounts_authorized(
+                [self.mount("/dev/nvme0n1p2", "/cache", "btrfs", "/tmp/not-a-volume")]
+            )
+        )
+        self.assertFalse(
+            _mounts_authorized(
+                [self.mount("/tmp/factory-cache", "/cache", "btrfs", root)]
+            )
+        )
+
+    def test_nested_vfs_runtime_file_root_is_authorized(self) -> None:
+        for target, name in (
+            ("/etc/hosts", "hosts"),
+            ("/etc/hostname", "hostname"),
+            ("/etc/resolv.conf", "resolv.conf"),
+        ):
+            root = f"/containers/storage/vfs-containers/abc123/userdata/{name}"
+            self.assertTrue(
+                _mounts_authorized([self.mount("tmpfs", target, "tmpfs", root)]),
+                target,
+            )
+            self.assertFalse(
+                _mounts_authorized(
+                    [
+                        self.mount(
+                            "tmpfs",
+                            target,
+                            "tmpfs",
+                            "/containers/storage/vfs-containers/abc123/userdata/config.json",
+                        )
+                    ]
+                ),
+                target,
+            )
+            self.assertFalse(
+                _mounts_authorized([self.mount("/tmp/hosts", target, "tmpfs", root)]),
+                target,
+            )
+
+    def test_nested_vfs_root_filesystem_is_authorized(self) -> None:
+        root = (
+            "/@home/dev/.local/share/containers/storage/volumes/engine/_data"
+            "/storage/vfs/dir/abc123"
+        )
+        self.assertTrue(
+            _mounts_authorized(
+                [self.mount("/dev/nvme0n1p2", "/", "btrfs", root)]
+            )
+        )
+        self.assertFalse(
+            _mounts_authorized([self.mount("/tmp/root", "/", "btrfs", root)])
+        )
+        self.assertFalse(
+            _mounts_authorized([self.mount("/dev/nvme0n1p2", "/", "btrfs", "/")])
         )
 
     def test_missing_or_incomplete_mountinfo_is_not_attested(self) -> None:

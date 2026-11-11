@@ -34,6 +34,14 @@ CONTAINER_RUNTIME_FILES = {
     "/etc/hostname": "hostname",
     "/etc/resolv.conf": "resolv.conf",
 }
+# The canonical Compose runtime uses a private nested Podman engine with VFS
+# storage. Inside that engine, a named volume is a directory on a real
+# filesystem and its mountinfo `root` is
+# `.../storage/volumes/<name>/_data`; the `source` is the backing block
+# device. The outer engine's overlay paths remain accepted for the direct
+# builder path. Both forms identify a runtime-managed mount, never an
+# arbitrary host directory bind.
+NESTED_VOLUME_FILESYSTEMS = {"btrfs", "xfs", "ext4", "overlay", "squashfs"}
 
 
 def _mountinfo() -> tuple[list[dict[str, str]], bool]:
@@ -58,6 +66,7 @@ def _mountinfo() -> tuple[list[dict[str, str]], bool]:
             continue
         entries.append(
             {
+                "root": fields[3],
                 "mount_point": fields[4],
                 "source": post[1],
                 "fstype": post[0],
@@ -66,13 +75,7 @@ def _mountinfo() -> tuple[list[dict[str, str]], bool]:
     return entries, complete and bool(entries)
 
 
-def _authorized_volume_source(source: str) -> bool:
-    """True only for a Podman-managed named-volume source path.
-
-    A host bind path at ``/cache``, ``/nix`` or ``/inputs/workspace`` is not
-    attested as a no-host-mount builder. The brokered product path always uses
-    named volumes; the host wrapper is a development harness.
-    """
+def _podman_volume_source(source: str) -> bool:
     if not source.startswith(PODMAN_VOLUME_ROOT):
         return False
     parts = source[len(PODMAN_VOLUME_ROOT) :].strip("/").split("/")
@@ -82,8 +85,40 @@ def _authorized_volume_source(source: str) -> bool:
     return bool(name) and name not in (".", "..") and "\\" not in name and "\0" not in name
 
 
-def _container_runtime_file_source(source: str, expected: str) -> bool:
-    """Require the exact normalized container-runtime host-file structure."""
+def _nested_volume_root(root: str) -> bool:
+    """Match ``.../storage/volumes/<name>/_data`` from a nested VFS engine."""
+    parts = Path(root).parts
+    return (
+        len(parts) >= 4
+        and parts[-4] == "storage"
+        and parts[-3] == "volumes"
+        and bool(parts[-2])
+        and parts[-2] not in (".", "..")
+        and parts[-1] == "_data"
+    )
+
+
+def _authorized_volume_source(source: str, root: str, fstype: str) -> bool:
+    """True only for a runtime-managed named-volume mount.
+
+    A host bind path at ``/cache``, ``/nix`` or ``/inputs/workspace`` is not
+    attested as a no-host-mount builder. The brokered product path always uses
+    named volumes; the host wrapper is a development harness. The nested VFS
+    engine presents a named volume as a directory root on its backing block
+    device, so the mountinfo ``root`` and a real-filesystem source are the
+    runtime-managed identity.
+    """
+    if _podman_volume_source(source):
+        return True
+    return (
+        source.startswith("/dev/")
+        and fstype in NESTED_VOLUME_FILESYSTEMS
+        and _nested_volume_root(root)
+    )
+
+
+def _overlay_container_runtime_file_source(source: str, expected: str) -> bool:
+    """Require the exact normalized overlay container-runtime file source."""
     parts = Path(source).parts
     if any(part in (".", "..") for part in parts):
         return False
@@ -99,13 +134,53 @@ def _container_runtime_file_source(source: str, expected: str) -> bool:
     )
 
 
-def _safe_system_mount(target: str, source: str, fstype: str) -> bool:
+def _nested_container_runtime_file_root(root: str, expected: str) -> bool:
+    """Match ``.../storage/vfs-containers/<id>/userdata/<file>``."""
+    parts = Path(root).parts
+    return (
+        len(parts) >= 5
+        and parts[-5] == "storage"
+        and parts[-4] == "vfs-containers"
+        and bool(parts[-3])
+        and parts[-3] not in (".", "..")
+        and parts[-2] == "userdata"
+        and parts[-1] == expected
+    )
+
+
+def _container_runtime_file_source(
+    source: str, root: str, fstype: str, expected: str
+) -> bool:
+    if _overlay_container_runtime_file_source(source, expected):
+        return True
+    return (
+        source == "tmpfs"
+        and fstype == "tmpfs"
+        and _nested_container_runtime_file_root(root, expected)
+    )
+
+
+def _nested_container_root(root: str) -> bool:
+    parts = Path(root).parts
+    return any(
+        parts[index] == "storage" and parts[index + 1] in {"vfs", "overlay"}
+        for index in range(len(parts) - 1)
+    )
+
+
+def _safe_system_mount(target: str, source: str, fstype: str, root: str) -> bool:
     expected_runtime_file = CONTAINER_RUNTIME_FILES.get(target)
     if expected_runtime_file is not None:
-        return _container_runtime_file_source(source, expected_runtime_file)
+        return _container_runtime_file_source(source, root, fstype, expected_runtime_file)
     if target == "/":
-        return fstype in {"overlay", "rootfs", "squashfs"} and (
+        if fstype in {"overlay", "rootfs", "squashfs"} and (
             source in {"overlay", "rootfs", "/dev/root"} or source.startswith("/dev/")
+        ):
+            return True
+        return (
+            source.startswith("/dev/")
+            and fstype in NESTED_VOLUME_FILESYSTEMS
+            and _nested_container_root(root)
         )
     if target == "/proc" or target.startswith("/proc/"):
         return source == "proc" and fstype == "proc"
@@ -127,7 +202,7 @@ def _safe_system_mount(target: str, source: str, fstype: str) -> bool:
     if target == "/run" or target.startswith("/run/"):
         return source == "tmpfs" and fstype == "tmpfs"
     if target == "/tmp" or target.startswith("/tmp/"):
-        return _authorized_volume_source(source) or (
+        return _authorized_volume_source(source, root, fstype) or (
             source == "tmpfs" and fstype == "tmpfs"
         )
     if target == "/var/tmp" or target.startswith("/var/tmp/"):
@@ -135,7 +210,7 @@ def _safe_system_mount(target: str, source: str, fstype: str) -> bool:
     if target == "/home/factory" or target.startswith("/home/factory/"):
         return source == "tmpfs" and fstype == "tmpfs"
     if target == "/output" or target.startswith("/output/"):
-        return _authorized_volume_source(source) or (
+        return _authorized_volume_source(source, root, fstype) or (
             source == "tmpfs" and fstype == "tmpfs"
         )
     return False
@@ -150,20 +225,21 @@ def _mounts_authorized(mounts: list[dict[str, str]]) -> bool:
         source = mount["source"]
         target = mount["mount_point"]
         fstype = mount.get("fstype", "")
+        root = mount.get("root", "")
         # Validate the source before accepting any target, including "/" and
         # system mounts. A forbidden host path at /cache, /nix,
         # /inputs/workspace, / or /proc must never set noHostMount=true.
         if target in AUTHORIZED_PROJECT_OR_CACHE_MOUNTS or target.startswith(
             "/inputs/workspace/"
         ):
-            if not _authorized_volume_source(source):
+            if not _authorized_volume_source(source, root, fstype):
                 return False
             continue
         if target == "/" or any(
             target == prefix or target.startswith(prefix + "/")
             for prefix in ALLOWED_MOUNT_PREFIXES
         ):
-            if not _safe_system_mount(target, source, fstype):
+            if not _safe_system_mount(target, source, fstype, root):
                 return False
             continue
         return False
