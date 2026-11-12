@@ -115,7 +115,11 @@ per-language table. Instead:
    config expressions fail closed with a typed `ENVIRONMENT_SANDBOX_DENIED`.
    Every `import nixpkgs <args>` argument must also be a literal attrset or a
    merge of literal attrsets with static attribute names; computed keys such as
-   `{ ${configKey} = settings; }` and aliased arguments fail closed.
+   `{ ${configKey} = settings; }` and aliased arguments fail closed. Direct
+   aliasing of `import` itself is rejected. The precise residual boundary is an
+   arbitrary higher-order function that conceals `import` from the static scan;
+   such committed Nix is outside the supported subset and is not claimed to be
+   policy-safe by this static guard alone.
    Ordinary committed flake interpolation such as `devShells.${system}` remains
    valid, and a literal `config = { allowUnfree = false; }` is accepted (while
    `allowUnfree = true` remains rejected by the unfree policy). The production

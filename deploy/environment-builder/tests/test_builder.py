@@ -485,6 +485,7 @@ class PolicyTests(unittest.TestCase):
             '{ outputs = ({ nixpkgs }: let configKey = ("con" + "fig"); settings = { "${allow}" = (_: true); }; in (import nixpkgs { "${configKey}" = settings; })); }',
             '{ outputs = ({ nixpkgs }: let args = { config = { allowUnfree = false; }; }; in (import nixpkgs args)); }',
             '{ outputs = ({ nixpkgs }: import nixpkgs ({} // { "${key}" = (_: true); })); }',
+            '{ outputs = ({ nixpkgs }: let f = import; in (f nixpkgs { config = { allowUnfree = false; }; })); }',
         ]
         for ast in rejected_import_asts:
             with self.assertRaises(BuilderError) as raised:

@@ -357,7 +357,15 @@ def reject_computed_nixpkgs_import(ast: str, filename: str) -> None:
     `let args = { config = ...; }; in import nixpkgs args`, which would
     otherwise evade a scan that only looks for literal `config =` keys.
     Ordinary `devShells.${system}` is not an import argument and is unaffected.
+    Directly aliasing `import` itself (`let f = import; in f nixpkgs ...`) is
+    rejected; arbitrary higher-order functions that conceal `import` remain
+    outside the supported static subset.
     """
+    if re.search(r"\bimport\s*(?:;|\bin\b)", ast):
+        fail(
+            "ENVIRONMENT_SANDBOX_DENIED",
+            f"{filename} aliases import; committed Nix may only call import nixpkgs directly",
+        )
     index = 0
     in_string = False
     escaped = False
